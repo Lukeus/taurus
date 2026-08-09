@@ -1,0 +1,125 @@
+//! Normalized conversation types.
+//!
+//! These deliberately follow the Anthropic content-block shape rather than the
+//! OpenAI `tool_calls` + `role: "tool"` shape. Content blocks are the superset:
+//! an OpenAI or Ollama response maps into them without loss, while the reverse
+//! direction cannot represent interleaved text, thinking, and multiple tool
+//! calls inside a single assistant turn.
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum Role {
+    System,
+    User,
+    Assistant,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export)]
+pub enum ContentBlock {
+    Text {
+        text: String,
+    },
+    /// Chain-of-thought emitted by reasoning models. Kept separate from `Text`
+    /// so the UI can collapse it and compaction can drop it first.
+    Thinking {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        #[ts(type = "unknown")]
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+    },
+    Image {
+        mime_type: String,
+        /// Base64, no data-URI prefix.
+        data: String,
+    },
+}
+
+impl ContentBlock {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    pub fn tool_result(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: content.into(),
+            is_error: false,
+        }
+    }
+
+    pub fn tool_error(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: content.into(),
+            is_error: true,
+        }
+    }
+
+    /// Text carried by this block, if any. Tool results count: compaction and
+    /// token estimation care about their size.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text { text } | Self::Thinking { text } => Some(text),
+            Self::ToolResult { content, .. } => Some(content),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Message {
+    pub role: Role,
+    pub content: Vec<ContentBlock>,
+}
+
+impl Message {
+    pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
+        Self { role, content }
+    }
+
+    pub fn user(text: impl Into<String>) -> Self {
+        Self::new(Role::User, vec![ContentBlock::text(text)])
+    }
+
+    pub fn assistant(text: impl Into<String>) -> Self {
+        Self::new(Role::Assistant, vec![ContentBlock::text(text)])
+    }
+
+    /// Concatenated plain text of the message, ignoring thinking and tool blocks.
+    pub fn text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    pub fn tool_uses(&self) -> impl Iterator<Item = (&str, &str, &serde_json::Value)> {
+        self.content.iter().filter_map(|b| match b {
+            ContentBlock::ToolUse { id, name, input } => Some((id.as_str(), name.as_str(), input)),
+            _ => None,
+        })
+    }
+
+    pub fn has_tool_use(&self) -> bool {
+        self.tool_uses().next().is_some()
+    }
+}

@@ -1,0 +1,30 @@
+[package]
+name = "taurus-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Session state and the agent loop for the Taurus agent harness"
+
+[dependencies]
+taurus-provider.workspace = true
+taurus-tools.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+taurus-provider-ollama.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

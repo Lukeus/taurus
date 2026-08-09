@@ -1,0 +1,31 @@
+[package]
+name = "taurus-skills"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skill discovery, execution, and auto-generation for the Taurus agent harness"
+
+[dependencies]
+taurus-tools.workspace = true
+async-trait.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+taurus-core.workspace = true
+taurus-provider.workspace = true
+taurus-provider-ollama.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

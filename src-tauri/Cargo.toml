@@ -1,0 +1,42 @@
+[package]
+name = "taurus-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Taurus AI Shell desktop application"
+
+[lib]
+# Required on mobile targets and harmless elsewhere; keeps main.rs a stub so
+# the app logic stays testable as a library.
+name = "taurus_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+taurus-core.workspace = true
+taurus-host.workspace = true
+taurus-mcp.workspace = true
+taurus-provider.workspace = true
+taurus-skills.workspace = true
+taurus-tools.workspace = true
+
+async-trait.workspace = true
+dashmap = "6"
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ts-rs.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

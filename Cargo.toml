@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/taurus-provider",
+    "crates/taurus-provider-ollama",
+    "crates/taurus-tools",
+    "crates/taurus-core",
+    "crates/taurus-skills",
+    "crates/taurus-provider-openai",
+    "crates/taurus-mcp",
+    "crates/taurus-host",
+    "crates/taurus-cli",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+
+[workspace.dependencies]
+taurus-provider = { path = "crates/taurus-provider" }
+taurus-provider-ollama = { path = "crates/taurus-provider-ollama" }
+taurus-provider-openai = { path = "crates/taurus-provider-openai" }
+taurus-tools = { path = "crates/taurus-tools" }
+taurus-skills = { path = "crates/taurus-skills" }
+taurus-mcp = { path = "crates/taurus-mcp" }
+taurus-host = { path = "crates/taurus-host" }
+taurus-core = { path = "crates/taurus-core" }
+
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "process", "fs", "time", "io-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+schemars = { version = "1", features = ["derive"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "http2", "charset", "rustls", "rustls-native-certs"] }
+bytes = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "6"
+ignore = "0.4"
+globset = "0.4"
+portable-pty = "0.9"
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }

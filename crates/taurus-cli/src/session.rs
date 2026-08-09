@@ -1,0 +1,267 @@
+//! Driving turns from a terminal.
+
+use std::io::{IsTerminal, Write};
+use std::process::ExitCode;
+use std::sync::Arc;
+
+use taurus_core::{Session, UiEvent};
+use taurus_host::PermissionPromptFactory;
+use taurus_provider::Message;
+use taurus_skills::proposal::{save, validate_proposal, SkillProposal};
+use taurus_tools::PermissionPrompt;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+use crate::permission::{Policy, TerminalPrompt};
+use crate::render::{Format, Renderer};
+use crate::{Runtime, SessionArgs};
+
+/// Supplies terminal prompts as the host rebuilds its permission engine.
+pub struct TerminalPrompts {
+    policy: Policy,
+}
+
+impl TerminalPrompts {
+    pub fn new(policy: Policy) -> Self {
+        Self { policy }
+    }
+}
+
+impl PermissionPromptFactory for TerminalPrompts {
+    fn create(&self) -> Box<dyn PermissionPrompt> {
+        Box::new(TerminalPrompt::new(self.policy.clone()))
+    }
+}
+
+/// Runs one task and exits.
+pub async fn run_once(
+    runtime: &Runtime,
+    args: &SessionArgs,
+    task: &str,
+    format: Format,
+    quiet: bool,
+) -> Result<ExitCode, String> {
+    let (provider_id, model) = runtime
+        .host
+        .resolve_model(args.provider.as_deref(), args.model.as_deref())
+        .await?;
+    let provider = runtime.host.provider(&provider_id).await?;
+
+    let cancel = CancellationToken::new();
+    install_interrupt_handler(cancel.clone());
+
+    let mut session = Session::new(&model);
+    let ok = turn(runtime, &provider_id, provider, &model, &mut session, task, format, quiet, cancel)
+        .await?;
+
+    handle_proposals(runtime).await;
+    Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+/// Interactive session over stdin.
+pub async fn repl(runtime: &Runtime, args: &SessionArgs) -> Result<ExitCode, String> {
+    let (provider_id, model) = runtime
+        .host
+        .resolve_model(args.provider.as_deref(), args.model.as_deref())
+        .await?;
+    let provider = runtime.host.provider(&provider_id).await?;
+
+    let capabilities = provider
+        .capabilities(&model)
+        .await
+        .map_err(|e| format!("could not reach provider '{provider_id}': {e}"))?;
+
+    eprintln!(
+        "taurus — {} in {}",
+        model,
+        runtime.host.workspace().await.display()
+    );
+    if !capabilities.native_tools {
+        eprintln!("  {model} has no built-in tool calling; using prompted tool calls.");
+    }
+    eprintln!("  Ctrl-D to exit, Ctrl-C to interrupt a turn.\n");
+
+    let mut session = Session::new(&model);
+
+    loop {
+        eprint!("› ");
+        let _ = std::io::stderr().flush();
+
+        // Reading stdin blocks; keep it off the async runtime.
+        let read = tokio::task::spawn_blocking(move || {
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf).map(|n| (n, buf))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let line = match read {
+            Ok((0, _)) => break, // EOF
+            Ok((_, buf)) => buf,
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let task = line.trim();
+        if task.is_empty() {
+            continue;
+        }
+        if matches!(task, "exit" | "quit" | ":q") {
+            break;
+        }
+
+        // A fresh token per turn so an interrupted turn does not kill the next.
+        let cancel = CancellationToken::new();
+        install_interrupt_handler(cancel.clone());
+
+        turn(
+            runtime,
+            &provider_id,
+            provider.clone(),
+            &model,
+            &mut session,
+            task,
+            Format::Human,
+            false,
+            cancel,
+        )
+        .await?;
+
+        handle_proposals(runtime).await;
+        eprintln!();
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// One turn, streamed to the terminal. Returns whether it completed cleanly.
+#[allow(clippy::too_many_arguments)]
+async fn turn(
+    runtime: &Runtime,
+    provider_id: &str,
+    provider: Arc<dyn taurus_provider::Provider>,
+    model: &str,
+    session: &mut Session,
+    task: &str,
+    format: Format,
+    quiet: bool,
+    cancel: CancellationToken,
+) -> Result<bool, String> {
+    runtime.host.remember_session(provider_id, model).await;
+
+    let agent = runtime.host.build_agent(provider, model, cancel).await;
+
+    let (tx, mut rx) = mpsc::channel::<UiEvent>(256);
+    let mut renderer = Renderer::new(format, quiet);
+    let printer = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            renderer.handle(&event);
+        }
+        renderer.finish();
+    });
+
+    let outcome = agent.run_turn(session, Message::user(task), tx).await;
+    printer.await.map_err(|e| e.to_string())?;
+
+    match outcome {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            eprintln!("taurus: {e}");
+            Ok(false)
+        }
+    }
+}
+
+/// Reviews whatever the agent proposed during the turn.
+///
+/// With a terminal, asks. Without one, reports and discards — writing a skill
+/// nobody reviewed would defeat the approval gate the whole design rests on.
+async fn handle_proposals(runtime: &Runtime) {
+    let proposals: Vec<SkillProposal> = {
+        let mut queued = runtime.proposals.proposals.lock().await;
+        std::mem::take(&mut *queued)
+    };
+    if proposals.is_empty() {
+        return;
+    }
+
+    for proposal in proposals {
+        if let Err(e) = validate_proposal(&proposal, &*runtime.host.catalog().read().await) {
+            eprintln!("  skill '{}' rejected: {e}", proposal.name);
+            continue;
+        }
+
+        if !runtime.interactive {
+            eprintln!(
+                "  skill '{}' was proposed but not saved (no terminal to review it).\n    \
+                 Run `taurus repl` or open the app to review it.",
+                proposal.name
+            );
+            continue;
+        }
+
+        if !review(&proposal) {
+            continue;
+        }
+
+        let root = taurus_host::config::workspace_skills_dir(&runtime.host.workspace().await);
+        match save(&proposal, &root) {
+            Ok(dir) => {
+                eprintln!("  saved skill to {}", dir.display());
+                // Reload so it is usable in the very next turn of a REPL.
+                runtime.host.reload().await;
+            }
+            Err(e) => eprintln!("  could not save skill: {e}"),
+        }
+    }
+}
+
+/// Shows a proposal and asks whether to keep it.
+fn review(proposal: &SkillProposal) -> bool {
+    let mut err = std::io::stderr();
+    let _ = writeln!(err, "\n  Taurus wants to save a skill: {}", proposal.name);
+    let _ = writeln!(err, "    {}", proposal.description);
+    let _ = writeln!(err, "    fires when: {}", proposal.when_to_use);
+    for script in &proposal.scripts {
+        let _ = writeln!(
+            err,
+            "    bundles script: {} ({})",
+            script.path, script.interpreter
+        );
+    }
+    let _ = write!(err, "  [v] view  [y] save  [n] discard: ");
+    let _ = err.flush();
+
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => true,
+        "v" | "view" => {
+            let _ = writeln!(err, "\n{}\n", proposal.body);
+            for script in &proposal.scripts {
+                let _ = writeln!(err, "--- {} ---\n{}\n", script.path, script.content);
+            }
+            let _ = write!(err, "  [y] save  [n] discard: ");
+            let _ = err.flush();
+            let mut second = String::new();
+            let _ = std::io::stdin().read_line(&mut second);
+            matches!(second.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        }
+        _ => false,
+    }
+}
+
+/// Makes Ctrl-C cancel the turn rather than kill the process, so a half-written
+/// file gets its tool call cleaned up and the session ends consistently.
+fn install_interrupt_handler(cancel: CancellationToken) {
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            if std::io::stderr().is_terminal() {
+                eprintln!("\n  interrupted");
+            }
+            cancel.cancel();
+        }
+    });
+}

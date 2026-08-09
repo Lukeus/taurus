@@ -1,0 +1,184 @@
+//! A scripted provider for exercising the loop without a model.
+//!
+//! Every behavior the agent loop is responsible for — tool dispatch, ordering,
+//! error recovery, cancellation, the iteration ceiling — is deterministic given
+//! the model's output, so the tests script that output directly instead of
+//! hoping a real model cooperates.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use taurus_provider::{
+    Capabilities, ChatRequest, ModelInfo, Provider, Result, StopReason, StreamEvent,
+};
+use tokio::sync::{mpsc, Mutex};
+use tokio_util::sync::CancellationToken;
+
+/// One scripted assistant turn.
+pub struct ScriptedTurn {
+    pub events: Vec<StreamEvent>,
+    pub stop: StopReason,
+}
+
+impl ScriptedTurn {
+    /// A turn that just says something and ends.
+    pub fn text(text: &str) -> Self {
+        Self {
+            events: vec![StreamEvent::TextDelta { text: text.into() }],
+            stop: StopReason::EndTurn,
+        }
+    }
+
+    /// A turn that calls one tool.
+    pub fn tool_call(id: &str, name: &str, input: serde_json::Value) -> Self {
+        Self {
+            events: vec![
+                StreamEvent::ToolUseStart {
+                    id: id.into(),
+                    name: name.into(),
+                },
+                StreamEvent::ToolUseInputDelta {
+                    id: id.into(),
+                    json: input.to_string(),
+                },
+                StreamEvent::ToolUseEnd { id: id.into() },
+            ],
+            stop: StopReason::ToolUse,
+        }
+    }
+
+    /// A turn that calls several tools at once.
+    pub fn tool_calls(calls: Vec<(&str, &str, serde_json::Value)>) -> Self {
+        let mut events = Vec::new();
+        for (id, name, input) in calls {
+            events.push(StreamEvent::ToolUseStart {
+                id: id.into(),
+                name: name.into(),
+            });
+            events.push(StreamEvent::ToolUseInputDelta {
+                id: id.into(),
+                json: input.to_string(),
+            });
+            events.push(StreamEvent::ToolUseEnd { id: id.into() });
+        }
+        Self {
+            events,
+            stop: StopReason::ToolUse,
+        }
+    }
+}
+
+pub struct FakeProvider {
+    turns: Mutex<std::collections::VecDeque<ScriptedTurn>>,
+    /// Requests the loop actually sent, for asserting on prompt construction.
+    pub seen: Mutex<Vec<ChatRequest>>,
+    context_length: u32,
+    /// Turn used once the script runs out. Without it, a loop bug would hang
+    /// the test rather than fail it.
+    fallback_text: String,
+    /// Fires the cancellation token when this many requests have been served.
+    ///
+    /// Cancellation is otherwise untestable here: a scripted provider answers
+    /// in microseconds, so a timer race would decide the result rather than
+    /// the loop's behavior.
+    cancel_after_requests: Option<usize>,
+}
+
+impl FakeProvider {
+    pub fn new(turns: Vec<ScriptedTurn>) -> Arc<Self> {
+        Arc::new(Self {
+            turns: Mutex::new(turns.into()),
+            seen: Mutex::new(Vec::new()),
+            context_length: 128_000,
+            fallback_text: "(script exhausted)".into(),
+            cancel_after_requests: None,
+        })
+    }
+
+    /// A provider that cancels the turn once it has served `n` requests.
+    pub fn cancelling_after(turns: Vec<ScriptedTurn>, n: usize) -> Arc<Self> {
+        Arc::new(Self {
+            turns: Mutex::new(turns.into()),
+            seen: Mutex::new(Vec::new()),
+            context_length: 128_000,
+            fallback_text: "(script exhausted)".into(),
+            cancel_after_requests: Some(n),
+        })
+    }
+
+    /// A provider with a small window, for exercising compaction.
+    pub fn with_context_length(turns: Vec<ScriptedTurn>, context_length: u32) -> Arc<Self> {
+        Arc::new(Self {
+            turns: Mutex::new(turns.into()),
+            seen: Mutex::new(Vec::new()),
+            context_length,
+            fallback_text: "(script exhausted)".into(),
+            cancel_after_requests: None,
+        })
+    }
+
+    pub async fn request_count(&self) -> usize {
+        self.seen.lock().await.len()
+    }
+
+    pub async fn last_request(&self) -> Option<ChatRequest> {
+        self.seen.lock().await.last().cloned()
+    }
+}
+
+#[async_trait]
+impl Provider for FakeProvider {
+    fn id(&self) -> &str {
+        "fake"
+    }
+
+    async fn models(&self) -> Result<Vec<ModelInfo>> {
+        Ok(vec![ModelInfo {
+            id: "fake".into(),
+            display_name: "Fake".into(),
+            context_length: Some(self.context_length),
+        }])
+    }
+
+    async fn capabilities(&self, _model: &str) -> Result<Capabilities> {
+        Ok(Capabilities {
+            native_tools: true,
+            vision: false,
+            thinking: false,
+            context_length: self.context_length,
+        })
+    }
+
+    async fn stream(
+        &self,
+        request: ChatRequest,
+        tx: mpsc::Sender<StreamEvent>,
+        cancel: CancellationToken,
+    ) -> Result<StopReason> {
+        let served = {
+            let mut seen = self.seen.lock().await;
+            seen.push(request);
+            seen.len()
+        };
+
+        if self.cancel_after_requests == Some(served) {
+            cancel.cancel();
+        }
+        if cancel.is_cancelled() {
+            return Ok(StopReason::Canceled);
+        }
+
+        let turn = self.turns.lock().await.pop_front();
+        let turn = turn.unwrap_or_else(|| ScriptedTurn::text(&self.fallback_text));
+
+        for event in turn.events {
+            if cancel.is_cancelled() {
+                return Ok(StopReason::Canceled);
+            }
+            if tx.send(event).await.is_err() {
+                return Ok(StopReason::Canceled);
+            }
+        }
+        Ok(turn.stop)
+    }
+}
