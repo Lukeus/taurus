@@ -3,4 +3,12 @@ dist/
 target/
 .DS_Store
 *.log
-src/bindings/
+# Generated TypeScript. ts-rs writes into each crate's own `bindings/` when
+# TS_RS_EXPORT_DIR is unset, which any plain `cargo test` does; the app imports
+# only src/bindings, and CI regenerates that before type-checking.
+bindings/
+
+# Per-developer workspace state: the model last used here, and permissions
+# granted for this project only. Project skills are meant to be committed.
+.taurus/*
+!.taurus/skills/

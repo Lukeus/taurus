@@ -364,8 +364,10 @@ taurus mcp                      # non-zero exit if a server failed to connect
   closed, which is right for an agent but means programs that check `isatty`
   behave as though piped, and interactive prompts hit the timeout instead of
   hanging forever.
-- **Sessions are in-memory.** Config, skills, and permissions persist;
-  conversations do not survive a restart.
 - **Sub-agent progress is summarized, not streamed.** The parent's transcript
   shows one delegation card plus a tool-usage summary rather than the child's
   live output.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
