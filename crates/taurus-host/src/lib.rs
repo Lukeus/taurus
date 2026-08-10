@@ -8,6 +8,10 @@
 pub mod config;
 pub mod host;
 pub mod prompt;
+pub mod sessions;
+#[cfg(test)]
+mod testing;
 
-pub use config::{ProviderConfig, ProviderKind, Settings};
+pub use config::{ProviderConfig, ProviderKind, Scope, Settings};
 pub use host::{Host, PermissionPromptFactory, MAX_CONCURRENT_SUBAGENTS};
+pub use sessions::{SessionLog, SessionMeta};

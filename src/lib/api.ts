@@ -7,25 +7,39 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { AllowedRule } from "../bindings/AllowedRule";
 import type { AppStatus } from "../bindings/AppStatus";
+import type { ContentBlock } from "../bindings/ContentBlock";
 import type { CreatedSession } from "../bindings/CreatedSession";
+import type { Message } from "../bindings/Message";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
 import type { ProviderConfig } from "../bindings/ProviderConfig";
+import type { ProviderKind } from "../bindings/ProviderKind";
+import type { ResumedSession } from "../bindings/ResumedSession";
 import type { SaveTarget } from "../bindings/SaveTarget";
+import type { Scope } from "../bindings/Scope";
+import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
 import type { UiEvent } from "../bindings/UiEvent";
 
 export type {
+  AllowedRule,
   AppStatus,
+  ContentBlock,
   CreatedSession,
+  Message,
   ModelInfo,
   PermissionDecision,
   PermissionRequest,
   ProviderConfig,
+  ProviderKind,
+  ResumedSession,
   SaveTarget,
+  Scope,
+  SessionMeta,
   SkillProposal,
   SkillSummary,
   UiEvent,
@@ -62,14 +76,25 @@ export function sendMessage(
 export const cancelSession = (sessionId: string) =>
   invoke<void>("cancel_session", { sessionId });
 
+/** Saved conversations, newest first. `all` crosses workspaces. */
+export const listSessions = (all = false) =>
+  invoke<SessionMeta[]>("list_sessions", { all });
+
+export const resumeSession = (sessionId: string, providerId?: string) =>
+  invoke<ResumedSession>("resume_session", {
+    sessionId,
+    providerId: providerId ?? null,
+  });
+
 export const respondPermission = (id: string, decision: PermissionDecision) =>
   invoke<void>("respond_permission", { response: { id, decision } });
 
 export const listPermissionRules = () =>
-  invoke<string[]>("list_permission_rules");
+  invoke<AllowedRule[]>("list_permission_rules");
 
-export const revokePermissionRule = (rule: string) =>
-  invoke<void>("revoke_permission_rule", { rule });
+/** Removes a rule from one layer; the same rule may be granted in both. */
+export const revokePermissionRule = (rule: string, scope: Scope) =>
+  invoke<void>("revoke_permission_rule", { rule, scope });
 
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 
@@ -90,6 +115,16 @@ export const setSkillSynthesis = (enabled: boolean) =>
 
 export const saveProviders = (providers: ProviderConfig[]) =>
   invoke<void>("save_providers", { providers });
+
+/**
+ * The global provider layer, which is what the settings editor must edit.
+ *
+ * `AppStatus.providers` is the *effective* list with this workspace's
+ * overrides folded in; saving that back would write one project's settings
+ * into every project's config.
+ */
+export const listGlobalProviders = () =>
+  invoke<ProviderConfig[]>("list_global_providers");
 
 export const onPermissionRequest = (
   handler: (request: PermissionRequest) => void,

@@ -4,6 +4,7 @@
 //! permission allowlist. Everything shared lives in `taurus-host`; this crate
 //! only decides how to talk to a terminal.
 
+mod markdown;
 mod permission;
 mod render;
 mod session;
@@ -39,7 +40,16 @@ enum Command {
     /// Run one task and exit.
     Run(RunArgs),
     /// Start an interactive session.
-    Repl(SessionArgs),
+    Repl(ReplArgs),
+    /// List saved sessions.
+    Sessions {
+        #[command(flatten)]
+        session: SessionArgs,
+
+        /// Every workspace, not just this one.
+        #[arg(long)]
+        all: bool,
+    },
     /// Inspect the skill library.
     Skills {
         #[command(subcommand)]
@@ -80,6 +90,23 @@ pub struct SessionArgs {
     pub model: Option<String>,
 }
 
+#[derive(Args, Clone)]
+pub struct ResumeArg {
+    /// Continue a saved conversation. Bare `--resume` takes this workspace's
+    /// most recent one; `--resume <ID>` names one from `taurus sessions`.
+    #[arg(long, num_args = 0..=1, value_name = "ID")]
+    pub resume: Option<Option<String>>,
+}
+
+#[derive(Args)]
+pub struct ReplArgs {
+    #[command(flatten)]
+    pub session: SessionArgs,
+
+    #[command(flatten)]
+    pub resume: ResumeArg,
+}
+
 #[derive(Args)]
 pub struct RunArgs {
     /// What you want done.
@@ -87,6 +114,9 @@ pub struct RunArgs {
 
     #[command(flatten)]
     pub session: SessionArgs,
+
+    #[command(flatten)]
+    pub resume: ResumeArg,
 
     #[command(flatten)]
     pub policy: PolicyArgs,
@@ -98,6 +128,10 @@ pub struct RunArgs {
     /// Print only the model's answer, with no tool activity.
     #[arg(short, long)]
     pub quiet: bool,
+
+    /// Also stream the model's reasoning, when it produces any.
+    #[arg(short, long, conflicts_with = "quiet")]
+    pub verbose: bool,
 }
 
 /// What the agent may do without being asked.
@@ -135,7 +169,9 @@ impl From<&PolicyArgs> for Policy {
 async fn main() -> ExitCode {
     // Silent unless asked: a CLI's stderr belongs to the task, not to logs.
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_env("TAURUS_LOG").unwrap_or_else(|_| EnvFilter::new("warn")))
+        .with_env_filter(
+            EnvFilter::try_from_env("TAURUS_LOG").unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
         .with_writer(std::io::stderr)
         .init();
 
@@ -157,15 +193,51 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             }
             let policy = Policy::from(&args.policy);
             let runtime = build_host(&args.session, policy).await?;
-            let format = if args.json { Format::Json } else { Format::Human };
-            session::run_once(&runtime, &args.session, &task, format, args.quiet).await
+            let format = if args.json {
+                Format::Json
+            } else {
+                Format::Human
+            };
+            session::run_once(
+                &runtime,
+                &args.session,
+                args.resume.resume.as_ref(),
+                &task,
+                format,
+                args.quiet,
+                args.verbose,
+            )
+            .await
         }
 
-        Command::Repl(session_args) => {
+        Command::Repl(args) => {
             // A REPL always has a person at it, so it prompts rather than
             // taking a policy up front.
-            let runtime = build_host(&session_args, Policy::default()).await?;
-            session::repl(&runtime, &session_args).await
+            let runtime = build_host(&args.session, Policy::default()).await?;
+            session::repl(&runtime, &args.session, args.resume.resume.as_ref()).await
+        }
+
+        Command::Sessions { session, all } => {
+            let host = build_host(&session, Policy::default()).await?.host;
+            let workspace = host.workspace().await;
+            let listed = taurus_host::sessions::list(if all { None } else { Some(&workspace) });
+
+            if listed.is_empty() {
+                println!("No saved sessions for {}.", workspace.display());
+                return Ok(ExitCode::SUCCESS);
+            }
+            for meta in listed {
+                let title = if meta.title.is_empty() {
+                    "(no turns yet)"
+                } else {
+                    &meta.title
+                };
+                println!("{:<38} {:<24} {title}", meta.id, meta.model);
+                if all {
+                    println!("{:38} {}", "", meta.workspace);
+                }
+            }
+            Ok(ExitCode::SUCCESS)
         }
 
         Command::Skills { command, session } => {
@@ -183,7 +255,10 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             let mut failed = false;
             for status in statuses {
                 if status.connected {
-                    println!("{:<20} {} tools  {}", status.name, status.tool_count, status.description);
+                    println!(
+                        "{:<20} {} tools  {}",
+                        status.name, status.tool_count, status.description
+                    );
                 } else {
                     failed = true;
                     println!(
@@ -193,12 +268,18 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                     );
                 }
             }
-            Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+            Ok(if failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            })
         }
 
         Command::Models { session } => {
             let host = build_host(&session, Policy::default()).await?.host;
-            let (provider_id, _) = host.resolve_model(session.provider.as_deref(), None).await?;
+            let (provider_id, _) = host
+                .resolve_model(session.provider.as_deref(), None)
+                .await?;
             let provider = host.provider(&provider_id).await?;
             let models = provider
                 .models()
@@ -235,9 +316,12 @@ pub struct Runtime {
 /// permission allowlist come from the right place.
 async fn build_host(args: &SessionArgs, policy: Policy) -> Result<Runtime, String> {
     let workspace = match &args.workspace {
-        Some(path) => path
-            .canonicalize()
-            .map_err(|e| format!("{}: {e}", path.display()))?,
+        Some(path) => path.canonicalize().map_err(|_| {
+            format!(
+                "workspace {} does not exist or is not reachable",
+                path.display()
+            )
+        })?,
         None => Host::default_workspace(),
     };
     if !workspace.is_dir() {

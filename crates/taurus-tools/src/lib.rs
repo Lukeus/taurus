@@ -8,7 +8,8 @@ pub mod registry;
 pub mod tool;
 
 pub use permission::{
-    AllowAll, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt, PermissionRequest,
+    AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,
+    PermissionRequest, Scope,
 };
 pub use registry::ToolRegistry;
 pub use tool::{Effect, Tool, ToolContext, ToolError, ToolResult};
@@ -38,7 +39,9 @@ mod test_support {
         // Canonicalize up front: on macOS the temp dir is behind /var -> /private/var,
         // and a workspace root that is itself a symlink would fail every path check.
         let root = dir.path().canonicalize().unwrap();
-        let engine = Arc::new(PermissionEngine::new(&root, prompt));
+        // The global layer points inside the temp workspace so a test grant
+        // cannot reach the real config home.
+        let engine = Arc::new(PermissionEngine::new(&root, root.join(".taurus"), prompt));
         (
             ToolContext::new(root, engine, CancellationToken::new()),
             dir,

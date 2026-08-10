@@ -8,6 +8,8 @@ use std::io::{IsTerminal, Write};
 
 use taurus_core::UiEvent;
 
+use crate::markdown::MarkdownStyler;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Human,
@@ -21,18 +23,32 @@ pub struct Renderer {
     /// Tracks whether the model is mid-sentence, so activity lines do not cut
     /// into a streaming paragraph without a break.
     mid_text: bool,
+    /// Styling is line-oriented, so text is held here until a newline arrives.
+    /// The cost is that prose appears a line at a time rather than a token at
+    /// a time; the alternative is redrawing the current line with cursor
+    /// escapes, which corrupts output the moment a line wraps.
+    pending: String,
+    styler: MarkdownStyler,
+    /// Same, for reasoning, which streams to stderr on its own line.
+    mid_thinking: bool,
     quiet: bool,
+    verbose: bool,
 }
 
 impl Renderer {
-    pub fn new(format: Format, quiet: bool) -> Self {
+    pub fn new(format: Format, quiet: bool, verbose: bool) -> Self {
+        // Never colorize a redirected stream, and honor the de facto standard
+        // opt-out. With color off the styler passes markdown through untouched.
+        let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
         Self {
             format,
-            // Never colorize a redirected stream, and honor the de facto
-            // standard opt-out.
-            color: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+            color,
             mid_text: false,
+            mid_thinking: false,
+            pending: String::new(),
+            styler: MarkdownStyler::new(color),
             quiet,
+            verbose,
         }
     }
 
@@ -52,18 +68,29 @@ impl Renderer {
     fn emit_human(&mut self, event: &UiEvent) {
         match event {
             UiEvent::TextDelta { text } => {
-                print!("{text}");
-                let _ = std::io::stdout().flush();
-                self.mid_text = true;
+                self.pending.push_str(text);
+                while let Some(at) = self.pending.find('\n') {
+                    let line: String = self.pending.drain(..=at).collect();
+                    let styled = self.styler.line(line.trim_end_matches('\n'));
+                    println!("{styled}");
+                }
+                self.mid_text = !self.pending.is_empty();
             }
 
-            // Reasoning is not shown by default: it is long, and on a small
-            // model it is usually noise. `--verbose` surfaces it.
+            // Reasoning is hidden unless asked for: it is long, and on a small
+            // model it is mostly noise. When shown it must stream inline —
+            // these deltas are token-sized, so a line each would print one
+            // word per line.
             UiEvent::ThinkingDelta { text } => {
-                if !self.quiet {
-                    self.break_text();
-                    self.dim(&format!("  {}", text.trim()));
+                if !self.verbose {
+                    return;
                 }
+                self.break_text();
+                if !self.mid_thinking {
+                    self.write_err("  ");
+                    self.mid_thinking = true;
+                }
+                self.write_err(text);
             }
 
             UiEvent::ToolCallStarted { name, preview, .. } => {
@@ -71,6 +98,7 @@ impl Renderer {
                     return;
                 }
                 self.break_text();
+                self.break_thinking();
                 self.dim(&format!("  {} {}", glyph(name), preview));
             }
 
@@ -95,6 +123,7 @@ impl Renderer {
 
             UiEvent::Compacted { messages_removed } => {
                 self.break_text();
+                self.break_thinking();
                 self.dim(&format!(
                     "  [summarized {messages_removed} earlier messages to fit the context window]"
                 ));
@@ -102,6 +131,7 @@ impl Renderer {
 
             UiEvent::Error { message } => {
                 self.break_text();
+                self.break_thinking();
                 self.warn(&format!("  error: {message}"));
             }
 
@@ -109,6 +139,7 @@ impl Renderer {
 
             UiEvent::TurnFinished { usage, .. } => {
                 self.break_text();
+                self.break_thinking();
                 if !self.quiet {
                     self.dim(&format!(
                         "  [{} in / {} out]",
@@ -119,12 +150,35 @@ impl Renderer {
         }
     }
 
-    /// Ends a streaming line before printing an annotation beneath it.
+    /// Emits any buffered partial line before printing an annotation beneath
+    /// it, so a half-written sentence is never left hanging.
     fn break_text(&mut self) {
-        if self.mid_text {
+        if !self.pending.is_empty() {
+            let line = std::mem::take(&mut self.pending);
+            let styled = self.styler.partial(&line);
+            println!("{styled}");
+        } else if self.mid_text {
             println!();
-            self.mid_text = false;
         }
+        self.mid_text = false;
+    }
+
+    fn break_thinking(&mut self) {
+        if self.mid_thinking {
+            let _ = writeln!(std::io::stderr());
+            self.mid_thinking = false;
+        }
+    }
+
+    /// Dimmed, no trailing newline — for streaming reasoning.
+    fn write_err(&self, text: &str) {
+        let mut err = std::io::stderr();
+        let _ = if self.color {
+            write!(err, "\x1b[2m{text}\x1b[0m")
+        } else {
+            write!(err, "{text}")
+        };
+        let _ = err.flush();
     }
 
     /// Annotations go to stderr so `taurus run > answer.md` captures only the
@@ -151,6 +205,7 @@ impl Renderer {
     pub fn finish(&mut self) {
         if self.format == Format::Human {
             self.break_text();
+            self.break_thinking();
         }
     }
 }

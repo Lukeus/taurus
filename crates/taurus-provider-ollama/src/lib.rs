@@ -115,7 +115,12 @@ impl Provider for OllamaProvider {
             .models
             .into_iter()
             .map(|m| {
-                let size = m.details.and_then(|d| d.parameter_size);
+                // Ollama reports an empty parameter_size for some builds; an
+                // empty "()" suffix reads as a bug to the user.
+                let size = m
+                    .details
+                    .and_then(|d| d.parameter_size)
+                    .filter(|s| !s.trim().is_empty());
                 let display_name = match size {
                     Some(s) => format!("{} ({s})", m.name),
                     None => m.name.clone(),

@@ -44,7 +44,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let caps = provider.capabilities(&model).await?;
     println!("model {model} — native_tools={}\n", caps.native_tools);
 
-    let permissions = Arc::new(PermissionEngine::new(&workspace, Box::new(AllowAll)));
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
     let agent = Agent::new(
         provider,
         registry,

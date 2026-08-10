@@ -42,6 +42,8 @@ pub fn run() {
             commands::set_workspace,
             commands::list_models,
             commands::create_session,
+            commands::list_sessions,
+            commands::resume_session,
             commands::send_message,
             commands::cancel_session,
             commands::close_session,
@@ -53,6 +55,7 @@ pub fn run() {
             commands::respond_skill_proposal,
             commands::set_skill_synthesis,
             commands::save_providers,
+            commands::list_global_providers,
             commands::reload_skills,
         ])
         .run(tauri::generate_context!())

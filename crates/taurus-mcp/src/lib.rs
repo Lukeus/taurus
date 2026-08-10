@@ -121,6 +121,13 @@ impl McpManager {
                     "HTTP MCP servers are not supported yet ({url}); use a stdio server for now"
                 ))
             }
+            // Layer merging resolves toggles against the server they name, so
+            // one reaching this far means it named nothing.
+            ServerConfig::Toggle(_) => {
+                return Err(format!(
+                    "'{name}' only sets `disabled`; it needs a `command` or a `url`"
+                ))
+            }
         };
 
         let peer = service.peer().clone();

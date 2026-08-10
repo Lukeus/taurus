@@ -2,16 +2,19 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { PermissionDialog } from "./components/PermissionDialog";
+import { Settings } from "./components/Settings";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript } from "./components/Transcript";
 import * as api from "./lib/api";
-import type { ModelInfo, SkillSummary } from "./lib/api";
+import type { ModelInfo, SessionMeta, SkillSummary } from "./lib/api";
 import { useStore } from "./state/store";
 
 export default function App() {
   const store = useStore();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     store.init();
@@ -61,6 +64,8 @@ export default function App() {
 
         <div className="spacer" />
 
+        <button onClick={() => setHistoryOpen(true)}>History</button>
+        <button onClick={() => setSettingsOpen(true)}>Settings</button>
         <button onClick={() => setSkillsOpen(true)}>
           Skills
           {store.status ? ` (${store.status.skill_count})` : ""}
@@ -110,8 +115,93 @@ export default function App() {
       )}
 
       {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
+      {historyOpen && <HistoryDrawer onClose={() => setHistoryOpen(false)} />}
+      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
     </div>
   );
+}
+
+function HistoryDrawer({ onClose }: { onClose: () => void }) {
+  const [sessions, setSessions] = useState<SessionMeta[] | null>(null);
+  const [all, setAll] = useState(false);
+  const current = useStore((s) => s.session?.id);
+  const providerId = useStore((s) => s.session?.provider_id);
+  const busy = useStore((s) => s.busy);
+  const resume = useStore((s) => s.resume);
+  const startSession = useStore((s) => s.startSession);
+  const model = useStore((s) => s.session?.model);
+
+  useEffect(() => {
+    api.listSessions(all).then(setSessions).catch(() => setSessions([]));
+  }, [all]);
+
+  return (
+    <div className="scrim" onClick={onClose}>
+      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
+        <header className="drawer-head">
+          <h2>History</h2>
+          <button
+            disabled={busy || !providerId || !model}
+            title="Start a new conversation"
+            onClick={async () => {
+              if (!providerId || !model) return;
+              await startSession(providerId, model);
+              onClose();
+            }}
+          >
+            New
+          </button>
+          <button onClick={() => setAll((a) => !a)}>
+            {all ? "This workspace" : "All workspaces"}
+          </button>
+          <button onClick={onClose}>Close</button>
+        </header>
+
+        {sessions?.length === 0 && (
+          <p className="muted drawer-empty">
+            No saved conversations yet. Every session is written to
+            <code> ~/.taurus/sessions</code> as it happens.
+          </p>
+        )}
+
+        <ul className="skill-list">
+          {sessions?.map((session) => (
+            <li key={session.id}>
+              <div className="skill-row">
+                <button
+                  className="link"
+                  // Switching mid-turn would leave the running turn streaming
+                  // into a transcript nobody is looking at.
+                  disabled={busy || session.id === current}
+                  onClick={async () => {
+                    await resume(session.id);
+                    onClose();
+                  }}
+                >
+                  {session.title || "(no turns yet)"}
+                </button>
+                {session.id === current && <span className="tag">current</span>}
+              </div>
+              <p className="muted small">
+                {session.model} · {when(session.updated)}
+                {all ? ` · ${session.workspace}` : ""}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </aside>
+    </div>
+  );
+}
+
+/** Unix seconds as something a person reads at a glance. */
+function when(seconds: number): string {
+  const elapsed = Date.now() / 1000 - seconds;
+  if (elapsed < 60) return "just now";
+  if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ago`;
+  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)}h ago`;
+  if (elapsed < 604800) return `${Math.floor(elapsed / 86400)}d ago`;
+  return new Date(seconds * 1000).toLocaleDateString();
 }
 
 function Composer({

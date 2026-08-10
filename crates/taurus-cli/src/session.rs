@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use taurus_core::{Session, UiEvent};
-use taurus_host::PermissionPromptFactory;
+use taurus_host::{sessions, PermissionPromptFactory, SessionLog};
 use taurus_provider::Message;
 use taurus_skills::proposal::{save, validate_proposal, SkillProposal};
 use taurus_tools::PermissionPrompt;
@@ -33,13 +33,60 @@ impl PermissionPromptFactory for TerminalPrompts {
     }
 }
 
+/// Picks up a saved conversation, or starts a fresh one.
+///
+/// `Some(None)` is a bare `--resume`, meaning this workspace's most recent
+/// session. A named session that cannot be found is an error rather than a
+/// silent new conversation: continuing somewhere else is not what was asked
+/// for, and the mistake is invisible until the model answers without context.
+async fn open_session(
+    runtime: &Runtime,
+    resume: Option<&Option<String>>,
+    model: &str,
+) -> Result<(Session, SessionLog), String> {
+    let workspace = runtime.host.workspace().await;
+
+    let requested = match resume {
+        None => None,
+        Some(Some(id)) => Some(id.clone()),
+        Some(None) => Some(
+            sessions::latest(&workspace)
+                .ok_or_else(|| {
+                    format!(
+                        "no saved sessions for {}. Start one with `taurus repl`.",
+                        workspace.display()
+                    )
+                })?
+                .id,
+        ),
+    };
+
+    let Some(id) = requested else {
+        let session = Session::new(model);
+        let log = SessionLog::create(&session, &workspace);
+        return Ok((session, log));
+    };
+
+    let (session, _) = sessions::load(&id)?;
+    let log = SessionLog::resume(&session, &workspace);
+    eprintln!(
+        "  resuming {} — {} messages, model {}",
+        session.id,
+        session.messages.len(),
+        session.model
+    );
+    Ok((session, log))
+}
+
 /// Runs one task and exits.
 pub async fn run_once(
     runtime: &Runtime,
     args: &SessionArgs,
+    resume: Option<&Option<String>>,
     task: &str,
     format: Format,
     quiet: bool,
+    verbose: bool,
 ) -> Result<ExitCode, String> {
     let (provider_id, model) = runtime
         .host
@@ -50,16 +97,36 @@ pub async fn run_once(
     let cancel = CancellationToken::new();
     install_interrupt_handler(cancel.clone());
 
-    let mut session = Session::new(&model);
-    let ok = turn(runtime, &provider_id, provider, &model, &mut session, task, format, quiet, cancel)
-        .await?;
+    let (mut session, mut log) = open_session(runtime, resume, &model).await?;
+    let ok = turn(
+        runtime,
+        &provider_id,
+        provider,
+        &model,
+        &mut session,
+        &mut log,
+        task,
+        format,
+        quiet,
+        verbose,
+        cancel,
+    )
+    .await?;
 
     handle_proposals(runtime).await;
-    Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+    Ok(if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 /// Interactive session over stdin.
-pub async fn repl(runtime: &Runtime, args: &SessionArgs) -> Result<ExitCode, String> {
+pub async fn repl(
+    runtime: &Runtime,
+    args: &SessionArgs,
+    resume: Option<&Option<String>>,
+) -> Result<ExitCode, String> {
     let (provider_id, model) = runtime
         .host
         .resolve_model(args.provider.as_deref(), args.model.as_deref())
@@ -81,7 +148,7 @@ pub async fn repl(runtime: &Runtime, args: &SessionArgs) -> Result<ExitCode, Str
     }
     eprintln!("  Ctrl-D to exit, Ctrl-C to interrupt a turn.\n");
 
-    let mut session = Session::new(&model);
+    let (mut session, mut log) = open_session(runtime, resume, &model).await?;
 
     loop {
         eprint!("› ");
@@ -119,8 +186,10 @@ pub async fn repl(runtime: &Runtime, args: &SessionArgs) -> Result<ExitCode, Str
             provider.clone(),
             &model,
             &mut session,
+            &mut log,
             task,
             Format::Human,
+            false,
             false,
             cancel,
         )
@@ -141,9 +210,11 @@ async fn turn(
     provider: Arc<dyn taurus_provider::Provider>,
     model: &str,
     session: &mut Session,
+    log: &mut SessionLog,
     task: &str,
     format: Format,
     quiet: bool,
+    verbose: bool,
     cancel: CancellationToken,
 ) -> Result<bool, String> {
     runtime.host.remember_session(provider_id, model).await;
@@ -151,7 +222,7 @@ async fn turn(
     let agent = runtime.host.build_agent(provider, model, cancel).await;
 
     let (tx, mut rx) = mpsc::channel::<UiEvent>(256);
-    let mut renderer = Renderer::new(format, quiet);
+    let mut renderer = Renderer::new(format, quiet, verbose);
     let printer = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             renderer.handle(&event);
@@ -161,6 +232,11 @@ async fn turn(
 
     let outcome = agent.run_turn(session, Message::user(task), tx).await;
     printer.await.map_err(|e| e.to_string())?;
+
+    // Recorded whatever the outcome: an interrupted or failed turn still
+    // produced the messages that led there, and those are the ones worth
+    // resuming from.
+    log.record(session);
 
     match outcome {
         Ok(_) => Ok(true),

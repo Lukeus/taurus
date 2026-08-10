@@ -33,7 +33,11 @@ fn harness_with(
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();
     let cancel = CancellationToken::new();
-    let permissions = Arc::new(PermissionEngine::new(&workspace, prompt));
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        prompt,
+    ));
     let tools = ToolContext::new(workspace.clone(), permissions, cancel.clone());
     let provider = FakeProvider::with_context_length(turns, context_length);
     let agent = Agent::new(
@@ -288,7 +292,11 @@ async fn cancellation_partway_through_stops_the_loop_without_a_further_request()
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();
     let cancel = CancellationToken::new();
-    let permissions = Arc::new(PermissionEngine::new(&workspace, Box::new(AllowAll)));
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
     let tools = ToolContext::new(workspace, permissions, cancel.clone());
     let provider = FakeProvider::cancelling_after(
         vec![

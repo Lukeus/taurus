@@ -16,9 +16,9 @@ use taurus_mcp::ServerStatus;
 use taurus_provider::{Message, ModelInfo};
 use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
-use taurus_tools::PermissionDecision;
+use taurus_tools::{AllowedRule, PermissionDecision, Scope};
 
-use taurus_host::{ProviderConfig, Settings};
+use taurus_host::{sessions, ProviderConfig, SessionLog, SessionMeta, Settings};
 
 use crate::state::{AppState, SessionEntry};
 
@@ -96,6 +96,7 @@ pub async fn create_session(
         .map_err(|e| e.to_string())?;
 
     let session = Session::new(&model);
+    let log = SessionLog::create(&session, &state.host.workspace().await);
     let id = session.id.clone();
     state.sessions.insert(
         id.clone(),
@@ -103,6 +104,7 @@ pub async fn create_session(
             session: Arc::new(Mutex::new(session)),
             provider_id: provider_id.clone(),
             cancel: Arc::new(Mutex::new(CancellationToken::new())),
+            log: Arc::new(Mutex::new(log)),
         }),
     );
 
@@ -116,6 +118,92 @@ pub async fn create_session(
         native_tools: capabilities.native_tools,
         context_length: capabilities.context_length,
     })
+}
+
+/// Saved conversations, newest first — this workspace's, or every one.
+#[tauri::command]
+pub async fn list_sessions(
+    state: State<'_, Arc<AppState>>,
+    all: bool,
+) -> CmdResult<Vec<SessionMeta>> {
+    let workspace = state.host.workspace().await;
+    Ok(sessions::list(if all { None } else { Some(&workspace) }))
+}
+
+/// What a resumed conversation needs to be redrawn and continued.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct ResumedSession {
+    pub id: String,
+    pub model: String,
+    pub provider_id: String,
+    pub native_tools: bool,
+    pub context_length: u32,
+    /// The whole transcript, for the frontend to rebuild the view from.
+    pub messages: Vec<Message>,
+}
+
+/// Reopens a saved conversation as a live session.
+///
+/// Already-open sessions are returned as they stand rather than reloaded: the
+/// in-memory one is the newer of the two mid-turn, and replacing it would drop
+/// whatever the running turn has produced.
+#[tauri::command]
+pub async fn resume_session(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    provider_id: Option<String>,
+) -> CmdResult<ResumedSession> {
+    let (session, provider_id) = match state.sessions.get(&session_id) {
+        Some(open) => {
+            let entry = open.clone();
+            let provider_id = entry.provider_id.clone();
+            let session = entry.session.lock().await.clone();
+            (session, provider_id)
+        }
+        None => {
+            let (session, _) = sessions::load(&session_id)?;
+            // Whichever provider the caller is on, else whatever the host
+            // resolves: a transcript records the model, not the backend that
+            // served it, and that backend may not even be configured now.
+            let (resolved, _) = state
+                .host
+                .resolve_model(provider_id.as_deref(), Some(&session.model))
+                .await?;
+            (session, resolved)
+        }
+    };
+
+    let provider = state.host.provider(&provider_id).await?;
+    let capabilities = provider
+        .capabilities(&session.model)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let resumed = ResumedSession {
+        id: session.id.clone(),
+        model: session.model.clone(),
+        provider_id: provider_id.clone(),
+        native_tools: capabilities.native_tools,
+        context_length: capabilities.context_length,
+        messages: session.messages.clone(),
+    };
+
+    if !state.sessions.contains_key(&session_id) {
+        let log = SessionLog::resume(&session, &state.host.workspace().await);
+        state.sessions.insert(
+            session_id.clone(),
+            Arc::new(SessionEntry {
+                session: Arc::new(Mutex::new(session)),
+                provider_id,
+                cancel: Arc::new(Mutex::new(CancellationToken::new())),
+                log: Arc::new(Mutex::new(log)),
+            }),
+        );
+        info!(session = %session_id, "session resumed");
+    }
+
+    Ok(resumed)
 }
 
 /// Runs one turn, streaming events to `on_event`.
@@ -152,6 +240,10 @@ pub async fn send_message(
 
     let mut session = entry.session.lock().await;
     let outcome = agent.run_turn(&mut session, Message::user(text), tx).await;
+    // Recorded whatever the outcome, and before the session lock is released:
+    // an interrupted turn still produced the messages that led there, and they
+    // must reach disk in the order they happened.
+    entry.log.lock().await.record(&session);
     drop(session);
     let _ = forwarder.await;
 
@@ -210,8 +302,20 @@ pub async fn respond_permission(
     }
 }
 
+/// The global provider layer, for the settings editor.
+///
+/// Deliberately not `AppStatus::providers`, which is the effective list with
+/// this workspace's overrides folded in. An editor that saved that back would
+/// write one project's settings into every project's config.
 #[tauri::command]
-pub async fn list_permission_rules(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<String>> {
+pub async fn list_global_providers(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<Vec<ProviderConfig>> {
+    Ok(state.host.global_providers().await)
+}
+
+#[tauri::command]
+pub async fn list_permission_rules(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<AllowedRule>> {
     Ok(state.host.permissions().await.allowed_rules().await)
 }
 
@@ -219,8 +323,9 @@ pub async fn list_permission_rules(state: State<'_, Arc<AppState>>) -> CmdResult
 pub async fn revoke_permission_rule(
     state: State<'_, Arc<AppState>>,
     rule: String,
+    scope: Scope,
 ) -> CmdResult<()> {
-    state.host.permissions().await.revoke(&rule).await;
+    state.host.permissions().await.revoke(&rule, scope).await;
     Ok(())
 }
 

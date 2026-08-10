@@ -464,7 +464,11 @@ mod tests {
 
         let workspace = TempDir::new().unwrap();
         let root = workspace.path().canonicalize().unwrap();
-        let permissions = Arc::new(PermissionEngine::new(&root, Box::new(AllowAll)));
+        let permissions = Arc::new(PermissionEngine::new(
+            &root,
+            root.join(".taurus"),
+            Box::new(AllowAll),
+        ));
         Fixture {
             ctx: ToolContext::new(root, permissions, CancellationToken::new()),
             catalog: Arc::new(RwLock::new(catalog)),

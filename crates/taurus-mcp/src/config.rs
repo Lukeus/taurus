@@ -36,12 +36,36 @@ pub enum ServerConfig {
         #[serde(default)]
         disabled: bool,
     },
+    /// A bare `{"disabled": true}`: not a server, but a change to one defined
+    /// in a lower layer. It exists so a workspace can switch off an inherited
+    /// server without copying its command line down, which would then rot.
+    Toggle(DisableToggle),
+}
+
+/// The payload of [`ServerConfig::Toggle`].
+///
+/// A separate struct purely so `deny_unknown_fields` can apply — serde allows
+/// it on a type but not on an enum variant, and without it this last untagged
+/// variant would match any object at all, swallowing entries that merely failed
+/// to parse as a real server.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisableToggle {
+    pub disabled: bool,
 }
 
 impl ServerConfig {
     pub fn disabled(&self) -> bool {
         match self {
             Self::Stdio { disabled, .. } | Self::Http { disabled, .. } => *disabled,
+            Self::Toggle(toggle) => toggle.disabled,
+        }
+    }
+
+    pub fn set_disabled(&mut self, value: bool) {
+        match self {
+            Self::Stdio { disabled, .. } | Self::Http { disabled, .. } => *disabled = value,
+            Self::Toggle(toggle) => toggle.disabled = value,
         }
     }
 
@@ -51,6 +75,7 @@ impl ServerConfig {
                 .trim_end()
                 .to_string(),
             Self::Http { url, .. } => url.clone(),
+            Self::Toggle(_) => "(not defined)".to_string(),
         }
     }
 }
@@ -117,6 +142,20 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(config_file(dir.path()), "{ not json").unwrap();
         assert!(load(dir.path()).unwrap_err().contains("mcp.json"));
+    }
+
+    #[test]
+    fn a_bare_disabled_entry_parses_as_a_toggle_and_nothing_else_does() {
+        let config: McpConfig =
+            serde_json::from_str(r#"{"mcpServers": {"off": {"disabled": true}}}"#).unwrap();
+        assert!(matches!(config.servers["off"], ServerConfig::Toggle { .. }));
+
+        // A real entry must not fall through to the toggle variant just
+        // because every one of its own fields happens to be optional.
+        let config: McpConfig =
+            serde_json::from_str(r#"{"mcpServers": {"real": {"command": "x", "disabled": true}}}"#)
+                .unwrap();
+        assert!(matches!(config.servers["real"], ServerConfig::Stdio { .. }));
     }
 
     #[test]

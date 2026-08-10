@@ -13,7 +13,7 @@ use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use taurus_core::Session;
-use taurus_host::{Host, PermissionPromptFactory};
+use taurus_host::{Host, PermissionPromptFactory, SessionLog};
 use taurus_skills::proposal::SkillProposal;
 use taurus_tools::{PermissionDecision, PermissionPrompt};
 
@@ -26,6 +26,9 @@ pub struct SessionEntry {
     /// Cancels the in-flight turn. Replaced after each turn so a cancellation
     /// does not poison the next one.
     pub cancel: Arc<Mutex<CancellationToken>>,
+    /// The transcript this conversation appends to. Its own lock rather than
+    /// the session's, so a listing or a close does not wait behind a turn.
+    pub log: Arc<Mutex<SessionLog>>,
 }
 
 /// Makes UI-backed permission prompts as the host rebuilds its engine.

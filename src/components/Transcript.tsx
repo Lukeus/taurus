@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { Markdown } from "./Markdown";
 import type { Entry } from "../state/store";
 
 /** Icon per tool, so a long transcript is scannable without reading. */
@@ -77,7 +78,11 @@ function EntryView({ entry }: { entry: Entry }) {
       return (
         <div className="entry assistant">
           {entry.thinking && <Thinking text={entry.thinking} />}
-          {entry.text && <div className="prose">{entry.text}</div>}
+          {entry.text && (
+            // `open` means the model is still writing into this entry, which
+            // is what tells the renderer to coalesce parses while streaming.
+            <Markdown text={entry.text} streaming={entry.open} />
+          )}
         </div>
       );
 

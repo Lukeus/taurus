@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { UiEvent } from "../lib/api";
-import { reduce, type Entry } from "./store";
+import type { Message, UiEvent } from "../lib/api";
+import { entriesFromMessages, reduce, type Entry } from "./store";
 
 /** Folds a whole event sequence, as a real turn would arrive. */
 const run = (...events: UiEvent[]): Entry[] => events.reduce(reduce, []);
@@ -119,5 +119,97 @@ describe("transcript reducer", () => {
       },
     );
     expect(entries.map((e) => e.kind)).toEqual(["assistant", "tool", "assistant"]);
+  });
+});
+
+describe("replaying a saved conversation", () => {
+  const saved: Message[] = [
+    { role: "user", content: [{ type: "text", text: "check the readme" }] },
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", text: "I should read it first." },
+        { type: "text", text: "Checking." },
+        {
+          type: "tool_use",
+          id: "t1",
+          name: "read_file",
+          input: { path: "README.md" },
+        },
+      ],
+    },
+    {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "t1", content: "body", is_error: false },
+      ],
+    },
+    { role: "assistant", content: [{ type: "text", text: "Done." }] },
+  ];
+
+  it("produces the same shape a streamed turn would have", () => {
+    // A resumed conversation must be indistinguishable from a live one, or the
+    // transcript visibly changes the moment you reopen it.
+    const entries = entriesFromMessages(saved);
+    expect(entries.map((e) => e.kind)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+    ]);
+  });
+
+  it("reunites a tool call with the result that answers it", () => {
+    const entries = entriesFromMessages(saved);
+    expect(entries[2]).toMatchObject({
+      kind: "tool",
+      name: "read_file",
+      status: "ok",
+      output: "body",
+    });
+  });
+
+  it("marks a failed tool call as failed", () => {
+    const entries = entriesFromMessages([
+      saved[1],
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "t1", content: "nope", is_error: true },
+        ],
+      },
+    ]);
+    expect(entries.find((e) => e.kind === "tool")).toMatchObject({
+      status: "error",
+      output: "nope",
+    });
+  });
+
+  it("leaves a call whose result never reached disk running", () => {
+    // What a crash mid-turn looks like on reload; it must not read as success.
+    const entries = entriesFromMessages([saved[0], saved[1]]);
+    expect(entries.find((e) => e.kind === "tool")).toMatchObject({
+      status: "running",
+    });
+  });
+
+  it("keeps reasoning attached to the answer it belongs to", () => {
+    const entries = entriesFromMessages(saved);
+    expect(entries[1]).toMatchObject({
+      kind: "assistant",
+      thinking: "I should read it first.",
+      text: "Checking.",
+      open: false,
+    });
+  });
+
+  it("closes every assistant entry so the next turn opens a new one", () => {
+    const entries = entriesFromMessages(saved);
+    const open = entries.filter((e) => e.kind === "assistant" && e.open);
+    expect(open).toHaveLength(0);
+  });
+
+  it("replays an empty transcript as an empty view", () => {
+    expect(entriesFromMessages([])).toEqual([]);
   });
 });

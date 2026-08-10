@@ -42,7 +42,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = std::path::Path::new("/tmp/mcp-probe").canonicalize()?;
     let ctx = ToolContext::new(
         workspace.clone(),
-        Arc::new(PermissionEngine::new(&workspace, Box::new(AllowAll))),
+        Arc::new(PermissionEngine::new(
+            &workspace,
+            workspace.join(".taurus"),
+            Box::new(AllowAll),
+        )),
         CancellationToken::new(),
     );
 

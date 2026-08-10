@@ -93,3 +93,12 @@ jobs:
 
       - run: pnpm build
       - run: cargo build --release -p taurus-app
+      - run: cargo build --release -p taurus-cli
+
+      # Exercises workspace resolution, skill discovery, and registry assembly
+      # on each platform without needing a model.
+      - name: Smoke-test the CLI
+        shell: bash
+        run: |
+          ./target/release/taurus tools
+          ./target/release/taurus skills list

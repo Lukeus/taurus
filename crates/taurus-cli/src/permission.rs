@@ -95,7 +95,16 @@ impl TerminalPrompt {
         // the redirected stdout stays clean for the model's answer.
         let mut err = std::io::stderr();
         let _ = writeln!(err, "\n  {} — {}", label(request.effect), request.preview);
-        let _ = write!(err, "  [y] once  [a] always  [n] deny: ");
+        // The everywhere option appears only where the engine offers it, so
+        // the prompt never advertises a key that would be quietly narrowed.
+        let _ = if request.always_global_scope.is_some() {
+            write!(
+                err,
+                "  [y] once  [a] always here  [g] always everywhere  [n] deny: "
+            )
+        } else {
+            write!(err, "  [y] once  [a] always  [n] deny: ")
+        };
         let _ = err.flush();
 
         let mut answer = String::new();
@@ -107,6 +116,9 @@ impl TerminalPrompt {
         match answer.trim().to_ascii_lowercase().as_str() {
             "y" | "yes" | "" => PermissionDecision::AllowOnce,
             "a" | "always" => PermissionDecision::AllowAlways,
+            "g" | "global" if request.always_global_scope.is_some() => {
+                PermissionDecision::AllowAlwaysGlobal
+            }
             _ => PermissionDecision::Deny,
         }
     }
@@ -165,6 +177,7 @@ mod tests {
             effect,
             preview: "preview".into(),
             always_scope: "scope".into(),
+            always_global_scope: None,
             input,
         }
     }

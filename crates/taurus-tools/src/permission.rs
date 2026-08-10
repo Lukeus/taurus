@@ -4,6 +4,10 @@
 //! every file read makes the harness unusable. Anything that writes, executes,
 //! or leaves the machine needs a decision, and "always" decisions persist so
 //! the user grants each capability once rather than once per call.
+//!
+//! An "always" decision persists into one of two layers: this workspace, or
+//! every workspace. Both are consulted, so a grant made once globally is not
+//! asked again in a project that has never seen it.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -16,8 +20,24 @@ use uuid::Uuid;
 
 use crate::tool::{Effect, Tool, ToolError};
 
-/// Where persisted decisions live, relative to the workspace root.
+/// Where workspace decisions live, relative to the workspace root.
 const ALLOWLIST_PATH: &str = ".taurus/permissions.json";
+
+/// Where global decisions live, relative to the config home.
+const GLOBAL_ALLOWLIST_FILE: &str = "permissions.json";
+
+/// Which layer a persisted decision belongs to.
+///
+/// The same two layers the config files use. It is defined here because this
+/// is the lowest crate that needs the distinction; `taurus-host` re-exports it
+/// so there is one `Scope` and one TypeScript type across the whole harness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum Scope {
+    Global,
+    Workspace,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -30,6 +50,9 @@ pub struct PermissionRequest {
     /// What "always allow" would grant, in words, so the user knows the scope
     /// of the broader decision they are being offered.
     pub always_scope: String,
+    /// The same, for granting it in every workspace. `None` when that is not
+    /// on offer for this call, which is how a frontend knows not to show it.
+    pub always_global_scope: Option<String>,
     #[ts(type = "unknown")]
     pub input: serde_json::Value,
 }
@@ -39,8 +62,38 @@ pub struct PermissionRequest {
 #[ts(export)]
 pub enum PermissionDecision {
     AllowOnce,
+    /// Persists for this workspace only.
     AllowAlways,
+    /// Persists for every workspace. Offered only where
+    /// [`PermissionRequest::always_global_scope`] is set.
+    AllowAlwaysGlobal,
     Deny,
+}
+
+/// One persisted rule and the layer it came from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AllowedRule {
+    pub rule: String,
+    pub scope: Scope,
+}
+
+/// Whether "allow everywhere" may be offered for this kind of call.
+///
+/// Never for command execution. A workspace grant for `git` is scoped to a
+/// project the user has already decided to trust; the same grant globally
+/// applies in every repository they ever open, including one just cloned to
+/// look at. That is the decision most worth making per project, so the wider
+/// option is not put on the table and a frontend that asks for it anyway is
+/// narrowed back to the workspace.
+///
+/// This governs what the harness will *create*, not what it will honor: a
+/// `run_command:*` rule hand-written into the global file still applies. That
+/// is deliberate — editing that file is an explicit, informed act, and
+/// silently ignoring configuration someone wrote is its own kind of surprise.
+/// The gap only exists in the direction of "you had to mean it".
+fn global_offerable(effect: Effect) -> bool {
+    effect != Effect::Execute
 }
 
 /// Implemented by the UI layer. The agent loop blocks on this.
@@ -77,20 +130,54 @@ struct Allowlist {
     allowed: BTreeSet<String>,
 }
 
+/// Both layers, behind one lock.
+///
+/// One lock rather than two because every read consults both: taking them
+/// separately would let a grant land between the two checks and be missed.
+#[derive(Debug, Default)]
+struct Allowlists {
+    global: Allowlist,
+    workspace: Allowlist,
+}
+
+impl Allowlists {
+    fn permits(&self, rule: &str) -> bool {
+        self.global.allowed.contains(rule) || self.workspace.allowed.contains(rule)
+    }
+
+    fn layer(&mut self, scope: Scope) -> &mut Allowlist {
+        match scope {
+            Scope::Global => &mut self.global,
+            Scope::Workspace => &mut self.workspace,
+        }
+    }
+}
+
 pub struct PermissionEngine {
     workspace: PathBuf,
+    /// The config home, which holds the global `permissions.json`.
+    global: PathBuf,
     prompt: Box<dyn PermissionPrompt>,
-    allowlist: Mutex<Allowlist>,
+    allowlists: Mutex<Allowlists>,
 }
 
 impl PermissionEngine {
-    pub fn new(workspace: impl Into<PathBuf>, prompt: Box<dyn PermissionPrompt>) -> Self {
+    pub fn new(
+        workspace: impl Into<PathBuf>,
+        global: impl Into<PathBuf>,
+        prompt: Box<dyn PermissionPrompt>,
+    ) -> Self {
         let workspace = workspace.into();
-        let allowlist = load_allowlist(&workspace);
+        let global = global.into();
+        let allowlists = Allowlists {
+            global: read_allowlist(&global_allowlist_file(&global)),
+            workspace: read_allowlist(&workspace_allowlist_file(&workspace)),
+        };
         Self {
             workspace,
+            global,
             prompt,
-            allowlist: Mutex::new(allowlist),
+            allowlists: Mutex::new(allowlists),
         }
     }
 
@@ -101,45 +188,70 @@ impl PermissionEngine {
         }
 
         let rule = rule_for(tool, input);
-        if self.allowlist.lock().await.allowed.contains(&rule) {
+        if self.allowlists.lock().await.permits(&rule) {
             return Ok(());
         }
 
+        let offer_global = global_offerable(tool.effect());
         let request = PermissionRequest {
             id: Uuid::new_v4().to_string(),
             tool: tool.name().to_string(),
             effect: tool.effect(),
             preview: tool.preview(input),
-            always_scope: describe_rule(&rule),
+            always_scope: describe_rule(&rule, Scope::Workspace),
+            always_global_scope: offer_global.then(|| describe_rule(&rule, Scope::Global)),
             input: input.clone(),
         };
 
-        match self.prompt.request(request).await {
-            PermissionDecision::AllowOnce => Ok(()),
-            PermissionDecision::AllowAlways => {
-                let mut list = self.allowlist.lock().await;
-                list.allowed.insert(rule);
-                save_allowlist(&self.workspace, &list);
-                Ok(())
-            }
-            PermissionDecision::Deny => Err(ToolError::Denied),
-        }
+        let scope = match self.prompt.request(request).await {
+            PermissionDecision::AllowOnce => return Ok(()),
+            PermissionDecision::Deny => return Err(ToolError::Denied),
+            PermissionDecision::AllowAlways => Scope::Workspace,
+            PermissionDecision::AllowAlwaysGlobal if offer_global => Scope::Global,
+            // A frontend that offered a global grant where one was not on
+            // offer gets the narrower decision honored, never the wider one.
+            PermissionDecision::AllowAlwaysGlobal => Scope::Workspace,
+        };
+
+        let mut lists = self.allowlists.lock().await;
+        lists.layer(scope).allowed.insert(rule);
+        self.save(scope, lists.layer(scope));
+        Ok(())
     }
 
-    pub async fn allowed_rules(&self) -> Vec<String> {
-        self.allowlist
-            .lock()
-            .await
-            .allowed
-            .iter()
-            .cloned()
-            .collect()
+    pub async fn allowed_rules(&self) -> Vec<AllowedRule> {
+        let lists = self.allowlists.lock().await;
+        [
+            (Scope::Global, &lists.global),
+            (Scope::Workspace, &lists.workspace),
+        ]
+        .into_iter()
+        .flat_map(|(scope, list)| {
+            list.allowed.iter().map(move |rule| AllowedRule {
+                rule: rule.clone(),
+                scope,
+            })
+        })
+        .collect()
     }
 
-    pub async fn revoke(&self, rule: &str) {
-        let mut list = self.allowlist.lock().await;
-        list.allowed.remove(rule);
-        save_allowlist(&self.workspace, &list);
+    /// Removes a rule from one layer.
+    ///
+    /// Scoped rather than "wherever it is": a rule can be granted in both, and
+    /// revoking the workspace copy must not silently drop a global grant the
+    /// user made for every project.
+    pub async fn revoke(&self, rule: &str, scope: Scope) {
+        let mut lists = self.allowlists.lock().await;
+        lists.layer(scope).allowed.remove(rule);
+        self.save(scope, lists.layer(scope));
+    }
+
+    fn save(&self, scope: Scope, list: &Allowlist) {
+        let path = match scope {
+            Scope::Global => global_allowlist_file(&self.global),
+            Scope::Workspace => workspace_allowlist_file(&self.workspace),
+        };
+        write_allowlist(&path, list);
     }
 }
 
@@ -162,12 +274,16 @@ fn rule_for(tool: &dyn Tool, input: &serde_json::Value) -> String {
     tool.name().to_string()
 }
 
-fn describe_rule(rule: &str) -> String {
+fn describe_rule(rule: &str, scope: Scope) -> String {
+    let where_ = match scope {
+        Scope::Global => "in every workspace",
+        Scope::Workspace => "in this workspace",
+    };
     match rule.split_once(':') {
         Some((tool, program)) => {
-            format!("Always allow `{tool}` to run `{program}` commands in this workspace")
+            format!("Always allow `{tool}` to run `{program}` commands {where_}")
         }
-        None => format!("Always allow `{rule}` in this workspace"),
+        None => format!("Always allow `{rule}` {where_}"),
     }
 }
 
@@ -180,19 +296,22 @@ fn leading_word(command: &str) -> Option<&str> {
         .filter(|w| !w.is_empty())
 }
 
-fn allowlist_file(workspace: &Path) -> PathBuf {
+fn workspace_allowlist_file(workspace: &Path) -> PathBuf {
     workspace.join(ALLOWLIST_PATH)
 }
 
-fn load_allowlist(workspace: &Path) -> Allowlist {
-    std::fs::read_to_string(allowlist_file(workspace))
+fn global_allowlist_file(home: &Path) -> PathBuf {
+    home.join(GLOBAL_ALLOWLIST_FILE)
+}
+
+fn read_allowlist(path: &Path) -> Allowlist {
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
-fn save_allowlist(workspace: &Path, list: &Allowlist) {
-    let path = allowlist_file(workspace);
+fn write_allowlist(path: &Path, list: &Allowlist) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -247,19 +366,57 @@ mod tests {
         }
     }
 
-    fn engine(
+    /// Keeps the request it was asked, so a test can assert on what the user
+    /// would have been offered.
+    struct Recording {
+        seen: Arc<Mutex<Option<Option<String>>>>,
         decision: PermissionDecision,
-    ) -> (PermissionEngine, Arc<AtomicUsize>, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
+    }
+
+    #[async_trait]
+    impl PermissionPrompt for Recording {
+        async fn request(&self, request: PermissionRequest) -> PermissionDecision {
+            *self.seen.lock().await = Some(request.always_global_scope);
+            self.decision
+        }
+    }
+
+    /// A workspace and a config home, kept apart so a test can tell which
+    /// layer a decision landed in.
+    struct Homes {
+        workspace: tempfile::TempDir,
+        global: tempfile::TempDir,
+    }
+
+    impl Homes {
+        fn new() -> Self {
+            Self {
+                workspace: tempfile::tempdir().unwrap(),
+                global: tempfile::tempdir().unwrap(),
+            }
+        }
+
+        fn engine(&self, prompt: Box<dyn PermissionPrompt>) -> PermissionEngine {
+            PermissionEngine::new(self.workspace.path(), self.global.path(), prompt)
+        }
+
+        fn wrote_workspace(&self) -> bool {
+            workspace_allowlist_file(self.workspace.path()).is_file()
+        }
+
+        fn wrote_global(&self) -> bool {
+            global_allowlist_file(self.global.path()).is_file()
+        }
+    }
+
+    fn engine(decision: PermissionDecision) -> (PermissionEngine, Arc<AtomicUsize>, Homes) {
+        let homes = Homes::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let engine = PermissionEngine::new(
-            dir.path(),
-            Box::new(Counting {
-                decision,
-                calls: calls.clone(),
-            }),
-        );
-        (engine, calls, dir)
+        let engine = homes.engine(Box::new(Counting {
+            decision,
+            calls: calls.clone(),
+        }));
+        (engine, calls, homes)
     }
 
     #[tokio::test]
@@ -315,24 +472,204 @@ mod tests {
 
     #[tokio::test]
     async fn allow_always_survives_a_restart() {
-        let dir = tempfile::tempdir().unwrap();
+        let homes = Homes::new();
         let tool = Fake {
             name: "write_file",
             effect: Effect::Write,
         };
-        let first = PermissionEngine::new(
-            dir.path(),
-            Box::new(Counting {
-                decision: PermissionDecision::AllowAlways,
-                calls: Arc::new(AtomicUsize::new(0)),
-            }),
-        );
+        let first = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowAlways,
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
         first.check(&tool, &serde_json::json!({})).await.unwrap();
 
         // A fresh engine over the same workspace must honor the stored rule
         // even though its prompt denies everything.
-        let second = PermissionEngine::new(dir.path(), Box::new(DenyAll));
+        let second = homes.engine(Box::new(DenyAll));
         assert!(second.check(&tool, &serde_json::json!({})).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_workspace_grant_stays_in_the_workspace() {
+        let (engine, _, homes) = engine(PermissionDecision::AllowAlways);
+        let tool = Fake {
+            name: "write_file",
+            effect: Effect::Write,
+        };
+        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+
+        assert!(homes.wrote_workspace());
+        assert!(
+            !homes.wrote_global(),
+            "a workspace decision must not touch the global layer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_global_grant_carries_into_a_workspace_that_never_saw_it() {
+        let global = tempfile::tempdir().unwrap();
+        let tool = Fake {
+            name: "write_file",
+            effect: Effect::Write,
+        };
+
+        let first = tempfile::tempdir().unwrap();
+        let engine = PermissionEngine::new(
+            first.path(),
+            global.path(),
+            Box::new(Counting {
+                decision: PermissionDecision::AllowAlwaysGlobal,
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        assert!(
+            !workspace_allowlist_file(first.path()).is_file(),
+            "a global decision must not also be written to the workspace"
+        );
+
+        // A different workspace, sharing only the config home, and a prompt
+        // that would refuse. The stored global rule has to carry it.
+        let second = tempfile::tempdir().unwrap();
+        let elsewhere = PermissionEngine::new(second.path(), global.path(), Box::new(DenyAll));
+        assert!(elsewhere.check(&tool, &serde_json::json!({})).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn running_commands_is_never_offered_globally() {
+        let homes = Homes::new();
+        let tool = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+
+        // What the request offers, and what the engine does if a frontend
+        // answers with the wider grant regardless.
+        let offered = Arc::new(Mutex::new(None));
+        let recorder = Recording {
+            seen: offered.clone(),
+            decision: PermissionDecision::AllowAlwaysGlobal,
+        };
+        let engine = homes.engine(Box::new(recorder));
+        engine
+            .check(&tool, &serde_json::json!({"command": "git status"}))
+            .await
+            .unwrap();
+
+        assert!(
+            offered.lock().await.as_ref().unwrap().is_none(),
+            "execution must not offer an everywhere grant"
+        );
+        assert!(
+            !homes.wrote_global(),
+            "an unofferable global grant must be narrowed, not honored"
+        );
+        assert!(homes.wrote_workspace());
+    }
+
+    #[tokio::test]
+    async fn revoking_one_layer_leaves_the_other_granted() {
+        let homes = Homes::new();
+        let tool = Fake {
+            name: "write_file",
+            effect: Effect::Write,
+        };
+
+        // The same rule granted in both layers, as happens when someone
+        // approves it per project and later approves it everywhere.
+        let engine = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowAlways,
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        engine.revoke("write_file", Scope::Workspace).await;
+
+        let global = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowAlwaysGlobal,
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        global.check(&tool, &serde_json::json!({})).await.unwrap();
+
+        global.revoke("write_file", Scope::Workspace).await;
+        assert!(
+            global.check(&tool, &serde_json::json!({})).await.is_ok(),
+            "revoking the workspace copy dropped the global grant"
+        );
+
+        global.revoke("write_file", Scope::Global).await;
+        let fresh = homes.engine(Box::new(DenyAll));
+        assert!(matches!(
+            fresh.check(&tool, &serde_json::json!({})).await,
+            Err(ToolError::Denied)
+        ));
+    }
+
+    #[tokio::test]
+    async fn listed_rules_say_which_layer_they_came_from() {
+        let homes = Homes::new();
+        let write = Fake {
+            name: "write_file",
+            effect: Effect::Write,
+        };
+        let net = Fake {
+            name: "fetch",
+            effect: Effect::Network,
+        };
+
+        let engine = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowAlways,
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        engine.check(&write, &serde_json::json!({})).await.unwrap();
+
+        let global = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowAlwaysGlobal,
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        global.check(&net, &serde_json::json!({})).await.unwrap();
+
+        let rules = global.allowed_rules().await;
+        assert!(rules.contains(&AllowedRule {
+            rule: "fetch".into(),
+            scope: Scope::Global,
+        }));
+        assert!(rules.contains(&AllowedRule {
+            rule: "write_file".into(),
+            scope: Scope::Workspace,
+        }));
+    }
+
+    #[tokio::test]
+    async fn a_hand_written_global_command_rule_is_still_honored() {
+        // The restriction on global execute grants is about what the harness
+        // will create, not what it will obey. Someone who edits the global
+        // file by hand has made an explicit choice, and quietly ignoring it
+        // would be its own surprise. Pinned so the distinction stays a
+        // decision rather than drifting either way by accident.
+        let homes = Homes::new();
+        std::fs::write(
+            global_allowlist_file(homes.global.path()),
+            r#"{"allowed": ["run_command:git"]}"#,
+        )
+        .unwrap();
+
+        let engine = homes.engine(Box::new(DenyAll));
+        assert!(engine
+            .check(
+                &Fake {
+                    name: "run_command",
+                    effect: Effect::Execute,
+                },
+                &serde_json::json!({"command": "git status"}),
+            )
+            .await
+            .is_ok());
+    }
+
+    #[test]
+    fn the_two_scopes_are_described_differently() {
+        assert!(describe_rule("write_file", Scope::Workspace).contains("this workspace"));
+        assert!(describe_rule("write_file", Scope::Global).contains("every workspace"));
     }
 
     #[tokio::test]

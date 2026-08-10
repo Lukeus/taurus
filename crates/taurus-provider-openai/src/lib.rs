@@ -28,6 +28,9 @@ use taurus_provider::{
 
 use wire::{ChatBody, ModelsResponse, StreamChunk};
 
+/// Path the OpenAI routes live under on almost every server.
+pub const DEFAULT_API_PREFIX: &str = "/v1";
+
 /// How a model's capabilities are determined.
 ///
 /// OpenAI-compatible servers have no capability endpoint — `/v1/models`
@@ -56,6 +59,8 @@ impl Default for OpenAiCapabilities {
 pub struct OpenAiProvider {
     id: String,
     base_url: String,
+    /// Already normalized: leading slash, no trailing one, possibly empty.
+    api_prefix: String,
     api_key: Option<String>,
     client: reqwest::Client,
     capabilities: OpenAiCapabilities,
@@ -71,14 +76,42 @@ impl OpenAiProvider {
         Self {
             id: id.into(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            api_prefix: DEFAULT_API_PREFIX.to_string(),
             api_key,
             client: reqwest::Client::new(),
             capabilities,
         }
     }
 
+    /// Moves the OpenAI routes to a different path prefix.
+    ///
+    /// `/v1` covers OpenAI itself and nearly every server that imitates it.
+    /// The exception worth naming is OpenVINO Model Server, which served these
+    /// routes under `/v3` until 2026.3 added `/v1` as an alias. A server behind
+    /// a reverse proxy that mounts the API somewhere else needs this too.
+    ///
+    /// `None` keeps the default, so a config that says nothing changes nothing.
+    pub fn with_api_prefix(mut self, prefix: Option<impl AsRef<str>>) -> Self {
+        if let Some(prefix) = prefix {
+            self.api_prefix = normalize_prefix(prefix.as_ref());
+        }
+        self
+    }
+
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
+        format!("{}{}{}", self.base_url, self.api_prefix, path)
+    }
+
+    // The two routes, named rather than spelled out at the call sites, so a
+    // test asserts the same string the request uses. Written inline they were
+    // passed to `url` still carrying the `/v1` the prefix now supplies, and
+    // every test still passed.
+    fn models_url(&self) -> String {
+        self.url("/models")
+    }
+
+    fn chat_url(&self) -> String {
+        self.url("/chat/completions")
     }
 
     fn authorize(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -123,7 +156,7 @@ impl Provider for OpenAiProvider {
 
     async fn models(&self) -> Result<Vec<ModelInfo>> {
         let response = self
-            .authorize(self.client.get(self.url("/v1/models")))
+            .authorize(self.client.get(self.models_url()))
             .send()
             .await
             .map_err(|e| self.unreachable(e))?;
@@ -166,7 +199,7 @@ impl Provider for OpenAiProvider {
         let response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Ok(StopReason::Canceled),
-            r = self.authorize(self.client.post(self.url("/v1/chat/completions")).json(&body)).send() => {
+            r = self.authorize(self.client.post(self.chat_url()).json(&body)).send() => {
                 self.check_status(r.map_err(|e| self.unreachable(e))?).await?
             }
         };
@@ -281,6 +314,20 @@ impl Provider for OpenAiProvider {
     }
 }
 
+/// Accepts the prefix however a person wrote it in a config file.
+///
+/// `v3`, `/v3`, and `/v3/` all mean the same thing, and an empty value means
+/// the routes sit directly on the base URL. Being lenient here costs nothing
+/// and saves a class of "why does it 404" that is invisible in a JSON file.
+fn normalize_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
 async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> {
     tx.send(event).await.map_err(|_| ProviderError::Canceled)
 }
@@ -329,5 +376,86 @@ where
                 None => self.done = true,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider(base_url: &str, prefix: Option<&str>) -> OpenAiProvider {
+        OpenAiProvider::new("test", base_url, None, OpenAiCapabilities::default())
+            .with_api_prefix(prefix)
+    }
+
+    #[test]
+    fn the_default_prefix_is_what_almost_every_server_uses() {
+        let p = provider("http://localhost:8000", None);
+        assert_eq!(
+            p.chat_url(),
+            "http://localhost:8000/v1/chat/completions",
+            "the default must stay byte-identical to the old hardcoded route"
+        );
+        assert_eq!(p.models_url(), "http://localhost:8000/v1/models");
+    }
+
+    #[test]
+    fn an_openvino_model_server_can_be_moved_to_its_own_prefix() {
+        // OVMS before 2026.3 serves the OpenAI routes under /v3 only.
+        let p = provider("http://localhost:8000", Some("/v3"));
+        assert_eq!(p.chat_url(), "http://localhost:8000/v3/chat/completions");
+        assert_eq!(p.models_url(), "http://localhost:8000/v3/models");
+    }
+
+    #[test]
+    fn the_prefix_is_never_applied_twice() {
+        // Regression: the routes were once written as `url("/v1/models")`,
+        // which silently became `/v1/v1/models` once a prefix existed.
+        for prefix in [None, Some("/v1"), Some("/v3")] {
+            let p = provider("http://x", prefix);
+            assert_eq!(
+                p.models_url().matches("/v1/").count() + p.models_url().matches("/v3/").count(),
+                1
+            );
+            assert!(!p.chat_url().contains("/v1/v1/"), "{}", p.chat_url());
+        }
+    }
+
+    #[test]
+    fn the_prefix_is_accepted_however_it_was_written() {
+        for written in ["/v3", "v3", "/v3/", " v3 "] {
+            assert_eq!(
+                provider("http://x", Some(written)).models_url(),
+                "http://x/v3/models",
+                "{written:?} should mean the same thing"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_prefix_puts_the_routes_on_the_base_url() {
+        // What a reverse proxy that already strips the version segment needs.
+        for written in ["", "/", "  "] {
+            assert_eq!(
+                provider("http://x", Some(written)).models_url(),
+                "http://x/models",
+                "{written:?} should mean no prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prefix_may_have_more_than_one_segment() {
+        let p = provider("https://gateway.example", Some("/openai/v1"));
+        assert_eq!(
+            p.chat_url(),
+            "https://gateway.example/openai/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn a_trailing_slash_on_the_base_url_does_not_double_up() {
+        let p = provider("http://localhost:8000/", Some("/v3"));
+        assert_eq!(p.models_url(), "http://localhost:8000/v3/models");
     }
 }

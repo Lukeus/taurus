@@ -48,7 +48,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // AllowAll stands in for the user clicking Allow; the permission engine is
     // still in the path, so a bug that skipped it would not be hidden here.
-    let permissions = Arc::new(PermissionEngine::new(&workspace, Box::new(AllowAll)));
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
     let cancel = CancellationToken::new();
     let agent = Agent::new(
         provider,

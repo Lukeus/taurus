@@ -68,9 +68,12 @@ pub fn resolve(root: &Path, candidate: &str) -> Result<PathBuf, ToolError> {
 }
 
 fn canonical_root(root: &Path) -> Result<PathBuf, ToolError> {
-    root.canonicalize().map_err(|e| {
-        ToolError::InvalidInput(format!(
-            "workspace root {} is unusable: {e}",
+    root.canonicalize().map_err(|_| {
+        // Hit on every tool call once the directory goes away, so it has to
+        // explain itself rather than surface a bare errno.
+        ToolError::Failed(format!(
+            "The workspace {} no longer exists. It may have been deleted or unmounted. \
+             Choose another workspace to continue.",
             root.display()
         ))
     })
@@ -172,6 +175,17 @@ mod tests {
         let ws = workspace();
         std::os::unix::fs::symlink(ws.path().join("sub"), ws.path().join("alias")).unwrap();
         assert!(resolve(ws.path(), "alias/file.txt").is_ok());
+    }
+
+    #[test]
+    fn a_vanished_workspace_explains_itself() {
+        let ws = workspace();
+        let root = ws.path().to_path_buf();
+        drop(ws);
+        let err = resolve(&root, ".").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("no longer exists"), "{message}");
+        assert!(message.contains("Choose another workspace"), "{message}");
     }
 
     #[test]

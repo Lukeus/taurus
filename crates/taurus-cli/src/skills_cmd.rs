@@ -28,7 +28,11 @@ pub async fn run(host: &Host, command: SkillsCommand) -> Result<ExitCode, String
                 } else {
                     ""
                 };
-                println!("{:<24} {:<8}{degraded}", skill.name, format!("{:?}", skill.tier).to_lowercase());
+                println!(
+                    "{:<24} {:<8}{degraded}",
+                    skill.name,
+                    format!("{:?}", skill.tier).to_lowercase()
+                );
                 println!("    {}", skill.when_to_use);
             }
             Ok(ExitCode::SUCCESS)

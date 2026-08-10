@@ -1,4 +1,4 @@
-import type { PermissionRequest } from "../lib/api";
+import type { PermissionDecision, PermissionRequest } from "../lib/api";
 
 const EFFECT_LABEL: Record<string, string> = {
   write: "wants to change a file",
@@ -18,7 +18,7 @@ export function PermissionDialog({
   onDecide,
 }: {
   request: PermissionRequest;
-  onDecide: (decision: "allow_once" | "allow_always" | "deny") => void;
+  onDecide: (decision: PermissionDecision) => void;
 }) {
   return (
     <div className="scrim">
@@ -36,7 +36,19 @@ export function PermissionDialog({
           <button className="primary" onClick={() => onDecide("allow_once")} autoFocus>
             Allow once
           </button>
-          <button onClick={() => onDecide("allow_always")}>Allow always</button>
+          <button onClick={() => onDecide("allow_always")} title={request.always_scope}>
+            {request.always_global_scope ? "Always here" : "Allow always"}
+          </button>
+          {/* Absent where the wider grant is not on offer — running commands,
+              where "every project you ever open" is the wrong unit. */}
+          {request.always_global_scope && (
+            <button
+              onClick={() => onDecide("allow_always_global")}
+              title={request.always_global_scope}
+            >
+              Always everywhere
+            </button>
+          )}
           <button className="danger" onClick={() => onDecide("deny")}>
             Deny
           </button>

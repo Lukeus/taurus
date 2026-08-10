@@ -24,4 +24,10 @@ api_key_env: string | null,
  * Overrides for backends that cannot be probed. Ignored for Ollama, which
  * reports its own capabilities per model.
  */
-native_tools: boolean | null, context_length: number | null, };
+native_tools: boolean | null, context_length: number | null, 
+/**
+ * Path prefix the OpenAI-compatible routes live under. Defaults to `/v1`,
+ * which is right for OpenAI, vLLM, LM Studio, llama.cpp, and OpenVINO
+ * Model Server from 2026.3 on; earlier OVMS builds need `/v3`.
+ */
+api_prefix: string | null, };

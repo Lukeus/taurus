@@ -270,7 +270,11 @@ mod tests {
     fn fixture(turns: Vec<ScriptedTurn>) -> (SpawnSubagent, ToolContext, TempDir) {
         let dir = TempDir::new().unwrap();
         let workspace = dir.path().canonicalize().unwrap();
-        let permissions = Arc::new(PermissionEngine::new(&workspace, Box::new(AllowAll)));
+        let permissions = Arc::new(PermissionEngine::new(
+            &workspace,
+            workspace.join(".taurus"),
+            Box::new(AllowAll),
+        ));
         let ctx = ToolContext::new(workspace, permissions, CancellationToken::new());
 
         let provider = FakeProvider::new(turns);

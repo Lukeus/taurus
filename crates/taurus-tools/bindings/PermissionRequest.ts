@@ -10,4 +10,9 @@ preview: string,
  * What "always allow" would grant, in words, so the user knows the scope
  * of the broader decision they are being offered.
  */
-always_scope: string, input: unknown, };
+always_scope: string, 
+/**
+ * The same, for granting it in every workspace. `None` when that is not
+ * on offer for this call, which is how a frontend knows not to show it.
+ */
+always_global_scope: string | null, input: unknown, };
