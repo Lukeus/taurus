@@ -238,14 +238,27 @@ mod tests {
         assert!(out.contains("marker.txt"));
     }
 
+    // `shell_invocation` runs the platform's own shell -- /bin/sh elsewhere,
+    // cmd.exe on Windows -- so a test that exercises shell *syntax* has to
+    // speak the right dialect. The behavior under test is identical on both.
+
+    /// Writes to stderr, then exits non-zero.
+    #[cfg(windows)]
+    const FAILS_WITH_STDERR: &str = "echo oops 1>&2 & exit 3";
+    #[cfg(not(windows))]
+    const FAILS_WITH_STDERR: &str = "echo oops >&2; exit 3";
+
+    /// Blocks on a line of stdin, then reports that it got past the read.
+    #[cfg(windows)]
+    const READS_STDIN: &str = "set /p line= & echo got:";
+    #[cfg(not(windows))]
+    const READS_STDIN: &str = "read line; echo \"got:$line\"";
+
     #[tokio::test]
     async fn a_failing_command_returns_its_output_not_an_error() {
         let (ctx, _dir) = test_ctx();
         let out = RunCommand
-            .execute(
-                serde_json::json!({"command": "echo oops >&2; exit 3"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"command": FAILS_WITH_STDERR}), &ctx)
             .await
             .unwrap();
         assert!(out.contains("Exit code 3"));
@@ -280,7 +293,7 @@ mod tests {
         let (ctx, _dir) = test_ctx();
         let out = RunCommand
             .execute(
-                serde_json::json!({"command": "read line; echo \"got:$line\"", "timeout_secs": 5}),
+                serde_json::json!({"command": READS_STDIN, "timeout_secs": 5}),
                 &ctx,
             )
             .await

@@ -98,12 +98,35 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 
 /// Path shown in prompts and tool output: relative to the workspace when
 /// possible, so the model and the user see stable, short names.
+///
+/// Separators are always `/`, including on Windows. This string is not merely
+/// cosmetic: the model reads it and writes it straight back into the next tool
+/// call, and `resolve` accepts either separator on Windows. Emitting the native
+/// `\` would make every path in a transcript, a skill, and a stored session
+/// platform-specific for no gain, and would collide with JSON escaping on the
+/// way through.
 pub fn display(root: &Path, path: &Path) -> String {
-    root.canonicalize()
+    let shown = root
+        .canonicalize()
         .ok()
         .and_then(|r| path.strip_prefix(r).ok())
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|| path.display().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    with_forward_slashes(&shown, std::path::MAIN_SEPARATOR)
+}
+
+/// Separator rewriting, with the platform's separator passed in.
+///
+/// A parameter rather than reading `MAIN_SEPARATOR` directly so the Windows
+/// behavior is exercised by the test suite on every platform. A test that can
+/// only run on the system that already works proves nothing about the one that
+/// does not.
+fn with_forward_slashes(shown: &str, separator: char) -> String {
+    if separator == '/' {
+        shown.to_string()
+    } else {
+        shown.replace(separator, "/")
+    }
 }
 
 #[cfg(test)]
@@ -186,6 +209,44 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("no longer exists"), "{message}");
         assert!(message.contains("Choose another workspace"), "{message}");
+    }
+
+    #[test]
+    fn shown_paths_use_forward_slashes_on_every_platform() {
+        // The model reads these and writes them back into the next tool call,
+        // so a nested path must look the same on Windows as anywhere else.
+        let ws = workspace();
+        let nested = resolve(ws.path(), "sub/file.txt").unwrap();
+        assert_eq!(display(ws.path(), &nested), "sub/file.txt");
+        assert!(
+            !display(ws.path(), &nested).contains('\\'),
+            "a native separator leaked into model-facing output"
+        );
+    }
+
+    #[test]
+    fn a_path_outside_the_workspace_is_still_normalized() {
+        // Falls back to the absolute path; it should not switch separator
+        // style halfway through a transcript.
+        let ws = workspace();
+        let outside = std::env::temp_dir().join("a").join("b");
+        assert!(!display(ws.path(), &outside).contains('\\'));
+    }
+
+    #[test]
+    fn windows_separators_are_rewritten_even_when_the_tests_run_elsewhere() {
+        // The actual regression, reproduced on any platform: `glob` returned
+        // `src\main.rs` on Windows, which the model then echoed back into the
+        // next tool call.
+        assert_eq!(with_forward_slashes(r"src\main.rs", '\\'), "src/main.rs");
+        assert_eq!(
+            with_forward_slashes(r"C:\Users\me\project\a.txt", '\\'),
+            "C:/Users/me/project/a.txt"
+        );
+        // A POSIX path is untouched, including one with a backslash in a
+        // filename -- legal on Unix, and not a separator there.
+        assert_eq!(with_forward_slashes("src/main.rs", '/'), "src/main.rs");
+        assert_eq!(with_forward_slashes(r"odd\name.txt", '/'), r"odd\name.txt");
     }
 
     #[test]
