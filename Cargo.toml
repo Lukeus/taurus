@@ -6,6 +6,7 @@ members = [
     "crates/taurus-tools",
     "crates/taurus-core",
     "crates/taurus-skills",
+    "crates/taurus-web",
     "crates/taurus-provider-openai",
     "crates/taurus-mcp",
     "crates/taurus-host",
@@ -25,6 +26,7 @@ taurus-provider-ollama = { path = "crates/taurus-provider-ollama" }
 taurus-provider-openai = { path = "crates/taurus-provider-openai" }
 taurus-tools = { path = "crates/taurus-tools" }
 taurus-skills = { path = "crates/taurus-skills" }
+taurus-web = { path = "crates/taurus-web" }
 taurus-mcp = { path = "crates/taurus-mcp" }
 taurus-host = { path = "crates/taurus-host" }
 taurus-core = { path = "crates/taurus-core" }
@@ -40,7 +42,7 @@ schemars = { version = "1", features = ["derive"] }
 # `rustls` pulls rustls-platform-verifier, which reads the OS trust store
 # directly. reqwest 0.13.2 dropped the separate `rustls-native-certs` optional
 # dependency that used to be needed alongside it.
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "http2", "charset", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "stream", "http2", "charset", "rustls"] }
 bytes = "1"
 thiserror = "2"
 anyhow = "1"
@@ -50,6 +52,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 directories = "6"
 ignore = "0.4"
 globset = "0.4"
+# HTML to Markdown for `fetch_url`. A page arrives as markup and reaches the
+# model as prose either way; converting keeps the headings and link targets that
+# a plain-text render throws away.
+htmd = "0.5"
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 
 [workspace.lints.rust]

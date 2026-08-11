@@ -2,37 +2,82 @@
  * One stylesheet, no framework. The UI is small enough that a build-time CSS
  * pipeline would cost more than it saves, and Tauri's CSP forbids remote
  * stylesheets anyway.
+ *
+ * The palette is a surface ladder rather than a set of one-off colours: the
+ * window sits at --bg, a panel raised off it at --bg-raised, and anything
+ * inset back into a panel — code, a preview, a row of output — drops to
+ * --bg-sunken. Two weights of line separate them: --border where an edge is
+ * structural, --rule for the hairlines inside a panel. Boxes inside boxes are
+ * what the ladder exists to avoid.
  */
 
 :root {
-  --bg: #0e0f13;
-  --bg-raised: #16181f;
-  --bg-sunken: #0a0b0e;
+  --bg: #0b0d12;
+  --bg-rail: #0f1218;
+  --bg-raised: #0f1218;
+  --bg-sunken: #0b0d12;
+  --bg-elevated: #12151d;
+  --bg-hover: #161a23;
+  --bg-active: #1c212c;
+  /* A tool row that wrote something, tinted just enough to group. */
+  --bg-row: #141821;
+
   --border: #262a35;
-  --text: #e4e6ec;
-  --text-dim: #9aa1b1;
-  --text-faint: #6b7280;
-  --accent: #7c8cf8;
-  --accent-dim: #4c5bd4;
+  --rule: #1d222d;
+  --border-strong: #2c3243;
+
+  --text: #e7e9ef;
+  --text-dim: #98a0b0;
+  --text-faint: #656c7c;
+
+  --accent: #8c9bff;
+  --accent-hover: #a9b4ff;
+  --accent-soft: #c9cfff;
+  --on-accent: #0b0d12;
+
   --ok: #4ade80;
   --warn: #fbbf24;
   --danger: #f87171;
-  --radius: 8px;
+
+  --r-sm: 6px;
+  --r: 9px;
+  --r-md: 10px;
+  --r-lg: 12px;
+  --r-xl: 14px;
+
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
 }
 
+/*
+ * The same ladder read the other way up. Roles are preserved rather than
+ * inverted one colour at a time: --bg-sunken is still the inset surface, so
+ * in light it is *darker* than the panel it sits in, not lighter.
+ */
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #fbfbfd;
+    --bg-rail: #f2f3f8;
     --bg-raised: #ffffff;
-    --bg-sunken: #f1f2f6;
-    --border: #dfe1e8;
-    --text: #1a1c22;
-    --text-dim: #5a6072;
-    --text-faint: #8b91a1;
+    --bg-sunken: #f4f5fa;
+    --bg-elevated: #ffffff;
+    --bg-hover: #eceef5;
+    --bg-active: #e2e5f0;
+    --bg-row: #f6f7fc;
+
+    --border: #d8dbe4;
+    --rule: #e7e9f0;
+    --border-strong: #c7cbd8;
+
+    --text: #12141a;
+    --text-dim: #565d6e;
+    --text-faint: #858b9b;
+
     --accent: #4c5bd4;
-    --accent-dim: #7c8cf8;
+    --accent-hover: #3a48be;
+    --accent-soft: #3a48be;
+    --on-accent: #ffffff;
+
     --ok: #16a34a;
     --warn: #b45309;
     --danger: #dc2626;
@@ -59,19 +104,22 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ------------------------------------------------------------- primitives */
+
 button {
   font: inherit;
   color: var(--text-dim);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
+  border-radius: var(--r);
+  padding: 5px 11px;
+  font-size: 12.5px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 button:hover:not(:disabled) {
+  background: var(--bg-hover);
   color: var(--text);
-  border-color: var(--text-faint);
 }
 button:disabled {
   opacity: 0.4;
@@ -80,16 +128,27 @@ button:disabled {
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
+  font-weight: 600;
 }
 button.primary:hover:not(:disabled) {
-  background: var(--accent-dim);
-  border-color: var(--accent-dim);
-  color: #fff;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--on-accent);
 }
 button.danger {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+button.quiet {
+  border-color: transparent;
+}
+button.quiet:hover:not(:disabled) {
+  border-color: transparent;
 }
 
 input,
@@ -97,10 +156,11 @@ select,
 textarea {
   font: inherit;
   color: var(--text);
-  background: var(--bg-raised);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  padding: 6px 9px;
+  font-size: 13px;
 }
 textarea {
   resize: none;
@@ -115,54 +175,61 @@ code {
   font-size: 0.92em;
 }
 
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
 .spacer {
   flex: 1;
 }
-
 .muted {
   color: var(--text-dim);
 }
 .small {
   font-size: 12px;
 }
-
-/* ---------------------------------------------------------------- header */
-
-.header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-raised);
-  /* Keeps the drag region clear of the macOS traffic lights. */
-  padding-left: 84px;
-}
-
-.workspace {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.mono {
   font-family: var(--mono);
-  font-size: 12px;
 }
 
-.model-select {
-  max-width: 240px;
+/*
+ * The micro-label: mono, tracked out, uppercase. Names a region without
+ * needing a box around it, which is most of why the boxes could go.
+ */
+.micro {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* A status dot. Colour is the whole message, so it never carries text. */
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: none;
+  background: var(--text-faint);
+}
+.dot.ok {
+  background: var(--ok);
+}
+.dot.warn {
+  background: var(--warn);
+}
+.dot.error {
+  background: var(--danger);
+}
+.dot.accent {
+  background: var(--accent);
 }
 
 .tag {
-  font-size: 11px;
-  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  color: var(--text-dim);
+  color: var(--text-faint);
   white-space: nowrap;
 }
 .tag.warn {
@@ -174,42 +241,362 @@ code {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
-/* ------------------------------------------------------------ transcript */
+/* A pill is a toggle that reads as a filter, not a command. */
+.pill {
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12px;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  background: transparent;
+}
+.pill:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text-dim);
+  border-color: var(--accent);
+}
+.pill.on {
+  background: var(--bg-active);
+  color: var(--text);
+}
+.pill-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 
-.main {
+.app {
+  display: flex;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------------- rail */
+
+.rail {
+  width: 236px;
+  flex: none;
+  background: var(--bg-rail);
+  border-right: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Clears the macOS traffic lights, which float over this corner. */
+.rail-drag {
+  height: 44px;
+  flex: none;
+}
+
+.rail-pad {
+  padding: 0 12px 10px;
+}
+
+.rail-workspace {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-hover);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  text-align: left;
+}
+.rail-workspace:hover:not(:disabled) {
+  background: var(--bg-active);
+}
+.mark {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.rail-workspace-name {
+  flex: 1;
+  min-width: 0;
+}
+.rail-workspace-name b {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--text);
+}
+.rail-workspace-name span {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.rail-workspace-name b,
+.rail-workspace-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-workspace-swap {
+  color: var(--text-faint);
+  font-size: 11px;
+  flex: none;
+}
+
+.rail-new {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+.rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.rail-group {
+  padding: 14px 18px 6px;
+}
+.rail-list {
+  padding: 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* A conversation reads as text; only the hover tells you it is a control. */
+.rail-item {
+  border: none;
+  background: transparent;
+  border-radius: var(--r-sm);
+  border-left: 2px solid transparent;
+  padding: 7px 10px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.rail-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.rail-item.current {
+  background: var(--bg-active);
+  border-left-color: var(--accent);
+}
+.rail-item.current:disabled {
+  opacity: 1;
+}
+.rail-item b {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-item.current b {
+  color: var(--text);
+}
+.rail-item span {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-empty {
+  padding: 4px 18px 0;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.rail-foot {
+  flex: none;
+  border-top: 1px solid var(--rule);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.rail-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: none;
+  background: transparent;
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  text-align: left;
+}
+.rail-link:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.rail-link .glyph {
+  width: 14px;
+  flex: none;
+  color: var(--text-faint);
+}
+.rail-link.accent .glyph {
+  color: var(--accent);
+}
+.rail-link b {
+  flex: 1;
+  font-weight: 400;
+}
+.rail-link .count {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.rail-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+}
+.rail-status span {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-status .dot {
+  margin-left: 4px;
+}
+
+/* ------------------------------------------------------------------- pane */
+
+.pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pane main {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
+.topbar {
+  height: 44px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--rule);
+}
+.topbar-title {
+  font-size: 13.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 44ch;
+}
+/* A button that reports a fact as well as offering an action. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  flex: none;
+}
+.model-select {
+  max-width: 220px;
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--text-dim);
+  padding: 5px 9px;
+  font-size: 12.5px;
+}
+
+/* ------------------------------------------------------------- transcript */
+
 .transcript {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 20px 24px 8px;
+  padding: 24px 32px 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 22px;
 }
 .transcript.empty {
   justify-content: center;
   align-items: center;
+  padding: 40px;
 }
 
-.welcome {
-  max-width: 460px;
+/* First run: one thing to say, two things to do. */
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
   text-align: center;
-  color: var(--text-dim);
 }
-.welcome h1 {
+.hero-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-lg);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--mono);
   font-size: 22px;
-  letter-spacing: 0.02em;
-  color: var(--text);
-  margin: 0 0 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.welcome .hint {
+.hero-copy {
+  max-width: 44ch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hero-copy h1 {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.hero-copy p {
+  margin: 0;
+  font-size: 14.5px;
+  color: var(--text-dim);
+  text-wrap: pretty;
+}
+.hero-actions {
+  display: flex;
+  gap: 10px;
+}
+.hero-actions button {
+  border-radius: var(--r-md);
+  padding: 9px 18px;
+  font-size: 13.5px;
+}
+.hero-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
   color: var(--text-faint);
-  font-size: 13px;
 }
 
 .entry.user {
@@ -217,20 +604,217 @@ code {
   justify-content: flex-end;
 }
 .entry.user .bubble {
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px 12px;
-  max-width: 78%;
+  background: var(--bg-active);
+  border-radius: var(--r-xl) var(--r-xl) 4px var(--r-xl);
+  padding: 10px 14px;
+  max-width: 70%;
+  font-size: 14.5px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* ---------------------------------------------------------- markdown */
+.entry.assistant {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 80ch;
+}
+
+/*
+ * A hairline rule with a label on it. Reasoning, compaction and other
+ * turn-level asides are boundaries in the transcript, not cards in it.
+ */
+.rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rule-line {
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+.rule button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.rule button:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+}
+.rule-note {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.thinking-body,
+.tool-output,
+.proposal-body {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- tool run */
+
+/*
+ * One card per run of tool calls, so a nine-step turn reads as one step of
+ * the conversation rather than nine. The header carries the shape of the run
+ * — how many steps, how long, what kinds — and the rows carry the detail.
+ */
+.run {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  overflow: hidden;
+  max-width: 80ch;
+}
+.run-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 9px 13px;
+  text-align: left;
+}
+.run-head:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.run.open .run-head {
+  border-bottom: 1px solid var(--rule);
+}
+.run-steps {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.run-breakdown {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-chevron {
+  color: var(--text-faint);
+  font-size: 11px;
+  flex: none;
+}
+
+.run-row {
+  display: flex;
+  flex-direction: column;
+}
+/* Steps that changed the workspace are tinted; reads are not. */
+.run-row.wrote {
+  background: var(--bg-row);
+}
+.run-row-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 7px 13px;
+  text-align: left;
+}
+.run-row-head:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.run-row .glyph {
+  width: 1em;
+  flex: none;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.run-row.wrote .glyph {
+  color: var(--accent);
+}
+.run-row.error .glyph {
+  color: var(--danger);
+}
+.run-row.ok.ran .glyph {
+  color: var(--ok);
+}
+/* Steps that left the machine. Marked because "which of these talked to the
+   internet" is the question you scan a finished run for. */
+.run-row.ok.net .glyph {
+  color: var(--warn);
+}
+.run-row-text {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-row-status {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.run-row.ok .run-row-status {
+  color: var(--ok);
+}
+.run-row.error .run-row-status {
+  color: var(--danger);
+}
+.run-row .tool-output {
+  margin: 0 13px 10px;
+}
+
+.notice {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  border-left: 2px solid var(--rule);
+  padding-left: 12px;
+  max-width: 80ch;
+}
+.notice.error {
+  color: var(--danger);
+  border-left-color: color-mix(in srgb, var(--danger) 50%, transparent);
+}
+
+.working {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------- markdown */
 
 .markdown {
   max-width: 80ch;
   overflow-wrap: anywhere;
+  font-size: 14.5px;
+  line-height: 1.6;
 }
 
 /* Collapse the outer margins so a reply does not start with a blank line,
@@ -253,6 +837,7 @@ code {
   margin: 1.1em 0 0.45em;
   line-height: 1.3;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .markdown h1 {
   font-size: 1.3em;
@@ -280,13 +865,13 @@ code {
 .markdown blockquote {
   margin: 0 0 0.7em;
   padding-left: 0.9em;
-  border-left: 2px solid var(--border);
+  border-left: 2px solid var(--rule);
   color: var(--text-dim);
 }
 
 .markdown hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--rule);
   margin: 1.1em 0;
 }
 
@@ -299,49 +884,48 @@ code {
 .md-inline-code {
   font-family: var(--mono);
   font-size: 0.88em;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.1em 0.35em;
+  color: var(--accent-soft);
 }
 
 .md-code {
   margin: 0 0 0.7em;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
   overflow: hidden;
 }
 .md-code-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 8px 3px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-raised);
+  padding: 7px 10px 7px 13px;
+  border-bottom: 1px solid var(--rule);
 }
 .md-code-lang {
   flex: 1;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-faint);
 }
 .md-copy {
   border: none;
-  padding: 1px 6px;
+  padding: 2px 7px;
   font-size: 11px;
   color: var(--text-faint);
+  border-radius: var(--r-sm);
 }
 .md-code pre {
   margin: 0;
-  padding: 10px 12px;
+  padding: 12px 14px;
   /* Long lines scroll inside the block; the transcript itself never does. */
   overflow-x: auto;
 }
 .md-code code {
   font-family: var(--mono);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--text);
   white-space: pre;
 }
@@ -356,8 +940,8 @@ code {
 }
 .markdown th,
 .markdown td {
-  border: 1px solid var(--border);
-  padding: 4px 9px;
+  border: 1px solid var(--rule);
+  padding: 5px 10px;
   text-align: left;
 }
 .markdown th {
@@ -365,121 +949,68 @@ code {
   font-weight: 600;
 }
 
-.thinking {
-  margin-bottom: 4px;
+/* ------------------------------------------------------------- composer */
+
+.composer {
+  flex: none;
+  padding: 0 32px 20px;
 }
-.disclosure {
+.composer-box {
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  background: var(--bg-raised);
+  padding: 12px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.composer-box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.composer textarea {
   border: none;
+  background: transparent;
   padding: 0;
-  font-size: 12px;
+  font-size: 14.5px;
+  min-height: 44px;
+  max-height: 220px;
+  field-sizing: content;
+}
+.composer textarea:focus-visible {
+  outline: none;
+}
+.composer textarea::placeholder {
   color: var(--text-faint);
 }
-.thinking-body,
-.tool-output,
-.proposal-body {
-  font-family: var(--mono);
-  font-size: 12px;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin: 6px 0 0;
-  max-height: 320px;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--text-dim);
-}
-
-.tool {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-raised);
-  max-width: 80ch;
-}
-.tool.error {
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
-}
-.tool-head {
+.composer-foot {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  border: none;
-  background: none;
-  padding: 6px 10px;
-  text-align: left;
 }
-.tool .glyph {
-  color: var(--accent);
-  width: 1em;
-  flex: none;
-}
-.tool-preview {
-  flex: 1;
+.composer-foot .pill {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-dim);
+  max-width: 26ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tool-status {
-  flex: none;
+.composer-hint {
+  font-family: var(--mono);
+  font-size: 10.5px;
   color: var(--text-faint);
 }
-.tool.ok .tool-status {
-  color: var(--ok);
-}
-.tool.error .tool-status {
-  color: var(--danger);
-}
-.tool-output {
-  margin: 0 10px 10px;
-}
-
-.notice {
-  font-size: 12px;
-  color: var(--text-dim);
-  border-left: 2px solid var(--border);
-  padding-left: 10px;
-  max-width: 80ch;
-}
-.notice.error {
-  color: var(--danger);
-  border-left-color: var(--danger);
-}
-
-.working {
-  font-size: 12px;
-  color: var(--text-faint);
-  font-style: italic;
-}
-
-/* ------------------------------------------------------------- composer */
-
-.composer {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-  padding: 12px 24px 16px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-raised);
-}
-.composer textarea {
-  flex: 1;
-  min-height: 38px;
-  max-height: 220px;
-  padding: 9px 12px;
-  field-sizing: content;
-}
-.composer button {
-  height: 38px;
-  padding: 0 18px;
+.composer-send {
+  padding: 6px 16px;
+  font-size: 13px;
 }
 
 .banner {
-  padding: 8px 24px;
+  padding: 8px 32px;
   font-size: 13px;
   display: flex;
   gap: 12px;
@@ -503,10 +1034,10 @@ code {
 }
 
 .dialog {
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xl);
+  padding: 20px;
   width: min(560px, 90vw);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
 }
@@ -516,118 +1047,142 @@ code {
   gap: 10px;
 }
 .dialog-head h2 {
-  font-size: 15px;
+  font-size: 16px;
   margin: 0;
   font-weight: 600;
 }
 .effect {
-  font-size: 11px;
+  font-family: var(--mono);
+  font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 2px 7px;
+  letter-spacing: 0.14em;
+  padding: 3px 8px;
   border-radius: 4px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
   color: var(--warn);
 }
 .effect.execute,
 .effect.network {
   color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+.effect.read {
+  color: var(--text-dim);
+  border-color: var(--border);
 }
 .dialog-detail {
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 13px;
   background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px 12px;
-  margin: 14px 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  padding: 12px 14px;
+  margin: 16px 0 10px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 220px;
   overflow: auto;
+  color: var(--text);
+}
+.dialog-detail .prompt {
+  color: var(--text-faint);
+}
+.dialog-footnote {
+  margin: 0 0 18px;
+  font-size: 12.5px;
+  color: var(--text-faint);
 }
 .dialog-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
 }
 .dialog-actions button {
-  height: 34px;
-  padding: 0 14px;
-}
-.dialog-footnote {
-  margin: 12px 0 0;
-  font-size: 12px;
-  color: var(--text-faint);
+  padding: 8px 14px;
+  font-size: 13.5px;
 }
 
 /* ------------------------------------------------------------- proposals */
 
 .proposals {
-  padding: 0 24px 12px;
+  flex: none;
+  padding: 0 32px 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
 .proposal {
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
-  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--r-xl);
   background: var(--bg-raised);
-  padding: 14px 16px;
+  padding: 18px;
   max-width: 80ch;
 }
 .proposal-head {
   display: flex;
-  gap: 10px;
+  gap: 11px;
 }
 .proposal-head .glyph {
   color: var(--accent);
 }
 .proposal-head h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 .proposal-desc {
-  margin: 2px 0 0;
+  margin: 3px 0 0;
   color: var(--text-dim);
   font-size: 13px;
 }
 .proposal-meta {
+  margin: 14px 0;
+  padding: 12px 14px;
+  background: var(--bg-sunken);
+  border-radius: var(--r-md);
   display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 14px;
-  margin: 12px 0;
+  grid-template-columns: 76px 1fr;
+  gap: 8px 14px;
   font-size: 13px;
 }
 .proposal-meta dt {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-faint);
+  padding-top: 2px;
 }
 .proposal-meta dd {
   margin: 0;
 }
-.proposal-scripts {
-  margin-top: 8px;
+.proposal-disclosures {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.proposal-disclosures .pill {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.proposal-body {
+  margin-bottom: 14px;
 }
 .proposal-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 14px;
+  flex-wrap: wrap;
 }
-.save-target {
-  font-size: 12px;
-  color: var(--text-dim);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.proposal-actions .micro {
+  margin-right: 2px;
 }
 
 /* ---------------------------------------------------------------- drawer */
@@ -638,167 +1193,225 @@ code {
   width: min(460px, 92vw);
   background: var(--bg-raised);
   border-left: 1px solid var(--border);
-  padding: 16px 18px;
+  padding: 18px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .drawer-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
+  gap: 10px;
 }
 .drawer-head h2 {
-  font-size: 15px;
+  font-size: 16px;
   margin: 0;
   flex: 1;
+  font-weight: 600;
+}
+.drawer-close {
+  border: none;
+  padding: 5px 8px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+.drawer-intro {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
 }
 .drawer-empty {
+  margin: 0;
   font-size: 13px;
+  color: var(--text-dim);
 }
-.skill-list {
+.drawer-foot {
+  margin-top: auto;
+  padding-top: 14px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+  line-height: 1.6;
+}
+
+.card-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
-.skill-list p {
-  margin: 2px 0 0;
-  font-size: 12.5px;
+
+/* The one repeated shape in every drawer: an inset card on a raised panel. */
+.card {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  overflow: hidden;
 }
-.skill-row {
+.card-body {
+  padding: 12px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.card-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-/* A session title in the history drawer: reads as text, behaves as a button. */
-button.link {
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  text-align: left;
+.card-title {
+  font-size: 13.5px;
   color: var(--text);
-  cursor: pointer;
+}
+.card-sub {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.card-files {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.card-files.warn {
+  color: var(--warn);
+}
+/* The turn number leads its row, so it takes the accent rather than the
+   faint grey the rest of the micro-labels use. */
+.card-row .micro.turn-no {
+  color: var(--accent);
+  letter-spacing: 0.14em;
+}
+.rewind-open {
+  margin-top: 6px;
+}
+.card-add {
+  width: 100%;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-lg);
+  padding: 11px;
+  font-size: 13px;
+  color: var(--text-faint);
+  background: transparent;
+}
+.card-add:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/*
+ * The confirmation step of a rewind: it hangs off the turn it is asking
+ * about, on the elevated surface, so it reads as a question rather than
+ * another entry in the list.
+ */
+.rewind-plan {
+  border-top: 1px solid var(--rule);
+  padding: 12px 13px;
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rewind-plan p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.rewind-plan .actions {
+  display: flex;
+  gap: 8px;
+}
+
+.section {
+  border-top: 1px solid var(--rule);
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.section-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.section-row .name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-button.link:hover:not(:disabled) {
-  text-decoration: underline;
+.section-row .value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  flex: none;
 }
-button.link:disabled {
-  color: var(--text-dim);
-  cursor: default;
-}
-
-/* The confirmation step of a rewind: indented and outlined, because it is a
-   question about the entry it hangs under rather than another list item. */
-.rewind-plan {
-  margin: 8px 0 4px 12px;
-  padding: 10px 12px;
-  border-left: 2px solid var(--danger);
-  background: var(--surface-2, rgba(127, 127, 127, 0.08));
-  border-radius: 4px;
-}
-.rewind-plan p {
-  margin: 0 0 6px;
-}
-.rewind-plan .skill-row {
-  margin-top: 10px;
-}
-
-.mcp-servers {
-  margin-top: 20px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.mcp-servers h3 {
-  font-size: 13px;
-  margin: 0 0 8px;
-  color: var(--text-dim);
-}
-.mcp-servers .skill-row {
-  margin-bottom: 6px;
-}
-
-.skill-problems {
-  margin-top: 20px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
+.section-row .value.error {
   color: var(--danger);
-}
-.skill-problems h3 {
-  font-size: 13px;
-  margin: 0 0 6px;
 }
 
 /* -------------------------------------------------------------- settings */
 
-.settings-section {
-  margin-bottom: 26px;
-}
-.settings-section h3 {
-  font-size: 13px;
-  margin: 0 0 6px;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.settings-section > .muted {
-  margin: 0 0 12px;
-}
-
 .settings-provider {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 10px;
+  padding: 13px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 11px;
 }
 .settings-id {
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--mono);
   min-width: 0;
   flex: 1;
 }
-
+/* A granted rule can be a long command pattern; it wraps rather than
+   pushing the Revoke button off the edge of the drawer. */
+.rule-name {
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .settings-field {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-}
-.settings-label {
-  font-size: 12px;
-  color: var(--text-dim);
+  gap: 4px;
 }
 /* Inputs must not push the drawer wider than it is. */
 .settings-field input,
 .settings-field select {
   width: 100%;
   min-width: 0;
+  font-family: var(--mono);
 }
-
+/* The sentence under a control explaining what it actually does. */
+.hint {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
 .settings-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 12px;
 }
-
 .settings-problem {
   color: var(--danger);
-  margin: 8px 0 0;
+  margin: 0;
+  font-size: 12.5px;
 }
-
 .settings-note {
   color: var(--warn);
   margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
 }
-
 .settings-check {
   display: flex;
   align-items: flex-start;
@@ -807,23 +1420,22 @@ button.link:disabled {
   cursor: pointer;
 }
 .settings-check input {
-  margin-top: 2px;
+  margin-top: 3px;
 }
-
 .settings-paths {
   margin: 0;
-  font-size: 12.5px;
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 12px;
+  grid-template-columns: 88px 1fr;
+  gap: 6px 12px;
+  font-size: 12.5px;
 }
 .settings-paths dt {
-  color: var(--text-dim);
-  white-space: nowrap;
+  color: var(--text-faint);
 }
 .settings-paths dd {
   margin: 0;
   overflow-wrap: anywhere;
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--mono);
   font-size: 12px;
+  color: var(--text-dim);
 }

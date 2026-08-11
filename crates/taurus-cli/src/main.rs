@@ -330,6 +330,13 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             for name in host.tool_names().await {
                 println!("{name}");
             }
+            // Why a tool is *not* in that list is the question this command is
+            // usually being asked, and a config that resolved to nothing is the
+            // usual answer. On stderr, so a script reading the list still gets
+            // names and nothing else on stdout.
+            for problem in host.problems().await {
+                eprintln!("problem: {problem}");
+            }
             Ok(ExitCode::SUCCESS)
         }
     }

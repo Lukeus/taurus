@@ -198,8 +198,9 @@ impl PermissionEngine {
             tool: tool.name().to_string(),
             effect: tool.effect(),
             preview: tool.preview(input),
-            always_scope: describe_rule(&rule, Scope::Workspace),
-            always_global_scope: offer_global.then(|| describe_rule(&rule, Scope::Global)),
+            always_scope: describe_rule(&rule, tool.effect(), Scope::Workspace),
+            always_global_scope: offer_global
+                .then(|| describe_rule(&rule, tool.effect(), Scope::Global)),
             input: input.clone(),
         };
 
@@ -258,9 +259,13 @@ impl PermissionEngine {
 /// The unit an "always" decision grants.
 ///
 /// Shell commands are keyed by their leading word so approving `git` does not
-/// also approve `rm`. Every other tool is keyed by name: the user is saying
-/// "this tool may write in this workspace", which is the granularity they
-/// actually reason about.
+/// also approve `rm`. A call that names a URL is keyed by that URL's host, for
+/// the same reason: "always allow fetching docs.rs" is a decision about a site
+/// the user trusts, and the tool-wide version of it is a standing grant to
+/// reach anywhere on the internet.
+///
+/// Everything else is keyed by name: the user is saying "this tool may write in
+/// this workspace", which is the granularity they actually reason about.
 fn rule_for(tool: &dyn Tool, input: &serde_json::Value) -> String {
     if tool.effect() == Effect::Execute {
         if let Some(program) = input
@@ -271,20 +276,61 @@ fn rule_for(tool: &dyn Tool, input: &serde_json::Value) -> String {
             return format!("{}:{program}", tool.name());
         }
     }
+    if tool.effect() == Effect::Network {
+        if let Some(host) = input.get("url").and_then(|u| u.as_str()).and_then(host_of) {
+            return format!("{}:{host}", tool.name());
+        }
+    }
     tool.name().to_string()
 }
 
-fn describe_rule(rule: &str, scope: Scope) -> String {
+fn describe_rule(rule: &str, effect: Effect, scope: Scope) -> String {
     let where_ = match scope {
         Scope::Global => "in every workspace",
         Scope::Workspace => "in this workspace",
     };
     match rule.split_once(':') {
+        Some((tool, qualifier)) if effect == Effect::Network => {
+            format!("Always allow `{tool}` to reach {qualifier} {where_}")
+        }
         Some((tool, program)) => {
             format!("Always allow `{tool}` to run `{program}` commands {where_}")
         }
         None => format!("Always allow `{rule}` {where_}"),
     }
+}
+
+/// Host of an absolute URL, without scheme, port, path, or credentials.
+///
+/// Deliberately not a URL parser: what a grant is keyed by has to be something
+/// the user can read back out of `permissions.json` and recognize, and anything
+/// this rejects simply falls back to a per-call prompt.
+///
+/// It does have to agree with the parser the request will actually use about
+/// where the authority *ends*, though, or the two disagree about which host is
+/// being granted. WHATWG — which is what `url`, and so `reqwest`, implements —
+/// ends it at a backslash as readily as a slash, so `https://a.test\@b.test/`
+/// reaches `a.test` while a naive split would key it under `b.test`. Getting
+/// that wrong spends a grant for one host on a request to another, so the
+/// terminator set here matches theirs.
+fn host_of(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://")?.1;
+    let authority = after_scheme
+        .split(['/', '\\', '?', '#'])
+        .next()
+        .filter(|a| !a.is_empty())?;
+    // `user:pass@host` — the credential is not part of what is being granted.
+    let host = authority.rsplit('@').next()?;
+    let host = match host.rfind(':') {
+        // A colon inside brackets is an IPv6 address, not a port.
+        Some(i) if !host.ends_with(']') => &host[..i],
+        _ => host,
+    };
+    // Hosts are case-insensitive, so `DOCS.RS` must not bank a second grant
+    // alongside the `docs.rs` the user already approved.
+    Some(host)
+        .filter(|h| !h.is_empty())
+        .map(|h| h.to_ascii_lowercase())
 }
 
 /// First bare word of a command line, ignoring `VAR=value` prefixes.
@@ -639,6 +685,115 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn a_url_is_keyed_by_its_host_and_nothing_else() {
+        assert_eq!(
+            host_of("https://docs.rs/serde/latest").as_deref(),
+            Some("docs.rs")
+        );
+        assert_eq!(
+            host_of("http://localhost:8888/search?q=x").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(
+            host_of("https://user:pw@private.test/x").as_deref(),
+            Some("private.test")
+        );
+        assert_eq!(host_of("https://[::1]:9000/x").as_deref(), Some("[::1]"));
+        assert_eq!(
+            host_of("https://example.test").as_deref(),
+            Some("example.test")
+        );
+    }
+
+    #[test]
+    fn something_that_is_not_a_url_keys_nothing_and_so_keeps_prompting() {
+        assert_eq!(host_of("not a url"), None);
+        assert_eq!(host_of("https://"), None);
+    }
+
+    #[test]
+    fn a_backslash_ends_the_authority_the_way_the_url_parser_says_it_does() {
+        // WHATWG treats `\` like `/`, so this reaches evil.test. Keying it
+        // under docs.rs would spend a grant for one host on another.
+        assert_eq!(
+            host_of("https://evil.test\\x@docs.rs/serde").as_deref(),
+            Some("evil.test")
+        );
+    }
+
+    #[test]
+    fn host_case_does_not_bank_a_second_grant() {
+        assert_eq!(host_of("https://DOCS.RS/serde").as_deref(), Some("docs.rs"));
+    }
+
+    #[tokio::test]
+    async fn a_network_grant_covers_one_host_rather_than_the_whole_internet() {
+        let homes = Homes::new();
+        let fetch = Fake {
+            name: "fetch_url",
+            effect: Effect::Network,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowAlways,
+            calls: calls.clone(),
+        }));
+
+        engine
+            .check(&fetch, &serde_json::json!({"url": "https://docs.rs/serde"}))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // A second page on the granted host does not ask again.
+        engine
+            .check(&fetch, &serde_json::json!({"url": "https://docs.rs/tokio"}))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // A different host is a different decision.
+        engine
+            .check(&fetch, &serde_json::json!({"url": "https://evil.test/x"}))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        assert!(engine.allowed_rules().await.contains(&AllowedRule {
+            rule: "fetch_url:docs.rs".into(),
+            scope: Scope::Workspace,
+        }));
+    }
+
+    #[test]
+    fn a_network_grant_is_described_as_reaching_a_host_not_running_a_command() {
+        let described = describe_rule("fetch_url:docs.rs", Effect::Network, Scope::Workspace);
+        assert!(described.contains("reach docs.rs"), "{described}");
+        assert!(!described.contains("commands"), "{described}");
+    }
+
+    #[tokio::test]
+    async fn a_search_without_a_url_is_still_keyed_by_tool_name() {
+        let homes = Homes::new();
+        let search = Fake {
+            name: "web_search",
+            effect: Effect::Network,
+        };
+        let engine = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowAlways,
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        engine
+            .check(&search, &serde_json::json!({"query": "rust"}))
+            .await
+            .unwrap();
+        assert!(engine.allowed_rules().await.contains(&AllowedRule {
+            rule: "web_search".into(),
+            scope: Scope::Workspace,
+        }));
+    }
+
     #[tokio::test]
     async fn a_hand_written_global_command_rule_is_still_honored() {
         // The restriction on global execute grants is about what the harness
@@ -668,8 +823,12 @@ mod tests {
 
     #[test]
     fn the_two_scopes_are_described_differently() {
-        assert!(describe_rule("write_file", Scope::Workspace).contains("this workspace"));
-        assert!(describe_rule("write_file", Scope::Global).contains("every workspace"));
+        assert!(
+            describe_rule("write_file", Effect::Write, Scope::Workspace).contains("this workspace")
+        );
+        assert!(
+            describe_rule("write_file", Effect::Write, Scope::Global).contains("every workspace")
+        );
     }
 
     #[tokio::test]

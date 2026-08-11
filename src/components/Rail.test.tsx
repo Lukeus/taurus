@@ -1,0 +1,131 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { Rail, type ProviderHealth } from "./Rail";
+import type { SessionMeta } from "../lib/api";
+
+const now = Math.floor(Date.now() / 1000);
+
+const session = (id: string, title: string, updated: number): SessionMeta => ({
+  id,
+  workspace: "/Users/x/code/taurus",
+  model: "qwen3.6:27b",
+  started: updated,
+  updated,
+  title,
+});
+
+const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
+  renderToStaticMarkup(
+    <Rail
+      workspace="/Users/x/code/taurus-ai-shell"
+      sessions={[]}
+      currentId={undefined}
+      changedCount={0}
+      busy={false}
+      skillCount={12}
+      health={{ state: "connected", id: "ollama", models: 4 }}
+      onPickWorkspace={() => {}}
+      onNew={() => {}}
+      onOpen={() => {}}
+      onSkills={() => {}}
+      onSettings={() => {}}
+      {...props}
+    />,
+  );
+
+describe("the workspace button", () => {
+  it("leads with the folder name and keeps the path underneath", () => {
+    const html = draw();
+    expect(html).toContain("taurus-ai-shell");
+    // The full path is too long for 236px, so the parent is abbreviated.
+    expect(html).toContain("~/code");
+  });
+
+  it("says so when there is no workspace rather than rendering an empty row", () => {
+    expect(draw({ workspace: null })).toContain("No workspace");
+  });
+});
+
+describe("grouping conversations", () => {
+  it("separates today from everything before it", () => {
+    const html = draw({
+      sessions: [
+        session("a", "Rename parseContextLength", now - 60),
+        session("b", "Add the context-length field", now - 3 * 86_400),
+      ],
+    });
+    expect(html).toContain("Today");
+    expect(html).toContain("Earlier");
+  });
+
+  it("omits a heading with nothing under it", () => {
+    const html = draw({ sessions: [session("a", "Only one", now - 60)] });
+    expect(html).toContain("Today");
+    expect(html).not.toContain("Earlier");
+  });
+
+  it("names an untitled conversation instead of leaving the row blank", () => {
+    // A session exists on disk from the moment it is created, before the
+    // first turn has given it a title.
+    expect(draw({ sessions: [session("a", "", now)] })).toContain(
+      "New conversation",
+    );
+  });
+});
+
+describe("what a conversation row says about itself", () => {
+  it("reports the open conversation by what it changed", () => {
+    const html = draw({
+      sessions: [session("a", "Rename it", now - 60)],
+      currentId: "a",
+      changedCount: 2,
+    });
+    expect(html).toContain("2 files changed");
+  });
+
+  it("calls the open conversation read-only when it changed nothing", () => {
+    const html = draw({
+      sessions: [session("a", "Summarize the crates", now - 60)],
+      currentId: "a",
+      changedCount: 0,
+    });
+    expect(html).toContain("read-only");
+  });
+
+  it("falls back to the model for conversations that are not open", () => {
+    // The changed-file count is only known for the session in memory; the
+    // others would need a checkpoint read each, so they show what was listed.
+    const html = draw({
+      sessions: [session("a", "Older", now - 3 * 86_400)],
+      changedCount: 2,
+    });
+    expect(html).toContain("qwen3.6:27b");
+    expect(html).not.toContain("2 files changed");
+  });
+
+  it("cannot be clicked into while a turn is running", () => {
+    const html = draw({ sessions: [session("a", "Older", now)], busy: true });
+    expect(html).toContain("disabled");
+  });
+});
+
+describe("provider health", () => {
+  const label = (health: ProviderHealth) => draw({ health });
+
+  it("names the provider and how many models it offered", () => {
+    expect(label({ state: "connected", id: "ollama", models: 4 })).toContain(
+      "ollama · 4 models",
+    );
+  });
+
+  it("says a provider is unreachable rather than showing it as idle", () => {
+    const html = label({ state: "unreachable", id: "apim" });
+    expect(html).toContain("apim · unreachable");
+    expect(html).toContain("dot error");
+  });
+
+  it("points at the missing configuration when there is no provider at all", () => {
+    expect(label({ state: "none" })).toContain("no provider configured");
+  });
+});

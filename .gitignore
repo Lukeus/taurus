@@ -10,5 +10,7 @@ bindings/
 
 # Per-developer workspace state: the model last used here, and permissions
 # granted for this project only. Project skills are meant to be committed.
-.taurus/*
-!.taurus/skills/
+# Matched at any depth: a `.taurus` appears wherever the app is run from, and
+# an anchored pattern silently misses `src-tauri/.taurus`.
+**/.taurus/*
+!**/.taurus/skills/

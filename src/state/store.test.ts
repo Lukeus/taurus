@@ -34,16 +34,38 @@ describe("transcript reducer", () => {
       { type: "tool_call_started", id: "t1", name: "read_file", preview: "Read a.txt" },
       { type: "tool_call_finished", id: "t1", ok: true, output: "contents" },
     );
-    expect(entries).toEqual([
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "tool",
+      id: "t1",
+      name: "read_file",
+      preview: "Read a.txt",
+      status: "ok",
+      output: "contents",
+    });
+  });
+
+  it("times the call so a run of steps can report how long it took", () => {
+    const entries = run(
+      { type: "tool_call_started", id: "t1", name: "run_command", preview: "run" },
+      { type: "tool_call_finished", id: "t1", ok: true, output: "" },
+    );
+    const tool = entries[0] as Extract<Entry, { kind: "tool" }>;
+    expect(tool.startedAt).toEqual(expect.any(Number));
+    expect(tool.endedAt).toBeGreaterThanOrEqual(tool.startedAt!);
+  });
+
+  it("leaves a resumed call untimed rather than inventing a duration", () => {
+    // The transcript on disk records what happened, not when. A run of
+    // replayed steps must show its shape without claiming a wall-clock time.
+    const [tool] = entriesFromMessages([
       {
-        kind: "tool",
-        id: "t1",
-        name: "read_file",
-        preview: "Read a.txt",
-        status: "ok",
-        output: "contents",
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "read_file", input: {} }],
       },
-    ]);
+    ]) as Extract<Entry, { kind: "tool" }>[];
+    expect(tool.startedAt).toBeUndefined();
+    expect(tool.endedAt).toBeUndefined();
   });
 
   it("marks a failed tool call as an error", () => {

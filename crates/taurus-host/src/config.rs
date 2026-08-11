@@ -89,6 +89,40 @@ pub fn settings_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> 
     scope_dir(scope, workspace).map(|d| d.join("settings.json"))
 }
 
+/// Reads both layers of `search.json` and resolves the selected backend.
+///
+/// Returns `None` when web search is off, which is the default and not a
+/// problem — see [`taurus_web::merge`] for the distinction between "not turned
+/// on" and "turned on but unusable".
+///
+/// Writes a starter global file when none exists, the same courtesy
+/// `providers.json` gets: every backend spelled out, none of them selected, so
+/// enabling search is a one-word edit rather than a trip to the documentation.
+pub fn load_search(workspace: Option<&Path>) -> (Option<taurus_web::Backend>, Vec<String>) {
+    let mut problems = Vec::new();
+    let mut layers = Vec::new();
+
+    let global_dir = home_dir();
+    if !taurus_web::config::config_file(&global_dir).exists() {
+        if let Ok(json) = serde_json::to_string_pretty(&taurus_web::starter_file()) {
+            write_config(&taurus_web::config::config_file(&global_dir), &json);
+        }
+    }
+
+    for dir in config_dirs(workspace) {
+        match taurus_web::load(&dir) {
+            Ok(layer) => layers.push(layer),
+            // One unparseable layer must not cost the other, the same rule
+            // every other layered file follows.
+            Err(e) => problems.push(e),
+        }
+    }
+
+    let (backend, merge_problems) = taurus_web::merge(layers);
+    problems.extend(merge_problems);
+    (backend, problems)
+}
+
 /// How to reach one model backend.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]

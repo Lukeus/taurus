@@ -157,6 +157,19 @@ impl Host {
             self.proposals.clone(),
         )));
 
+        // Both web tools stand or fall together: a `fetch_url` with no way to
+        // find a URL is a tool the model can only use on links the user pastes,
+        // and registering search without fetch leaves it holding snippets it
+        // cannot follow. Neither appears until a backend resolves, so the model
+        // is never offered a search it has no key for.
+        let (search_backend, search_problems) = config::load_search(Some(&workspace));
+        problems.extend(search_problems);
+        if let Some(backend) = search_backend {
+            info!(backend = %backend.id, "web search enabled");
+            registry.register(Arc::new(taurus_web::WebSearch::new(backend)));
+            registry.register(Arc::new(taurus_web::FetchUrl));
+        }
+
         // Reconnecting drops the previous connections, stopping the old child
         // processes; leaving them would leak one per workspace change.
         self.mcp.shutdown().await;
@@ -522,6 +535,89 @@ mod tests {
         }
         // The spawn tool is deliberately absent here; it is added per turn.
         assert!(!tools.iter().any(|t| t == taurus_core::SPAWN_TOOL));
+    }
+
+    #[tokio::test]
+    async fn the_web_tools_stay_unregistered_until_a_backend_is_configured() {
+        let dir = TempDir::new().unwrap();
+        let (host, _home) = host(&dir.path().canonicalize().unwrap());
+        host.reload().await;
+
+        let tools = host.tool_names().await;
+        assert!(!tools.iter().any(|t| t == "web_search"));
+        assert!(!tools.iter().any(|t| t == "fetch_url"));
+        // Not configuring search is the default, not a misconfiguration.
+        assert!(
+            host.problems().await.is_empty(),
+            "{:?}",
+            host.problems().await
+        );
+    }
+
+    #[tokio::test]
+    async fn a_workspace_can_turn_web_search_on_for_one_project() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/search.json"),
+            r#"{"backend": "local",
+                "backends": {"local": {"kind": "searxng", "base_url": "http://localhost:8888"}}}"#,
+        )
+        .unwrap();
+
+        let other = TempDir::new().unwrap();
+        let (host, _home) = host(&other.path().canonicalize().unwrap());
+        host.reload().await;
+        assert!(!host.tool_names().await.iter().any(|t| t == "web_search"));
+
+        host.set_workspace(&workspace).await.unwrap();
+        let tools = host.tool_names().await;
+        // Both, or neither: search that cannot be followed up is half a tool.
+        assert!(tools.iter().any(|t| t == "web_search"));
+        assert!(tools.iter().any(|t| t == "fetch_url"));
+    }
+
+    #[tokio::test]
+    async fn a_search_backend_that_cannot_run_is_reported_rather_than_registered() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/search.json"),
+            r#"{"backend": "brave",
+                "backends": {"brave": {"kind": "brave",
+                                       "api_key_env": "TAURUS_TEST_HOST_UNSET_KEY"}}}"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(!host.tool_names().await.iter().any(|t| t == "web_search"));
+        let problems = host.problems().await;
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("TAURUS_TEST_HOST_UNSET_KEY")),
+            "the missing variable has to reach the user: {problems:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_first_run_leaves_an_editable_search_file_behind() {
+        let dir = TempDir::new().unwrap();
+        let (host, home) = host(&dir.path().canonicalize().unwrap());
+        host.reload().await;
+
+        let written = std::fs::read_to_string(home.path().join("search.json")).unwrap();
+        assert!(
+            written.contains("brave") && written.contains("searxng"),
+            "{written}"
+        );
+        // Written, but off: installing the app must not start sending prompts
+        // to a search engine.
+        assert!(!host.tool_names().await.iter().any(|t| t == "web_search"));
     }
 
     #[tokio::test]
