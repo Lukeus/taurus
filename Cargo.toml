@@ -50,6 +50,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 directories = "6"
+# Credential storage. Held at 3.x: 4.x needs Rust 1.88 and this workspace
+# promises 1.82. Features are selected per platform by the crate that uses it —
+# there is no default backend, and the wrong one is a compile error rather than
+# a silent no-op.
+keyring = { version = "3.6", default-features = false }
 ignore = "0.4"
 globset = "0.4"
 # HTML to Markdown for `fetch_url`. A page arrives as markup and reaches the

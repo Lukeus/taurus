@@ -29,6 +29,7 @@ use taurus_tools::{
 
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings};
 use crate::prompt;
+use crate::secrets;
 
 /// How many sub-agents may run at once. Low on purpose: each is a full model
 /// stream, and local hardware serves them all from the same GPU.
@@ -352,6 +353,48 @@ impl Host {
         let workspace = self.workspace.read().await.clone();
         let (effective, _) = config::load_providers(Some(&workspace));
         *self.providers.write().await = effective;
+    }
+
+    /// Stores a provider's API key in the OS credential store.
+    ///
+    /// Takes the id rather than a whole config because the secret is not part
+    /// of the config: `providers.json` is written on every settings save, and a
+    /// key that travelled with it would eventually be written into it.
+    pub async fn set_provider_key(&self, provider_id: &str, key: &str) -> Result<(), String> {
+        if !self
+            .providers
+            .read()
+            .await
+            .iter()
+            .any(|p| p.id == provider_id)
+        {
+            return Err(format!("no provider configured with id '{provider_id}'"));
+        }
+        secrets::store(provider_id, key)
+    }
+
+    pub async fn clear_provider_key(&self, provider_id: &str) -> Result<(), String> {
+        secrets::clear(provider_id)
+    }
+
+    /// Where each configured provider's key is coming from.
+    ///
+    /// Returned for the whole list at once because that is how the settings
+    /// screen draws it, and asking per provider would mean one credential-store
+    /// round trip per row.
+    pub async fn key_statuses(&self) -> Vec<(String, secrets::KeyStatus)> {
+        self.providers
+            .read()
+            .await
+            .iter()
+            .map(|p| (p.id.clone(), p.key_status()))
+            .collect()
+    }
+
+    /// Whether this machine can store keys at all, so a frontend can offer the
+    /// field or explain its absence instead of failing on save.
+    pub fn keychain_available() -> bool {
+        secrets::available()
     }
 
     pub async fn settings(&self) -> Settings {

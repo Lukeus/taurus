@@ -19,7 +19,8 @@ use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, PermissionDecision, Scope};
 
 use taurus_host::{
-    sessions, Checkpoint, ProviderConfig, Restored, SessionLog, SessionMeta, Settings, TurnRef,
+    sessions, Checkpoint, Host, KeyStatus, ProviderConfig, Restored, SessionLog, SessionMeta,
+    Settings, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -325,6 +326,43 @@ pub async fn list_global_providers(
     state: State<'_, Arc<AppState>>,
 ) -> CmdResult<Vec<ProviderConfig>> {
     Ok(state.host.global_providers().await)
+}
+
+/// Where each provider's API key comes from.
+///
+/// Status only — the key itself is never sent to the frontend. A secret handed
+/// to the webview lives in JavaScript memory and in whatever the DOM does with
+/// it, and there is nothing the settings screen needs it for: the field is a
+/// place to type a new key, not to review the old one.
+#[tauri::command]
+pub async fn list_key_statuses(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<Vec<(String, KeyStatus)>> {
+    Ok(state.host.key_statuses().await)
+}
+
+#[tauri::command]
+pub async fn keychain_available() -> CmdResult<bool> {
+    Ok(Host::keychain_available())
+}
+
+#[tauri::command]
+pub async fn set_provider_key(
+    state: State<'_, Arc<AppState>>,
+    provider_id: String,
+    key: String,
+) -> CmdResult<()> {
+    state.host.set_provider_key(&provider_id, &key).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_provider_key(
+    state: State<'_, Arc<AppState>>,
+    provider_id: String,
+) -> CmdResult<()> {
+    state.host.clear_provider_key(&provider_id).await?;
+    Ok(())
 }
 
 #[tauri::command]

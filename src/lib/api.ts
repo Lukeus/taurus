@@ -12,6 +12,7 @@ import type { AppStatus } from "../bindings/AppStatus";
 import type { Checkpoint } from "../bindings/Checkpoint";
 import type { ContentBlock } from "../bindings/ContentBlock";
 import type { CreatedSession } from "../bindings/CreatedSession";
+import type { KeyStatus } from "../bindings/KeyStatus";
 import type { Message } from "../bindings/Message";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
@@ -33,6 +34,7 @@ export type {
   Checkpoint,
   ContentBlock,
   CreatedSession,
+  KeyStatus,
   Message,
   ModelInfo,
   PermissionDecision,
@@ -129,6 +131,26 @@ export const saveProviders = (providers: ProviderConfig[]) =>
  */
 export const listGlobalProviders = () =>
   invoke<ProviderConfig[]>("list_global_providers");
+
+/**
+ * Where each provider's API key comes from, as `[providerId, status]` pairs.
+ *
+ * Status only. The key itself never crosses into the frontend: a secret handed
+ * to the webview lives in JavaScript memory and in whatever the DOM does with
+ * it, and the settings screen has no use for the old value — the field is a
+ * place to type a new key, not to review the current one.
+ */
+export const listKeyStatuses = () =>
+  invoke<[string, KeyStatus][]>("list_key_statuses");
+
+/** Whether this machine has a credential store to save keys into at all. */
+export const keychainAvailable = () => invoke<boolean>("keychain_available");
+
+export const setProviderKey = (providerId: string, key: string) =>
+  invoke<void>("set_provider_key", { providerId, key });
+
+export const clearProviderKey = (providerId: string) =>
+  invoke<void>("clear_provider_key", { providerId });
 
 /** Turns in this conversation that changed files, oldest first. */
 export const listCheckpoints = (sessionId: string) =>

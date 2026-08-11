@@ -138,7 +138,9 @@ pub struct ProviderConfig {
     /// Name of the environment variable holding the API key.
     ///
     /// The key itself is never written here: a config file full of secrets is
-    /// the thing users accidentally commit.
+    /// the thing users accidentally commit. Optional now that keys can live in
+    /// the OS credential store — a provider with no variable named reads from
+    /// there, and one that names a variable prefers it. See [`crate::secrets`].
     #[serde(default)]
     pub api_key_env: Option<String>,
     /// Header the key is sent in, for gateways that do not use bearer auth.
@@ -172,11 +174,15 @@ pub enum ProviderKind {
 }
 
 impl ProviderConfig {
+    /// The key to send, from the environment if a variable names one and the
+    /// credential store otherwise.
     pub fn api_key(&self) -> Option<String> {
-        self.api_key_env
-            .as_ref()
-            .and_then(|name| std::env::var(name).ok())
-            .filter(|k| !k.trim().is_empty())
+        crate::secrets::resolve(&self.id, self.api_key_env.as_deref())
+    }
+
+    /// Which of the two the key came from, for display.
+    pub fn key_status(&self) -> crate::secrets::KeyStatus {
+        crate::secrets::status(&self.id, self.api_key_env.as_deref())
     }
 }
 

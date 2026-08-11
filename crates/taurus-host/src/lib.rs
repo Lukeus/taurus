@@ -8,11 +8,13 @@
 pub mod config;
 pub mod host;
 pub mod prompt;
+pub mod secrets;
 pub mod sessions;
 #[cfg(test)]
 mod testing;
 
 pub use config::{ProviderConfig, ProviderKind, Scope, Settings};
 pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};
+pub use secrets::KeyStatus;
 pub use sessions::{SessionLog, SessionMeta};
 pub use taurus_tools::{Checkpoint, Restored};

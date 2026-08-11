@@ -4,6 +4,7 @@
 //! permission allowlist. Everything shared lives in `taurus-host`; this crate
 //! only decides how to talk to a terminal.
 
+mod key_cmd;
 mod markdown;
 mod permission;
 mod render;
@@ -82,6 +83,13 @@ enum Command {
     },
     /// Show MCP server connection status.
     Mcp {
+        #[command(flatten)]
+        session: SessionArgs,
+    },
+    /// Store provider API keys in the OS credential store.
+    Key {
+        #[command(subcommand)]
+        command: key_cmd::KeyCommand,
         #[command(flatten)]
         session: SessionArgs,
     },
@@ -277,6 +285,11 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Skills { command, session } => {
             let runtime = build_host(&session, Policy::default()).await?;
             skills_cmd::run(&runtime.host, command).await
+        }
+
+        Command::Key { command, session } => {
+            let host = build_host(&session, Policy::default()).await?.host;
+            key_cmd::run(&host, command).await
         }
 
         Command::Mcp { session } => {

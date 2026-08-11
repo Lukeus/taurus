@@ -12,6 +12,7 @@ import type { ProviderConfig } from "../lib/api";
 import {
   Settings,
   blankProvider,
+  keyHint,
   overrideOf,
   parseContextLength,
   validate,
@@ -28,6 +29,32 @@ const provider = (patch: Partial<ProviderConfig> = {}): ProviderConfig => ({
   context_length: null,
   api_prefix: null,
   ...patch,
+});
+
+describe("what the API key field says about where the key comes from", () => {
+  it("names the variable that is overriding a stored key", () => {
+    // The state a user hits after storing a key that then does nothing. The
+    // hint has to name the variable, or there is nothing to go and unset.
+    const hint = keyHint({ kind: "overridden", variable: "OPENAI_API_KEY" });
+    expect(hint).toContain("OPENAI_API_KEY");
+    expect(hint).toMatch(/unset/i);
+  });
+
+  it("names the variable in use when nothing is stored", () => {
+    expect(keyHint({ kind: "environment", variable: "AZURE_KEY" })).toContain(
+      "AZURE_KEY",
+    );
+  });
+
+  it("says a stored key is actually in use", () => {
+    expect(keyHint({ kind: "keychain" })).toMatch(/in use/i);
+  });
+
+  it("promises the keychain rather than disk when nothing is set yet", () => {
+    const hint = keyHint({ kind: "missing" });
+    expect(hint).toMatch(/keychain/i);
+    expect(hint).toMatch(/never on disk/i);
+  });
 });
 
 describe("context length input", () => {

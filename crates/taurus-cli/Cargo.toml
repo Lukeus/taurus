@@ -19,6 +19,9 @@ taurus-tools.workspace = true
 
 async-trait.workspace = true
 clap = { version = "4", features = ["derive"] }
+# Terminal echo suppression for `taurus key set`. Doing this by hand means
+# termios on unix and console APIs on Windows, for a prompt.
+rpassword = "7"
 serde_json.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 tokio-util.workspace = true
