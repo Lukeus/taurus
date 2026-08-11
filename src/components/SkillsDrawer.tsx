@@ -33,11 +33,7 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
     api.listSkills().then(setSkills).catch(() => setSkills([]));
   }, []);
 
-  const all = skills ?? [];
-  const project = all.filter((s) => s.tier === "project");
-  const attention = all.filter((s) => s.degraded);
-  const shown =
-    filter === "project" ? project : filter === "attention" ? attention : all;
+  const { all, project, attention, shown } = partition(skills ?? [], filter);
 
   return (
     <div className="scrim" onClick={onClose}>
@@ -178,6 +174,26 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
       </aside>
     </div>
   );
+}
+
+/**
+ * The three questions actually asked of the skill list: what is there, what
+ * did this project add, and what is broken.
+ *
+ * Every count comes out of one pass so the pills and the list below them can
+ * never disagree — a filter reading "Needs attention 2" over a list of three
+ * is the kind of thing nobody reports and everybody distrusts.
+ */
+export function partition(skills: SkillSummary[], filter: Filter) {
+  const project = skills.filter((s) => s.tier === "project");
+  const attention = skills.filter((s) => s.degraded);
+  return {
+    all: skills,
+    project,
+    attention,
+    shown:
+      filter === "project" ? project : filter === "attention" ? attention : skills,
+  };
 }
 
 const TIER_LABEL: Record<SkillSummary["tier"], string> = {
