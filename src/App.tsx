@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { ChangesDrawer } from "./components/ChangesDrawer";
@@ -9,7 +9,7 @@ import { SkillsDrawer } from "./components/SkillsDrawer";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript } from "./components/Transcript";
 import * as api from "./lib/api";
-import type { ModelInfo } from "./lib/api";
+import type { ModelInfo, ProviderConfig } from "./lib/api";
 import { basename, plural } from "./lib/format";
 import { useStore } from "./state/store";
 
@@ -26,16 +26,53 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const providerId = store.session?.provider_id ?? store.status?.providers[0]?.id;
+  const providers = store.status?.providers ?? [];
+  const providerId = currentProvider(
+    providers,
+    store.session?.provider_id,
+    store.status?.settings.last_provider,
+  );
+
+  // Which provider the visible model list belongs to. Without it, switching
+  // providers lists twice — once here, and again when starting the session
+  // moves `providerId` on to the new one.
+  const listedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!providerId) return;
+    if (!providerId || listedFor.current === providerId) return;
+    listedFor.current = providerId;
     setModels(null);
     api
       .listModels(providerId)
       .then(setModels)
       .catch(() => setModels("failed"));
   }, [providerId]);
+
+  /**
+   * Switches provider, which means starting a conversation on it.
+   *
+   * The same thing choosing a model does: a session is bound to one provider
+   * and model, so changing either is a new conversation rather than a setting
+   * applied to this one.
+   */
+  const chooseProvider = async (id: string) => {
+    if (id === providerId) return;
+    listedFor.current = id;
+    setModels(null);
+    try {
+      const list = await api.listModels(id);
+      setModels(list);
+      if (list[0]) await store.startSession(id, list[0].id);
+    } catch {
+      setModels("failed");
+      // A backend with no model listing is still usable when the config names
+      // the model to talk to — an Azure APIM route often exposes the chat
+      // endpoint and nothing else. This is the same fallback `resolve_model`
+      // makes for the CLI.
+      const named = providers.find((p) => p.id === id)?.default_model;
+      if (named) await store.startSession(id, named);
+    }
+  };
 
   const available = Array.isArray(models) ? models : [];
   const workspace = store.status?.workspace ?? null;
@@ -99,6 +136,25 @@ export default function App() {
                 ? `${plural(store.changed.length, "file")} changed`
                 : "No file changes"}
             </button>
+          )}
+
+          {/* Only worth a control when there is a choice to make. One provider
+              is the common case and the picker would be a dropdown that can
+              only ever say what the model list already implies. */}
+          {providers.length > 1 && (
+            <select
+              className="provider-select"
+              aria-label="Provider"
+              value={providerId ?? ""}
+              disabled={store.busy}
+              onChange={(e) => chooseProvider(e.target.value)}
+            >
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.id}
+                </option>
+              ))}
+            </select>
           )}
 
           <select
@@ -183,6 +239,28 @@ export default function App() {
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
     </div>
   );
+}
+
+/**
+ * Which provider the header is showing.
+ *
+ * The open conversation decides it, because a session is bound to the provider
+ * it was started on. With no session, the one this workspace was last worked in
+ * — falling back to the first configured only when that provider is gone, which
+ * is what happens after it is removed in Settings.
+ *
+ * `last_provider` matters more than it looks: the store restores it on launch,
+ * so ignoring it here meant the header disagreed with the session actually
+ * running whenever the restore failed.
+ */
+export function currentProvider(
+  providers: ProviderConfig[],
+  sessionProvider: string | undefined,
+  lastProvider: string | null | undefined,
+): string | undefined {
+  if (sessionProvider) return sessionProvider;
+  const remembered = providers.find((p) => p.id === lastProvider);
+  return (remembered ?? providers[0])?.id;
 }
 
 /**

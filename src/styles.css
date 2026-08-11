@@ -515,13 +515,21 @@ code {
   white-space: nowrap;
   flex: none;
 }
-.model-select {
+.model-select,
+.provider-select {
   max-width: 220px;
   border-radius: var(--r);
   background: transparent;
   color: var(--text-dim);
   padding: 5px 9px;
   font-size: 12.5px;
+}
+/* Narrower, and monospaced: a provider id is a config key the user typed,
+   not a product name, and it reads as one next to the model beside it. */
+.provider-select {
+  max-width: 150px;
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 /* ------------------------------------------------------------- transcript */
