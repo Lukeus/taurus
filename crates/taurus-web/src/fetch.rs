@@ -37,7 +37,20 @@ pub struct FetchUrlInput {
     pub max_chars: Option<usize>,
 }
 
-pub struct FetchUrl;
+pub struct FetchUrl {
+    /// When false, a URL resolving to loopback or a private network is refused.
+    /// See [`crate::address`] for why this tool is guarded and the others are
+    /// not.
+    allow_private_hosts: bool,
+}
+
+impl FetchUrl {
+    pub fn new(allow_private_hosts: bool) -> Self {
+        Self {
+            allow_private_hosts,
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for FetchUrl {
@@ -73,7 +86,19 @@ impl Tool for FetchUrl {
         let url = check_scheme(input.url.trim())?;
         let limit = input.max_chars.unwrap_or(DEFAULT_MAX_CHARS).min(MAX_CHARS);
 
-        let response = http::send(http::client().get(url), ctx).await?;
+        // Parsed here rather than left to reqwest, because the guard below
+        // needs the host and refusing an unparseable URL up front is a better
+        // error than whatever the transport would say about it.
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| ToolError::InvalidInput(format!("'{url}' is not a valid URL: {e}")))?;
+
+        if !self.allow_private_hosts {
+            crate::address::ensure_public(&parsed)
+                .await
+                .map_err(ToolError::Failed)?;
+        }
+
+        let response = http::send(http::client().get(parsed), ctx).await?;
         let status = response.status();
         // Same-host redirects are followed, so this may not be the URL that was
         // asked for. Reporting where the text actually came from is the

@@ -8,6 +8,7 @@
 //!
 //! [`Effect::Network`]: taurus_tools::Effect::Network
 
+pub mod address;
 pub mod config;
 pub mod fetch;
 mod http;

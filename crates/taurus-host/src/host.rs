@@ -171,9 +171,15 @@ impl Host {
         let (search_backend, search_problems) = config::load_search(Some(&workspace));
         problems.extend(Problem::tag(ProblemSource::Search, search_problems));
         if let Some(backend) = search_backend {
-            info!(backend = %backend.id, "web search enabled");
+            info!(
+                backend = %backend.id,
+                allow_private_hosts = backend.allow_private_hosts,
+                "web search enabled"
+            );
+            registry.register(Arc::new(taurus_web::FetchUrl::new(
+                backend.allow_private_hosts,
+            )));
             registry.register(Arc::new(taurus_web::WebSearch::new(backend)));
-            registry.register(Arc::new(taurus_web::FetchUrl));
         }
 
         // Reconnecting drops the previous connections, stopping the old child

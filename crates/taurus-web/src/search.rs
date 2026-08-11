@@ -277,6 +277,7 @@ mod tests {
             base_url: "http://example.invalid".into(),
             api_key: Some("key".into()),
             max_results: 5,
+            allow_private_hosts: false,
         }
     }
 

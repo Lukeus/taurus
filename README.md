@@ -401,6 +401,23 @@ approve a link shortener and the hop lands wherever it points, including on
 your own network. A redirect that crosses hosts stops and reports its target,
 which the model can then ask for on its own terms.
 
+**`fetch_url` will not reach your own machine or network.** The host is
+resolved and every address it answers with has to be public, so
+`http://127.0.0.1:8080/admin` and `http://169.254.169.254/` — the cloud
+metadata endpoint, which answers unauthenticated and with credentials — are
+refused. The URL there is chosen by a model that just read a web page, which
+is what makes it different from a search backend or an MCP server: those are
+addresses you wrote down, and they are never subject to this. If you want the
+model reading a docs server you run locally, that is a deliberate act:
+
+```jsonc
+{ "allow_private_hosts": true }
+```
+
+Deliberately file-only, and not a checkbox in Settings. It is the one setting
+here where the easy version of the mistake is expensive, and a config file is
+a good place to make someone think for a moment.
+
 The tools are registered together or not at all. A `fetch_url` with no way to
 find a URL is only usable on links you paste, and search without fetch leaves
 the model holding snippets it cannot follow. If the selected backend cannot run
@@ -604,10 +621,15 @@ taurus key status               # where each provider's API key comes from
   shows one delegation card plus a tool-usage summary rather than the child's
   live output.
 - **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
-  that renders its content client-side comes back near-empty. It is also not
-  restricted to public addresses: an approved fetch of `localhost` or a
-  private-range host goes through, which is why the prompt shows the whole URL
-  and an "always" grant covers only that one host.
+  that renders its content client-side comes back near-empty. Closing this
+  means shipping a browser engine, so it is a limit rather than a to-do.
+- **`fetch_url` resolves a name twice.** Loopback and private-network addresses
+  are refused — the host is resolved and every address it answers with must be
+  public — but the connection resolves the name again, so a name that answers
+  publicly during the check and privately a moment later would get through.
+  Pinning the connection to the address that was checked is per-client in
+  reqwest, not per-request. `"allow_private_hosts": true` in `search.json`
+  turns the check off deliberately.
 
 ## License
 

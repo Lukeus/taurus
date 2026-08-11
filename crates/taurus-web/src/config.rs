@@ -56,6 +56,14 @@ pub struct SearchFile {
     /// Id of the backend to use. Unset means web search stays off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// Lets `fetch_url` reach loopback and private-network addresses.
+    ///
+    /// Off by default. It governs the tool rather than any one backend — a
+    /// search backend's URL is one the user wrote down, and is never subject to
+    /// this — but it lives here because `search.json` is the file the web tools
+    /// are configured from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_private_hosts: Option<bool>,
     #[serde(default)]
     pub backends: BTreeMap<String, BackendEntry>,
 }
@@ -106,6 +114,10 @@ pub struct Backend {
     pub base_url: String,
     pub api_key: Option<String>,
     pub max_results: u8,
+    /// File-level, not really the backend's own — but the web tools are
+    /// registered together and only when a backend resolves, so this is the one
+    /// value that reaches them both.
+    pub allow_private_hosts: bool,
 }
 
 /// Results returned when neither the model nor the config asks for a number.
@@ -160,11 +172,15 @@ pub fn merge_with(
 ) -> (Option<Backend>, Vec<String>) {
     let mut problems = Vec::new();
     let mut selected: Option<String> = None;
+    let mut allow_private_hosts = false;
     let mut backends: BTreeMap<String, BackendEntry> = BTreeMap::new();
 
     for layer in layers {
         if layer.backend.is_some() {
             selected = layer.backend;
+        }
+        if let Some(allow) = layer.allow_private_hosts {
+            allow_private_hosts = allow;
         }
         for (id, entry) in layer.backends {
             match backends.get_mut(&id) {
@@ -186,7 +202,7 @@ pub fn merge_with(
         return (None, problems);
     };
 
-    match resolve(&id, entry, &key_source) {
+    match resolve(&id, entry, &key_source, allow_private_hosts) {
         Ok(backend) => (Some(backend), problems),
         Err(e) => {
             problems.push(format!("search backend '{id}': {e}"));
@@ -201,6 +217,7 @@ fn resolve(
     id: &str,
     entry: &BackendEntry,
     key_source: impl Fn(&str, Option<&str>) -> Option<String>,
+    allow_private_hosts: bool,
 ) -> Result<Backend, String> {
     let kind = entry
         .kind
@@ -231,6 +248,7 @@ fn resolve(
         base_url: base_url.trim_end_matches('/').to_string(),
         api_key,
         max_results: entry.max_results.unwrap_or(DEFAULT_MAX_RESULTS),
+        allow_private_hosts,
     })
 }
 
@@ -240,6 +258,7 @@ fn resolve(
 pub fn starter_file() -> SearchFile {
     SearchFile {
         backend: None,
+        allow_private_hosts: None,
         backends: BTreeMap::from([
             (
                 "brave".to_string(),
