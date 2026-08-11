@@ -411,6 +411,24 @@ impl Host {
         config::load_global_search()
     }
 
+    /// Where each configured search backend's key comes from.
+    ///
+    /// The twin of [`Self::key_statuses`], and for the same reason: both
+    /// frontends draw a list of these at once, and asking per backend would be
+    /// one credential-store round trip per row.
+    pub fn search_key_statuses(&self) -> Vec<(String, secrets::KeyStatus)> {
+        config::load_global_search()
+            .backends
+            .iter()
+            .map(|(id, entry)| {
+                (
+                    id.clone(),
+                    config::search_key_status(id, entry.api_key_env.as_deref()),
+                )
+            })
+            .collect()
+    }
+
     /// Whether web search resolved to something that can actually run.
     ///
     /// Distinct from "a backend is selected": a selection with no key resolves

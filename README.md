@@ -266,7 +266,7 @@ file every other project reads.
 | --- | --- | --- |
 | `providers.json` | Backends, including the header a key is sent in. Never the key itself — that lives in the OS keychain or an env var. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Header values and URLs may name env vars. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
-| `search.json` | Web search backends and which one is active. Keys are referenced by env-var name, never stored. | A different backend for this project, or field overrides on an inherited one. |
+| `search.json` | Web search backends and which one is active. Never the key itself — that lives in the OS keychain or an env var, as with providers. | A different backend for this project, or field overrides on an inherited one. |
 | `settings.json` | Last workspace, skill-synthesis toggle, fallback model. | The provider and model this project was last worked in. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
@@ -277,14 +277,17 @@ file every other project reads.
 
 A key never goes in a config file. Type it into Settings and it goes to the OS
 credential store — Keychain on macOS, Credential Manager on Windows, the Secret
-Service on Linux — under the service `taurus` and the provider's id. Or from a
-terminal:
+Service on Linux — under the service `taurus` and the provider's id. Web-search
+backends keep their keys in the same store, under `search:<id>`, since both ids
+are yours to choose and a backend and a provider may well share a name. Or from
+a terminal:
 
 ```bash
 taurus key set openai        # prompts, input not echoed
 taurus key set openai < key.txt
 pass show openai | taurus key set openai
-taurus key status            # where each provider's key comes from
+taurus key set brave --search   # the same, for a web-search backend
+taurus key status            # where every key comes from, both kinds
 taurus key clear openai
 ```
 
@@ -350,12 +353,19 @@ of a missing one. A literal value still passes through untouched.
 
 Two tools, `web_search` and `fetch_url`, and **neither exists until you turn
 one on.** Searching means sending your prompt to a third party, which is not
-something to start doing because a program was installed. A first run writes a
-`search.json` with every backend spelled out and none of them selected:
+something to start doing because a program was installed.
+
+In the app, that is **Settings › Search**: pick a backend, paste its key, done.
+The key goes to the OS keychain, the same place provider keys go, and the tools
+are registered the moment the backend resolves — no restart.
+
+Everything it writes is `~/.taurus/search.json`, which the CLI reads too and
+which a first run leaves behind with every backend spelled out and none of them
+selected:
 
 ```jsonc
 {
-  "backend": "brave",           // ← the only edit needed to enable it
+  "backend": "brave",           // ← unset means off
   "backends": {
     "brave":   { "kind": "brave",   "api_key_env": "BRAVE_API_KEY" },
     "tavily":  { "kind": "tavily",  "api_key_env": "TAVILY_API_KEY" },
@@ -363,6 +373,10 @@ something to start doing because a program was installed. A first run writes a
   }
 }
 ```
+
+`api_key_env` stays supported and **wins over a stored key** when both are set,
+which is what makes CI and keychain-less machines work. Same precedence as
+providers, because both resolve through the same code.
 
 | `kind` | Needs | Notes |
 | --- | --- | --- |
@@ -390,9 +404,11 @@ which the model can then ask for on its own terms.
 The tools are registered together or not at all. A `fetch_url` with no way to
 find a URL is only usable on links you paste, and search without fetch leaves
 the model holding snippets it cannot follow. If the selected backend cannot run
-— an unset key variable, a SearXNG entry with no URL — nothing is registered and
-the reason is reported at startup, rather than the model spending a turn
-discovering it has no credential.
+— no key saved and none in the environment, a SearXNG entry with no URL —
+nothing is registered and the reason is reported in Settings › Search, rather
+than the model spending a turn discovering it has no credential. Picking a
+backend and it still not running is a state the tab names explicitly, since a
+selection alone is not the same as a working one.
 
 ### Azure OpenAI, and gateways in front of it
 
