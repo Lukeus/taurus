@@ -6,7 +6,8 @@ desktop app and a `taurus` CLI. macOS, Windows, and Linux from one codebase.
 
 It reads and edits files in a workspace, runs commands, connects to MCP
 servers, delegates to sub-agents — and writes down procedures it works out as
-reusable **skills**, which you approve before they are kept.
+reusable **skills**, which you approve before they are kept. Every file it
+edits is recorded first, so any turn can be **rewound**.
 
 ## Quick start
 
@@ -29,6 +30,7 @@ cargo install --path crates/taurus-cli
 taurus repl                                     # interactive
 taurus run "summarize the modules in src/"      # one-shot
 taurus run --json "count the rust files" | jq   # for scripts
+taurus rewind --to last                         # undo what the last turn wrote
 ```
 
 Both share `~/.taurus` — same providers, same skills, same permission
@@ -174,6 +176,51 @@ instead of poisoning the file. There is no index — everything a listing shows 
 in each transcript's own opening lines, and an index is a second copy of the
 truth that can disagree with it.
 
+### Rewinding a turn
+
+A transcript remembers that the model called `edit_file`. It does not remember
+the bytes that were there first — so a model that rewrites the wrong file, or
+gets an edit subtly wrong across a dozen call sites, has destroyed work nothing
+else in the harness can give back.
+
+So the bytes are kept. Before a tool changes a file, its current contents go
+into an append-only log beside the transcript, and any turn can be undone:
+
+```bash
+taurus rewind                        # turns that changed files, newest first
+taurus rewind --to last --dry-run    # exactly what undoing the last one does
+taurus rewind --to 3                 # back to just before turn 3
+```
+
+The desktop app's **Changes** drawer is the same thing with a button.
+
+Rewinding to turn *N* undoes every turn from *N* onward, not only that one: the
+log records what a file held before a turn, and restoring one turn while
+leaving a later one in place would produce a tree that never existed. Where two
+turns touched the same file, the oldest pre-image wins, because that is the one
+that predates all of them.
+
+Both frontends show the plan before they write, and neither will do it
+unattended — a rewind discards whatever is in those files *now*, including
+edits you made by hand since. Piped, it names the flag that would have allowed
+it, the same way a refused tool call does:
+
+```
+$ taurus rewind --to last < /dev/null
+  reverted  src/widget.rs
+  deleted   src/widget_test.rs
+taurus: no terminal to confirm on; re-run with --yes to rewind, or --dry-run to
+        see the plan
+```
+
+**`run_command` is not covered.** A shell command's reach cannot be known
+before it runs, and the only honest options were to snapshot the whole
+workspace before every command or to say plainly what is not included. Coverage
+is exactly what a tool declares it will touch, which today means `write_file`
+and `edit_file`. A file that was not text when it was recorded is reported as
+`skipped` rather than silently left as the model made it, and `taurus rewind`
+exits non-zero when anything could not be put back.
+
 ### Output formatting
 
 Models answer in markdown, so both frontends render it.
@@ -213,12 +260,81 @@ file every other project reads.
 
 | File | Global | Workspace |
 | --- | --- | --- |
-| `providers.json` | Backends. API keys are referenced by env-var name, never stored. | Overrides and additions for this project. |
-| `mcp.json` | MCP servers, in the same format Claude Desktop uses. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
+| `providers.json` | Backends, including the header a key is sent in. Keys are referenced by env-var name, never stored. | Overrides and additions for this project. |
+| `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Header values and URLs may name env vars. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `settings.json` | Last workspace, skill-synthesis toggle, fallback model. | The provider and model this project was last worked in. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
+| `checkpoints/` | Pre-images of changed files, keyed by workspace like sessions and for the same reason. | — |
+
+### MCP servers
+
+`mcp.json` takes stdio and streamable-HTTP servers in the format Claude Desktop
+and Claude Code use, so an existing `mcpServers` block pastes in unchanged:
+
+```jsonc
+{
+  "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
+    "remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${EXAMPLE_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+`${VAR}` in a header value or a URL is read from the environment. That matters
+because a remote server almost always needs a credential, and the workspace
+layer of `mcp.json` is meant to be hand-written and version-controlled — a
+literal token there is a token in the repository. It is the same bargain
+`providers.json` already makes for API keys. A variable that is not set fails
+the server with its own name in the message, rather than sending an empty
+`Authorization` header and producing a 401 that looks like a bad token instead
+of a missing one. A literal value still passes through untouched.
+
+### Azure OpenAI, and gateways in front of it
+
+Azure is an OpenAI-compatible backend that disagrees about one thing: where the
+key goes. OpenAI and everything imitating it read `Authorization: Bearer`;
+Azure OpenAI reads `api-key`, and an Azure API Management gateway reads
+`Ocp-Apim-Subscription-Key`. Both are bare — a `Bearer ` in front of the value
+produces a 401 that looks exactly like a wrong key.
+
+`api_key_header` names the header. The key is sent raw in it, with no scheme
+prefix:
+
+```jsonc
+{
+  "id": "apim",
+  "kind": "open_ai_compatible",
+  "base_url": "https://my-gateway.azure-api.net",
+  "api_prefix": "/openai/v1",
+  "api_key_env": "APIM_SUBSCRIPTION_KEY",
+  "api_key_header": "Ocp-Apim-Subscription-Key",
+  "default_model": "gpt-4o",
+  "context_length": 128000
+}
+```
+
+Leaving it unset keeps bearer auth, so nothing else changes. There is
+deliberately no separate setting for the scheme: naming `Authorization` sends
+the key bare in that header, which is the only other shape a gateway asks for.
+The value is marked sensitive, so a subscription key cannot reach a debug log
+through the header map.
+
+Two other fields matter more here than elsewhere:
+
+- **`api_prefix`.** Azure's OpenAI-shaped surface lives under `/openai/v1`,
+  where the model goes in the request body. Its older data plane puts the
+  deployment name in the path and requires an `api-version` query parameter;
+  Taurus cannot express either, so point it at the `/openai/v1` route, or at an
+  APIM route whose policy supplies them.
+- **`default_model`.** A gateway need not expose `/v1/models`, and without a
+  listing there is nothing to pick from. Set this and Taurus uses it rather
+  than asking. Without it, and with no listing, the error says so instead of
+  reporting an unreachable backend.
 
 ### Intel hardware, and other backends
 
@@ -291,8 +407,9 @@ Layering is per key, not per file, so an override states only what it changes:
 [{ "id": "ollama", "base_url": "http://gpu-box:11434" }]
 ```
 
-`kind`, `api_key_env`, and the capability overrides are inherited from the
-global entry with the same `id`. An entry whose `id` is new to this layer is
+`kind`, `api_key_env`, `api_key_header`, and the capability overrides are
+inherited from the global entry with the same `id`. An entry whose `id` is new
+to this layer is
 added instead, and then needs a `kind` and a `base_url` of its own. Anything
 unresolvable — a malformed layer, an override with no `kind`, an MCP toggle
 naming a server nothing defines — is reported as a startup problem rather than
@@ -311,8 +428,8 @@ into the project file.
 ## Development
 
 ```bash
-cargo test --workspace     # 276 tests
-pnpm test                  # transcript reducer, replay, settings
+cargo test --workspace     # 322 tests
+pnpm test                  # transcript reducer, replay, settings, rewind
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 
@@ -356,10 +473,9 @@ taurus mcp                      # non-zero exit if a server failed to connect
 
 ## Known gaps
 
-- **MCP over HTTP is not wired up.** stdio servers work; the HTTP transport in
-  `rmcp` pins a `reqwest` major version that conflicts with the one the
-  provider adapters use. An HTTP entry in `mcp.json` reports this rather than
-  failing silently.
+- **A rewind does not cover `run_command`.** Checkpoints record what a tool
+  declares it will touch, and a shell command's reach is not knowable before it
+  runs. See [Rewinding a turn](#rewinding-a-turn).
 - **`run_command` has no PTY.** Commands run non-interactively with stdin
   closed, which is right for an agent but means programs that check `isatty`
   behave as though piped, and interactive prompts hit the timeout instead of

@@ -1,0 +1,177 @@
+import { useEffect, useState } from "react";
+
+import * as api from "../lib/api";
+import type { Checkpoint, Restored } from "../lib/api";
+
+/**
+ * Files this conversation changed, and the way back.
+ *
+ * A rewind overwrites the workspace and cannot itself be undone, so it is
+ * never one click: choosing a turn asks the backend what reverting would do
+ * and shows that list, and only the second press writes. The same two steps
+ * the CLI takes, for the same reason — a checkpoint is only worth having if
+ * the user can see what they are about to trade for it.
+ */
+export function ChangesDrawer({
+  sessionId,
+  busy,
+  onClose,
+}: {
+  sessionId: string;
+  busy: boolean;
+  onClose: () => void;
+}) {
+  const [turns, setTurns] = useState<Checkpoint[] | null>(null);
+  const [plan, setPlan] = useState<{ turn: number; outcomes: Restored[] } | null>(null);
+  const [done, setDone] = useState<Restored[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () =>
+    api
+      .listCheckpoints(sessionId)
+      .then(setTurns)
+      .catch((e) => {
+        setError(String(e));
+        setTurns([]);
+      });
+
+  useEffect(() => {
+    refresh();
+    // Reloading on every render would fight the plan/confirm state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
+  const preview = async (turn: number) => {
+    setError(null);
+    setDone(null);
+    try {
+      setPlan({ turn, outcomes: await api.rewindTo(sessionId, turn, true) });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const apply = async () => {
+    if (!plan) return;
+    setError(null);
+    try {
+      const outcomes = await api.rewindTo(sessionId, plan.turn, false);
+      setDone(outcomes);
+      setPlan(null);
+      // The undone turns are gone from the workspace but still in the log, so
+      // the list is re-read rather than assumed.
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  return (
+    <div className="scrim" onClick={onClose}>
+      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
+        <header className="drawer-head">
+          <h2>Changes</h2>
+          <button onClick={refresh}>Refresh</button>
+          <button onClick={onClose}>Close</button>
+        </header>
+
+        {error && <p className="banner error">{error}</p>}
+
+        {done && (
+          <section className="mcp-servers">
+            <h3>Restored</h3>
+            {done.map((outcome) => (
+              <p key={outcome.path} className="small">
+                <Outcome outcome={outcome} />
+              </p>
+            ))}
+          </section>
+        )}
+
+        {turns?.length === 0 && (
+          <p className="muted drawer-empty">
+            This conversation has not changed any files. Taurus records what a
+            file held before it edits it, so a turn can be undone.
+          </p>
+        )}
+
+        <ul className="skill-list">
+          {turns
+            ?.slice()
+            .reverse()
+            .map((turn) => (
+              <li key={turn.turn}>
+                <div className="skill-row">
+                  <code>turn {turn.turn}</code>
+                  <span className="tag">
+                    {turn.files.length} file{turn.files.length === 1 ? "" : "s"}
+                  </span>
+                  <button
+                    className="link"
+                    // Rewinding under a running turn would race the tool calls
+                    // still writing. The backend refuses too; this just stops
+                    // the user reaching for it.
+                    disabled={busy}
+                    title={
+                      busy
+                        ? "Wait for the current turn to finish"
+                        : "Undo this turn and everything after it"
+                    }
+                    onClick={() => preview(turn.turn)}
+                  >
+                    Revert to before this
+                  </button>
+                </div>
+                <p className="muted">{turn.prompt || "(no prompt recorded)"}</p>
+                <p className="muted small">{turn.files.join(", ")}</p>
+
+                {plan?.turn === turn.turn && (
+                  <div className="rewind-plan">
+                    <p className="small">
+                      This overwrites {plan.outcomes.length} file
+                      {plan.outcomes.length === 1 ? "" : "s"} with what was there
+                      before, including anything you changed by hand since.
+                    </p>
+                    {plan.outcomes.map((outcome) => (
+                      <p key={outcome.path} className="small">
+                        <Outcome outcome={outcome} />
+                      </p>
+                    ))}
+                    <div className="skill-row">
+                      <button className="danger" onClick={apply}>
+                        Rewind
+                      </button>
+                      <button onClick={() => setPlan(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            ))}
+        </ul>
+      </aside>
+    </div>
+  );
+}
+
+export function Outcome({ outcome }: { outcome: Restored }) {
+  switch (outcome.action) {
+    case "reverted":
+      return (
+        <>
+          <span className="tag">reverted</span> {outcome.path}
+        </>
+      );
+    case "deleted":
+      return (
+        <>
+          <span className="tag">deleted</span> {outcome.path}
+        </>
+      );
+    case "skipped":
+      return (
+        <>
+          <span className="tag warn">skipped</span> {outcome.path} — {outcome.reason}
+        </>
+      );
+  }
+}

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use taurus_core::{Session, UiEvent};
-use taurus_host::{sessions, PermissionPromptFactory, SessionLog};
+use taurus_host::{sessions, PermissionPromptFactory, SessionLog, TurnRef};
 use taurus_provider::Message;
 use taurus_skills::proposal::{save, validate_proposal, SkillProposal};
 use taurus_tools::PermissionPrompt;
@@ -219,7 +219,18 @@ async fn turn(
 ) -> Result<bool, String> {
     runtime.host.remember_session(provider_id, model).await;
 
-    let agent = runtime.host.build_agent(provider, model, cancel).await;
+    let agent = runtime
+        .host
+        .build_agent(
+            provider,
+            model,
+            cancel,
+            TurnRef {
+                session_id: &session.id,
+                prompt: task,
+            },
+        )
+        .await;
 
     let (tx, mut rx) = mpsc::channel::<UiEvent>(256);
     let mut renderer = Renderer::new(format, quiet, verbose);

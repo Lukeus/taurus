@@ -694,6 +694,22 @@ button.link:disabled {
   cursor: default;
 }
 
+/* The confirmation step of a rewind: indented and outlined, because it is a
+   question about the entry it hangs under rather than another list item. */
+.rewind-plan {
+  margin: 8px 0 4px 12px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--danger);
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
+}
+.rewind-plan p {
+  margin: 0 0 6px;
+}
+.rewind-plan .skill-row {
+  margin-top: 10px;
+}
+
 .mcp-servers {
   margin-top: 20px;
   padding-top: 12px;

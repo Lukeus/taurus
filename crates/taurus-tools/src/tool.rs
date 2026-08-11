@@ -91,6 +91,13 @@ pub struct ToolContext {
     pub workspace: PathBuf,
     pub permissions: Arc<PermissionEngine>,
     pub cancel: CancellationToken,
+    /// The open turn that file changes are checkpointed into.
+    ///
+    /// Optional because not every caller wants a rewindable turn — a piped run
+    /// that only reads, an example, a test. Cloning the context shares the
+    /// recorder, which is how a sub-agent's writes land in the turn that
+    /// spawned it.
+    pub checkpoints: Option<Arc<crate::checkpoint::TurnRecorder>>,
 }
 
 impl ToolContext {
@@ -103,7 +110,14 @@ impl ToolContext {
             workspace: workspace.into(),
             permissions,
             cancel,
+            checkpoints: None,
         }
+    }
+
+    /// Makes changes made through this context undoable.
+    pub fn with_checkpoints(mut self, recorder: Arc<crate::checkpoint::TurnRecorder>) -> Self {
+        self.checkpoints = Some(recorder);
+        self
     }
 
     pub fn resolve(&self, candidate: &str) -> Result<PathBuf, ToolError> {
@@ -133,6 +147,17 @@ pub trait Tool: Send + Sync {
     /// general, so it must reflect the arguments.
     fn preview(&self, input: &serde_json::Value) -> String {
         format!("{} {}", self.name(), compact(input))
+    }
+
+    /// Files this call may change, as the caller wrote them.
+    ///
+    /// Read just before the call so a rewind has something to put back. The
+    /// default is empty, which means *this tool changes nothing, or nothing
+    /// knowable in advance* — the second is why `run_command` declares nothing:
+    /// a shell command's reach cannot be predicted, and a checkpoint that
+    /// appeared to cover it would be worse than an honest gap.
+    fn touches(&self, _input: &serde_json::Value) -> Vec<String> {
+        Vec::new()
     }
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult;

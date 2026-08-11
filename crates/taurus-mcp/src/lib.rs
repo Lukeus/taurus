@@ -7,13 +7,15 @@
 
 pub mod config;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::model::{CallToolRequestParams, ContentBlock};
 use rmcp::service::{Peer, RoleClient, RunningService, ServiceExt};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -113,13 +115,15 @@ impl McpManager {
                     .await
                     .map_err(|e| format!("handshake failed: {e}"))?
             }
-            // HTTP transport is not built in: rmcp's HTTP client pins a
-            // reqwest major version that conflicts with the one the provider
-            // adapters use. Saying so beats silently skipping the entry.
-            ServerConfig::Http { url, .. } => {
-                return Err(format!(
-                    "HTTP MCP servers are not supported yet ({url}); use a stdio server for now"
-                ))
+            ServerConfig::Http { url, headers, .. } => {
+                let url = expand_env(url).map_err(|e| format!("url: {e}"))?;
+                let transport = StreamableHttpClientTransport::<reqwest::Client>::from_config(
+                    StreamableHttpClientTransportConfig::with_uri(url)
+                        .custom_headers(http_headers(headers)?),
+                );
+                ().serve(transport)
+                    .await
+                    .map_err(|e| format!("handshake failed: {e}"))?
             }
             // Layer merging resolves toggles against the server they name, so
             // one reaching this far means it named nothing.
@@ -181,6 +185,57 @@ impl McpManager {
         self.connections.write().await.clear();
         self.status.write().await.clear();
     }
+}
+
+/// Substitutes `${VAR}` from the environment.
+///
+/// An HTTP server almost always needs a credential in a header, and the
+/// workspace layer of `mcp.json` is meant to be hand-written and committed —
+/// a literal token there is a token in the repository. Naming the variable
+/// instead is the same bargain `providers.json` already makes for API keys.
+///
+/// A literal value still passes through untouched, so a config pasted from
+/// somewhere else keeps working.
+fn expand_env(raw: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            return Err("unterminated `${` — write `${VAR}`".into());
+        };
+        let name = &after[..end];
+        // Unset is an error rather than an empty string: sending a blank
+        // Authorization header produces a 401 that looks like a bad token
+        // rather than a missing one.
+        let value =
+            std::env::var(name).map_err(|_| format!("environment variable {name} is not set"))?;
+        out.push_str(&value);
+        rest = &after[end + 1..];
+    }
+
+    out.push_str(rest);
+    Ok(out)
+}
+
+fn http_headers(
+    raw: &BTreeMap<String, String>,
+) -> Result<HashMap<HeaderName, HeaderValue>, String> {
+    let mut headers = HashMap::with_capacity(raw.len());
+    for (name, value) in raw {
+        let header = HeaderName::try_from(name.as_str())
+            .map_err(|_| format!("'{name}' is not a valid HTTP header name"))?;
+        let expanded = expand_env(value).map_err(|e| format!("header '{name}': {e}"))?;
+        let mut value = HeaderValue::try_from(expanded)
+            .map_err(|_| format!("header '{name}' has a value HTTP does not allow"))?;
+        // These carry credentials. Marking them keeps the value out of the
+        // `{:?}` rendering that reqwest and rmcp use when tracing a request.
+        value.set_sensitive(true);
+        headers.insert(header, value);
+    }
+    Ok(headers)
 }
 
 /// On Windows, `npx` and friends are batch scripts that `CreateProcess` cannot
@@ -351,6 +406,85 @@ mod tests {
         assert_eq!(statuses.len(), 1);
         assert!(!statuses[0].connected);
         assert!(statuses[0].error.is_some());
+    }
+
+    #[test]
+    fn a_header_can_name_an_environment_variable_instead_of_holding_the_secret() {
+        // Unique per test: these mutate process-wide state, and the suite runs
+        // its tests in parallel threads.
+        std::env::set_var("TAURUS_TEST_MCP_TOKEN", "s3cret");
+        let headers = http_headers(&BTreeMap::from([(
+            "Authorization".to_string(),
+            "Bearer ${TAURUS_TEST_MCP_TOKEN}".to_string(),
+        )]))
+        .unwrap();
+
+        let value = &headers[&HeaderName::from_static("authorization")];
+        assert_eq!(value.to_str().unwrap(), "Bearer s3cret");
+        assert!(
+            value.is_sensitive(),
+            "a credential header must not be printable by a stray {{:?}}"
+        );
+    }
+
+    #[test]
+    fn a_literal_header_still_passes_through_unchanged() {
+        // The format's whole point is that someone else's config pastes in.
+        let headers = http_headers(&BTreeMap::from([(
+            "X-Api-Key".to_string(),
+            "literal-value".to_string(),
+        )]))
+        .unwrap();
+        assert_eq!(
+            headers[&HeaderName::from_static("x-api-key")]
+                .to_str()
+                .unwrap(),
+            "literal-value"
+        );
+    }
+
+    #[test]
+    fn an_unset_variable_names_itself_rather_than_sending_an_empty_credential() {
+        let err = http_headers(&BTreeMap::from([(
+            "Authorization".to_string(),
+            "Bearer ${TAURUS_TEST_MCP_DEFINITELY_UNSET}".to_string(),
+        )]))
+        .unwrap_err();
+        assert!(err.contains("TAURUS_TEST_MCP_DEFINITELY_UNSET"), "{err}");
+        assert!(err.contains("Authorization"), "{err}");
+    }
+
+    #[test]
+    fn a_malformed_placeholder_is_reported_not_sent_verbatim() {
+        assert!(expand_env("Bearer ${OOPS").is_err());
+        assert_eq!(
+            expand_env("no placeholders here").unwrap(),
+            "no placeholders here"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_http_server_is_recorded_and_skipped() {
+        let manager = McpManager::new();
+        let mut config = McpConfig::default();
+        config.servers.insert(
+            "remote".into(),
+            ServerConfig::Http {
+                // Reserved by RFC 2606, so this cannot accidentally resolve.
+                url: "http://mcp.invalid/mcp".into(),
+                headers: Default::default(),
+                disabled: false,
+            },
+        );
+
+        assert!(manager.connect_all(&config).await.is_empty());
+        let statuses = manager.statuses().await;
+        assert_eq!(statuses.len(), 1);
+        assert!(!statuses[0].connected);
+        assert!(
+            statuses[0].error.is_some(),
+            "the reason has to reach the user, not just the log"
+        );
     }
 
     #[tokio::test]

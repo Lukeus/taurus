@@ -9,6 +9,20 @@ use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError,
 /// Guards against a single read blowing the model's context window.
 const MAX_READ_BYTES: usize = 256 * 1024;
 
+/// The `path` argument, for the tools whose whole effect is on one file.
+///
+/// Reads the raw JSON rather than the parsed input struct because a checkpoint
+/// is taken before the tool validates anything: a call that is about to be
+/// rejected costs one `read_to_string`, and a call that is not must not have
+/// gone unrecorded because the snapshot ran too late.
+fn touched_path(input: &serde_json::Value) -> Vec<String> {
+    input
+        .get("path")
+        .and_then(|p| p.as_str())
+        .map(|p| vec![p.to_string()])
+        .unwrap_or_default()
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct ReadFileInput {
     /// Path to the file, relative to the workspace root or absolute within it.
@@ -126,6 +140,9 @@ impl Tool for WriteFile {
             .map_or(0, str::len);
         format!("Write {path} ({bytes} bytes)")
     }
+    fn touches(&self, input: &serde_json::Value) -> Vec<String> {
+        touched_path(input)
+    }
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: WriteFileInput = parse_input(input)?;
@@ -188,6 +205,9 @@ impl Tool for EditFile {
             "Edit {}",
             input.get("path").and_then(|p| p.as_str()).unwrap_or("?")
         )
+    }
+    fn touches(&self, input: &serde_json::Value) -> Vec<String> {
+        touched_path(input)
     }
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {

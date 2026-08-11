@@ -18,7 +18,9 @@ use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, PermissionDecision, Scope};
 
-use taurus_host::{sessions, ProviderConfig, SessionLog, SessionMeta, Settings};
+use taurus_host::{
+    sessions, Checkpoint, ProviderConfig, Restored, SessionLog, SessionMeta, Settings, TurnRef,
+};
 
 use crate::state::{AppState, SessionEntry};
 
@@ -226,7 +228,18 @@ pub async fn send_message(
     *entry.cancel.lock().await = cancel.clone();
 
     let model = session_model(&entry).await;
-    let agent = state.host.build_agent(provider, &model, cancel).await;
+    let agent = state
+        .host
+        .build_agent(
+            provider,
+            &model,
+            cancel,
+            TurnRef {
+                session_id: &session_id,
+                prompt: &text,
+            },
+        )
+        .await;
 
     // Bridge the loop's mpsc channel to the IPC channel.
     let (tx, mut rx) = mpsc::channel::<UiEvent>(256);
@@ -408,4 +421,40 @@ pub async fn save_providers(
 pub async fn reload_skills(state: State<'_, Arc<AppState>>) -> CmdResult<usize> {
     state.host.reload().await;
     Ok(state.host.skill_count().await)
+}
+
+#[tauri::command]
+pub async fn list_checkpoints(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> CmdResult<Vec<Checkpoint>> {
+    state.host.checkpoints().await.turns(&session_id)
+}
+
+/// Restores the workspace to just before `turn`.
+///
+/// With `dry_run`, reports what that would do and writes nothing — which is how
+/// the UI shows the plan before asking.
+#[tauri::command]
+pub async fn rewind_to(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    turn: u32,
+    dry_run: bool,
+) -> CmdResult<Vec<Restored>> {
+    // A turn holds this lock for its whole run. Rewinding underneath one would
+    // race the tool calls still writing, and the disabled button in the UI is
+    // not something the backend should have to trust.
+    if let Ok(entry) = state.session(&session_id) {
+        if entry.session.try_lock().is_err() {
+            return Err("this conversation is mid-turn; stop it before rewinding".into());
+        }
+    }
+
+    let workspace = state.host.workspace().await;
+    state
+        .host
+        .checkpoints()
+        .await
+        .rewind(&session_id, &workspace, turn, dry_run)
 }

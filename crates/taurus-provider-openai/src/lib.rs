@@ -62,6 +62,8 @@ pub struct OpenAiProvider {
     /// Already normalized: leading slash, no trailing one, possibly empty.
     api_prefix: String,
     api_key: Option<String>,
+    /// Header the key goes in. `None` means bearer auth.
+    api_key_header: Option<String>,
     client: reqwest::Client,
     capabilities: OpenAiCapabilities,
 }
@@ -78,9 +80,28 @@ impl OpenAiProvider {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_prefix: DEFAULT_API_PREFIX.to_string(),
             api_key,
+            api_key_header: None,
             client: reqwest::Client::new(),
             capabilities,
         }
+    }
+
+    /// Sends the key in a named header instead of as a bearer token.
+    ///
+    /// OpenAI and everything imitating it want `Authorization: Bearer <key>`,
+    /// which is the default and what `None` preserves. Azure does not: Azure
+    /// OpenAI reads `api-key`, and an Azure APIM gateway reads
+    /// `Ocp-Apim-Subscription-Key` — both bare, with no scheme prefix.
+    ///
+    /// So a named header carries the key raw. That one rule covers every
+    /// gateway worth naming, including one that wants a bare `Authorization`
+    /// with no `Bearer`, which is why there is no separate prefix setting.
+    pub fn with_api_key_header(mut self, header: Option<impl Into<String>>) -> Self {
+        self.api_key_header = header
+            .map(Into::into)
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty());
+        self
     }
 
     /// Moves the OpenAI routes to a different path prefix.
@@ -115,9 +136,31 @@ impl OpenAiProvider {
     }
 
     fn authorize(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.api_key {
-            Some(key) => builder.bearer_auth(key),
-            None => builder,
+        let Some(key) = &self.api_key else {
+            return builder;
+        };
+        match &self.api_key_header {
+            None => builder.bearer_auth(key),
+            Some(name) => {
+                // Built by hand rather than passed as a &str so it can be
+                // marked sensitive: reqwest prints headers in its `{:?}`, and a
+                // subscription key in a debug log is a leaked credential.
+                let mut value = match reqwest::header::HeaderValue::from_str(key) {
+                    Ok(value) => value,
+                    // A key with a newline or a non-ASCII byte in it cannot be
+                    // sent. Dropping the header produces a 401 the user can
+                    // act on; panicking on their config would not.
+                    Err(_) => {
+                        warn!(
+                            provider = %self.id,
+                            "the API key has characters an HTTP header cannot carry; sending none"
+                        );
+                        return builder;
+                    }
+                };
+                value.set_sensitive(true);
+                builder.header(name, value)
+            }
         }
     }
 
@@ -386,6 +429,100 @@ mod tests {
     fn provider(base_url: &str, prefix: Option<&str>) -> OpenAiProvider {
         OpenAiProvider::new("test", base_url, None, OpenAiCapabilities::default())
             .with_api_prefix(prefix)
+    }
+
+    /// The headers `authorize` actually puts on a request.
+    ///
+    /// Built through `reqwest` rather than by reading the struct back, so the
+    /// assertion is about the bytes on the wire.
+    fn auth_headers(key: Option<&str>, header: Option<&str>) -> reqwest::header::HeaderMap {
+        let provider = OpenAiProvider::new(
+            "test",
+            "http://x",
+            key.map(str::to_string),
+            OpenAiCapabilities::default(),
+        )
+        .with_api_key_header(header);
+
+        provider
+            .authorize(provider.client.get("http://x"))
+            .build()
+            .expect("the request must be constructible")
+            .headers()
+            .clone()
+    }
+
+    #[test]
+    fn a_key_with_no_header_named_is_still_a_bearer_token() {
+        // The default has to stay byte-identical: every existing config relies
+        // on it, and a silent change here reads as "my API key stopped working".
+        let headers = auth_headers(Some("sk-abc"), None);
+        assert_eq!(headers["authorization"], "Bearer sk-abc");
+    }
+
+    #[test]
+    fn a_named_header_carries_the_key_with_no_scheme_prefix() {
+        // Azure APIM: `Ocp-Apim-Subscription-Key: <key>`, bare. A `Bearer `
+        // in front of it is a 401 that looks like a wrong key.
+        let headers = auth_headers(Some("sub-key"), Some("Ocp-Apim-Subscription-Key"));
+        assert_eq!(headers["ocp-apim-subscription-key"], "sub-key");
+        assert!(
+            !headers.contains_key("authorization"),
+            "the bearer header must not also be sent"
+        );
+    }
+
+    #[test]
+    fn azure_openais_own_header_works_the_same_way() {
+        let headers = auth_headers(Some("azure-key"), Some("api-key"));
+        assert_eq!(headers["api-key"], "azure-key");
+    }
+
+    #[test]
+    fn naming_authorization_sends_the_key_without_bearer() {
+        // The reason there is no separate prefix setting: a gateway wanting a
+        // bare Authorization is expressible with the one knob.
+        let headers = auth_headers(Some("raw-token"), Some("Authorization"));
+        assert_eq!(headers["authorization"], "raw-token");
+    }
+
+    #[test]
+    fn the_key_is_marked_sensitive_so_it_stays_out_of_debug_output() {
+        // reqwest renders headers with `{:?}` when tracing a request.
+        let headers = auth_headers(Some("sub-key"), Some("Ocp-Apim-Subscription-Key"));
+        assert!(headers["ocp-apim-subscription-key"].is_sensitive());
+        assert!(!format!("{headers:?}").contains("sub-key"));
+    }
+
+    #[test]
+    fn a_header_name_is_accepted_however_it_was_written() {
+        for written in [" api-key ", "api-key"] {
+            assert_eq!(auth_headers(Some("k"), Some(written))["api-key"], "k");
+        }
+        // Blank means "not set", not "a header with no name", which would be
+        // an unbuildable request rather than a config error the user can see.
+        for written in ["", "   "] {
+            assert_eq!(
+                auth_headers(Some("k"), Some(written))["authorization"],
+                "Bearer k",
+                "{written:?} should fall back to bearer auth"
+            );
+        }
+    }
+
+    #[test]
+    fn no_key_configured_sends_no_credential_either_way() {
+        assert!(auth_headers(None, None).get("authorization").is_none());
+        let named = auth_headers(None, Some("api-key"));
+        assert!(named.get("api-key").is_none());
+    }
+
+    #[test]
+    fn a_key_that_cannot_be_a_header_value_is_dropped_rather_than_panicking() {
+        // A pasted key with a trailing newline in the env var. Sending nothing
+        // yields a 401 the user can act on; unwrapping would take down the app.
+        let headers = auth_headers(Some("bad\nkey"), Some("api-key"));
+        assert!(headers.get("api-key").is_none());
     }
 
     #[test]

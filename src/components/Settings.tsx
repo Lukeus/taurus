@@ -275,8 +275,19 @@ function ProviderForm({
           </Field>
 
           <Field
+            label="API key header"
+            hint="Leave blank for Authorization: Bearer. Azure OpenAI reads api-key; an Azure APIM gateway reads Ocp-Apim-Subscription-Key."
+          >
+            <input
+              value={provider.api_key_header ?? ""}
+              placeholder="Authorization: Bearer"
+              onChange={(e) => onChange({ api_key_header: blank(e.target.value) })}
+            />
+          </Field>
+
+          <Field
             label="API prefix"
-            hint="Defaults to /v1. OpenVINO Model Server before 2026.3 needs /v3."
+            hint="Defaults to /v1. Azure OpenAI behind APIM usually needs /openai/v1; OpenVINO Model Server before 2026.3 needs /v3."
           >
             <input
               value={provider.api_prefix ?? ""}
@@ -392,6 +403,7 @@ export function overrideOf(
     "base_url",
     "default_model",
     "api_key_env",
+    "api_key_header",
     "native_tools",
     "context_length",
     "api_prefix",
@@ -432,6 +444,7 @@ export function blankProvider(existing: ProviderConfig[]): ProviderConfig {
     base_url: "",
     default_model: null,
     api_key_env: null,
+    api_key_header: null,
     native_tools: null,
     context_length: null,
     api_prefix: null,
