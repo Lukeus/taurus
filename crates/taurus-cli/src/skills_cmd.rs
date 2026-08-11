@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use clap::Subcommand;
-use taurus_host::Host;
+use taurus_host::{Host, ProblemSource};
 
 #[derive(Subcommand)]
 pub enum SkillsCommand {
@@ -39,7 +39,11 @@ pub async fn run(host: &Host, command: SkillsCommand) -> Result<ExitCode, String
         }
 
         SkillsCommand::Check => {
-            let problems = host.problems().await;
+            // Skills only. This command's exit code is meant to gate CI on a
+            // skill library, and failing that build because an MCP server the
+            // developer runs locally would not start reports the wrong thing
+            // about the wrong repository.
+            let problems = host.problems_from(&[ProblemSource::Skills]).await;
             let degraded: Vec<_> = host
                 .skills()
                 .await
@@ -48,7 +52,7 @@ pub async fn run(host: &Host, command: SkillsCommand) -> Result<ExitCode, String
                 .collect();
 
             for problem in &problems {
-                println!("could not load: {problem}");
+                println!("could not load: {}", problem.message);
             }
             for skill in &degraded {
                 println!(

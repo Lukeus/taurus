@@ -19,8 +19,8 @@ use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, PermissionDecision, Scope};
 
 use taurus_host::{
-    sessions, Checkpoint, Host, KeyStatus, ProviderConfig, Restored, SessionLog, SessionMeta,
-    Settings, TurnRef,
+    sessions, Checkpoint, Host, KeyStatus, Problem, ProviderConfig, Restored, SessionLog,
+    SessionMeta, Settings, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -40,7 +40,11 @@ pub struct AppStatus {
     pub providers: Vec<ProviderConfig>,
     pub settings: Settings,
     pub skill_count: usize,
-    pub skill_problems: Vec<String>,
+    /// Everything that failed to load, each tagged with where it came from so
+    /// the UI can show it on the screen that can fix it. Previously this was an
+    /// untagged list called `skill_problems`, and a malformed `providers.json`
+    /// was reported under a list of skills.
+    pub problems: Vec<Problem>,
     pub tool_names: Vec<String>,
     pub mcp_servers: Vec<ServerStatus>,
 }
@@ -52,7 +56,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus>
         providers: state.host.providers().await,
         settings: state.host.settings().await,
         skill_count: state.host.skill_count().await,
-        skill_problems: state.host.problems().await,
+        problems: state.host.problems().await,
         tool_names: state.host.tool_names().await,
         mcp_servers: state.host.mcp_statuses().await,
     })

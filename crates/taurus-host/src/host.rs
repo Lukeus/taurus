@@ -28,6 +28,7 @@ use taurus_tools::{
 };
 
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings};
+use crate::problem::{self, Problem, ProblemSource};
 use crate::prompt;
 use crate::secrets;
 
@@ -64,7 +65,7 @@ pub struct Host {
     registry: Arc<RwLock<ToolRegistry>>,
     permissions: RwLock<Arc<PermissionEngine>>,
     mcp: McpManager,
-    problems: RwLock<Vec<String>>,
+    problems: RwLock<Vec<Problem>>,
     prompts: Arc<dyn PermissionPromptFactory>,
     proposals: Arc<dyn ProposalSink>,
 }
@@ -122,7 +123,8 @@ impl Host {
     pub async fn reload(&self) {
         let workspace = self.workspace.read().await.clone();
 
-        let (providers, mut problems) = config::load_providers(Some(&workspace));
+        let (providers, provider_problems) = config::load_providers(Some(&workspace));
+        let mut problems = Problem::tag(ProblemSource::Providers, provider_problems);
         *self.providers.write().await = providers;
         *self.settings.write().await = config::load_settings(Some(&workspace));
 
@@ -143,7 +145,10 @@ impl Host {
             problems = skill_problems.len(),
             "skills loaded"
         );
-        problems.extend(skill_problems.iter().map(|p| p.to_string()));
+        problems.extend(Problem::tag(
+            ProblemSource::Skills,
+            skill_problems.iter().map(|p| p.to_string()),
+        ));
         *self.catalog.write().await = catalog;
 
         let mut registry = ToolRegistry::with_builtins();
@@ -164,7 +169,7 @@ impl Host {
         // cannot follow. Neither appears until a backend resolves, so the model
         // is never offered a search it has no key for.
         let (search_backend, search_problems) = config::load_search(Some(&workspace));
-        problems.extend(search_problems);
+        problems.extend(Problem::tag(ProblemSource::Search, search_problems));
         if let Some(backend) = search_backend {
             info!(backend = %backend.id, "web search enabled");
             registry.register(Arc::new(taurus_web::WebSearch::new(backend)));
@@ -180,11 +185,11 @@ impl Host {
                 Ok(layer) => layers.push(layer),
                 // A layer that will not parse is skipped, not fatal: the other
                 // one is still a working set of servers.
-                Err(e) => problems.push(e),
+                Err(e) => problems.push(Problem::new(ProblemSource::Mcp, e)),
             }
         }
         let (mcp_config, mcp_problems) = config::merge_mcp(layers);
-        problems.extend(mcp_problems);
+        problems.extend(Problem::tag(ProblemSource::Mcp, mcp_problems));
         for tool in self.mcp.connect_all(&mcp_config).await {
             registry.register(tool);
         }
@@ -456,8 +461,14 @@ impl Host {
             .collect()
     }
 
-    pub async fn problems(&self) -> Vec<String> {
+    /// Everything that failed to load, tagged with where it came from.
+    pub async fn problems(&self) -> Vec<Problem> {
         self.problems.read().await.clone()
+    }
+
+    /// Just the problems one screen is responsible for showing.
+    pub async fn problems_from(&self, sources: &[ProblemSource]) -> Vec<Problem> {
+        problem::of(&self.problems.read().await, sources)
     }
 
     pub async fn mcp_statuses(&self) -> Vec<ServerStatus> {
@@ -640,10 +651,9 @@ mod tests {
         assert!(!host.tool_names().await.iter().any(|t| t == "web_search"));
         let problems = host.problems().await;
         assert!(
-            problems
-                .iter()
-                .any(|p| p.contains("TAURUS_TEST_HOST_UNSET_KEY")),
-            "the missing variable has to reach the user: {problems:?}"
+            problems.iter().any(|p| p.source == ProblemSource::Search
+                && p.message.contains("TAURUS_TEST_HOST_UNSET_KEY")),
+            "the missing variable has to reach the user, tagged to search: {problems:?}"
         );
     }
 
@@ -773,12 +783,27 @@ mod tests {
         let (host, _home) = host(&workspace);
         host.reload().await;
 
+        let problems = host.problems().await;
         assert!(
-            host.problems()
+            problems
+                .iter()
+                .any(|p| p.source == ProblemSource::Providers
+                    && p.message.contains("providers.json")),
+            "a config file the user must fix has to reach the UI: {problems:?}"
+        );
+        // And it must reach the screen that can fix it, rather than the skills
+        // list, which is where an untagged list of problems used to put it.
+        assert!(
+            !host
+                .problems_from(&[ProblemSource::Skills, ProblemSource::Mcp])
                 .await
                 .iter()
-                .any(|p| p.contains("providers.json")),
-            "a config file the user must fix has to reach the UI"
+                .any(|p| p.message.contains("providers.json")),
+            "a provider problem must not be reported as a skill problem"
+        );
+        assert_eq!(
+            host.problems_from(&[ProblemSource::Providers]).await.len(),
+            1
         );
         // And the global layer still works.
         assert!(!host.providers().await.is_empty());

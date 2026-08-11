@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod host;
+pub mod problem;
 pub mod prompt;
 pub mod secrets;
 pub mod sessions;
@@ -15,6 +16,7 @@ mod testing;
 
 pub use config::{ProviderConfig, ProviderKind, Scope, Settings};
 pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};
+pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;
 pub use sessions::{SessionLog, SessionMeta};
 pub use taurus_tools::{Checkpoint, Restored};

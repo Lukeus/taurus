@@ -17,6 +17,8 @@ import type { Message } from "../bindings/Message";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
+import type { Problem } from "../bindings/Problem";
+import type { ProblemSource } from "../bindings/ProblemSource";
 import type { ProviderConfig } from "../bindings/ProviderConfig";
 import type { ProviderKind } from "../bindings/ProviderKind";
 import type { Restored } from "../bindings/Restored";
@@ -39,6 +41,8 @@ export type {
   ModelInfo,
   PermissionDecision,
   PermissionRequest,
+  Problem,
+  ProblemSource,
   ProviderConfig,
   ProviderKind,
   Restored,

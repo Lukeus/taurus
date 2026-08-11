@@ -18,7 +18,14 @@ type Filter = "all" | "project" | "attention";
 export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
-  const problems = useStore((s) => s.status?.skill_problems ?? []);
+  // Only what this drawer is actually about. Provider and search failures go
+  // to Settings, which is where they can be fixed — an untagged list put them
+  // here, under a heading about skills.
+  const problems = useStore((s) =>
+    (s.status?.problems ?? []).filter(
+      (p) => p.source === "skills" || p.source === "mcp",
+    ),
+  );
   const mcpServers = useStore((s) => s.status?.mcp_servers ?? []);
 
   useEffect(() => {
@@ -129,8 +136,8 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
           <section className="section">
             <span className="micro">Could not load</span>
             {problems.map((problem) => (
-              <p key={problem} className="settings-problem">
-                {problem}
+              <p key={problem.message} className="settings-problem">
+                {problem.message}
               </p>
             ))}
           </section>

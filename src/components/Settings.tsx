@@ -38,6 +38,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const [keys, setKeys] = useState<Map<string, KeyStatus>>(new Map());
   const [keychain, setKeychain] = useState(false);
 
+  const providerProblems = (status?.problems ?? []).filter(
+    (p) => p.source === "providers",
+  );
+
   // Re-read rather than patched locally: storing a key can change what another
   // row reports — an environment variable that was the only source becomes an
   // override — and a status the frontend guessed at would be a status that
@@ -114,6 +118,20 @@ export function Settings({ onClose }: { onClose: () => void }) {
               CLI. API keys are never stored here — name the environment
               variable that holds one.
             </p>
+
+            {/* A providers.json that will not parse is why the list below can
+                be empty or stale, so it belongs at the top of this tab rather
+                than in a drawer about skills, where it used to appear. */}
+            {providerProblems.length > 0 && (
+              <section className="section">
+                <span className="micro">Could not load</span>
+                {providerProblems.map((problem) => (
+                  <p key={problem.message} className="settings-problem">
+                    {problem.message}
+                  </p>
+                ))}
+              </section>
+            )}
 
             <div className="card-list">
               {draft?.map((provider, index) => (
