@@ -37,7 +37,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 schemars = { version = "1", features = ["derive"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "http2", "charset", "rustls", "rustls-native-certs"] }
+# `rustls` pulls rustls-platform-verifier, which reads the OS trust store
+# directly. reqwest 0.13.2 dropped the separate `rustls-native-certs` optional
+# dependency that used to be needed alongside it.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "http2", "charset", "rustls"] }
 bytes = "1"
 thiserror = "2"
 anyhow = "1"

@@ -214,11 +214,37 @@ file every other project reads.
 | File | Global | Workspace |
 | --- | --- | --- |
 | `providers.json` | Backends. API keys are referenced by env-var name, never stored. | Overrides and additions for this project. |
-| `mcp.json` | MCP servers, in the same format Claude Desktop uses. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
+| `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Header values and URLs may name env vars. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `settings.json` | Last workspace, skill-synthesis toggle, fallback model. | The provider and model this project was last worked in. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
+
+### MCP servers
+
+`mcp.json` takes stdio and streamable-HTTP servers in the format Claude Desktop
+and Claude Code use, so an existing `mcpServers` block pastes in unchanged:
+
+```jsonc
+{
+  "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
+    "remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${EXAMPLE_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+`${VAR}` in a header value or a URL is read from the environment. That matters
+because a remote server almost always needs a credential, and the workspace
+layer of `mcp.json` is meant to be hand-written and version-controlled — a
+literal token there is a token in the repository. It is the same bargain
+`providers.json` already makes for API keys. A variable that is not set fails
+the server with its own name in the message, rather than sending an empty
+`Authorization` header and producing a 401 that looks like a bad token instead
+of a missing one. A literal value still passes through untouched.
 
 ### Intel hardware, and other backends
 
@@ -356,10 +382,6 @@ taurus mcp                      # non-zero exit if a server failed to connect
 
 ## Known gaps
 
-- **MCP over HTTP is not wired up.** stdio servers work; the HTTP transport in
-  `rmcp` pins a `reqwest` major version that conflicts with the one the
-  provider adapters use. An HTTP entry in `mcp.json` reports this rather than
-  failing silently.
 - **`run_command` has no PTY.** Commands run non-interactively with stdin
   closed, which is right for an agent but means programs that check `isatty`
   behave as though piped, and interactive prompts hit the timeout instead of
