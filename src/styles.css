@@ -1364,6 +1364,31 @@ code {
   flex-direction: column;
   gap: 9px;
 }
+/* A section heading with an action on the right. The heading keeps the
+   baseline; the action is quiet until you look for it. */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.section-head .micro {
+  flex: 1;
+}
+button.link {
+  flex: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+button.link:hover {
+  color: var(--text);
+}
 .section-row {
   display: flex;
   align-items: center;

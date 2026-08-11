@@ -112,6 +112,16 @@ export const revokePermissionRule = (rule: string, scope: Scope) =>
 
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 
+/**
+ * Opens a layer's `mcp.json`, creating it if absent, and returns its path.
+ *
+ * Servers are configured by editing that file: the format is the one Claude
+ * Desktop uses and entries get moved between the two, so the app points at the
+ * file rather than reimplementing a schema it does not own.
+ */
+export const openMcpConfig = (scope: Scope) =>
+  invoke<string>("open_mcp_config", { scope });
+
 export const reloadSkills = () => invoke<number>("reload_skills");
 
 export const respondSkillProposal = (

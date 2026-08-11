@@ -94,6 +94,32 @@ pub fn search_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
     scope_dir(scope, workspace).map(|d| taurus_web::config::config_file(&d))
 }
 
+pub fn mcp_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
+    scope_dir(scope, workspace).map(|d| taurus_mcp::config::config_file(&d))
+}
+
+/// Ensures a layer's `mcp.json` exists, and returns it.
+///
+/// There is no UI for adding servers — the format is the one Claude Desktop
+/// uses and people paste it between the two — so the app's job is to put the
+/// file in front of them rather than to reimplement it as a form. Creating it
+/// empty first is what makes that a working route on a machine that has never
+/// had one, instead of an editor opening on nothing.
+pub fn ensure_mcp_file(scope: Scope, workspace: Option<&Path>) -> Result<PathBuf, String> {
+    let path = mcp_file(scope, workspace)
+        .ok_or_else(|| "no workspace is open, so it has no config directory".to_string())?;
+    if !path.exists() {
+        write_config(&path, "{\n  \"mcpServers\": {}\n}\n");
+    }
+    // `write_config` swallows its failure by design, so the check is here: an
+    // editor opening on a file that was never created is a worse outcome than
+    // being told why.
+    if !path.exists() {
+        return Err(format!("could not create {}", path.display()));
+    }
+    Ok(path)
+}
+
 /// The global `search.json` alone, which is what an editor must edit.
 ///
 /// The same rule `global_providers` follows: hand the editor the *merged* view

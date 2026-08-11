@@ -494,6 +494,29 @@ pub async fn clear_search_key(
     state.host.clear_search_key(&backend_id).await
 }
 
+/// Opens a layer's `mcp.json` in whatever the OS uses for it, creating it first
+/// if it is not there yet.
+///
+/// MCP servers are configured by editing that file — the format is the one
+/// Claude Desktop uses, and people move entries between the two — so this is a
+/// route to the file rather than a form that would have to be kept in step with
+/// a schema Taurus does not own.
+#[tauri::command]
+pub async fn open_mcp_config(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    scope: Scope,
+) -> CmdResult<String> {
+    let workspace = state.host.workspace().await;
+    let path = taurus_host::config::ensure_mcp_file(scope, Some(&workspace))?;
+
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
 #[tauri::command]
 pub async fn list_permission_rules(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<AllowedRule>> {
     Ok(state.host.permissions().await.allowed_rules().await)

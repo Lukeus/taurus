@@ -65,6 +65,7 @@ pub fn run() {
             commands::set_search_key,
             commands::clear_search_key,
             commands::reload_skills,
+            commands::open_mcp_config,
             commands::list_checkpoints,
             commands::rewind_to,
         ])
