@@ -19,7 +19,7 @@ use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioC
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolResult};
+use taurus_tools::{expand_env, Effect, Tool, ToolContext, ToolError, ToolResult};
 
 pub use config::{load, McpConfig, ServerConfig};
 
@@ -185,39 +185,6 @@ impl McpManager {
         self.connections.write().await.clear();
         self.status.write().await.clear();
     }
-}
-
-/// Substitutes `${VAR}` from the environment.
-///
-/// An HTTP server almost always needs a credential in a header, and the
-/// workspace layer of `mcp.json` is meant to be hand-written and committed —
-/// a literal token there is a token in the repository. Naming the variable
-/// instead is the same bargain `providers.json` already makes for API keys.
-///
-/// A literal value still passes through untouched, so a config pasted from
-/// somewhere else keeps working.
-fn expand_env(raw: &str) -> Result<String, String> {
-    let mut out = String::with_capacity(raw.len());
-    let mut rest = raw;
-
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let Some(end) = after.find('}') else {
-            return Err("unterminated `${` — write `${VAR}`".into());
-        };
-        let name = &after[..end];
-        // Unset is an error rather than an empty string: sending a blank
-        // Authorization header produces a 401 that looks like a bad token
-        // rather than a missing one.
-        let value =
-            std::env::var(name).map_err(|_| format!("environment variable {name} is not set"))?;
-        out.push_str(&value);
-        rest = &after[end + 1..];
-    }
-
-    out.push_str(rest);
-    Ok(out)
 }
 
 fn http_headers(
@@ -452,15 +419,6 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("TAURUS_TEST_MCP_DEFINITELY_UNSET"), "{err}");
         assert!(err.contains("Authorization"), "{err}");
-    }
-
-    #[test]
-    fn a_malformed_placeholder_is_reported_not_sent_verbatim() {
-        assert!(expand_env("Bearer ${OOPS").is_err());
-        assert_eq!(
-            expand_env("no placeholders here").unwrap(),
-            "no placeholders here"
-        );
     }
 
     #[tokio::test]

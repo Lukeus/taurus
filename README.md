@@ -4,10 +4,10 @@ An agent harness that runs against any model provider, starting with local
 Ollama. Rust underneath, with two frontends over one shared core: a Tauri v2
 desktop app and a `taurus` CLI. macOS, Windows, and Linux from one codebase.
 
-It reads and edits files in a workspace, runs commands, connects to MCP
-servers, delegates to sub-agents — and writes down procedures it works out as
-reusable **skills**, which you approve before they are kept. Every file it
-edits is recorded first, so any turn can be **rewound**.
+It reads and edits files in a workspace, runs commands, searches the web,
+connects to MCP servers, delegates to sub-agents — and writes down procedures it
+works out as reusable **skills**, which you approve before they are kept. Every
+file it edits is recorded first, so any turn can be **rewound**.
 
 ## Quick start
 
@@ -46,6 +46,7 @@ crates/
   taurus-tools/             Tool registry, built-in tools, permission gate
   taurus-skills/            Skill discovery, execution, and authoring
   taurus-mcp/               MCP client
+  taurus-web/               Web search and page fetching
   taurus-core/              Session state, the agent loop, sub-agents
   taurus-host/              Config, system prompt, registry assembly
   taurus-cli/               The `taurus` binary
@@ -105,7 +106,9 @@ Python-dependent skill does not hard-fail a Windows machine.
 
 Read-only tools inside the workspace run unattended. Writes, command execution,
 and network access prompt with the exact call. Shell approvals are keyed by the
-leading command word, so approving `git` does not also approve `rm`.
+leading command word, so approving `git` does not also approve `rm`. A call that
+names a URL is keyed the same way by that URL's host: approving `fetch_url` for
+`docs.rs` is a decision about a site, not a standing grant to reach anywhere.
 
 An "allow always" decision persists into one of two layers, and both are
 consulted:
@@ -160,7 +163,8 @@ taurus run --resume <ID> "and now…"   # continue a named one
 ```
 
 The desktop app reopens its last conversation for the workspace on launch, and
-its **History** drawer switches between them.
+its left rail lists the rest — today's, then everything earlier — so switching
+between them is one click rather than a drawer.
 
 Transcripts live in `~/.taurus/sessions/<workspace>/<id>.jsonl`, in the global
 config home rather than in the project. They hold file contents, command
@@ -262,6 +266,7 @@ file every other project reads.
 | --- | --- | --- |
 | `providers.json` | Backends, including the header a key is sent in. Keys are referenced by env-var name, never stored. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Header values and URLs may name env vars. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
+| `search.json` | Web search backends and which one is active. Keys are referenced by env-var name, never stored. | A different backend for this project, or field overrides on an inherited one. |
 | `settings.json` | Last workspace, skill-synthesis toggle, fallback model. | The provider and model this project was last worked in. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
@@ -293,6 +298,54 @@ literal token there is a token in the repository. It is the same bargain
 the server with its own name in the message, rather than sending an empty
 `Authorization` header and producing a 401 that looks like a bad token instead
 of a missing one. A literal value still passes through untouched.
+
+### Web search
+
+Two tools, `web_search` and `fetch_url`, and **neither exists until you turn
+one on.** Searching means sending your prompt to a third party, which is not
+something to start doing because a program was installed. A first run writes a
+`search.json` with every backend spelled out and none of them selected:
+
+```jsonc
+{
+  "backend": "brave",           // ← the only edit needed to enable it
+  "backends": {
+    "brave":   { "kind": "brave",   "api_key_env": "BRAVE_API_KEY" },
+    "tavily":  { "kind": "tavily",  "api_key_env": "TAVILY_API_KEY" },
+    "searxng": { "kind": "searxng", "base_url": "http://localhost:8888" }
+  }
+}
+```
+
+| `kind` | Needs | Notes |
+| --- | --- | --- |
+| `brave` | An API key | Free tier covers ordinary use. |
+| `tavily` | An API key | Built for agents; returns page extracts rather than one-line snippets. |
+| `searxng` | A `base_url` | No key and no account. Your instance has to enable the `json` format in its `settings.yml`, or it answers API requests with a 403. |
+
+Backends layer field by field like providers, so a workspace can retarget one
+setting — `{"backends": {"brave": {"base_url": "http://proxy.internal"}}}` — or
+switch which one is active with a bare `{"backend": "searxng"}`, without
+restating the rest. `base_url` may name an environment variable the same way
+`mcp.json` does.
+
+Both tools carry the `network` effect, so both prompt with what they would
+send: `web_search` shows the query in full, and `fetch_url` shows the whole URL
+rather than an abbreviation of it — which host a request goes to is the
+decision being approved, and a shortened URL is exactly what hides it.
+
+Redirects are followed only while the host stays the same. One approval is
+worth exactly one host, and the default policy would spend it somewhere else:
+approve a link shortener and the hop lands wherever it points, including on
+your own network. A redirect that crosses hosts stops and reports its target,
+which the model can then ask for on its own terms.
+
+The tools are registered together or not at all. A `fetch_url` with no way to
+find a URL is only usable on links you paste, and search without fetch leaves
+the model holding snippets it cannot follow. If the selected backend cannot run
+— an unset key variable, a SearXNG entry with no URL — nothing is registered and
+the reason is reported at startup, rather than the model spending a turn
+discovering it has no credential.
 
 ### Azure OpenAI, and gateways in front of it
 
@@ -458,6 +511,9 @@ cargo run -p taurus-skills --example synthesis -- qwen3.6:27b
 
 # MCP: connect, list tools, call one through the registry.
 cargo run -p taurus-mcp --example probe -- path/to/mcp.json
+
+# Web: one real search, then fetch the first result it returns.
+cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async book"
 ```
 
 The CLI doubles as a live check on the whole stack:
@@ -483,6 +539,11 @@ taurus mcp                      # non-zero exit if a server failed to connect
 - **Sub-agent progress is summarized, not streamed.** The parent's transcript
   shows one delegation card plus a tool-usage summary rather than the child's
   live output.
+- **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
+  that renders its content client-side comes back near-empty. It is also not
+  restricted to public addresses: an approved fetch of `localhost` or a
+  private-range host goes through, which is why the prompt shows the whole URL
+  and an "always" grant covers only that one host.
 
 ## License
 

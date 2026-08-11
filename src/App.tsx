@@ -3,18 +3,20 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { PermissionDialog } from "./components/PermissionDialog";
+import { Rail, type ProviderHealth } from "./components/Rail";
 import { Settings } from "./components/Settings";
+import { SkillsDrawer } from "./components/SkillsDrawer";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript } from "./components/Transcript";
 import * as api from "./lib/api";
-import type { ModelInfo, SessionMeta, SkillSummary } from "./lib/api";
+import type { ModelInfo } from "./lib/api";
+import { basename, plural } from "./lib/format";
 import { useStore } from "./state/store";
 
 export default function App() {
   const store = useStore();
-  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
 
@@ -28,93 +30,140 @@ export default function App() {
 
   useEffect(() => {
     if (!providerId) return;
-    api.listModels(providerId).then(setModels).catch(() => setModels([]));
+    setModels(null);
+    api
+      .listModels(providerId)
+      .then(setModels)
+      .catch(() => setModels("failed"));
   }, [providerId]);
+
+  const available = Array.isArray(models) ? models : [];
+  const workspace = store.status?.workspace ?? null;
 
   const pickWorkspace = async () => {
     const chosen = await open({ directory: true, multiple: false });
     if (typeof chosen === "string") await store.setWorkspace(chosen);
   };
 
+  const newConversation = () => {
+    const model = store.session?.model ?? available[0]?.id;
+    if (providerId && model) return store.startSession(providerId, model);
+    // Nothing to start a conversation with yet; the place to fix that is here.
+    setSettingsOpen(true);
+  };
+
+  const title =
+    store.sessions.find((s) => s.id === store.session?.id)?.title ||
+    "New conversation";
+
   return (
     <div className="app">
-      <header className="header">
-        <button className="workspace" onClick={pickWorkspace} title="Change workspace">
-          <span className="glyph">▤</span>
-          {basename(store.status?.workspace ?? "…")}
-        </button>
-
-        <select
-          className="model-select"
-          value={store.session?.model ?? ""}
-          disabled={store.busy || !providerId}
-          onChange={(e) => providerId && store.startSession(providerId, e.target.value)}
-        >
-          {models.length === 0 && <option value="">no models</option>}
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.display_name}
-            </option>
-          ))}
-        </select>
-
-        {store.session && !store.session.native_tools && (
-          <span className="tag warn" title="This model has no built-in tool calling; Taurus prompts for it instead.">
-            prompted tools
-          </span>
-        )}
-
-        <div className="spacer" />
-
-        <button
-          disabled={!store.session}
-          title="Files this conversation changed, and the way back"
-          onClick={() => setChangesOpen(true)}
-        >
-          Changes
-        </button>
-        <button onClick={() => setHistoryOpen(true)}>History</button>
-        <button onClick={() => setSettingsOpen(true)}>Settings</button>
-        <button onClick={() => setSkillsOpen(true)}>
-          Skills
-          {store.status ? ` (${store.status.skill_count})` : ""}
-        </button>
-        <button onClick={store.clear} disabled={store.entries.length === 0}>
-          Clear
-        </button>
-      </header>
-
-      <main className="main">
-        <Transcript entries={store.entries} busy={store.busy} />
-
-        {store.proposals.length > 0 && (
-          <div className="proposals">
-            {store.proposals.map((p) => (
-              <SkillProposalCard
-                key={p.id}
-                proposal={p}
-                onResolve={(approve, target) =>
-                  store.resolveProposal(p.id, approve, target)
-                }
-              />
-            ))}
-          </div>
-        )}
-      </main>
-
-      <Composer
+      <Rail
+        workspace={workspace}
+        sessions={store.sessions}
+        currentId={store.session?.id}
+        changedCount={store.changed.length}
         busy={store.busy}
-        ready={!!store.session}
-        onSend={store.send}
-        onStop={store.stop}
+        skillCount={store.status?.skill_count ?? null}
+        health={health(store.status?.providers.length, providerId, models)}
+        onPickWorkspace={pickWorkspace}
+        onNew={newConversation}
+        onOpen={store.resume}
+        onSkills={() => setSkillsOpen(true)}
+        onSettings={() => setSettingsOpen(true)}
       />
 
-      {store.error && (
-        <div className="banner error">
-          {store.error}
-          <button onClick={store.dismissError}>dismiss</button>
-        </div>
-      )}
+      <div className="pane">
+        <header className="topbar">
+          <span className="topbar-title">{title}</span>
+
+          {store.session && !store.session.native_tools && (
+            <span
+              className="tag warn"
+              title="This model has no built-in tool calling; Taurus prompts for it instead."
+            >
+              prompted tools
+            </span>
+          )}
+
+          <div className="spacer" />
+
+          {store.session && (
+            <button
+              className="chip"
+              title="Files this conversation changed, and the way back"
+              onClick={() => setChangesOpen(true)}
+            >
+              <span className={`dot${store.changed.length > 0 ? " accent" : ""}`} />
+              {store.changed.length > 0
+                ? `${plural(store.changed.length, "file")} changed`
+                : "No file changes"}
+            </button>
+          )}
+
+          <select
+            className="model-select"
+            aria-label="Model"
+            value={store.session?.model ?? ""}
+            disabled={store.busy || !providerId}
+            onChange={(e) => providerId && store.startSession(providerId, e.target.value)}
+          >
+            {available.length === 0 && <option value="">no models</option>}
+            {available.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.display_name}
+              </option>
+            ))}
+          </select>
+        </header>
+
+        <main>
+          <Transcript
+            entries={store.entries}
+            busy={store.busy}
+            empty={
+              <FirstRun
+                workspace={workspace}
+                ready={!!store.session}
+                health={health(store.status?.providers.length, providerId, models)}
+                onPickWorkspace={pickWorkspace}
+                onSettings={() => setSettingsOpen(true)}
+              />
+            }
+          />
+
+          {store.proposals.length > 0 && (
+            <div className="proposals">
+              {store.proposals.map((p) => (
+                <SkillProposalCard
+                  key={p.id}
+                  proposal={p}
+                  onResolve={(approve, target) =>
+                    store.resolveProposal(p.id, approve, target)
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </main>
+
+        {store.error && (
+          <div className="banner error">
+            {store.error}
+            <div className="spacer" />
+            <button onClick={store.dismissError}>Dismiss</button>
+          </div>
+        )}
+
+        <Composer
+          busy={store.busy}
+          ready={!!store.session}
+          workspace={workspace}
+          onPickWorkspace={pickWorkspace}
+          onSend={store.send}
+          onStop={store.stop}
+        />
+      </div>
 
       {store.permission && (
         <PermissionDialog
@@ -131,103 +180,97 @@ export default function App() {
         />
       )}
       {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
-      {historyOpen && <HistoryDrawer onClose={() => setHistoryOpen(false)} />}
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
 
-function HistoryDrawer({ onClose }: { onClose: () => void }) {
-  const [sessions, setSessions] = useState<SessionMeta[] | null>(null);
-  const [all, setAll] = useState(false);
-  const current = useStore((s) => s.session?.id);
-  const providerId = useStore((s) => s.session?.provider_id);
-  const busy = useStore((s) => s.busy);
-  const resume = useStore((s) => s.resume);
-  const startSession = useStore((s) => s.startSession);
-  const model = useStore((s) => s.session?.model);
-
-  useEffect(() => {
-    api.listSessions(all).then(setSessions).catch(() => setSessions([]));
-  }, [all]);
-
-  return (
-    <div className="scrim" onClick={onClose}>
-      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
-        <header className="drawer-head">
-          <h2>History</h2>
-          <button
-            disabled={busy || !providerId || !model}
-            title="Start a new conversation"
-            onClick={async () => {
-              if (!providerId || !model) return;
-              await startSession(providerId, model);
-              onClose();
-            }}
-          >
-            New
-          </button>
-          <button onClick={() => setAll((a) => !a)}>
-            {all ? "This workspace" : "All workspaces"}
-          </button>
-          <button onClick={onClose}>Close</button>
-        </header>
-
-        {sessions?.length === 0 && (
-          <p className="muted drawer-empty">
-            No saved conversations yet. Every session is written to
-            <code> ~/.taurus/sessions</code> as it happens.
-          </p>
-        )}
-
-        <ul className="skill-list">
-          {sessions?.map((session) => (
-            <li key={session.id}>
-              <div className="skill-row">
-                <button
-                  className="link"
-                  // Switching mid-turn would leave the running turn streaming
-                  // into a transcript nobody is looking at.
-                  disabled={busy || session.id === current}
-                  onClick={async () => {
-                    await resume(session.id);
-                    onClose();
-                  }}
-                >
-                  {session.title || "(no turns yet)"}
-                </button>
-                {session.id === current && <span className="tag">current</span>}
-              </div>
-              <p className="muted small">
-                {session.model} · {when(session.updated)}
-                {all ? ` · ${session.workspace}` : ""}
-              </p>
-            </li>
-          ))}
-        </ul>
-      </aside>
-    </div>
-  );
+/**
+ * Whether the provider behind this session is answering.
+ *
+ * There is no health endpoint to ask, so the model listing stands in for one:
+ * it is the first thing the app does with a provider and the first thing that
+ * fails when the provider is not there.
+ */
+export function health(
+  providerCount: number | undefined,
+  providerId: string | undefined,
+  models: ModelInfo[] | "failed" | null,
+): ProviderHealth {
+  if (providerCount === 0) return { state: "none" };
+  if (!providerId || models === null) return { state: "unknown" };
+  if (models === "failed") return { state: "unreachable", id: providerId };
+  return { state: "connected", id: providerId, models: models.length };
 }
 
-/** Unix seconds as something a person reads at a glance. */
-function when(seconds: number): string {
-  const elapsed = Date.now() / 1000 - seconds;
-  if (elapsed < 60) return "just now";
-  if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ago`;
-  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)}h ago`;
-  if (elapsed < 604800) return `${Math.floor(elapsed / 86400)}d ago`;
-  return new Date(seconds * 1000).toLocaleDateString();
+/**
+ * What fills the transcript before there is one.
+ *
+ * Says the same thing in both of the states it covers — this is a folder
+ * Taurus works in and every change is undoable — but only offers setup when
+ * setup is what is missing.
+ */
+function FirstRun({
+  workspace,
+  ready,
+  health,
+  onPickWorkspace,
+  onSettings,
+}: {
+  workspace: string | null;
+  ready: boolean;
+  health: ProviderHealth;
+  onPickWorkspace: () => void;
+  onSettings: () => void;
+}) {
+  return (
+    <div className="hero">
+      <div className="hero-mark">t</div>
+      <div className="hero-copy">
+        <h1>
+          {ready && workspace
+            ? `Ready in ${basename(workspace)}`
+            : "Point Taurus at a folder"}
+        </h1>
+        <p>
+          It reads and edits files there, runs commands with your approval, and
+          remembers every change so any turn can be undone.
+        </p>
+      </div>
+      <div className="hero-actions">
+        <button className="primary" onClick={onPickWorkspace}>
+          {ready ? "Change workspace" : "Choose a workspace"}
+        </button>
+        <button onClick={onSettings}>
+          {ready ? "Providers" : "Connect a model"}
+        </button>
+      </div>
+      <div className="hero-status">
+        <span className={`dot ${health.state === "connected" ? "ok" : health.state === "unreachable" ? "error" : ""}`} />
+        {health.state === "connected"
+          ? `${health.id} · ${plural(health.models, "model")} available`
+          : health.state === "unreachable"
+            ? `${health.id} is not answering`
+            : health.state === "none"
+              ? "no provider configured yet"
+              : "looking for a provider…"}
+      </div>
+    </div>
+  );
 }
 
 function Composer({
   busy,
   ready,
+  workspace,
+  onPickWorkspace,
   onSend,
   onStop,
 }: {
   busy: boolean;
   ready: boolean;
+  workspace: string | null;
+  onPickWorkspace: () => void;
   onSend: (text: string) => void;
   onStop: () => void;
 }) {
@@ -241,122 +284,46 @@ function Composer({
 
   return (
     <footer className="composer">
-      <textarea
-        value={text}
-        placeholder={ready ? "Ask Taurus to do something…" : "Select a model to begin"}
-        disabled={!ready}
-        rows={1}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          // Enter sends; Shift+Enter is a newline, matching every chat UI.
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
-      {busy ? (
-        <button className="danger" onClick={onStop}>
-          Stop
-        </button>
-      ) : (
-        <button className="primary" onClick={submit} disabled={!ready || !text.trim()}>
-          Send
-        </button>
-      )}
+      <div className="composer-box">
+        <textarea
+          value={text}
+          placeholder={ready ? "Ask Taurus to do something…" : "Connect a model to begin"}
+          disabled={!ready}
+          rows={1}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter sends; Shift+Enter is a newline, matching every chat UI.
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <div className="composer-foot">
+          <button
+            className="pill"
+            onClick={onPickWorkspace}
+            title={workspace ?? "Choose a workspace"}
+          >
+            ▤ {workspace ? basename(workspace) : "no workspace"}
+          </button>
+          <div className="spacer" />
+          <span className="composer-hint">↵ send · ⇧↵ newline</span>
+          {busy ? (
+            <button className="danger composer-send" onClick={onStop}>
+              Stop
+            </button>
+          ) : (
+            <button
+              className="primary composer-send"
+              onClick={submit}
+              disabled={!ready || !text.trim()}
+            >
+              Send
+            </button>
+          )}
+        </div>
+      </div>
     </footer>
   );
-}
-
-function SkillsDrawer({ onClose }: { onClose: () => void }) {
-  const [skills, setSkills] = useState<SkillSummary[]>([]);
-  const problems = useStore((s) => s.status?.skill_problems ?? []);
-  const mcpServers = useStore((s) => s.status?.mcp_servers ?? []);
-
-  useEffect(() => {
-    api.listSkills().then(setSkills);
-  }, []);
-
-  return (
-    <div className="scrim" onClick={onClose}>
-      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
-        <header className="drawer-head">
-          <h2>Skills</h2>
-          <button
-            onClick={async () => {
-              await api.reloadSkills();
-              setSkills(await api.listSkills());
-            }}
-          >
-            Rescan
-          </button>
-          <button onClick={onClose}>Close</button>
-        </header>
-
-        {skills.length === 0 && (
-          <p className="muted drawer-empty">
-            No skills yet. Taurus will offer to write one when it works out a
-            procedure worth keeping.
-          </p>
-        )}
-
-        <ul className="skill-list">
-          {skills.map((skill) => (
-            <li key={skill.name}>
-              <div className="skill-row">
-                <code>{skill.name}</code>
-                <span className={`tag ${skill.tier}`}>{skill.tier}</span>
-                {skill.degraded && (
-                  <span className="tag warn" title={skill.degraded}>
-                    scripts unavailable
-                  </span>
-                )}
-              </div>
-              <p className="muted">{skill.when_to_use}</p>
-              {skill.scripts.length > 0 && (
-                <p className="muted small">
-                  {skill.scripts.map((s) => s.path).join(", ")}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-
-        {mcpServers.length > 0 && (
-          <section className="mcp-servers">
-            <h3>MCP servers</h3>
-            {mcpServers.map((server) => (
-              <div key={server.name} className="skill-row">
-                <code>{server.name}</code>
-                <span className={`tag ${server.connected ? "" : "warn"}`}>
-                  {server.connected ? `${server.tool_count} tools` : "failed"}
-                </span>
-                {server.error && (
-                  <span className="muted small" title={server.error}>
-                    {server.error}
-                  </span>
-                )}
-              </div>
-            ))}
-          </section>
-        )}
-
-        {problems.length > 0 && (
-          <section className="skill-problems">
-            <h3>Could not load</h3>
-            {problems.map((p) => (
-              <p key={p} className="small">
-                {p}
-              </p>
-            ))}
-          </section>
-        )}
-      </aside>
-    </div>
-  );
-}
-
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? path;
 }

@@ -4,6 +4,8 @@ import * as api from "../lib/api";
 import type { AllowedRule, ProviderConfig, ProviderKind, Scope } from "../lib/api";
 import { useStore } from "../state/store";
 
+type Tab = "models" | "permissions" | "behavior";
+
 /**
  * The settings drawer.
  *
@@ -13,11 +15,15 @@ import { useStore } from "../state/store";
  * layer while showing where this workspace overrides it. Silently folding a
  * project's override into the global file is the one destructive thing a
  * settings screen over layered config can do.
+ *
+ * The tabs are three separate files' worth of state, so switching between
+ * them never discards a draft — the provider draft outlives the tab.
  */
 export function Settings({ onClose }: { onClose: () => void }) {
   const status = useStore((s) => s.status);
   const refresh = useStore((s) => s.refresh);
 
+  const [tab, setTab] = useState<Tab>("models");
   const [draft, setDraft] = useState<ProviderConfig[] | null>(null);
   const [rules, setRules] = useState<AllowedRule[]>([]);
   const [saving, setSaving] = useState(false);
@@ -60,66 +66,124 @@ export function Settings({ onClose }: { onClose: () => void }) {
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
           <h2>Settings</h2>
-          <button onClick={onClose}>Close</button>
+          <button className="drawer-close" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
         </header>
 
-        <section className="settings-section">
-          <h3>Providers</h3>
-          <p className="muted small">
-            Saved to <code>~/.taurus/providers.json</code>, shared with the CLI.
-            API keys are never stored here — name the environment variable that
-            holds one.
-          </p>
-
-          {draft?.map((provider, index) => (
-            <ProviderForm
-              key={index}
-              provider={provider}
-              overriddenBy={overrideOf(provider, status?.providers ?? [])}
-              onChange={(patch) => update(index, patch)}
-              onRemove={() => {
-                setDraft((d) => d?.filter((_, i) => i !== index) ?? d);
-                setSaved(false);
-              }}
-            />
-          ))}
-
-          {draft?.length === 0 && (
-            <p className="muted drawer-empty">
-              No providers configured. Add one to get started.
-            </p>
-          )}
-
-          <div className="settings-actions">
+        <div className="pill-row">
+          {TABS.map(([value, label]) => (
             <button
-              onClick={() => {
-                setDraft((d) => [...(d ?? []), blankProvider(d ?? [])]);
-                setSaved(false);
-              }}
+              key={value}
+              className={`pill${tab === value ? " on" : ""}`}
+              onClick={() => setTab(value)}
             >
-              Add provider
+              {label}
             </button>
-            <div className="spacer" />
-            {saved && !saving && <span className="muted small">Saved</span>}
-            <button
-              className="primary"
-              onClick={save}
-              disabled={saving || !dirty || problems.length > 0 || !draft}
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-          </div>
-
-          {problems.map((problem) => (
-            <p key={problem} className="settings-problem small">
-              {problem}
-            </p>
           ))}
-          {error && <p className="settings-problem small">{error}</p>}
-        </section>
+        </div>
 
-        <section className="settings-section">
-          <h3>Behavior</h3>
+        {tab === "models" && (
+          <>
+            <p className="drawer-intro">
+              Saved to <code>~/.taurus/providers.json</code>, shared with the
+              CLI. API keys are never stored here — name the environment
+              variable that holds one.
+            </p>
+
+            <div className="card-list">
+              {draft?.map((provider, index) => (
+                <ProviderForm
+                  key={index}
+                  provider={provider}
+                  overriddenBy={overrideOf(provider, status?.providers ?? [])}
+                  onChange={(patch) => update(index, patch)}
+                  onRemove={() => {
+                    setDraft((d) => d?.filter((_, i) => i !== index) ?? d);
+                    setSaved(false);
+                  }}
+                />
+              ))}
+
+              <button
+                className="card-add"
+                onClick={() => {
+                  setDraft((d) => [...(d ?? []), blankProvider(d ?? [])]);
+                  setSaved(false);
+                }}
+              >
+                Add a provider
+              </button>
+            </div>
+
+            <div className="settings-actions">
+              {saved && !saving && <span className="muted small">Saved</span>}
+              <div className="spacer" />
+              <button
+                className="primary"
+                onClick={save}
+                disabled={saving || !dirty || problems.length > 0 || !draft}
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+
+            {problems.map((problem) => (
+              <p key={problem} className="settings-problem">
+                {problem}
+              </p>
+            ))}
+            {error && <p className="settings-problem">{error}</p>}
+          </>
+        )}
+
+        {tab === "permissions" && (
+          <>
+            <p className="drawer-intro">
+              Approvals you marked “always”. Revoking one puts the next such
+              call back in front of you.
+            </p>
+            {rules.length === 0 ? (
+              <p className="drawer-empty">
+                Nothing has been granted permanently yet.
+              </p>
+            ) : (
+              <ul className="card-list">
+                {rules.map((allowed) => (
+                  <li key={`${allowed.scope}:${allowed.rule}`} className="card">
+                    <div className="card-body">
+                      <div className="card-row">
+                        <span className="card-title mono rule-name">
+                          {allowed.rule}
+                        </span>
+                        <span
+                          className={`tag${allowed.scope === "workspace" ? " project" : ""}`}
+                        >
+                          {SCOPE_LABEL[allowed.scope]}
+                        </span>
+                        <div className="spacer" />
+                        <button
+                          className="danger"
+                          onClick={async () => {
+                            await api.revokePermissionRule(
+                              allowed.rule,
+                              allowed.scope,
+                            );
+                            setRules(await api.listPermissionRules());
+                          }}
+                        >
+                          Revoke
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+
+        {tab === "behavior" && (
           <label className="settings-check">
             <input
               type="checkbox"
@@ -131,57 +195,18 @@ export function Settings({ onClose }: { onClose: () => void }) {
             />
             <span>
               Let Taurus propose skills
-              <span className="muted small">
-                {" "}
-                — it offers a procedure it worked out; nothing is saved without
+              <span className="hint">
+                It offers a procedure it worked out; nothing is saved without
                 your approval.
               </span>
             </span>
           </label>
-        </section>
+        )}
 
-        <section className="settings-section">
-          <h3>Permissions</h3>
-          {rules.length === 0 ? (
-            <p className="muted drawer-empty">
-              Nothing has been granted permanently. Approvals you mark “always”
-              will appear here.
-            </p>
-          ) : (
-            <ul className="skill-list">
-              {rules.map((allowed) => (
-                <li key={`${allowed.scope}:${allowed.rule}`}>
-                  <div className="skill-row">
-                    <code>{allowed.rule}</code>
-                    <span className={`tag ${allowed.scope}`}>
-                      {SCOPE_LABEL[allowed.scope]}
-                    </span>
-                    <div className="spacer" />
-                    <button
-                      className="danger"
-                      onClick={async () => {
-                        await api.revokePermissionRule(
-                          allowed.rule,
-                          allowed.scope,
-                        );
-                        setRules(await api.listPermissionRules());
-                      }}
-                    >
-                      Revoke
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section className="settings-section">
-          <h3>Locations</h3>
+        <section className="section">
+          <span className="micro">Files</span>
           <dl className="settings-paths">
-            <dt>Workspace</dt>
-            <dd>{status?.workspace ?? "—"}</dd>
-            <dt>Config &amp; skills</dt>
+            <dt>Config</dt>
             <dd>~/.taurus</dd>
             <dt>This project</dt>
             <dd>{status ? `${status.workspace}/.taurus` : "—"}</dd>
@@ -191,6 +216,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
     </div>
   );
 }
+
+const TABS: [Tab, string][] = [
+  ["models", "Models"],
+  ["permissions", "Permissions"],
+  ["behavior", "Behavior"],
+];
 
 const SCOPE_LABEL: Record<Scope, string> = {
   global: "every workspace",
@@ -219,8 +250,8 @@ function ProviderForm({
   const compatible = provider.kind === "open_ai_compatible";
 
   return (
-    <div className="settings-provider">
-      <div className="skill-row">
+    <div className="card settings-provider">
+      <div className="card-row">
         <input
           className="settings-id"
           value={provider.id}
@@ -239,7 +270,6 @@ function ProviderForm({
             </option>
           ))}
         </select>
-        <div className="spacer" />
         <button className="danger" onClick={onRemove}>
           Remove
         </button>
@@ -329,7 +359,7 @@ function ProviderForm({
       )}
 
       {overriddenBy.length > 0 && (
-        <p className="settings-note small">
+        <p className="settings-note">
           This workspace overrides {listSentence(overriddenBy)} in its own{" "}
           <code>.taurus/providers.json</code>. Changes here apply everywhere
           else; the override still wins in this project.
@@ -350,9 +380,9 @@ function Field({
 }) {
   return (
     <label className="settings-field">
-      <span className="settings-label">{label}</span>
+      <span className="micro">{label}</span>
       {children}
-      {hint && <span className="muted small">{hint}</span>}
+      {hint && <span className="hint">{hint}</span>}
     </label>
   );
 }

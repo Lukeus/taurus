@@ -131,8 +131,11 @@ describe("rendering", () => {
     // The drawer can be opened before `get_status` has resolved; every field
     // it shows has to tolerate a null status rather than throw.
     const html = renderToStaticMarkup(<Settings onClose={() => {}} />);
-    expect(html).toContain("Providers");
+    expect(html).toContain("Models");
     expect(html).toContain("Permissions");
-    expect(html).toContain("Locations");
+    expect(html).toContain("Behavior");
+    // The paths block reads `status.workspace`, which is the field most
+    // likely to be dereferenced before it exists.
+    expect(html).toContain("This project");
   });
 });

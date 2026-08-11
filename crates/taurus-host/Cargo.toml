@@ -14,6 +14,7 @@ taurus-provider-ollama.workspace = true
 taurus-provider-openai.workspace = true
 taurus-skills.workspace = true
 taurus-tools.workspace = true
+taurus-web.workspace = true
 
 async-trait.workspace = true
 directories.workspace = true

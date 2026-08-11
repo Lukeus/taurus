@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
 import type { Checkpoint, Restored } from "../lib/api";
+import { plural, when } from "../lib/format";
 
 /**
  * Files this conversation changed, and the way back.
@@ -72,16 +73,23 @@ export function ChangesDrawer({
         <header className="drawer-head">
           <h2>Changes</h2>
           <button onClick={refresh}>Refresh</button>
-          <button onClick={onClose}>Close</button>
+          <button className="drawer-close" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
         </header>
 
-        {error && <p className="banner error">{error}</p>}
+        <p className="drawer-intro">
+          Every file Taurus changed in this conversation, and the state it was
+          in before.
+        </p>
+
+        {error && <p className="settings-problem">{error}</p>}
 
         {done && (
-          <section className="mcp-servers">
-            <h3>Restored</h3>
+          <section className="section">
+            <span className="micro">Restored</span>
             {done.map((outcome) => (
-              <p key={outcome.path} className="small">
+              <p key={outcome.path} className="card-files">
                 <Outcome outcome={outcome} />
               </p>
             ))}
@@ -89,57 +97,67 @@ export function ChangesDrawer({
         )}
 
         {turns?.length === 0 && (
-          <p className="muted drawer-empty">
+          <p className="drawer-empty">
             This conversation has not changed any files. Taurus records what a
             file held before it edits it, so a turn can be undone.
           </p>
         )}
 
-        <ul className="skill-list">
+        <ul className="card-list">
           {turns
             ?.slice()
             .reverse()
             .map((turn) => (
-              <li key={turn.turn}>
-                <div className="skill-row">
-                  <code>turn {turn.turn}</code>
-                  <span className="tag">
-                    {turn.files.length} file{turn.files.length === 1 ? "" : "s"}
+              <li key={turn.turn} className="card">
+                <div className="card-body">
+                  <div className="card-row">
+                    <span className="micro turn-no">Turn {turn.turn}</span>
+                    <span className="card-files">{when(turn.at)}</span>
+                    <div className="spacer" />
+                    <span className="card-files">
+                      {plural(turn.files.length, "file")}
+                    </span>
+                  </div>
+                  <span className="card-title">
+                    {turn.prompt || "(no prompt recorded)"}
                   </span>
-                  <button
-                    className="link"
-                    // Rewinding under a running turn would race the tool calls
-                    // still writing. The backend refuses too; this just stops
-                    // the user reaching for it.
-                    disabled={busy}
-                    title={
-                      busy
-                        ? "Wait for the current turn to finish"
-                        : "Undo this turn and everything after it"
-                    }
-                    onClick={() => preview(turn.turn)}
-                  >
-                    Revert to before this
-                  </button>
+                  <span className="card-files">{turn.files.join(" · ")}</span>
+                  {plan?.turn !== turn.turn && (
+                    <div className="card-row rewind-open">
+                      <button
+                        className="quiet"
+                        // Rewinding under a running turn would race the tool
+                        // calls still writing. The backend refuses too; this
+                        // just stops the user reaching for it.
+                        disabled={busy}
+                        title={
+                          busy
+                            ? "Wait for the current turn to finish"
+                            : "Undo this turn and everything after it"
+                        }
+                        onClick={() => preview(turn.turn)}
+                      >
+                        Rewind to before this
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <p className="muted">{turn.prompt || "(no prompt recorded)"}</p>
-                <p className="muted small">{turn.files.join(", ")}</p>
 
                 {plan?.turn === turn.turn && (
                   <div className="rewind-plan">
-                    <p className="small">
-                      This overwrites {plan.outcomes.length} file
-                      {plan.outcomes.length === 1 ? "" : "s"} with what was there
-                      before, including anything you changed by hand since.
+                    <p>
+                      Rewinding here restores {plural(plan.outcomes.length, "file")}{" "}
+                      to what they held before turn {turn.turn} — including
+                      anything you changed by hand since. This cannot be undone.
                     </p>
                     {plan.outcomes.map((outcome) => (
-                      <p key={outcome.path} className="small">
+                      <p key={outcome.path} className="card-files">
                         <Outcome outcome={outcome} />
                       </p>
                     ))}
-                    <div className="skill-row">
+                    <div className="actions">
                       <button className="danger" onClick={apply}>
-                        Rewind
+                        Rewind to before turn {turn.turn}
                       </button>
                       <button onClick={() => setPlan(null)}>Cancel</button>
                     </div>
@@ -148,6 +166,11 @@ export function ChangesDrawer({
               </li>
             ))}
         </ul>
+
+        <p className="drawer-foot">
+          run_command is not covered — a shell command's reach is not knowable
+          before it runs.
+        </p>
       </aside>
     </div>
   );

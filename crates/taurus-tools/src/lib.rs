@@ -3,12 +3,14 @@
 pub mod builtin;
 pub mod checkpoint;
 pub mod coerce;
+pub mod env;
 pub mod path_guard;
 pub mod permission;
 pub mod registry;
 pub mod tool;
 
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, TurnRecorder};
+pub use env::expand_env;
 pub use permission::{
     AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,
     PermissionRequest, Scope,

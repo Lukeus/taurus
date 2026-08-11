@@ -15,6 +15,7 @@ import type {
   Message,
   PermissionDecision,
   PermissionRequest,
+  SessionMeta,
   SkillProposal,
   UiEvent,
 } from "../lib/api";
@@ -29,13 +30,39 @@ export type Entry =
       preview: string;
       status: "running" | "ok" | "error";
       output?: string;
+      /**
+       * Wall-clock bounds of the call, in epoch milliseconds, so a run of
+       * steps can report how long it took. Absent on a resumed conversation:
+       * the transcript on disk records what happened, not when, and a made-up
+       * duration is worse than none.
+       */
+      startedAt?: number;
+      endedAt?: number;
     }
-  | { kind: "notice"; id: string; text: string; tone: "info" | "error" };
+  | {
+      kind: "notice";
+      id: string;
+      text: string;
+      tone: "info" | "error";
+      /**
+       * Renders as a labelled hairline across the transcript instead of a
+       * block of prose. For the things that happened *to* the conversation
+       * rather than in it — compaction being the only one so far.
+       */
+      rule?: { label: string; note: string };
+    };
 
 interface Store {
   status: AppStatus | null;
   session: CreatedSession | null;
+  /** This workspace's saved conversations, newest first. Drives the rail. */
+  sessions: SessionMeta[];
   entries: Entry[];
+  /**
+   * Workspace-relative paths this conversation has changed. Counted in the
+   * header, listed turn by turn in the Changes drawer.
+   */
+  changed: string[];
   busy: boolean;
   /** Set while a turn is running so the composer can show Stop instead of Send. */
   permission: PermissionRequest | null;
@@ -57,7 +84,8 @@ interface Store {
   setWorkspace: (path: string) => Promise<void>;
   /** Re-reads config-derived state after something on disk changed. */
   refresh: () => Promise<void>;
-  clear: () => void;
+  /** Re-reads the conversation list and this conversation's changed files. */
+  reload: () => Promise<void>;
   dismissError: () => void;
 }
 
@@ -74,7 +102,9 @@ let initialized = false;
 export const useStore = create<Store>((set, get) => ({
   status: null,
   session: null,
+  sessions: [],
   entries: [],
+  changed: [],
   busy: false,
   permission: null,
   proposals: [],
@@ -96,9 +126,10 @@ export const useStore = create<Store>((set, get) => ({
     // run, a deleted transcript, a model that no longer exists — fall through
     // to a fresh session rather than leaving the app with none.
     try {
-      const [recent] = await api.listSessions();
-      if (recent) {
-        await get().resume(recent.id);
+      const sessions = await api.listSessions();
+      set({ sessions });
+      if (sessions[0]) {
+        await get().resume(sessions[0].id);
         return;
       }
     } catch (e) {
@@ -124,7 +155,8 @@ export const useStore = create<Store>((set, get) => ({
 
   startSession: async (providerId, model) => {
     const session = await api.createSession(providerId, model);
-    set({ session, entries: [], error: null });
+    set({ session, entries: [], changed: [], error: null, proposals: [] });
+    void get().reload();
     if (!session.native_tools) {
       set((s) => ({
         entries: [
@@ -145,9 +177,11 @@ export const useStore = create<Store>((set, get) => ({
     set({
       session,
       entries: entriesFromMessages(messages),
+      changed: [],
       error: null,
       proposals: [],
     });
+    void get().reload();
   },
 
   send: async (text) => {
@@ -179,6 +213,9 @@ export const useStore = create<Store>((set, get) => ({
           e.kind === "assistant" ? { ...e, open: false } : e,
         ),
       }));
+      // The turn may have retitled the conversation and almost certainly
+      // changed the file list, both of which are on screen.
+      void get().reload();
     }
   },
 
@@ -214,11 +251,29 @@ export const useStore = create<Store>((set, get) => ({
   setWorkspace: async (path) => {
     await api.setWorkspace(path);
     set({ status: await api.getStatus() });
+    await get().reload();
   },
 
   refresh: async () => set({ status: await api.getStatus() }),
 
-  clear: () => set({ entries: [] }),
+  reload: async () => {
+    const { session } = get();
+    // Neither list is load-bearing: a rail with a stale entry beats an error
+    // banner over a working conversation, so both failures are swallowed.
+    try {
+      set({ sessions: await api.listSessions() });
+    } catch (e) {
+      console.warn("could not list conversations", e);
+    }
+    if (!session) return set({ changed: [] });
+    try {
+      const turns = await api.listCheckpoints(session.id);
+      set({ changed: [...new Set(turns.flatMap((t) => t.files))] });
+    } catch (e) {
+      console.warn("could not list changed files", e);
+    }
+  },
+
   dismissError: () => set({ error: null }),
 }));
 
@@ -337,13 +392,19 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           name: event.name,
           preview: event.preview,
           status: "running",
+          startedAt: Date.now(),
         },
       ];
 
     case "tool_call_finished":
       return entries.map((e) =>
         e.kind === "tool" && e.id === event.id
-          ? { ...e, status: event.ok ? "ok" : "error", output: event.output }
+          ? {
+              ...e,
+              status: event.ok ? "ok" : "error",
+              output: event.output,
+              endedAt: Date.now(),
+            }
           : e,
       );
 
@@ -355,6 +416,10 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           id: nextId(),
           tone: "info",
           text: `Summarized ${event.messages_removed} earlier messages to stay within the context window.`,
+          rule: {
+            label: "Context compacted",
+            note: `${event.messages_removed} messages`,
+          },
         },
       ];
 

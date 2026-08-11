@@ -12,6 +12,8 @@ const EFFECT_LABEL: Record<string, string> = {
  *
  * Deliberately shows the exact call rather than a summary: the user is
  * approving this command line or this file write, not the tool in general.
+ * The scope sentence sits above the buttons because it is the thing that
+ * distinguishes them — which of these grants is wider, and by how much.
  */
 export function PermissionDialog({
   request,
@@ -24,13 +26,18 @@ export function PermissionDialog({
     <div className="scrim">
       <div className="dialog" role="alertdialog" aria-labelledby="perm-title">
         <div className="dialog-head">
-          <span className={`effect ${request.effect}`}>{request.effect}</span>
+          <span className={`effect ${request.effect}`}>{VERB[request.effect]}</span>
           <h2 id="perm-title">
             Taurus {EFFECT_LABEL[request.effect] ?? "wants permission"}
           </h2>
         </div>
 
-        <pre className="dialog-detail">{request.preview}</pre>
+        <pre className="dialog-detail">
+          {request.effect === "execute" && <span className="prompt">❯ </span>}
+          {request.preview}
+        </pre>
+
+        <p className="dialog-footnote">{request.always_scope}.</p>
 
         <div className="dialog-actions">
           <button className="primary" onClick={() => onDecide("allow_once")} autoFocus>
@@ -49,13 +56,20 @@ export function PermissionDialog({
               Always everywhere
             </button>
           )}
+          <div className="spacer" />
           <button className="danger" onClick={() => onDecide("deny")}>
             Deny
           </button>
         </div>
-
-        <p className="dialog-footnote">{request.always_scope}.</p>
       </div>
     </div>
   );
 }
+
+/** The chip above the call, in the imperative the user is being asked about. */
+const VERB: Record<string, string> = {
+  read: "read",
+  write: "write",
+  execute: "run",
+  network: "network",
+};
