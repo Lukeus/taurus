@@ -55,6 +55,29 @@ describe("transcript reducer", () => {
     expect(tool.endedAt).toBeGreaterThanOrEqual(tool.startedAt!);
   });
 
+  it("collects a delegation's progress under the call it belongs to", () => {
+    const entries = run(
+      { type: "tool_call_started", id: "t1", name: "spawn_subagent", preview: "Delegate" },
+      { type: "tool_progress", id: "t1", label: "read_file config.rs" },
+      { type: "tool_progress", id: "t1", label: "grep load_config" },
+    );
+    const tool = entries[0] as Extract<Entry, { kind: "tool" }>;
+    expect(tool.steps).toEqual(["read_file config.rs", "grep load_config"]);
+  });
+
+  it("does not attach progress to a different call", () => {
+    // Two delegations can run at once, and steps landing on the wrong card
+    // would read as one agent doing all the work.
+    const entries = run(
+      { type: "tool_call_started", id: "t1", name: "spawn_subagent", preview: "A" },
+      { type: "tool_call_started", id: "t2", name: "spawn_subagent", preview: "B" },
+      { type: "tool_progress", id: "t2", label: "only B did this" },
+    );
+    const [a, b] = entries as Extract<Entry, { kind: "tool" }>[];
+    expect(a.steps).toEqual([]);
+    expect(b.steps).toEqual(["only B did this"]);
+  });
+
   it("leaves a resumed call untimed rather than inventing a duration", () => {
     // The transcript on disk records what happened, not when. A run of
     // replayed steps must show its shape without claiming a wall-clock time.

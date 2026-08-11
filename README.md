@@ -617,9 +617,11 @@ taurus key status               # where each provider's API key comes from
   closed, which is right for an agent but means programs that check `isatty`
   behave as though piped, and interactive prompts hit the timeout instead of
   hanging forever.
-- **Sub-agent progress is summarized, not streamed.** The parent's transcript
-  shows one delegation card plus a tool-usage summary rather than the child's
-  live output.
+- **A sub-agent's answer is summarized, not streamed.** Its tool calls now
+  appear under the delegation card as it makes them, so a long delegation looks
+  alive rather than hung, but its reasoning and prose stay inside the child.
+  That part is deliberate: the parent asked for a conclusion, and a second
+  conversation inlined into the transcript is what delegation exists to avoid.
 - **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
   that renders its content client-side comes back near-empty. Closing this
   means shipping a browser engine, so it is a limit rather than a to-do.

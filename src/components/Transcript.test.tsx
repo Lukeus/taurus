@@ -15,6 +15,7 @@ const tool = (
   name,
   preview: `${name} something`,
   status: "ok",
+  steps: [],
   ...times,
 });
 

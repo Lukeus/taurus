@@ -796,6 +796,29 @@ code {
   margin: 0 13px 10px;
 }
 
+/* What a delegation is doing right now. Indented under its own row and set
+   fainter than it, so a glance reads "this call, still going" rather than
+   mistaking the child's steps for the parent's. */
+.run-substeps {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0 13px 0 34px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.run-substeps li {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-substeps li::before {
+  content: "· ";
+}
+
 .notice {
   font-size: 12.5px;
   color: var(--text-dim);

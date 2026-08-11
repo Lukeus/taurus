@@ -31,6 +31,11 @@ export type Entry =
       status: "running" | "ok" | "error";
       output?: string;
       /**
+       * What a still-running tool has reported doing. Only delegation emits
+       * these; for everything else the array stays empty and nothing is drawn.
+       */
+      steps: string[];
+      /**
        * Wall-clock bounds of the call, in epoch milliseconds, so a run of
        * steps can report how long it took. Absent on a resumed conversation:
        * the transcript on disk records what happened, not when, and a made-up
@@ -341,6 +346,9 @@ export function entriesFromMessages(messages: Message[]): Entry[] {
         // The live preview is composed by the tool itself and is not part of
         // the transcript, so the arguments stand in for it.
         preview: preview(block.input),
+        // Nothing to replay: progress is live-only, and a transcript records
+        // what a call did, not what it said while doing it.
+        steps: [],
         // Overwritten by the result below. A call left running is one whose
         // result never made it to disk — the turn the process died in.
         status: "running",
@@ -392,9 +400,17 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           name: event.name,
           preview: event.preview,
           status: "running",
+          steps: [],
           startedAt: Date.now(),
         },
       ];
+
+    case "tool_progress":
+      return entries.map((e) =>
+        e.kind === "tool" && e.id === event.id
+          ? { ...e, steps: [...e.steps, event.label] }
+          : e,
+      );
 
     case "tool_call_finished":
       return entries.map((e) =>

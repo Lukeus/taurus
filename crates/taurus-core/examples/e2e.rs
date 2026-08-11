@@ -75,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     use std::io::Write;
                     let _ = std::io::stdout().flush();
                 }
+                UiEvent::ToolProgress { label, .. } => println!("      · {label}"),
                 UiEvent::ToolCallStarted { name, preview, .. } => {
                     tool_calls += 1;
                     println!("\n  → {name}: {preview}");

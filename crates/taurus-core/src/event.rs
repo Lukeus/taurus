@@ -29,6 +29,13 @@ pub enum UiEvent {
         /// Human-readable summary of the specific call.
         preview: String,
     },
+    /// Something a still-running tool has done. Only tools slow enough for
+    /// silence to be ambiguous emit these — in practice, delegation.
+    ToolProgress {
+        /// The call this belongs under, matching its `ToolCallStarted`.
+        id: String,
+        label: String,
+    },
     ToolCallFinished {
         id: String,
         ok: bool,

@@ -13,7 +13,7 @@ use taurus_provider::{
     ChatRequest, ContentBlock, Message, Provider, Role, StopReason, StreamAccumulator, StreamEvent,
     TokenUsage,
 };
-use taurus_tools::{ToolContext, ToolError, ToolRegistry};
+use taurus_tools::{ToolContext, ToolError, ToolProgress, ToolRegistry};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -294,9 +294,12 @@ impl Agent {
 
         let mut pending: FuturesUnordered<_> = concurrent
             .into_iter()
-            .map(|(id, name, input)| async move {
-                let outcome = self.execute_one(&name, input).await;
-                (id, outcome)
+            .map(|(id, name, input)| {
+                let ctx = self.context_for(&id, ui);
+                async move {
+                    let outcome = self.execute_one(&name, input, &ctx).await;
+                    (id, outcome)
+                }
             })
             .collect();
         while let Some((id, outcome)) = pending.next().await {
@@ -304,7 +307,8 @@ impl Agent {
         }
 
         for (id, name, input) in sequential {
-            let outcome = self.execute_one(&name, input).await;
+            let ctx = self.context_for(&id, ui);
+            let outcome = self.execute_one(&name, input, &ctx).await;
             results.push((id.clone(), self.report(&id, outcome, ui).await));
         }
 
@@ -321,7 +325,21 @@ impl Agent {
         ordered
     }
 
-    async fn execute_one(&self, name: &str, input: serde_json::Value) -> Result<String, ToolError> {
+    /// This turn's tool context, bound to one call so anything it reports lands
+    /// on that call's card rather than loose in the transcript.
+    fn context_for(&self, id: &str, ui: &mpsc::Sender<UiEvent>) -> ToolContext {
+        self.tools.clone().with_progress(Arc::new(CallProgress {
+            id: id.to_string(),
+            ui: ui.clone(),
+        }))
+    }
+
+    async fn execute_one(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<String, ToolError> {
         // The prompted fallback surfaces syntax failures under this name. A
         // bare "no such tool" would send the model looking for a different
         // tool instead of fixing its formatting.
@@ -332,7 +350,7 @@ impl Agent {
                     .into(),
             ));
         }
-        self.registry.execute(name, input, &self.tools).await
+        self.registry.execute(name, input, ctx).await
     }
 
     async fn report(
@@ -434,5 +452,27 @@ impl Agent {
 
         let text = acc.finish().0.text();
         (!text.trim().is_empty()).then_some(text)
+    }
+}
+
+/// Forwards a tool's progress reports to the UI, tagged with the call they
+/// belong to.
+struct CallProgress {
+    id: String,
+    ui: mpsc::Sender<UiEvent>,
+}
+
+#[async_trait::async_trait]
+impl ToolProgress for CallProgress {
+    async fn step(&self, label: String) {
+        // Dropped rather than allowed to stall the tool if the UI is gone or
+        // behind: progress is by definition the part that can be missed.
+        let _ = self
+            .ui
+            .send(UiEvent::ToolProgress {
+                id: self.id.clone(),
+                label,
+            })
+            .await;
     }
 }
