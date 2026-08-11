@@ -90,6 +90,27 @@ pub fn settings_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> 
     scope_dir(scope, workspace).map(|d| d.join("settings.json"))
 }
 
+pub fn search_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
+    scope_dir(scope, workspace).map(|d| taurus_web::config::config_file(&d))
+}
+
+/// The global `search.json` alone, which is what an editor must edit.
+///
+/// The same rule `global_providers` follows: hand the editor the *merged* view
+/// and saving it writes this workspace's overrides into every other workspace.
+pub fn load_global_search() -> taurus_web::SearchFile {
+    taurus_web::load(&home_dir()).unwrap_or_default()
+}
+
+pub fn save_search(file: &taurus_web::SearchFile) {
+    let Some(path) = search_file(Scope::Global, None) else {
+        return;
+    };
+    if let Ok(json) = serde_json::to_string_pretty(file) {
+        write_config(&path, &json);
+    }
+}
+
 /// Reads both layers of `search.json` and resolves the selected backend.
 ///
 /// Returns `None` when web search is off, which is the default and not a
@@ -119,9 +140,26 @@ pub fn load_search(workspace: Option<&Path>) -> (Option<taurus_web::Backend>, Ve
         }
     }
 
-    let (backend, merge_problems) = taurus_web::merge(layers);
+    let (backend, merge_problems) = taurus_web::merge_with(layers, |id, variable| {
+        crate::secrets::resolve(&search_key_id(id), variable)
+    });
     problems.extend(merge_problems);
     (backend, problems)
+}
+
+/// Credential-store id for a search backend's key.
+///
+/// Namespaced, because backend ids and provider ids are user-chosen and land in
+/// the same store: without this, a search backend called `brave` and a provider
+/// called `brave` would be one entry, and saving either would overwrite the
+/// other's key.
+pub fn search_key_id(backend_id: &str) -> String {
+    format!("search:{backend_id}")
+}
+
+/// Where a search backend's key is coming from, for the settings screen.
+pub fn search_key_status(backend_id: &str, api_key_env: Option<&str>) -> crate::secrets::KeyStatus {
+    crate::secrets::status(&search_key_id(backend_id), api_key_env)
 }
 
 /// How to reach one model backend.
@@ -593,6 +631,39 @@ mod tests {
     fn write(path: PathBuf, body: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn a_search_backend_and_a_provider_of_the_same_name_keep_separate_keys() {
+        // Both ids are user-chosen and both land in one credential store, so
+        // without the namespace a backend called `brave` and a provider called
+        // `brave` would be a single entry, and saving either would silently
+        // destroy the other's key.
+        assert_ne!(search_key_id("brave"), "brave");
+        assert_eq!(search_key_id("brave"), "search:brave");
+    }
+
+    #[test]
+    fn a_named_variable_beats_a_stored_search_key() {
+        // The same precedence provider keys follow, which is the point of
+        // routing both through `secrets` rather than reimplementing it: an
+        // environment variable is the escape hatch for CI and for machines
+        // with no keychain, so it has to win.
+        let _home = isolated_home();
+        std::env::set_var("TAURUS_TEST_SEARCH_KEY", "from-the-environment");
+
+        let status = search_key_status("brave", Some("TAURUS_TEST_SEARCH_KEY"));
+        assert!(
+            matches!(status, crate::secrets::KeyStatus::Environment { ref variable }
+                if variable == "TAURUS_TEST_SEARCH_KEY"),
+            "{status:?}"
+        );
+
+        std::env::remove_var("TAURUS_TEST_SEARCH_KEY");
+        assert_eq!(
+            search_key_status("brave", Some("TAURUS_TEST_SEARCH_KEY")),
+            crate::secrets::KeyStatus::Missing
+        );
     }
 
     #[test]

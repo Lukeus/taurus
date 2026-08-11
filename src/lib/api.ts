@@ -25,6 +25,8 @@ import type { Restored } from "../bindings/Restored";
 import type { ResumedSession } from "../bindings/ResumedSession";
 import type { SaveTarget } from "../bindings/SaveTarget";
 import type { Scope } from "../bindings/Scope";
+import type { SearchBackend } from "../bindings/SearchBackend";
+import type { SearchSettings } from "../bindings/SearchSettings";
 import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
@@ -49,6 +51,8 @@ export type {
   ResumedSession,
   SaveTarget,
   Scope,
+  SearchBackend,
+  SearchSettings,
   SessionMeta,
   SkillProposal,
   SkillSummary,
@@ -155,6 +159,28 @@ export const setProviderKey = (providerId: string, key: string) =>
 
 export const clearProviderKey = (providerId: string) =>
   invoke<void>("clear_provider_key", { providerId });
+
+/**
+ * The global `search.json`, plus where each backend's key comes from and
+ * whether search is actually running.
+ *
+ * `active` is not the same as "a backend is selected": a selection with no key
+ * resolves to nothing and registers no tools.
+ */
+export const getSearchSettings = () =>
+  invoke<SearchSettings>("get_search_settings");
+
+/** Saves the global search layer. Selecting `null` turns web search off. */
+export const saveSearchSettings = (
+  selected: string | null,
+  backends: SearchBackend[],
+) => invoke<void>("save_search_settings", { selected, backends });
+
+export const setSearchKey = (backendId: string, key: string) =>
+  invoke<void>("set_search_key", { backendId, key });
+
+export const clearSearchKey = (backendId: string) =>
+  invoke<void>("clear_search_key", { backendId });
 
 /** Turns in this conversation that changed files, oldest first. */
 export const listCheckpoints = (sessionId: string) =>

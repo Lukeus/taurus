@@ -20,3 +20,7 @@ pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;
 pub use sessions::{SessionLog, SessionMeta};
 pub use taurus_tools::{Checkpoint, Restored};
+// Re-exported so a frontend can edit search config without depending on the
+// crate that runs the searches — the same reason `Checkpoint` comes through
+// here rather than from `taurus-tools`.
+pub use taurus_web::{BackendEntry, BackendKind, SearchFile};

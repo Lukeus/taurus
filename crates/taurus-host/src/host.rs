@@ -406,6 +406,40 @@ impl Host {
         self.settings.read().await.clone()
     }
 
+    /// The global `search.json`, for the settings editor.
+    pub fn global_search(&self) -> taurus_web::SearchFile {
+        config::load_global_search()
+    }
+
+    /// Whether web search resolved to something that can actually run.
+    ///
+    /// Distinct from "a backend is selected": a selection with no key resolves
+    /// to nothing, and the difference is what the settings screen shows.
+    pub async fn search_active(&self) -> bool {
+        self.registry.read().await.get("web_search").is_some()
+    }
+
+    /// Saves the global search layer and rebuilds, so turning search on
+    /// registers its tools without a restart.
+    pub async fn set_search(&self, file: taurus_web::SearchFile) {
+        config::save_search(&file);
+        self.reload().await;
+    }
+
+    pub async fn set_search_key(&self, backend_id: &str, key: &str) -> Result<(), String> {
+        secrets::store(&config::search_key_id(backend_id), key)?;
+        // A saved key can be the thing that makes a selected backend resolve,
+        // and the tools are only registered for one that does.
+        self.reload().await;
+        Ok(())
+    }
+
+    pub async fn clear_search_key(&self, backend_id: &str) -> Result<(), String> {
+        secrets::clear(&config::search_key_id(backend_id))?;
+        self.reload().await;
+        Ok(())
+    }
+
     /// Toggles skill synthesis for every workspace.
     ///
     /// A project that wants it off regardless can say so in its own

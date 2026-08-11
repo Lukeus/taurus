@@ -8,13 +8,14 @@ vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {},
 }));
 
-import type { ProviderConfig } from "../lib/api";
+import type { ProviderConfig, SearchSettings } from "../lib/api";
 import {
   Settings,
   blankProvider,
   keyHint,
   overrideOf,
   parseContextLength,
+  statusHint,
   validate,
 } from "./Settings";
 
@@ -164,5 +165,36 @@ describe("rendering", () => {
     // The paths block reads `status.workspace`, which is the field most
     // likely to be dereferenced before it exists.
     expect(html).toContain("This project");
+  });
+});
+
+describe("statusHint", () => {
+  const settings = (patch: Partial<SearchSettings> = {}): SearchSettings => ({
+    selected: null,
+    backends: [],
+    key_statuses: [],
+    active: false,
+    problems: [],
+    ...patch,
+  });
+
+  it("calls off what is off, without dressing it as a problem", () => {
+    // Not searching is the default and a legitimate choice, so this must not
+    // read like something the user has failed to finish.
+    expect(statusHint(settings())).toBe("Off. Taurus will not search the web.");
+  });
+
+  it("says it is on only when the tools are actually registered", () => {
+    expect(statusHint(settings({ selected: "brave", active: true }))).toBe(
+      "On, through brave.",
+    );
+  });
+
+  it("distinguishes a backend that is picked from one that runs", () => {
+    // The state a missing key leaves behind. Reporting this as "on" would be
+    // contradicted by the very next search that fails.
+    const hint = statusHint(settings({ selected: "brave", active: false }));
+    expect(hint).toContain("not running yet");
+    expect(hint).toContain("brave");
   });
 });
