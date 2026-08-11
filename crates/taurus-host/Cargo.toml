@@ -20,6 +20,9 @@ async-trait.workspace = true
 directories.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Not just for tests: config files are replaced through a temporary file in the
+# same directory so a reader never sees a half-written one.
+tempfile = "3"
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
@@ -39,7 +42,6 @@ keyring = { workspace = true, features = ["windows-native"] }
 keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
-tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
