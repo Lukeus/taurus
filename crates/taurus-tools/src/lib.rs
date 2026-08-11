@@ -1,12 +1,14 @@
 //! Tools the agent can call, and the permission gate in front of them.
 
 pub mod builtin;
+pub mod checkpoint;
 pub mod coerce;
 pub mod path_guard;
 pub mod permission;
 pub mod registry;
 pub mod tool;
 
+pub use checkpoint::{Checkpoint, CheckpointStore, Restored, TurnRecorder};
 pub use permission::{
     AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,
     PermissionRequest, Scope,

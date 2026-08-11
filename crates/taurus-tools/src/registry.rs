@@ -116,6 +116,18 @@ impl ToolRegistry {
 
         ctx.permissions.check(tool.as_ref(), &input).await?;
 
+        // After the permission check, so a denied call leaves no trace, and
+        // before execution, so what is recorded is what was there first.
+        if let Some(recorder) = &ctx.checkpoints {
+            for candidate in tool.touches(&input) {
+                // An unresolvable path is left to the tool to reject with its
+                // own message; there is nothing to snapshot either way.
+                if let Ok(path) = ctx.resolve(&candidate) {
+                    recorder.capture(&path).await;
+                }
+            }
+        }
+
         debug!(tool = name, "executing");
         tool.execute(input, ctx).await
     }
@@ -216,6 +228,78 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "y y"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_dispatched_through_the_registry_can_be_undone() {
+        let (ctx, dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        std::fs::write(root.join("a.txt"), "original").unwrap();
+
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx.with_checkpoints(store.begin_turn("s1", &root, "replace a.txt"));
+
+        ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "the model's version"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "the model's version"
+        );
+
+        store.rewind("s1", &root, 1, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "original"
+        );
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn a_denied_write_leaves_nothing_to_rewind() {
+        // The snapshot sits behind the permission gate, so a refused call does
+        // not litter the log with turns that changed nothing.
+        let (ctx, _dir) = crate::test_support::test_ctx_denying();
+        let root = ctx.workspace.clone();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx.with_checkpoints(store.begin_turn("s1", &root, "try to write"));
+
+        let _ = ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "x.txt", "content": "nope"}),
+                &ctx,
+            )
+            .await;
+
+        assert!(store.turns("s1").unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_command_declares_nothing_it_will_touch() {
+        // Asserted rather than only documented: a shell command's reach is not
+        // knowable in advance, and the day someone makes this tool guess, the
+        // guess needs to fail loudly here.
+        let registry = ToolRegistry::with_builtins();
+        assert!(registry
+            .get("run_command")
+            .unwrap()
+            .touches(&serde_json::json!({"command": "rm -rf src"}))
+            .is_empty());
+        assert_eq!(
+            registry
+                .get("edit_file")
+                .unwrap()
+                .touches(&serde_json::json!({"path": "src/main.rs"})),
+            vec!["src/main.rs".to_string()]
         );
     }
 

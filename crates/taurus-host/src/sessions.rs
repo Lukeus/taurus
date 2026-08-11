@@ -42,6 +42,19 @@ pub fn sessions_dir() -> PathBuf {
     crate::config::home_dir().join("sessions")
 }
 
+/// Where one workspace's checkpoint logs live.
+///
+/// Alongside transcripts and keyed the same way, for the same reason: a
+/// checkpoint holds the contents of files in the project, so keeping it in the
+/// project would commit them. It shares [`workspace_key`] so that both halves
+/// of a conversation's record — what was said and what was changed — land in
+/// directories a person can pair up by eye.
+pub fn checkpoints_dir(workspace: &Path) -> PathBuf {
+    crate::config::home_dir()
+        .join("checkpoints")
+        .join(workspace_key(workspace))
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

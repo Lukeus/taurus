@@ -9,6 +9,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { AllowedRule } from "../bindings/AllowedRule";
 import type { AppStatus } from "../bindings/AppStatus";
+import type { Checkpoint } from "../bindings/Checkpoint";
 import type { ContentBlock } from "../bindings/ContentBlock";
 import type { CreatedSession } from "../bindings/CreatedSession";
 import type { Message } from "../bindings/Message";
@@ -17,6 +18,7 @@ import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
 import type { ProviderConfig } from "../bindings/ProviderConfig";
 import type { ProviderKind } from "../bindings/ProviderKind";
+import type { Restored } from "../bindings/Restored";
 import type { ResumedSession } from "../bindings/ResumedSession";
 import type { SaveTarget } from "../bindings/SaveTarget";
 import type { Scope } from "../bindings/Scope";
@@ -28,6 +30,7 @@ import type { UiEvent } from "../bindings/UiEvent";
 export type {
   AllowedRule,
   AppStatus,
+  Checkpoint,
   ContentBlock,
   CreatedSession,
   Message,
@@ -36,6 +39,7 @@ export type {
   PermissionRequest,
   ProviderConfig,
   ProviderKind,
+  Restored,
   ResumedSession,
   SaveTarget,
   Scope,
@@ -125,6 +129,20 @@ export const saveProviders = (providers: ProviderConfig[]) =>
  */
 export const listGlobalProviders = () =>
   invoke<ProviderConfig[]>("list_global_providers");
+
+/** Turns in this conversation that changed files, oldest first. */
+export const listCheckpoints = (sessionId: string) =>
+  invoke<Checkpoint[]>("list_checkpoints", { sessionId });
+
+/**
+ * Restores the workspace to just before `turn`, undoing it and every turn
+ * after it.
+ *
+ * `dryRun` reports what that would do and writes nothing, which is how the UI
+ * shows the plan before asking.
+ */
+export const rewindTo = (sessionId: string, turn: number, dryRun: boolean) =>
+  invoke<Restored[]>("rewind_to", { sessionId, turn, dryRun });
 
 export const onPermissionRequest = (
   handler: (request: PermissionRequest) => void,

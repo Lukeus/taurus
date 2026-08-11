@@ -7,6 +7,7 @@
 mod markdown;
 mod permission;
 mod render;
+mod rewind_cmd;
 mod session;
 mod skills_cmd;
 
@@ -49,6 +50,28 @@ enum Command {
         /// Every workspace, not just this one.
         #[arg(long)]
         all: bool,
+    },
+    /// List file changes a session made, and undo them.
+    Rewind {
+        #[command(flatten)]
+        session: SessionArgs,
+
+        /// Session to inspect. Defaults to this workspace's most recent.
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+
+        /// Restore the workspace to just before this turn, undoing it and
+        /// everything after it. `last` undoes only the most recent turn.
+        #[arg(long, value_name = "TURN|last")]
+        to: Option<String>,
+
+        /// Show what `--to` would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the confirmation. Required to rewind without a terminal.
+        #[arg(long)]
+        yes: bool,
     },
     /// Inspect the skill library.
     Skills {
@@ -238,6 +261,17 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 }
             }
             Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Rewind {
+            session,
+            id,
+            to,
+            dry_run,
+            yes,
+        } => {
+            let host = build_host(&session, Policy::default()).await?.host;
+            rewind_cmd::run(&host, id.as_deref(), to.as_deref(), dry_run, yes).await
         }
 
         Command::Skills { command, session } => {

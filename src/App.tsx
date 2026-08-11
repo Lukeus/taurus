@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
+import { ChangesDrawer } from "./components/ChangesDrawer";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { Settings } from "./components/Settings";
 import { SkillProposalCard } from "./components/SkillProposalCard";
@@ -15,6 +16,7 @@ export default function App() {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [changesOpen, setChangesOpen] = useState(false);
 
   useEffect(() => {
     store.init();
@@ -64,6 +66,13 @@ export default function App() {
 
         <div className="spacer" />
 
+        <button
+          disabled={!store.session}
+          title="Files this conversation changed, and the way back"
+          onClick={() => setChangesOpen(true)}
+        >
+          Changes
+        </button>
         <button onClick={() => setHistoryOpen(true)}>History</button>
         <button onClick={() => setSettingsOpen(true)}>Settings</button>
         <button onClick={() => setSkillsOpen(true)}>
@@ -114,6 +123,13 @@ export default function App() {
         />
       )}
 
+      {changesOpen && store.session && (
+        <ChangesDrawer
+          sessionId={store.session.id}
+          busy={store.busy}
+          onClose={() => setChangesOpen(false)}
+        />
+      )}
       {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
       {historyOpen && <HistoryDrawer onClose={() => setHistoryOpen(false)} />}
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}

@@ -13,5 +13,6 @@ pub mod sessions;
 mod testing;
 
 pub use config::{ProviderConfig, ProviderKind, Scope, Settings};
-pub use host::{Host, PermissionPromptFactory, MAX_CONCURRENT_SUBAGENTS};
+pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};
 pub use sessions::{SessionLog, SessionMeta};
+pub use taurus_tools::{Checkpoint, Restored};

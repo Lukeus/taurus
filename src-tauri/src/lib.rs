@@ -57,6 +57,8 @@ pub fn run() {
             commands::save_providers,
             commands::list_global_providers,
             commands::reload_skills,
+            commands::list_checkpoints,
+            commands::rewind_to,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Taurus");

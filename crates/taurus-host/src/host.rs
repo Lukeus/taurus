@@ -23,7 +23,9 @@ use taurus_skills::catalog::{SkillCatalog, SkillSource};
 use taurus_skills::proposal::ProposalSink;
 use taurus_skills::skill::{SkillSummary, SkillTier};
 use taurus_skills::SharedCatalog;
-use taurus_tools::{PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry};
+use taurus_tools::{
+    CheckpointStore, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
+};
 
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings};
 use crate::prompt;
@@ -38,6 +40,17 @@ pub const MAX_CONCURRENT_SUBAGENTS: usize = 2;
 /// rebuilt whenever the workspace changes, and each engine owns its prompt.
 pub trait PermissionPromptFactory: Send + Sync {
     fn create(&self) -> Box<dyn PermissionPrompt>;
+}
+
+/// Names the turn about to run, so what it changes can be undone.
+///
+/// Passed to [`Host::build_agent`] rather than read out of the session inside
+/// it, because the desktop app builds its agent before it takes the session
+/// lock. Both frontends hold these two strings at that point either way.
+pub struct TurnRef<'a> {
+    pub session_id: &'a str,
+    /// What the user asked for. Labels the checkpoint in a listing.
+    pub prompt: &'a str,
 }
 
 pub struct Host {
@@ -228,14 +241,16 @@ impl Host {
 
     /// Builds the agent for one turn.
     ///
-    /// The single place system prompt, tool set, and sub-agent wiring come
-    /// together, so the CLI and the desktop app cannot disagree about how an
-    /// agent is configured.
+    /// The single place system prompt, tool set, sub-agent wiring, and the
+    /// turn's checkpoint come together, so the CLI and the desktop app cannot
+    /// disagree about how an agent is configured — or about whether a turn is
+    /// rewindable.
     pub async fn build_agent(
         &self,
         provider: Arc<dyn Provider>,
         model: &str,
         cancel: CancellationToken,
+        turn: TurnRef<'_>,
     ) -> Agent {
         // Bound to this session's provider and model, so it is added per turn
         // rather than living in the shared registry. Children get the shared
@@ -252,15 +267,30 @@ impl Host {
         let skill_section = self.catalog.read().await.prompt_section();
         let synthesis = self.settings.read().await.skill_synthesis_enabled;
 
+        // Opened here rather than by the loop, because a sub-agent runs its own
+        // loop and must record into the turn that spawned it, not one of its
+        // own. Cloning the context is what carries it down.
+        let recorder =
+            self.checkpoints()
+                .await
+                .begin_turn(turn.session_id, &workspace, turn.prompt);
+
         Agent::new(
             provider,
             registry,
-            self.tool_context(cancel).await,
+            self.tool_context(cancel).await.with_checkpoints(recorder),
             AgentConfig {
                 system_prompt: prompt::build(&workspace, skill_section, synthesis),
                 ..Default::default()
             },
         )
+    }
+
+    /// This workspace's checkpoint logs, for listing and rewinding.
+    pub async fn checkpoints(&self) -> CheckpointStore {
+        CheckpointStore::new(crate::sessions::checkpoints_dir(
+            &self.workspace.read().await,
+        ))
     }
 
     pub async fn tool_context(&self, cancel: CancellationToken) -> ToolContext {
@@ -589,6 +619,43 @@ mod tests {
         );
         // And the global layer still works.
         assert!(!host.providers().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn checkpoints_live_in_the_config_home_and_follow_the_workspace() {
+        // Not in the project: a checkpoint holds the contents of files in the
+        // workspace, and kept there it would be committed by accident.
+        let first_dir = TempDir::new().unwrap();
+        let first = first_dir.path().canonicalize().unwrap();
+        let second_dir = TempDir::new().unwrap();
+        let second = second_dir.path().canonicalize().unwrap();
+
+        let (host, _home) = host(&first);
+        host.set_workspace(&first).await.unwrap();
+
+        let file = first.join("a.txt");
+        std::fs::write(&file, "original").unwrap();
+        let recorder = host
+            .checkpoints()
+            .await
+            .begin_turn("s1", &first, "change a.txt");
+        recorder.capture(&file).await;
+        std::fs::write(&file, "changed").unwrap();
+
+        assert!(
+            !first.join(".taurus/checkpoints").exists(),
+            "checkpoints must not be written into the project"
+        );
+
+        host.checkpoints()
+            .await
+            .rewind("s1", &first, 1, false)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
+
+        // A different workspace is a different log, even for the same id.
+        host.set_workspace(&second).await.unwrap();
+        assert!(host.checkpoints().await.turns("s1").unwrap().is_empty());
     }
 
     #[tokio::test]
