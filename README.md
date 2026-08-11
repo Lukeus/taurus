@@ -260,7 +260,7 @@ file every other project reads.
 
 | File | Global | Workspace |
 | --- | --- | --- |
-| `providers.json` | Backends. API keys are referenced by env-var name, never stored. | Overrides and additions for this project. |
+| `providers.json` | Backends, including the header a key is sent in. Keys are referenced by env-var name, never stored. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Header values and URLs may name env vars. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `settings.json` | Last workspace, skill-synthesis toggle, fallback model. | The provider and model this project was last worked in. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
@@ -293,6 +293,48 @@ literal token there is a token in the repository. It is the same bargain
 the server with its own name in the message, rather than sending an empty
 `Authorization` header and producing a 401 that looks like a bad token instead
 of a missing one. A literal value still passes through untouched.
+
+### Azure OpenAI, and gateways in front of it
+
+Azure is an OpenAI-compatible backend that disagrees about one thing: where the
+key goes. OpenAI and everything imitating it read `Authorization: Bearer`;
+Azure OpenAI reads `api-key`, and an Azure API Management gateway reads
+`Ocp-Apim-Subscription-Key`. Both are bare — a `Bearer ` in front of the value
+produces a 401 that looks exactly like a wrong key.
+
+`api_key_header` names the header. The key is sent raw in it, with no scheme
+prefix:
+
+```jsonc
+{
+  "id": "apim",
+  "kind": "open_ai_compatible",
+  "base_url": "https://my-gateway.azure-api.net",
+  "api_prefix": "/openai/v1",
+  "api_key_env": "APIM_SUBSCRIPTION_KEY",
+  "api_key_header": "Ocp-Apim-Subscription-Key",
+  "default_model": "gpt-4o",
+  "context_length": 128000
+}
+```
+
+Leaving it unset keeps bearer auth, so nothing else changes. There is
+deliberately no separate setting for the scheme: naming `Authorization` sends
+the key bare in that header, which is the only other shape a gateway asks for.
+The value is marked sensitive, so a subscription key cannot reach a debug log
+through the header map.
+
+Two other fields matter more here than elsewhere:
+
+- **`api_prefix`.** Azure's OpenAI-shaped surface lives under `/openai/v1`,
+  where the model goes in the request body. Its older data plane puts the
+  deployment name in the path and requires an `api-version` query parameter;
+  Taurus cannot express either, so point it at the `/openai/v1` route, or at an
+  APIM route whose policy supplies them.
+- **`default_model`.** A gateway need not expose `/v1/models`, and without a
+  listing there is nothing to pick from. Set this and Taurus uses it rather
+  than asking. Without it, and with no listing, the error says so instead of
+  reporting an unreachable backend.
 
 ### Intel hardware, and other backends
 
@@ -365,8 +407,9 @@ Layering is per key, not per file, so an override states only what it changes:
 [{ "id": "ollama", "base_url": "http://gpu-box:11434" }]
 ```
 
-`kind`, `api_key_env`, and the capability overrides are inherited from the
-global entry with the same `id`. An entry whose `id` is new to this layer is
+`kind`, `api_key_env`, `api_key_header`, and the capability overrides are
+inherited from the global entry with the same `id`. An entry whose `id` is new
+to this layer is
 added instead, and then needs a `kind` and a `base_url` of its own. Anything
 unresolvable — a malformed layer, an override with no `kind`, an MCP toggle
 naming a server nothing defines — is reported as a startup problem rather than
@@ -385,7 +428,7 @@ into the project file.
 ## Development
 
 ```bash
-cargo test --workspace     # 312 tests
+cargo test --workspace     # 322 tests
 pnpm test                  # transcript reducer, replay, settings, rewind
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all

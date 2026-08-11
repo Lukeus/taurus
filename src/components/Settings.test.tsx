@@ -23,6 +23,7 @@ const provider = (patch: Partial<ProviderConfig> = {}): ProviderConfig => ({
   base_url: "http://localhost:11434",
   default_model: null,
   api_key_env: null,
+  api_key_header: null,
   native_tools: null,
   context_length: null,
   api_prefix: null,

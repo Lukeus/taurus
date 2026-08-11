@@ -233,7 +233,8 @@ impl Host {
                                 .unwrap_or(defaults.context_length),
                         },
                     )
-                    .with_api_prefix(config.api_prefix.clone()),
+                    .with_api_prefix(config.api_prefix.clone())
+                    .with_api_key_header(config.api_key_header.clone()),
                 )
             }
         })
@@ -432,15 +433,38 @@ impl Host {
             return Ok((chosen, model.to_string()));
         }
 
+        let configured = providers
+            .iter()
+            .find(|p| p.id == chosen)
+            .and_then(|p| p.default_model.clone())
+            .filter(|m| !m.trim().is_empty());
+
         let provider = self.provider(&chosen).await?;
-        let available = provider
-            .models()
-            .await
-            .map_err(|e| format!("could not list models from '{chosen}': {e}"))?;
+        let available = match provider.models().await {
+            Ok(available) => available,
+            // A listing is not something every backend has. An Azure APIM
+            // route often exposes the chat endpoint and nothing else, and that
+            // is no reason to be unusable when the config already says which
+            // model to talk to.
+            Err(e) => {
+                let Some(default) = configured else {
+                    return Err(format!(
+                        "could not list models from '{chosen}': {e}. If this backend has no \
+                         model listing, give it a `default_model` in providers.json or name \
+                         one with --model."
+                    ));
+                };
+                return Ok((chosen, default));
+            }
+        };
 
         let preferred = settings
             .last_model
             .filter(|m| available.iter().any(|a| &a.id == m))
+            // Ahead of "whatever came first" but behind the model this
+            // workspace was last worked in, which is a decision the user made
+            // more recently than the config file.
+            .or(configured)
             .or_else(|| available.first().map(|m| m.id.clone()))
             .ok_or_else(|| format!("provider '{chosen}' has no models available"))?;
 
@@ -692,6 +716,56 @@ mod tests {
             "tests are still pointed at the real config directory"
         );
         assert_eq!(crate::config::home_dir(), PathBuf::from(home));
+    }
+
+    #[tokio::test]
+    async fn a_backend_with_no_model_listing_falls_back_to_its_configured_default() {
+        // An Azure APIM route commonly exposes /chat/completions and nothing
+        // else. Before `default_model` was consulted this was simply unusable
+        // without passing --model on every single invocation.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/providers.json"),
+            r#"[{
+                "id": "apim",
+                "kind": "open_ai_compatible",
+                "base_url": "http://127.0.0.1:1",
+                "api_prefix": "/openai/v1",
+                "default_model": "gpt-4o"
+            }]"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let (provider, model) = host
+            .resolve_model(Some("apim"), None)
+            .await
+            .expect("an unreachable listing must not be fatal when a default is configured");
+        assert_eq!(provider, "apim");
+        assert_eq!(model, "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn a_backend_with_neither_a_listing_nor_a_default_says_how_to_fix_it() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/providers.json"),
+            r#"[{"id": "apim", "kind": "open_ai_compatible", "base_url": "http://127.0.0.1:1"}]"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let err = host.resolve_model(Some("apim"), None).await.unwrap_err();
+        assert!(err.contains("default_model"), "{err}");
+        assert!(err.contains("--model"), "{err}");
     }
 
     #[tokio::test]

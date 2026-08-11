@@ -107,6 +107,14 @@ pub struct ProviderConfig {
     /// the thing users accidentally commit.
     #[serde(default)]
     pub api_key_env: Option<String>,
+    /// Header the key is sent in, for gateways that do not use bearer auth.
+    ///
+    /// Unset means `Authorization: Bearer <key>`, which is what OpenAI and
+    /// everything imitating it expects. A name here sends the key raw in that
+    /// header instead, with no scheme prefix — `api-key` for Azure OpenAI,
+    /// `Ocp-Apim-Subscription-Key` for an Azure APIM gateway.
+    #[serde(default)]
+    pub api_key_header: Option<String>,
     /// Overrides for backends that cannot be probed. Ignored for Ollama, which
     /// reports its own capabilities per model.
     #[serde(default)]
@@ -156,6 +164,8 @@ pub struct ProviderEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_header: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_tools: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
@@ -180,6 +190,9 @@ impl ProviderEntry {
         }
         if self.api_key_env.is_some() {
             base.api_key_env = self.api_key_env.clone();
+        }
+        if self.api_key_header.is_some() {
+            base.api_key_header = self.api_key_header.clone();
         }
         if self.native_tools.is_some() {
             base.native_tools = self.native_tools;
@@ -212,6 +225,7 @@ impl ProviderEntry {
             base_url,
             default_model: self.default_model,
             api_key_env: self.api_key_env,
+            api_key_header: self.api_key_header,
             native_tools: self.native_tools,
             context_length: self.context_length,
             api_prefix: self.api_prefix,
@@ -227,6 +241,7 @@ impl From<&ProviderConfig> for ProviderEntry {
             base_url: Some(config.base_url.clone()),
             default_model: config.default_model.clone(),
             api_key_env: config.api_key_env.clone(),
+            api_key_header: config.api_key_header.clone(),
             native_tools: config.native_tools,
             context_length: config.context_length,
             api_prefix: config.api_prefix.clone(),
@@ -241,6 +256,7 @@ fn default_providers() -> Vec<ProviderConfig> {
         base_url: taurus_provider_ollama::DEFAULT_BASE_URL.into(),
         default_model: None,
         api_key_env: None,
+        api_key_header: None,
         native_tools: None,
         context_length: None,
         api_prefix: None,
