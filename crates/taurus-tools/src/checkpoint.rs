@@ -352,8 +352,16 @@ fn read_log(path: &Path) -> Result<Vec<ReadTurn>, String> {
         }
     }
 
+    // A missing header is a damaged log, not a suspicious one, so it costs a
+    // warning rather than the file. The version guard above only ever applied
+    // to logs that *have* a header — a newer Taurus writes one too — so
+    // refusing a header-less file protects nothing, while every turn in it is
+    // sitting right there, already parsed as the current format.
     if !header_seen && !turns.is_empty() {
-        return Err(format!("{} has no header", path.display()));
+        tracing::warn!(
+            path = %path.display(),
+            "checkpoint log has no header; reading it as the current format"
+        );
     }
     Ok(turns)
 }
@@ -410,7 +418,14 @@ impl TurnRecorder {
         // The turn's header goes down with its first file, so a log holds only
         // turns that changed something.
         if !state.opened {
-            let header = (!log.exists()).then(|| {
+            // Asks the file whether it has a header rather than whether it
+            // exists. `append` creates the file before it writes, so a write
+            // that fails leaves an empty one behind — and "it exists" would
+            // then be true forever, so every later turn skipped the header and
+            // left a log that `read_log` could not accept. Checking for the
+            // record itself also repairs a log already in that state, on its
+            // next turn.
+            let header = (!has_header(&log)).then(|| {
                 Record::Header(Header {
                     version: FORMAT_VERSION,
                     session: self.session.clone(),
@@ -439,6 +454,22 @@ impl TurnRecorder {
             state.disabled = true;
         }
     }
+}
+
+/// Whether the log already carries a header record.
+///
+/// Scans for one anywhere rather than checking the first line, because a log
+/// repaired after a failed first write carries its header after the turns it
+/// was missing from. A log is one short line per changed file, and the normal
+/// case stops on line one.
+fn has_header(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .any(|line| matches!(serde_json::from_str::<Record>(&line), Ok(Record::Header(_))))
 }
 
 /// Appends one record. Returns whether it landed.
@@ -724,6 +755,113 @@ mod tests {
             .turns("s1")
             .expect("a torn tail must not fail the read");
         assert_eq!(turns[0].files, vec!["a.txt"]);
+    }
+
+    #[tokio::test]
+    async fn an_empty_log_left_by_a_failed_write_still_gets_its_header() {
+        // `append` creates the file before it writes, so a write that fails
+        // leaves a zero-byte log. Keying the header off "does the file exist"
+        // meant every later turn skipped it, and the session's checkpoints
+        // became permanently unreadable while the pre-images sat on disk.
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.log("s1").parent().unwrap()).unwrap();
+        std::fs::write(f.log("s1"), "").unwrap();
+
+        let file = f.path("a.txt");
+        std::fs::write(&file, "original").unwrap();
+        let recorder = f.store.begin_turn("s1", &f.root, "change a.txt");
+        recorder.capture(&file).await;
+        std::fs::write(&file, "changed").unwrap();
+
+        let turns = f
+            .store
+            .turns("s1")
+            .expect("a log that started empty must still be readable");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].files, vec!["a.txt"]);
+    }
+
+    #[tokio::test]
+    async fn a_log_that_lost_its_header_is_repaired_by_the_next_turn() {
+        let f = Fixture::new();
+        let file = f.path("a.txt");
+        std::fs::write(&file, "original").unwrap();
+
+        // A turn's worth of records with no header, which is what the old
+        // condition produced once a zero-byte log existed.
+        std::fs::create_dir_all(f.log("s1").parent().unwrap()).unwrap();
+        let headerless = [
+            Record::Turn {
+                prompt: "earlier turn".into(),
+                at: 1,
+            },
+            Record::Before {
+                path: "a.txt".into(),
+                state: State::Text {
+                    content: "original".into(),
+                },
+            },
+        ]
+        .iter()
+        .map(|r| serde_json::to_string(r).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+        std::fs::write(f.log("s1"), format!("{headerless}\n")).unwrap();
+
+        let recorder = f.store.begin_turn("s1", &f.root, "a later turn");
+        recorder.capture(&file).await;
+
+        assert!(has_header(&f.log("s1")), "the next turn must repair it");
+        // And repairing it once is enough — a second turn must not stack
+        // another header on top.
+        let before = std::fs::read_to_string(f.log("s1")).unwrap();
+        let again = f.store.begin_turn("s1", &f.root, "a third turn");
+        std::fs::write(&file, "changed twice").unwrap();
+        again.capture(&file).await;
+        let after = std::fs::read_to_string(f.log("s1")).unwrap();
+        assert_eq!(
+            before.matches("\"header\"").count(),
+            after.matches("\"header\"").count(),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_header_less_log_is_read_rather_than_refused() {
+        // Every record in it parsed as the current format, and a newer Taurus
+        // would have written a header of its own — so refusing this file
+        // guards nothing and loses turns that are sitting right there.
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.log("s1").parent().unwrap()).unwrap();
+        let records = [
+            Record::Turn {
+                prompt: "a turn".into(),
+                at: 1,
+            },
+            Record::Before {
+                path: "a.txt".into(),
+                state: State::Text {
+                    content: "original".into(),
+                },
+            },
+        ]
+        .iter()
+        .map(|r| serde_json::to_string(r).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+        std::fs::write(f.log("s1"), format!("{records}\n")).unwrap();
+
+        let turns = f
+            .store
+            .turns("s1")
+            .expect("a header-less log must still be readable");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].files, vec!["a.txt"]);
+
+        // And it can actually be rewound, which is the point of reading it.
+        let file = f.path("a.txt");
+        std::fs::write(&file, "the model's version").unwrap();
+        f.store.rewind("s1", &f.root, 1, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
     }
 
     #[tokio::test]
