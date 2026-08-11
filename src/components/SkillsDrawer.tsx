@@ -110,6 +110,15 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
                     </span>
                   )
                 )}
+                {/* What the skill says it reaches for. Advisory — it is not a
+                    grant, and every call still meets the permission gate — but
+                    it is the one thing you would want to read before running
+                    something a model wrote. */}
+                {skill.allowed_tools.length > 0 && (
+                  <span className="card-files">
+                    uses {skill.allowed_tools.join(", ")}
+                  </span>
+                )}
               </div>
             </li>
           ))}
@@ -148,7 +157,6 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
 }
 
 const TIER_LABEL: Record<SkillSummary["tier"], string> = {
-  builtin: "built in",
   user: "all projects",
   project: "project",
 };
