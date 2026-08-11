@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
-import type { AllowedRule, ProviderConfig, ProviderKind, Scope } from "../lib/api";
+import type {
+  AllowedRule,
+  KeyStatus,
+  ProviderConfig,
+  ProviderKind,
+  Scope,
+} from "../lib/api";
 import { useStore } from "../state/store";
 
 type Tab = "models" | "permissions" | "behavior";
@@ -29,10 +35,25 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [keys, setKeys] = useState<Map<string, KeyStatus>>(new Map());
+  const [keychain, setKeychain] = useState(false);
+
+  // Re-read rather than patched locally: storing a key can change what another
+  // row reports — an environment variable that was the only source becomes an
+  // override — and a status the frontend guessed at would be a status that
+  // disagrees with the one the request will actually use.
+  const refreshKeys = () => {
+    api
+      .listKeyStatuses()
+      .then((entries) => setKeys(new Map(entries)))
+      .catch(() => setKeys(new Map()));
+  };
 
   useEffect(() => {
     api.listGlobalProviders().then(setDraft).catch((e) => setError(String(e)));
     api.listPermissionRules().then(setRules).catch(() => setRules([]));
+    api.keychainAvailable().then(setKeychain).catch(() => setKeychain(false));
+    refreshKeys();
   }, []);
 
   const problems = draft ? validate(draft) : [];
@@ -53,6 +74,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
       await api.saveProviders(draft);
       await refresh();
       setDraft(await api.listGlobalProviders());
+      // A provider that was just added or renamed only now has an id a key can
+      // be stored against, so its field has to stop saying "not saved yet".
+      refreshKeys();
       setSaved(true);
     } catch (e) {
       setError(String(e));
@@ -97,6 +121,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
                   key={index}
                   provider={provider}
                   overriddenBy={overrideOf(provider, status?.providers ?? [])}
+                  keyStatus={keys.get(provider.id)}
+                  keychainAvailable={keychain}
+                  onKeyChanged={refreshKeys}
                   onChange={(patch) => update(index, patch)}
                   onRemove={() => {
                     setDraft((d) => d?.filter((_, i) => i !== index) ?? d);
@@ -233,14 +260,132 @@ const KINDS: { value: ProviderKind; label: string }[] = [
   { value: "open_ai_compatible", label: "OpenAI-compatible" },
 ];
 
+/**
+ * The API key field.
+ *
+ * Write-only on purpose: the stored key is never sent to the frontend, so there
+ * is nothing to prefill and the input starts empty every time. What replaces
+ * the reassurance of seeing the old value is [`keyLine`] saying where the key
+ * in use is coming from — which is the thing a user actually needs to know, and
+ * the thing an obscured field full of dots cannot tell them.
+ *
+ * The key belongs to a *saved* provider id. A row that has been renamed or
+ * never saved has no id to store against yet, so the field says so rather than
+ * failing on the button press.
+ */
+function ApiKeyField({
+  providerId,
+  status,
+  available,
+  onChanged,
+}: {
+  providerId: string;
+  status: KeyStatus | undefined;
+  available: boolean;
+  onChanged: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!available) {
+    return (
+      <Field
+        label="API key"
+        hint="This machine has no credential store Taurus can use, so the key has to come from the environment variable above."
+      >
+        <div className="settings-key-none">unavailable</div>
+      </Field>
+    );
+  }
+
+  // No status means this provider is not in the saved list: either it was just
+  // added, or its id was edited and the old key still belongs to the old id.
+  if (!status) {
+    return (
+      <Field label="API key" hint="Save this provider before storing a key for it.">
+        <div className="settings-key-none">not saved yet</div>
+      </Field>
+    );
+  }
+
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      setValue("");
+      onChanged();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stored = status.kind === "keychain" || status.kind === "overridden";
+
+  return (
+    <Field label="API key" hint={keyHint(status)}>
+      <div className="settings-key">
+        <input
+          type="password"
+          value={value}
+          disabled={busy}
+          placeholder={stored ? "replace the stored key" : "paste a key to store it"}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <button
+          disabled={busy || value.trim() === ""}
+          onClick={() => run(() => api.setProviderKey(providerId, value))}
+        >
+          Store
+        </button>
+        {stored && (
+          <button
+            className="danger"
+            disabled={busy}
+            onClick={() => run(() => api.clearProviderKey(providerId))}
+          >
+            Remove
+          </button>
+        )}
+      </div>
+      {error && <div className="settings-key-error">{error}</div>}
+    </Field>
+  );
+}
+
+/** What the field says beneath itself about where the key comes from. */
+export function keyHint(status: KeyStatus): string {
+  switch (status.kind) {
+    case "missing":
+      return "Stored in your OS keychain, never on disk and never in a config file.";
+    case "keychain":
+      return "Stored in your OS keychain and in use.";
+    case "environment":
+      return `Currently coming from $${status.variable}. A key stored here would be used only if that variable were unset.`;
+    case "overridden":
+      return `Stored here, but $${status.variable} is set and wins. Unset it for the stored key to take effect.`;
+  }
+}
+
 function ProviderForm({
   provider,
   overriddenBy,
+  keyStatus,
+  keychainAvailable,
+  onKeyChanged,
   onChange,
   onRemove,
 }: {
   provider: ProviderConfig;
   overriddenBy: string[];
+  keyStatus: KeyStatus | undefined;
+  keychainAvailable: boolean;
+  onKeyChanged: () => void;
   onChange: (patch: Partial<ProviderConfig>) => void;
   onRemove: () => void;
 }) {
@@ -293,9 +438,16 @@ function ProviderForm({
 
       {compatible && (
         <>
+          <ApiKeyField
+            providerId={provider.id}
+            status={keyStatus}
+            available={keychainAvailable}
+            onChanged={onKeyChanged}
+          />
+
           <Field
             label="API key variable"
-            hint="The name of an environment variable. The key itself is never written to disk."
+            hint="Optional. Names an environment variable that overrides the stored key — useful for CI, and the only option on machines with no keychain."
           >
             <input
               value={provider.api_key_env ?? ""}

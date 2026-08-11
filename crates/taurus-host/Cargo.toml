@@ -25,6 +25,19 @@ tokio-util.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
 
+# No default backend exists, so each platform names its own. Anything not listed
+# here — a BSD, a headless box with no Secret Service — compiles without a
+# keychain and falls back to environment variables, which `secrets` reports
+# rather than hides.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros"] }

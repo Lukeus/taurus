@@ -1370,6 +1370,34 @@ code {
   min-width: 0;
   flex: 1;
 }
+/* The key input takes the room; its buttons keep their intrinsic width so
+   "Store" and "Remove" stay side by side rather than wrapping under it. */
+.settings-key {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.settings-key input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+}
+.settings-key button {
+  flex: none;
+}
+/* Stands in for the input where there is nothing to type into: no credential
+   store, or a provider that has not been saved yet. */
+.settings-key-none {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  font-style: italic;
+  padding: 7px 0;
+}
+.settings-key-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
 /* A granted rule can be a long command pattern; it wraps rather than
    pushing the Revoke button off the edge of the drawer. */
 .rule-name {

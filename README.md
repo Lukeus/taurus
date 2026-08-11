@@ -264,7 +264,7 @@ file every other project reads.
 
 | File | Global | Workspace |
 | --- | --- | --- |
-| `providers.json` | Backends, including the header a key is sent in. Keys are referenced by env-var name, never stored. | Overrides and additions for this project. |
+| `providers.json` | Backends, including the header a key is sent in. Never the key itself — that lives in the OS keychain or an env var. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Header values and URLs may name env vars. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `search.json` | Web search backends and which one is active. Keys are referenced by env-var name, never stored. | A different backend for this project, or field overrides on an inherited one. |
 | `settings.json` | Last workspace, skill-synthesis toggle, fallback model. | The provider and model this project was last worked in. |
@@ -272,6 +272,53 @@ file every other project reads.
 | `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
 | `checkpoints/` | Pre-images of changed files, keyed by workspace like sessions and for the same reason. | — |
+
+### API keys
+
+A key never goes in a config file. Type it into Settings and it goes to the OS
+credential store — Keychain on macOS, Credential Manager on Windows, the Secret
+Service on Linux — under the service `taurus` and the provider's id. Or from a
+terminal:
+
+```bash
+taurus key set openai        # prompts, input not echoed
+taurus key set openai < key.txt
+pass show openai | taurus key set openai
+taurus key status            # where each provider's key comes from
+taurus key clear openai
+```
+
+The key is read from stdin, never from an argument: a key on the command line
+is visible to every process on the machine through `ps` and lands in the shell
+history of whoever typed it.
+
+**An environment variable wins over a stored key.** Exporting one is an
+explicit act, usually in CI or a container where no keychain exists at all, and
+a stored key silently beating it would make headless runs unpredictable. So
+`api_key_env` remains what it was, and is now optional — name a variable and it
+takes precedence, leave it unset and the stored key is used. `taurus key
+status` and the Settings field both say which one is in effect, because
+"I stored a key and it isn't being used" is otherwise a 401 that explains
+nothing:
+
+```
+$ taurus key status
+ollama               none
+openai               $OPENAI_API_KEY  (a stored key is being overridden)
+azure                keychain
+```
+
+Settings never displays a stored key, only where the key comes from. The field
+is a place to type a new one, not to review the old one — a secret handed to
+the webview lives in JavaScript memory and in whatever the DOM does with it,
+and nothing on that screen needs the value.
+
+Two things worth knowing. On macOS the keychain grants access per binary, so
+the first time the `taurus` CLI reads a key stored by the desktop app (or the
+reverse) the OS asks you to allow it; "Always Allow" makes it once. And on
+Linux the Secret Service is a running D-Bus service, not a file — on a headless
+box there may be none, in which case storing fails, `taurus key status` says
+so, and environment variables are the whole story.
 
 ### MCP servers
 
@@ -522,6 +569,7 @@ The CLI doubles as a live check on the whole stack:
 taurus tools                    # what the agent can reach
 taurus skills check             # non-zero exit if a skill is broken or degraded
 taurus mcp                      # non-zero exit if a server failed to connect
+taurus key status               # where each provider's API key comes from
 ```
 
 `skills check` and `mcp` are meant for CI on a repository that ships its own
