@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "bindings": "TS_RS_EXPORT_DIR=\"$PWD/src/bindings\" cargo test --workspace export_bindings"
+    "bindings": "node scripts/bindings.mjs"
   },
   "dependencies": {
     "@fontsource/manrope": "^5.3.0",

@@ -46,7 +46,7 @@ jobs:
       # The frontend's types come from Rust, so they must be regenerated before
       # the type check rather than committed and trusted.
       - name: Generate TypeScript bindings
-        run: TS_RS_EXPORT_DIR="$PWD/src/bindings" cargo test --workspace export_bindings
+        run: pnpm bindings
 
       - run: pnpm typecheck
       - run: pnpm test
@@ -87,9 +87,11 @@ jobs:
       # their tests on every OS even though the rest ran on Linux only.
       - run: cargo test -p taurus-tools -p taurus-skills
 
+      # Through the same script a contributor runs, in the default shell of each
+      # OS. Pinning this step to bash was what kept a Windows-only break in the
+      # script invisible to a matrix that includes Windows.
       - name: Generate TypeScript bindings
-        shell: bash
-        run: TS_RS_EXPORT_DIR="$PWD/src/bindings" cargo test --workspace export_bindings
+        run: pnpm bindings
 
       - run: pnpm build
       - run: cargo build --release -p taurus-app

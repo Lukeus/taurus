@@ -106,14 +106,29 @@ impl Tool for ReadFile {
 
         // An offset past the end is a mistake worth naming, not an empty
         // result: the model asked for a region that does not exist and needs
-        // the file's actual length to correct itself.
+        // the file's actual length to correct itself. On a truncated read that
+        // length is unknown — `lines` is only the readable prefix — and
+        // reporting it as the file's length would send the model off to correct
+        // an offset against a number that is not the file's.
         if start >= lines.len() {
-            return Err(ToolError::InvalidInput(format!(
-                "{} has {} lines; offset {} is past the end",
-                ctx.display(&path),
-                lines.len(),
-                start + 1
-            )));
+            return Err(ToolError::InvalidInput(if truncated {
+                format!(
+                    "{} is larger than the {} KB read limit; offset {} is past its readable first \
+                     {} lines, and how many more there are is not knowable this way — use grep to \
+                     locate what you need",
+                    ctx.display(&path),
+                    MAX_READ_BYTES / 1024,
+                    start + 1,
+                    lines.len()
+                )
+            } else {
+                format!(
+                    "{} has {} lines; offset {} is past the end",
+                    ctx.display(&path),
+                    lines.len(),
+                    start + 1
+                )
+            }));
         }
         let end = start.saturating_add(limit).min(lines.len());
 
@@ -480,6 +495,31 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("has 5 lines"), "{err}");
+    }
+
+    /// Past the read limit the line count is the prefix's, not the file's, and
+    /// stating it as the file's would have the model correct its offset against
+    /// a number that belongs to nothing.
+    #[tokio::test]
+    async fn an_offset_past_a_truncated_read_does_not_claim_to_know_the_length() {
+        let (ctx, dir) = test_ctx();
+        // Comfortably past the 256 KB limit at ~9 bytes a line.
+        lines_file(dir.path(), "big.txt", 40_000);
+        let err = ReadFile
+            .execute(
+                serde_json::json!({"path": "big.txt", "offset": 39_000}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("larger than the 256 KB read limit"),
+            "{message}"
+        );
+        assert!(!message.contains("has 40000 lines"), "{message}");
+        assert!(message.contains("readable first"), "{message}");
+        assert!(message.contains("grep"), "{message}");
     }
 
     #[tokio::test]

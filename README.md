@@ -260,7 +260,7 @@ for a tool the model had no reason to call. And anything a project does not want
 can be named in `settings.json`:
 
 ```json
-{ "disabled_tools": ["fetch_url", "some-server:rarely_used"] }
+{ "disabled_tools": ["fetch_url", "mcp__some-server__rarely_used"] }
 ```
 
 A disabled tool is not registered at all, so skills and sub-agents cannot reach
@@ -677,8 +677,10 @@ pnpm test                  # transcript reducer, replay, settings, rewind
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 
-# TypeScript types are generated from Rust; regenerate after changing a payload:
-TS_RS_EXPORT_DIR="$PWD/src/bindings" cargo test --workspace export_bindings
+# TypeScript types are generated from Rust; regenerate after changing a payload.
+# `src/bindings` is not committed, so this is also the first thing a fresh clone
+# needs — without it `pnpm build` cannot find a single frontend type.
+pnpm bindings
 ```
 
 ### Live checks
