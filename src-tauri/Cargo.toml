@@ -12,6 +12,19 @@ description = "Taurus AI Shell desktop application"
 name = "taurus_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# What separates a shippable binary from a dev one — and it is the feature, not
+# the profile, that decides. `tauri`'s build script sets `cfg(dev)` to
+# `!custom_protocol`, and `cfg(dev)` is what makes the webview load `devUrl`
+# instead of the bundled frontend. So `cargo build --release` without this
+# produces an optimized binary that still points at http://localhost:1420 and
+# opens on "localhost refused to connect" wherever no dev server is listening.
+#
+# `tauri build` passes `tauri/custom-protocol` itself. This exists so that a
+# plain cargo build can say the same thing, and so `lib.rs` can refuse to
+# compile a release that would ship without it.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

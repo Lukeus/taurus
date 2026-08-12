@@ -94,7 +94,11 @@ jobs:
         run: pnpm bindings
 
       - run: pnpm build
-      - run: cargo build --release -p taurus-app
+      # `custom-protocol` is what `tauri build` passes and what tells tauri this
+      # is not a dev build. Without it the binary compiles and then looks for a
+      # Vite server that is not there, which is a failure no CI step that only
+      # builds would ever see.
+      - run: cargo build --release -p taurus-app --features custom-protocol
       - run: cargo build --release -p taurus-cli
 
       # Exercises workspace resolution, skill discovery, and registry assembly
