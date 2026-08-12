@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import type { ProviderConfig, SearchSettings } from "../lib/api";
 import {
   Settings,
+  ModelList,
   blankProvider,
   keyHint,
   overrideOf,
@@ -23,6 +24,7 @@ const provider = (patch: Partial<ProviderConfig> = {}): ProviderConfig => ({
   id: "ollama",
   kind: "ollama",
   base_url: "http://localhost:11434",
+  models: [],
   default_model: null,
   api_key_env: null,
   api_key_header: null,
@@ -136,6 +138,54 @@ describe("workspace override detection", () => {
     const effective = { ...provider({ id: "ov" }) } as ProviderConfig;
     delete (effective as Partial<ProviderConfig>).api_prefix;
     expect(overrideOf(global, [effective])).toEqual([]);
+  });
+});
+
+describe("the model list", () => {
+  it("is not an override just because two equal lists are different objects", () => {
+    // `!==` on arrays compares identity, so every provider with a model list
+    // reported itself as overridden by a workspace that had not touched it.
+    const global = provider({ id: "ov", models: [{ id: "gpt-4o" }] });
+    const effective = provider({ id: "ov", models: [{ id: "gpt-4o" }] });
+    expect(overrideOf(global, [effective])).toEqual([]);
+  });
+
+  it("is named as an override when the workspace really did change it", () => {
+    const global = provider({ id: "ov", models: [{ id: "gpt-4o" }] });
+    const effective = provider({ id: "ov", models: [{ id: "o3" }] });
+    expect(overrideOf(global, [effective])).toEqual(["models"]);
+  });
+
+  it("says what an empty list means rather than showing an empty box", () => {
+    // Empty is the normal state, and "we will ask the endpoint" is not
+    // something a user can infer from nothing being there.
+    const html = renderToStaticMarkup(<ModelList models={[]} onChange={() => {}} />);
+    expect(html).toContain("asks this endpoint what it serves");
+  });
+
+  it("gives every row's controls a label naming the model they belong to", () => {
+    // Four identical unlabelled boxes per row is unusable with a screen
+    // reader, and the id is the only thing telling them apart.
+    const html = renderToStaticMarkup(
+      <ModelList models={[{ id: "gpt-4o" }]} onChange={() => {}} />,
+    );
+    expect(html).toContain("Context length for gpt-4o");
+    expect(html).toContain("Tool calling for gpt-4o");
+    expect(html).toContain("Remove gpt-4o");
+  });
+
+  it("falls back to a position when a row has no id typed yet", () => {
+    const html = renderToStaticMarkup(
+      <ModelList models={[{ id: "" }]} onChange={() => {}} />,
+    );
+    expect(html).toContain("Remove model 1");
+  });
+
+  it("says the overrides are optional once there is a row to override", () => {
+    const html = renderToStaticMarkup(
+      <ModelList models={[{ id: "gpt-4o" }]} onChange={() => {}} />,
+    );
+    expect(html).toContain("replace whatever the endpoint would list");
   });
 });
 

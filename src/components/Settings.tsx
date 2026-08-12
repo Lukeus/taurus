@@ -4,6 +4,7 @@ import * as api from "../lib/api";
 import type {
   AllowedRule,
   KeyStatus,
+  ModelEntry,
   ProviderConfig,
   ProviderKind,
   Scope,
@@ -611,7 +612,21 @@ function ProviderForm({
         />
       </Field>
 
-      <Field label="Default model">
+      {compatible && (
+        <ModelList
+          models={provider.models}
+          onChange={(models) => onChange({ models })}
+        />
+      )}
+
+      <Field
+        label="Default model"
+        hint={
+          compatible
+            ? "Which one a new conversation starts on. Optional — the first model above is used otherwise."
+            : "Which one a new conversation starts on. Optional."
+        }
+      >
         <input
           value={provider.default_model ?? ""}
           placeholder="optional"
@@ -706,6 +721,98 @@ function ProviderForm({
   );
 }
 
+/**
+ * The models this endpoint serves.
+ *
+ * Only shown for OpenAI-compatible providers. Ollama reports its own inventory
+ * *and* its own per-model capabilities, so a list here would be a second answer
+ * to a question already answered correctly.
+ *
+ * Empty is the normal state and means "ask the endpoint". Naming anything
+ * replaces that listing outright, which is what makes this usable two ways: a
+ * gateway with no `/v1/models` route can finally offer more than one model, and
+ * one that lists four hundred can be cut to the three there is quota for.
+ *
+ * The per-model overrides are here rather than only on the provider because a
+ * gateway routinely fronts models that share neither a context window nor tool
+ * support, and the wire format reports neither.
+ */
+export function ModelList({
+  models,
+  onChange,
+}: {
+  models: ModelEntry[];
+  onChange: (models: ModelEntry[]) => void;
+}) {
+  const patch = (index: number, fields: Partial<ModelEntry>) =>
+    onChange(models.map((m, i) => (i === index ? { ...m, ...fields } : m)));
+
+  return (
+    <div className="settings-field">
+      <div className="section-head">
+        <span className="micro">Models</span>
+        <button
+          className="link"
+          onClick={() => onChange([...models, { id: "" }])}
+        >
+          Add a model
+        </button>
+      </div>
+
+      <ul className="model-rows">
+        {models.map((model, i) => (
+          // Keyed by position because nothing else is stable: the id is the
+          // field being typed into, and is empty on a row just added.
+          <li key={i} className="model-row">
+            <input
+              className="mono"
+              aria-label={`Model ${i + 1} id`}
+              value={model.id}
+              placeholder="gpt-4o"
+              onChange={(e) => patch(i, { id: e.target.value })}
+            />
+            <button
+              className="quiet model-remove"
+              aria-label={`Remove ${model.id || `model ${i + 1}`}`}
+              onClick={() => onChange(models.filter((_, n) => n !== i))}
+            >
+              ✕
+            </button>
+            <div className="model-caps">
+              <input
+                inputMode="numeric"
+                aria-label={`Context length for ${model.id || `model ${i + 1}`}`}
+                value={model.context_length ?? ""}
+                placeholder="context length"
+                onChange={(e) =>
+                  patch(i, { context_length: parseContextLength(e.target.value) })
+                }
+              />
+              <select
+                aria-label={`Tool calling for ${model.id || `model ${i + 1}`}`}
+                value={triState(model.native_tools ?? null)}
+                onChange={(e) =>
+                  patch(i, { native_tools: fromTriState(e.target.value) })
+                }
+              >
+                <option value="auto">Tools: as below</option>
+                <option value="yes">Tools: native</option>
+                <option value="no">Tools: prompted</option>
+              </select>
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      <span className="hint">
+        {models.length === 0
+          ? "None named, so Taurus asks this endpoint what it serves. Add one to decide the menu yourself — the only option on a gateway with no /v1/models route."
+          : "These replace whatever the endpoint would list. Left blank, a model inherits the context length and tool calling set below."}
+      </span>
+    </div>
+  );
+}
+
 function Field({
   label,
   hint,
@@ -768,6 +875,7 @@ export function overrideOf(
   const fields: (keyof ProviderConfig)[] = [
     "kind",
     "base_url",
+    "models",
     "default_model",
     "api_key_env",
     "api_key_header",
@@ -775,7 +883,21 @@ export function overrideOf(
     "context_length",
     "api_prefix",
   ];
-  return fields.filter((field) => (global[field] ?? null) !== (match[field] ?? null));
+  return fields.filter((field) => !same(global[field], match[field]));
+}
+
+/**
+ * Whether two config values are the same setting.
+ *
+ * `models` is a list, so `!==` on it reports an override for every provider
+ * that has one — two equal arrays are never the same object. Compared by
+ * content instead; everything else is a scalar and compares as one.
+ */
+function same(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+  }
+  return (a ?? null) === (b ?? null);
 }
 
 /** Duplicate ids and missing required fields, as sentences. */
@@ -809,6 +931,7 @@ export function blankProvider(existing: ProviderConfig[]): ProviderConfig {
     id,
     kind: "open_ai_compatible",
     base_url: "",
+    models: [],
     default_model: null,
     api_key_env: null,
     api_key_header: null,

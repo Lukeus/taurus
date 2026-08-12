@@ -18,7 +18,7 @@ use taurus_core::{Agent, AgentConfig, SpawnSubagent};
 use taurus_mcp::{McpManager, ServerStatus};
 use taurus_provider::Provider;
 use taurus_provider_ollama::OllamaProvider;
-use taurus_provider_openai::{OpenAiCapabilities, OpenAiProvider};
+use taurus_provider_openai::{ModelSpec, OpenAiCapabilities, OpenAiProvider};
 use taurus_skills::catalog::{SkillCatalog, SkillSource};
 use taurus_skills::proposal::ProposalSink;
 use taurus_skills::skill::{SkillSummary, SkillTier};
@@ -259,7 +259,19 @@ impl Host {
                         },
                     )
                     .with_api_prefix(config.api_prefix.clone())
-                    .with_api_key_header(config.api_key_header.clone()),
+                    .with_api_key_header(config.api_key_header.clone())
+                    .with_models(
+                        config
+                            .models
+                            .iter()
+                            .map(|m| ModelSpec {
+                                id: m.id.clone(),
+                                display_name: m.display_name.clone(),
+                                context_length: m.context_length,
+                                native_tools: m.native_tools,
+                            })
+                            .collect(),
+                    ),
                 )
             }
         })

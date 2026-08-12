@@ -1,43 +1,87 @@
 /*
  * One stylesheet, no framework. The UI is small enough that a build-time CSS
  * pipeline would cost more than it saves, and Tauri's CSP forbids remote
- * stylesheets anyway.
+ * stylesheets anyway — which is why the three typefaces below are installed as
+ * packages and bundled, not pulled from Google Fonts the way the design system
+ * describes them.
  *
- * The palette is a surface ladder rather than a set of one-off colours: the
- * window sits at --bg, a panel raised off it at --bg-raised, and anything
- * inset back into a panel — code, a preview, a row of output — drops to
- * --bg-sunken. Two weights of line separate them: --border where an edge is
- * structural, --rule for the hairlines inside a panel. Boxes inside boxes are
- * what the ladder exists to avoid.
+ * The palette is the Lukeus system: an ink base, three surfaces stepped up off
+ * it, one hairline weight, and cyan as the single lead accent. Peach and mint
+ * are secondary signals, spent sparingly — a surface that is 5% accent reads as
+ * signal, one that is 30% reads as decoration.
+ *
+ * Those raw values are only ever named once, at the top. Everything below
+ * speaks in roles instead: the window sits at --bg, a panel raised off it at
+ * --bg-raised, and anything inset back into a panel — code, a preview, a row of
+ * output — drops to --bg-sunken. Boxes inside boxes are what the ladder exists
+ * to avoid.
+ *
+ * The system is dark-only, so the light theme below is this app's own
+ * derivation rather than something it ships. It restates the raw tokens and
+ * nothing else, which is the point of naming them separately: the roles, the
+ * ladder, and every rule in the file are written once and mean the same thing
+ * under both.
  */
 
 :root {
-  --bg: #0b0d12;
-  --bg-rail: #0f1218;
-  --bg-raised: #0f1218;
-  --bg-sunken: #0b0d12;
-  --bg-elevated: #12151d;
-  --bg-hover: #161a23;
-  --bg-active: #1c212c;
+  /* --------------------------------------------- Lukeus tokens, as authored */
+  --lk-ink: #0b0f14;
+  --lk-surface-1: #121922;
+  --lk-surface-2: #1a232e;
+  --lk-line: #243140;
+  /* Between surface-1 and surface-2, so a hover reads as on the way to a
+     selected row rather than as one already. Not in the system; the system has
+     no hover step, and one row landing straight on the selected colour made
+     every list look like it had two selections. */
+  --lk-surface-hover: #161e28;
+
+  --lk-text: #eef2f6;
+  --lk-text-dim: #90a0b0;
+  --lk-text-faint: #5c6a78;
+
+  --lk-cyan: #7cd2ff;
+  --lk-cyan-hover: #a4e0ff;
+  /* What sits *on* cyan. Ink on light cyan here; the light theme inverts both
+     halves and needs its own answer. */
+  --lk-on-cyan: var(--lk-ink);
+  --lk-peach: #ffbb7c;
+  --lk-mint: #a3ffb0;
+  /* The system's three accents carry no "wrong" signal, so the red the design
+     reaches for on failures and destructive actions is named here with them. */
+  --lk-red: #ff9a9a;
+
+  --lk-display: "Space Grotesk";
+  --lk-body: "Manrope";
+  --lk-mono-face: "Source Code Pro";
+
+  /* ------------------------------------------------------ roles, in surfaces */
+  --bg: var(--lk-ink);
+  --bg-rail: var(--lk-surface-1);
+  --bg-raised: var(--lk-surface-1);
+  --bg-sunken: var(--lk-ink);
+  --bg-elevated: var(--lk-surface-2);
+  --bg-hover: var(--lk-surface-hover);
+  --bg-active: var(--lk-surface-2);
   /* A tool row that wrote something, tinted just enough to group. */
-  --bg-row: #141821;
+  --bg-row: color-mix(in srgb, var(--lk-surface-2) 40%, var(--lk-surface-1));
 
-  --border: #262a35;
-  --rule: #1d222d;
-  --border-strong: #2c3243;
+  /* One hairline weight. The ladder does the separating; the line only has to
+     mark where a surface ends. */
+  --border: var(--lk-line);
+  --rule: var(--lk-line);
 
-  --text: #e7e9ef;
-  --text-dim: #98a0b0;
-  --text-faint: #656c7c;
+  --text: var(--lk-text);
+  --text-dim: var(--lk-text-dim);
+  --text-faint: var(--lk-text-faint);
 
-  --accent: #8c9bff;
-  --accent-hover: #a9b4ff;
-  --accent-soft: #c9cfff;
-  --on-accent: #0b0d12;
+  --accent: var(--lk-cyan);
+  --accent-hover: var(--lk-cyan-hover);
+  --accent-soft: var(--lk-cyan);
+  --on-accent: var(--lk-on-cyan);
 
-  --ok: #4ade80;
-  --warn: #fbbf24;
-  --danger: #f87171;
+  --ok: var(--lk-mint);
+  --warn: var(--lk-peach);
+  --danger: var(--lk-red);
 
   --r-sm: 6px;
   --r: 9px;
@@ -45,42 +89,71 @@
   --r-lg: 12px;
   --r-xl: 14px;
 
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  /* The tracking every mono micro-label shares. One value, so a tag, a section
+     label and a run header line up as the same kind of thing. */
+  --tracking-label: 0.1em;
+
+  --mono: var(--lk-mono-face), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: var(--lk-body), -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    sans-serif;
+  /* Headings only — titles, not prose. A reply's own markdown headings stay in
+     the body face so an answer never reads as a landing page. */
+  --display: var(--lk-display), var(--sans);
+
+  /* What separates a modal from the app behind it. Both are restated in light,
+     where far less black does the same job. */
+  --scrim: rgba(0, 0, 0, 0.55);
+  --lift: 0 18px 48px rgba(0, 0, 0, 0.5);
 }
 
 /*
- * The same ladder read the other way up. Roles are preserved rather than
- * inverted one colour at a time: --bg-sunken is still the inset surface, so
- * in light it is *darker* than the panel it sits in, not lighter.
+ * The same system in light.
+ *
+ * Derived rather than shipped: the Lukeus palette is dark-only, so these are
+ * this app's answer to a question the design system does not ask. Only the raw
+ * tokens are restated — every role below is written in terms of them, so the
+ * ladder, the hairline, and which surface is inset stay exactly as they are in
+ * dark. --bg-sunken is still the inset one, which in light makes it *darker*
+ * than the panel it sits in rather than lighter.
+ *
+ * The accents cannot simply be reused. Cyan at #7cd2ff carries 11:1 against
+ * ink and 1.6:1 against white — the same colour that leads the dark theme is
+ * invisible in the light one. Each is re-picked at the same job and the same
+ * hue, dark enough to clear 4.5:1 on all three surfaces, which is why they
+ * read as deeper here rather than pastel.
  */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #fbfbfd;
-    --bg-rail: #f2f3f8;
-    --bg-raised: #ffffff;
-    --bg-sunken: #f4f5fa;
-    --bg-elevated: #ffffff;
-    --bg-hover: #eceef5;
-    --bg-active: #e2e5f0;
-    --bg-row: #f6f7fc;
+    --lk-ink: #f7f9fb;
+    --lk-surface-1: #ffffff;
+    --lk-surface-2: #eaeff5;
+    --lk-line: #d3dce6;
+    --lk-surface-hover: #f4f7fa;
 
-    --border: #d8dbe4;
-    --rule: #e7e9f0;
-    --border-strong: #c7cbd8;
+    --lk-text: #0d141c;
+    --lk-text-dim: #4c5b6b;
+    /* Carries the 10px micro-labels, so it is the one that has to be darkest
+       relative to its job — small text needs more contrast, not less. */
+    --lk-text-faint: #5b6b7c;
 
-    --text: #12141a;
-    --text-dim: #565d6e;
-    --text-faint: #858b9b;
+    --lk-cyan: #0a6f9c;
+    --lk-cyan-hover: #08587c;
+    /* Cyan is now the dark half of the pair, so what sits on it inverts. */
+    --lk-on-cyan: #ffffff;
+    --lk-peach: #9a5b12;
+    --lk-mint: #0f7a33;
+    --lk-red: #c0343c;
 
-    --accent: #4c5bd4;
-    --accent-hover: #3a48be;
-    --accent-soft: #3a48be;
-    --on-accent: #ffffff;
+    /* A scrim's job is to push a panel back, and on a light ground it takes
+       much less black to do it — 55% here reads as the lights going out. */
+    --scrim: rgba(15, 25, 35, 0.28);
+    --lift: 0 14px 40px rgba(15, 25, 35, 0.16);
+  }
 
-    --ok: #16a34a;
-    --warn: #b45309;
-    --danger: #dc2626;
+  /* Thinning strokes is what antialiased does, which helps light text on a
+     dark ground and hurts the reverse. */
+  body {
+    -webkit-font-smoothing: auto;
   }
 }
 
@@ -195,7 +268,7 @@ code {
 .micro {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: 0.16em;
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -224,7 +297,7 @@ code {
 .tag {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: 0.1em;
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   padding: 2px 8px;
   border-radius: 999px;
@@ -273,13 +346,54 @@ code {
 /* ------------------------------------------------------------------- rail */
 
 .rail {
-  width: 236px;
   flex: none;
   background: var(--bg-rail);
-  border-right: 1px solid var(--rule);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Width is the user's, set inline by the handle beside it. */
+}
+
+/*
+ * The edge you drag to size a pane.
+ *
+ * At rest it is the hairline it replaces, drawn one pixel wide down the middle
+ * of a five-pixel target — the line stays a line, and the thing you have to hit
+ * with a mouse is five times bigger than it looks. Negative margin pulls that
+ * target back over the edge it sits on so the panes stay flush.
+ */
+.rail-handle {
+  flex: none;
+  width: 5px;
+  margin-left: -3px;
+  position: relative;
+  z-index: 2;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  cursor: col-resize;
+  transition: background 0.12s;
+}
+.rail-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0 2px;
+  background: var(--rule);
+}
+.rail-handle:hover,
+.rail-handle:focus-visible {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.rail-handle.dragging {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* The pointer must not change to a text caret the moment the drag leaves the
+   five pixels it started in, which it does within about one frame. */
+body.resizing,
+body.resizing * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 /* Clears the macOS traffic lights, which float over this corner. */
@@ -577,6 +691,7 @@ code {
   gap: 8px;
 }
 .hero-copy h1 {
+  font-family: var(--display);
   font-size: 24px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -711,7 +826,7 @@ code {
 .run-steps {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.14em;
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   color: var(--text-dim);
 }
@@ -834,7 +949,7 @@ code {
 .working {
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.14em;
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -936,7 +1051,7 @@ code {
   flex: 1;
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.14em;
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -1057,7 +1172,7 @@ code {
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1065,12 +1180,12 @@ code {
 }
 
 .dialog {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
   border-radius: var(--r-xl);
   padding: 20px;
   width: min(560px, 90vw);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--lift);
 }
 .dialog-head {
   display: flex;
@@ -1078,6 +1193,7 @@ code {
   gap: 10px;
 }
 .dialog-head h2 {
+  font-family: var(--display);
   font-size: 16px;
   margin: 0;
   font-weight: 600;
@@ -1086,7 +1202,7 @@ code {
   font-family: var(--mono);
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.14em;
+  letter-spacing: var(--tracking-label);
   padding: 3px 8px;
   border-radius: 4px;
   border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
@@ -1158,6 +1274,7 @@ code {
   color: var(--accent);
 }
 .proposal-head h3 {
+  font-family: var(--display);
   margin: 0;
   font-size: 15px;
   font-weight: 600;
@@ -1184,7 +1301,7 @@ code {
 .proposal-meta dt {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: 0.14em;
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   color: var(--text-faint);
   padding-top: 2px;
@@ -1221,7 +1338,9 @@ code {
 .drawer {
   margin-left: auto;
   height: 100%;
-  width: min(460px, 92vw);
+  width: 440px;
+  max-width: 92vw;
+  flex: none;
   background: var(--bg-raised);
   border-left: 1px solid var(--border);
   padding: 18px;
@@ -1230,12 +1349,30 @@ code {
   flex-direction: column;
   gap: 16px;
 }
+/* A drawer the user can size carries its handle on the edge facing the app,
+   which is its left one — it is pinned to the right of the window, so the room
+   it can take is all in that direction. */
+.drawer-dock {
+  margin-left: auto;
+  height: 100%;
+  display: flex;
+  min-width: 0;
+}
+.drawer-dock .drawer {
+  margin-left: 0;
+  border-left: none;
+}
+.drawer-dock .rail-handle {
+  margin-left: 0;
+  margin-right: -3px;
+}
 .drawer-head {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 .drawer-head h2 {
+  font-family: var(--display);
   font-size: 16px;
   margin: 0;
   flex: 1;
@@ -1314,7 +1451,7 @@ code {
    faint grey the rest of the micro-labels use. */
 .card-row .micro.turn-no {
   color: var(--accent);
-  letter-spacing: 0.14em;
+  letter-spacing: var(--tracking-label);
 }
 .rewind-open {
   margin-top: 6px;
@@ -1452,6 +1589,53 @@ button.link:hover {
 .settings-key-error {
   font-size: 12px;
   color: var(--danger);
+}
+
+/*
+ * One row per model the provider serves.
+ *
+ * Two lines rather than four columns: an id, a context length and a tool-call
+ * mode do not fit across a drawer at any width worth having, and the id is the
+ * only one of them anybody scans down the list for. So the id leads its own
+ * line with the remove button, and the overrides sit under it — indented, so a
+ * row reads as one thing and the ids stay in a column.
+ */
+.model-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.model-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px 7px;
+  align-items: center;
+}
+.model-row input,
+.model-row select {
+  min-width: 0;
+  width: 100%;
+}
+.model-remove {
+  padding: 5px 8px;
+  color: var(--text-faint);
+}
+.model-caps {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 7px;
+  padding-left: 12px;
+  border-left: 1px solid var(--rule);
+}
+.model-caps input {
+  flex: 1;
+}
+.model-caps select {
+  flex: none;
+  max-width: 46%;
 }
 
 /* A granted rule can be a long command pattern; it wraps rather than

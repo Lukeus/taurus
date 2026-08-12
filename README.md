@@ -446,6 +446,7 @@ prefix:
   "api_prefix": "/openai/v1",
   "api_key_env": "APIM_SUBSCRIPTION_KEY",
   "api_key_header": "Ocp-Apim-Subscription-Key",
+  "models": ["gpt-4o", "gpt-4o-mini", "o3"],
   "default_model": "gpt-4o",
   "context_length": 128000
 }
@@ -464,10 +465,37 @@ Two other fields matter more here than elsewhere:
   deployment name in the path and requires an `api-version` query parameter;
   Taurus cannot express either, so point it at the `/openai/v1` route, or at an
   APIM route whose policy supplies them.
-- **`default_model`.** A gateway need not expose `/v1/models`, and without a
-  listing there is nothing to pick from. Set this and Taurus uses it rather
-  than asking. Without it, and with no listing, the error says so instead of
-  reporting an unreachable backend.
+- **`models`.** A gateway need not expose `/v1/models`, and plenty of the ones
+  that do answer with an inventory rather than an entitlement — every model the
+  vendor sells, including the ones this key cannot call. Naming models here
+  replaces that listing outright: what is listed is what the picker offers, and
+  no request is made to find out. Leave it out and Taurus asks, which is right
+  for Ollama and for any endpoint that answers usefully.
+
+  An entry is either a bare id or an object, so the common case stays one word:
+
+  ```jsonc
+  "models": [
+    "gpt-4o",
+    { "id": "llama-3.1-8b", "context_length": 8192, "native_tools": false }
+  ]
+  ```
+
+  The overrides matter because an OpenAI-compatible endpoint reports no
+  capabilities at all, and one gateway commonly fronts models that share
+  neither a context window nor tool support — told the provider-wide 128000
+  above, an 8k model compacts tens of thousands of tokens too late. Anything
+  left unset inherits the provider's own value, so a bare id means exactly what
+  it did before these existed.
+
+  A workspace layer *replaces* this list rather than adding to it. Appending
+  could not express dropping a model, and a workspace that names models is
+  saying which ones it wants.
+
+- **`default_model`.** Which of them a new conversation starts on. Optional —
+  the first model is used otherwise. It also still works alone, without
+  `models`, which is all a single-model gateway ever needed. With neither, and
+  no listing, the error says so instead of reporting an unreachable backend.
 
 ### Intel hardware, and other backends
 

@@ -197,7 +197,18 @@ pub struct ProviderConfig {
     pub id: String,
     pub kind: ProviderKind,
     pub base_url: String,
-    /// Default model to select when this provider is chosen.
+    /// The models this backend serves, when it will not say so itself.
+    ///
+    /// Empty means ask the backend — right for Ollama and for anything that
+    /// answers `/v1/models` usefully. A non-empty list *is* the menu: the
+    /// listing endpoint is not called at all, so a gateway that advertises
+    /// four hundred models nobody has quota for can be cut down to the three
+    /// that work.
+    #[serde(default)]
+    pub models: Vec<ModelEntry>,
+    /// Which of them to select first. Not a substitute for `models` — a
+    /// provider can name a default without listing anything, and did so
+    /// before `models` existed.
     #[serde(default)]
     pub default_model: Option<String>,
     /// Name of the environment variable holding the API key.
@@ -238,6 +249,95 @@ pub enum ProviderKind {
     OpenAiCompatible,
 }
 
+/// One model a provider serves.
+///
+/// Written either way round in `providers.json`, because most entries have
+/// nothing to say beyond their own name:
+///
+/// ```jsonc
+/// "models": [
+///   "gpt-4o",
+///   { "id": "llama-3.1-8b", "context_length": 8192, "native_tools": false }
+/// ]
+/// ```
+///
+/// The overrides exist because an OpenAI-compatible endpoint reports no
+/// capabilities at all, and one gateway commonly fronts models that do not
+/// share them. Left unset a model inherits the provider's own values, so the
+/// shorthand above means exactly what a bare id meant before.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct ModelEntry {
+    pub id: String,
+    /// What the picker shows. Defaults to the id, which is what a raw
+    /// `/v1/models` listing gives and what most deployments want.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Overrides the provider's, for a model that does not share it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_tools: Option<bool>,
+}
+
+impl ModelEntry {
+    /// The bare-id form, which is what the shorthand and the UI both produce.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            display_name: None,
+            context_length: None,
+            native_tools: None,
+        }
+    }
+
+    /// What to show in a picker.
+    pub fn label(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(&self.id)
+    }
+}
+
+/*
+ * Accepts the string shorthand as well as the full object.
+ *
+ * Serialization deliberately does not mirror it: everything is written back as
+ * an object, so the UI has one shape to edit and the file has one shape to
+ * read. A hand-written `["gpt-4o"]` keeps working and becomes `[{"id": ...}]`
+ * the first time Settings saves that provider.
+ */
+impl<'de> Deserialize<'de> for ModelEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Id(String),
+            Full {
+                id: String,
+                #[serde(default)]
+                display_name: Option<String>,
+                #[serde(default)]
+                context_length: Option<u32>,
+                #[serde(default)]
+                native_tools: Option<bool>,
+            },
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Id(id) => Self::new(id),
+            Wire::Full {
+                id,
+                display_name,
+                context_length,
+                native_tools,
+            } => Self {
+                id,
+                display_name,
+                context_length,
+                native_tools,
+            },
+        })
+    }
+}
+
 impl ProviderConfig {
     /// The key to send, from the environment if a variable names one and the
     /// credential store otherwise.
@@ -264,6 +364,11 @@ pub struct ProviderEntry {
     pub kind: Option<ProviderKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// Replaces the inherited list wholesale rather than adding to it — a
+    /// workspace that names models is stating which ones it wants, and an
+    /// append could not express dropping one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<ModelEntry>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -290,6 +395,9 @@ impl ProviderEntry {
         // A set-to-null in the file parses as `None`, which reads as "inherit"
         // rather than "clear". Clearing an inherited value is not expressible,
         // and has not been worth the double-Option it would cost.
+        if let Some(models) = &self.models {
+            base.models = models.clone();
+        }
         if self.default_model.is_some() {
             base.default_model = self.default_model.clone();
         }
@@ -328,6 +436,7 @@ impl ProviderEntry {
             id: self.id,
             kind,
             base_url,
+            models: self.models.unwrap_or_default(),
             default_model: self.default_model,
             api_key_env: self.api_key_env,
             api_key_header: self.api_key_header,
@@ -344,6 +453,9 @@ impl From<&ProviderConfig> for ProviderEntry {
             id: config.id.clone(),
             kind: Some(config.kind),
             base_url: Some(config.base_url.clone()),
+            // An empty list is "ask the backend", which is also what omitting
+            // the field means — so it is omitted rather than written as `[]`.
+            models: Some(config.models.clone()).filter(|m| !m.is_empty()),
             default_model: config.default_model.clone(),
             api_key_env: config.api_key_env.clone(),
             api_key_header: config.api_key_header.clone(),
@@ -359,6 +471,7 @@ fn default_providers() -> Vec<ProviderConfig> {
         id: "ollama".into(),
         kind: ProviderKind::Ollama,
         base_url: taurus_provider_ollama::DEFAULT_BASE_URL.into(),
+        models: Vec::new(),
         default_model: None,
         api_key_env: None,
         api_key_header: None,
@@ -657,6 +770,71 @@ mod tests {
     fn write(path: PathBuf, body: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn a_model_entry_reads_as_a_bare_string_or_as_an_object() {
+        // The shorthand is what most entries want to be, and what every
+        // hand-written config that predates the overrides already is.
+        let entries: Vec<ModelEntry> = serde_json::from_str(
+            r#"["gpt-4o", {"id": "llama-3.1-8b", "context_length": 8192, "native_tools": false}]"#,
+        )
+        .expect("both spellings must parse");
+
+        assert_eq!(entries[0], ModelEntry::new("gpt-4o"));
+        assert_eq!(entries[1].context_length, Some(8192));
+        assert_eq!(entries[1].native_tools, Some(false));
+        // Unset is not `false`: it means "inherit the provider's".
+        assert_eq!(entries[0].native_tools, None);
+    }
+
+    #[test]
+    fn a_model_labels_itself_with_its_id_until_told_otherwise() {
+        assert_eq!(ModelEntry::new("gpt-4o").label(), "gpt-4o");
+        let named = ModelEntry {
+            display_name: Some("GPT-4o".into()),
+            ..ModelEntry::new("gpt-4o")
+        };
+        assert_eq!(named.label(), "GPT-4o");
+    }
+
+    #[test]
+    fn a_workspace_replaces_the_model_list_rather_than_adding_to_it() {
+        // Appending could not express dropping one, and a workspace that names
+        // models is stating which it wants — not which to add to someone
+        // else's list.
+        let mut base = ProviderConfig {
+            id: "apim".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: "https://gateway".into(),
+            models: vec![ModelEntry::new("gpt-4o"), ModelEntry::new("o3")],
+            default_model: None,
+            api_key_env: None,
+            api_key_header: None,
+            native_tools: None,
+            context_length: None,
+            api_prefix: None,
+        };
+
+        ProviderEntry {
+            id: "apim".into(),
+            models: Some(vec![ModelEntry::new("gpt-4o-mini")]),
+            ..ProviderEntry::default()
+        }
+        .apply_to(&mut base);
+        assert_eq!(base.models, vec![ModelEntry::new("gpt-4o-mini")]);
+
+        // Saying nothing about models leaves the inherited list alone, which is
+        // the whole point of the overlay: retarget a base URL without
+        // restating the menu.
+        ProviderEntry {
+            id: "apim".into(),
+            base_url: Some("https://other".into()),
+            ..ProviderEntry::default()
+        }
+        .apply_to(&mut base);
+        assert_eq!(base.models, vec![ModelEntry::new("gpt-4o-mini")]);
+        assert_eq!(base.base_url, "https://other");
     }
 
     #[test]

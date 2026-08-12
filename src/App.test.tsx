@@ -39,12 +39,13 @@ const state = {
 vi.mock("./state/store", () => ({ useStore: () => state }));
 
 import type { ProviderConfig } from "./lib/api";
-import App, { currentProvider } from "./App";
+import App, { currentProvider, offered } from "./App";
 
 const provider = (id: string): ProviderConfig => ({
   id,
   kind: "open_ai_compatible",
   base_url: `http://${id}`,
+  models: [],
   default_model: null,
   api_key_env: null,
   api_key_header: null,
@@ -82,6 +83,61 @@ describe("which provider the header shows", () => {
 
   it("reports nothing when no providers are configured", () => {
     expect(currentProvider([], undefined, "openai")).toBeUndefined();
+  });
+});
+
+describe("what the model picker offers", () => {
+  const listed = [
+    { id: "gpt-4o", display_name: "gpt-4o", context_length: null },
+    { id: "o3", display_name: "o3", context_length: null },
+  ];
+
+  it("shows what the backend listed, when it listed anything", () => {
+    expect(offered(listed, provider("openai")).map((m) => m.id)).toEqual([
+      "gpt-4o",
+      "o3",
+    ]);
+  });
+
+  it("falls back to the models the config names when the listing fails", () => {
+    // The reported bug: a gateway with no /v1/models route left the picker
+    // saying "no models" while a conversation ran on one of them.
+    const gateway = {
+      ...provider("apim"),
+      models: [{ id: "gpt-4o" }, { id: "o3" }],
+    };
+    expect(offered("failed", gateway).map((m) => m.id)).toEqual(["gpt-4o", "o3"]);
+  });
+
+  it("labels a configured model by its display name when it has one", () => {
+    const gateway = {
+      ...provider("apim"),
+      models: [{ id: "llama-3.1-8b", display_name: "Llama 3.1 8B" }],
+    };
+    expect(offered("failed", gateway)[0].display_name).toBe("Llama 3.1 8B");
+  });
+
+  it("still offers a lone default_model, which is all older configs have", () => {
+    const gateway = { ...provider("apim"), default_model: "gpt-4o" };
+    expect(offered("failed", gateway).map((m) => m.id)).toEqual(["gpt-4o"]);
+  });
+
+  it("keeps the running model selectable even when nothing listed it", () => {
+    // Otherwise the <select> has no matching option and displays its first
+    // one, naming a model the conversation is not on.
+    const gateway = { ...provider("apim"), models: [{ id: "gpt-4o" }] };
+    const ids = offered("failed", gateway, "retired-model").map((m) => m.id);
+    expect(ids).toContain("retired-model");
+    expect(ids).toContain("gpt-4o");
+  });
+
+  it("does not repeat the running model when the list already has it", () => {
+    expect(offered(listed, provider("openai"), "o3")).toHaveLength(2);
+  });
+
+  it("offers nothing when there is nothing to offer", () => {
+    expect(offered("failed", provider("apim"))).toEqual([]);
+    expect(offered(null, undefined)).toEqual([]);
   });
 });
 

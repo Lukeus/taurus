@@ -27,6 +27,7 @@ import type { SaveTarget } from "../bindings/SaveTarget";
 import type { Scope } from "../bindings/Scope";
 import type { SearchBackend } from "../bindings/SearchBackend";
 import type { SearchSettings } from "../bindings/SearchSettings";
+import type { ModelEntry } from "../bindings/ModelEntry";
 import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
@@ -40,6 +41,7 @@ export type {
   CreatedSession,
   KeyStatus,
   Message,
+  ModelEntry,
   ModelInfo,
   PermissionDecision,
   PermissionRequest,

@@ -55,6 +55,16 @@ describe("rendering", () => {
     expect(html).toContain("Changes");
   });
 
+  it("carries an edge the user can drag it wider by", () => {
+    const html = renderToStaticMarkup(
+      <ChangesDrawer sessionId="s1" busy={false} onClose={() => {}} />,
+    );
+    expect(html).toContain('role="separator"');
+    expect(html).toContain("Changes drawer width");
+    // Opened at the design's width, before anything is dragged or remembered.
+    expect(html).toContain("width:440px");
+  });
+
   it("shows no empty-state message until the list has actually arrived", () => {
     // `null` means "not loaded"; only an empty array means "nothing here".
     // Conflating them flashes "no changes" on every open.
