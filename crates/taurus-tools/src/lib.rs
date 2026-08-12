@@ -7,6 +7,7 @@ pub mod env;
 pub mod path_guard;
 pub mod permission;
 pub mod registry;
+pub mod schema;
 pub mod tool;
 
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, TurnRecorder};

@@ -225,6 +225,89 @@ and `edit_file`. A file that was not text when it was recorded is reported as
 `skipped` rather than silently left as the model made it, and `taurus rewind`
 exits non-zero when anything could not be put back.
 
+### The context window
+
+A local 8k model runs out of room in a way a hosted 200k one does not, so the
+budget is managed rather than hoped for. Three things do the work.
+
+**Reads come back a window at a time.** `read_file` returns 2000 lines by
+default and takes `offset` and `limit` for the rest. Line numbers stay absolute,
+so a number from a windowed read still means what it says, and a partial answer
+always says it is partial — a window that does not announce itself is
+indistinguishable from a short file, and a model that thinks it read the whole
+thing will act on what is missing.
+
+**Old tool output shrinks before anything is summarized.** Tool results are most
+of what a working session holds, and every byte is re-sent on each iteration of
+the turn. When history crosses the compaction threshold, two cheap rules run
+first, with no model call involved: a result whose call was later repeated with
+the same input is dropped down to a pointer at the newer one, and results older
+than the verbatim tail keep their first few lines and say what went. Only if
+that does not get under budget is the older half summarized. The block itself
+always stays either way — replacing its text keeps every tool call paired with a
+result, which is the thing providers actually validate.
+
+**Nothing is advertised that the prompt cannot explain.** Every tool's schema
+goes out with every request — not once per session, once per iteration of every
+turn — so it is the one part of the prompt that is pure overhead. Three things
+keep it down. Schemas are slimmed on the way out: `$schema`, the Rust struct
+name `schemars` leaves in `title`, `"default": null`, and integer-width formats
+are dropped, which is about a quarter of the built-in schema bytes and applies
+to MCP servers' schemas too. `propose_skill` is only registered when skill
+synthesis is on, matching the prompt section that explains it — it is the
+largest schema here, and offering it while saying nothing about it was paying
+for a tool the model had no reason to call. And anything a project does not want
+can be named in `settings.json`:
+
+```json
+{ "disabled_tools": ["fetch_url", "some-server:rarely_used"] }
+```
+
+A disabled tool is not registered at all, so skills and sub-agents cannot reach
+it either — a tool hidden from the model but still callable would be a
+permission gap wearing a token-saving costume. A name matching nothing is
+reported rather than ignored, because a typo otherwise looks exactly like a tool
+that is quietly still on.
+
+**Where it went is a question you can ask.**
+
+```bash
+taurus usage            # this workspace's most recent session, by tool
+taurus usage --all      # every session in this workspace
+```
+
+```
+Turns              1
+Messages           16
+Billed by provider 20,440 in / 496 out
+Transcript holds   ~1,407 tokens
+
+Tool                    calls    ~tokens   share
+read_file                   7      1,144    100%
+
+Sent again with every request  ~1,982 tokens
+  system prompt                 430
+  10 tool schemas             1,552
+
+Heaviest tool schemas
+  propose_skill                 456
+  read_file                     166
+  run_command                   160
+  edit_file                     156
+  run_skill_script              151
+  5 more                        463
+```
+
+The gap between the first two figures is the point: a transcript holding 1,407
+tokens billed 20,440, and the bottom half is where the difference went — ~1,982
+tokens of fixed overhead on each of seven requests. Per-tool numbers are
+estimates, since a provider reports one total per request and never says which
+part of the prompt was whose, but they use the same arithmetic that drives
+compaction, so the report and the trigger cannot disagree. They are read back
+out of the transcript rather than tracked beside it, for the reason the
+transcript format already gives: a second copy of the truth can disagree with
+it.
+
 ### Output formatting
 
 Models answer in markdown, so both frontends render it.

@@ -11,6 +11,7 @@ mod render;
 mod rewind_cmd;
 mod session;
 mod skills_cmd;
+mod usage_cmd;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -102,6 +103,19 @@ enum Command {
     Tools {
         #[command(flatten)]
         session: SessionArgs,
+    },
+    /// Show what a session spent its context window on, by tool.
+    Usage {
+        #[command(flatten)]
+        session: SessionArgs,
+
+        /// Session to inspect. Defaults to this workspace's most recent.
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+
+        /// Total every session in this workspace instead of one.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
     },
 }
 
@@ -351,6 +365,14 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 eprintln!("problem: {problem}");
             }
             Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Usage { session, id, all } => {
+            let host = build_host(&session, Policy::default()).await?.host;
+            let workspace = host.workspace().await;
+            let fixed =
+                usage_cmd::Fixed::new(&host.system_prompt().await, host.tool_definitions().await);
+            usage_cmd::run(&workspace, id.as_deref(), all, &fixed)
         }
     }
 }

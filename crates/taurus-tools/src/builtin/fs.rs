@@ -9,6 +9,14 @@ use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError,
 /// Guards against a single read blowing the model's context window.
 const MAX_READ_BYTES: usize = 256 * 1024;
 
+/// Lines returned when the caller does not ask for a range.
+///
+/// A file read is usually the largest thing a turn puts into the context
+/// window, and it stays there for every later iteration of that turn. Returning
+/// a window by default makes the common case — a long file the model needs one
+/// region of — cost what the region costs rather than what the file costs.
+const DEFAULT_READ_LINES: usize = 2000;
+
 /// The `path` argument, for the tools whose whole effect is on one file.
 ///
 /// Reads the raw JSON rather than the parsed input struct because a checkpoint
@@ -27,6 +35,12 @@ fn touched_path(input: &serde_json::Value) -> Vec<String> {
 pub struct ReadFileInput {
     /// Path to the file, relative to the workspace root or absolute within it.
     pub path: String,
+    /// 1-based line to start at. Defaults to the start of the file.
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// How many lines to return. Defaults to 2000.
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 pub struct ReadFile;
@@ -38,7 +52,8 @@ impl Tool for ReadFile {
     }
     fn description(&self) -> &str {
         "Read a file's contents. Prefer this over running `cat`. Returns the text with 1-based \
-         line numbers so you can reference specific lines."
+         line numbers so you can reference specific lines. Long files come back one window at a \
+         time; pass `offset` and `limit` to ask for the part you need instead of the whole file."
     }
     fn input_schema(&self) -> serde_json::Value {
         schema_for::<ReadFileInput>()
@@ -85,15 +100,57 @@ impl Tool for ReadFile {
             return Ok(format!("{} is empty.", ctx.display(&path)));
         }
 
-        let mut out = String::with_capacity(text.len() + text.lines().count() * 6);
-        for (i, line) in text.lines().enumerate() {
-            out.push_str(&format!("{:>5}\t{line}\n", i + 1));
+        let lines: Vec<&str> = text.lines().collect();
+        let start = input.offset.unwrap_or(1).max(1) - 1;
+        let limit = input.limit.unwrap_or(DEFAULT_READ_LINES).max(1);
+
+        // An offset past the end is a mistake worth naming, not an empty
+        // result: the model asked for a region that does not exist and needs
+        // the file's actual length to correct itself.
+        if start >= lines.len() {
+            return Err(ToolError::InvalidInput(format!(
+                "{} has {} lines; offset {} is past the end",
+                ctx.display(&path),
+                lines.len(),
+                start + 1
+            )));
         }
-        if truncated {
-            out.push_str("\n[truncated: file exceeds the read limit]\n");
+        let end = start.saturating_add(limit).min(lines.len());
+
+        let window = &lines[start..end];
+        let mut out =
+            String::with_capacity(window.iter().map(|l| l.len()).sum::<usize>() + window.len() * 8);
+        for (i, line) in window.iter().enumerate() {
+            // Numbered by absolute position, not by position in the window, so
+            // a line number from a windowed read still means what it says.
+            out.push_str(&format!("{:>5}\t{line}\n", start + i + 1));
+        }
+        if truncated || start > 0 || end < lines.len() {
+            out.push_str(&range_note(start + 1, end, lines.len(), truncated));
         }
         Ok(out)
     }
+}
+
+/// Tells the model what it just got and how to get the rest.
+///
+/// Stated every time the answer is partial, because a window that does not say
+/// it is a window is indistinguishable from a short file, and a model that
+/// believes it has read the whole thing will act on what is missing.
+fn range_note(first: usize, last: usize, available: usize, truncated: bool) -> String {
+    let mut note = format!("\n[showing lines {first}-{last} of {available}");
+    if truncated {
+        note.push_str(&format!(
+            " readable; the file is larger than the {} KB read limit, so the rest is not \
+             reachable this way — use grep to locate it",
+            MAX_READ_BYTES / 1024
+        ));
+    }
+    if last < available {
+        note.push_str(&format!("; read again with offset {} for more", last + 1));
+    }
+    note.push_str("]\n");
+    note
 }
 
 /// `str::is_char_boundary` for a byte slice we are about to lossy-decode.
@@ -340,6 +397,89 @@ mod tests {
             .unwrap();
         assert!(out.contains("    1\tone"));
         assert!(out.contains("    2\ttwo"));
+    }
+
+    /// A file of `n` numbered lines, for exercising windowed reads.
+    fn lines_file(dir: &std::path::Path, name: &str, n: usize) {
+        let body: String = (1..=n).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_short_file_reads_whole_and_says_nothing_about_ranges() {
+        let (ctx, dir) = test_ctx();
+        lines_file(dir.path(), "a.txt", 3);
+        let out = ReadFile
+            .execute(serde_json::json!({"path": "a.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.contains("    3\tline 3"));
+        assert!(!out.contains("showing lines"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_long_file_stops_at_the_default_window_and_says_how_to_continue() {
+        let (ctx, dir) = test_ctx();
+        lines_file(dir.path(), "big.txt", DEFAULT_READ_LINES + 50);
+        let out = ReadFile
+            .execute(serde_json::json!({"path": "big.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.contains(&format!(
+            "{:>5}\tline {}",
+            DEFAULT_READ_LINES, DEFAULT_READ_LINES
+        )));
+        assert!(!out.contains(&format!("line {}", DEFAULT_READ_LINES + 1)));
+        assert!(
+            out.contains(&format!(
+                "read again with offset {}",
+                DEFAULT_READ_LINES + 1
+            )),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_windowed_read_numbers_lines_by_absolute_position() {
+        let (ctx, dir) = test_ctx();
+        lines_file(dir.path(), "a.txt", 100);
+        let out = ReadFile
+            .execute(
+                serde_json::json!({"path": "a.txt", "offset": 40, "limit": 2}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("   40\tline 40"), "{out}");
+        assert!(out.contains("   41\tline 41"), "{out}");
+        assert!(!out.contains("line 42"), "{out}");
+        assert!(out.contains("showing lines 40-41 of 100"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_window_reaching_the_end_does_not_invite_another_read() {
+        let (ctx, dir) = test_ctx();
+        lines_file(dir.path(), "a.txt", 10);
+        let out = ReadFile
+            .execute(
+                serde_json::json!({"path": "a.txt", "offset": 9, "limit": 500}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("showing lines 9-10 of 10"), "{out}");
+        assert!(!out.contains("read again"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn an_offset_past_the_end_reports_the_files_length() {
+        let (ctx, dir) = test_ctx();
+        lines_file(dir.path(), "a.txt", 5);
+        let err = ReadFile
+            .execute(serde_json::json!({"path": "a.txt", "offset": 99}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("has 5 lines"), "{err}");
     }
 
     #[tokio::test]

@@ -133,6 +133,17 @@ impl Renderer {
                 }
             }
 
+            UiEvent::ContextTrimmed {
+                results,
+                tokens_saved,
+            } => {
+                self.break_text();
+                self.break_thinking();
+                self.dim(&format!(
+                    "  [shortened {results} older tool results, ~{tokens_saved} tokens]"
+                ));
+            }
+
             UiEvent::Compacted { messages_removed } => {
                 self.break_text();
                 self.break_thinking();

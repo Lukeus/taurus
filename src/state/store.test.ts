@@ -128,6 +128,18 @@ describe("transcript reducer", () => {
     expect((entries[0] as { text: string }).text).toContain("12");
   });
 
+  it("reports trimming with what it recovered", () => {
+    const entries = run({
+      type: "context_trimmed",
+      results: 6,
+      tokens_saved: 12400,
+    });
+    expect(entries[0]).toMatchObject({ kind: "notice", tone: "info" });
+    const text = (entries[0] as { text: string }).text;
+    expect(text).toContain("6");
+    expect(text).toContain("12,400");
+  });
+
   it("surfaces errors as an error notice", () => {
     const entries = run({ type: "error", message: "provider unreachable" });
     expect(entries[0]).toMatchObject({

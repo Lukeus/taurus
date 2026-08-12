@@ -43,13 +43,22 @@ impl ToolRegistry {
         }
     }
 
+    /// Removes a tool, reporting whether there was one to remove.
+    ///
+    /// Removal rather than hiding: a tool left registered but undeclared is
+    /// still reachable by a skill or a sub-agent, which makes "turned off" mean
+    /// something different depending on who is asking.
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
+    }
+
     /// A copy of this registry with one tool removed.
     ///
     /// Used to build a sub-agent's registry without the spawn tool, which caps
     /// delegation depth structurally rather than by a counter.
     pub fn without(&self, name: &str) -> Self {
         let mut clone = self.clone();
-        clone.tools.remove(name);
+        clone.remove(name);
         clone
     }
 
@@ -70,13 +79,19 @@ impl ToolRegistry {
     }
 
     /// Tool definitions to advertise to the model.
+    ///
+    /// Schemas are slimmed on the way out. This is the one place every tool's
+    /// definition passes through — built-in, skill, and MCP alike — so it is
+    /// also the one place that has to know the difference between what a
+    /// validator needs and what a model reads. Dispatch still sees the full
+    /// schema: [`crate::coerce`] works from the real types.
     pub fn definitions(&self) -> Vec<ToolDef> {
         self.tools
             .values()
             .map(|t| ToolDef {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
-                input_schema: t.input_schema(),
+                input_schema: crate::schema::slim(&t.input_schema()),
             })
             .collect()
     }

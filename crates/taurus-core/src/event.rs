@@ -42,6 +42,15 @@ pub enum UiEvent {
         /// Tool output, truncated for display.
         output: String,
     },
+    /// Older tool output was shortened to stay inside the context window.
+    /// Cheaper than [`UiEvent::Compacted`] and tried first: nothing was sent to
+    /// the model to produce it, and no message was removed.
+    ContextTrimmed {
+        /// Tool results collapsed or shortened.
+        results: usize,
+        /// Estimated tokens recovered.
+        tokens_saved: u32,
+    },
     /// History was summarized to stay inside the context window.
     Compacted {
         messages_removed: usize,

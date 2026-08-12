@@ -14,4 +14,4 @@ pub mod tools;
 pub use catalog::{SkillCatalog, SkillSource};
 pub use proposal::{ProposalSink, SaveTarget, SkillProposal};
 pub use skill::{Skill, SkillError, SkillSummary, SkillTier};
-pub use tools::{LoadSkill, ProposeSkill, RunSkillScript, SharedCatalog};
+pub use tools::{LoadSkill, ProposeSkill, RunSkillScript, SharedCatalog, PROPOSE_TOOL};

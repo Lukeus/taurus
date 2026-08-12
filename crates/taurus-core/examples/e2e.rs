@@ -84,6 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let first = output.lines().next().unwrap_or("");
                     println!("  {} {first}", if ok { "✓" } else { "✕" });
                 }
+                UiEvent::ContextTrimmed {
+                    results,
+                    tokens_saved,
+                } => {
+                    println!("  [trimmed {results} tool results, ~{tokens_saved} tokens]");
+                }
                 UiEvent::Compacted { messages_removed } => {
                     println!("  [compacted {messages_removed} messages]");
                 }

@@ -349,6 +349,11 @@ pub struct ProposeSkill {
     sink: Arc<dyn ProposalSink>,
 }
 
+/// Named as a constant because the host registers and unregisters this tool as
+/// the skill-synthesis setting changes, and a name typed twice is a name that
+/// can be typed differently.
+pub const PROPOSE_TOOL: &str = "propose_skill";
+
 impl ProposeSkill {
     pub fn new(catalog: SharedCatalog, sink: Arc<dyn ProposalSink>) -> Self {
         Self { catalog, sink }
@@ -358,7 +363,7 @@ impl ProposeSkill {
 #[async_trait]
 impl Tool for ProposeSkill {
     fn name(&self) -> &str {
-        "propose_skill"
+        PROPOSE_TOOL
     }
 
     fn description(&self) -> &str {
