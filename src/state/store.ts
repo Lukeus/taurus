@@ -424,6 +424,21 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           : e,
       );
 
+    case "context_trimmed":
+      return [
+        ...entries,
+        {
+          kind: "notice",
+          id: nextId(),
+          tone: "info",
+          text: `Shortened ${event.results} older tool results, recovering about ${event.tokens_saved.toLocaleString()} tokens.`,
+          rule: {
+            label: "Context trimmed",
+            note: `~${event.tokens_saved.toLocaleString()} tokens`,
+          },
+        },
+      ];
+
     case "compacted":
       return [
         ...entries,

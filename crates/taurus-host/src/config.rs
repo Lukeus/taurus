@@ -591,6 +591,21 @@ pub struct Settings {
     /// Whether the agent may propose skills on its own after a turn.
     #[serde(default = "default_true")]
     pub skill_synthesis_enabled: bool,
+    /// Tools to leave out of the harness entirely, by the exact name
+    /// `taurus tools` prints.
+    ///
+    /// Every registered tool's schema is sent with every request, so this is
+    /// the only lever on the one part of the prompt that is fixed overhead —
+    /// it is paid on each iteration whether or not the tool is ever called.
+    /// It matters most with MCP servers attached, where a dozen tools nobody
+    /// uses can outweigh the whole system prompt.
+    ///
+    /// A disabled tool is never registered, so it is not merely hidden from
+    /// the model: skills and sub-agents cannot reach it either. Hiding a tool
+    /// that could still be invoked would be a permission gap wearing a
+    /// token-saving costume.
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -604,6 +619,7 @@ impl Default for Settings {
             last_provider: None,
             last_model: None,
             skill_synthesis_enabled: true,
+            disabled_tools: Vec::new(),
         }
     }
 }
@@ -622,6 +638,8 @@ pub struct StoredSettings {
     pub last_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_synthesis_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_tools: Option<Vec<String>>,
 }
 
 impl StoredSettings {
@@ -632,6 +650,10 @@ impl StoredSettings {
         self.skill_synthesis_enabled = other
             .skill_synthesis_enabled
             .or(self.skill_synthesis_enabled);
+        // Replaced rather than merged, like every other field: a workspace that
+        // sets this is stating the list it wants, and a merge would make a
+        // global entry impossible to undo for one project.
+        self.disabled_tools = other.disabled_tools.or(self.disabled_tools.take());
     }
 
     fn resolve(self) -> Settings {
@@ -643,6 +665,7 @@ impl StoredSettings {
             skill_synthesis_enabled: self
                 .skill_synthesis_enabled
                 .unwrap_or(defaults.skill_synthesis_enabled),
+            disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
         }
     }
 }

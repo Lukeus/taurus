@@ -385,17 +385,42 @@ impl Agent {
         }
     }
 
-    /// Summarizes older history when the window fills up.
+    /// Makes room in the context window when it fills up.
     ///
     /// Local models often have 8k windows, so this is load-bearing rather than
-    /// a long-session nicety. A failed summarization is not fatal: the turn
-    /// proceeds uncompacted and the provider reports the overflow if there is
-    /// one.
+    /// a long-session nicety. It works in two tiers, cheapest first:
+    ///
+    /// 1. Shorten old and superseded tool output. Free — no model call — and
+    ///    it usually recovers the most, because tool output is most of what a
+    ///    working session holds.
+    /// 2. Summarize the older half of the conversation. Costs a request and
+    ///    loses detail, so it only runs if step one did not get under budget.
+    ///
+    /// A failed summarization is not fatal: the turn proceeds uncompacted and
+    /// the provider reports the overflow if there is one.
     async fn compact_if_needed(&self, session: &mut Session, ui: &mpsc::Sender<UiEvent>) {
         let Ok(caps) = self.provider.capabilities(&session.model).await else {
             return;
         };
         let budget = (caps.context_length as f32 * self.config.compaction_threshold) as u32;
+        if session.estimated_tokens() < budget {
+            return;
+        }
+
+        let trimmed = session.trim_tool_results(self.config.keep_recent_messages);
+        if !trimmed.is_empty() {
+            info!(
+                results = trimmed.results,
+                tokens_saved = trimmed.tokens_saved,
+                "trimmed older tool output"
+            );
+            let _ = ui
+                .send(UiEvent::ContextTrimmed {
+                    results: trimmed.results,
+                    tokens_saved: trimmed.tokens_saved,
+                })
+                .await;
+        }
         if session.estimated_tokens() < budget {
             return;
         }

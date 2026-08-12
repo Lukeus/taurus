@@ -28,6 +28,8 @@ pub enum ProblemSource {
     Mcp,
     /// A skill directory that would not load.
     Skills,
+    /// `settings.json` — the tools the agent is allowed to have.
+    Tools,
 }
 
 impl ProblemSource {
@@ -36,7 +38,9 @@ impl ProblemSource {
         match self {
             Self::Providers => "Settings › Models",
             Self::Search => "Settings › Search",
-            Self::Mcp | Self::Skills => "Skills",
+            // The screen that lists what the agent can reach, which is exactly
+            // what a disabled tool changes.
+            Self::Mcp | Self::Skills | Self::Tools => "Skills",
         }
     }
 
@@ -47,6 +51,7 @@ impl ProblemSource {
             Self::Search => "search",
             Self::Mcp => "mcp",
             Self::Skills => "skills",
+            Self::Tools => "tools",
         }
     }
 }
@@ -139,6 +144,7 @@ mod tests {
             ProblemSource::Search,
             ProblemSource::Mcp,
             ProblemSource::Skills,
+            ProblemSource::Tools,
         ] {
             assert!(!source.where_to_fix().is_empty());
         }

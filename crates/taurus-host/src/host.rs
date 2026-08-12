@@ -158,10 +158,17 @@ impl Host {
         registry.register(Arc::new(taurus_skills::RunSkillScript::new(
             self.catalog.clone(),
         )));
-        registry.register(Arc::new(taurus_skills::ProposeSkill::new(
-            self.catalog.clone(),
-            self.proposals.clone(),
-        )));
+        // Only when the setting is on. The prompt's authoring guidance already
+        // follows this setting, and advertising the tool without it left the
+        // model holding a schema — one of the largest here — that nothing told
+        // it when to use. Same rule the web tools follow: never offer a tool the
+        // prompt cannot explain.
+        if self.settings.read().await.skill_synthesis_enabled {
+            registry.register(Arc::new(taurus_skills::ProposeSkill::new(
+                self.catalog.clone(),
+                self.proposals.clone(),
+            )));
+        }
 
         // Both web tools stand or fall together: a `fetch_url` with no way to
         // find a URL is a tool the model can only use on links the user pastes,
@@ -199,6 +206,15 @@ impl Host {
         for tool in self.mcp.connect_all(&mcp_config).await {
             registry.register(tool);
         }
+
+        // Last, so it applies to everything the harness assembled — built-ins,
+        // skill tools, web, MCP — rather than to whichever of them happened to
+        // register before the setting was read.
+        let disabled = self.settings.read().await.disabled_tools.clone();
+        problems.extend(Problem::tag(
+            ProblemSource::Tools,
+            disable(&mut registry, &disabled),
+        ));
 
         *self.registry.write().await = registry;
         *self.problems.write().await = problems;
@@ -486,6 +502,26 @@ impl Host {
         });
         let workspace = self.workspace.read().await.clone();
         *self.settings.write().await = config::load_settings(Some(&workspace));
+
+        // The tool follows the setting rather than waiting for a reload, so
+        // turning synthesis off stops paying for its schema on the next request
+        // instead of the next restart. Rebuilding the whole registry here would
+        // also drop every MCP connection, which a checkbox has no business
+        // doing.
+        let resolved = self.settings.read().await.clone();
+        let mut registry = self.registry.write().await;
+        registry.remove(taurus_skills::PROPOSE_TOOL);
+        if resolved.skill_synthesis_enabled
+            && !resolved
+                .disabled_tools
+                .iter()
+                .any(|d| d == taurus_skills::PROPOSE_TOOL)
+        {
+            registry.register(Arc::new(taurus_skills::ProposeSkill::new(
+                self.catalog.clone(),
+                self.proposals.clone(),
+            )));
+        }
     }
 
     /// Records the provider and model just used, in both layers.
@@ -529,6 +565,25 @@ impl Host {
             .names()
             .map(str::to_string)
             .collect()
+    }
+
+    /// What the model is told it can call, as it goes over the wire.
+    ///
+    /// The same list [`Host::build_agent`] would hand a turn, minus the spawn
+    /// tool that is added per turn. Exposed so the cost of advertising it can be
+    /// reported: this is the part of every request that is fixed overhead, paid
+    /// again on each iteration whether or not a tool is called.
+    pub async fn tool_definitions(&self) -> Vec<taurus_provider::ToolDef> {
+        self.registry.read().await.definitions()
+    }
+
+    /// The system prompt a turn in this workspace would carry.
+    pub async fn system_prompt(&self) -> String {
+        prompt::build(
+            &self.workspace.read().await.clone(),
+            self.catalog.read().await.prompt_section(),
+            self.settings.read().await.skill_synthesis_enabled,
+        )
     }
 
     /// Everything that failed to load, tagged with where it came from.
@@ -609,6 +664,28 @@ impl Host {
     }
 }
 
+/// Removes the tools the user has turned off, returning a message for every
+/// name that matched nothing.
+///
+/// An unmatched name is worth saying out loud rather than dropping. The setting
+/// is a list of hand-typed strings with nothing checking them, and a typo looks
+/// exactly like a tool that is quietly still enabled — the failure is silent in
+/// the direction that costs tokens and leaves a tool reachable.
+fn disable(registry: &mut ToolRegistry, disabled: &[String]) -> Vec<String> {
+    let mut unmatched = Vec::new();
+    for name in disabled {
+        if registry.remove(name) {
+            info!(tool = %name, "tool disabled by settings");
+        } else {
+            unmatched.push(format!(
+                "settings.json disables '{name}', which is not a registered tool. \
+                 `taurus tools` lists the names that work."
+            ));
+        }
+    }
+    unmatched
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -659,6 +736,128 @@ mod tests {
         }
         // The spawn tool is deliberately absent here; it is added per turn.
         assert!(!tools.iter().any(|t| t == taurus_core::SPAWN_TOOL));
+    }
+
+    #[tokio::test]
+    async fn the_proposal_tool_is_not_advertised_when_synthesis_is_off() {
+        // Its schema is one of the largest the harness ships, and with the
+        // setting off nothing in the prompt tells the model what it is for.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/settings.json"),
+            r#"{"skill_synthesis_enabled": false}"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let tools = host.tool_names().await;
+        assert!(!tools.iter().any(|t| t == taurus_skills::PROPOSE_TOOL));
+        // The rest of the skill tools are about using skills, not writing them.
+        assert!(tools.iter().any(|t| t == "load_skill"));
+    }
+
+    #[tokio::test]
+    async fn toggling_synthesis_adds_and_removes_the_tool_without_a_reload() {
+        let dir = TempDir::new().unwrap();
+        let (host, _home) = host(&dir.path().canonicalize().unwrap());
+        host.reload().await;
+        assert!(host
+            .tool_names()
+            .await
+            .iter()
+            .any(|t| t == taurus_skills::PROPOSE_TOOL));
+
+        host.set_skill_synthesis(false).await;
+        assert!(!host
+            .tool_names()
+            .await
+            .iter()
+            .any(|t| t == taurus_skills::PROPOSE_TOOL));
+
+        host.set_skill_synthesis(true).await;
+        assert!(host
+            .tool_names()
+            .await
+            .iter()
+            .any(|t| t == taurus_skills::PROPOSE_TOOL));
+    }
+
+    #[tokio::test]
+    async fn a_workspace_can_turn_off_a_tool_it_does_not_want_advertised() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/settings.json"),
+            r#"{"disabled_tools": ["run_command"]}"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let tools = host.tool_names().await;
+        assert!(!tools.iter().any(|t| t == "run_command"));
+        // Only the named one goes.
+        assert!(tools.iter().any(|t| t == "read_file"));
+        assert!(
+            host.problems().await.is_empty(),
+            "{:?}",
+            host.problems().await
+        );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_tool_is_gone_from_the_registry_not_merely_undeclared() {
+        // The distinction that matters: a tool the model cannot see but a skill
+        // could still call is not turned off.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/settings.json"),
+            r#"{"disabled_tools": ["run_command"]}"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let registry = host.registry.read().await;
+        assert!(registry.get("run_command").is_none());
+        assert!(!registry
+            .definitions()
+            .iter()
+            .any(|d| d.name == "run_command"));
+    }
+
+    #[tokio::test]
+    async fn disabling_a_tool_that_does_not_exist_says_so() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/settings.json"),
+            r#"{"disabled_tools": ["run_comand"]}"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let problems = host.problems().await;
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.source == ProblemSource::Tools && p.message.contains("run_comand")),
+            "a typo must not look like a tool that is quietly still on: {problems:?}"
+        );
+        // The real tool is untouched by the near-miss.
+        assert!(host.tool_names().await.iter().any(|t| t == "run_command"));
     }
 
     #[tokio::test]

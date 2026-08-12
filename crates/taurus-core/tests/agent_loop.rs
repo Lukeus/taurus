@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use taurus_core::testing::{FakeProvider, ScriptedTurn};
 use taurus_core::{Agent, AgentConfig, AgentError, Session, UiEvent};
-use taurus_provider::{Message, StopReason};
+use taurus_provider::{ContentBlock, Message, Role, StopReason};
 use taurus_tools::{
     AllowAll, DenyAll, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
 };
@@ -327,6 +327,73 @@ async fn cancellation_partway_through_stops_the_loop_without_a_further_request()
         2,
         "the loop kept going after cancellation"
     );
+}
+
+#[tokio::test]
+async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
+    let h = harness_with(
+        // One turn only. A second would mean the summarizer ran.
+        vec![ScriptedTurn::text("Carrying on.")],
+        Box::new(AllowAll),
+        AgentConfig {
+            keep_recent_messages: 2,
+            compaction_threshold: 0.8,
+            ..Default::default()
+        },
+        1000,
+    );
+
+    // The same file read four times over. Only the last answer is current, so
+    // three bulky results are dead weight the trim pass can collapse.
+    let mut session = Session::new("fake");
+    for i in 0..4 {
+        session.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: format!("t{i}"),
+                name: "read_file".into(),
+                input: serde_json::json!({ "path": "a.rs" }),
+            }],
+        ));
+        session.push(Message::new(
+            Role::User,
+            vec![ContentBlock::tool_result(
+                format!("t{i}"),
+                "fn main() {}\n".repeat(160),
+            )],
+        ));
+    }
+    let before = session.messages.len();
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok());
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::ContextTrimmed { .. })),
+        "the trim pass did not run: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "trimming got under budget, so nothing should have been summarized"
+    );
+    assert_eq!(
+        h.provider.request_count().await,
+        1,
+        "a summarizer request was made when trimming was enough"
+    );
+
+    // Trimming shortens messages rather than removing them, which is what keeps
+    // every tool call paired with a result.
+    assert_eq!(session.messages.len(), before + 2);
+    let trimmed = match &session.messages[1].content[0] {
+        ContentBlock::ToolResult { content, .. } => content.clone(),
+        other => panic!("expected a tool result, got {other:?}"),
+    };
+    assert!(trimmed.contains("called again later"), "{trimmed}");
 }
 
 #[tokio::test]
