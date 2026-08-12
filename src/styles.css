@@ -21,9 +21,16 @@
  * nothing else, which is the point of naming them separately: the roles, the
  * ladder, and every rule in the file are written once and mean the same thing
  * under both.
+ *
+ * Which of the two is showing is decided in one place — `data-theme` on <html>,
+ * written by lib/theme.ts, and always the *resolved* answer rather than the
+ * preference. "Follow the system" is a JS concern precisely so that it is not
+ * also a CSS one: no rule here needs a media query, and the light palette is
+ * written exactly once instead of once per way of arriving at it.
  */
 
 :root {
+  color-scheme: dark;
   /* --------------------------------------------- Lukeus tokens, as authored */
   --lk-ink: #0b0f14;
   --lk-surface-1: #121922;
@@ -122,38 +129,52 @@
  * hue, dark enough to clear 4.5:1 on all three surfaces, which is why they
  * read as deeper here rather than pastel.
  */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --lk-ink: #f7f9fb;
+  --lk-surface-1: #ffffff;
+  --lk-surface-2: #eaeff5;
+  --lk-line: #d3dce6;
+  --lk-surface-hover: #f4f7fa;
+
+  --lk-text: #0d141c;
+  --lk-text-dim: #4c5b6b;
+  /* Carries the 10px micro-labels, so it is the one that has to be darkest
+     relative to its job — small text needs more contrast, not less. */
+  --lk-text-faint: #5b6b7c;
+
+  --lk-cyan: #0a6f9c;
+  --lk-cyan-hover: #08587c;
+  /* Cyan is now the dark half of the pair, so what sits on it inverts. */
+  --lk-on-cyan: #ffffff;
+  --lk-peach: #9a5b12;
+  --lk-mint: #0f7a33;
+  --lk-red: #c0343c;
+
+  /* A scrim's job is to push a panel back, and on a light ground it takes
+     much less black to do it — 55% here reads as the lights going out. */
+  --scrim: rgba(15, 25, 35, 0.28);
+  --lift: 0 14px 40px rgba(15, 25, 35, 0.16);
+}
+
+/* Thinning strokes is what antialiased does, which helps light text on a
+   dark ground and hurts the reverse. */
+:root[data-theme="light"] body {
+  -webkit-font-smoothing: auto;
+}
+
+/*
+ * The one frame before the script runs.
+ *
+ * In a production build the stylesheet is a <link> in <head>, so it paints
+ * before the module that sets `data-theme` has executed. Nothing is rendered
+ * yet — the page is an empty <body> — so the background is the only token that
+ * can be wrong on screen, and this keeps a light-mode user from opening the app
+ * on a flash of ink.
+ */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --lk-ink: #f7f9fb;
-    --lk-surface-1: #ffffff;
-    --lk-surface-2: #eaeff5;
-    --lk-line: #d3dce6;
-    --lk-surface-hover: #f4f7fa;
-
-    --lk-text: #0d141c;
-    --lk-text-dim: #4c5b6b;
-    /* Carries the 10px micro-labels, so it is the one that has to be darkest
-       relative to its job — small text needs more contrast, not less. */
-    --lk-text-faint: #5b6b7c;
-
-    --lk-cyan: #0a6f9c;
-    --lk-cyan-hover: #08587c;
-    /* Cyan is now the dark half of the pair, so what sits on it inverts. */
-    --lk-on-cyan: #ffffff;
-    --lk-peach: #9a5b12;
-    --lk-mint: #0f7a33;
-    --lk-red: #c0343c;
-
-    /* A scrim's job is to push a panel back, and on a light ground it takes
-       much less black to do it — 55% here reads as the lights going out. */
-    --scrim: rgba(15, 25, 35, 0.28);
-    --lift: 0 14px 40px rgba(15, 25, 35, 0.16);
-  }
-
-  /* Thinning strokes is what antialiased does, which helps light text on a
-     dark ground and hurts the reverse. */
-  body {
-    -webkit-font-smoothing: auto;
   }
 }
 

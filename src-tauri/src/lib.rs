@@ -66,6 +66,7 @@ pub fn run() {
             commands::list_proposals,
             commands::respond_skill_proposal,
             commands::set_skill_synthesis,
+            commands::set_theme,
             commands::save_providers,
             commands::list_global_providers,
             commands::list_key_statuses,

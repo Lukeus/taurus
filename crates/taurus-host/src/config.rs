@@ -578,6 +578,23 @@ pub fn save_providers(providers: &[ProviderConfig]) {
     }
 }
 
+/// Which palette the window paints in.
+///
+/// `System` is not a third palette: it is the absence of a choice, deferring to
+/// what the OS reports and following it when it changes at dusk. Storing the
+/// deferral rather than the resolved value is what makes that keep working —
+/// writing "light" the moment someone opens the app in daylight would pin it
+/// there for the night.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// Preferences that survive a restart, with both layers already resolved.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -606,6 +623,11 @@ pub struct Settings {
     /// token-saving costume.
     #[serde(default)]
     pub disabled_tools: Vec<String>,
+    /// Which palette the window paints in. Purely a UI preference, kept here so
+    /// it is one more hand-editable line in the same file as the rest rather
+    /// than state stranded in the webview's local storage.
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 fn default_true() -> bool {
@@ -620,6 +642,7 @@ impl Default for Settings {
             last_model: None,
             skill_synthesis_enabled: true,
             disabled_tools: Vec::new(),
+            theme: Theme::System,
         }
     }
 }
@@ -640,6 +663,8 @@ pub struct StoredSettings {
     pub skill_synthesis_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<Theme>,
 }
 
 impl StoredSettings {
@@ -654,6 +679,7 @@ impl StoredSettings {
         // sets this is stating the list it wants, and a merge would make a
         // global entry impossible to undo for one project.
         self.disabled_tools = other.disabled_tools.or(self.disabled_tools.take());
+        self.theme = other.theme.or(self.theme);
     }
 
     fn resolve(self) -> Settings {
@@ -666,6 +692,7 @@ impl StoredSettings {
                 .skill_synthesis_enabled
                 .unwrap_or(defaults.skill_synthesis_enabled),
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
+            theme: self.theme.unwrap_or(defaults.theme),
         }
     }
 }
@@ -1089,6 +1116,28 @@ mod tests {
             assert_eq!(settings.last_model.as_deref(), Some("project-model"));
             // Not reset to the default just because the workspace file omits it.
             assert!(!settings.skill_synthesis_enabled);
+        });
+    }
+
+    /// Following the OS is the absence of a choice, so it has to be what an
+    /// untouched install resolves to — a settings file that has never mentioned
+    /// the theme must not pin one.
+    #[test]
+    fn a_theme_nobody_set_follows_the_system() {
+        with_home(|home| {
+            write(home.join("settings.json"), r#"{"last_model": "m"}"#);
+            assert_eq!(load_settings(None).theme, Theme::System);
+        });
+    }
+
+    #[test]
+    fn a_stored_theme_survives_the_round_trip() {
+        with_home(|home| {
+            edit_settings(Scope::Global, None, |s| s.theme = Some(Theme::Light));
+
+            let text = std::fs::read_to_string(home.join("settings.json")).unwrap();
+            assert!(text.contains("\"theme\": \"light\""), "{text}");
+            assert_eq!(load_settings(None).theme, Theme::Light);
         });
     }
 

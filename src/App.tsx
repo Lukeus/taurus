@@ -16,6 +16,7 @@ import { Transcript } from "./components/Transcript";
 import * as api from "./lib/api";
 import type { ModelInfo, ProviderConfig } from "./lib/api";
 import { basename, plural } from "./lib/format";
+import { applyTheme, watchSystemTheme } from "./lib/theme";
 import { useStore } from "./state/store";
 
 export default function App() {
@@ -31,6 +32,17 @@ export default function App() {
     // Intentionally once: init wires the event listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Settings are the authority; main.tsx only guessed from the last run. Also
+  // where following the OS is honoured — while the preference is `system`, a
+  // machine that switches at dusk switches the app with it, and the listener is
+  // torn down the moment someone picks a side.
+  const theme = store.status?.settings.theme;
+  useEffect(() => {
+    if (!theme) return;
+    applyTheme(theme);
+    return watchSystemTheme(theme);
+  }, [theme]);
 
   const providers = store.status?.providers ?? [];
   const providerId = currentProvider(
