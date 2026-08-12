@@ -49,10 +49,23 @@ impl Session {
     /// grep, a build log — and every byte of it is re-sent on every later
     /// iteration of the turn. Two things make a result safe to shorten:
     ///
-    /// - The same tool was called again later with the same input, so the
-    ///   earlier answer has been superseded by one already in the transcript.
+    /// - The same question was asked again later and answered, so the earlier
+    ///   answer has been superseded by one already in the transcript.
     /// - It is old enough to be outside the tail kept verbatim, in which case
     ///   the model is working from conclusions rather than from the bytes.
+    ///
+    /// Superseding is the strong claim of the two — it throws the output away
+    /// rather than shortening it — so it is fenced in three ways, all of which
+    /// have to hold. `repeats_supersede` decides whether asking a given tool
+    /// twice means anything: a build log or an MCP call answers a moment, not a
+    /// question, and two runs of `cargo test` around a fix are the two halves
+    /// of the loop the model is in. No tool that changes the world may have
+    /// run in between, or the later read answers a different question than the
+    /// earlier one — read, edit, read is the shape that makes this matter. And
+    /// the later call must have actually produced a result: a turn canceled
+    /// between the model's call and the tool's answer leaves a dangling
+    /// `tool_use` in history, and pointing at it would delete the only real
+    /// output in favor of a note about a result that is not there.
     ///
     /// The block itself always stays: replacing its text keeps every tool call
     /// paired with a result, which is what providers actually validate. Errors
@@ -60,12 +73,17 @@ impl Session {
     /// next few messages look the way they do.
     ///
     /// Costs no model call, which is the point: this runs before summarizing.
-    pub fn trim_tool_results(&mut self, keep_recent: usize) -> Trimmed {
+    pub fn trim_tool_results(
+        &mut self,
+        keep_recent: usize,
+        repeats_supersede: &dyn Fn(&str) -> bool,
+    ) -> Trimmed {
         let cutoff = self.messages.len().saturating_sub(keep_recent);
         if cutoff == 0 {
             return Trimmed::default();
         }
         let (call_of, last_use) = index_calls(&self.messages);
+        let mutations = mutations_before(&self.messages, repeats_supersede);
 
         let mut trimmed = Trimmed::default();
         for (index, message) in self.messages.iter_mut().enumerate().take(cutoff) {
@@ -85,12 +103,13 @@ impl Session {
                     continue;
                 };
 
-                let superseded = last_use
-                    .get(call.signature.as_str())
-                    .is_some_and(|&last| last > index);
+                let superseded = repeats_supersede(&call.name)
+                    && last_use.get(call.signature.as_str()).is_some_and(|&last| {
+                        last > index && mutations[last + 1] == mutations[index]
+                    });
                 let replacement = if superseded {
                     superseded_note(&call.name)
-                } else if content.len() > MIN_SQUEEZE_BYTES {
+                } else if content.len() > squeeze_floor(&call.name) {
                     squeeze(content, &call.name)
                 } else {
                     continue;
@@ -125,18 +144,24 @@ impl Trimmed {
     }
 }
 
-/// Results shorter than this are left alone: the note that would replace one
-/// costs most of what shortening it saves.
-///
-/// It must also exceed head-plus-note, or an already-shortened result would be
-/// shortened again on the next pass and a long turn would erode its own history
-/// a little at a time. `trimming_twice_changes_nothing_the_second_time` holds
-/// that.
-const MIN_SQUEEZE_BYTES: usize = 600;
-
 /// How much of a shortened result survives. Enough to keep what the output was
 /// *about* — the path, the header line, the first hits — without the body.
 const SQUEEZE_HEAD_BYTES: usize = 400;
+
+/// Results at or under this are left alone: the note that would replace one
+/// costs most of what shortening it saves.
+///
+/// It is head-plus-note rather than a flat number because the note names the
+/// tool twice, and `mcp__server__tool` names run long enough to push an
+/// already-shortened result back over any fixed threshold — which would shorten
+/// it again on the next pass, and let a long turn erode its own history a
+/// little at a time while reporting the loss with a wrong character count.
+/// Measuring the note instead of counting its characters by hand keeps that
+/// true if the wording changes.
+/// `trimming_twice_changes_nothing_the_second_time` holds it.
+fn squeeze_floor(name: &str) -> usize {
+    SQUEEZE_HEAD_BYTES + squeeze_note(name, usize::MAX, usize::MAX).len()
+}
 
 /// The call a tool result answers.
 struct Call {
@@ -147,14 +172,35 @@ struct Call {
 }
 
 /// Maps every tool-use id to its call, and every call signature to the last
-/// message that made it.
+/// message that made it *and got an answer*.
+///
+/// Answered is the load-bearing part: a call with no result behind it cannot
+/// supersede anything, because there is nothing to point the model at. That
+/// covers the canceled turn, whose assistant message is in history while the
+/// tool's answer never arrived, and the call that failed, where the earlier
+/// result is the only one that ever worked.
 fn index_calls(messages: &[Message]) -> (HashMap<String, Call>, HashMap<String, usize>) {
+    let answered: std::collections::HashSet<&str> = messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error: false,
+                ..
+            } => Some(tool_use_id.as_str()),
+            _ => None,
+        })
+        .collect();
+
     let mut call_of = HashMap::new();
     let mut last_use = HashMap::new();
     for (index, message) in messages.iter().enumerate() {
         for (id, name, input) in message.tool_uses() {
             let signature = format!("{name}\u{0}{input}");
-            last_use.insert(signature.clone(), index);
+            if answered.contains(id) {
+                last_use.insert(signature.clone(), index);
+            }
             call_of.insert(
                 id.to_string(),
                 Call {
@@ -167,20 +213,44 @@ fn index_calls(messages: &[Message]) -> (HashMap<String, Call>, HashMap<String, 
     (call_of, last_use)
 }
 
+/// A running count of world-changing tool calls, indexed so that
+/// `counts[b] - counts[a]` is how many ran in messages `a..b`.
+///
+/// Two identical reads only ask the same question if nothing moved underneath
+/// them. Anything whose repeat does not supersede — a write, a command, an MCP
+/// call — is treated as having moved something, which is the conservative
+/// reading and the correct one for `edit_file`.
+fn mutations_before(messages: &[Message], repeats_supersede: &dyn Fn(&str) -> bool) -> Vec<usize> {
+    let mut counts = Vec::with_capacity(messages.len() + 1);
+    let mut running = 0;
+    counts.push(0);
+    for message in messages {
+        running += message
+            .tool_uses()
+            .filter(|(_, name, _)| !repeats_supersede(name))
+            .count();
+        counts.push(running);
+    }
+    counts
+}
+
 fn superseded_note(name: &str) -> String {
     format!(
-        "[dropped: `{name}` was called again later with the same input, and that result is \
-         further down. This one said the same thing.]"
+        "[dropped: `{name}` was called again later with the same input and nothing changed the \
+         answer in between, so that result — further down — is this one.]"
     )
 }
 
 fn squeeze(content: &str, name: &str) -> String {
     let head = head_lines(content, SQUEEZE_HEAD_BYTES);
+    let note = squeeze_note(name, content.len() - head.len(), content.len());
+    format!("{head}\n{note}")
+}
+
+fn squeeze_note(name: &str, dropped: usize, total: usize) -> String {
     format!(
-        "{head}\n[shortened: {} of {} characters of this older `{name}` result were dropped to \
-         fit the context window. Call `{name}` again if you need the rest.]",
-        content.len() - head.len(),
-        content.len()
+        "[shortened: {dropped} of {total} characters of this older `{name}` result were dropped \
+         to fit the context window. Call `{name}` again if you need the rest.]"
     )
 }
 
@@ -225,7 +295,13 @@ pub fn estimate_block(block: &ContentBlock) -> u32 {
     }
 }
 
-fn estimate_message(message: &Message) -> u32 {
+/// What a whole message costs, blocks plus the envelope around them.
+///
+/// Public for the same reason [`estimate_tokens`] is: `taurus usage` reports on
+/// a transcript the compaction trigger is also measuring, and summing blocks
+/// without the envelope would have the two disagree by four tokens a message —
+/// small, and exactly the kind of small that makes a user distrust the number.
+pub fn estimate_message(message: &Message) -> u32 {
     let chars: usize = message
         .content
         .iter()
@@ -300,6 +376,13 @@ mod tests {
         Message::new(Role::User, vec![ContentBlock::tool_result(id, body)])
     }
 
+    /// Stands in for the registry: the read-only tools whose repeat asks the
+    /// same question again. Everything else — `shell`, `edit_file`, an MCP
+    /// call — answers a moment rather than a question.
+    fn reads(name: &str) -> bool {
+        matches!(name, "read_file" | "grep" | "list_dir")
+    }
+
     fn body_of(message: &Message) -> &str {
         match &message.content[0] {
             ContentBlock::ToolResult { content, .. } => content,
@@ -322,7 +405,7 @@ mod tests {
             result("t2", &bulky()),
             Message::assistant("done"),
         ];
-        let trimmed = session.trim_tool_results(2);
+        let trimmed = session.trim_tool_results(2, &reads);
         assert!(!trimmed.is_empty());
         assert!(body_of(&session.messages[1]).contains("called again later"));
         // The answer that is still current survives untouched.
@@ -339,7 +422,7 @@ mod tests {
             result("t2", "short"),
             Message::assistant("done"),
         ];
-        session.trim_tool_results(2);
+        session.trim_tool_results(2, &reads);
         assert_eq!(body_of(&session.messages[1]), "short");
     }
 
@@ -352,7 +435,7 @@ mod tests {
             Message::assistant("a"),
             Message::assistant("b"),
         ];
-        let trimmed = session.trim_tool_results(2);
+        let trimmed = session.trim_tool_results(2, &reads);
         assert_eq!(trimmed.results, 1);
         assert!(trimmed.tokens_saved > 0);
 
@@ -366,6 +449,12 @@ mod tests {
     /// repeatedly over the same messages. A second pass that shortened them
     /// again would erode the conversation a little at a time until nothing of
     /// it was left.
+    ///
+    /// The long name is the case that matters: the note names its tool twice,
+    /// so a fixed threshold that clears head-plus-note for `shell` does not
+    /// clear it for anything namespaced, and those results would shrink a
+    /// little on every pass while reporting a character count that was already
+    /// wrong.
     #[test]
     fn trimming_twice_changes_nothing_the_second_time() {
         let mut session = Session::new("m");
@@ -376,22 +465,113 @@ mod tests {
             result("t2", &bulky()),
             call("t3", "shell", "cargo test"),
             result("t3", &bulky()),
+            call(
+                "t4",
+                "mcp__documentation__search_reference_articles",
+                "a.rs",
+            ),
+            result("t4", &bulky()),
             Message::assistant("a"),
             Message::assistant("b"),
         ];
 
-        assert!(!session.trim_tool_results(2).is_empty());
+        assert!(!session.trim_tool_results(2, &reads).is_empty());
         let after_one = session.messages.clone();
 
-        assert!(session.trim_tool_results(2).is_empty());
+        assert!(session.trim_tool_results(2, &reads).is_empty());
         assert_eq!(session.messages, after_one);
+    }
+
+    /// The read → edit → read loop. The two reads have the same signature and
+    /// different answers, and the first one is the only record of what the file
+    /// held before the edit.
+    #[test]
+    fn a_repeat_across_an_edit_does_not_supersede() {
+        let mut session = Session::new("m");
+        session.messages = vec![
+            call("t1", "read_file", "a.rs"),
+            result("t1", &bulky()),
+            call("t2", "edit_file", "a.rs"),
+            result("t2", "edited"),
+            call("t3", "read_file", "a.rs"),
+            result("t3", &bulky()),
+            Message::assistant("a"),
+            Message::assistant("b"),
+        ];
+        session.trim_tool_results(2, &reads);
+
+        let body = body_of(&session.messages[1]);
+        assert!(!body.contains("dropped:"), "{body}");
+        // Shortened for age is still fine — the head of the pre-edit file
+        // survives, which is what the note about it promises.
+        assert!(body.starts_with("some output line"), "{body}");
+    }
+
+    /// Run a suite, fix, run it again: the first result is the failure the fix
+    /// was for, and "this one said the same thing" is the one thing it did not.
+    #[test]
+    fn a_repeated_command_does_not_supersede() {
+        let mut session = Session::new("m");
+        session.messages = vec![
+            call("t1", "shell", "cargo test"),
+            result("t1", &bulky()),
+            call("t2", "shell", "cargo test"),
+            result("t2", &bulky()),
+            Message::assistant("a"),
+            Message::assistant("b"),
+        ];
+        session.trim_tool_results(2, &reads);
+
+        let body = body_of(&session.messages[1]);
+        assert!(!body.contains("dropped:"), "{body}");
+        assert!(body.starts_with("some output line"), "{body}");
+    }
+
+    /// A turn canceled between the model's call and the tool's answer leaves
+    /// the call in history with nothing behind it. Superseding to it would
+    /// delete the only real output and point at a result that is not there.
+    #[test]
+    fn an_unanswered_repeat_supersedes_nothing() {
+        let mut session = Session::new("m");
+        session.messages = vec![
+            call("t1", "read_file", "a.rs"),
+            result("t1", &bulky()),
+            call("t2", "read_file", "a.rs"),
+            Message::assistant("a"),
+            Message::assistant("b"),
+        ];
+        session.trim_tool_results(2, &reads);
+
+        let body = body_of(&session.messages[1]);
+        assert!(!body.contains("dropped:"), "{body}");
+        assert!(body.starts_with("some output line"), "{body}");
+    }
+
+    /// A repeat that failed leaves the earlier result the only one that ever
+    /// worked.
+    #[test]
+    fn a_failed_repeat_supersedes_nothing() {
+        let mut session = Session::new("m");
+        session.messages = vec![
+            call("t1", "read_file", "a.rs"),
+            result("t1", &bulky()),
+            call("t2", "read_file", "a.rs"),
+            Message::new(Role::User, vec![ContentBlock::tool_error("t2", "gone")]),
+            Message::assistant("a"),
+            Message::assistant("b"),
+        ];
+        session.trim_tool_results(2, &reads);
+
+        let body = body_of(&session.messages[1]);
+        assert!(!body.contains("dropped:"), "{body}");
+        assert!(body.starts_with("some output line"), "{body}");
     }
 
     #[test]
     fn recent_results_are_left_alone() {
         let mut session = Session::new("m");
         session.messages = vec![call("t1", "shell", "x"), result("t1", &bulky())];
-        assert!(session.trim_tool_results(8).is_empty());
+        assert!(session.trim_tool_results(8, &reads).is_empty());
         assert_eq!(body_of(&session.messages[1]), bulky());
     }
 
@@ -404,7 +584,7 @@ mod tests {
             Message::assistant("a"),
             Message::assistant("b"),
         ];
-        assert!(session.trim_tool_results(2).is_empty());
+        assert!(session.trim_tool_results(2, &reads).is_empty());
         assert_eq!(body_of(&session.messages[1]), "ok");
     }
 
@@ -418,7 +598,7 @@ mod tests {
             Message::assistant("a"),
             Message::assistant("b"),
         ];
-        assert!(session.trim_tool_results(2).is_empty());
+        assert!(session.trim_tool_results(2, &reads).is_empty());
         assert_eq!(body_of(&session.messages[1]), message);
     }
 
@@ -433,7 +613,7 @@ mod tests {
             Message::assistant("done"),
         ];
         let before = session.messages.len();
-        session.trim_tool_results(1);
+        session.trim_tool_results(1, &reads);
 
         assert_eq!(session.messages.len(), before);
         for id in ["t1", "t2"] {
@@ -456,7 +636,7 @@ mod tests {
             Message::assistant("b"),
         ];
         let before = session.estimated_tokens();
-        let trimmed = session.trim_tool_results(2);
+        let trimmed = session.trim_tool_results(2, &reads);
         let after = session.estimated_tokens();
 
         assert!(after < before);

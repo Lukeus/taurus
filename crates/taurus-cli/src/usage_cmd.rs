@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::ExitCode;
 
-use taurus_core::{estimate_block, estimate_tokens, Session};
+use taurus_core::{estimate_block, estimate_message, estimate_tokens, Session};
 use taurus_host::sessions;
 use taurus_provider::{ContentBlock, Role, ToolDef};
 
@@ -188,7 +188,10 @@ impl Report {
         let mut seen: HashMap<String, u32> = HashMap::new();
 
         for message in &session.messages {
-            self.history += message.content.iter().map(estimate_block).sum::<u32>();
+            // The whole message, envelope included, so this total is the one
+            // the compaction trigger is working from and not four tokens a
+            // message off it.
+            self.history += estimate_message(message);
 
             // A user message that is not a tool result is somebody typing.
             if message.role == Role::User

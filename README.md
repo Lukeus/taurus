@@ -260,7 +260,7 @@ for a tool the model had no reason to call. And anything a project does not want
 can be named in `settings.json`:
 
 ```json
-{ "disabled_tools": ["fetch_url", "some-server:rarely_used"] }
+{ "disabled_tools": ["fetch_url", "mcp__some-server__rarely_used"] }
 ```
 
 A disabled tool is not registered at all, so skills and sub-agents cannot reach

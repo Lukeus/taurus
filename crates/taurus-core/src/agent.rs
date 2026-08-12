@@ -13,7 +13,7 @@ use taurus_provider::{
     ChatRequest, ContentBlock, Message, Provider, Role, StopReason, StreamAccumulator, StreamEvent,
     TokenUsage,
 };
-use taurus_tools::{ToolContext, ToolError, ToolProgress, ToolRegistry};
+use taurus_tools::{Effect, ToolContext, ToolError, ToolProgress, ToolRegistry};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -407,7 +407,18 @@ impl Agent {
             return;
         }
 
-        let trimmed = session.trim_tool_results(self.config.keep_recent_messages);
+        // Only a read-only tool answers the same question twice: a repeat of
+        // anything else is the model watching the world change, and the two
+        // results are both worth keeping. An unregistered name — an MCP server
+        // that went away, a transcript from another build — reads as unsafe.
+        let registry = &self.registry;
+        let repeats_supersede = |name: &str| {
+            registry
+                .get(name)
+                .is_some_and(|tool| tool.effect() == Effect::Read)
+        };
+        let trimmed =
+            session.trim_tool_results(self.config.keep_recent_messages, &repeats_supersede);
         if !trimmed.is_empty() {
             info!(
                 results = trimmed.results,
