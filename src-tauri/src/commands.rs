@@ -20,7 +20,7 @@ use taurus_tools::{AllowedRule, PermissionDecision, Scope};
 
 use taurus_host::{
     sessions, BackendKind, Checkpoint, Host, KeyStatus, Problem, ProviderConfig, Restored,
-    SessionLog, SessionMeta, Settings, TurnRef,
+    SessionLog, SessionMeta, Settings, Theme, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -592,6 +592,12 @@ pub async fn respond_skill_proposal(
 #[tauri::command]
 pub async fn set_skill_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
     state.host.set_skill_synthesis(enabled).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_theme(state: State<'_, Arc<AppState>>, theme: Theme) -> CmdResult<()> {
+    state.host.set_theme(theme).await;
     Ok(())
 }
 
