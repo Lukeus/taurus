@@ -14,7 +14,7 @@ import { SkillsDrawer } from "./components/SkillsDrawer";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript } from "./components/Transcript";
 import * as api from "./lib/api";
-import type { ModelInfo, ProviderConfig } from "./lib/api";
+import type { ModelInfo, ProviderConfig, Theme } from "./lib/api";
 import { basename, plural } from "./lib/format";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
 import { useStore } from "./state/store";
@@ -116,6 +116,18 @@ export default function App() {
     store.sessions.find((s) => s.id === store.session?.id)?.title ||
     "New conversation";
 
+  /**
+   * The same two steps `ThemePicker` takes, because the rail row and the
+   * Settings pills set one preference between them: paint immediately so the
+   * click is answered by the screen it changed, then write, then re-read — the
+   * settings file stays the authority, and the effect above repaints from it.
+   */
+  const chooseTheme = async (next: Theme) => {
+    applyTheme(next);
+    await api.setTheme(next);
+    await store.refresh();
+  };
+
   return (
     <div className="app">
       <Rail
@@ -127,9 +139,12 @@ export default function App() {
         busy={store.busy}
         skillCount={store.status?.skill_count ?? null}
         health={health(store.status?.providers.length, providerId, models)}
+        theme={theme ?? "system"}
         onPickWorkspace={pickWorkspace}
         onNew={newConversation}
         onOpen={store.resume}
+        onDelete={store.remove}
+        onTheme={chooseTheme}
         onSkills={() => setSkillsOpen(true)}
         onSettings={() => setSettingsOpen(true)}
       />

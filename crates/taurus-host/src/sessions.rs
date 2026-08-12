@@ -494,6 +494,22 @@ fn first_text(message: &Message) -> Option<String> {
     }
 }
 
+/// Erases a saved conversation.
+///
+/// The transcript is the conversation — there is no index to keep in step and
+/// nothing else on disk refers to it — so removing the file is the whole
+/// operation. Its checkpoint log is a separate tree with a separate owner, and
+/// deleting that is the caller's to decide.
+///
+/// A session that is not there is an error rather than a quiet success: the
+/// only way to ask for one is from a listing that just showed it, so a missing
+/// transcript means something else removed it and the user should be told
+/// rather than shown a confirmation for work that did not happen.
+pub fn delete(id: &str) -> Result<(), String> {
+    let path = find(id).ok_or_else(|| format!("no saved session '{id}'"))?;
+    std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Locates a transcript by id across every workspace.
 fn find(id: &str) -> Option<PathBuf> {
     // Rejected before it reaches the filesystem: an id is used as a filename,
@@ -577,6 +593,41 @@ mod tests {
 
         let (again, _) = load("resume1").unwrap();
         assert_eq!(again.messages.len(), 5);
+    }
+
+    #[test]
+    fn a_deleted_session_is_gone_from_the_listing_and_from_disk() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+
+        for id in ["keep1", "drop1"] {
+            let session = session_with(id, &["a question"]);
+            let mut log = SessionLog::create(&session, workspace);
+            log.record(&session);
+        }
+
+        delete("drop1").expect("a listed session should delete");
+
+        assert!(load("drop1").is_err(), "the transcript is still readable");
+        let ids: Vec<String> = list(Some(workspace)).into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, ["keep1"], "the listing still offers a deleted session");
+    }
+
+    #[test]
+    fn deleting_a_session_that_is_not_there_says_so() {
+        // The only way to ask is from a listing that just showed it, so a
+        // missing transcript means something else took it — and reporting
+        // success would confirm work that did not happen.
+        let _home = isolated_home();
+        assert!(delete("never-existed").is_err());
+    }
+
+    #[test]
+    fn an_id_that_would_escape_the_sessions_tree_deletes_nothing() {
+        let _home = isolated_home();
+        for id in ["../../etc/passwd", "..", "", "a/b"] {
+            assert!(delete(id).is_err(), "'{id}' was accepted as a session id");
+        }
     }
 
     #[test]

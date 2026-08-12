@@ -185,6 +185,26 @@ impl CheckpointStore {
             .collect())
     }
 
+    /// Discards a session's log, and with it every turn it could have undone.
+    ///
+    /// For a conversation being deleted: the log is keyed by session id and
+    /// reachable only through it, so one left behind is a copy of the user's
+    /// files that nothing can read, list, or ever restore.
+    ///
+    /// A missing log is success, unlike everything else that takes an id here.
+    /// A conversation that only read files never writes one, so "no log" is the
+    /// ordinary outcome rather than a sign that something went wrong.
+    pub fn forget(&self, session_id: &str) -> Result<(), String> {
+        let Some(path) = self.log_path(session_id) else {
+            return Err(format!("'{session_id}' is not a usable session id"));
+        };
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
     /// Puts `workspace` back the way it was before `turn` ran.
     ///
     /// Every turn from `turn` onward is undone, not just that one: the log
@@ -561,6 +581,39 @@ mod tests {
         let f = Fixture::new();
         f.store.begin_turn("s1", &f.root, "just have a look around");
         assert!(f.store.turns("s1").unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_session_takes_its_log_and_leaves_the_others() {
+        let f = Fixture::new();
+        for session in ["s1", "s2"] {
+            let file = f.path(&format!("{session}.txt"));
+            let recorder = f.store.begin_turn(session, &f.root, "write a file");
+            recorder.capture(&file).await;
+            std::fs::write(&file, "content").unwrap();
+        }
+
+        f.store.forget("s1").unwrap();
+
+        assert!(!f.log("s1").exists(), "the log outlived its conversation");
+        assert!(f.store.turns("s1").unwrap().is_empty());
+        assert_eq!(f.store.turns("s2").unwrap().len(), 1, "the wrong log went");
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_session_that_changed_nothing_is_not_a_failure() {
+        // A read-only conversation never writes a log, and that is the ordinary
+        // case rather than a sign that something went wrong.
+        let f = Fixture::new();
+        f.store.forget("never-wrote-anything").unwrap();
+    }
+
+    #[tokio::test]
+    async fn forgetting_will_not_take_an_id_that_escapes_the_checkpoint_tree() {
+        let f = Fixture::new();
+        for id in ["../secrets", "..", "", "a/b"] {
+            assert!(f.store.forget(id).is_err(), "'{id}' was accepted");
+        }
     }
 
     #[tokio::test]
