@@ -18,6 +18,7 @@ export type ProviderHealth =
  * folder, which skills, whether the model is answering.
  */
 export function Rail({
+  width,
   workspace,
   sessions,
   currentId,
@@ -31,6 +32,8 @@ export function Rail({
   onSkills,
   onSettings,
 }: {
+  /** Set by the handle beside it; the rail only has to wear the number. */
+  width: number;
   workspace: string | null;
   sessions: SessionMeta[];
   currentId: string | undefined;
@@ -63,7 +66,7 @@ export function Rail({
   );
 
   return (
-    <aside className="rail">
+    <aside className="rail" style={{ width }}>
       <div className="rail-drag" />
 
       <div className="rail-pad">

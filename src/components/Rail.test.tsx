@@ -18,6 +18,7 @@ const session = (id: string, title: string, updated: number): SessionMeta => ({
 const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
   renderToStaticMarkup(
     <Rail
+      width={236}
       workspace="/Users/x/code/taurus-ai-shell"
       sessions={[]}
       currentId={undefined}
@@ -44,6 +45,14 @@ describe("the workspace button", () => {
 
   it("says so when there is no workspace rather than rendering an empty row", () => {
     expect(draw({ workspace: null })).toContain("No workspace");
+  });
+});
+
+describe("the rail's width", () => {
+  it("is whatever the handle beside it has been dragged to", () => {
+    // The stylesheet gives the rail no width of its own, so a rail that
+    // ignored this prop would collapse to the width of its longest title.
+    expect(draw({ width: 312 })).toContain("width:312px");
   });
 });
 

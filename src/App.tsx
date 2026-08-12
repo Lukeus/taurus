@@ -4,6 +4,11 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { Rail, type ProviderHealth } from "./components/Rail";
+import {
+  RAIL_WIDTH,
+  ResizeHandle,
+  useResizableWidth,
+} from "./components/ResizeHandle";
 import { Settings } from "./components/Settings";
 import { SkillsDrawer } from "./components/SkillsDrawer";
 import { SkillProposalCard } from "./components/SkillProposalCard";
@@ -15,6 +20,7 @@ import { useStore } from "./state/store";
 
 export default function App() {
   const store = useStore();
+  const rail = useResizableWidth({ storageKey: "taurus.railWidth", ...RAIL_WIDTH });
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -59,22 +65,26 @@ export default function App() {
     if (id === providerId) return;
     listedFor.current = id;
     setModels(null);
+    const config = providers.find((p) => p.id === id);
     try {
       const list = await api.listModels(id);
       setModels(list);
-      if (list[0]) await store.startSession(id, list[0].id);
+      // The named default ahead of whatever the backend happened to list
+      // first, which is the order `resolve_model` uses for the CLI.
+      const first = config?.default_model ?? list[0]?.id;
+      if (first) await store.startSession(id, first);
     } catch {
       setModels("failed");
       // A backend with no model listing is still usable when the config names
-      // the model to talk to — an Azure APIM route often exposes the chat
-      // endpoint and nothing else. This is the same fallback `resolve_model`
-      // makes for the CLI.
-      const named = providers.find((p) => p.id === id)?.default_model;
+      // what to talk to — an Azure APIM route often exposes the chat endpoint
+      // and nothing else.
+      const named = config?.default_model ?? offered("failed", config)[0]?.id;
       if (named) await store.startSession(id, named);
     }
   };
 
-  const available = Array.isArray(models) ? models : [];
+  const provider = providers.find((p) => p.id === providerId);
+  const available = offered(models, provider, store.session?.model);
   const workspace = store.status?.workspace ?? null;
 
   const pickWorkspace = async () => {
@@ -83,7 +93,8 @@ export default function App() {
   };
 
   const newConversation = () => {
-    const model = store.session?.model ?? available[0]?.id;
+    const model =
+      store.session?.model ?? provider?.default_model ?? available[0]?.id;
     if (providerId && model) return store.startSession(providerId, model);
     // Nothing to start a conversation with yet; the place to fix that is here.
     setSettingsOpen(true);
@@ -96,6 +107,7 @@ export default function App() {
   return (
     <div className="app">
       <Rail
+        width={rail.width}
         workspace={workspace}
         sessions={store.sessions}
         currentId={store.session?.id}
@@ -109,6 +121,8 @@ export default function App() {
         onSkills={() => setSkillsOpen(true)}
         onSettings={() => setSettingsOpen(true)}
       />
+
+      <ResizeHandle pane={rail} label="Rail width" />
 
       <div className="pane">
         <header className="topbar">
@@ -165,6 +179,9 @@ export default function App() {
             onChange={(e) => providerId && store.startSession(providerId, e.target.value)}
           >
             {available.length === 0 && <option value="">no models</option>}
+            {/* `available` already carries the running session's model even
+                when nothing listed it, so the select can always show what the
+                conversation is actually on. */}
             {available.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.display_name}
@@ -261,6 +278,51 @@ export function currentProvider(
   if (sessionProvider) return sessionProvider;
   const remembered = providers.find((p) => p.id === lastProvider);
   return (remembered ?? providers[0])?.id;
+}
+
+/**
+ * What the model picker can offer.
+ *
+ * A listing is the answer when there is one. When there is not, the config
+ * still knows: a gateway with no `/v1/models` is exactly the case `models` and
+ * `default_model` exist for, and the picker used to say "no models" while a
+ * conversation ran happily on one of them — the app disagreeing with itself
+ * about something the user can see in two places at once.
+ *
+ * `current` is folded in for the same reason. A session already running on a
+ * model nothing listed still has to be selectable, or the `<select>` falls
+ * back to displaying its first option and names the wrong model as chosen.
+ */
+export function offered(
+  models: ModelInfo[] | "failed" | null,
+  provider: ProviderConfig | undefined,
+  current?: string,
+): ModelInfo[] {
+  const listed = Array.isArray(models) ? models : [];
+  const from = listed.length > 0 ? listed : declared(provider);
+  if (current && !from.some((m) => m.id === current)) {
+    return [...from, named(current)];
+  }
+  return from;
+}
+
+/** The models a provider's own config names, in the order it names them. */
+function declared(provider: ProviderConfig | undefined): ModelInfo[] {
+  if (!provider) return [];
+  if (provider.models.length > 0) {
+    return provider.models.map((m) => ({
+      id: m.id,
+      display_name: m.display_name ?? m.id,
+      context_length: m.context_length ?? null,
+    }));
+  }
+  // Predates `models`, and still the whole config for a provider that serves
+  // one thing.
+  return provider.default_model ? [named(provider.default_model)] : [];
+}
+
+function named(id: string): ModelInfo {
+  return { id, display_name: id, context_length: null };
 }
 
 /**

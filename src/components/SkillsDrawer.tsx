@@ -19,15 +19,24 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [mcpError, setMcpError] = useState<string | null>(null);
+  /*
+   * One stable slice, narrowed here rather than in the selector.
+   *
+   * zustand v5 hands the selector straight to `useSyncExternalStore`, which
+   * compares what comes back with `Object.is`. A selector that ends in
+   * `.filter(…)` or `?? []` allocates a fresh array on every call, so the
+   * snapshot never compares equal, and React tears the tree down with "the
+   * result of getSnapshot should be cached" — this drawer simply refused to
+   * open. `s.status` is one reference that only changes when the status does.
+   */
+  const status = useStore((s) => s.status);
   // Only what this drawer is actually about. Provider and search failures go
   // to Settings, which is where they can be fixed — an untagged list put them
   // here, under a heading about skills.
-  const problems = useStore((s) =>
-    (s.status?.problems ?? []).filter(
-      (p) => p.source === "skills" || p.source === "mcp",
-    ),
+  const problems = (status?.problems ?? []).filter(
+    (p) => p.source === "skills" || p.source === "mcp",
   );
-  const mcpServers = useStore((s) => s.status?.mcp_servers ?? []);
+  const mcpServers = status?.mcp_servers ?? [];
 
   useEffect(() => {
     api.listSkills().then(setSkills).catch(() => setSkills([]));

@@ -56,6 +56,28 @@ impl Default for OpenAiCapabilities {
     }
 }
 
+/// A model the config named, rather than one the server offered.
+///
+/// The overrides are per model because a single gateway routinely fronts
+/// models that do not share a context window or tool support, and
+/// `/v1/models` reports neither. Unset means "whatever the provider says".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelSpec {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub context_length: Option<u32>,
+    pub native_tools: Option<bool>,
+}
+
+impl ModelSpec {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            ..Self::default()
+        }
+    }
+}
+
 pub struct OpenAiProvider {
     id: String,
     base_url: String,
@@ -66,6 +88,8 @@ pub struct OpenAiProvider {
     api_key_header: Option<String>,
     client: reqwest::Client,
     capabilities: OpenAiCapabilities,
+    /// Declared models. Non-empty means `/v1/models` is never called.
+    models: Vec<ModelSpec>,
 }
 
 impl OpenAiProvider {
@@ -83,7 +107,27 @@ impl OpenAiProvider {
             api_key_header: None,
             client: reqwest::Client::new(),
             capabilities,
+            models: Vec::new(),
         }
+    }
+
+    /// Declares the models this endpoint serves, instead of asking it.
+    ///
+    /// A gateway need not expose `/v1/models` at all, and plenty of the ones
+    /// that do answer with an inventory rather than an entitlement — every
+    /// model the vendor sells, including the ones this key cannot call. Naming
+    /// them here replaces the listing outright: what is declared is what the
+    /// picker offers, and no request is made to find out.
+    ///
+    /// An empty list changes nothing, so a config that says nothing still asks.
+    pub fn with_models(mut self, models: Vec<ModelSpec>) -> Self {
+        self.models = models;
+        self
+    }
+
+    /// What the config said about one model, if it said anything.
+    fn declared(&self, model: &str) -> Option<&ModelSpec> {
+        self.models.iter().find(|m| m.id == model)
     }
 
     /// Sends the key in a named header instead of as a bearer token.
@@ -198,6 +242,20 @@ impl Provider for OpenAiProvider {
     }
 
     async fn models(&self) -> Result<Vec<ModelInfo>> {
+        // Declared beats discovered, and skips the round trip entirely. This
+        // is also the only path that works on a gateway with no listing route.
+        if !self.models.is_empty() {
+            return Ok(self
+                .models
+                .iter()
+                .map(|m| ModelInfo {
+                    id: m.id.clone(),
+                    display_name: m.display_name.clone().unwrap_or_else(|| m.id.clone()),
+                    context_length: m.context_length,
+                })
+                .collect());
+        }
+
         let response = self
             .authorize(self.client.get(self.models_url()))
             .send()
@@ -216,14 +274,23 @@ impl Provider for OpenAiProvider {
             .collect())
     }
 
-    async fn capabilities(&self, _model: &str) -> Result<Capabilities> {
+    async fn capabilities(&self, model: &str) -> Result<Capabilities> {
+        // Per model where the config bothered to say, per provider otherwise.
+        // The difference matters most for context length: one gateway fronting
+        // gpt-4o and an 8k local model compacts far too late for the second if
+        // both are told they have 128k.
+        let declared = self.declared(model);
         Ok(Capabilities {
-            native_tools: self.capabilities.native_tools,
+            native_tools: declared
+                .and_then(|m| m.native_tools)
+                .unwrap_or(self.capabilities.native_tools),
             vision: self.capabilities.vision,
             // No OpenAI-compatible endpoint exposes reasoning as a separate
             // stream field, so thinking is always folded into text here.
             thinking: false,
-            context_length: self.capabilities.context_length,
+            context_length: declared
+                .and_then(|m| m.context_length)
+                .unwrap_or(self.capabilities.context_length),
         })
     }
 
@@ -450,6 +517,95 @@ mod tests {
             .expect("the request must be constructible")
             .headers()
             .clone()
+    }
+
+    #[tokio::test]
+    async fn a_declared_list_is_the_model_list() {
+        // The base URL is deliberately unroutable: if `models()` reached for
+        // `/v1/models` at all this would fail rather than answer, which is the
+        // whole claim being made — declared models cost no request, so a
+        // gateway with no listing route can still offer more than one model.
+        let provider = OpenAiProvider::new(
+            "apim",
+            "http://127.0.0.1:1",
+            None,
+            OpenAiCapabilities::default(),
+        )
+        .with_models(vec![
+            ModelSpec::new("gpt-4o"),
+            ModelSpec {
+                id: "llama-3.1-8b".into(),
+                display_name: Some("Llama 3.1 8B".into()),
+                ..ModelSpec::default()
+            },
+        ]);
+
+        let models = provider
+            .models()
+            .await
+            .expect("declared models cannot fail");
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["gpt-4o", "llama-3.1-8b"]
+        );
+        // An id is its own label unless the config gave it a better one.
+        assert_eq!(models[0].display_name, "gpt-4o");
+        assert_eq!(models[1].display_name, "Llama 3.1 8B");
+    }
+
+    #[tokio::test]
+    async fn a_model_can_override_the_provider_it_is_served_by() {
+        // One gateway, two models that share nothing. Told the provider-wide
+        // 128k, the 8k model compacts tens of thousands of tokens too late —
+        // which is a context-overflow error, not a formatting nicety.
+        let provider = OpenAiProvider::new(
+            "apim",
+            "http://127.0.0.1:1",
+            None,
+            OpenAiCapabilities {
+                native_tools: true,
+                vision: false,
+                context_length: 128_000,
+            },
+        )
+        .with_models(vec![
+            ModelSpec::new("gpt-4o"),
+            ModelSpec {
+                id: "llama-3.1-8b".into(),
+                context_length: Some(8192),
+                native_tools: Some(false),
+                ..ModelSpec::default()
+            },
+        ]);
+
+        let inherited = provider.capabilities("gpt-4o").await.unwrap();
+        assert_eq!(inherited.context_length, 128_000);
+        assert!(inherited.native_tools);
+
+        let overridden = provider.capabilities("llama-3.1-8b").await.unwrap();
+        assert_eq!(overridden.context_length, 8192);
+        assert!(!overridden.native_tools);
+    }
+
+    #[tokio::test]
+    async fn a_model_nobody_declared_still_gets_the_provider_defaults() {
+        // Resuming a conversation started before the list was trimmed, or a
+        // model named by `default_model` alone. Neither is a reason to fail.
+        let provider = OpenAiProvider::new(
+            "apim",
+            "http://127.0.0.1:1",
+            None,
+            OpenAiCapabilities {
+                native_tools: false,
+                vision: false,
+                context_length: 32_000,
+            },
+        )
+        .with_models(vec![ModelSpec::new("gpt-4o")]);
+
+        let caps = provider.capabilities("something-else").await.unwrap();
+        assert_eq!(caps.context_length, 32_000);
+        assert!(!caps.native_tools);
     }
 
     #[test]
