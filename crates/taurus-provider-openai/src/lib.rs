@@ -540,7 +540,10 @@ mod tests {
             },
         ]);
 
-        let models = provider.models().await.expect("declared models cannot fail");
+        let models = provider
+            .models()
+            .await
+            .expect("declared models cannot fail");
         assert_eq!(
             models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
             ["gpt-4o", "llama-3.1-8b"]
