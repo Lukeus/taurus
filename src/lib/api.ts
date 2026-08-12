@@ -104,6 +104,16 @@ export const resumeSession = (sessionId: string, providerId?: string) =>
     providerId: providerId ?? null,
   });
 
+/**
+ * Erases a saved conversation — its transcript, and the checkpoints that made
+ * its turns undoable. The workspace itself is untouched.
+ *
+ * Rejected while that conversation is mid-turn, so the UI must be prepared for
+ * a failure it did not ask a question about.
+ */
+export const deleteSession = (sessionId: string) =>
+  invoke<void>("delete_session", { sessionId });
+
 export const respondPermission = (id: string, decision: PermissionDecision) =>
   invoke<void>("respond_permission", { response: { id, decision } });
 

@@ -1,5 +1,17 @@
-import type { SessionMeta } from "../lib/api";
+import { useState } from "react";
+
+import type { SessionMeta, Theme } from "../lib/api";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
+import {
+  DisplayIcon,
+  Logo,
+  MoonIcon,
+  SlidersIcon,
+  SparkIcon,
+  SunIcon,
+  SwapIcon,
+  TrashIcon,
+} from "./icons";
 
 /** How the provider behind the current session is actually doing. */
 export type ProviderHealth =
@@ -26,9 +38,12 @@ export function Rail({
   busy,
   skillCount,
   health,
+  theme,
   onPickWorkspace,
   onNew,
   onOpen,
+  onDelete,
+  onTheme,
   onSkills,
   onSettings,
 }: {
@@ -41,33 +56,102 @@ export function Rail({
   busy: boolean;
   skillCount: number | null;
   health: ProviderHealth;
+  /** The preference, not the resolved palette — the row names what was chosen. */
+  theme: Theme;
   onPickWorkspace: () => void;
   onNew: () => void;
   onOpen: (sessionId: string) => void;
+  onDelete: (sessionId: string) => void;
+  onTheme: (theme: Theme) => void;
   onSkills: () => void;
   onSettings: () => void;
 }) {
+  /**
+   * Which row is asking to be confirmed.
+   *
+   * A delete takes the transcript and the checkpoints that made its turns
+   * undoable, and neither comes back — so the trash can arms rather than acts.
+   * Held here rather than per row so that arming a second one disarms the
+   * first, which is what stops the rail filling up with pending questions.
+   */
+  const [arming, setArming] = useState<string | null>(null);
+
   const today = sessions.filter((s) => isToday(s.updated));
   const earlier = sessions.filter((s) => !isToday(s.updated));
 
-  const item = (session: SessionMeta) => (
-    <button
-      key={session.id}
-      className={`rail-item${session.id === currentId ? " current" : ""}`}
-      // Switching mid-turn would leave the running turn streaming into a
-      // transcript nobody is looking at.
-      disabled={busy || session.id === currentId}
-      title={session.title || "No turns yet"}
-      onClick={() => onOpen(session.id)}
-    >
-      <b>{session.title || "New conversation"}</b>
-      <span>{subtitle(session, session.id === currentId ? changedCount : null)}</span>
-    </button>
-  );
+  const item = (session: SessionMeta) => {
+    const current = session.id === currentId;
+    const armed = arming === session.id;
+    const title = session.title || "New conversation";
+    return (
+      <div
+        key={session.id}
+        className={`rail-row${current ? " current" : ""}${armed ? " armed" : ""}`}
+      >
+        <button
+          className="rail-item"
+          // Switching mid-turn would leave the running turn streaming into a
+          // transcript nobody is looking at.
+          disabled={busy || current}
+          title={session.title || "No turns yet"}
+          onClick={() => onOpen(session.id)}
+        >
+          <b>{title}</b>
+          <span className={armed ? "warn" : undefined}>
+            {armed
+              ? "delete this and its undo history?"
+              : subtitle(session, current ? changedCount : null)}
+          </span>
+        </button>
+
+        {armed ? (
+          <>
+            <button
+              className="rail-delete confirm"
+              title="Erase the transcript and the checkpoints that made its turns undoable"
+              onClick={() => {
+                setArming(null);
+                onDelete(session.id);
+              }}
+            >
+              Delete
+            </button>
+            <button
+              className="rail-delete"
+              aria-label="Keep this conversation"
+              title="Keep it"
+              onClick={() => setArming(null)}
+            >
+              ✕
+            </button>
+          </>
+        ) : (
+          <button
+            className="rail-delete"
+            // The backend refuses this outright for the conversation a turn is
+            // running in; the other rows stay live, because deleting one of
+            // them costs the running turn nothing.
+            disabled={busy && current}
+            aria-label={`Delete ${title}`}
+            title="Delete this conversation"
+            onClick={() => setArming(session.id)}
+          >
+            <TrashIcon />
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <aside className="rail" style={{ width }}>
-      <div className="rail-drag" />
+      {/* Clears the macOS traffic lights, which float over this corner, and
+          carries the wordmark at the one height that lines its rule up with
+          the topbar's across the fold. */}
+      <div className="rail-brand">
+        <Logo />
+        <span>taurus</span>
+      </div>
 
       <div className="rail-pad">
         <button
@@ -80,7 +164,9 @@ export function Rail({
             <b>{workspace ? basename(workspace) : "No workspace"}</b>
             <span>{workspace ? parentDir(workspace) : "choose a folder"}</span>
           </span>
-          <span className="rail-workspace-swap">⇅</span>
+          <span className="rail-workspace-swap">
+            <SwapIcon size={12} />
+          </span>
         </button>
       </div>
 
@@ -113,13 +199,29 @@ export function Rail({
 
       <div className="rail-foot">
         <button className="rail-link accent" onClick={onSkills}>
-          <span className="glyph">✦</span>
+          <span className="glyph">
+            <SparkIcon />
+          </span>
           <b>Skills</b>
           {skillCount !== null && <span className="count">{skillCount}</span>}
         </button>
         <button className="rail-link" onClick={onSettings}>
-          <span className="glyph">◈</span>
+          <span className="glyph">
+            <SlidersIcon />
+          </span>
           <b>Settings</b>
+        </button>
+        {/* Three preferences on one row, so it cycles rather than toggles.
+            A light/dark switch here would quietly throw away "follow the
+            system", which is both the default and the only one of the three
+            that can change on its own. */}
+        <button
+          className="rail-link"
+          title={THEME_HINT[theme]}
+          onClick={() => onTheme(NEXT_THEME[theme])}
+        >
+          <span className="glyph">{themeIcon(theme)}</span>
+          <b>{THEME_LABEL[theme]}</b>
         </button>
         <div className="rail-status" title={healthTitle(health)}>
           <span className={`dot ${healthDot(health)}`} />
@@ -143,6 +245,35 @@ function subtitle(session: SessionMeta, changed: number | null): string {
   return changed === 0
     ? `read-only · ${ago}`
     : `${plural(changed, "file")} changed · ${ago}`;
+}
+
+const NEXT_THEME: Record<Theme, Theme> = {
+  system: "light",
+  light: "dark",
+  dark: "system",
+};
+
+const THEME_LABEL: Record<Theme, string> = {
+  system: "Match system",
+  light: "Light theme",
+  dark: "Dark theme",
+};
+
+const THEME_HINT: Record<Theme, string> = {
+  system: "Following your system setting. Click for light.",
+  light: "Light in every workspace. Click for dark.",
+  dark: "Dark in every workspace. Click to follow the system.",
+};
+
+function themeIcon(theme: Theme) {
+  switch (theme) {
+    case "light":
+      return <SunIcon />;
+    case "dark":
+      return <MoonIcon />;
+    case "system":
+      return <DisplayIcon />;
+  }
 }
 
 function healthDot(health: ProviderHealth): string {

@@ -78,6 +78,11 @@ interface Store {
   startSession: (providerId: string, model: string) => Promise<void>;
   /** Reopens a saved conversation and redraws it. */
   resume: (sessionId: string) => Promise<void>;
+  /**
+   * Erases a saved conversation. Deleting the open one starts a replacement on
+   * the same provider and model, so the app is never left without a session.
+   */
+  remove: (sessionId: string) => Promise<void>;
   send: (text: string) => Promise<void>;
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
@@ -187,6 +192,33 @@ export const useStore = create<Store>((set, get) => ({
       proposals: [],
     });
     void get().reload();
+  },
+
+  remove: async (sessionId) => {
+    const open = get().session;
+    try {
+      await api.deleteSession(sessionId);
+    } catch (e) {
+      // The backend refuses to delete a conversation mid-turn, which is the one
+      // failure a user can actually provoke. It belongs in the banner rather
+      // than thrown at a click handler in the rail.
+      return set({ error: String(e) });
+    }
+
+    if (open?.id !== sessionId) return get().reload();
+
+    // The conversation on screen is the one that just went. Replacing it beats
+    // leaving the transcript showing a conversation that no longer exists, and
+    // its provider and model were both working a moment ago.
+    set({ session: null, entries: [], changed: [], proposals: [] });
+    try {
+      await get().startSession(open.provider_id, open.model);
+    } catch (e) {
+      // A provider that has since gone away. The rail, the first-run screen and
+      // Settings all work with no session, so this is a message, not a dead end.
+      set({ error: String(e) });
+    }
+    await get().reload();
   },
 
   send: async (text) => {
