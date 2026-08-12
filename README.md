@@ -677,8 +677,10 @@ pnpm test                  # transcript reducer, replay, settings, rewind
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 
-# TypeScript types are generated from Rust; regenerate after changing a payload:
-TS_RS_EXPORT_DIR="$PWD/src/bindings" cargo test --workspace export_bindings
+# TypeScript types are generated from Rust; regenerate after changing a payload.
+# `src/bindings` is not committed, so this is also the first thing a fresh clone
+# needs — without it `pnpm build` cannot find a single frontend type.
+pnpm bindings
 ```
 
 ### Live checks
