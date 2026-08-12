@@ -102,6 +102,18 @@ impl Renderer {
                 self.dim(&format!("  {} {}", glyph(name), preview));
             }
 
+            // Indented under the call it belongs to. Delegation is the only
+            // thing that reports these, and watching the child work is the
+            // difference between a minute of silence and a minute of progress.
+            UiEvent::ToolProgress { label, .. } => {
+                if self.quiet {
+                    return;
+                }
+                self.break_text();
+                self.break_thinking();
+                self.dim(&format!("    · {label}"));
+            }
+
             UiEvent::ToolCallFinished { ok, output, .. } => {
                 if self.quiet {
                     return;

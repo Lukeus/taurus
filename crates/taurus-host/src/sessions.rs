@@ -12,9 +12,13 @@
 //! progress rather than the whole conversation, and a half-written final line
 //! is dropped on load instead of poisoning the file.
 //!
-//! There is deliberately no index file. Everything a listing needs is in each
-//! transcript's own first lines, and an index is a second copy of the truth
-//! that can disagree with it.
+//! There is deliberately no index file. Everything a listing needs is in the
+//! transcript itself — normally in its opening lines — and an index is a second
+//! copy of the truth that can disagree with it.
+//!
+//! Reading and listing apply the same rule about what a valid transcript is. A
+//! listing stricter than the loader would hide conversations that open fine
+//! when asked for by id, and the listing is the only way anybody reaches them.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -104,7 +108,7 @@ enum Record {
     Usage(TokenUsage),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Header {
     version: u32,
     id: String,
@@ -139,35 +143,36 @@ pub struct SessionMeta {
 ///
 /// Writes never fail a turn: persistence is a side effect of work the user
 /// asked for, and a full disk or a read-only home must cost them the record of
-/// the conversation, not the conversation. Failures are logged once and the log
-/// then goes quiet.
+/// the conversation, not the conversation. A failure is reported once and then
+/// retried quietly on the next turn — a disk that frees up must not leave the
+/// rest of the conversation unrecorded because one early write missed.
 pub struct SessionLog {
     path: PathBuf,
-    /// How many of the session's messages are already on disk.
+    /// The header this transcript must carry, held until the file is known to
+    /// have one. Kept rather than written once and forgotten, so a log whose
+    /// header write failed can still be repaired on a later turn.
+    header: Option<Header>,
+    /// How many of the session's messages are already on disk. Advanced per
+    /// message that actually landed, never past one that did not.
     persisted: usize,
-    /// Set after a write fails, so one broken log does not narrate every turn.
-    disabled: bool,
+    /// A log that must never write anything. Distinct from a write that failed,
+    /// which is retried.
+    off: bool,
+    /// Set after a failure, so one broken log does not narrate every turn.
+    warned: bool,
 }
 
 impl SessionLog {
     /// Starts a transcript for a new session and writes its header.
     pub fn create(session: &Session, workspace: &Path) -> Self {
-        let path = sessions_dir()
-            .join(workspace_key(workspace))
-            .join(format!("{}.{EXTENSION}", session.id));
-
         let mut log = Self {
-            path,
+            path: transcript_path(session, workspace),
+            header: Some(header_for(session, workspace)),
             persisted: 0,
-            disabled: false,
+            off: false,
+            warned: false,
         };
-        log.write(&Record::Header(Header {
-            version: FORMAT_VERSION,
-            id: session.id.clone(),
-            workspace: workspace.display().to_string(),
-            model: session.model.clone(),
-            started: now(),
-        }));
+        log.ensure_header();
         // Nothing is on disk yet, so every message the session already holds
         // still has to be written. Adopting an existing transcript is
         // `resume`'s job, not this one's.
@@ -176,13 +181,16 @@ impl SessionLog {
 
     /// Reopens the transcript a session was loaded from, to append to it.
     pub fn resume(session: &Session, workspace: &Path) -> Self {
-        let path = sessions_dir()
-            .join(workspace_key(workspace))
-            .join(format!("{}.{EXTENSION}", session.id));
         Self {
-            path,
+            path: transcript_path(session, workspace),
+            // Carried but almost never written: a transcript that loaded has a
+            // header by definition, so this is only reached if the file lost
+            // one. `started` is unrecoverable in that case, and the listing
+            // does not show it.
+            header: Some(header_for(session, workspace)),
             persisted: session.messages.len(),
-            disabled: false,
+            off: false,
+            warned: false,
         }
     }
 
@@ -190,8 +198,32 @@ impl SessionLog {
     pub fn disabled() -> Self {
         Self {
             path: PathBuf::new(),
+            header: None,
             persisted: 0,
-            disabled: true,
+            off: true,
+            warned: false,
+        }
+    }
+
+    /// Writes the header unless the transcript already carries one.
+    ///
+    /// Asks the file for the record rather than for its own existence:
+    /// `try_write` creates the file before it writes to it, so a write that
+    /// failed leaves an empty transcript behind, and "the file is there" would
+    /// be true from then on. Asking for the record also repairs a transcript
+    /// that is already missing one.
+    fn ensure_header(&mut self) {
+        if self.off || self.header.is_none() {
+            return;
+        }
+        if has_header(&self.path) {
+            self.header = None;
+            return;
+        }
+        if let Some(header) = self.header.clone() {
+            if self.write(&Record::Header(header)) {
+                self.header = None;
+            }
         }
     }
 
@@ -201,30 +233,54 @@ impl SessionLog {
 
     /// Appends whatever the session gained since the last call.
     pub fn record(&mut self, session: &Session) {
-        if self.disabled {
+        if self.off {
             return;
         }
+
+        // Retried every turn rather than attempted once at creation: a
+        // transient failure must cost the turn that hit it, not the record of
+        // the whole conversation.
+        self.ensure_header();
+        if self.header.is_some() {
+            // Still no header on disk. Messages appended under one would make a
+            // transcript `load` cannot identify, so leave them for the turn
+            // that manages to write it.
+            return;
+        }
+
         // Guards a resumed or replaced session whose history is shorter than
         // what has been written; appending from a stale offset would duplicate.
         let start = self.persisted.min(session.messages.len());
+        self.persisted = start;
         for message in &session.messages[start..] {
-            self.write(&Record::Message(message.clone()));
+            if !self.write(&Record::Message(message.clone())) {
+                // Left pointing at the message that did not land, so the next
+                // turn writes it rather than skipping past it.
+                return;
+            }
+            self.persisted += 1;
         }
-        self.persisted = session.messages.len();
         self.write(&Record::Usage(session.usage));
     }
 
-    fn write(&mut self, record: &Record) {
-        if self.disabled {
-            return;
+    /// Appends one record. Returns whether it landed.
+    fn write(&mut self, record: &Record) -> bool {
+        if self.off {
+            return false;
         }
-        if let Err(e) = self.try_write(record) {
-            tracing::warn!(
-                path = %self.path.display(),
-                error = %e,
-                "could not write the session transcript; this session will not be resumable"
-            );
-            self.disabled = true;
+        match self.try_write(record) {
+            Ok(()) => true,
+            Err(e) => {
+                if !self.warned {
+                    tracing::warn!(
+                        path = %self.path.display(),
+                        error = %e,
+                        "could not write the session transcript; retrying on the next turn"
+                    );
+                    self.warned = true;
+                }
+                false
+            }
         }
     }
 
@@ -241,6 +297,37 @@ impl SessionLog {
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")
     }
+}
+
+fn transcript_path(session: &Session, workspace: &Path) -> PathBuf {
+    sessions_dir()
+        .join(workspace_key(workspace))
+        .join(format!("{}.{EXTENSION}", session.id))
+}
+
+fn header_for(session: &Session, workspace: &Path) -> Header {
+    Header {
+        version: FORMAT_VERSION,
+        id: session.id.clone(),
+        workspace: workspace.display().to_string(),
+        model: session.model.clone(),
+        started: now(),
+    }
+}
+
+/// Whether a transcript already carries a header record.
+///
+/// Scans for the record rather than reading the first line, so that this agrees
+/// with [`load`], which accepts a header wherever it appears. `any` stops at the
+/// first match, so the ordinary case reads one line and no more.
+fn has_header(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .any(|line| matches!(serde_json::from_str::<Record>(&line), Ok(Record::Header(_))))
 }
 
 /// Rebuilds a session from its transcript.
@@ -327,6 +414,12 @@ pub fn latest(workspace: &Path) -> Option<SessionMeta> {
 /// Bounded on purpose: a session that read a large file has a transcript to
 /// match, and a listing that parses all of them for every entry would make
 /// `taurus sessions` slower than the turns it is listing.
+///
+/// The header is looked for rather than demanded on line one, because [`load`]
+/// accepts it anywhere. A listing stricter than the loader hides sessions that
+/// open perfectly well when asked for by id, which is worse than either rule on
+/// its own — the conversation is there, and only the one screen that would let
+/// somebody reach it disagrees.
 fn read_meta(path: &Path) -> Option<SessionMeta> {
     let updated = std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -336,24 +429,38 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
         .unwrap_or_default();
 
     let file = std::fs::File::open(path).ok()?;
-    let mut lines = BufReader::new(file).lines().map_while(Result::ok);
 
-    let header = match serde_json::from_str::<Record>(&lines.next()?) {
-        Ok(Record::Header(header)) => header,
-        _ => return None,
-    };
+    let mut header: Option<Header> = None;
+    let mut title: Option<String> = None;
+
+    // One pass for both, stopping as soon as nothing worth finding is left. A
+    // transcript normally opens with its header and reaches the first question
+    // a line or two later, so this reads the top of the file and returns.
+    for (index, line) in BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .enumerate()
+    {
+        match serde_json::from_str::<Record>(&line) {
+            Ok(Record::Header(found)) => header = Some(found),
+            // Tool results are skipped: a resumed turn can begin with one, and
+            // titling a session with the contents of a file it happened to read
+            // tells the user nothing about what they asked for. `first_text`
+            // returns `None` for those, which leaves the search running.
+            Ok(Record::Message(message)) if title.is_none() && message.role == Role::User => {
+                title = first_text(&message);
+            }
+            _ => {}
+        }
+        if header.is_some() && (title.is_some() || index + 1 >= TITLE_SCAN_LINES) {
+            break;
+        }
+    }
+
+    let header = header?;
     if header.version > FORMAT_VERSION {
         return None;
     }
-
-    let title = lines
-        .take(TITLE_SCAN_LINES)
-        .filter_map(|line| serde_json::from_str::<Record>(&line).ok())
-        .find_map(|record| match record {
-            Record::Message(message) if message.role == Role::User => first_text(&message),
-            _ => None,
-        })
-        .unwrap_or_default();
 
     Some(SessionMeta {
         id: header.id,
@@ -361,7 +468,7 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
         model: header.model,
         started: header.started,
         updated,
-        title,
+        title: title.unwrap_or_default(),
     })
 }
 
@@ -554,5 +661,108 @@ mod tests {
         let mut log = SessionLog::disabled();
         log.record(&session_with("nope", &["secret"]));
         assert!(list(None).is_empty());
+    }
+
+    /// Puts a file where a workspace's transcript directory belongs, so
+    /// `create_dir_all` fails and every write to it fails with it.
+    ///
+    /// Portable, unlike permission bits, and it models the case that matters:
+    /// writes failing from the very first one, before any header exists.
+    fn block_writes(workspace: &Path) -> PathBuf {
+        let dir = sessions_dir().join(workspace_key(workspace));
+        std::fs::create_dir_all(dir.parent().expect("sessions dir has a parent")).unwrap();
+        std::fs::write(&dir, "in the way").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_failed_first_write_does_not_cost_the_whole_conversation() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/blocked");
+        let obstruction = block_writes(workspace);
+
+        let mut session = session_with("blocked1", &["first question"]);
+        let mut log = SessionLog::create(&session, workspace);
+        log.record(&session);
+        assert!(
+            load("blocked1").is_err(),
+            "the write failed, so there is nothing to load yet"
+        );
+
+        // Whatever it was clears: a full disk with room again, a home that is
+        // no longer read-only.
+        std::fs::remove_file(&obstruction).unwrap();
+
+        session.push(Message::user("second question"));
+        session.push(Message::assistant("ok"));
+        log.record(&session);
+
+        let (loaded, _) = load("blocked1")
+            .expect("the next turn must write the header it could not write before");
+        assert_eq!(
+            loaded.messages.len(),
+            4,
+            "the turn that failed must be written too, not skipped past"
+        );
+        assert_eq!(loaded.model, "test-model");
+        assert_eq!(
+            list(Some(workspace)).len(),
+            1,
+            "a repaired transcript has to reach the listing, not just the loader"
+        );
+    }
+
+    #[test]
+    fn a_transcript_carries_exactly_one_header_however_many_turns_land() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/onceonly");
+
+        let mut session = session_with("once1", &["one"]);
+        let mut log = SessionLog::create(&session, workspace);
+        log.record(&session);
+        session.push(Message::user("two"));
+        session.push(Message::assistant("ok"));
+        log.record(&session);
+
+        let text = std::fs::read_to_string(log.path()).unwrap();
+        let headers = text
+            .lines()
+            .filter(|line| matches!(serde_json::from_str::<Record>(line), Ok(Record::Header(_))))
+            .count();
+        assert_eq!(headers, 1, "the header must not be rewritten every turn");
+    }
+
+    #[test]
+    fn a_listing_accepts_a_header_that_is_not_on_the_first_line() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/outoforder");
+
+        let dir = sessions_dir().join(workspace_key(workspace));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let message =
+            serde_json::to_string(&Record::Message(Message::user("the question"))).unwrap();
+        let header = serde_json::to_string(&Record::Header(Header {
+            version: FORMAT_VERSION,
+            id: "ooo1".into(),
+            workspace: workspace.display().to_string(),
+            model: "test-model".into(),
+            started: 1,
+        }))
+        .unwrap();
+        std::fs::write(dir.join("ooo1.jsonl"), format!("{message}\n{header}\n")).unwrap();
+
+        // `load` reads a header wherever it sits, so the listing must agree. A
+        // listing that is stricter hides a conversation that opens fine.
+        let (loaded, _) = load("ooo1").expect("load accepts a header anywhere");
+        assert_eq!(loaded.model, "test-model");
+
+        let listed = list(Some(workspace));
+        assert_eq!(
+            listed.len(),
+            1,
+            "a session `load` can open must be listable"
+        );
+        assert_eq!(listed[0].title, "the question");
     }
 }

@@ -192,13 +192,18 @@ impl Tool for SpawnSubagent {
 
         info!(kind = definition.name, "spawning sub-agent");
 
-        // The child's events are collected rather than forwarded: the parent's
-        // transcript should show one delegation, not the child's whole run.
+        // The child's own text and results stay inside the child — the parent's
+        // transcript should show one delegation, not a second conversation. But
+        // *what it is doing* is forwarded as it happens: a delegation can run
+        // for a minute, and a card that says "running" for that long is
+        // indistinguishable from one that has hung.
         let (tx, mut rx) = mpsc::channel::<UiEvent>(256);
+        let progress = ctx.clone();
         let collector = tokio::spawn(async move {
             let mut tools: Vec<String> = Vec::new();
             while let Some(event) = rx.recv().await {
-                if let UiEvent::ToolCallStarted { name, .. } = event {
+                if let UiEvent::ToolCallStarted { name, preview, .. } = event {
+                    progress.report(preview).await;
                     tools.push(name);
                 }
             }

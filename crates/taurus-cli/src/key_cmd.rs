@@ -1,4 +1,9 @@
-//! `taurus key` — provider API keys in the OS credential store.
+//! `taurus key` — API keys in the OS credential store.
+//!
+//! Model providers and web-search backends both keep their keys here, under
+//! separate namespaces, and `--search` is what picks between them. Without it
+//! a search key could only be stored from the desktop app, which would leave
+//! the CLI with the worse half of a feature both frontends share.
 //!
 //! The secret is read from stdin, never from an argument. A key on the command
 //! line is visible to every process on the machine through `ps`, and it lands
@@ -13,27 +18,41 @@ use taurus_host::{secrets::KeyStatus, Host};
 
 #[derive(Subcommand)]
 pub enum KeyCommand {
-    /// Store a provider's API key, read from stdin.
+    /// Store an API key, read from stdin.
     Set {
-        /// Provider id, as it appears in `providers.json`.
-        provider: String,
+        /// Provider id from `providers.json`, or a backend id from
+        /// `search.json` with `--search`.
+        id: String,
+        /// Store this against a web-search backend rather than a provider.
+        #[arg(long)]
+        search: bool,
     },
-    /// Remove a provider's stored key.
-    Clear { provider: String },
-    /// Show where each provider's key comes from.
+    /// Remove a stored key.
+    Clear {
+        id: String,
+        /// Clear a web-search backend's key rather than a provider's.
+        #[arg(long)]
+        search: bool,
+    },
+    /// Show where every key comes from.
     Status,
 }
 
 pub async fn run(host: &Host, command: KeyCommand) -> Result<ExitCode, String> {
     match command {
-        KeyCommand::Set { provider } => {
+        KeyCommand::Set { id, search } => {
             let key = read_key()?;
-            host.set_provider_key(&provider, &key).await?;
+            let what = if search { "search backend" } else { "provider" };
+            if search {
+                host.set_search_key(&id, &key).await?;
+            } else {
+                host.set_provider_key(&id, &key).await?;
+            }
 
-            println!("Stored the key for '{provider}'.");
+            println!("Stored the key for {what} '{id}'.");
             // Saying so at the moment of storing beats letting them discover it
             // through a 401 that names nothing.
-            if let KeyStatus::Overridden { variable } = status_of(host, &provider).await {
+            if let KeyStatus::Overridden { variable } = status_of(host, &id, search).await {
                 println!(
                     "Note: ${variable} is set and takes precedence, so this key will not be \
                      used until that variable is unset."
@@ -42,21 +61,37 @@ pub async fn run(host: &Host, command: KeyCommand) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
 
-        KeyCommand::Clear { provider } => {
-            host.clear_provider_key(&provider).await?;
-            println!("Removed any stored key for '{provider}'.");
+        KeyCommand::Clear { id, search } => {
+            if search {
+                host.clear_search_key(&id).await?;
+            } else {
+                host.clear_provider_key(&id).await?;
+            }
+            println!("Removed any stored key for '{id}'.");
             Ok(ExitCode::SUCCESS)
         }
 
         KeyCommand::Status => {
-            let statuses = host.key_statuses().await;
-            if statuses.is_empty() {
-                println!("No providers are configured.");
+            let providers = host.key_statuses().await;
+            let backends = host.search_key_statuses();
+            if providers.is_empty() && backends.is_empty() {
+                println!("Nothing is configured that takes a key.");
                 return Ok(ExitCode::SUCCESS);
             }
-            for (id, status) in &statuses {
-                println!("{:<20} {}", id, describe(status));
+
+            // Labelled by section rather than listed together: the two
+            // namespaces allow the same id in both, and an undifferentiated
+            // list would show it twice with no way to tell which was which.
+            for (heading, statuses) in [("providers", &providers), ("search", &backends)] {
+                if statuses.is_empty() {
+                    continue;
+                }
+                println!("{heading}:");
+                for (id, status) in statuses.iter() {
+                    println!("  {:<18} {}", id, describe(status));
+                }
             }
+
             if !Host::keychain_available() {
                 println!();
                 println!(
@@ -80,11 +115,15 @@ fn describe(status: &KeyStatus) -> String {
     }
 }
 
-async fn status_of(host: &Host, provider: &str) -> KeyStatus {
-    host.key_statuses()
-        .await
+async fn status_of(host: &Host, wanted: &str, search: bool) -> KeyStatus {
+    let statuses = if search {
+        host.search_key_statuses()
+    } else {
+        host.key_statuses().await
+    };
+    statuses
         .into_iter()
-        .find(|(id, _)| id == provider)
+        .find(|(id, _)| id == wanted)
         .map(|(_, status)| status)
         .unwrap_or(KeyStatus::Missing)
 }

@@ -13,6 +13,7 @@
 //! `base_url` does not have to restate the rest of the list.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,53 @@ pub fn settings_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> 
     scope_dir(scope, workspace).map(|d| d.join("settings.json"))
 }
 
+pub fn search_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
+    scope_dir(scope, workspace).map(|d| taurus_web::config::config_file(&d))
+}
+
+pub fn mcp_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
+    scope_dir(scope, workspace).map(|d| taurus_mcp::config::config_file(&d))
+}
+
+/// Ensures a layer's `mcp.json` exists, and returns it.
+///
+/// There is no UI for adding servers — the format is the one Claude Desktop
+/// uses and people paste it between the two — so the app's job is to put the
+/// file in front of them rather than to reimplement it as a form. Creating it
+/// empty first is what makes that a working route on a machine that has never
+/// had one, instead of an editor opening on nothing.
+pub fn ensure_mcp_file(scope: Scope, workspace: Option<&Path>) -> Result<PathBuf, String> {
+    let path = mcp_file(scope, workspace)
+        .ok_or_else(|| "no workspace is open, so it has no config directory".to_string())?;
+    if !path.exists() {
+        write_config(&path, "{\n  \"mcpServers\": {}\n}\n");
+    }
+    // `write_config` swallows its failure by design, so the check is here: an
+    // editor opening on a file that was never created is a worse outcome than
+    // being told why.
+    if !path.exists() {
+        return Err(format!("could not create {}", path.display()));
+    }
+    Ok(path)
+}
+
+/// The global `search.json` alone, which is what an editor must edit.
+///
+/// The same rule `global_providers` follows: hand the editor the *merged* view
+/// and saving it writes this workspace's overrides into every other workspace.
+pub fn load_global_search() -> taurus_web::SearchFile {
+    taurus_web::load(&home_dir()).unwrap_or_default()
+}
+
+pub fn save_search(file: &taurus_web::SearchFile) {
+    let Some(path) = search_file(Scope::Global, None) else {
+        return;
+    };
+    if let Ok(json) = serde_json::to_string_pretty(file) {
+        write_config(&path, &json);
+    }
+}
+
 /// Reads both layers of `search.json` and resolves the selected backend.
 ///
 /// Returns `None` when web search is off, which is the default and not a
@@ -118,9 +166,26 @@ pub fn load_search(workspace: Option<&Path>) -> (Option<taurus_web::Backend>, Ve
         }
     }
 
-    let (backend, merge_problems) = taurus_web::merge(layers);
+    let (backend, merge_problems) = taurus_web::merge_with(layers, |id, variable| {
+        crate::secrets::resolve(&search_key_id(id), variable)
+    });
     problems.extend(merge_problems);
     (backend, problems)
+}
+
+/// Credential-store id for a search backend's key.
+///
+/// Namespaced, because backend ids and provider ids are user-chosen and land in
+/// the same store: without this, a search backend called `brave` and a provider
+/// called `brave` would be one entry, and saving either would overwrite the
+/// other's key.
+pub fn search_key_id(backend_id: &str) -> String {
+    format!("search:{backend_id}")
+}
+
+/// Where a search backend's key is coming from, for the settings screen.
+pub fn search_key_status(backend_id: &str, api_key_env: Option<&str>) -> crate::secrets::KeyStatus {
+    crate::secrets::status(&search_key_id(backend_id), api_key_env)
 }
 
 /// How to reach one model backend.
@@ -512,9 +577,37 @@ fn write_config(path: &Path, json: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Err(e) = std::fs::write(path, json) {
+    if let Err(e) = replace_file(path, json) {
         tracing::warn!(path = %path.display(), error = %e, "could not write config");
     }
+}
+
+/// Puts `contents` at `path` without ever leaving it partly written.
+///
+/// `fs::write` truncates before it writes, and these files are rewritten
+/// constantly — `remember_session` saves settings at both layers after every
+/// turn — so the window in which an interrupted write leaves an empty
+/// `providers.json` is not a narrow one. That file is the whole provider list,
+/// and the keychain entries keyed to those ids are orphaned along with it.
+///
+/// The temporary file is made in the target's own directory, because a rename
+/// is only atomic within one filesystem and `~/.taurus` need not share one with
+/// the system temp directory. Dropping it unpersisted removes it, so a failure
+/// part way leaves neither a torn file nor litter behind.
+///
+/// One deliberate trade: this needs the *directory* to be writable, where a
+/// plain overwrite needed only the file to be. A `.taurus` directory that is
+/// read-only while its files are writable is a strange enough arrangement to be
+/// worth losing, given what it buys.
+fn replace_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(contents.as_bytes())?;
+    // Flushed before the rename: otherwise a crash just after it could leave
+    // the real name pointing at content that never reached the disk.
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 /// Merges MCP server maps in layer order, lowest precedence first.
@@ -564,6 +657,98 @@ mod tests {
     fn write(path: PathBuf, body: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn a_search_backend_and_a_provider_of_the_same_name_keep_separate_keys() {
+        // Both ids are user-chosen and both land in one credential store, so
+        // without the namespace a backend called `brave` and a provider called
+        // `brave` would be a single entry, and saving either would silently
+        // destroy the other's key.
+        assert_ne!(search_key_id("brave"), "brave");
+        assert_eq!(search_key_id("brave"), "search:brave");
+    }
+
+    #[test]
+    fn a_named_variable_beats_a_stored_search_key() {
+        // The same precedence provider keys follow, which is the point of
+        // routing both through `secrets` rather than reimplementing it: an
+        // environment variable is the escape hatch for CI and for machines
+        // with no keychain, so it has to win.
+        let _home = isolated_home();
+        std::env::set_var("TAURUS_TEST_SEARCH_KEY", "from-the-environment");
+
+        let status = search_key_status("brave", Some("TAURUS_TEST_SEARCH_KEY"));
+        assert!(
+            matches!(status, crate::secrets::KeyStatus::Environment { ref variable }
+                if variable == "TAURUS_TEST_SEARCH_KEY"),
+            "{status:?}"
+        );
+
+        std::env::remove_var("TAURUS_TEST_SEARCH_KEY");
+        assert_eq!(
+            search_key_status("brave", Some("TAURUS_TEST_SEARCH_KEY")),
+            crate::secrets::KeyStatus::Missing
+        );
+    }
+
+    #[test]
+    fn rewriting_a_config_replaces_it_and_leaves_nothing_behind() {
+        let home = isolated_home();
+        let path = home.path().join("settings.json");
+
+        write_config(&path, r#"{"last_model":"a"}"#);
+        write_config(&path, r#"{"last_model":"b"}"#);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"last_model":"b"}"#
+        );
+
+        // Settings are rewritten after every turn, so a temp file that outlived
+        // its rename would accumulate one per turn forever.
+        let stray: Vec<String> = std::fs::read_dir(home.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "settings.json")
+            .collect();
+        assert!(stray.is_empty(), "temp files left behind: {stray:?}");
+    }
+
+    /// Stands in for the crash or full disk that cannot be staged in a test.
+    ///
+    /// A directory that refuses new entries fails the write at the same point
+    /// an interruption would — before the rename — which is exactly the moment
+    /// a plain `fs::write` would already have truncated the file.
+    #[cfg(unix)]
+    #[test]
+    fn a_config_write_that_cannot_finish_leaves_the_old_one_intact() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = isolated_home();
+        let dir = home.path().join("locked");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("providers.json");
+        write_config(&path, r#"[{"id":"ollama"}]"#);
+
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(&dir, perms).unwrap();
+
+        write_config(&path, "half a file");
+
+        // Restored before asserting, so a failure here cannot leave a directory
+        // the test harness is unable to clean up.
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&dir, perms).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"[{"id":"ollama"}]"#,
+            "a write that could not complete must not destroy the provider list"
+        );
     }
 
     #[test]

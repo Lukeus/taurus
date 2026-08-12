@@ -19,8 +19,8 @@ use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, PermissionDecision, Scope};
 
 use taurus_host::{
-    sessions, Checkpoint, Host, KeyStatus, ProviderConfig, Restored, SessionLog, SessionMeta,
-    Settings, TurnRef,
+    sessions, BackendKind, Checkpoint, Host, KeyStatus, Problem, ProviderConfig, Restored,
+    SessionLog, SessionMeta, Settings, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -40,7 +40,11 @@ pub struct AppStatus {
     pub providers: Vec<ProviderConfig>,
     pub settings: Settings,
     pub skill_count: usize,
-    pub skill_problems: Vec<String>,
+    /// Everything that failed to load, each tagged with where it came from so
+    /// the UI can show it on the screen that can fix it. Previously this was an
+    /// untagged list called `skill_problems`, and a malformed `providers.json`
+    /// was reported under a list of skills.
+    pub problems: Vec<Problem>,
     pub tool_names: Vec<String>,
     pub mcp_servers: Vec<ServerStatus>,
 }
@@ -52,7 +56,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus>
         providers: state.host.providers().await,
         settings: state.host.settings().await,
         skill_count: state.host.skill_count().await,
-        skill_problems: state.host.problems().await,
+        problems: state.host.problems().await,
         tool_names: state.host.tool_names().await,
         mcp_servers: state.host.mcp_statuses().await,
     })
@@ -363,6 +367,154 @@ pub async fn clear_provider_key(
 ) -> CmdResult<()> {
     state.host.clear_provider_key(&provider_id).await?;
     Ok(())
+}
+
+/// One search backend as the settings screen edits it.
+///
+/// Flattened out of `SearchFile`'s map so the frontend gets a list it can
+/// render in a stable order, with the id alongside the entry rather than as a
+/// key it has to carry separately.
+#[derive(Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchBackend {
+    pub id: String,
+    pub kind: BackendKind,
+    /// Empty when the config does not say and the kind has no default — which
+    /// is only SearXNG, where guessing would turn a blank into a refused
+    /// connection.
+    pub base_url: String,
+    pub api_key_env: Option<String>,
+    pub max_results: Option<u8>,
+    /// False for SearXNG, so the UI can leave the key field out entirely.
+    pub needs_key: bool,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct SearchSettings {
+    /// The selected backend id, or null when search is off — which is the
+    /// default, and not a problem.
+    pub selected: Option<String>,
+    pub backends: Vec<SearchBackend>,
+    /// Where each backend's key comes from, by id. Status only; the key itself
+    /// never crosses into the frontend.
+    pub key_statuses: Vec<(String, KeyStatus)>,
+    /// True when `web_search` is actually registered. A backend can be selected
+    /// and still not run, and saying "on" then would be a lie.
+    pub active: bool,
+    pub problems: Vec<Problem>,
+}
+
+#[tauri::command]
+pub async fn get_search_settings(state: State<'_, Arc<AppState>>) -> CmdResult<SearchSettings> {
+    let file = state.host.global_search();
+
+    let backends: Vec<SearchBackend> = file
+        .backends
+        .iter()
+        .filter_map(|(id, entry)| {
+            // An entry with no kind is a workspace override of something the
+            // global layer never defined; there is nothing to edit here.
+            let kind = entry.kind?;
+            Some(SearchBackend {
+                id: id.clone(),
+                kind,
+                base_url: entry
+                    .base_url
+                    .clone()
+                    .or_else(|| kind.default_base_url().map(str::to_string))
+                    .unwrap_or_default(),
+                api_key_env: entry.api_key_env.clone(),
+                max_results: entry.max_results,
+                needs_key: kind.needs_key(),
+            })
+        })
+        .collect();
+
+    let key_statuses = backends
+        .iter()
+        .map(|b| {
+            (
+                b.id.clone(),
+                taurus_host::config::search_key_status(&b.id, b.api_key_env.as_deref()),
+            )
+        })
+        .collect();
+
+    Ok(SearchSettings {
+        selected: file.backend.clone(),
+        backends,
+        key_statuses,
+        active: state.host.search_active().await,
+        problems: state
+            .host
+            .problems_from(&[taurus_host::ProblemSource::Search])
+            .await,
+    })
+}
+
+#[tauri::command]
+pub async fn save_search_settings(
+    state: State<'_, Arc<AppState>>,
+    selected: Option<String>,
+    backends: Vec<SearchBackend>,
+) -> CmdResult<()> {
+    let mut file = state.host.global_search();
+
+    // Entries are updated in place rather than rebuilt, so fields the settings
+    // screen does not know about survive a save by someone who hand-edited the
+    // file. Losing those silently is how a config editor earns distrust.
+    for backend in &backends {
+        let entry = file.backends.entry(backend.id.clone()).or_default();
+        entry.kind = Some(backend.kind);
+        entry.base_url = Some(backend.base_url.clone()).filter(|u| !u.trim().is_empty());
+        entry.api_key_env = backend.api_key_env.clone().filter(|v| !v.trim().is_empty());
+        entry.max_results = backend.max_results;
+    }
+    file.backend = selected.filter(|id| !id.trim().is_empty());
+
+    state.host.set_search(file).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_search_key(
+    state: State<'_, Arc<AppState>>,
+    backend_id: String,
+    key: String,
+) -> CmdResult<()> {
+    state.host.set_search_key(&backend_id, &key).await
+}
+
+#[tauri::command]
+pub async fn clear_search_key(
+    state: State<'_, Arc<AppState>>,
+    backend_id: String,
+) -> CmdResult<()> {
+    state.host.clear_search_key(&backend_id).await
+}
+
+/// Opens a layer's `mcp.json` in whatever the OS uses for it, creating it first
+/// if it is not there yet.
+///
+/// MCP servers are configured by editing that file — the format is the one
+/// Claude Desktop uses, and people move entries between the two — so this is a
+/// route to the file rather than a form that would have to be kept in step with
+/// a schema Taurus does not own.
+#[tauri::command]
+pub async fn open_mcp_config(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    scope: Scope,
+) -> CmdResult<String> {
+    let workspace = state.host.workspace().await;
+    let path = taurus_host::config::ensure_mcp_file(scope, Some(&workspace))?;
+
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    Ok(path.display().to_string())
 }
 
 #[tauri::command]

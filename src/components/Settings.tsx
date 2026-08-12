@@ -7,10 +7,12 @@ import type {
   ProviderConfig,
   ProviderKind,
   Scope,
+  SearchBackend,
+  SearchSettings,
 } from "../lib/api";
 import { useStore } from "../state/store";
 
-type Tab = "models" | "permissions" | "behavior";
+type Tab = "models" | "search" | "permissions" | "behavior";
 
 /**
  * The settings drawer.
@@ -22,8 +24,8 @@ type Tab = "models" | "permissions" | "behavior";
  * project's override into the global file is the one destructive thing a
  * settings screen over layered config can do.
  *
- * The tabs are three separate files' worth of state, so switching between
- * them never discards a draft — the provider draft outlives the tab.
+ * Each tab is a separate file's worth of state, so switching between them
+ * never discards a draft — the provider draft outlives the tab.
  */
 export function Settings({ onClose }: { onClose: () => void }) {
   const status = useStore((s) => s.status);
@@ -37,6 +39,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [keys, setKeys] = useState<Map<string, KeyStatus>>(new Map());
   const [keychain, setKeychain] = useState(false);
+
+  const providerProblems = (status?.problems ?? []).filter(
+    (p) => p.source === "providers",
+  );
 
   // Re-read rather than patched locally: storing a key can change what another
   // row reports — an environment variable that was the only source becomes an
@@ -115,6 +121,20 @@ export function Settings({ onClose }: { onClose: () => void }) {
               variable that holds one.
             </p>
 
+            {/* A providers.json that will not parse is why the list below can
+                be empty or stale, so it belongs at the top of this tab rather
+                than in a drawer about skills, where it used to appear. */}
+            {providerProblems.length > 0 && (
+              <section className="section">
+                <span className="micro">Could not load</span>
+                {providerProblems.map((problem) => (
+                  <p key={problem.message} className="settings-problem">
+                    {problem.message}
+                  </p>
+                ))}
+              </section>
+            )}
+
             <div className="card-list">
               {draft?.map((provider, index) => (
                 <ProviderForm
@@ -163,6 +183,8 @@ export function Settings({ onClose }: { onClose: () => void }) {
             {error && <p className="settings-problem">{error}</p>}
           </>
         )}
+
+        {tab === "search" && <SearchTab />}
 
         {tab === "permissions" && (
           <>
@@ -244,8 +266,165 @@ export function Settings({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * Web search: which backend, and the key it needs.
+ *
+ * Everything behind this was built and shipped some time ago — the backends,
+ * the key handling, the tools — and none of it was reachable without knowing
+ * `~/.taurus/search.json` existed and writing its schema by hand.
+ *
+ * Off is the default and stays a first-class choice, not a disabled state:
+ * searching means sending the user's prompt to a third party, and that is not
+ * something to slide into because a screen made it the easy option.
+ */
+export function SearchTab() {
+  const [settings, setSettings] = useState<SearchSettings | null>(null);
+  const [keychain, setKeychain] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => api.getSearchSettings().then(setSettings).catch(() => {});
+
+  useEffect(() => {
+    load();
+    api.keychainAvailable().then(setKeychain).catch(() => setKeychain(false));
+  }, []);
+
+  if (!settings) return <p className="drawer-intro">Loading…</p>;
+
+  const keys = new Map(settings.key_statuses);
+  const selected = settings.backends.find((b) => b.id === settings.selected);
+
+  const save = async (id: string | null, backends = settings.backends) => {
+    setBusy(true);
+    try {
+      await api.saveSearchSettings(id, backends);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const patch = (id: string, change: Partial<SearchBackend>) =>
+    settings.backends.map((b) => (b.id === id ? { ...b, ...change } : b));
+
+  return (
+    <>
+      <p className="drawer-intro">
+        Lets Taurus look things up on the web. Your prompt goes to whichever
+        service you pick, so it stays off until you choose one.
+      </p>
+
+      {settings.problems.length > 0 && (
+        <section className="section">
+          <span className="micro">Could not load</span>
+          {settings.problems.map((problem) => (
+            <p key={problem.message} className="settings-problem">
+              {problem.message}
+            </p>
+          ))}
+        </section>
+      )}
+
+      <Field label="Search with" hint={statusHint(settings)}>
+        <select
+          value={settings.selected ?? ""}
+          disabled={busy}
+          onChange={(e) => save(e.target.value === "" ? null : e.target.value)}
+        >
+          <option value="">Off</option>
+          {settings.backends.map((backend) => (
+            <option key={backend.id} value={backend.id}>
+              {backend.id}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      {selected && (
+        <div className="card-list">
+          <div className="card">
+            <div className="card-body">
+              <Field
+                label="Address"
+                hint={
+                  selected.kind === "searxng"
+                    ? "Your SearXNG instance. There is no default — no instance is the canonical one."
+                    : "Override only if you route through a proxy."
+                }
+              >
+                <input
+                  value={selected.base_url}
+                  disabled={busy}
+                  spellCheck={false}
+                  placeholder={
+                    selected.kind === "searxng" ? "http://localhost:8888" : ""
+                  }
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      backends: patch(selected.id, { base_url: e.target.value }),
+                    })
+                  }
+                  onBlur={() => save(settings.selected)}
+                />
+              </Field>
+
+              {selected.needs_key && (
+                <>
+                  <ApiKeyField
+                    status={keys.get(selected.id)}
+                    available={keychain}
+                    onStore={(key) => api.setSearchKey(selected.id, key)}
+                    onClear={() => api.clearSearchKey(selected.id)}
+                    onChanged={load}
+                    unsavedHint="Save this backend before storing a key for it."
+                  />
+
+                  <Field
+                    label="API key variable"
+                    hint="Optional. Names an environment variable that overrides the stored key — useful for CI, and the only option on machines with no keychain."
+                  >
+                    <input
+                      value={selected.api_key_env ?? ""}
+                      disabled={busy}
+                      spellCheck={false}
+                      placeholder="BRAVE_API_KEY"
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          backends: patch(selected.id, {
+                            api_key_env: blank(e.target.value),
+                          }),
+                        })
+                      }
+                      onBlur={() => save(settings.selected)}
+                    />
+                  </Field>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * Whether search is actually running, which is not the same as whether a
+ * backend is picked — a selection with no key resolves to nothing and
+ * registers no tools. Saying "on" then would be a lie the transcript
+ * immediately contradicts.
+ */
+export function statusHint(settings: SearchSettings): string {
+  if (settings.selected === null) return "Off. Taurus will not search the web.";
+  if (settings.active) return `On, through ${settings.selected}.`;
+  return `Selected, but not running yet — ${settings.selected} still needs something below.`;
+}
+
 const TABS: [Tab, string][] = [
   ["models", "Models"],
+  ["search", "Search"],
   ["permissions", "Permissions"],
   ["behavior", "Behavior"],
 ];
@@ -269,20 +448,28 @@ const KINDS: { value: ProviderKind; label: string }[] = [
  * in use is coming from — which is the thing a user actually needs to know, and
  * the thing an obscured field full of dots cannot tell them.
  *
- * The key belongs to a *saved* provider id. A row that has been renamed or
- * never saved has no id to store against yet, so the field says so rather than
- * failing on the button press.
+ * The key belongs to a *saved* id. A row that has been renamed or never saved
+ * has no id to store against yet, so the field says so rather than failing on
+ * the button press.
+ *
+ * Storing and clearing are passed in rather than chosen here: model providers
+ * and search backends keep their keys in the same credential store under
+ * different namespaces, and the field is identical either way.
  */
 function ApiKeyField({
-  providerId,
   status,
   available,
+  onStore,
+  onClear,
   onChanged,
+  unsavedHint,
 }: {
-  providerId: string;
   status: KeyStatus | undefined;
   available: boolean;
+  onStore: (key: string) => Promise<void>;
+  onClear: () => Promise<void>;
   onChanged: () => void;
+  unsavedHint: string;
 }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -303,7 +490,7 @@ function ApiKeyField({
   // added, or its id was edited and the old key still belongs to the old id.
   if (!status) {
     return (
-      <Field label="API key" hint="Save this provider before storing a key for it.">
+      <Field label="API key" hint={unsavedHint}>
         <div className="settings-key-none">not saved yet</div>
       </Field>
     );
@@ -339,16 +526,12 @@ function ApiKeyField({
         />
         <button
           disabled={busy || value.trim() === ""}
-          onClick={() => run(() => api.setProviderKey(providerId, value))}
+          onClick={() => run(() => onStore(value))}
         >
           Store
         </button>
         {stored && (
-          <button
-            className="danger"
-            disabled={busy}
-            onClick={() => run(() => api.clearProviderKey(providerId))}
-          >
+          <button className="danger" disabled={busy} onClick={() => run(onClear)}>
             Remove
           </button>
         )}
@@ -439,10 +622,12 @@ function ProviderForm({
       {compatible && (
         <>
           <ApiKeyField
-            providerId={provider.id}
             status={keyStatus}
             available={keychainAvailable}
+            onStore={(key) => api.setProviderKey(provider.id, key)}
+            onClear={() => api.clearProviderKey(provider.id)}
             onChanged={onKeyChanged}
+            unsavedHint="Save this provider before storing a key for it."
           />
 
           <Field

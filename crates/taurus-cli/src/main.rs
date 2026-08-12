@@ -86,7 +86,7 @@ enum Command {
         #[command(flatten)]
         session: SessionArgs,
     },
-    /// Store provider API keys in the OS credential store.
+    /// Store provider and web-search API keys in the OS credential store.
     Key {
         #[command(subcommand)]
         command: key_cmd::KeyCommand,

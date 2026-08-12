@@ -16,7 +16,7 @@ pub use permission::{
     PermissionRequest, Scope,
 };
 pub use registry::ToolRegistry;
-pub use tool::{Effect, Tool, ToolContext, ToolError, ToolResult};
+pub use tool::{Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult};
 
 #[cfg(test)]
 mod test_support {

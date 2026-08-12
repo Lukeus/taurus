@@ -60,7 +60,12 @@ pub fn run() {
             commands::keychain_available,
             commands::set_provider_key,
             commands::clear_provider_key,
+            commands::get_search_settings,
+            commands::save_search_settings,
+            commands::set_search_key,
+            commands::clear_search_key,
             commands::reload_skills,
+            commands::open_mcp_config,
             commands::list_checkpoints,
             commands::rewind_to,
         ])

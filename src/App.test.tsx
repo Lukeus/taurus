@@ -96,7 +96,7 @@ const withProviders = (ids: string[], lastProvider: string | null = null) => {
       skill_synthesis_enabled: true,
     },
     skill_count: 0,
-    skill_problems: [],
+    problems: [],
     tool_names: [],
     mcp_servers: [],
   };

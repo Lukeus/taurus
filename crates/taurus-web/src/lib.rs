@@ -8,12 +8,15 @@
 //!
 //! [`Effect::Network`]: taurus_tools::Effect::Network
 
+pub mod address;
 pub mod config;
 pub mod fetch;
 mod http;
 pub mod search;
 
-pub use config::{load, merge, starter_file, Backend, BackendKind, SearchFile};
+pub use config::{
+    env_key, load, merge, merge_with, starter_file, Backend, BackendEntry, BackendKind, SearchFile,
+};
 pub use fetch::FetchUrl;
 pub use search::WebSearch;
 

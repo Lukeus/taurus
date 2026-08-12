@@ -85,6 +85,20 @@ impl ToolError {
 
 pub type ToolResult = Result<String, ToolError>;
 
+/// Where a tool reports what it is doing before it has a result.
+///
+/// Only worth implementing for calls long enough that silence is ambiguous. A
+/// sub-agent can work for a minute, and a card that says "running" for that
+/// long is indistinguishable from one that has hung.
+///
+/// Deliberately one method taking a rendered line, rather than the UI event
+/// type: that lives in `taurus-core`, which depends on this crate, and a tool
+/// reporting progress does not need to know how progress is drawn.
+#[async_trait]
+pub trait ToolProgress: Send + Sync {
+    async fn step(&self, label: String);
+}
+
 /// Everything a tool needs at call time.
 #[derive(Clone)]
 pub struct ToolContext {
@@ -98,6 +112,10 @@ pub struct ToolContext {
     /// recorder, which is how a sub-agent's writes land in the turn that
     /// spawned it.
     pub checkpoints: Option<Arc<crate::checkpoint::TurnRecorder>>,
+    /// Bound to one tool call by the agent loop, so a report lands on the right
+    /// card. `None` outside a loop that draws anything — the CLI's piped mode,
+    /// examples, tests.
+    pub progress: Option<Arc<dyn ToolProgress>>,
 }
 
 impl ToolContext {
@@ -111,6 +129,7 @@ impl ToolContext {
             permissions,
             cancel,
             checkpoints: None,
+            progress: None,
         }
     }
 
@@ -118,6 +137,19 @@ impl ToolContext {
     pub fn with_checkpoints(mut self, recorder: Arc<crate::checkpoint::TurnRecorder>) -> Self {
         self.checkpoints = Some(recorder);
         self
+    }
+
+    /// Binds this context to one tool call's progress reporting.
+    pub fn with_progress(mut self, progress: Arc<dyn ToolProgress>) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    /// Reports a step, if anyone is listening. Costs nothing when nobody is.
+    pub async fn report(&self, label: impl Into<String>) {
+        if let Some(progress) = &self.progress {
+            progress.step(label.into()).await;
+        }
     }
 
     pub fn resolve(&self, candidate: &str) -> Result<PathBuf, ToolError> {

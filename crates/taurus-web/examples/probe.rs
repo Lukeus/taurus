@@ -34,8 +34,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Registered exactly as the host does, so this exercises the permission
     // gate and the registry rather than the tools in isolation.
     let mut registry = ToolRegistry::with_builtins();
+    registry.register(Arc::new(FetchUrl::new(backend.allow_private_hosts)));
     registry.register(Arc::new(WebSearch::new(backend)));
-    registry.register(Arc::new(FetchUrl));
 
     let workspace = std::env::current_dir()?.canonicalize()?;
     let ctx = ToolContext::new(

@@ -225,10 +225,27 @@ function ToolRow({ step }: { step: ToolEntry }) {
           {step.status === "running" ? "…" : step.status === "ok" ? "✓" : "failed"}
         </span>
       </button>
+      {/* What a delegation is doing while it does it. Shown without needing
+          the row opened: the point is that a long call looks alive, and that
+          is no use behind a click. Dropped once it finishes, when the result
+          is the more useful thing to have in the same space. */}
+      {step.status === "running" && step.steps.length > 0 && (
+        <ul className="run-substeps">
+          {step.steps.slice(-MAX_VISIBLE_SUBSTEPS).map((label, i) => (
+            <li key={`${i}-${label}`}>{label}</li>
+          ))}
+        </ul>
+      )}
       {open && step.output && <pre className="tool-output">{step.output}</pre>}
     </div>
   );
 }
+
+/**
+ * A delegation can make dozens of calls. The last few say what it is doing
+ * now; the whole list would push the conversation off the screen.
+ */
+const MAX_VISIBLE_SUBSTEPS = 4;
 
 /**
  * How long the run took, or `null` when it cannot be known.

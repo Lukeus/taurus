@@ -18,18 +18,22 @@ type Filter = "all" | "project" | "attention";
 export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
-  const problems = useStore((s) => s.status?.skill_problems ?? []);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  // Only what this drawer is actually about. Provider and search failures go
+  // to Settings, which is where they can be fixed — an untagged list put them
+  // here, under a heading about skills.
+  const problems = useStore((s) =>
+    (s.status?.problems ?? []).filter(
+      (p) => p.source === "skills" || p.source === "mcp",
+    ),
+  );
   const mcpServers = useStore((s) => s.status?.mcp_servers ?? []);
 
   useEffect(() => {
     api.listSkills().then(setSkills).catch(() => setSkills([]));
   }, []);
 
-  const all = skills ?? [];
-  const project = all.filter((s) => s.tier === "project");
-  const attention = all.filter((s) => s.degraded);
-  const shown =
-    filter === "project" ? project : filter === "attention" ? attention : all;
+  const { all, project, attention, shown } = partition(skills ?? [], filter);
 
   return (
     <div className="scrim" onClick={onClose}>
@@ -103,15 +107,48 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
                     </span>
                   )
                 )}
+                {/* What the skill says it reaches for. Advisory — it is not a
+                    grant, and every call still meets the permission gate — but
+                    it is the one thing you would want to read before running
+                    something a model wrote. */}
+                {skill.allowed_tools.length > 0 && (
+                  <span className="card-files">
+                    uses {skill.allowed_tools.join(", ")}
+                  </span>
+                )}
               </div>
             </li>
           ))}
         </ul>
 
-        {mcpServers.length > 0 && (
-          <section className="section">
+        <section className="section">
+          <div className="section-head">
             <span className="micro">MCP servers</span>
-            {mcpServers.map((server) => (
+            {/* A route to the file, not a form. The format is the one Claude
+                Desktop uses and entries get pasted between the two, so a
+                reimplementation here would be a schema Taurus does not own and
+                would have to chase. */}
+            <button
+              className="link"
+              onClick={async () => {
+                try {
+                  await api.openMcpConfig("global");
+                } catch (e) {
+                  setMcpError(String(e));
+                }
+              }}
+            >
+              Edit mcp.json
+            </button>
+          </div>
+          {mcpError && <p className="settings-problem">{mcpError}</p>}
+          {mcpServers.length === 0 && (
+            <p className="drawer-empty">
+              No servers configured. Add one to mcp.json, then Rescan.
+            </p>
+          )}
+          {mcpServers.length > 0 &&
+            mcpServers.map((server) => (
               <div key={server.name} className="section-row">
                 <span className={`dot ${server.connected ? "ok" : "error"}`} />
                 <span className="name">{server.name}</span>
@@ -122,15 +159,14 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
                 </span>
               </div>
             ))}
-          </section>
-        )}
+        </section>
 
         {problems.length > 0 && (
           <section className="section">
             <span className="micro">Could not load</span>
             {problems.map((problem) => (
-              <p key={problem} className="settings-problem">
-                {problem}
+              <p key={problem.message} className="settings-problem">
+                {problem.message}
               </p>
             ))}
           </section>
@@ -140,8 +176,27 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * The three questions actually asked of the skill list: what is there, what
+ * did this project add, and what is broken.
+ *
+ * Every count comes out of one pass so the pills and the list below them can
+ * never disagree — a filter reading "Needs attention 2" over a list of three
+ * is the kind of thing nobody reports and everybody distrusts.
+ */
+export function partition(skills: SkillSummary[], filter: Filter) {
+  const project = skills.filter((s) => s.tier === "project");
+  const attention = skills.filter((s) => s.degraded);
+  return {
+    all: skills,
+    project,
+    attention,
+    shown:
+      filter === "project" ? project : filter === "attention" ? attention : skills,
+  };
+}
+
 const TIER_LABEL: Record<SkillSummary["tier"], string> = {
-  builtin: "built in",
   user: "all projects",
   project: "project",
 };

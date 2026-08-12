@@ -17,8 +17,9 @@ use taurus_tools::expand_env;
 
 /// Which service a backend talks to. Each speaks its own dialect; the kind is
 /// what selects the request shape and the response parser.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum BackendKind {
     /// Brave Search API. Key goes in `X-Subscription-Token`.
     Brave,
@@ -55,6 +56,14 @@ pub struct SearchFile {
     /// Id of the backend to use. Unset means web search stays off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// Lets `fetch_url` reach loopback and private-network addresses.
+    ///
+    /// Off by default. It governs the tool rather than any one backend — a
+    /// search backend's URL is one the user wrote down, and is never subject to
+    /// this — but it lives here because `search.json` is the file the web tools
+    /// are configured from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_private_hosts: Option<bool>,
     #[serde(default)]
     pub backends: BTreeMap<String, BackendEntry>,
 }
@@ -105,6 +114,10 @@ pub struct Backend {
     pub base_url: String,
     pub api_key: Option<String>,
     pub max_results: u8,
+    /// File-level, not really the backend's own — but the web tools are
+    /// registered together and only when a backend resolves, so this is the one
+    /// value that reaches them both.
+    pub allow_private_hosts: bool,
 }
 
 /// Results returned when neither the model nor the config asks for a number.
@@ -132,13 +145,42 @@ pub fn load(dir: &Path) -> Result<SearchFile, String> {
 /// simply has not turned it on, and one that got `None` with a problem has
 /// something to show them.
 pub fn merge(layers: Vec<SearchFile>) -> (Option<Backend>, Vec<String>) {
+    merge_with(layers, env_key)
+}
+
+/// Reads a key straight out of the environment. The behaviour when no richer
+/// source is supplied, and the fallback inside every richer source there is.
+pub fn env_key(_id: &str, variable: Option<&str>) -> Option<String> {
+    variable
+        .and_then(|name| std::env::var(name).ok())
+        .filter(|key| !key.trim().is_empty())
+}
+
+/// [`merge`], with the caller deciding where a backend's key comes from.
+///
+/// The credential store lives in `taurus-host`, which depends on this crate, so
+/// it cannot be reached from here. Rather than invert that, the host passes in
+/// how to find a key — which also keeps the precedence rule in one place, next
+/// to the identical one for model providers, instead of implemented twice and
+/// drifting.
+///
+/// `key_source` is handed the backend's id and the variable name its config
+/// names, if any, and returns the key to use.
+pub fn merge_with(
+    layers: Vec<SearchFile>,
+    key_source: impl Fn(&str, Option<&str>) -> Option<String>,
+) -> (Option<Backend>, Vec<String>) {
     let mut problems = Vec::new();
     let mut selected: Option<String> = None;
+    let mut allow_private_hosts = false;
     let mut backends: BTreeMap<String, BackendEntry> = BTreeMap::new();
 
     for layer in layers {
         if layer.backend.is_some() {
             selected = layer.backend;
+        }
+        if let Some(allow) = layer.allow_private_hosts {
+            allow_private_hosts = allow;
         }
         for (id, entry) in layer.backends {
             match backends.get_mut(&id) {
@@ -160,7 +202,7 @@ pub fn merge(layers: Vec<SearchFile>) -> (Option<Backend>, Vec<String>) {
         return (None, problems);
     };
 
-    match resolve(&id, entry) {
+    match resolve(&id, entry, &key_source, allow_private_hosts) {
         Ok(backend) => (Some(backend), problems),
         Err(e) => {
             problems.push(format!("search backend '{id}': {e}"));
@@ -171,7 +213,12 @@ pub fn merge(layers: Vec<SearchFile>) -> (Option<Backend>, Vec<String>) {
 
 /// Turns a merged entry into something that can make a request, or says what it
 /// is missing.
-fn resolve(id: &str, entry: &BackendEntry) -> Result<Backend, String> {
+fn resolve(
+    id: &str,
+    entry: &BackendEntry,
+    key_source: impl Fn(&str, Option<&str>) -> Option<String>,
+    allow_private_hosts: bool,
+) -> Result<Backend, String> {
     let kind = entry
         .kind
         .ok_or_else(|| "needs a `kind` of `brave`, `tavily`, or `searxng`".to_string())?;
@@ -184,22 +231,16 @@ fn resolve(id: &str, entry: &BackendEntry) -> Result<Backend, String> {
             .to_string(),
     };
 
-    let api_key = match entry.api_key_env.as_deref() {
-        Some(name) => {
-            let key = std::env::var(name)
-                .ok()
-                .filter(|k| !k.trim().is_empty())
-                // Reported rather than shrugged off: a search that goes out
-                // without a key comes back 401, which reads as a bad key rather
-                // than a missing one.
-                .ok_or_else(|| format!("environment variable {name} is not set"))?;
-            Some(key)
-        }
-        None if kind.needs_key() => {
-            return Err("needs an `api_key_env` naming the variable that holds its key".into())
-        }
-        None => None,
-    };
+    let api_key = key_source(id, entry.api_key_env.as_deref());
+
+    // Reported rather than shrugged off: a search that goes out without a key
+    // comes back 401, which reads as a bad key rather than a missing one.
+    if api_key.is_none() && kind.needs_key() {
+        return Err(match entry.api_key_env.as_deref() {
+            Some(name) => format!("needs a key — none saved, and {name} is not set"),
+            None => "needs a key; save one in Settings › Search".into(),
+        });
+    }
 
     Ok(Backend {
         id: id.to_string(),
@@ -207,6 +248,7 @@ fn resolve(id: &str, entry: &BackendEntry) -> Result<Backend, String> {
         base_url: base_url.trim_end_matches('/').to_string(),
         api_key,
         max_results: entry.max_results.unwrap_or(DEFAULT_MAX_RESULTS),
+        allow_private_hosts,
     })
 }
 
@@ -216,6 +258,7 @@ fn resolve(id: &str, entry: &BackendEntry) -> Result<Backend, String> {
 pub fn starter_file() -> SearchFile {
     SearchFile {
         backend: None,
+        allow_private_hosts: None,
         backends: BTreeMap::from([
             (
                 "brave".to_string(),

@@ -17,12 +17,16 @@ import type { Message } from "../bindings/Message";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
+import type { Problem } from "../bindings/Problem";
+import type { ProblemSource } from "../bindings/ProblemSource";
 import type { ProviderConfig } from "../bindings/ProviderConfig";
 import type { ProviderKind } from "../bindings/ProviderKind";
 import type { Restored } from "../bindings/Restored";
 import type { ResumedSession } from "../bindings/ResumedSession";
 import type { SaveTarget } from "../bindings/SaveTarget";
 import type { Scope } from "../bindings/Scope";
+import type { SearchBackend } from "../bindings/SearchBackend";
+import type { SearchSettings } from "../bindings/SearchSettings";
 import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
@@ -39,12 +43,16 @@ export type {
   ModelInfo,
   PermissionDecision,
   PermissionRequest,
+  Problem,
+  ProblemSource,
   ProviderConfig,
   ProviderKind,
   Restored,
   ResumedSession,
   SaveTarget,
   Scope,
+  SearchBackend,
+  SearchSettings,
   SessionMeta,
   SkillProposal,
   SkillSummary,
@@ -104,6 +112,16 @@ export const revokePermissionRule = (rule: string, scope: Scope) =>
 
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 
+/**
+ * Opens a layer's `mcp.json`, creating it if absent, and returns its path.
+ *
+ * Servers are configured by editing that file: the format is the one Claude
+ * Desktop uses and entries get moved between the two, so the app points at the
+ * file rather than reimplementing a schema it does not own.
+ */
+export const openMcpConfig = (scope: Scope) =>
+  invoke<string>("open_mcp_config", { scope });
+
 export const reloadSkills = () => invoke<number>("reload_skills");
 
 export const respondSkillProposal = (
@@ -151,6 +169,28 @@ export const setProviderKey = (providerId: string, key: string) =>
 
 export const clearProviderKey = (providerId: string) =>
   invoke<void>("clear_provider_key", { providerId });
+
+/**
+ * The global `search.json`, plus where each backend's key comes from and
+ * whether search is actually running.
+ *
+ * `active` is not the same as "a backend is selected": a selection with no key
+ * resolves to nothing and registers no tools.
+ */
+export const getSearchSettings = () =>
+  invoke<SearchSettings>("get_search_settings");
+
+/** Saves the global search layer. Selecting `null` turns web search off. */
+export const saveSearchSettings = (
+  selected: string | null,
+  backends: SearchBackend[],
+) => invoke<void>("save_search_settings", { selected, backends });
+
+export const setSearchKey = (backendId: string, key: string) =>
+  invoke<void>("set_search_key", { backendId, key });
+
+export const clearSearchKey = (backendId: string) =>
+  invoke<void>("clear_search_key", { backendId });
 
 /** Turns in this conversation that changed files, oldest first. */
 export const listCheckpoints = (sessionId: string) =>

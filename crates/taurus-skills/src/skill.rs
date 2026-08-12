@@ -7,12 +7,14 @@ use ts_rs::TS;
 
 /// Where a skill came from. Later tiers shadow earlier ones by name, so a
 /// project can override a personal skill that does not fit it.
+///
+/// There is no `Builtin`: nothing ships with the harness, and a variant the
+/// UI had a label for but no code could ever produce read as a feature someone
+/// had left half-finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum SkillTier {
-    /// Ships with the harness.
-    Builtin,
     /// `~/.taurus/skills`
     User,
     /// `<workspace>/.taurus/skills`
@@ -40,8 +42,13 @@ pub struct SkillFrontmatter {
     pub when_to_use: String,
     #[serde(default = "default_version")]
     pub version: u32,
-    /// Tools this skill needs. Advisory: it documents intent and drives the
-    /// UI, but does not widen the session's permissions.
+    /// Tools this skill expects to use.
+    ///
+    /// Advisory, and deliberately so: it is shown next to the skill so a reader
+    /// can see what it will reach for before running it, and it never widens
+    /// what the session is permitted to do. A skill cannot grant itself the
+    /// shell by listing `run_command` — every call still goes through the same
+    /// permission gate as any other.
     #[serde(default)]
     pub allowed_tools: Vec<String>,
     #[serde(default)]
@@ -88,6 +95,9 @@ pub struct SkillSummary {
     pub when_to_use: String,
     pub version: u32,
     pub tier: SkillTier,
+    /// Advisory. Shown so a reader can see what the skill reaches for; it
+    /// grants nothing.
+    pub allowed_tools: Vec<String>,
     pub scripts: Vec<SkillScript>,
     pub degraded: Option<String>,
     pub dir: String,
@@ -101,6 +111,7 @@ impl From<&Skill> for SkillSummary {
             when_to_use: skill.frontmatter.when_to_use.clone(),
             version: skill.frontmatter.version,
             tier: skill.tier,
+            allowed_tools: skill.frontmatter.allowed_tools.clone(),
             scripts: skill.frontmatter.scripts.clone(),
             degraded: skill.degraded.clone(),
             dir: skill.dir.display().to_string(),
