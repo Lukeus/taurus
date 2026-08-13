@@ -93,6 +93,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 UiEvent::Compacted { messages_removed } => {
                     println!("  [compacted {messages_removed} messages]");
                 }
+                UiEvent::Retrying {
+                    attempt,
+                    of,
+                    reason,
+                } => {
+                    println!("  [retrying {attempt}/{of}] {reason}");
+                }
                 UiEvent::Error { message } => println!("  [error] {message}"),
                 UiEvent::TurnFinished { stop_reason, usage } => {
                     println!(

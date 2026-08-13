@@ -225,6 +225,32 @@ and `edit_file`. A file that was not text when it was recorded is reported as
 `skipped` rather than silently left as the model made it, and `taurus rewind`
 exits non-zero when anything could not be put back.
 
+### When a turn stops
+
+A turn runs until the model stops asking for tools. Three things end one early,
+and each records its reason in the transcript so a resumed session finds an
+explanation rather than a conversation that simply stops:
+
+- **The iteration ceiling** — twenty-five model/tool round trips. A ceiling
+  rather than a budget the model is shown, because one it could see is one it
+  could argue with.
+- **A stall** — the same tool call, with the same arguments, failing three times
+  running. The system prompt already tells the model not to retry a failed call
+  unchanged; this is what makes that true rather than merely stated. A call that
+  changes resets the count, and so does one that succeeds: a model re-reading a
+  file it is editing is working, not stuck.
+- **A provider failure no retry could fix** — a rejected key, an unknown model,
+  a response that would not parse.
+
+A rate limit or a 5xx is not in that last group. Those are retried up to three
+times with a doubling backoff, and the wait is reported rather than silent,
+because a pause nobody explained is indistinguishable from a hang. Cancelling
+during a backoff returns immediately instead of serving out the delay.
+
+One case is deliberately never retried: a request that had already begun
+streaming an answer. The user has read the first half, and a second attempt
+would write it again.
+
 ### The context window
 
 A local 8k model runs out of room in a way a hosted 200k one does not, so the
@@ -735,6 +761,12 @@ taurus key status               # where each provider's API key comes from
   alive rather than hung, but its reasoning and prose stay inside the child.
   That part is deliberate: the parent asked for a conclusion, and a second
   conversation inlined into the transcript is what delegation exists to avoid.
+- **Stall detection only catches an exact repeat.** A model that alternates
+  between two calls that both fail — A, B, A, B — is as stuck as one repeating a
+  single call, but each round differs from the one before it, so only the
+  iteration ceiling stops it. Widening the check to a window of recent rounds
+  would catch that, at the cost of ending turns where the model was genuinely
+  cycling through candidates. See [When a turn stops](#when-a-turn-stops).
 - **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
   that renders its content client-side comes back near-empty. Closing this
   means shipping a browser engine, so it is a limit rather than a to-do.

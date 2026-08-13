@@ -6,6 +6,7 @@
 //! and reports progress on a channel.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use taurus_provider::prompted::MALFORMED_TOOL;
@@ -34,6 +35,28 @@ pub struct AgentConfig {
     pub keep_recent_messages: usize,
     /// Tools the model may call. Empty means every registered tool.
     pub allowed_tools: Vec<String>,
+    /// How many times a request that failed before producing any output is
+    /// retried.
+    ///
+    /// A 429 or a 502 is the backend having a moment, not the turn being wrong,
+    /// and losing a session's work to one is a poor trade for the seconds a
+    /// retry costs. Only errors [`taurus_provider::ProviderError::is_transient`]
+    /// vouches for are retried, and only when nothing has reached the user yet.
+    pub max_transient_retries: u32,
+    /// First backoff, doubled on each further attempt.
+    ///
+    /// Configurable rather than a constant so tests can set it to zero; three
+    /// real backoffs would put seconds of sleeping into the suite to prove
+    /// something that has nothing to do with wall-clock time.
+    pub retry_backoff: Duration,
+    /// How many times the model may repeat a tool call that just failed,
+    /// unchanged, before the turn is stopped.
+    ///
+    /// The system prompt already tells it not to. This is what makes that true:
+    /// left alone, a model on a bad path spends the whole iteration budget
+    /// rediscovering the same error, and the user waits for all of it to be
+    /// told nothing happened.
+    pub stall_limit: u32,
 }
 
 impl Default for AgentConfig {
@@ -46,6 +69,9 @@ impl Default for AgentConfig {
             compaction_threshold: 0.8,
             keep_recent_messages: 8,
             allowed_tools: Vec::new(),
+            max_transient_retries: 3,
+            retry_backoff: Duration::from_millis(500),
+            stall_limit: 3,
         }
     }
 }
@@ -56,6 +82,14 @@ pub enum AgentError {
     Provider(#[from] taurus_provider::ProviderError),
     #[error("reached the {0}-iteration limit for one turn")]
     IterationLimit(u32),
+    #[error("the same failing tool call was repeated {0} times without change")]
+    Stalled(u32),
+}
+
+/// A request that failed, and whether any of it had already reached the user.
+struct FailedAttempt {
+    error: taurus_provider::ProviderError,
+    produced_output: bool,
 }
 
 pub struct Agent {
@@ -110,6 +144,12 @@ impl Agent {
 
         let mut total = TokenUsage::default();
         let mut iteration = 0;
+        // The last round of calls where *everything* failed, and how many times
+        // it has now arrived unchanged. Only all-failed rounds are tracked: a
+        // round where something succeeded is progress, whatever else went wrong
+        // alongside it.
+        let mut last_failed: Option<Vec<(String, serde_json::Value)>> = None;
+        let mut repeats = 0;
 
         loop {
             if self.tools.cancel.is_cancelled() {
@@ -191,16 +231,102 @@ impl Agent {
             }
 
             let results = self.run_tool_calls(&assistant, &ui).await;
+
+            // Checked before the results are pushed, so the transcript ends on
+            // the failure the model kept repeating rather than on a stop notice
+            // with no visible cause.
+            let failed = all_failed(&assistant, &results);
+            match &failed {
+                Some(calls) if last_failed.as_ref() == Some(calls) => repeats += 1,
+                _ => repeats = 1,
+            }
+            last_failed = failed;
+
             session.push(Message::new(Role::User, results));
+
+            if repeats >= self.config.stall_limit {
+                let message = format!(
+                    "Stopped after the same tool call failed {repeats} times unchanged. Nothing \
+                     about it will succeed on a further attempt; a different approach is needed, \
+                     or the obstacle needs reporting."
+                );
+                // Recorded in the transcript, so a resumed session can see why
+                // it stopped rather than finding a turn that simply ends.
+                session.push(Message::user(message.clone()));
+                let _ = ui.send(UiEvent::Error { message }).await;
+                info!(repeats, "stopping a stalled turn");
+                return Err(AgentError::Stalled(repeats));
+            }
         }
     }
 
-    /// One model request, streamed to the UI and reassembled.
+    /// One model request, retried while the failure is both transient and
+    /// invisible to the user.
+    ///
+    /// "Invisible" is the load-bearing half. A request that dies on connect can
+    /// be sent again and nobody is any the wiser; one that dies half-way
+    /// through an answer has already put that half on screen, and retrying it
+    /// would write the same paragraph twice. So the moment any text reaches the
+    /// UI the request stops being retryable, whatever the error says.
     async fn stream_once(
         &self,
         session: &Session,
         ui: &mpsc::Sender<UiEvent>,
     ) -> Result<(Message, TokenUsage, StopReason), AgentError> {
+        let mut attempt = 1;
+        loop {
+            let failure = match self.stream_attempt(session, ui).await {
+                Ok(outcome) => return Ok(outcome),
+                Err(failure) => failure,
+            };
+
+            let retries_left = attempt <= self.config.max_transient_retries;
+            if failure.produced_output
+                || !failure.error.is_transient()
+                || !retries_left
+                || self.tools.cancel.is_cancelled()
+            {
+                return Err(failure.error.into());
+            }
+
+            let _ = ui
+                .send(UiEvent::Retrying {
+                    attempt: attempt + 1,
+                    of: self.config.max_transient_retries + 1,
+                    reason: failure.error.to_string(),
+                })
+                .await;
+            info!(attempt, error = %failure.error, "retrying transient provider failure");
+
+            if !self.backoff(attempt).await {
+                return Err(failure.error.into());
+            }
+            attempt += 1;
+        }
+    }
+
+    /// Sleeps before the next attempt, doubling each time. Returns false if the
+    /// turn was canceled while waiting — a user who hits stop during a backoff
+    /// should not have to sit through the rest of it.
+    async fn backoff(&self, attempt: u32) -> bool {
+        // Capped so a large `max_transient_retries` cannot turn into a wait
+        // measured in hours.
+        let delay = self.config.retry_backoff * 2u32.saturating_pow(attempt.min(6) - 1);
+        if delay.is_zero() {
+            return !self.tools.cancel.is_cancelled();
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => true,
+            _ = self.tools.cancel.cancelled() => false,
+        }
+    }
+
+    /// One model request, streamed to the UI and reassembled.
+    async fn stream_attempt(
+        &self,
+        session: &Session,
+        ui: &mpsc::Sender<UiEvent>,
+    ) -> Result<(Message, TokenUsage, StopReason), FailedAttempt> {
         let request = self.build_request(session);
         let (tx, mut rx) = mpsc::channel(128);
         let provider = self.provider.clone();
@@ -209,12 +335,18 @@ impl Agent {
         let handle = tokio::spawn(async move { provider.stream(request, tx, cancel).await });
 
         let mut acc = StreamAccumulator::new();
+        // Tool-use deltas do not count: they are accumulated, not displayed, so
+        // a stream that dies part-way through a tool call can still be retried
+        // without the user seeing anything twice.
+        let mut produced_output = false;
         while let Some(event) = rx.recv().await {
             match &event {
                 StreamEvent::TextDelta { text } => {
+                    produced_output = true;
                     let _ = ui.send(UiEvent::TextDelta { text: text.clone() }).await;
                 }
                 StreamEvent::ThinkingDelta { text } => {
+                    produced_output = true;
                     let _ = ui.send(UiEvent::ThinkingDelta { text: text.clone() }).await;
                 }
                 _ => {}
@@ -222,9 +354,15 @@ impl Agent {
             acc.push(event);
         }
 
-        let stop = handle.await.map_err(|e| {
-            taurus_provider::ProviderError::Protocol(format!("stream task failed: {e}"))
-        })??;
+        let joined = handle.await.unwrap_or_else(|e| {
+            Err(taurus_provider::ProviderError::Protocol(format!(
+                "stream task failed: {e}"
+            )))
+        });
+        let stop = joined.map_err(|error| FailedAttempt {
+            error,
+            produced_output,
+        })?;
 
         let (message, usage, malformed) = acc.finish();
         if !malformed.is_empty() {
@@ -489,6 +627,38 @@ impl Agent {
         let text = acc.finish().0.text();
         (!text.trim().is_empty()).then_some(text)
     }
+}
+
+/// This round's calls, as name and arguments, if every one of them failed.
+///
+/// `None` when anything succeeded and when there were no calls at all: both are
+/// progress, and neither should count toward a stall. Call ids are deliberately
+/// not part of the identity — the model mints a fresh one each time, so two
+/// genuinely identical calls never share one.
+fn all_failed(
+    assistant: &Message,
+    results: &[ContentBlock],
+) -> Option<Vec<(String, serde_json::Value)>> {
+    let failed: std::collections::HashSet<&str> = results
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error: true,
+                ..
+            } => Some(tool_use_id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    let mut calls = Vec::new();
+    for (id, name, input) in assistant.tool_uses() {
+        if !failed.contains(id) {
+            return None;
+        }
+        calls.push((name.to_string(), input.clone()));
+    }
+    (!calls.is_empty()).then_some(calls)
 }
 
 /// Forwards a tool's progress reports to the UI, tagged with the call they

@@ -42,6 +42,21 @@ pub enum UiEvent {
         /// Tool output, truncated for display.
         output: String,
     },
+    /// A request failed in a way a retry could plausibly fix, and is being
+    /// retried after a backoff.
+    ///
+    /// Reported for the same reason [`UiEvent::ToolProgress`] is: a wait of
+    /// several seconds with nothing on screen is indistinguishable from a hang,
+    /// and a rate limit the harness is already handling should not look like
+    /// one.
+    Retrying {
+        /// 1-based, so it reads as "attempt 2 of 4" rather than counting
+        /// retries the user never saw.
+        attempt: u32,
+        of: u32,
+        /// Why the previous attempt failed, in the provider's own words.
+        reason: String,
+    },
     /// Older tool output was shortened to stay inside the context window.
     /// Cheaper than [`UiEvent::Compacted`] and tried first: nothing was sent to
     /// the model to produce it, and no message was removed.
