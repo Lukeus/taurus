@@ -25,11 +25,13 @@ export function Rail({
   changedCount,
   busy,
   skillCount,
+  agentCount,
   health,
   onPickWorkspace,
   onNew,
   onOpen,
   onSkills,
+  onAgents,
   onSettings,
 }: {
   /** Set by the handle beside it; the rail only has to wear the number. */
@@ -40,11 +42,13 @@ export function Rail({
   changedCount: number;
   busy: boolean;
   skillCount: number | null;
+  agentCount: number | null;
   health: ProviderHealth;
   onPickWorkspace: () => void;
   onNew: () => void;
   onOpen: (sessionId: string) => void;
   onSkills: () => void;
+  onAgents: () => void;
   onSettings: () => void;
 }) {
   const today = sessions.filter((s) => isToday(s.updated));
@@ -116,6 +120,11 @@ export function Rail({
           <span className="glyph">✦</span>
           <b>Skills</b>
           {skillCount !== null && <span className="count">{skillCount}</span>}
+        </button>
+        <button className="rail-link" onClick={onAgents}>
+          <span className="glyph">◇</span>
+          <b>Agents</b>
+          {agentCount !== null && <span className="count">{agentCount}</span>}
         </button>
         <button className="rail-link" onClick={onSettings}>
           <span className="glyph">◈</span>

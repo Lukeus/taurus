@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use ts_rs::TS;
 
+use taurus_agents::AgentSummary;
 use taurus_core::{Session, UiEvent};
 use taurus_mcp::ServerStatus;
 use taurus_provider::{Message, ModelInfo};
@@ -40,6 +41,9 @@ pub struct AppStatus {
     pub providers: Vec<ProviderConfig>,
     pub settings: Settings,
     pub skill_count: usize,
+    /// The roster size, so the rail can carry it beside the skill count. Never
+    /// zero: two agents ship with the harness.
+    pub agent_count: usize,
     /// Everything that failed to load, each tagged with where it came from so
     /// the UI can show it on the screen that can fix it. Previously this was an
     /// untagged list called `skill_problems`, and a malformed `providers.json`
@@ -56,6 +60,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus>
         providers: state.host.providers().await,
         settings: state.host.settings().await,
         skill_count: state.host.skill_count().await,
+        agent_count: state.host.agents().await.len(),
         problems: state.host.problems().await,
         tool_names: state.host.tool_names().await,
         mcp_servers: state.host.mcp_statuses().await,
@@ -537,6 +542,47 @@ pub async fn list_skills(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Skill
     Ok(state.host.skills().await)
 }
 
+/// The sub-agent roster, rescanned from disk first.
+///
+/// Rescanning here rather than returning the cached catalog is what makes the
+/// drawer show the feature working: the whole authoring surface is a text
+/// editor, so a list assembled at startup is stale by the time anyone opens it.
+#[tauri::command]
+pub async fn list_agents(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<AgentSummary>> {
+    state.host.rescan_agents().await;
+    Ok(state.host.agents().await)
+}
+
+/// What the roster costs on every request, in characters. Shown beside it,
+/// because an expense nobody can see is one nobody chose.
+#[tauri::command]
+pub async fn agent_roster_cost(state: State<'_, Arc<AppState>>) -> CmdResult<usize> {
+    Ok(state.host.roster_cost().await)
+}
+
+/// Writes a starter agent file and opens it.
+///
+/// Disk stays the source of truth — there is no in-app editor, deliberately —
+/// but nobody should have to already know the frontmatter to write their first
+/// agent. The template documents every key in place.
+#[tauri::command]
+pub async fn create_agent(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    scope: Scope,
+    name: String,
+) -> CmdResult<String> {
+    let workspace = state.host.workspace().await;
+    let path = taurus_host::config::create_agent_file(scope, Some(&workspace), &name)?;
+    state.host.rescan_agents().await;
+
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
 #[tauri::command]
 pub async fn list_proposals(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<SkillProposal>> {
     Ok(state
@@ -607,10 +653,17 @@ pub async fn save_providers(
     Ok(())
 }
 
+/// Re-reads both config layers, rescans skills and agents, and reconnects MCP
+/// servers.
+///
+/// Named for what it does. It was `reload_skills`, which promised less than it
+/// delivered from the day agents were discovered by the same call: someone who
+/// had edited an agent would not press it, and someone who pressed it would not
+/// expect their agent edits to land.
 #[tauri::command]
-pub async fn reload_skills(state: State<'_, Arc<AppState>>) -> CmdResult<usize> {
+pub async fn reload_config(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
     state.host.reload().await;
-    Ok(state.host.skill_count().await)
+    Ok(())
 }
 
 #[tauri::command]

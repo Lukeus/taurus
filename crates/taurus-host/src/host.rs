@@ -14,7 +14,9 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use taurus_core::{Agent, AgentConfig, SpawnSubagent};
+use taurus_agents::catalog::{AgentCatalog, AgentSource};
+use taurus_agents::{AgentDefinition, AgentSummary, AgentTier};
+use taurus_core::{Agent, AgentConfig, AgentModel, ModelOverrides, SpawnSubagent};
 use taurus_mcp::{McpManager, ServerStatus};
 use taurus_provider::Provider;
 use taurus_provider_ollama::OllamaProvider;
@@ -35,6 +37,17 @@ use crate::secrets;
 /// How many sub-agents may run at once. Low on purpose: each is a full model
 /// stream, and local hardware serves them all from the same GPU.
 pub const MAX_CONCURRENT_SUBAGENTS: usize = 2;
+
+/// How many characters of agent roster are worth carrying before it is worth
+/// saying so.
+///
+/// The roster sits in the spawn tool's description, so every line is paid on
+/// every request of every turn — the same argument `disabled_tools` makes about
+/// tool schemas. Silent expense is the failure mode worth engineering against;
+/// a visible one the user chose is fine, so passing this reports a problem
+/// rather than dropping anything. Roughly a dozen agents at the 200-character
+/// description cap, which is well past what a person curates by hand.
+pub const ROSTER_BUDGET_CHARS: usize = 2_400;
 
 /// Makes a permission prompt on demand.
 ///
@@ -60,6 +73,12 @@ pub struct Host {
     providers: RwLock<Vec<ProviderConfig>>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
+    /// The sub-agent roster. Seeded with the built-ins so `explorer` and
+    /// `worker` work before anything has been scanned.
+    agents: RwLock<AgentCatalog>,
+    /// Each agent's `(provider, model)`, resolved once per reload. Resolving it
+    /// here rather than per turn keeps a keychain read off the hot path.
+    agent_models: RwLock<ModelOverrides>,
     /// Shared rather than owned so sub-agents can be handed the same registry:
     /// it has no spawn tool, which is what caps delegation depth.
     registry: Arc<RwLock<ToolRegistry>>,
@@ -90,6 +109,8 @@ impl Host {
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
             catalog: Arc::new(RwLock::new(SkillCatalog::default())),
+            agents: RwLock::new(AgentCatalog::default()),
+            agent_models: RwLock::new(ModelOverrides::new()),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             permissions: RwLock::new(permissions),
             mcp: McpManager::new(),
@@ -216,8 +237,136 @@ impl Host {
             disable(&mut registry, &disabled),
         ));
 
+        // After the registry is finished, and deliberately so: an agent scoped
+        // to tools the user has since disabled is exactly the case this catches.
+        let available: Vec<String> = registry.names().map(str::to_string).collect();
+        problems.extend(self.load_agents(&workspace, &available).await);
+
         *self.registry.write().await = registry;
         *self.problems.write().await = problems;
+    }
+
+    /// Rescans the agent directories without touching anything else.
+    ///
+    /// The whole authoring surface for an agent is a text editor, so a drawer
+    /// that shows the catalog as it was at startup is not showing the feature
+    /// working. This is what opening it calls. It is deliberately narrower than
+    /// [`Host::reload`]: rescanning a directory should not restart every MCP
+    /// server, which a full reload does.
+    pub async fn rescan_agents(&self) {
+        let workspace = self.workspace.read().await.clone();
+        let available: Vec<String> = self
+            .registry
+            .read()
+            .await
+            .names()
+            .map(str::to_string)
+            .collect();
+        let found = self.load_agents(&workspace, &available).await;
+
+        let mut problems = self.problems.write().await;
+        problems.retain(|p| p.source != ProblemSource::Agents);
+        problems.extend(found);
+    }
+
+    /// Discovers the roster, checks it against `available`, resolves its
+    /// models, and installs it. Returns what to report.
+    async fn load_agents(&self, workspace: &Path, available: &[String]) -> Vec<Problem> {
+        let (mut agents, errors) = AgentCatalog::discover(&[
+            AgentSource {
+                tier: AgentTier::User,
+                dir: config::user_agents_dir(),
+            },
+            AgentSource {
+                tier: AgentTier::Project,
+                dir: config::workspace_agents_dir(workspace),
+            },
+        ]);
+        info!(
+            agents = agents.len(),
+            problems = errors.len(),
+            "agents loaded"
+        );
+
+        let mut problems = Problem::tag(
+            ProblemSource::Agents,
+            errors.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
+        );
+        problems.extend(Problem::tag(
+            ProblemSource::Agents,
+            cross_check_tools(&mut agents, available),
+        ));
+        self.resolve_agent_models(&mut agents).await;
+
+        if agents.roster_cost() > ROSTER_BUDGET_CHARS {
+            problems.push(Problem::new(
+                ProblemSource::Agents,
+                format!(
+                    "the {} sub-agents cost {} characters of every request, over the \
+                     {ROSTER_BUDGET_CHARS} this budgets for; shorten their descriptions or remove \
+                     the ones you do not use",
+                    agents.len(),
+                    agents.roster_cost()
+                ),
+            ));
+        }
+
+        *self.agents.write().await = agents;
+        problems
+    }
+
+    /// Resolves each agent's `model:` and `provider:` into something the spawn
+    /// tool can use.
+    ///
+    /// An unresolvable model degrades rather than failing the load: a repo can
+    /// then ship an agent that names a cloud model without breaking for the
+    /// contributor who runs Ollama only. Like a skill with a missing
+    /// interpreter, that is recorded on the agent rather than raised as a
+    /// problem — the drawer row and `taurus agents check` both show the reason,
+    /// so the fallback is visible without the status strip claiming something
+    /// is broken when nothing is.
+    async fn resolve_agent_models(&self, agents: &mut AgentCatalog) {
+        let mut resolved = ModelOverrides::new();
+
+        for agent in agents.iter_mut() {
+            let Some(model) = agent.frontmatter.model.clone() else {
+                continue;
+            };
+            let Some(provider_id) = agent.frontmatter.provider.clone() else {
+                // A model with no provider is a different model on whichever
+                // provider the session is using, which is not known until a turn
+                // starts. Nothing to resolve, and nothing that can fail here.
+                resolved.insert(
+                    agent.name().to_string(),
+                    AgentModel {
+                        provider: None,
+                        model,
+                    },
+                );
+                continue;
+            };
+
+            match self.provider(&provider_id).await {
+                Ok(provider) => {
+                    resolved.insert(
+                        agent.name().to_string(),
+                        AgentModel {
+                            provider: Some(provider),
+                            model,
+                        },
+                    );
+                }
+                Err(e) => degrade(
+                    agent,
+                    format!(
+                        "wants {model} on provider '{provider_id}', which is not usable here \
+                         ({e}); it will run on the session's model instead"
+                    ),
+                ),
+            }
+        }
+
+        *self.agent_models.write().await = resolved;
     }
 
     pub async fn set_workspace(&self, path: &Path) -> Result<PathBuf, String> {
@@ -310,12 +459,20 @@ impl Host {
         // rather than living in the shared registry. Children get the shared
         // registry, which has no spawn tool — that is the depth cap.
         let mut registry = self.registry.read().await.clone();
-        registry.register(Arc::new(SpawnSubagent::new(
-            provider.clone(),
-            self.registry.clone(),
-            model,
-            MAX_CONCURRENT_SUBAGENTS,
-        )));
+        // The roster is snapshotted here, so a turn sees the set of agents it
+        // started with even if a file is saved while it runs.
+        registry.register(Arc::new(
+            SpawnSubagent::new(
+                provider.clone(),
+                self.registry.clone(),
+                model,
+                MAX_CONCURRENT_SUBAGENTS,
+            )
+            .with_roster(
+                Arc::new(self.agents.read().await.to_vec()),
+                self.agent_models.read().await.clone(),
+            ),
+        ));
 
         let workspace = self.workspace.read().await.clone();
         let skill_section = self.catalog.read().await.prompt_section();
@@ -554,6 +711,18 @@ impl Host {
         self.catalog.read().await.summaries()
     }
 
+    /// The sub-agent roster: the built-ins, plus whatever the last reload found
+    /// on disk, with anything that shadowed something else saying so.
+    pub async fn agents(&self) -> Vec<AgentSummary> {
+        self.agents.read().await.summaries()
+    }
+
+    /// Characters of every request the roster costs. Shown next to the roster,
+    /// because a cost nobody can see is one nobody chooses.
+    pub async fn roster_cost(&self) -> usize {
+        self.agents.read().await.roster_cost()
+    }
+
     pub async fn skill_count(&self) -> usize {
         self.catalog.read().await.len()
     }
@@ -686,6 +855,81 @@ fn disable(registry: &mut ToolRegistry, disabled: &[String]) -> Vec<String> {
     unmatched
 }
 
+/// Intersects every agent's `tools:` list with the finished registry, returning
+/// a message for each agent that had to be refused.
+///
+/// This exists because of what an *empty* allow-list means downstream: every
+/// tool the parent has. An agent scoped to `[read_file, grep]` whose two tools
+/// were both disabled would filter down to nothing and be handed the shell — a
+/// setting reached for to *narrow* an agent widening it instead. So a scope that
+/// survives in part degrades, and a scope that vanishes entirely is refused.
+///
+/// Only the refusal is a problem. A partial loss is recorded on the agent and
+/// shown on its row, the same way a skill's missing interpreter is: the agent
+/// still runs, so the status strip has nothing to send anyone to fix.
+fn cross_check_tools(agents: &mut AgentCatalog, available: &[String]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut refused = Vec::new();
+
+    for agent in agents.iter_mut() {
+        let Some(wanted) = agent.frontmatter.tools.clone() else {
+            continue;
+        };
+        let missing: Vec<String> = wanted
+            .iter()
+            .filter(|name| !available.contains(name))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+
+        if missing.len() == wanted.len() {
+            problems.push(format!(
+                "{}: none of the tools it is scoped to are available here ({}). An empty scope \
+                 would mean every tool rather than none, so this agent has been refused instead \
+                 of widened. Re-enable those tools, or correct the names.",
+                located(agent),
+                wanted.join(", ")
+            ));
+            refused.push(agent.name().to_string());
+        } else {
+            degrade(
+                agent,
+                format!(
+                    "cannot use {}, which this session does not have; it runs with the rest of \
+                     its tools",
+                    missing.join(", ")
+                ),
+            );
+        }
+    }
+
+    for name in refused {
+        agents.remove(&name);
+    }
+    problems
+}
+
+/// Adds a reason without losing one already there: an agent can be both scoped
+/// to a missing tool and pointed at an unconfigured provider, and a user fixing
+/// one should not discover the other only afterwards.
+fn degrade(agent: &mut AgentDefinition, reason: String) {
+    agent.degraded = Some(match agent.degraded.take() {
+        Some(existing) => format!("{existing}; {reason}"),
+        None => reason,
+    });
+}
+
+/// What to call an agent in a problem message. The file, when there is one —
+/// the whole authoring surface is a text editor, so the path is the fix.
+fn located(agent: &AgentDefinition) -> String {
+    match &agent.path {
+        Some(path) => path.display().to_string(),
+        None => format!("the built-in agent '{}'", agent.name()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,6 +966,225 @@ mod tests {
             Arc::new(NoProposals),
         );
         (host, home)
+    }
+
+    /// Writes an agent file into a workspace's `.taurus/agents`.
+    fn write_agent(workspace: &Path, name: &str, frontmatter: &str) {
+        let dir = workspace.join(".taurus/agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{name}.md")),
+            format!(
+                "---\nname: {name}\ndescription: does {name}\n{frontmatter}---\n\nBe {name}.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_settings(workspace: &Path, json: &str) {
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(workspace.join(".taurus/settings.json"), json).unwrap();
+    }
+
+    fn agent_problems(problems: &[Problem]) -> Vec<String> {
+        problems
+            .iter()
+            .filter(|p| p.source == ProblemSource::Agents)
+            .map(|p| p.message.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_machine_with_no_agents_directory_still_has_the_builtins() {
+        let dir = TempDir::new().unwrap();
+        let (host, _home) = host(&dir.path().canonicalize().unwrap());
+        host.reload().await;
+
+        let names: Vec<String> = host.agents().await.into_iter().map(|a| a.name).collect();
+        assert_eq!(names, vec!["explorer".to_string(), "worker".to_string()]);
+        assert!(agent_problems(&host.problems().await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_project_agent_file_joins_the_roster() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_agent(&workspace, "reviewer", "tools: [read_file, grep]\n");
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let agents = host.agents().await;
+        let reviewer = agents.iter().find(|a| a.name == "reviewer").unwrap();
+        assert_eq!(reviewer.tier, AgentTier::Project);
+        assert_eq!(
+            reviewer.tools.as_deref(),
+            Some(["read_file", "grep"].map(String::from).as_slice())
+        );
+        assert!(reviewer.degraded.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_agent_whose_whole_tool_list_was_disabled_is_refused_not_widened() {
+        // The one failure in this feature that widens a permission rather than
+        // breaking a feature: an empty scope means *every* tool downstream, so
+        // an agent the user narrowed must never arrive there by attrition.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_settings(&workspace, r#"{"disabled_tools": ["run_command"]}"#);
+        write_agent(&workspace, "shell-only", "tools: [run_command]\n");
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(
+            !host.agents().await.iter().any(|a| a.name == "shell-only"),
+            "an agent with nothing left to be scoped to must not stay in the roster"
+        );
+        let reported = agent_problems(&host.problems().await);
+        assert!(
+            reported.iter().any(|m| m.contains("refused")),
+            "the refusal must be reported, not silent: {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_loses_only_some_tools_is_degraded_and_kept() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_settings(&workspace, r#"{"disabled_tools": ["run_command"]}"#);
+        write_agent(&workspace, "mixed", "tools: [read_file, run_command]\n");
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let agents = host.agents().await;
+        let mixed = agents.iter().find(|a| a.name == "mixed").unwrap();
+        assert!(mixed
+            .degraded
+            .as_ref()
+            .is_some_and(|d| d.contains("run_command")));
+    }
+
+    #[tokio::test]
+    async fn an_agent_naming_an_unconfigured_provider_loads_degraded() {
+        // A repo can ship an agent that names a cloud model without breaking for
+        // the contributor who runs Ollama only.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_agent(
+            &workspace,
+            "cloud-thinker",
+            "model: gpt-5\nprovider: not-configured\n",
+        );
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let agents = host.agents().await;
+        let agent = agents.iter().find(|a| a.name == "cloud-thinker").unwrap();
+        let reason = agent.degraded.as_ref().expect("it should say why");
+        assert!(reason.contains("not-configured"));
+        assert!(
+            reason.contains("session's model"),
+            "and what it falls back to"
+        );
+
+        // Degradation is not a problem: the agent still runs, so there is
+        // nothing for the status strip to send anyone to fix.
+        assert!(agent_problems(&host.problems().await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_oversized_roster_reports_what_it_costs() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        // Descriptions are capped at 200 characters each, so this is what
+        // "too many agents" looks like: enough of them to be worth saying.
+        for i in 0..20 {
+            let name = format!("agent-{i:02}");
+            let agents_dir = workspace.join(".taurus/agents");
+            std::fs::create_dir_all(&agents_dir).unwrap();
+            std::fs::write(
+                agents_dir.join(format!("{name}.md")),
+                format!(
+                    "---\nname: {name}\ndescription: {}\n---\n\nBe {name}.\n",
+                    "x".repeat(180)
+                ),
+            )
+            .unwrap();
+        }
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let reported = agent_problems(&host.problems().await);
+        assert!(
+            reported
+                .iter()
+                .any(|m| m.contains("characters of every request")),
+            "an expense this size should be visible, not silent: {reported:?}"
+        );
+        assert_eq!(
+            host.agents().await.len(),
+            22,
+            "and nothing is dropped for it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rescan_picks_up_a_file_written_since_the_reload() {
+        // The drawer's whole job. Editing a file and reopening the drawer to see
+        // the old catalog is the feature not working, not a papercut.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert_eq!(host.agents().await.len(), 2);
+
+        write_agent(&workspace, "late-arrival", "");
+        host.rescan_agents().await;
+
+        assert!(host.agents().await.iter().any(|a| a.name == "late-arrival"));
+    }
+
+    #[tokio::test]
+    async fn a_rescan_clears_a_problem_the_user_has_since_fixed() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus/agents")).unwrap();
+        let broken = workspace.join(".taurus/agents/broken.md");
+        std::fs::write(&broken, "not an agent file").unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert_eq!(agent_problems(&host.problems().await).len(), 1);
+
+        std::fs::remove_file(&broken).unwrap();
+        host.rescan_agents().await;
+
+        assert!(agent_problems(&host.problems().await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_rescan_leaves_other_sources_problems_alone() {
+        // The problem list is shared. A rescan that swept it would silently
+        // clear a providers.json error nobody had fixed.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(workspace.join(".taurus/providers.json"), "{ not json").unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        let before = host.problems_from(&[ProblemSource::Providers]).await.len();
+        assert!(before > 0);
+
+        host.rescan_agents().await;
+        assert_eq!(
+            host.problems_from(&[ProblemSource::Providers]).await.len(),
+            before
+        );
     }
 
     #[tokio::test]

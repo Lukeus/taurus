@@ -4,6 +4,7 @@
 //! permission allowlist. Everything shared lives in `taurus-host`; this crate
 //! only decides how to talk to a terminal.
 
+mod agents_cmd;
 mod key_cmd;
 mod markdown;
 mod permission;
@@ -79,6 +80,13 @@ enum Command {
     Skills {
         #[command(subcommand)]
         command: skills_cmd::SkillsCommand,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
+    /// Inspect the sub-agents this workspace can delegate to.
+    Agents {
+        #[command(subcommand)]
+        command: agents_cmd::AgentsCommand,
         #[command(flatten)]
         session: SessionArgs,
     },
@@ -299,6 +307,11 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Skills { command, session } => {
             let runtime = build_host(&session, Policy::default()).await?;
             skills_cmd::run(&runtime.host, command).await
+        }
+
+        Command::Agents { command, session } => {
+            let runtime = build_host(&session, Policy::default()).await?;
+            agents_cmd::run(&runtime.host, command).await
         }
 
         Command::Key { command, session } => {

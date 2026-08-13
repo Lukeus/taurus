@@ -12,4 +12,4 @@ pub mod testing;
 pub use agent::{Agent, AgentConfig, AgentError, TurnOutcome};
 pub use event::UiEvent;
 pub use session::{estimate_block, estimate_message, estimate_tokens, Session, Trimmed};
-pub use subagent::{SpawnSubagent, SPAWN_TOOL};
+pub use subagent::{AgentModel, ModelOverrides, SpawnSubagent, SPAWN_TOOL};

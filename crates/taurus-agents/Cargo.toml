@@ -1,0 +1,29 @@
+[package]
+name = "taurus-agents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Sub-agent definitions and discovery for the Taurus agent harness"
+
+[dependencies]
+serde.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+
+[dev-dependencies]
+# A dev-only cycle back to the crates that consume this one: the delegation
+# example needs a real agent loop and a real provider to prove a scope holds,
+# and a leaf crate is the wrong place to carry either in its actual dependencies.
+taurus-core.workspace = true
+taurus-provider-ollama.workspace = true
+taurus-tools.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio-util.workspace = true
+
+[lints]
+workspace = true

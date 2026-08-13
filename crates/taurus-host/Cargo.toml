@@ -12,6 +12,7 @@ taurus-mcp.workspace = true
 taurus-provider.workspace = true
 taurus-provider-ollama.workspace = true
 taurus-provider-openai.workspace = true
+taurus-agents.workspace = true
 taurus-skills.workspace = true
 taurus-tools.workspace = true
 taurus-web.workspace = true

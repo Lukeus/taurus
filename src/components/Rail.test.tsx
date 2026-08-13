@@ -25,11 +25,13 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       changedCount={0}
       busy={false}
       skillCount={12}
+      agentCount={3}
       health={{ state: "connected", id: "ollama", models: 4 }}
       onPickWorkspace={() => {}}
       onNew={() => {}}
       onOpen={() => {}}
       onSkills={() => {}}
+      onAgents={() => {}}
       onSettings={() => {}}
       {...props}
     />,
@@ -136,5 +138,23 @@ describe("provider health", () => {
 
   it("points at the missing configuration when there is no provider at all", () => {
     expect(label({ state: "none" })).toContain("no provider configured");
+  });
+});
+
+describe("the foot links", () => {
+  it("carries both counts, so neither library is behind an unlabelled door", () => {
+    const html = draw({ skillCount: 12, agentCount: 3 });
+    expect(html).toContain("Skills");
+    expect(html).toContain(">12<");
+    expect(html).toContain("Agents");
+    expect(html).toContain(">3<");
+  });
+
+  it("omits a count it does not have yet rather than showing a zero", () => {
+    // Before the first status arrives there is no roster to report, and "0
+    // agents" would be wrong: two ship with the harness.
+    const html = draw({ skillCount: null, agentCount: null });
+    expect(html).toContain("Agents");
+    expect(html).not.toContain("count");
   });
 });

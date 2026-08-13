@@ -4778,6 +4778,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "taurus-agents"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "taurus-core",
+ "taurus-provider-ollama",
+ "taurus-tools",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ts-rs",
+]
+
+[[package]]
 name = "taurus-app"
 version = "0.1.0"
 dependencies = [
@@ -4789,6 +4807,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "taurus-agents",
  "taurus-core",
  "taurus-host",
  "taurus-mcp",
@@ -4831,6 +4850,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "taurus-agents",
  "taurus-provider",
  "taurus-provider-ollama",
  "taurus-tools",
@@ -4852,6 +4872,7 @@ dependencies = [
  "keyring",
  "serde",
  "serde_json",
+ "taurus-agents",
  "taurus-core",
  "taurus-mcp",
  "taurus-provider",
