@@ -33,6 +33,7 @@ import type { ModelEntry } from "../bindings/ModelEntry";
 import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
+import type { Theme } from "../bindings/Theme";
 import type { UiEvent } from "../bindings/UiEvent";
 
 export type {
@@ -62,6 +63,7 @@ export type {
   SessionMeta,
   SkillProposal,
   SkillSummary,
+  Theme,
   UiEvent,
 };
 
@@ -105,6 +107,16 @@ export const resumeSession = (sessionId: string, providerId?: string) =>
     sessionId,
     providerId: providerId ?? null,
   });
+
+/**
+ * Erases a saved conversation — its transcript, and the checkpoints that made
+ * its turns undoable. The workspace itself is untouched.
+ *
+ * Rejected while that conversation is mid-turn, so the UI must be prepared for
+ * a failure it did not ask a question about.
+ */
+export const deleteSession = (sessionId: string) =>
+  invoke<void>("delete_session", { sessionId });
 
 export const respondPermission = (id: string, decision: PermissionDecision) =>
   invoke<void>("respond_permission", { response: { id, decision } });
@@ -166,6 +178,8 @@ export const respondSkillProposal = (
 
 export const setSkillSynthesis = (enabled: boolean) =>
   invoke<void>("set_skill_synthesis", { enabled });
+
+export const setTheme = (theme: Theme) => invoke<void>("set_theme", { theme });
 
 export const saveProviders = (providers: ProviderConfig[]) =>
   invoke<void>("save_providers", { providers });

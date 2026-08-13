@@ -12,6 +12,18 @@ use std::sync::Arc;
 use tauri::Manager;
 use tracing_subscriber::EnvFilter;
 
+// An optimized build with `cfg(dev)` still set is the one broken artifact that
+// looks entirely healthy: it compiles, links, bundles, and then opens on
+// "localhost refused to connect" for anyone without a Vite server on 1420. The
+// flag is the `custom-protocol` feature rather than the profile, so nothing
+// about `--release` implies it and nothing at runtime warns. Refusing to
+// compile is the only place this can be caught before a user meets it.
+#[cfg(all(not(debug_assertions), dev))]
+compile_error!(
+    "a release build without the `custom-protocol` feature would load `devUrl` instead of the \
+     bundled frontend. Build with `pnpm tauri build`, or add `--features custom-protocol`."
+);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -47,6 +59,7 @@ pub fn run() {
             commands::send_message,
             commands::cancel_session,
             commands::close_session,
+            commands::delete_session,
             commands::respond_permission,
             commands::list_permission_rules,
             commands::revoke_permission_rule,
@@ -57,6 +70,7 @@ pub fn run() {
             commands::list_proposals,
             commands::respond_skill_proposal,
             commands::set_skill_synthesis,
+            commands::set_theme,
             commands::save_providers,
             commands::list_global_providers,
             commands::list_key_statuses,

@@ -29,7 +29,7 @@ use taurus_tools::{
     CheckpointStore, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
 };
 
-use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings};
+use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
 use crate::problem::{self, Problem, ProblemSource};
 use crate::prompt;
 use crate::secrets;
@@ -679,6 +679,18 @@ impl Host {
                 self.proposals.clone(),
             )));
         }
+    }
+
+    /// Sets the palette for every workspace.
+    ///
+    /// Global only, like every other edit from the UI: a theme is a property of
+    /// the person looking at the screen, not of the project on it, and writing
+    /// it into a workspace file would hand one repo the power to decide how the
+    /// app looks everywhere it is opened.
+    pub async fn set_theme(&self, theme: Theme) {
+        config::edit_settings(Scope::Global, None, |s| s.theme = Some(theme));
+        let workspace = self.workspace.read().await.clone();
+        *self.settings.write().await = config::load_settings(Some(&workspace));
     }
 
     /// Records the provider and model just used, in both layers.

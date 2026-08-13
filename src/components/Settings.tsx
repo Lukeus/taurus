@@ -10,7 +10,9 @@ import type {
   Scope,
   SearchBackend,
   SearchSettings,
+  Theme,
 } from "../lib/api";
+import { applyTheme } from "../lib/theme";
 import { useStore } from "../state/store";
 
 type Tab = "models" | "search" | "permissions" | "behavior";
@@ -234,23 +236,27 @@ export function Settings({ onClose }: { onClose: () => void }) {
         )}
 
         {tab === "behavior" && (
-          <label className="settings-check">
-            <input
-              type="checkbox"
-              checked={status?.settings.skill_synthesis_enabled ?? true}
-              onChange={async (e) => {
-                await api.setSkillSynthesis(e.target.checked);
-                await refresh();
-              }}
-            />
-            <span>
-              Let Taurus propose skills
-              <span className="hint">
-                It offers a procedure it worked out; nothing is saved without
-                your approval.
+          <>
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                checked={status?.settings.skill_synthesis_enabled ?? true}
+                onChange={async (e) => {
+                  await api.setSkillSynthesis(e.target.checked);
+                  await refresh();
+                }}
+              />
+              <span>
+                Let Taurus propose skills
+                <span className="hint">
+                  It offers a procedure it worked out; nothing is saved without
+                  your approval.
+                </span>
               </span>
-            </span>
-          </label>
+            </label>
+
+            <ThemePicker theme={status?.settings.theme ?? "system"} />
+          </>
         )}
 
         <section className="section">
@@ -266,6 +272,55 @@ export function Settings({ onClose }: { onClose: () => void }) {
     </div>
   );
 }
+
+/**
+ * Light, dark, or whatever the machine is doing.
+ *
+ * Painted before the write lands, and deliberately: a theme change is the one
+ * setting whose result is the screen itself, and waiting a round trip to see it
+ * makes the app feel like it did not hear you. The write is still the authority
+ * — `refresh` follows it, and App repaints from whatever settings actually say,
+ * so a failed write corrects the optimism rather than leaving it.
+ */
+export function ThemePicker({ theme }: { theme: Theme }) {
+  const refresh = useStore((s) => s.refresh);
+
+  const choose = async (next: Theme) => {
+    applyTheme(next);
+    await api.setTheme(next);
+    await refresh();
+  };
+
+  return (
+    <section className="section">
+      <span className="micro">Appearance</span>
+      <div className="pill-row" role="radiogroup" aria-label="Theme">
+        {THEMES.map(([value, label]) => (
+          <button
+            key={value}
+            role="radio"
+            aria-checked={theme === value}
+            className={`pill${theme === value ? " on" : ""}`}
+            onClick={() => choose(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <p className="hint">
+        {theme === "system"
+          ? "Follows your system setting, including when it changes at sunset."
+          : "Stays this way in every workspace, whatever the system does."}
+      </p>
+    </section>
+  );
+}
+
+const THEMES: [Theme, string][] = [
+  ["system", "System"],
+  ["light", "Light"],
+  ["dark", "Dark"],
+];
 
 /**
  * Web search: which backend, and the key it needs.

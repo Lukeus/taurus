@@ -21,9 +21,16 @@
  * nothing else, which is the point of naming them separately: the roles, the
  * ladder, and every rule in the file are written once and mean the same thing
  * under both.
+ *
+ * Which of the two is showing is decided in one place — `data-theme` on <html>,
+ * written by lib/theme.ts, and always the *resolved* answer rather than the
+ * preference. "Follow the system" is a JS concern precisely so that it is not
+ * also a CSS one: no rule here needs a media query, and the light palette is
+ * written exactly once instead of once per way of arriving at it.
  */
 
 :root {
+  color-scheme: dark;
   /* --------------------------------------------- Lukeus tokens, as authored */
   --lk-ink: #0b0f14;
   --lk-surface-1: #121922;
@@ -104,6 +111,12 @@
      where far less black does the same job. */
   --scrim: rgba(0, 0, 0, 0.55);
   --lift: 0 18px 48px rgba(0, 0, 0, 0.5);
+
+  /* Mixed off the faintest text rather than named, so both themes get theirs
+     from the palette that is already restated below and neither has to name a
+     grey of its own. A scrollbar is metadata about a pane, not a part of it. */
+  --scrollbar: color-mix(in srgb, var(--text-faint) 45%, transparent);
+  --scrollbar-hover: color-mix(in srgb, var(--text-faint) 80%, transparent);
 }
 
 /*
@@ -122,43 +135,105 @@
  * hue, dark enough to clear 4.5:1 on all three surfaces, which is why they
  * read as deeper here rather than pastel.
  */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --lk-ink: #f7f9fb;
+  --lk-surface-1: #ffffff;
+  --lk-surface-2: #eaeff5;
+  --lk-line: #d3dce6;
+  --lk-surface-hover: #f4f7fa;
+
+  --lk-text: #0d141c;
+  --lk-text-dim: #4c5b6b;
+  /* Carries the 10px micro-labels, so it is the one that has to be darkest
+     relative to its job — small text needs more contrast, not less. */
+  --lk-text-faint: #5b6b7c;
+
+  --lk-cyan: #0a6f9c;
+  --lk-cyan-hover: #08587c;
+  /* Cyan is now the dark half of the pair, so what sits on it inverts. */
+  --lk-on-cyan: #ffffff;
+  --lk-peach: #9a5b12;
+  --lk-mint: #0f7a33;
+  --lk-red: #c0343c;
+
+  /* A scrim's job is to push a panel back, and on a light ground it takes
+     much less black to do it — 55% here reads as the lights going out. */
+  --scrim: rgba(15, 25, 35, 0.28);
+  --lift: 0 14px 40px rgba(15, 25, 35, 0.16);
+}
+
+/* Thinning strokes is what antialiased does, which helps light text on a
+   dark ground and hurts the reverse. */
+:root[data-theme="light"] body {
+  -webkit-font-smoothing: auto;
+}
+
+/*
+ * The one frame before the script runs.
+ *
+ * In a production build the stylesheet is a <link> in <head>, so it paints
+ * before the module that sets `data-theme` has executed. Nothing is rendered
+ * yet — the page is an empty <body> — so the background is the only token that
+ * can be wrong on screen, and this keeps a light-mode user from opening the app
+ * on a flash of ink.
+ */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --lk-ink: #f7f9fb;
-    --lk-surface-1: #ffffff;
-    --lk-surface-2: #eaeff5;
-    --lk-line: #d3dce6;
-    --lk-surface-hover: #f4f7fa;
-
-    --lk-text: #0d141c;
-    --lk-text-dim: #4c5b6b;
-    /* Carries the 10px micro-labels, so it is the one that has to be darkest
-       relative to its job — small text needs more contrast, not less. */
-    --lk-text-faint: #5b6b7c;
-
-    --lk-cyan: #0a6f9c;
-    --lk-cyan-hover: #08587c;
-    /* Cyan is now the dark half of the pair, so what sits on it inverts. */
-    --lk-on-cyan: #ffffff;
-    --lk-peach: #9a5b12;
-    --lk-mint: #0f7a33;
-    --lk-red: #c0343c;
-
-    /* A scrim's job is to push a panel back, and on a light ground it takes
-       much less black to do it — 55% here reads as the lights going out. */
-    --scrim: rgba(15, 25, 35, 0.28);
-    --lift: 0 14px 40px rgba(15, 25, 35, 0.16);
-  }
-
-  /* Thinning strokes is what antialiased does, which helps light text on a
-     dark ground and hurts the reverse. */
-  body {
-    -webkit-font-smoothing: auto;
   }
 }
 
 * {
   box-sizing: border-box;
+}
+
+/*
+ * Scrollbars, in the palette the rest of the app is in.
+ *
+ * `color-scheme` above already gets the platform to draw a dark bar on the dark
+ * theme, but "dark" is the OS's idea of it and not this one's — a slate-blue
+ * window with a neutral grey bar down the side of the transcript. These are the
+ * standard properties rather than the `::-webkit-scrollbar` tree, because on
+ * macOS defining that tree opts the pane out of overlay scrollbars entirely:
+ * the bar stops fading away and starts taking a permanent 10px out of the
+ * content, which is a worse trade than the colour was ever worth.
+ *
+ * The track stays transparent. Every scrolling surface here sits on a different
+ * one of the three background roles, and a track with a colour of its own would
+ * be a fourth stripe down the edge of whichever pane it landed in.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+/*
+ * Where the standard properties are not understood — WebKitGTK on Linux is the
+ * one that matters — the same two colours through the old tree. It costs the
+ * overlay behavior, which is why it is not the thing being asked for first.
+ */
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar);
+    border-radius: 999px;
+    /* Inset off the edge, so the thumb reads as floating over the pane rather
+       than as a rail welded to the side of it. */
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-hover);
+    background-clip: content-box;
+  }
 }
 
 html,
@@ -396,14 +471,36 @@ body.resizing * {
   user-select: none;
 }
 
-/* Clears the macOS traffic lights, which float over this corner. */
-.rail-drag {
+/*
+ * The rail's header: the mark, the name, and the hairline under both.
+ *
+ * Also what clears the macOS traffic lights, which float over this corner — it
+ * replaced an empty spacer of exactly this height. 44px is the topbar's height
+ * too, so the two rules meet across the fold and the app reads as one window
+ * rather than two panes that happen to be adjacent.
+ */
+.rail-brand {
   height: 44px;
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.rail-brand span {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
 }
 
 .rail-pad {
   padding: 0 12px 10px;
+}
+/* The header now draws a line the first block would otherwise sit on. */
+.rail-brand + .rail-pad {
+  padding-top: 10px;
 }
 
 .rail-workspace {
@@ -457,8 +554,8 @@ body.resizing * {
 }
 .rail-workspace-swap {
   color: var(--text-faint);
-  font-size: 11px;
   flex: none;
+  display: inline-flex;
 }
 
 .rail-new {
@@ -482,27 +579,60 @@ body.resizing * {
   gap: 1px;
 }
 
-/* A conversation reads as text; only the hover tells you it is a control. */
-.rail-item {
-  border: none;
-  background: transparent;
+/*
+ * A conversation and the one destructive thing that can be done to it.
+ *
+ * The row carries the padding, the hover and the selection because what is in
+ * it is two controls, not one: a button cannot contain another button, and a
+ * trash can that only appeared on hover could not be reached from the keyboard
+ * at all.
+ */
+.rail-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   border-radius: var(--r-sm);
   border-left: 2px solid transparent;
-  padding: 7px 10px;
+  padding: 7px 6px 7px 10px;
+  min-width: 0;
+}
+.rail-row:hover {
+  background: var(--bg-hover);
+}
+.rail-row.current {
+  background: var(--bg-active);
+  border-left-color: var(--accent);
+}
+/*
+ * A row that has been asked to confirm holds its own ground, hover or not:
+ * under the pointer it would otherwise look exactly like the four rows around
+ * it, one of which is about to be deleted and three of which are not.
+ */
+.rail-row.armed,
+.rail-row.armed:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border-left-color: var(--danger);
+}
+
+/* A conversation reads as text; only the hover tells you it is a control. */
+.rail-item {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
   text-align: left;
   display: flex;
   flex-direction: column;
   gap: 1px;
-  min-width: 0;
 }
+/* The row is what lights up, so the title inside it must not light up again. */
 .rail-item:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: transparent;
 }
-.rail-item.current {
-  background: var(--bg-active);
-  border-left-color: var(--accent);
-}
-.rail-item.current:disabled {
+/* Disabled because it is already open, which is not the same as unavailable. */
+.rail-row.current .rail-item:disabled {
   opacity: 1;
 }
 .rail-item b {
@@ -513,7 +643,7 @@ body.resizing * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.rail-item.current b {
+.rail-row.current .rail-item b {
   color: var(--text);
 }
 .rail-item span {
@@ -523,6 +653,32 @@ body.resizing * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The armed row spends its subtitle line saying what is about to be lost;
+   there is no other room at this width to say it. */
+.rail-item span.warn {
+  color: var(--danger);
+}
+
+.rail-delete {
+  flex: none;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  padding: 5px;
+  color: var(--text-faint);
+  display: inline-flex;
+  align-items: center;
+}
+.rail-delete:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.rail-delete.confirm {
+  padding: 3px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--danger);
 }
 
 .rail-empty {
@@ -558,6 +714,8 @@ body.resizing * {
   width: 14px;
   flex: none;
   color: var(--text-faint);
+  display: inline-flex;
+  align-items: center;
 }
 .rail-link.accent .glyph {
   color: var(--accent);

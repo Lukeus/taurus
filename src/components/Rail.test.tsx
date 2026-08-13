@@ -27,9 +27,12 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       skillCount={12}
       agentCount={3}
       health={{ state: "connected", id: "ollama", models: 4 }}
+      theme="dark"
       onPickWorkspace={() => {}}
       onNew={() => {}}
       onOpen={() => {}}
+      onDelete={() => {}}
+      onTheme={() => {}}
       onSkills={() => {}}
       onAgents={() => {}}
       onSettings={() => {}}
@@ -118,6 +121,27 @@ describe("what a conversation row says about itself", () => {
   it("cannot be clicked into while a turn is running", () => {
     const html = draw({ sessions: [session("a", "Older", now)], busy: true });
     expect(html).toContain("disabled");
+  });
+});
+
+describe("deleting a conversation", () => {
+  it("offers it on every row, by name, so the control is not hover-only", () => {
+    // A trash can that appears on :hover is unreachable by keyboard and
+    // invisible to a screen reader; the label is what makes four identical
+    // buttons tellable apart once it is reached.
+    const html = draw({ sessions: [session("a", "Rename it", now - 60)] });
+    expect(html).toContain('aria-label="Delete Rename it"');
+  });
+
+});
+
+describe("the theme row", () => {
+  it("names the preference rather than the palette on screen", () => {
+    // "Match system" and "Dark theme" are different rows even when both are
+    // painting dark, and the one that is actually set is the one to show.
+    expect(draw({ theme: "system" })).toContain("Match system");
+    expect(draw({ theme: "dark" })).toContain("Dark theme");
+    expect(draw({ theme: "light" })).toContain("Light theme");
   });
 });
 

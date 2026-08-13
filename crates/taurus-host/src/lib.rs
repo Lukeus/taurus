@@ -14,7 +14,7 @@ pub mod sessions;
 #[cfg(test)]
 mod testing;
 
-pub use config::{ProviderConfig, ProviderKind, Scope, Settings};
+pub use config::{ProviderConfig, ProviderKind, Scope, Settings, Theme};
 pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};
 pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;

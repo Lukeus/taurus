@@ -21,7 +21,7 @@ use taurus_tools::{AllowedRule, PermissionDecision, Scope};
 
 use taurus_host::{
     sessions, BackendKind, Checkpoint, Host, KeyStatus, Problem, ProviderConfig, Restored,
-    SessionLog, SessionMeta, Settings, TurnRef,
+    SessionLog, SessionMeta, Settings, Theme, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -298,6 +298,37 @@ pub async fn close_session(state: State<'_, Arc<AppState>>, session_id: String) 
     if let Some((_, entry)) = state.sessions.remove(&session_id) {
         entry.cancel.lock().await.cancel();
     }
+    Ok(())
+}
+
+/// Deletes a saved conversation: the transcript, and the checkpoints that made
+/// its turns undoable.
+///
+/// Both halves go, because half of the record is worse than none — a checkpoint
+/// log outliving its conversation is a copy of the user's files under an id
+/// nothing can reach. Nothing in the workspace itself is touched: this forgets
+/// what was said and how to undo it, not the work.
+#[tauri::command]
+pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String) -> CmdResult<()> {
+    // The same rule `rewind_to` applies, for the same reason: a turn holds this
+    // lock for its whole run, and deleting underneath one would leave it
+    // appending to a file that is no longer anywhere.
+    if let Ok(entry) = state.session(&session_id) {
+        if entry.session.try_lock().is_err() {
+            return Err("this conversation is mid-turn; stop it before deleting".into());
+        }
+    }
+
+    // Dropped from memory before the file goes, not after. An open session's log
+    // recreates the transcript on its next write, so the other order can leave a
+    // deleted conversation back on disk.
+    if let Some((_, entry)) = state.sessions.remove(&session_id) {
+        entry.cancel.lock().await.cancel();
+    }
+
+    sessions::delete(&session_id)?;
+    state.host.checkpoints().await.forget(&session_id)?;
+    info!(session = %session_id, "session deleted");
     Ok(())
 }
 
@@ -638,6 +669,12 @@ pub async fn respond_skill_proposal(
 #[tauri::command]
 pub async fn set_skill_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
     state.host.set_skill_synthesis(enabled).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_theme(state: State<'_, Arc<AppState>>, theme: Theme) -> CmdResult<()> {
+    state.host.set_theme(theme).await;
     Ok(())
 }
 
