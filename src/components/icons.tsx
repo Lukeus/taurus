@@ -104,6 +104,47 @@ export function SparkIcon({ size }: { size?: number }) {
 }
 
 /**
+ * Sub-agents: one node handing work down to two.
+ *
+ * Deliberately not a second star or a second person-shape — the row reads left
+ * to right and Skills already owns the star, so this one has to be legible as a
+ * different *kind* of thing at 13px, not a variation on its neighbour. Branching
+ * is the one property of delegation that survives being drawn that small.
+ */
+export function DelegateIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx="8" cy="2.8" r="1.5" fill="currentColor" />
+      <path
+        d="M8 4.3v1.7M4.3 6h7.4M4.3 6v2M11.7 6v2"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <rect
+        x="2.3"
+        y="8"
+        width="4"
+        height="4"
+        rx="1.1"
+        stroke="currentColor"
+        strokeWidth="1.3"
+      />
+      <rect
+        x="9.7"
+        y="8"
+        width="4"
+        height="4"
+        rx="1.1"
+        stroke="currentColor"
+        strokeWidth="1.3"
+      />
+    </Icon>
+  );
+}
+
+/**
  * Settings, as sliders rather than the design's gear.
  *
  * The gear it replaces was a small circle with eight radial spokes, which at

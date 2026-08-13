@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { SessionMeta, Theme } from "../lib/api";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
 import {
+  DelegateIcon,
   DisplayIcon,
   Logo,
   MoonIcon,
@@ -210,7 +211,9 @@ export function Rail({
           {skillCount !== null && <span className="count">{skillCount}</span>}
         </button>
         <button className="rail-link" onClick={onAgents}>
-          <span className="glyph">◇</span>
+          <span className="glyph">
+            <DelegateIcon />
+          </span>
           <b>Agents</b>
           {agentCount !== null && <span className="count">{agentCount}</span>}
         </button>
@@ -262,7 +265,9 @@ const NEXT_THEME: Record<Theme, Theme> = {
   dark: "system",
 };
 
-const THEME_LABEL: Record<Theme, string> = {
+/** Exported so a test can find the theme control the way a reader does:
+ *  by the word on it, not by its position in a row that grows. */
+export const THEME_LABEL: Record<Theme, string> = {
   system: "Match system",
   light: "Light theme",
   dark: "Dark theme",

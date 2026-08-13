@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { Rail } from "./Rail";
+import { Rail, THEME_LABEL } from "./Rail";
 import type { SessionMeta, Theme } from "../lib/api";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -36,6 +36,7 @@ const mount = (props: Partial<Parameters<typeof Rail>[0]> = {}) => {
         changedCount={0}
         busy={false}
         skillCount={12}
+        agentCount={3}
         health={{ state: "connected", id: "ollama", models: 4 }}
         theme="dark"
         onPickWorkspace={() => {}}
@@ -44,6 +45,7 @@ const mount = (props: Partial<Parameters<typeof Rail>[0]> = {}) => {
         onDelete={() => {}}
         onTheme={() => {}}
         onSkills={() => {}}
+        onAgents={() => {}}
         onSettings={() => {}}
         {...props}
       />,
@@ -123,7 +125,17 @@ describe("the theme row", () => {
   const nextFrom = (theme: Theme) => {
     const onTheme = vi.fn();
     const host = mount({ theme, onTheme });
-    press(host, ".rail-foot .rail-link", 2);
+    // Found by the word on it rather than by its index in the foot: this was
+    // `.rail-link` number 2, and adding one link above it moved the assertion
+    // onto a different button without failing until it did.
+    const buttons = [
+      ...host.querySelectorAll<HTMLButtonElement>(".rail-foot .rail-link"),
+    ];
+    const button = buttons.find((b) =>
+      b.textContent?.includes(THEME_LABEL[theme]),
+    );
+    if (!button) throw new Error(`no theme button in: ${host.innerHTML}`);
+    act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     return onTheme.mock.calls[0]?.[0];
   };
 
