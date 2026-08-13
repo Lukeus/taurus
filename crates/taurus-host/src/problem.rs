@@ -28,6 +28,8 @@ pub enum ProblemSource {
     Mcp,
     /// A skill directory that would not load.
     Skills,
+    /// An agent file that would not load, or one that cannot run as written.
+    Agents,
     /// `settings.json` — the tools the agent is allowed to have.
     Tools,
 }
@@ -38,6 +40,9 @@ impl ProblemSource {
         match self {
             Self::Providers => "Settings › Models",
             Self::Search => "Settings › Search",
+            // The drawer that lists the roster, which is where a broken agent
+            // file is both visible and explicable.
+            Self::Agents => "Agents",
             // The screen that lists what the agent can reach, which is exactly
             // what a disabled tool changes.
             Self::Mcp | Self::Skills | Self::Tools => "Skills",
@@ -51,6 +56,7 @@ impl ProblemSource {
             Self::Search => "search",
             Self::Mcp => "mcp",
             Self::Skills => "skills",
+            Self::Agents => "agents",
             Self::Tools => "tools",
         }
     }
@@ -144,6 +150,7 @@ mod tests {
             ProblemSource::Search,
             ProblemSource::Mcp,
             ProblemSource::Skills,
+            ProblemSource::Agents,
             ProblemSource::Tools,
         ] {
             assert!(!source.where_to_fix().is_empty());

@@ -33,6 +33,7 @@ taurus-core.workspace = true
 taurus-host.workspace = true
 taurus-mcp.workspace = true
 taurus-provider.workspace = true
+taurus-agents.workspace = true
 taurus-skills.workspace = true
 taurus-tools.workspace = true
 

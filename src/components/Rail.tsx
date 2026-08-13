@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { SessionMeta, Theme } from "../lib/api";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
 import {
+  DelegateIcon,
   DisplayIcon,
   Logo,
   MoonIcon,
@@ -37,6 +38,7 @@ export function Rail({
   changedCount,
   busy,
   skillCount,
+  agentCount,
   health,
   theme,
   onPickWorkspace,
@@ -45,6 +47,7 @@ export function Rail({
   onDelete,
   onTheme,
   onSkills,
+  onAgents,
   onSettings,
 }: {
   /** Set by the handle beside it; the rail only has to wear the number. */
@@ -55,6 +58,7 @@ export function Rail({
   changedCount: number;
   busy: boolean;
   skillCount: number | null;
+  agentCount: number | null;
   health: ProviderHealth;
   /** The preference, not the resolved palette — the row names what was chosen. */
   theme: Theme;
@@ -64,6 +68,7 @@ export function Rail({
   onDelete: (sessionId: string) => void;
   onTheme: (theme: Theme) => void;
   onSkills: () => void;
+  onAgents: () => void;
   onSettings: () => void;
 }) {
   /**
@@ -205,6 +210,13 @@ export function Rail({
           <b>Skills</b>
           {skillCount !== null && <span className="count">{skillCount}</span>}
         </button>
+        <button className="rail-link" onClick={onAgents}>
+          <span className="glyph">
+            <DelegateIcon />
+          </span>
+          <b>Agents</b>
+          {agentCount !== null && <span className="count">{agentCount}</span>}
+        </button>
         <button className="rail-link" onClick={onSettings}>
           <span className="glyph">
             <SlidersIcon />
@@ -253,7 +265,9 @@ const NEXT_THEME: Record<Theme, Theme> = {
   dark: "system",
 };
 
-const THEME_LABEL: Record<Theme, string> = {
+/** Exported so a test can find the theme control the way a reader does:
+ *  by the word on it, not by its position in a row that grows. */
+export const THEME_LABEL: Record<Theme, string> = {
   system: "Match system",
   light: "Light theme",
   dark: "Dark theme",

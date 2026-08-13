@@ -486,6 +486,23 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
         },
       ];
 
+    // Informational, not an error: nothing has gone wrong yet. If the retries
+    // run out, the failure arrives on its own as `error`.
+    case "retrying":
+      return [
+        ...entries,
+        {
+          kind: "notice",
+          id: nextId(),
+          tone: "info",
+          text: event.reason,
+          rule: {
+            label: "Retrying",
+            note: `attempt ${event.attempt} of ${event.of}`,
+          },
+        },
+      ];
+
     case "error":
       return [
         ...entries,

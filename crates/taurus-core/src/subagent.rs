@@ -5,6 +5,7 @@
 //! point: a search that reads thirty files should cost the parent one paragraph
 //! rather than thirty file dumps.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::info;
 
+use taurus_agents::{builtin, AgentDefinition};
 use taurus_provider::{Message, Provider};
 use taurus_tools::tool::{parse_input, schema_for};
 use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
@@ -23,53 +25,27 @@ use crate::session::Session;
 
 pub const SPAWN_TOOL: &str = "spawn_subagent";
 
-/// A kind of sub-agent the parent can ask for.
-#[derive(Clone, Debug)]
-pub struct AgentDefinition {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub system_prompt: &'static str,
-    /// Tools this kind may use. Empty means everything the parent has.
-    pub allowed_tools: &'static [&'static str],
-    pub max_iterations: u32,
+/// What one agent's `model:` and `provider:` resolved to.
+///
+/// Resolved by the host at reload rather than here, because building a provider
+/// reads the OS credential store and that is not something to put on a per-turn
+/// path.
+#[derive(Clone)]
+pub struct AgentModel {
+    /// `None` when the file named a model but no provider: the model is then a
+    /// different model *on the session's provider*, which is the only provider
+    /// the host does not know at reload time.
+    pub provider: Option<Arc<dyn Provider>>,
+    pub model: String,
 }
 
-/// The kinds available out of the box.
-pub const DEFINITIONS: &[AgentDefinition] = &[
-    AgentDefinition {
-        name: "explorer",
-        description:
-            "Searches and reads the codebase to answer a question. Cannot modify anything. Use \
-             this when finding the answer would mean reading many files.",
-        system_prompt:
-            "You are a research sub-agent. Search and read to answer the question you were given, \
-             then reply with the answer and the paths that support it. You cannot modify files. \
-             Be specific and brief; the agent that called you sees only your reply, not your \
-             tool calls.",
-        allowed_tools: &["read_file", "list_dir", "glob", "grep", "load_skill"],
-        max_iterations: 20,
-    },
-    AgentDefinition {
-        name: "worker",
-        description:
-            "Carries out a well-specified, self-contained change. Give it complete instructions; \
-             it cannot ask you questions.",
-        system_prompt:
-            "You are a sub-agent carrying out one specific task. You cannot ask questions, so work \
-             from the instructions you were given. When done, reply with what you changed. Be \
-             brief; the agent that called you sees only your reply.",
-        allowed_tools: &[],
-        max_iterations: 25,
-    },
-];
-
-fn definition(name: &str) -> Option<&'static AgentDefinition> {
-    DEFINITIONS.iter().find(|d| d.name == name)
-}
+/// Per-agent model overrides, keyed by agent name.
+pub type ModelOverrides = HashMap<String, AgentModel>;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SpawnInput {
-    /// Which kind of sub-agent to run: `explorer` or `worker`.
+    /// Which kind of sub-agent to run. Must be one of the types this tool's
+    /// description lists.
     pub agent_type: String,
     /// The complete task. The sub-agent shares none of your context and cannot
     /// ask follow-up questions, so include every detail it needs.
@@ -77,30 +53,109 @@ pub struct SpawnInput {
 }
 
 pub struct SpawnSubagent {
-    provider: Arc<dyn Provider>,
+    /// The session's provider and model, used by any agent that does not name
+    /// its own.
+    default_provider: Arc<dyn Provider>,
+    default_model: String,
+    /// Per-agent overrides. See [`ModelOverrides`].
+    overrides: ModelOverrides,
+    /// This turn's roster, frozen at construction. A turn that saw one set of
+    /// agents when it started should not find a different set halfway through
+    /// because a file was saved.
+    agents: Arc<Vec<AgentDefinition>>,
     /// The live registry, shared with the parent so skills and MCP tools
     /// approved mid-session are visible to children too.
     registry: Arc<RwLock<ToolRegistry>>,
-    model: String,
     /// Caps how many children run at once. A confused model will otherwise
     /// spawn until the machine falls over.
     permits: Arc<Semaphore>,
+    /// Prebuilt from `agents`, so `description` can still return a `&str`.
+    description: String,
+    /// Prebuilt from `agents`: `agent_type` carries an `enum` of the live names.
+    schema: serde_json::Value,
 }
 
 impl SpawnSubagent {
+    /// Built with the compiled-in roster. Hosts that have scanned for custom
+    /// agents replace it with [`SpawnSubagent::with_roster`].
     pub fn new(
         provider: Arc<dyn Provider>,
         registry: Arc<RwLock<ToolRegistry>>,
         model: impl Into<String>,
         max_concurrent: usize,
     ) -> Self {
+        let agents = Arc::new(builtin::definitions());
         Self {
-            provider,
+            default_provider: provider,
+            default_model: model.into(),
+            overrides: ModelOverrides::new(),
+            description: describe(&agents),
+            schema: schema_with_agent_types(&agents),
+            agents,
             registry,
-            model: model.into(),
             permits: Arc::new(Semaphore::new(max_concurrent.max(1))),
         }
     }
+
+    /// Swaps in the host's roster and its resolved model overrides.
+    pub fn with_roster(
+        mut self,
+        agents: Arc<Vec<AgentDefinition>>,
+        overrides: ModelOverrides,
+    ) -> Self {
+        self.description = describe(&agents);
+        self.schema = schema_with_agent_types(&agents);
+        self.agents = agents;
+        self.overrides = overrides;
+        self
+    }
+
+    fn definition(&self, name: &str) -> Option<&AgentDefinition> {
+        self.agents.iter().find(|a| a.name() == name)
+    }
+}
+
+/// The tool description, with the roster in it.
+///
+/// The roster reaches the model here rather than through the system prompt so
+/// that it sits next to the `agent_type` parameter it constrains — and, more
+/// usefully, so it can be mirrored into that parameter's schema below.
+fn describe(agents: &[AgentDefinition]) -> String {
+    let mut out = String::from(
+        "Hand a self-contained task to a sub-agent with its own context, and get back its result. \
+         Use this when the work would fill your context with detail you do not need to keep — a \
+         broad search, or an independent change. The sub-agent cannot ask you questions and \
+         cannot delegate further, so give it complete instructions.\n\nTypes:\n",
+    );
+    for agent in agents {
+        out.push_str(&agent.roster_line());
+        out.push('\n');
+    }
+    out
+}
+
+/// Patches the statically derived schema so `agent_type` enumerates the live
+/// names.
+///
+/// An enum is materially stronger than prose for the 7B-class local models this
+/// harness targets, which otherwise invent plausible agent names. It is patched
+/// rather than derived because `schema_for` runs against a type, and the roster
+/// is not known until the host has scanned the disk.
+fn schema_with_agent_types(agents: &[AgentDefinition]) -> serde_json::Value {
+    let mut schema = schema_for::<SpawnInput>();
+    if let Some(property) = schema
+        .pointer_mut("/properties/agent_type")
+        .and_then(|v| v.as_object_mut())
+    {
+        property.insert(
+            "enum".into(),
+            agents
+                .iter()
+                .map(|a| serde_json::Value::String(a.name().to_string()))
+                .collect(),
+        );
+    }
+    schema
 }
 
 #[async_trait]
@@ -110,15 +165,11 @@ impl Tool for SpawnSubagent {
     }
 
     fn description(&self) -> &str {
-        "Hand a self-contained task to a sub-agent with its own context, and get back its result. \
-         Use this when the work would fill your context with detail you do not need to keep — a \
-         broad search, or an independent change. The sub-agent cannot ask you questions and \
-         cannot delegate further, so give it complete instructions. Types: 'explorer' (read-only \
-         research) and 'worker' (makes changes)."
+        &self.description
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        schema_for::<SpawnInput>()
+        self.schema.clone()
     }
 
     /// The child's own tool calls are gated individually against the same
@@ -140,8 +191,8 @@ impl Tool for SpawnSubagent {
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: SpawnInput = parse_input(input)?;
 
-        let Some(definition) = definition(&input.agent_type) else {
-            let known: Vec<&str> = DEFINITIONS.iter().map(|d| d.name).collect();
+        let Some(definition) = self.definition(&input.agent_type) else {
+            let known: Vec<&str> = self.agents.iter().map(AgentDefinition::name).collect();
             return Err(ToolError::InvalidInput(format!(
                 "No sub-agent type '{}'. Available: {}.",
                 input.agent_type,
@@ -167,15 +218,47 @@ impl Tool for SpawnSubagent {
         // tool, so it cannot delegate no matter what it decides to do.
         let child_registry = self.registry.read().await.without(SPAWN_TOOL);
 
-        let allowed: Vec<String> = definition
-            .allowed_tools
-            .iter()
-            .map(|s| s.to_string())
-            .filter(|name| child_registry.get(name).is_some())
-            .collect();
+        // `allowed_tools` empty means "everything the parent has", which is what
+        // an agent with no `tools:` key wants. An agent that *did* name its
+        // tools must never reach that state by attrition: a list that filters
+        // down to nothing is a scope the user wrote to narrow this agent, and
+        // honouring it as "everything" would hand it the shell instead. The
+        // host refuses such an agent at load; this is the same check standing
+        // between the two, because the live registry is not the one the host
+        // checked against.
+        let allowed: Vec<String> = match &definition.frontmatter.tools {
+            None => Vec::new(),
+            Some(wanted) => {
+                let available: Vec<String> = wanted
+                    .iter()
+                    .filter(|name| child_registry.get(name).is_some())
+                    .cloned()
+                    .collect();
+                if available.is_empty() {
+                    return Err(ToolError::Failed(format!(
+                        "The sub-agent '{}' is scoped to tools that are not available here ({}), \
+                         so it would run unrestricted. It has been refused instead. Enable those \
+                         tools, or widen its `tools:` list.",
+                        definition.name(),
+                        wanted.join(", ")
+                    )));
+                }
+                available
+            }
+        };
+
+        let (provider, model) = match self.overrides.get(definition.name()) {
+            Some(over) => (
+                over.provider
+                    .clone()
+                    .unwrap_or_else(|| self.default_provider.clone()),
+                over.model.clone(),
+            ),
+            None => (self.default_provider.clone(), self.default_model.clone()),
+        };
 
         let agent = Agent::new(
-            self.provider.clone(),
+            provider,
             child_registry,
             ctx.clone(),
             AgentConfig {
@@ -184,13 +267,13 @@ impl Tool for SpawnSubagent {
                     definition.system_prompt,
                     ctx.workspace.display()
                 ),
-                max_iterations: definition.max_iterations,
+                max_iterations: definition.frontmatter.max_iterations,
                 allowed_tools: allowed,
                 ..Default::default()
             },
         );
 
-        info!(kind = definition.name, "spawning sub-agent");
+        info!(kind = definition.name(), %model, "spawning sub-agent");
 
         // The child's own text and results stay inside the child — the parent's
         // transcript should show one delegation, not a second conversation. But
@@ -210,7 +293,7 @@ impl Tool for SpawnSubagent {
             tools
         });
 
-        let mut session = Session::new(&self.model);
+        let mut session = Session::new(&model);
         let outcome = agent
             .run_turn(&mut session, Message::user(&input.prompt), tx)
             .await;
@@ -273,6 +356,16 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     fn fixture(turns: Vec<ScriptedTurn>) -> (SpawnSubagent, ToolContext, TempDir) {
+        let (tool, _, ctx, dir) = fixture_with(turns, None);
+        (tool, ctx, dir)
+    }
+
+    /// The same fixture, plus the provider (to read back what the child was
+    /// actually sent) and an optional custom roster.
+    fn fixture_with(
+        turns: Vec<ScriptedTurn>,
+        agents: Option<Vec<AgentDefinition>>,
+    ) -> (SpawnSubagent, Arc<FakeProvider>, ToolContext, TempDir) {
         let dir = TempDir::new().unwrap();
         let workspace = dir.path().canonicalize().unwrap();
         let permissions = Arc::new(PermissionEngine::new(
@@ -293,8 +386,30 @@ mod tests {
         )));
         let registry = Arc::new(RwLock::new(registry));
 
-        let tool = SpawnSubagent::new(provider, registry, "fake", 2);
-        (tool, ctx, dir)
+        let mut tool = SpawnSubagent::new(provider.clone(), registry, "fake", 2);
+        if let Some(agents) = agents {
+            tool = tool.with_roster(Arc::new(agents), ModelOverrides::new());
+        }
+        (tool, provider, ctx, dir)
+    }
+
+    /// A definition as a discovered file would produce one.
+    fn custom(name: &str, prompt: &str, tools: Option<Vec<&str>>) -> AgentDefinition {
+        AgentDefinition {
+            frontmatter: taurus_agents::AgentFrontmatter {
+                name: name.into(),
+                description: format!("does {name}"),
+                tools: tools.map(|t| t.into_iter().map(String::from).collect()),
+                max_iterations: 5,
+                model: None,
+                provider: None,
+            },
+            system_prompt: prompt.into(),
+            tier: taurus_agents::AgentTier::User,
+            path: Some(std::path::PathBuf::from(format!("/agents/{name}.md"))),
+            shadows: None,
+            degraded: None,
+        }
     }
 
     #[tokio::test]
@@ -385,6 +500,182 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("too vague"));
+    }
+
+    #[tokio::test]
+    async fn a_user_agent_shadows_a_builtin_of_the_same_name() {
+        let (tool, provider, ctx, _dir) = fixture_with(
+            vec![ScriptedTurn::text("Done.")],
+            Some(vec![custom(
+                "explorer",
+                "You are the explorer this user wrote.",
+                Some(vec!["read_file"]),
+            )]),
+        );
+        tool.execute(
+            serde_json::json!({
+                "agent_type": "explorer",
+                "prompt": "Look at the workspace and describe what you find."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let system = provider.last_request().await.unwrap().system.unwrap();
+        assert!(system.contains("the explorer this user wrote"));
+    }
+
+    #[tokio::test]
+    async fn a_tools_list_is_actually_enforced() {
+        // Unlike a skill's `allowed_tools`, which grants and withholds nothing.
+        let (tool, provider, ctx, _dir) = fixture_with(
+            vec![ScriptedTurn::text("Done.")],
+            Some(vec![custom(
+                "reader",
+                "Read only.",
+                Some(vec!["read_file"]),
+            )]),
+        );
+        tool.execute(
+            serde_json::json!({
+                "agent_type": "reader",
+                "prompt": "Read something and report back what it said."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let offered: Vec<String> = provider
+            .last_request()
+            .await
+            .unwrap()
+            .tools
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(offered, vec!["read_file".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn an_absent_tools_key_inherits_the_parent_set() {
+        // `worker` has always had everything the parent has minus the spawn
+        // tool, and that must not change under it.
+        let (tool, provider, ctx, _dir) = fixture_with(vec![ScriptedTurn::text("Done.")], None);
+        tool.execute(
+            serde_json::json!({
+                "agent_type": "worker",
+                "prompt": "Make the change described in the instructions above."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let offered: Vec<String> = provider
+            .last_request()
+            .await
+            .unwrap()
+            .tools
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(offered.len() > 1);
+        assert!(offered.contains(&"read_file".to_string()));
+        assert!(
+            !offered.contains(&SPAWN_TOOL.to_string()),
+            "inheriting must still stop at the depth cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_whose_tools_all_vanished_is_refused_not_widened() {
+        // The one failure in this feature that is a permission *widening* rather
+        // than a broken feature: an empty allow-list means "everything", so a
+        // scope that filtered down to nothing must refuse instead of inherit.
+        let (tool, ctx, _dir) = {
+            let (tool, _, ctx, dir) = fixture_with(
+                vec![ScriptedTurn::text("Done.")],
+                Some(vec![custom(
+                    "scoped",
+                    "Narrow by design.",
+                    Some(vec!["tool_that_is_not_registered"]),
+                )]),
+            );
+            (tool, ctx, dir)
+        };
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "scoped",
+                    "prompt": "Do the narrow thing you were scoped to do."
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("would run unrestricted"));
+    }
+
+    #[tokio::test]
+    async fn a_model_override_sends_the_child_to_a_different_model() {
+        let (tool, provider, ctx, _dir) = fixture_with(
+            vec![ScriptedTurn::text("Done.")],
+            Some(vec![custom(
+                "big-thinker",
+                "Think hard.",
+                Some(vec!["read_file"]),
+            )]),
+        );
+        let overrides: ModelOverrides = [(
+            "big-thinker".to_string(),
+            AgentModel {
+                provider: Some(provider.clone() as Arc<dyn Provider>),
+                model: "qwen3:32b".to_string(),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let tool = tool.with_roster(
+            Arc::new(vec![custom(
+                "big-thinker",
+                "Think hard.",
+                Some(vec!["read_file"]),
+            )]),
+            overrides,
+        );
+
+        tool.execute(
+            serde_json::json!({
+                "agent_type": "big-thinker",
+                "prompt": "Think about this problem and report your conclusion."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.last_request().await.unwrap().model, "qwen3:32b");
+    }
+
+    #[test]
+    fn the_schema_enumerates_the_live_roster() {
+        // Derived statically from `SpawnInput` and patched, so it stops working
+        // silently if schemars changes its output shape. Hence the test.
+        let agents = vec![custom("alpha", "a", None), custom("beta", "b", None)];
+        let schema = schema_with_agent_types(&agents);
+        let names = schema
+            .pointer("/properties/agent_type/enum")
+            .expect("agent_type must carry an enum of the live names");
+        assert_eq!(names, &serde_json::json!(["alpha", "beta"]));
+    }
+
+    #[test]
+    fn the_description_lists_the_live_roster() {
+        let text = describe(&[custom("reviewer", "r", None)]);
+        assert!(text.contains("- reviewer: does reviewer"));
+        assert!(text.contains("cannot delegate further"));
     }
 
     #[test]

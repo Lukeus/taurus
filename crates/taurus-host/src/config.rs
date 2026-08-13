@@ -82,6 +82,14 @@ pub fn workspace_skills_dir(workspace: &Path) -> PathBuf {
     workspace_dir(workspace).join("skills")
 }
 
+pub fn user_agents_dir() -> PathBuf {
+    home_dir().join("agents")
+}
+
+pub fn workspace_agents_dir(workspace: &Path) -> PathBuf {
+    workspace_dir(workspace).join("agents")
+}
+
 pub fn providers_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
     scope_dir(scope, workspace).map(|d| d.join("providers.json"))
 }
@@ -118,6 +126,84 @@ pub fn ensure_mcp_file(scope: Scope, workspace: Option<&Path>) -> Result<PathBuf
         return Err(format!("could not create {}", path.display()));
     }
     Ok(path)
+}
+
+/// Creates a starter agent file in a scope, and returns it.
+///
+/// Authoring is a text editor, which is a fine surface once you know the
+/// format and an opaque one before that. So the file arrives already carrying
+/// every key with a comment saying what it does — the same reasoning behind
+/// [`ensure_mcp_file`], pushed one step further because there is no other tool
+/// this format is shared with to copy an example from.
+///
+/// An existing file is never overwritten: an agent someone has written is the
+/// last thing a "new agent" button should be able to destroy.
+pub fn create_agent_file(
+    scope: Scope,
+    workspace: Option<&Path>,
+    name: &str,
+) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("an agent needs a name".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || name.starts_with('-')
+        || name.ends_with('-')
+    {
+        return Err(format!(
+            "'{name}' must be kebab-case: lowercase letters, digits, and hyphens, like \
+             'code-reviewer'"
+        ));
+    }
+
+    let dir = match scope {
+        Scope::Global => user_agents_dir(),
+        Scope::Workspace => workspace_agents_dir(
+            workspace
+                .ok_or_else(|| "no workspace is open, so it has no config directory".to_string())?,
+        ),
+    };
+    let path = dir.join(format!("{name}.md"));
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    std::fs::write(&path, agent_template(name))
+        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+/// The starter file. Every key it can carry, with what it does next to it.
+fn agent_template(name: &str) -> String {
+    format!(
+        "---\n\
+         # The name you delegate to. Must match this file's name.\n\
+         name: {name}\n\
+         # The one line the main agent reads when choosing a sub-agent. Say when\n\
+         # to use it, not what it is. Under 200 characters — it is sent on every\n\
+         # request.\n\
+         description: Describe when to hand work to this agent.\n\
+         # The tools it may call, and the only ones it may call. Remove this key\n\
+         # entirely to give it everything the main agent has.\n\
+         tools: [read_file, list_dir, glob, grep]\n\
+         # Tool round trips before it is stopped. 1 to 50.\n\
+         max_iterations: 20\n\
+         # Optional. Run this agent on a different model than the session's.\n\
+         # Add `provider:` too if that model belongs to another provider.\n\
+         # model: qwen3:32b\n\
+         ---\n\
+         \n\
+         Everything below the frontmatter is this agent's system prompt.\n\
+         \n\
+         It cannot ask questions and it cannot delegate further, so tell it what\n\
+         to do and what to report back. The agent that calls it sees only its\n\
+         final reply, not its tool calls.\n"
+    )
 }
 
 /// The global `search.json` alone, which is what an editor must edit.
@@ -820,6 +906,46 @@ mod tests {
     fn write(path: PathBuf, body: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn the_starter_agent_file_is_a_working_agent() {
+        // A template that a reader has to fix before it loads would teach the
+        // format by making them debug it.
+        with_home(|_| {
+            let dir = TempDir::new().unwrap();
+            let path =
+                create_agent_file(Scope::Workspace, Some(dir.path()), "code-reviewer").unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let (frontmatter, body) = taurus_agents::parse_agent_md(&text, &path).unwrap();
+            taurus_agents::validate(&frontmatter, &body, &path.display().to_string())
+                .expect("the file the app writes must satisfy the rules the app enforces");
+            assert_eq!(frontmatter.name, "code-reviewer");
+        });
+    }
+
+    #[test]
+    fn a_starter_file_never_overwrites_an_agent_someone_wrote() {
+        with_home(|_| {
+            let dir = TempDir::new().unwrap();
+            create_agent_file(Scope::Workspace, Some(dir.path()), "keeper").unwrap();
+            let err = create_agent_file(Scope::Workspace, Some(dir.path()), "keeper").unwrap_err();
+            assert!(err.contains("already exists"));
+        });
+    }
+
+    #[test]
+    fn a_starter_file_rejects_a_name_the_catalog_would_reject() {
+        // Better here than as a file that appears and then will not load.
+        with_home(|_| {
+            let dir = TempDir::new().unwrap();
+            for bad in ["Code Reviewer", "code_reviewer", "-lead", ""] {
+                assert!(
+                    create_agent_file(Scope::Workspace, Some(dir.path()), bad).is_err(),
+                    "'{bad}' should be rejected"
+                );
+            }
+        });
     }
 
     #[test]

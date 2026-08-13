@@ -133,6 +133,19 @@ impl Renderer {
                 }
             }
 
+            // Warn rather than dim: this is the one notice that explains a wait
+            // the user is currently sitting through, so it has to survive the
+            // same glance a dimmed line would not.
+            UiEvent::Retrying {
+                attempt,
+                of,
+                reason,
+            } => {
+                self.break_text();
+                self.break_thinking();
+                self.warn(&format!("  retrying ({attempt}/{of}): {reason}"));
+            }
+
             UiEvent::ContextTrimmed {
                 results,
                 tokens_saved,

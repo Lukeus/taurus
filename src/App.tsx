@@ -10,6 +10,7 @@ import {
   useResizableWidth,
 } from "./components/ResizeHandle";
 import { Settings } from "./components/Settings";
+import { AgentsDrawer } from "./components/AgentsDrawer";
 import { SkillsDrawer } from "./components/SkillsDrawer";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript } from "./components/Transcript";
@@ -24,6 +25,7 @@ export default function App() {
   const rail = useResizableWidth({ storageKey: "taurus.railWidth", ...RAIL_WIDTH });
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
 
@@ -138,6 +140,7 @@ export default function App() {
         changedCount={store.changed.length}
         busy={store.busy}
         skillCount={store.status?.skill_count ?? null}
+        agentCount={store.status?.agent_count ?? null}
         health={health(store.status?.providers.length, providerId, models)}
         theme={theme ?? "system"}
         onPickWorkspace={pickWorkspace}
@@ -146,6 +149,7 @@ export default function App() {
         onDelete={store.remove}
         onTheme={chooseTheme}
         onSkills={() => setSkillsOpen(true)}
+        onAgents={() => setAgentsOpen(true)}
         onSettings={() => setSettingsOpen(true)}
       />
 
@@ -280,6 +284,7 @@ export default function App() {
         />
       )}
       {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
+      {agentsOpen && <AgentsDrawer onClose={() => setAgentsOpen(false)} />}
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
     </div>
   );

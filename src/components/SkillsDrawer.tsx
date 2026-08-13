@@ -51,7 +51,7 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
           <h2>Skills</h2>
           <button
             onClick={async () => {
-              await api.reloadSkills();
+              await api.reloadConfig();
               setSkills(await api.listSkills());
             }}
           >

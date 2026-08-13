@@ -7,6 +7,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { AgentSummary } from "../bindings/AgentSummary";
+import type { AgentTier } from "../bindings/AgentTier";
 import type { AllowedRule } from "../bindings/AllowedRule";
 import type { AppStatus } from "../bindings/AppStatus";
 import type { Checkpoint } from "../bindings/Checkpoint";
@@ -35,6 +37,8 @@ import type { Theme } from "../bindings/Theme";
 import type { UiEvent } from "../bindings/UiEvent";
 
 export type {
+  AgentSummary,
+  AgentTier,
   AllowedRule,
   AppStatus,
   Checkpoint,
@@ -127,6 +131,25 @@ export const revokePermissionRule = (rule: string, scope: Scope) =>
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 
 /**
+ * The sub-agent roster. Rescans the agent directories first, so what comes back
+ * is what is on disk rather than what was there at startup — the whole
+ * authoring surface for an agent is a text editor.
+ */
+export const listAgents = () => invoke<AgentSummary[]>("list_agents");
+
+/** Characters of every request the roster costs. */
+export const agentRosterCost = () => invoke<number>("agent_roster_cost");
+
+/**
+ * Writes a starter agent file in `scope` and opens it, returning its path.
+ *
+ * Disk stays the source of truth; this only means nobody has to already know
+ * the frontmatter to write their first one.
+ */
+export const createAgent = (scope: Scope, name: string) =>
+  invoke<string>("create_agent", { scope, name });
+
+/**
  * Opens a layer's `mcp.json`, creating it if absent, and returns its path.
  *
  * Servers are configured by editing that file: the format is the one Claude
@@ -136,7 +159,12 @@ export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 export const openMcpConfig = (scope: Scope) =>
   invoke<string>("open_mcp_config", { scope });
 
-export const reloadSkills = () => invoke<number>("reload_skills");
+/**
+ * Re-reads every config layer, rescans skills and agents, and reconnects MCP
+ * servers. Named for what it does: as `reloadSkills` it promised less, so
+ * nobody who had edited an agent would think to press it.
+ */
+export const reloadConfig = () => invoke<void>("reload_config");
 
 export const respondSkillProposal = (
   id: string,

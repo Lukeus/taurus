@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use taurus_provider::{
-    Capabilities, ChatRequest, ModelInfo, Provider, Result, StopReason, StreamEvent,
+    Capabilities, ChatRequest, ModelInfo, Provider, ProviderError, Result, StopReason, StreamEvent,
 };
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -18,6 +18,12 @@ use tokio_util::sync::CancellationToken;
 pub struct ScriptedTurn {
     pub events: Vec<StreamEvent>,
     pub stop: StopReason,
+    /// When set, the request fails with this instead of completing.
+    ///
+    /// `events` are still emitted first, so a failure part-way through a stream
+    /// is scriptable too — which is the case the loop must *not* retry, and so
+    /// the one worth being able to write a test for.
+    pub failure: Option<ProviderError>,
 }
 
 impl ScriptedTurn {
@@ -26,6 +32,48 @@ impl ScriptedTurn {
         Self {
             events: vec![StreamEvent::TextDelta { text: text.into() }],
             stop: StopReason::EndTurn,
+            failure: None,
+        }
+    }
+
+    /// A request that fails before producing anything, with a status the
+    /// provider layer classifies as worth retrying.
+    pub fn transient_failure() -> Self {
+        Self {
+            events: Vec::new(),
+            stop: StopReason::EndTurn,
+            failure: Some(ProviderError::Api {
+                provider: "fake".into(),
+                status: 503,
+                body: "upstream is briefly unavailable".into(),
+            }),
+        }
+    }
+
+    /// A request that streams some text and *then* fails. Retrying this would
+    /// replay text the user has already read.
+    pub fn transient_failure_after_text(text: &str) -> Self {
+        Self {
+            events: vec![StreamEvent::TextDelta { text: text.into() }],
+            stop: StopReason::EndTurn,
+            failure: Some(ProviderError::Api {
+                provider: "fake".into(),
+                status: 503,
+                body: "died mid-answer".into(),
+            }),
+        }
+    }
+
+    /// A request that fails in a way no retry can fix.
+    pub fn permanent_failure() -> Self {
+        Self {
+            events: Vec::new(),
+            stop: StopReason::EndTurn,
+            failure: Some(ProviderError::Api {
+                provider: "fake".into(),
+                status: 401,
+                body: "invalid api key".into(),
+            }),
         }
     }
 
@@ -44,6 +92,7 @@ impl ScriptedTurn {
                 StreamEvent::ToolUseEnd { id: id.into() },
             ],
             stop: StopReason::ToolUse,
+            failure: None,
         }
     }
 
@@ -64,6 +113,7 @@ impl ScriptedTurn {
         Self {
             events,
             stop: StopReason::ToolUse,
+            failure: None,
         }
     }
 }
@@ -178,6 +228,11 @@ impl Provider for FakeProvider {
             if tx.send(event).await.is_err() {
                 return Ok(StopReason::Canceled);
             }
+        }
+        // After the events, so a scripted failure can land either before the
+        // stream produced anything or after it produced some of an answer.
+        if let Some(error) = turn.failure {
+            return Err(error);
         }
         Ok(turn.stop)
     }

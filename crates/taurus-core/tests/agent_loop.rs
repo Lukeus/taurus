@@ -492,3 +492,248 @@ async fn allowed_tools_restricts_what_the_model_is_offered() {
         .collect();
     assert_eq!(names, vec!["glob", "read_file"]);
 }
+
+// ---------------------------------------------------------------------------
+// Transient failures
+//
+// `ProviderError::is_transient` classifies a 429 or a 5xx as worth another go.
+// These cover what the loop does with that answer — including the case where it
+// must ignore it.
+
+/// A config that retries without ever sleeping. The backoff is real behaviour
+/// but its duration is not what any of these assert on.
+fn instant_retries(retries: u32) -> AgentConfig {
+    AgentConfig {
+        max_transient_retries: retries,
+        retry_backoff: std::time::Duration::ZERO,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_transient_failure_is_retried_and_the_turn_survives() {
+    let h = harness_with(
+        vec![
+            ScriptedTurn::transient_failure(),
+            ScriptedTurn::text("Recovered."),
+        ],
+        Box::new(AllowAll),
+        instant_retries(3),
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "hi").await;
+
+    assert!(
+        outcome.is_ok(),
+        "a 503 should not end the turn: {outcome:?}"
+    );
+    assert_eq!(session.messages[1].text(), "Recovered.");
+    assert_eq!(
+        h.provider.request_count().await,
+        2,
+        "should have retried once"
+    );
+
+    let retried = events.iter().find_map(|e| match e {
+        UiEvent::Retrying { attempt, of, .. } => Some((*attempt, *of)),
+        _ => None,
+    });
+    assert_eq!(
+        retried,
+        Some((2, 4)),
+        "the user must be told a retry is why they are waiting"
+    );
+}
+
+#[tokio::test]
+async fn a_failure_part_way_through_an_answer_is_not_retried() {
+    // The half-answer is already on screen. Retrying would write it twice.
+    let h = harness_with(
+        vec![
+            ScriptedTurn::transient_failure_after_text("The answer is "),
+            ScriptedTurn::text("42."),
+        ],
+        Box::new(AllowAll),
+        instant_retries(3),
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "hi").await;
+
+    assert!(
+        matches!(outcome, Err(AgentError::Provider(_))),
+        "a stream that died mid-answer must surface, not retry: {outcome:?}"
+    );
+    assert_eq!(h.provider.request_count().await, 1);
+    assert!(
+        !events.iter().any(|e| matches!(e, UiEvent::Retrying { .. })),
+        "nothing should have been retried"
+    );
+}
+
+#[tokio::test]
+async fn a_permanent_failure_is_not_retried() {
+    let h = harness_with(
+        vec![ScriptedTurn::permanent_failure(), ScriptedTurn::text("hi")],
+        Box::new(AllowAll),
+        instant_retries(3),
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "hi").await;
+
+    assert!(matches!(outcome, Err(AgentError::Provider(_))));
+    assert_eq!(
+        h.provider.request_count().await,
+        1,
+        "a bad API key does not improve on the second attempt"
+    );
+}
+
+#[tokio::test]
+async fn retries_are_bounded() {
+    let h = harness_with(
+        (0..6).map(|_| ScriptedTurn::transient_failure()).collect(),
+        Box::new(AllowAll),
+        instant_retries(2),
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "hi").await;
+
+    assert!(matches!(outcome, Err(AgentError::Provider(_))));
+    assert_eq!(
+        h.provider.request_count().await,
+        3,
+        "one attempt plus two retries"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, UiEvent::Retrying { .. }))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn canceling_during_a_backoff_does_not_wait_it_out() {
+    // A backoff long enough that sitting through it would fail the timeout
+    // below, so only honoring the cancellation can pass this.
+    let config = AgentConfig {
+        max_transient_retries: 3,
+        retry_backoff: std::time::Duration::from_secs(30),
+        ..Default::default()
+    };
+    let h = harness_with(
+        (0..4).map(|_| ScriptedTurn::transient_failure()).collect(),
+        Box::new(AllowAll),
+        config,
+        128_000,
+    );
+    let cancel = h.cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel.cancel();
+    });
+
+    let mut session = Session::new("fake");
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run(&h, &mut session, "hi"),
+    )
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "cancellation should cut the backoff short rather than run it to term"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Stalls
+//
+// The system prompt tells the model not to retry a failed call unchanged. These
+// are what make that true rather than merely stated.
+
+/// Calls `read_file` on a path that is not there, which fails every time.
+fn failing_read(id: &str, path: &str) -> ScriptedTurn {
+    ScriptedTurn::tool_call(id, "read_file", serde_json::json!({ "path": path }))
+}
+
+#[tokio::test]
+async fn repeating_one_failing_call_unchanged_stops_the_turn() {
+    let h = harness(vec![
+        failing_read("t1", "missing.txt"),
+        failing_read("t2", "missing.txt"),
+        failing_read("t3", "missing.txt"),
+        ScriptedTurn::text("never reached"),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "read it").await;
+
+    assert!(
+        matches!(outcome, Err(AgentError::Stalled(3))),
+        "expected a stall after three identical failures: {outcome:?}"
+    );
+    assert_eq!(
+        h.provider.request_count().await,
+        3,
+        "the turn should stop rather than spend its whole iteration budget"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, UiEvent::Error { .. })),
+        "the user must be told why the turn stopped"
+    );
+    // The transcript has to carry the reason, or a resumed session finds a turn
+    // that simply ends.
+    assert!(session
+        .messages
+        .last()
+        .unwrap()
+        .text()
+        .contains("failed 3 times"));
+}
+
+#[tokio::test]
+async fn a_failing_call_that_changes_is_not_a_stall() {
+    // Three failures, but the model is trying something new each time. That is
+    // the model working, not the model stuck.
+    let h = harness(vec![
+        failing_read("t1", "one.txt"),
+        failing_read("t2", "two.txt"),
+        failing_read("t3", "three.txt"),
+        ScriptedTurn::text("None of those exist."),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "find it").await;
+
+    assert!(
+        outcome.is_ok(),
+        "changing the argument is progress: {outcome:?}"
+    );
+    assert_eq!(
+        session.messages.last().unwrap().text(),
+        "None of those exist."
+    );
+}
+
+#[tokio::test]
+async fn repeating_a_call_that_succeeds_is_not_a_stall() {
+    // A model may legitimately repeat a call while it works — polling a build,
+    // re-listing a directory it is changing. Only a repeat that keeps failing
+    // is a stall.
+    let h = harness(vec![
+        ScriptedTurn::tool_call("t1", "list_dir", serde_json::json!({ "path": "." })),
+        ScriptedTurn::tool_call("t2", "list_dir", serde_json::json!({ "path": "." })),
+        ScriptedTurn::tool_call("t3", "list_dir", serde_json::json!({ "path": "." })),
+        ScriptedTurn::text("Still empty."),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "watch it").await;
+
+    assert!(
+        outcome.is_ok(),
+        "a succeeding repeat is not a stall: {outcome:?}"
+    );
+}

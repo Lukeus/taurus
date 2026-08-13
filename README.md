@@ -45,6 +45,7 @@ crates/
   taurus-provider-openai/   OpenAI-compatible adapter (SSE, vLLM/LM Studio/…)
   taurus-tools/             Tool registry, built-in tools, permission gate
   taurus-skills/            Skill discovery, execution, and authoring
+  taurus-agents/            Sub-agent definitions and discovery
   taurus-mcp/               MCP client
   taurus-web/               Web search and page fetching
   taurus-core/              Session state, the agent loop, sub-agents
@@ -101,6 +102,65 @@ Scripts declare a logical interpreter (`python3`, `node`, `bash`, …) which is
 resolved per platform at load time. When it cannot be found, the skill is
 marked degraded and the model is told to follow the written steps instead — a
 Python-dependent skill does not hard-fail a Windows machine.
+
+### Sub-agents
+
+A turn can hand a self-contained job to a sub-agent: its own conversation, its
+own context window, and a narrower set of tools. The parent sees only the
+child's conclusion, so a search that reads thirty files costs it one paragraph.
+
+Two ship with the harness. `explorer` searches and reads and cannot modify
+anything; `worker` carries out one well-specified change with the tools the main
+agent has. The model reaches either through `spawn_subagent`.
+
+You can add your own. An agent is a markdown file in `~/.taurus/agents` or
+`<workspace>/.taurus/agents` — the file name is the agent's name, and the body
+below the frontmatter is its system prompt:
+
+```markdown
+---
+name: reviewer
+description: Reviews a diff for correctness bugs. Use after a change is written.
+tools: [read_file, grep, glob]
+max_iterations: 20
+model: qwen3:32b        # optional; defaults to the session's model
+provider: ollama        # optional; defaults to the session's provider
+---
+
+You are a review sub-agent. Read the diff you were given and report only
+defects you can point at a specific line for. You cannot ask questions.
+Be brief; the agent that called you sees only your reply.
+```
+
+A project agent shadows a personal one of the same name, and either shadows a
+built-in — so a `explorer.md` of your own replaces the shipped explorer rather
+than sitting beside it. The drawer says on the row when that has happened.
+
+`tools:` is **enforced**, unlike a skill's `allowed_tools`, which is advisory:
+it is exactly the set the child is offered. Leave the key out to inherit
+everything the main agent has. It narrows what the agent is *offered* and never
+what it is *permitted* — every call the child makes still meets the same
+permission gate as the parent's. If every tool an agent names turns out to be
+unavailable here, the agent is refused rather than run unscoped, because an
+empty list would otherwise mean "everything".
+
+`model:` runs one agent somewhere else — a bigger model for review, a smaller
+one for search. Naming a provider that is not configured on this machine
+degrades the agent rather than failing the load: it runs on the session's model,
+and both the drawer and `taurus agents check` say so. A repo can ship an agent
+naming a cloud model without breaking for a contributor who runs Ollama only.
+
+A sub-agent cannot delegate further. Its registry has no `spawn_subagent` in it,
+so the depth cap is structural rather than a counter the model could talk past.
+
+```bash
+taurus agents list    # the roster, what each is scoped to, what it costs
+taurus agents check   # non-zero if an agent will not load or cannot run as written
+```
+
+Authoring is a text editor, as it is for skills. The drawer's **New agent…**
+writes a starter file with every key documented in place and opens it, and it
+rescans on open, so editing a file and reopening shows what is actually on disk.
 
 ### Permissions
 
@@ -224,6 +284,32 @@ is exactly what a tool declares it will touch, which today means `write_file`
 and `edit_file`. A file that was not text when it was recorded is reported as
 `skipped` rather than silently left as the model made it, and `taurus rewind`
 exits non-zero when anything could not be put back.
+
+### When a turn stops
+
+A turn runs until the model stops asking for tools. Three things end one early,
+and each records its reason in the transcript so a resumed session finds an
+explanation rather than a conversation that simply stops:
+
+- **The iteration ceiling** — twenty-five model/tool round trips. A ceiling
+  rather than a budget the model is shown, because one it could see is one it
+  could argue with.
+- **A stall** — the same tool call, with the same arguments, failing three times
+  running. The system prompt already tells the model not to retry a failed call
+  unchanged; this is what makes that true rather than merely stated. A call that
+  changes resets the count, and so does one that succeeds: a model re-reading a
+  file it is editing is working, not stuck.
+- **A provider failure no retry could fix** — a rejected key, an unknown model,
+  a response that would not parse.
+
+A rate limit or a 5xx is not in that last group. Those are retried up to three
+times with a doubling backoff, and the wait is reported rather than silent,
+because a pause nobody explained is indistinguishable from a hang. Cancelling
+during a backoff returns immediately instead of serving out the delay.
+
+One case is deliberately never retried: a request that had already begun
+streaming an answer. The user has read the first half, and a second attempt
+would write it again.
 
 ### The context window
 
@@ -672,7 +758,7 @@ into the project file.
 ## Development
 
 ```bash
-cargo test --workspace     # 322 tests
+cargo test --workspace     # 528 tests
 pnpm test                  # transcript reducer, replay, settings, rewind
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -702,6 +788,9 @@ cargo run -p taurus-core --example e2e -- qwen3.6:27b
 # Skill authoring: propose, validate, save, rediscover.
 cargo run -p taurus-skills --example synthesis -- qwen3.6:27b
 
+# Delegation: define a scoped agent, delegate to it, prove it stayed in scope.
+cargo run -p taurus-agents --example delegate -- qwen3.6:27b
+
 # MCP: connect, list tools, call one through the registry.
 cargo run -p taurus-mcp --example probe -- path/to/mcp.json
 
@@ -714,12 +803,13 @@ The CLI doubles as a live check on the whole stack:
 ```bash
 taurus tools                    # what the agent can reach
 taurus skills check             # non-zero exit if a skill is broken or degraded
+taurus agents check             # non-zero exit if an agent will not load or run as written
 taurus mcp                      # non-zero exit if a server failed to connect
 taurus key status               # where each provider's API key comes from
 ```
 
-`skills check` and `mcp` are meant for CI on a repository that ships its own
-`.taurus/skills` directory.
+`skills check`, `agents check`, and `mcp` are meant for CI on a repository that
+ships its own `.taurus` directory.
 
 ## Known gaps
 
@@ -735,6 +825,25 @@ taurus key status               # where each provider's API key comes from
   alive rather than hung, but its reasoning and prose stay inside the child.
   That part is deliberate: the parent asked for a conclusion, and a second
   conversation inlined into the transcript is what delegation exists to avoid.
+- **A custom agent's roster is frozen for the turn.** The set of sub-agents is
+  snapshotted when a turn starts, so an agent file saved mid-turn is not visible
+  until the next one. The drawer rescans on open, which covers editing; a file
+  watcher would close the rest, and is a surface — config reloads racing a
+  running turn — worth opening deliberately rather than as a side effect.
+- **There is no `propose_agent`.** The model can write itself a skill and offer
+  it for review; it cannot write itself a delegate. The proposal pipeline would
+  port, but a model that authors its own sub-agents is a larger question than a
+  file format and should be asked on its own.
+- **An agent's tools narrow what it is offered, not what it may do.** Every call
+  a child makes goes through the same permission engine as the parent's, so
+  `tools:` is a scope, not a sandbox. A per-agent permission policy would be a
+  second thing to keep in step with the first, and is not there.
+- **Stall detection only catches an exact repeat.** A model that alternates
+  between two calls that both fail — A, B, A, B — is as stuck as one repeating a
+  single call, but each round differs from the one before it, so only the
+  iteration ceiling stops it. Widening the check to a window of recent rounds
+  would catch that, at the cost of ending turns where the model was genuinely
+  cycling through candidates. See [When a turn stops](#when-a-turn-stops).
 - **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
   that renders its content client-side comes back near-empty. Closing this
   means shipping a browser engine, so it is a limit rather than a to-do.
