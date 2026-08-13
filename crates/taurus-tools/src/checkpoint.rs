@@ -16,10 +16,19 @@
 //! read. That is what lets a sub-agent's writes land in the turn that spawned
 //! it without anyone passing an identifier down.
 //!
-//! What is covered is exactly what [`crate::Tool::touches`] declares, which
-//! means `write_file` and `edit_file` and not `run_command`: a shell command's
-//! reach cannot be known before it runs, and a checkpoint that quietly covered
-//! less than it appeared to would be worse than none.
+//! Pre-images arrive two ways. A tool that can name what it will change
+//! declares it through [`crate::Tool::touches`], and [`TurnRecorder::capture`]
+//! reads the file just before the call — that is `write_file` and `edit_file`.
+//! A tool that cannot name anything is covered by [`crate::sweep`], which
+//! indexes the workspace around the call and hands back the pre-images it
+//! already holds through [`TurnRecorder::capture_state`] — that is
+//! `run_command`, whose reach is only knowable by looking afterwards.
+//!
+//! Both land in the same log, and a rewind cannot tell them apart. What it can
+//! tell is when a pre-image is missing: a file too large to hold, or one that
+//! was never text, is recorded as [`State::Opaque`] and reported as skipped
+//! rather than quietly left out. A checkpoint that covered less than it
+//! appeared to would be worse than none.
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
@@ -83,10 +92,31 @@ pub enum State {
     /// rather than into a blob store that would need its own garbage
     /// collection.
     Text { content: String },
-    /// It existed but could not be read as text, so there is nothing to put
-    /// back. Recorded anyway: a rewind has to be able to say which files it
-    /// could not restore, rather than leaving the user to notice.
+    /// It existed, but its contents are not here to put back — it was not
+    /// text, could not be read, or was too large for [`crate::sweep`] to hold.
+    /// Recorded anyway: a rewind has to be able to say which files it could not
+    /// restore, rather than leaving the user to notice.
+    ///
+    /// `reason` is a complete phrase following the file's name, because that is
+    /// how a rewind reports it: "config.db was not text when it was recorded".
     Opaque { reason: String },
+}
+
+/// Reads what a file holds right now, as a pre-image.
+///
+/// Shared with [`crate::sweep`], so a file that is missing, unreadable, or not
+/// text is classified the same way whichever side captured it.
+pub(crate) fn read_state(path: &Path) -> State {
+    match std::fs::read_to_string(path) {
+        Ok(content) => State::Text { content },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => State::Absent,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => State::Opaque {
+            reason: "was not text when it was recorded".into(),
+        },
+        Err(e) => State::Opaque {
+            reason: format!("could not be read when it was recorded ({e})"),
+        },
+    }
 }
 
 /// A turn that changed files, as a listing shows it.
@@ -270,10 +300,12 @@ fn restore(workspace: &Path, file: &str, state: &State, dry_run: bool) -> Restor
     };
 
     let outcome = match state {
+        // The reason is already a complete phrase; the file it belongs to is
+        // carried alongside it, so wrapping it here would say the name twice.
         State::Opaque { reason } => {
             return Restored::Skipped {
                 path: file.to_string(),
-                reason: format!("was not text when it was recorded ({reason})"),
+                reason: reason.clone(),
             }
         }
         State::Absent => {
@@ -412,11 +444,29 @@ pub struct TurnRecorder {
 impl TurnRecorder {
     /// Records what `path` holds right now, the first time this turn asks.
     ///
+    /// For a tool that named the file before touching it, which is the only
+    /// moment its previous contents are still on disk to be read.
+    pub async fn capture(&self, path: &Path) {
+        self.record(path, None).await;
+    }
+
+    /// Records a pre-image the caller is already holding.
+    ///
+    /// For [`crate::sweep`], which learns that a file changed only after the
+    /// command that changed it has finished — by which time reading the path
+    /// would capture the new contents as though they were the old ones. The
+    /// bytes it passes here were read before the command ran.
+    pub async fn capture_state(&self, path: &Path, before: State) {
+        self.record(path, Some(before)).await;
+    }
+
+    /// The one path into the log.
+    ///
     /// Failing to write a checkpoint never fails the tool call. Persistence is
     /// a side effect of work the user asked for, and a full disk has to cost
     /// them the undo, not the edit — the same bargain the session transcript
     /// makes. It is logged once and then goes quiet.
-    pub async fn capture(&self, path: &Path) {
+    async fn record(&self, path: &Path, held: Option<State>) {
         let Some(log) = self.path.clone() else {
             return;
         };
@@ -427,13 +477,9 @@ impl TurnRecorder {
         }
 
         let relative = crate::path_guard::display(&self.workspace, path);
-        let before = match std::fs::read_to_string(path) {
-            Ok(content) => State::Text { content },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => State::Absent,
-            Err(e) => State::Opaque {
-                reason: e.to_string(),
-            },
-        };
+        // First capture wins, and a held pre-image is by definition older than
+        // anything a read here could produce, so it is preferred when present.
+        let before = held.unwrap_or_else(|| read_state(path));
 
         // The turn's header goes down with its first file, so a log holds only
         // turns that changed something.

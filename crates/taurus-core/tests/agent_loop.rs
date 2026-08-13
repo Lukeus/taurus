@@ -737,3 +737,94 @@ async fn repeating_a_call_that_succeeds_is_not_a_stall() {
         "a succeeding repeat is not a stall: {outcome:?}"
     );
 }
+
+#[tokio::test]
+async fn a_command_the_model_ran_can_be_undone() {
+    // The gap this closes, through the whole loop rather than the registry
+    // alone: no tool declared these paths, the model reached them with a shell
+    // command, and the turn is still recoverable afterwards.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    std::fs::write(workspace.join("keep.txt"), "the user's work").unwrap();
+    std::fs::write(workspace.join("doomed.txt"), "also the user's work").unwrap();
+
+    let logs = TempDir::new().unwrap();
+    let store = taurus_tools::CheckpointStore::new(logs.path());
+    let cancel = CancellationToken::new();
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
+    let tools = ToolContext::new(workspace.clone(), permissions, cancel)
+        .with_checkpoints(store.begin_turn("s1", &workspace, "tidy up"));
+
+    // What a model actually does: one command, several files, none declared.
+    let command = if cfg!(windows) {
+        "echo clobbered > keep.txt & del doomed.txt & echo new > built.txt"
+    } else {
+        "echo clobbered > keep.txt; rm doomed.txt; echo new > built.txt"
+    };
+    let provider = FakeProvider::new(vec![
+        ScriptedTurn::tool_call("t1", "run_command", serde_json::json!({"command": command})),
+        ScriptedTurn::text("Tidied."),
+    ]);
+    let agent = Agent::new(
+        provider,
+        ToolRegistry::with_builtins(),
+        tools,
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    let collector = tokio::spawn(async move {
+        let mut events = Vec::new();
+        while let Some(e) = rx.recv().await {
+            events.push(e);
+        }
+        events
+    });
+    agent
+        .run_turn(&mut session, Message::user("tidy up"), tx)
+        .await
+        .unwrap();
+    let events = collector.await.unwrap();
+
+    assert!(
+        !workspace.join("doomed.txt").exists(),
+        "the command no-opped"
+    );
+
+    // It reaches the list the app reads for its changed-file count and its
+    // Changes drawer, which is where the user is told.
+    let turns = store.turns("s1").unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].files, vec!["built.txt", "doomed.txt", "keep.txt"]);
+
+    // And the turn is reported as ordinary. A sweep that covered the command
+    // has nothing to add to the result; only one that could not covers says so.
+    let finished = events.iter().find_map(|e| match e {
+        UiEvent::ToolCallFinished { output, .. } => Some(output),
+        _ => None,
+    });
+    assert!(
+        !finished.unwrap().contains("[taurus]"),
+        "a covered command should carry no warning: {finished:?}"
+    );
+
+    store.rewind("s1", &workspace, 1, false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("keep.txt")).unwrap(),
+        "the user's work"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("doomed.txt")).unwrap(),
+        "also the user's work",
+        "a deleted file is the case nothing else in the harness remembers"
+    );
+    assert!(
+        !workspace.join("built.txt").exists(),
+        "a file the command created must not survive the rewind"
+    );
+}

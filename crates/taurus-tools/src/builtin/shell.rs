@@ -52,6 +52,10 @@ impl Tool for RunCommand {
         Effect::Execute
     }
 
+    fn touches_unpredictably(&self) -> bool {
+        true
+    }
+
     fn preview(&self, input: &serde_json::Value) -> String {
         let command = input
             .get("command")

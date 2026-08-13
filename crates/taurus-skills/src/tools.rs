@@ -160,6 +160,12 @@ impl Tool for RunSkillScript {
         Effect::Execute
     }
 
+    /// A skill script is a local program with the workspace in front of it, and
+    /// it names the files it will write no more than a shell command does.
+    fn touches_unpredictably(&self) -> bool {
+        true
+    }
+
     fn preview(&self, input: &serde_json::Value) -> String {
         let get = |k: &str| input.get(k).and_then(|v| v.as_str()).unwrap_or("?");
         let args = input

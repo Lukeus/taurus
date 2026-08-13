@@ -185,11 +185,27 @@ pub trait Tool: Send + Sync {
     ///
     /// Read just before the call so a rewind has something to put back. The
     /// default is empty, which means *this tool changes nothing, or nothing
-    /// knowable in advance* — the second is why `run_command` declares nothing:
-    /// a shell command's reach cannot be predicted, and a checkpoint that
-    /// appeared to cover it would be worse than an honest gap.
+    /// knowable in advance*. Tools of the second kind say so with
+    /// [`Tool::touches_unpredictably`].
     fn touches(&self, _input: &serde_json::Value) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Whether this tool can change files in the workspace without being able
+    /// to name them first.
+    ///
+    /// `run_command` is the case: a command line does not say what it will
+    /// rewrite, and a guess would be worse than no answer. Declaring this puts
+    /// the call inside [`crate::sweep`], which looks at the workspace before
+    /// and after instead of asking the tool to predict itself.
+    ///
+    /// Deliberately not inferred from [`Effect::Execute`]. That is a permission
+    /// tier — MCP tools take it because an external program is doing arbitrary
+    /// work, not because it is doing it to these files — and reading it as a
+    /// statement about the filesystem would make every call to a remote API
+    /// index the entire workspace twice.
+    fn touches_unpredictably(&self) -> bool {
+        false
     }
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult;

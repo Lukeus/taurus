@@ -143,8 +143,58 @@ impl ToolRegistry {
             }
         }
 
+        // A tool that changes files without being able to name them first is
+        // covered by looking rather than by asking. That used to be the whole of
+        // `run_command` sitting outside undo, and outside the changed-file list
+        // the user reads to decide whether they need it.
+        let sweep = match &ctx.checkpoints {
+            Some(_) if tool.touches_unpredictably() => {
+                Some(crate::sweep::Sweep::before(&ctx.workspace).await)
+            }
+            _ => None,
+        };
+
         debug!(tool = name, "executing");
-        tool.execute(input, ctx).await
+        let mut result = tool.execute(input, ctx).await;
+
+        // Unconditionally: a command that failed, timed out, or was canceled
+        // has still written whatever it got as far as writing, and that is
+        // precisely the turn someone reaches for undo on.
+        if let (Some(sweep), Some(recorder)) = (sweep, &ctx.checkpoints) {
+            let change = sweep.after(&ctx.workspace, recorder).await;
+
+            // What it *did* record needs no announcement: the changed-file
+            // count in the header and the Changes drawer are both read straight
+            // off the log, and they are where someone goes to look.
+            //
+            // What it could not record does. Believing a turn is undoable when
+            // it is not is the failure this whole path exists to prevent, and a
+            // progress line would not do — those are dropped from the card the
+            // moment the call finishes, which for a command is immediately.
+            if let Some(warning) = change.warning() {
+                annotate(&mut result, &warning);
+            }
+        }
+
+        result
+    }
+}
+
+/// Adds a note about the call to whatever the call produced.
+///
+/// A timeout and a cancellation are `Err`, and they are exactly the outcomes a
+/// warning about unrecorded changes matters most for — a command killed
+/// part-way through wrote something, and nobody knows what. So the error text
+/// carries it too. `Canceled` and the structured input errors are left alone:
+/// they have no message of their own to extend, and a call that never ran
+/// changed nothing.
+fn annotate(result: &mut ToolResult, note: &str) {
+    match result {
+        Ok(output) => output.push_str(&format!("\n\n[taurus] {note}")),
+        Err(ToolError::Failed(message)) => {
+            message.push_str(&format!("\n\n[taurus] {note}"));
+        }
+        Err(_) => {}
     }
 }
 
@@ -152,6 +202,7 @@ impl ToolRegistry {
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
+    use crate::tool::Effect;
 
     #[test]
     fn builtins_are_registered_under_stable_names() {
@@ -298,11 +349,221 @@ mod tests {
         assert!(store.turns("s1").unwrap().is_empty());
     }
 
+    /// Writes a file, then exits non-zero.
+    #[cfg(windows)]
+    const WRITES_THEN_FAILS: &str = "echo half-done > out.txt & exit 1";
+    #[cfg(not(windows))]
+    const WRITES_THEN_FAILS: &str = "echo half-done > out.txt; exit 1";
+
+    #[tokio::test]
+    async fn a_command_that_changed_files_can_be_undone() {
+        // The whole point of the sweep, through the path the agent actually
+        // takes: no tool declared this file, and it is still recoverable.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        std::fs::write(root.join("a.txt"), "original").unwrap();
+
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx.with_checkpoints(store.begin_turn("s1", &root, "rewrite it"));
+
+        ToolRegistry::with_builtins()
+            .execute(
+                "run_command",
+                serde_json::json!({"command": "echo rewritten > a.txt"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "original"
+        );
+
+        // And it reaches the list the user reads before deciding to undo.
+        assert_eq!(store.turns("s1").unwrap()[0].files, vec!["a.txt"]);
+
+        store.rewind("s1", &root, 1, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "original"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_that_failed_still_has_its_changes_recorded() {
+        // A command killed partway through has written whatever it got as far
+        // as writing, and that is exactly when undo is wanted.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx.with_checkpoints(store.begin_turn("s1", &root, "half a job"));
+
+        let out = ToolRegistry::with_builtins()
+            .execute(
+                "run_command",
+                serde_json::json!({"command": WRITES_THEN_FAILS}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("Exit code 1"), "{out}");
+
+        assert_eq!(store.turns("s1").unwrap()[0].files, vec!["out.txt"]);
+        store.rewind("s1", &root, 1, false).unwrap();
+        assert!(!root.join("out.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_command_the_sweep_could_not_cover_says_so_on_the_result() {
+        // Believing a turn is undoable when it is not is the failure this whole
+        // path exists to prevent, so the one case that cannot be recorded has
+        // to be said out loud — and on the result, which survives, rather than
+        // as progress, which the card drops the moment the call ends.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        std::fs::write(root.join(".gitignore"), "dist/\n").unwrap();
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        std::fs::write(root.join("dist/old.txt"), "predates the turn").unwrap();
+
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx.with_checkpoints(store.begin_turn("s1", &root, "unignore dist"));
+
+        let out = ToolRegistry::with_builtins()
+            .execute(
+                "run_command",
+                // Rewrites the rule so `dist/` stops being ignored, which makes
+                // every file already in it look newly created.
+                serde_json::json!({"command": "echo somethingelse > .gitignore"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(out.contains("[taurus]"), "no warning on the result: {out}");
+        assert!(out.contains("ignore rule"), "{out}");
+
+        // And the thing the warning is about actually held: the rewind leaves
+        // the revealed file alone rather than deleting it.
+        store.rewind("s1", &root, 1, false).unwrap();
+        assert!(root.join("dist/old.txt").exists());
+    }
+
+    /// Stands in for an MCP tool: highest permission tier, because an external
+    /// program is doing arbitrary work, but it never touches these files.
+    struct RemoteTool;
+
+    #[async_trait::async_trait]
+    impl Tool for RemoteTool {
+        fn name(&self) -> &str {
+            "remote_thing"
+        }
+        fn description(&self) -> &str {
+            "Calls a remote service."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn effect(&self) -> Effect {
+            Effect::Execute
+        }
+        async fn execute(&self, _: serde_json::Value, _: &ToolContext) -> ToolResult {
+            Ok("{\"temperature\": 12}".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_only_reaches_outward_is_not_swept() {
+        // `Effect::Execute` is a permission tier, not a claim about the
+        // filesystem. Reading it as one made every call to a remote API index
+        // the whole workspace twice and glued a note onto a JSON payload the
+        // model then had to parse.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx.with_checkpoints(store.begin_turn("s1", &root, "ask the weather"));
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RemoteTool));
+        let out = registry
+            .execute("remote_thing", serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(out, "{\"temperature\": 12}", "the payload was altered");
+        assert!(store.turns("s1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failure_carries_the_warning_too() {
+        // A timeout is an `Err`, and it is the outcome the warning matters most
+        // for: the command wrote something before it was killed, and nobody
+        // knows what. Annotating only `Ok` left exactly that case silent.
+        let mut result: ToolResult = Err(ToolError::Failed("Command timed out after 1s".into()));
+        annotate(&mut result, "This one cannot be undone.");
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("timed out"), "{message}");
+        assert!(
+            message.contains("[taurus] This one cannot be undone."),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_call_that_never_ran_is_left_alone() {
+        // Nothing to extend, and a canceled call changed nothing to warn about.
+        let mut result: ToolResult = Err(ToolError::Canceled);
+        annotate(&mut result, "ignored");
+        assert!(!result.unwrap_err().to_string().contains("ignored"));
+    }
+
+    #[tokio::test]
+    async fn a_read_only_command_leaves_the_log_empty() {
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        std::fs::write(root.join("a.txt"), "untouched").unwrap();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx.with_checkpoints(store.begin_turn("s1", &root, "just look"));
+
+        ToolRegistry::with_builtins()
+            .execute("run_command", serde_json::json!({"command": "ls"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(store.turns("s1").unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_denied_command_is_never_swept() {
+        // The sweep sits behind the permission gate like every other capture,
+        // so a refused command costs neither a walk nor a turn in the log.
+        let (ctx, _dir) = crate::test_support::test_ctx_denying();
+        let root = ctx.workspace.clone();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx.with_checkpoints(store.begin_turn("s1", &root, "try to run"));
+
+        let _ = ToolRegistry::with_builtins()
+            .execute(
+                "run_command",
+                serde_json::json!({"command": "echo nope > x.txt"}),
+                &ctx,
+            )
+            .await;
+
+        assert!(store.turns("s1").unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn run_command_declares_nothing_it_will_touch() {
         // Asserted rather than only documented: a shell command's reach is not
         // knowable in advance, and the day someone makes this tool guess, the
-        // guess needs to fail loudly here.
+        // guess needs to fail loudly here. What covers it is `sweep`, which
+        // looks instead of predicting.
         let registry = ToolRegistry::with_builtins();
         assert!(registry
             .get("run_command")

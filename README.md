@@ -43,7 +43,7 @@ crates/
   taurus-provider/          Provider trait + normalized message/stream types
   taurus-provider-ollama/   Ollama adapter (NDJSON, per-model capabilities)
   taurus-provider-openai/   OpenAI-compatible adapter (SSE, vLLM/LM Studio/…)
-  taurus-tools/             Tool registry, built-in tools, permission gate
+  taurus-tools/             Tool registry, built-in tools, permission gate, undo
   taurus-skills/            Skill discovery, execution, and authoring
   taurus-agents/            Sub-agent definitions and discovery
   taurus-mcp/               MCP client
@@ -277,13 +277,44 @@ taurus: no terminal to confirm on; re-run with --yes to rewind, or --dry-run to
         see the plan
 ```
 
-**`run_command` is not covered.** A shell command's reach cannot be known
-before it runs, and the only honest options were to snapshot the whole
-workspace before every command or to say plainly what is not included. Coverage
-is exactly what a tool declares it will touch, which today means `write_file`
-and `edit_file`. A file that was not text when it was recorded is reported as
-`skipped` rather than silently left as the model made it, and `taurus rewind`
-exits non-zero when anything could not be put back.
+A file that was not text when it was recorded is reported as `skipped` rather
+than silently left as the model made it, and `taurus rewind` exits non-zero
+when anything could not be put back.
+
+#### Commands are covered too
+
+A tool that can name what it will change declares it, and the log reads the
+file just before the call. `run_command` can name nothing — a command line does
+not say which files it will rewrite, and a guess would be worse than no answer.
+
+So it is not asked. The workspace is indexed before the command runs and walked
+again when it finishes, and the difference is the answer: anything whose length
+or modification time moved, appeared, or vanished is a change, and the contents
+held from the first pass become its pre-image. A rewind then treats it exactly
+like an `edit_file`. `sed -i` across a dozen files, a `rm` that took the wrong
+directory, a script the model wrote and ran — all of it comes back, and all of
+it appears in the changed-file count and the **Changes** drawer, which is where
+you look to decide whether you want it back.
+
+This runs whether the command succeeded, failed, timed out, or was canceled: a
+command killed halfway through has still written whatever it got as far as
+writing, and that is exactly the turn undo is wanted for.
+
+What it walks is what the search tools walk — the workspace minus `.git`,
+minus `.taurus`, and minus whatever `.gitignore` excludes. That bound is doing
+real work. Indexing `target/` and `node_modules/` would cost gigabytes on every
+command, and a rewind that deleted build output would be a worse surprise than
+one that leaves it alone. On this repository the two passes cost about 19 ms
+and 5 ms; on 7,000 files and 132 MB, 31 ms and 16 ms.
+
+When a command *cannot* be covered — a workspace past 50,000 files, or one
+whose ignore rules the command itself rewrote — the tool result says so in
+plain words rather than letting the turn look undoable:
+
+```
+[taurus] This workspace holds more than 50000 files, too many to record a
+command's changes against, so this one cannot be undone.
+```
 
 ### When a turn stops
 
@@ -796,6 +827,11 @@ cargo run -p taurus-mcp --example probe -- path/to/mcp.json
 
 # Web: one real search, then fetch the first result it returns.
 cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async book"
+
+# What a sweep costs on a real workspace, and that it stays quiet when nothing
+# changed. Needs no provider. Run it on something large before touching the
+# caps in `sweep.rs` — every command pays this twice.
+cargo run -p taurus-tools --example sweep -- .
 ```
 
 The CLI doubles as a live check on the whole stack:
@@ -813,9 +849,24 @@ ships its own `.taurus` directory.
 
 ## Known gaps
 
-- **A rewind does not cover `run_command`.** Checkpoints record what a tool
-  declares it will touch, and a shell command's reach is not knowable before it
-  runs. See [Rewinding a turn](#rewinding-a-turn).
+- **A rewind does not cover ignored files.** What a command changed is found by
+  walking the workspace around it, and that walk honors `.gitignore` — so a
+  command that rewrites an ignored file, `.env` being the one that matters, is
+  neither listed nor restorable. Widening it means indexing `target/` and
+  `node_modules/` before every command, which is not affordable, and having a
+  rewind delete build output, which is not wanted. See
+  [Rewinding a turn](#rewinding-a-turn).
+- **A rewind puts files back, not git state.** `.git` is left out of the walk,
+  so undoing a turn that ran `git checkout` or `git reset --hard` restores the
+  file contents while leaving `HEAD` and the index where the command moved them
+  — a tree that matches neither commit. Covering it means snapshotting the
+  object store, which is its own feature; `git reflog` is the way back for now.
+- **A change that moves neither length nor timestamp is invisible.** The same
+  walk compares size and modification time, which is what `make` and `rsync`
+  have always compared. On a filesystem with nanosecond timestamps defeating it
+  takes deliberate effort; on one with coarse timestamps, a command that
+  rewrites a file to the same length within the same tick would slip through.
+  Closing it means reading every file twice per command.
 - **`run_command` has no PTY.** Commands run non-interactively with stdin
   closed, which is right for an agent but means programs that check `isatty`
   behave as though piped, and interactive prompts hit the timeout instead of
