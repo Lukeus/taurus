@@ -560,6 +560,7 @@ fn append(path: &Path, record: &Record) -> bool {
             .create(true)
             .append(true)
             .open(path)?;
+        restrict(&file);
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")
     };
@@ -576,6 +577,38 @@ fn append(path: &Path, record: &Record) -> bool {
         }
     }
 }
+
+/// Narrows a log to its owner, if it is readable by anyone else.
+///
+/// These files hold the contents of whatever a turn changed, and since
+/// [`crate::sweep`] began covering files an ignore rule excludes by name, that
+/// includes `.env`. A file kept out of version control on purpose must not
+/// become world-readable by being made recoverable.
+///
+/// Applied on every append rather than only at creation, so a log written
+/// before this existed is narrowed the next time it is touched. The check is
+/// what keeps that to one `chmod` per file rather than one per record.
+#[cfg(unix)]
+fn restrict(file: &std::fs::File) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = file.metadata() else {
+        return;
+    };
+    let mut permissions = metadata.permissions();
+    if permissions.mode() & 0o077 == 0 {
+        return;
+    }
+    permissions.set_mode(0o600);
+    // Best-effort: a log that could not be narrowed is still a log worth
+    // writing, and failing the append would cost the undo as well.
+    let _ = file.set_permissions(permissions);
+}
+
+/// Windows has no comparable mode to set; the file inherits the directory's
+/// ACL, and `~/.taurus` is under the user's own profile.
+#[cfg(not(unix))]
+fn restrict(_file: &std::fs::File) {}
 
 fn shorten(prompt: &str) -> String {
     let line = prompt
@@ -630,6 +663,46 @@ mod tests {
         fn log(&self, session: &str) -> PathBuf {
             self.logs.path().join(format!("{session}.jsonl"))
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_log_is_readable_by_its_owner_and_nobody_else() {
+        // These hold the contents of whatever a turn changed, and since
+        // `sweep` began covering files an ignore rule excludes by name, that
+        // includes `.env`. Default permissions would publish it to every
+        // account on the machine.
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new();
+        let file = f.path("a.txt");
+        std::fs::write(&file, "before").unwrap();
+
+        let recorder = f.store.begin_turn("s1", &f.root, "change a.txt");
+        recorder.capture(&file).await;
+
+        let mode = std::fs::metadata(f.log("s1")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "log mode was {:o}", mode & 0o777);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_log_written_before_this_existed_is_narrowed_when_it_is_next_used() {
+        // The mode is set on append rather than on creation, so an existing
+        // log does not stay wide open for the rest of its life.
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new();
+        let log = f.log("s1");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(&log, "").unwrap();
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let file = f.path("a.txt");
+        std::fs::write(&file, "before").unwrap();
+        let recorder = f.store.begin_turn("s1", &f.root, "change a.txt");
+        recorder.capture(&file).await;
+
+        let mode = std::fs::metadata(&log).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "log mode was {:o}", mode & 0o777);
     }
 
     #[tokio::test]
