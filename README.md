@@ -342,6 +342,27 @@ One case is deliberately never retried: a request that had already begun
 streaming an answer. The user has read the first half, and a second attempt
 would write it again.
 
+#### One thing extends a turn
+
+A turn that changed files and never ran anything afterwards is asked, once, to
+check its own work before it is allowed to finish:
+
+> You changed files and have not run anything since. Check that work now — run
+> the project's tests, or build it, or run the thing you changed. If there is
+> genuinely nothing to run against it, say so in one line and stop.
+
+The system prompt says the same thing, and saying it there is not enough: a 9B
+model edits a file and stops anyway. Asked at the moment it tries to finish, it
+goes and runs the build. What counts as having checked is a command that ran
+and changed nothing — the model asking the project a question and getting an
+answer. A command that changed files as well is more work, not a check.
+
+Once per turn, and phrased with a way out, so a documentation edit costs one
+round trip rather than an argument. `verify_changes` in `AgentConfig` turns it
+off. The checkpoint log is what it reads to know whether anything changed,
+which means it is exactly as accurate as the log — a command that only touched
+ignored files reads as having changed nothing.
+
 ### The context window
 
 A local 8k model runs out of room in a way a hosted 200k one does not, so the

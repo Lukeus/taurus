@@ -442,6 +442,16 @@ pub struct TurnRecorder {
 }
 
 impl TurnRecorder {
+    /// How many distinct files this turn has recorded a pre-image for.
+    ///
+    /// The authority on "did this turn change anything", because it counts what
+    /// was actually captured rather than what a tool was asked to do — a denied
+    /// call, a failed write, and a command that touched nothing all leave it
+    /// where it was.
+    pub async fn changed_count(&self) -> usize {
+        self.state.lock().await.seen.len()
+    }
+
     /// Records what `path` holds right now, the first time this turn asks.
     ///
     /// For a tool that named the file before touching it, which is the only

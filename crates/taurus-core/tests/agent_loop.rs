@@ -828,3 +828,181 @@ async fn a_command_the_model_ran_can_be_undone() {
         "a file the command created must not survive the rewind"
     );
 }
+
+/// A harness whose turns are checkpointed, which is what the app and the CLI
+/// both do — and what the verify nudge keys off, since the checkpoint log is
+/// the authority on whether a turn actually changed anything.
+fn recorded(
+    turns: Vec<ScriptedTurn>,
+    config: AgentConfig,
+) -> (
+    Agent,
+    Arc<FakeProvider>,
+    std::path::PathBuf,
+    TempDir,
+    TempDir,
+) {
+    let dir = TempDir::new().unwrap();
+    let logs = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
+    let store = taurus_tools::CheckpointStore::new(logs.path());
+    let tools = ToolContext::new(workspace.clone(), permissions, CancellationToken::new())
+        .with_checkpoints(store.begin_turn("s1", &workspace, "do some work"));
+    let provider = FakeProvider::new(turns);
+    let agent = Agent::new(
+        provider.clone(),
+        ToolRegistry::with_builtins(),
+        tools,
+        config,
+    );
+    (agent, provider, workspace, dir, logs)
+}
+
+async fn drive(agent: &Agent, session: &mut Session, text: &str) {
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let _ = agent.run_turn(session, Message::user(text), tx).await;
+}
+
+/// How many times the nudge appears in what the provider was last sent.
+fn nudges(request: &taurus_provider::ChatRequest) -> usize {
+    request
+        .messages
+        .iter()
+        .filter(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text } if text.contains("have not run anything since"))
+            })
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn a_turn_that_changed_files_without_checking_is_asked_to_check() {
+    // The system prompt already says to run the tests. A small model edits a
+    // file and stops anyway, so being told once more, at the moment it tries to
+    // finish, is what actually makes it happen.
+    let (agent, provider, workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_call(
+                "t1",
+                "write_file",
+                serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+            ),
+            ScriptedTurn::text("Done."),
+            ScriptedTurn::tool_call("t2", "run_command", serde_json::json!({"command": "true"})),
+            ScriptedTurn::text("Checked; it builds."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "write a.rs").await;
+
+    assert!(workspace.join("a.rs").exists());
+    let last = provider.last_request().await.unwrap();
+    assert_eq!(nudges(&last), 1, "the model was never asked to check");
+    // And it kept going rather than the turn ending on the nudge.
+    assert_eq!(provider.request_count().await, 4);
+}
+
+#[tokio::test]
+async fn a_turn_that_already_checked_its_work_is_left_alone() {
+    // Ran a command after editing and it changed nothing — that is the model
+    // asking the project a question and getting an answer, which is the whole
+    // behavior being asked for. Nagging here would be nagging for compliance.
+    let (agent, provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_call(
+                "t1",
+                "write_file",
+                serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+            ),
+            ScriptedTurn::tool_call("t2", "run_command", serde_json::json!({"command": "true"})),
+            ScriptedTurn::text("Done, and it builds."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "write a.rs").await;
+
+    assert_eq!(
+        provider.request_count().await,
+        3,
+        "an unnecessary round trip"
+    );
+    assert_eq!(nudges(&provider.last_request().await.unwrap()), 0);
+}
+
+#[tokio::test]
+async fn a_turn_that_only_read_things_is_left_alone() {
+    let (agent, provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_call("t1", "list_dir", serde_json::json!({})),
+            ScriptedTurn::text("Empty."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "look around").await;
+
+    assert_eq!(provider.request_count().await, 2);
+    assert_eq!(nudges(&provider.last_request().await.unwrap()), 0);
+}
+
+#[tokio::test]
+async fn the_model_is_asked_to_check_at_most_once_a_turn() {
+    // A model that answers the nudge with prose rather than a command must not
+    // be asked again. One round trip is a fair price for the behavior; an
+    // argument the model cannot win is not.
+    let (agent, provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_call(
+                "t1",
+                "write_file",
+                serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+            ),
+            ScriptedTurn::text("Done."),
+            ScriptedTurn::text("Really done."),
+            ScriptedTurn::text("Still done."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "write a.rs").await;
+
+    assert_eq!(provider.request_count().await, 3, "it kept arguing");
+    assert_eq!(nudges(&provider.last_request().await.unwrap()), 1);
+}
+
+#[tokio::test]
+async fn the_check_can_be_turned_off() {
+    let (agent, provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_call(
+                "t1",
+                "write_file",
+                serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+            ),
+            ScriptedTurn::text("Done."),
+        ],
+        AgentConfig {
+            verify_changes: false,
+            ..AgentConfig::default()
+        },
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "write a.rs").await;
+
+    assert_eq!(provider.request_count().await, 2);
+    assert_eq!(nudges(&provider.last_request().await.unwrap()), 0);
+}
