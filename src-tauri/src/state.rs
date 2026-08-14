@@ -12,12 +12,13 @@ use tauri::AppHandle;
 use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 
+use taurus_agents::proposal::AgentProposal;
 use taurus_core::Session;
 use taurus_host::{Host, PermissionPromptFactory, SessionLog};
 use taurus_skills::proposal::SkillProposal;
 use taurus_tools::{PermissionDecision, PermissionPrompt};
 
-use crate::bridge::{UiPermissionPrompt, UiProposalSink};
+use crate::bridge::{UiAgentProposalSink, UiPermissionPrompt, UiProposalSink};
 
 /// One live conversation.
 pub struct SessionEntry {
@@ -51,6 +52,7 @@ pub struct AppState {
     pub sessions: DashMap<String, Arc<SessionEntry>>,
     pub pending_permissions: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>>,
     pub pending_proposals: Arc<DashMap<String, SkillProposal>>,
+    pub pending_agent_proposals: Arc<DashMap<String, AgentProposal>>,
 }
 
 impl AppState {
@@ -58,6 +60,7 @@ impl AppState {
         let pending_permissions: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>> =
             Arc::new(DashMap::new());
         let pending_proposals: Arc<DashMap<String, SkillProposal>> = Arc::new(DashMap::new());
+        let pending_agent_proposals: Arc<DashMap<String, AgentProposal>> = Arc::new(DashMap::new());
 
         let host = Host::new(
             Host::default_workspace(),
@@ -65,7 +68,11 @@ impl AppState {
                 app: app.clone(),
                 pending: pending_permissions.clone(),
             }),
-            Arc::new(UiProposalSink::new(app, pending_proposals.clone())),
+            Arc::new(UiProposalSink::new(app.clone(), pending_proposals.clone())),
+            Arc::new(UiAgentProposalSink::new(
+                app,
+                pending_agent_proposals.clone(),
+            )),
         );
 
         Self {
@@ -73,6 +80,7 @@ impl AppState {
             sessions: DashMap::new(),
             pending_permissions,
             pending_proposals,
+            pending_agent_proposals,
         }
     }
 

@@ -12,6 +12,7 @@ import {
 import { Settings } from "./components/Settings";
 import { AgentsDrawer } from "./components/AgentsDrawer";
 import { SkillsDrawer } from "./components/SkillsDrawer";
+import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript } from "./components/Transcript";
 import * as api from "./lib/api";
@@ -236,7 +237,8 @@ export default function App() {
             }
           />
 
-          {store.proposals.length > 0 && (
+          {(store.proposals.length > 0 ||
+            store.agentProposals.length > 0) && (
             <div className="proposals">
               {store.proposals.map((p) => (
                 <SkillProposalCard
@@ -244,6 +246,15 @@ export default function App() {
                   proposal={p}
                   onResolve={(approve, target) =>
                     store.resolveProposal(p.id, approve, target)
+                  }
+                />
+              ))}
+              {store.agentProposals.map((p) => (
+                <AgentProposalCard
+                  key={p.id}
+                  proposal={p}
+                  onResolve={(approve, target) =>
+                    store.resolveAgentProposal(p.id, approve, target)
                   }
                 />
               ))}

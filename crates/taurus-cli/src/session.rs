@@ -4,6 +4,9 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use taurus_agents::proposal::{
+    save as save_agent, validate_proposal as validate_agent, AgentProposal,
+};
 use taurus_core::{Session, UiEvent};
 use taurus_host::{sessions, PermissionPromptFactory, SessionLog, TurnRef};
 use taurus_provider::Message;
@@ -299,6 +302,109 @@ async fn handle_proposals(runtime: &Runtime) {
             }
             Err(e) => eprintln!("  could not save skill: {e}"),
         }
+    }
+
+    handle_agent_proposals(runtime).await;
+}
+
+/// The same review, for sub-agents the turn proposed.
+///
+/// Kept beside the skill flow rather than folded into it: the two carry
+/// different fields and print differently, and a shared loop over an enum would
+/// be longer than both.
+async fn handle_agent_proposals(runtime: &Runtime) {
+    let proposals: Vec<AgentProposal> = {
+        let mut queued = runtime.agent_proposals.proposals.lock().await;
+        std::mem::take(&mut *queued)
+    };
+    if proposals.is_empty() {
+        return;
+    }
+
+    // Re-checked here rather than trusted from propose time: the roster and the
+    // tool registry can both have moved since, and this is the last point
+    // before a file is written.
+    let available: Vec<String> = runtime
+        .host
+        .registry()
+        .read()
+        .await
+        .names()
+        .map(str::to_string)
+        .collect();
+
+    for proposal in proposals {
+        let verdict = {
+            let catalog = runtime.host.agent_catalog().read().await;
+            validate_agent(&proposal, &catalog, &available)
+        };
+        if let Err(e) = verdict {
+            eprintln!("  agent '{}' rejected: {e}", proposal.name);
+            continue;
+        }
+
+        if !runtime.interactive {
+            eprintln!(
+                "  agent '{}' was proposed but not saved (no terminal to review it).\n    \
+                 Run `taurus repl` or open the app to review it.",
+                proposal.name
+            );
+            continue;
+        }
+
+        if !review_agent(&proposal) {
+            continue;
+        }
+
+        let root = taurus_host::config::workspace_agents_dir(&runtime.host.workspace().await);
+        match save_agent(&proposal, &root) {
+            Ok(path) => {
+                eprintln!("  saved agent to {}", path.display());
+                // Narrower than a full reload, which would restart every MCP
+                // server to pick up one markdown file.
+                runtime.host.rescan_agents().await;
+            }
+            Err(e) => eprintln!("  could not save agent: {e}"),
+        }
+    }
+}
+
+/// Shows a proposed agent and asks whether to keep it.
+fn review_agent(proposal: &AgentProposal) -> bool {
+    let mut err = std::io::stderr();
+    let _ = writeln!(
+        err,
+        "\n  Taurus wants to save a sub-agent: {}",
+        proposal.name
+    );
+    let _ = writeln!(err, "    {}", proposal.description);
+    let _ = writeln!(
+        err,
+        "    tools: {}",
+        match &proposal.tools {
+            Some(tools) => tools.join(", "),
+            None => "inherits yours".to_string(),
+        }
+    );
+    let _ = write!(err, "  [v] view prompt  [y] save  [n] discard: ");
+    let _ = err.flush();
+
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => true,
+        "v" | "view" => {
+            let _ = writeln!(err, "\n{}\n", proposal.prompt);
+            let _ = write!(err, "  [y] save  [n] discard: ");
+            let _ = err.flush();
+            let mut second = String::new();
+            let _ = std::io::stdin().read_line(&mut second);
+            matches!(second.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        }
+        _ => false,
     }
 }
 

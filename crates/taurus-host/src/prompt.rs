@@ -61,8 +61,37 @@ something an existing skill already covers, or for facts that only matter to \
 this one task.
 ";
 
+/// Guidance for `propose_agent`, on the same rule as [`SKILL_AUTHORING`]: the
+/// tool is only advertised when its setting is on, so this only appears then.
+///
+/// The distinction it draws is the one a model gets wrong. Both a skill and an
+/// agent capture something learned; the difference is whether you follow it
+/// yourself or hand it to someone else, and a roster of delegates that should
+/// have been procedures costs a line of every request for work you could have
+/// done inline.
+const AGENT_AUTHORING: &str = "\
+# Writing sub-agents down
+
+When a task has a shape that recurs and a scope worth narrowing — reviewing a \
+diff, auditing one kind of file, working through a migration site by site — \
+call `propose_agent` to record it as a delegate. The user reviews every \
+proposal, so proposing costs them a glance and nothing else; keep working \
+immediately after. The agent is not available in this turn even if approved.
+
+Propose an agent when the work is better handed over than followed: it needs \
+its own context, its own tool scope, or a narrower brief than the conversation \
+you are in. Propose a skill instead when the answer is a procedure *you* should \
+follow next time. Do not propose an agent that duplicates one on the roster, \
+and do not propose one for the task in front of you.
+";
+
 /// Builds the system prompt for a session.
-pub fn build(workspace: &Path, skill_section: Option<String>, synthesis_enabled: bool) -> String {
+pub fn build(
+    workspace: &Path,
+    skill_section: Option<String>,
+    synthesis_enabled: bool,
+    agent_synthesis_enabled: bool,
+) -> String {
     let mut prompt = String::from(BASE);
 
     // The path is named because a command's output will mention it and the
@@ -94,6 +123,11 @@ pub fn build(workspace: &Path, skill_section: Option<String>, synthesis_enabled:
         prompt.push_str(SKILL_AUTHORING);
     }
 
+    if agent_synthesis_enabled {
+        prompt.push('\n');
+        prompt.push_str(AGENT_AUTHORING);
+    }
+
     prompt
 }
 
@@ -115,7 +149,7 @@ mod tests {
 
     #[test]
     fn includes_the_workspace_path() {
-        let prompt = build(Path::new("/tmp/project"), None, false);
+        let prompt = build(Path::new("/tmp/project"), None, false, false);
         assert!(prompt.contains("/tmp/project"));
     }
 
@@ -124,14 +158,14 @@ mod tests {
         // The fix for a model that goes hunting for the project it is already
         // standing in: given only an absolute path, it built absolute commands
         // out of it, `cd`ed into the parent, and spent an entire turn there.
-        let prompt = build(Path::new("/tmp/project"), None, false);
+        let prompt = build(Path::new("/tmp/project"), None, false, false);
         assert!(prompt.contains("already start"), "{prompt}");
         assert!(prompt.contains("relative"), "{prompt}");
     }
 
     #[test]
     fn tells_the_model_to_finish_and_check_its_work() {
-        let prompt = build(Path::new("/tmp/project"), None, false);
+        let prompt = build(Path::new("/tmp/project"), None, false, false);
         assert!(
             prompt.contains("until the task is actually done"),
             "{prompt}"
@@ -141,7 +175,7 @@ mod tests {
 
     #[test]
     fn names_the_platform() {
-        let prompt = build(Path::new("/tmp"), None, false);
+        let prompt = build(Path::new("/tmp"), None, false, false);
         let named = ["Windows", "macOS", "Linux"]
             .iter()
             .any(|p| prompt.contains(p));
@@ -150,8 +184,8 @@ mod tests {
 
     #[test]
     fn skill_authoring_guidance_follows_the_setting() {
-        assert!(build(Path::new("/tmp"), None, true).contains("propose_skill"));
-        assert!(!build(Path::new("/tmp"), None, false).contains("propose_skill"));
+        assert!(build(Path::new("/tmp"), None, true, false).contains("propose_skill"));
+        assert!(!build(Path::new("/tmp"), None, false, false).contains("propose_skill"));
     }
 
     #[test]
@@ -160,7 +194,26 @@ mod tests {
             Path::new("/tmp"),
             Some("# Skills\n\n- alpha: when alpha\n".into()),
             false,
+            false,
         );
         assert!(prompt.contains("- alpha: when alpha"));
+    }
+
+    #[test]
+    fn agent_authoring_guidance_follows_its_own_setting() {
+        // Two settings, two sections. Turning skills off must not silently take
+        // the agent guidance with it, or the model is offered `propose_agent`
+        // with nothing telling it when to reach for one.
+        assert!(build(Path::new("/tmp"), None, false, true).contains("propose_agent"));
+        assert!(!build(Path::new("/tmp"), None, true, false).contains("propose_agent"));
+    }
+
+    #[test]
+    fn the_two_authoring_sections_say_how_they_differ() {
+        // The distinction a model gets wrong. An agent that should have been a
+        // skill costs a roster line on every request for work it could have
+        // done inline.
+        let prompt = build(Path::new("/tmp"), None, true, true);
+        assert!(prompt.contains("Propose a skill instead"), "{prompt}");
     }
 }

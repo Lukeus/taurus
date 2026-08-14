@@ -162,6 +162,31 @@ Authoring is a text editor, as it is for skills. The drawer's **New agent…**
 writes a starter file with every key documented in place and opens it, and it
 rescans on open, so editing a file and reopening shows what is actually on disk.
 
+The agent can also write one for you. `propose_agent` is the twin of
+`propose_skill` and gated by its own setting — a skill is a procedure the model
+follows, an agent is a worker it hands a task to, and wanting one is no reason
+to want the other. A proposal is validated before it reaches a review card:
+kebab-case name, a description under 200 characters, a system prompt long
+enough to be worth a file, no near-duplicate of an agent already on the roster,
+and no tool this session does not have. Nothing touches disk until you approve
+it, and the card is editable — so it is validated again on the way out, because
+a hand-edited name or tool list has never been checked.
+
+What keeps that a bounded risk is that a proposed agent cannot reach past the
+session that wrote it. `tools:` only ever narrows; a name outside the session's
+registry is refused rather than saved and degraded; every call the child makes
+still meets the parent's permission gate; and the child has no `spawn_subagent`,
+so it cannot propose or spawn further agents. `model:` and `provider:` are not
+proposable at all — which model a delegate runs on is a cost decision on a
+provider you pay for, and it is the one field with no bearing on what the agent
+can do. An approved agent inherits the session's model; change it by editing
+the file, where the decision is yours and visible.
+
+Approving rescans the roster rather than reloading everything, so saving an
+agent does not restart every MCP server. It is not usable in the turn that
+proposed it — a turn's roster is frozen when it starts — and the tool result
+says so, rather than letting the model spend a round trip finding out.
+
 ### Permissions
 
 Read-only tools inside the workspace run unattended. Writes, command execution,
@@ -300,12 +325,43 @@ This runs whether the command succeeded, failed, timed out, or was canceled: a
 command killed halfway through has still written whatever it got as far as
 writing, and that is exactly the turn undo is wanted for.
 
-What it walks is what the search tools walk — the workspace minus `.git`,
-minus `.taurus`, and minus whatever `.gitignore` excludes. That bound is doing
-real work. Indexing `target/` and `node_modules/` would cost gigabytes on every
-command, and a rewind that deleted build output would be a worse surprise than
-one that leaves it alone. On this repository the two passes cost about 19 ms
-and 5 ms; on 7,000 files and 132 MB, 31 ms and 16 ms.
+What it walks is the workspace minus `.git` and minus `.taurus`, and it draws
+one more line: a directory `.gitignore` excludes is not entered, but a file it
+excludes by name is still covered. Indexing `target/` and `node_modules/` would
+cost gigabytes on every command, and a rewind that deleted build output would be
+a worse surprise than one that leaves it alone — while the file an ignore rule
+usually names is `.env`, and a command that clobbers *that* is exactly the one
+you want back.
+
+The split falls out of the walk rather than being a list of blessed names.
+Every directory the walk enters is also read flat, which turns up the entries
+the walk would skip; a directory it never enters is never read either. So `.env`
+beside a `Cargo.toml` is covered and `target/` beside it is not. On this
+repository the two passes cost about 21 ms and 8 ms.
+
+Because `.env` is held, the checkpoint log holds it too, so those logs are
+readable by their owner and nobody else. A file kept out of version control on
+purpose should not become world-readable by being made recoverable.
+
+**A command that moved git says so.** `.git` is not swept and not restored, so
+undoing a turn that ran `git checkout` or `git reset --hard` puts the files back
+and leaves `HEAD` where the command left it — a tree matching neither commit.
+Restoring that properly would mean snapshotting the object store, which is its
+own feature; noticing costs two small reads, so the sweep reads `.git/HEAD` and
+the branch it names before and after each command. When both moved and files
+were recorded, the result carries the reason it is not the whole story:
+
+```
+[taurus] This command moved git's own state as well. A rewind puts the files
+back but leaves HEAD and the index where the command left them, so the result
+would match neither commit; `git reflog` is the way back to where HEAD was.
+```
+
+Only when files were recorded, which is what keeps it a warning rather than a
+running commentary. A `git commit` that touched no working-tree file leaves
+nothing to undo, so nothing looks undoable and there is nothing to correct.
+`.git/index` is watched by neither: `git status` rewrites it to refresh its stat
+cache, and a note on every turn that ran one would drown the turns that matter.
 
 When a command *cannot* be covered — a workspace past 50,000 files, or one
 whose ignore rules the command itself rewrote — the tool result says so in
@@ -325,11 +381,15 @@ explanation rather than a conversation that simply stops:
 - **The iteration ceiling** — twenty-five model/tool round trips. A ceiling
   rather than a budget the model is shown, because one it could see is one it
   could argue with.
-- **A stall** — the same tool call, with the same arguments, failing three times
-  running. The system prompt already tells the model not to retry a failed call
-  unchanged; this is what makes that true rather than merely stated. A call that
-  changes resets the count, and so does one that succeeds: a model re-reading a
-  file it is editing is working, not stuck.
+- **A stall** — the same tool call, with the same arguments, failing three
+  times with nothing succeeding in between. The system prompt already tells the
+  model not to retry a failed call unchanged; this is what makes that true
+  rather than merely stated. Counted across rounds rather than consecutively,
+  so a model alternating between two dead ends — A, B, A, B, A — is caught as
+  readily as one insisting on a single call. Anything that succeeds clears the
+  count, which is what keeps a model working through genuinely different
+  candidates from tripping it: a model re-reading a file it is editing is
+  working, not stuck.
 - **A provider failure no retry could fix** — a rejected key, an unknown model,
   a response that would not parse.
 
@@ -361,7 +421,7 @@ Once per turn, and phrased with a way out, so a documentation edit costs one
 round trip rather than an argument. `verify_changes` in `AgentConfig` turns it
 off. The checkpoint log is what it reads to know whether anything changed,
 which means it is exactly as accurate as the log — a command that only touched
-ignored files reads as having changed nothing.
+files inside an ignored directory reads as having changed nothing.
 
 ### The context window
 
@@ -391,11 +451,11 @@ turn — so it is the one part of the prompt that is pure overhead. Three things
 keep it down. Schemas are slimmed on the way out: `$schema`, the Rust struct
 name `schemars` leaves in `title`, `"default": null`, and integer-width formats
 are dropped, which is about a quarter of the built-in schema bytes and applies
-to MCP servers' schemas too. `propose_skill` is only registered when skill
-synthesis is on, matching the prompt section that explains it — it is the
-largest schema here, and offering it while saying nothing about it was paying
-for a tool the model had no reason to call. And anything a project does not want
-can be named in `settings.json`:
+to MCP servers' schemas too. `propose_skill` and `propose_agent` are each only
+registered when their own setting is on, matching the prompt section that
+explains each — they are the largest schemas here, and offering one while saying
+nothing about it was paying for a tool the model had no reason to call. And
+anything a project does not want can be named in `settings.json`:
 
 ```json
 { "disabled_tools": ["fetch_url", "mcp__some-server__rarely_used"] }
@@ -470,7 +530,7 @@ as soon as a line wraps.
 ## Configuration
 
 The desktop app's **Settings** drawer edits providers, revokes permission
-rules, and toggles skill synthesis. Everything it writes is a plain file under
+rules, and toggles skill and sub-agent synthesis. Everything it writes is a plain file under
 `~/.taurus` that the CLI reads too, so the UI and a text editor are
 interchangeable.
 
@@ -488,7 +548,7 @@ file every other project reads.
 | `providers.json` | Backends, including the header a key is sent in. Never the key itself — that lives in the OS keychain or an env var. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Header values and URLs may name env vars. Skills › **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `search.json` | Web search backends and which one is active. Never the key itself — that lives in the OS keychain or an env var, as with providers. | A different backend for this project, or field overrides on an inherited one. |
-| `settings.json` | Last workspace, skill-synthesis toggle, theme, fallback model. | The provider and model this project was last worked in. |
+| `settings.json` | Last workspace, the two synthesis toggles, theme, fallback model. | The provider and model this project was last worked in. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
@@ -570,6 +630,28 @@ the server with its own name in the message, rather than sending an empty
 `Authorization` header and producing a 401 that looks like a bad token instead
 of a missing one. A literal value still passes through untouched.
 
+**The agent can draft an entry but never install one.** `draft_mcp_server`
+takes a name and a command line and hands back a block to paste, the file it
+belongs in, and what has to be filled in first — and that is all it does. It
+writes nothing and starts nothing.
+
+That asymmetry with skills and sub-agents is deliberate. Both of those are
+reviewable: the artifact you approve is the text that will run. An MCP entry is
+a pointer to code nobody in the loop has seen — the reviewable part of `npx -y
+@scope/package` is a package name — and the program it names runs at every
+launch, before any tool call, outside the permission engine. A review card
+there would be asking for a decision with the information missing. So the model
+does the part it is good at, which is knowing what the server is called and
+which arguments it takes, and installing stays something you do in your editor
+having read it.
+
+Secrets are never carried through the draft. `env` and `headers` take variable
+and header *names*; the block comes back with `<replace-me>` where each value
+goes, and the model is told to explain what each one is rather than guess at it.
+A key the model typed would live in the transcript, and in every copy of it, for
+as long as the conversation is kept. The block is rendered through the same type
+the loader reads, so what comes back is what will parse.
+
 ### Web search
 
 Two tools, `web_search` and `fetch_url`, and **neither exists until you turn
@@ -626,7 +708,10 @@ which the model can then ask for on its own terms.
 resolved and every address it answers with has to be public, so
 `http://127.0.0.1:8080/admin` and `http://169.254.169.254/` — the cloud
 metadata endpoint, which answers unauthenticated and with credentials — are
-refused. The URL there is chosen by a model that just read a web page, which
+refused. That resolution happens inside the HTTP client `fetch_url` uses, so
+the addresses the connection is given are the addresses that were checked;
+there is no second lookup for a name to answer differently. The URL there is
+chosen by a model that just read a web page, which
 is what makes it different from a search backend or an MCP server: those are
 addresses you wrote down, and they are never subject to this. If you want the
 model reading a docs server you run locally, that is a deliberate act:
@@ -810,7 +895,7 @@ into the project file.
 ## Development
 
 ```bash
-cargo test --workspace     # 568 tests
+cargo test --workspace     # 609 tests
 pnpm test                  # transcript reducer, replay, settings, rewind
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -893,18 +978,24 @@ ships its own `.taurus` directory.
 
 ## Known gaps
 
-- **A rewind does not cover ignored files.** What a command changed is found by
-  walking the workspace around it, and that walk honors `.gitignore` — so a
-  command that rewrites an ignored file, `.env` being the one that matters, is
-  neither listed nor restorable. Widening it means indexing `target/` and
-  `node_modules/` before every command, which is not affordable, and having a
-  rewind delete build output, which is not wanted. See
+- **A rewind does not cover ignored directories.** A file an ignore rule
+  excludes by name is covered; everything under a directory an ignore rule
+  excludes is not, so a command that rewrites something in `target/` or
+  `node_modules/` is neither listed nor restorable. Widening it means indexing
+  those before every command, which is not affordable, and having a rewind
+  delete build output, which is not wanted. See
   [Rewinding a turn](#rewinding-a-turn).
-- **A rewind puts files back, not git state.** `.git` is left out of the walk,
-  so undoing a turn that ran `git checkout` or `git reset --hard` restores the
-  file contents while leaving `HEAD` and the index where the command moved them
-  — a tree that matches neither commit. Covering it means snapshotting the
-  object store, which is its own feature; `git reflog` is the way back for now.
+- **A rewind reports git state, it does not put it back.** `.git` is left out
+  of the walk, so undoing a turn that ran `git checkout` or `git reset --hard`
+  restores the file contents while leaving `HEAD` and the index where the
+  command moved them — a tree that matches neither commit. The turn now says so
+  when it happens, and points at `git reflog`, but covering it properly means
+  snapshotting the object store, which is its own feature. The warning also
+  reaches you at the moment the command runs rather than at the moment you
+  reach for undo; carrying it into the checkpoint log means a record shape and
+  a format version, and has not been done. Staging is unreported as well — see
+  [Rewinding a turn](#rewinding-a-turn) for why the index is deliberately not
+  watched.
 - **A change that moves neither length nor timestamp is invisible.** The same
   walk compares size and modification time, which is what `make` and `rsync`
   have always compared. On a filesystem with nanosecond timestamps defeating it
@@ -925,30 +1016,42 @@ ships its own `.taurus` directory.
   until the next one. The drawer rescans on open, which covers editing; a file
   watcher would close the rest, and is a surface — config reloads racing a
   running turn — worth opening deliberately rather than as a side effect.
-- **There is no `propose_agent`.** The model can write itself a skill and offer
-  it for review; it cannot write itself a delegate. The proposal pipeline would
-  port, but a model that authors its own sub-agents is a larger question than a
-  file format and should be asked on its own.
+- **A proposed agent's system prompt is reviewed by eye, and nothing else.**
+  `propose_agent` checks the shape — the name, the description, the tool scope,
+  whether it duplicates an existing agent — but the prompt itself is prose, and
+  prose that will steer a delegate on every future turn. That is the same
+  exposure `propose_skill` has always had, and it has the same answer: the card
+  shows it in full, unelided and editable, and nothing is written until you
+  approve it. There is no check that reads what it says. See
+  [Sub-agents](#sub-agents).
+- **Taurus will not install an MCP server for you.** `draft_mcp_server` writes
+  a block to paste; adding it is yours to do. The command line is the whole of
+  what a review could show, and it does not say what the program does, so this
+  is a limit rather than a to-do. See [MCP servers](#mcp-servers).
 - **An agent's tools narrow what it is offered, not what it may do.** Every call
   a child makes goes through the same permission engine as the parent's, so
   `tools:` is a scope, not a sandbox. A per-agent permission policy would be a
   second thing to keep in step with the first, and is not there.
-- **Stall detection only catches an exact repeat.** A model that alternates
-  between two calls that both fail — A, B, A, B — is as stuck as one repeating a
-  single call, but each round differs from the one before it, so only the
-  iteration ceiling stops it. Widening the check to a window of recent rounds
-  would catch that, at the cost of ending turns where the model was genuinely
-  cycling through candidates. See [When a turn stops](#when-a-turn-stops).
+- **Stall detection needs an exact repeat.** Alternating between two dead ends
+  is now caught, but the calls have to match argument for argument. A model
+  asking the same unanswerable question in three slightly different ways —
+  reading a missing file by three spellings of its path — is making no more
+  progress than one asking it identically, and nothing here notices. Judging
+  that would mean deciding when two calls are *near* enough to be the same
+  mistake, which is a guess the iteration ceiling makes unnecessary. See
+  [When a turn stops](#when-a-turn-stops).
 - **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
   that renders its content client-side comes back near-empty. Closing this
   means shipping a browser engine, so it is a limit rather than a to-do.
-- **`fetch_url` resolves a name twice.** Loopback and private-network addresses
-  are refused — the host is resolved and every address it answers with must be
-  public — but the connection resolves the name again, so a name that answers
-  publicly during the check and privately a moment later would get through.
-  Pinning the connection to the address that was checked is per-client in
-  reqwest, not per-request. `"allow_private_hosts": true` in `search.json`
-  turns the check off deliberately.
+- **`fetch_url`'s address check does not survive a proxy.** Loopback and
+  private-network addresses are refused, and the check now runs inside the
+  client that connects, so a name cannot answer publicly for the check and
+  privately for the connection. An HTTP proxy resolves the name at its end
+  though, so a request routed through one reaches a destination Taurus never
+  sees. Taurus configures no proxy, but reqwest reads `HTTP_PROXY` and the
+  system settings, and refusing to work behind a corporate proxy would cost
+  more than this buys. `"allow_private_hosts": true` in `search.json` turns
+  the check off deliberately.
 
 ## License
 

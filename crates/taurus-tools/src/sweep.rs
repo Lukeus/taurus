@@ -17,21 +17,37 @@
 //!
 //! # What it covers
 //!
-//! The same files the search tools walk: the workspace minus `.git` and minus
-//! whatever `.gitignore` excludes. That bound is not a detail. Indexing
+//! The files the search tools walk, plus the ones an ignore rule excludes by
+//! name.
+//!
+//! Those are not the same bound, and the difference is the point. Indexing
 //! `target/` and `node_modules/` would cost gigabytes on every command, and a
 //! rewind that deleted build output would be a worse surprise than one that
-//! leaves it alone. The cost is that a command which changes an ignored file —
-//! `.env` being the one that matters — is not recorded and cannot be undone.
+//! leaves it alone — so a directory an ignore rule excludes is not entered.
+//! But a rule that excludes a *file* costs nothing to look past, and the file
+//! it usually excludes is `.env`. A command that rewrites that one is exactly
+//! the command a user reaches for undo on.
+//!
+//! The split falls out of the walk rather than being imposed on it. Every
+//! directory the walk enters is also read flat, which surfaces the entries the
+//! walk itself would skip; a directory the walk never enters is never read
+//! here either, because it never arrives to be read. So `.env` beside a
+//! `Cargo.toml` is covered and `target/` beside it is not, with no list of
+//! special names deciding which is which.
 //!
 //! # What it costs
 //!
-//! One read of every tracked file before each command, bounded by the
+//! One read of every covered file before each command, bounded by the
 //! constants below, and one metadata-only walk after. For a source repository
 //! that is a few megabytes; the caps are what keep a workspace full of large
 //! assets from turning every command into a copy of itself. A file past a cap
 //! is still *detected* — detection only needs length and modification time —
 //! it just has no pre-image, so a rewind reports it instead of restoring it.
+//!
+//! Because `.env` is now held, the checkpoint log holds it too. That is why
+//! [`crate::checkpoint`] keeps its logs readable by their owner and nobody
+//! else: a file kept out of version control on purpose should not become
+//! world-readable by being recoverable.
 //!
 //! # Where it is blind
 //!
@@ -41,8 +57,17 @@
 //! within the same tick would slip through. Length and mtime is the comparison
 //! `make` and `rsync` have always used, and reading every file twice to close
 //! it would cost more than the gap is worth.
+//!
+//! Git's own state is not restored either, and here the sweep at least knows
+//! it. `.git` is excluded from the walk, so a turn that ran `git checkout` or
+//! `git reset --hard` has its files put back while `HEAD` and the index stay
+//! where the command moved them — a tree matching neither commit. Snapshotting
+//! the object store to fix that properly is a feature rather than a field, but
+//! *noticing* costs two small reads: see [`GitState`]. A turn that moved git
+//! and recorded files carries a caveat saying so, which is the difference
+//! between a wrong tree and a wrong tree you were told about.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -86,6 +111,9 @@ pub struct Sweep {
     /// second pass can tell whether the rules it is walking under are the ones
     /// the first pass walked under. See [`Sweep::after`].
     ignores: HashMap<PathBuf, (u64, Option<SystemTime>)>,
+    /// Where git stood, so a command that moved it can say so. See
+    /// [`GitState`].
+    git: Option<GitState>,
     /// Set when nothing was indexed, carrying the reason to report.
     abandoned: Option<String>,
 }
@@ -173,6 +201,7 @@ impl Sweep {
         Self {
             files: HashMap::new(),
             ignores: HashMap::new(),
+            git: None,
             abandoned: Some(reason),
         }
     }
@@ -192,9 +221,9 @@ impl Sweep {
 
         let scan = {
             let root = root.to_path_buf();
-            tokio::task::spawn_blocking(move || current(&root)).await
+            tokio::task::spawn_blocking(move || (current(&root), git_state(&root))).await
         };
-        let Ok(Some(now)) = scan else {
+        let Ok((Some(now), git_now)) = scan else {
             return Change {
                 caveat: Some(
                     "The workspace could not be read after this command, so whatever it changed \
@@ -271,41 +300,120 @@ impl Sweep {
             recorder.capture_state(&path, before).await;
         }
 
+        let mut caveats = Vec::new();
+        // Narrower than the others on purpose: what was recorded is still
+        // sound, and saying otherwise would be its own kind of wrong.
+        if !rules_held {
+            caveats.push(
+                "An ignore rule changed while this command ran, so any file it stopped ignoring \
+                 was left out and a rewind will not touch it."
+                    .to_string(),
+            );
+        }
+        // Only when something was recorded, which is what makes this a warning
+        // rather than a running commentary on git. A `git commit` that touched
+        // no working-tree file leaves nothing to undo, so nothing here looks
+        // undoable and there is nothing to correct. A `git checkout` that
+        // rewrote half the tree is the opposite: the files come back, `HEAD`
+        // does not, and the result matches neither commit.
+        if !files.is_empty() && self.git != git_now {
+            caveats.push(
+                "This command moved git's own state as well. A rewind puts the files back but \
+                 leaves HEAD and the index where the command left them, so the result would match \
+                 neither commit; `git reflog` is the way back to where HEAD was."
+                    .to_string(),
+            );
+        }
+
         Change {
             files,
             unrestorable,
-            // Narrower than the others on purpose: what was recorded is still
-            // sound, and saying otherwise would be its own kind of wrong.
-            caveat: (!rules_held).then(|| {
-                "An ignore rule changed while this command ran, so any file it stopped ignoring \
-                 was left out and a rewind will not touch it."
-                    .to_string()
-            }),
+            caveat: (!caveats.is_empty()).then(|| caveats.join(" ")),
         }
     }
 }
 
+/// Every file one pass covers.
+///
+/// The walk, plus a flat read of each directory it enters. The second half is
+/// what brings in a file an ignore rule excludes by name; see the module
+/// header for why a directory it excludes stays out.
+///
+/// `None` when the workspace holds more than [`MAX_FILES`], which is a
+/// different answer from holding none.
+fn sweepable(root: &Path) -> Option<Vec<PathBuf>> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    // The walk yields a directory before descending into it, so nearly every
+    // file arrives from the flat read first and again from the walk. Which one
+    // found it does not matter; recording it twice would.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    for entry in walker(root) {
+        let Ok(entry) = entry else { continue };
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+
+        if file_type.is_dir() {
+            let Ok(listing) = std::fs::read_dir(entry.path()) else {
+                continue;
+            };
+            for entry in listing.flatten() {
+                // Files only, and never a descent: an ignored directory shows
+                // up here as an entry and is passed over exactly like the walk
+                // passes over it.
+                if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                    continue;
+                }
+                // The walk excludes these by name and prunes them as
+                // directories, which is how they usually appear. In a git
+                // worktree `.git` is a regular *file* pointing elsewhere, and a
+                // flat read would hand it over as ordinary content.
+                if skipped(&entry.file_name()) {
+                    continue;
+                }
+                if files.len() >= MAX_FILES {
+                    return None;
+                }
+                let path = entry.path();
+                if seen.insert(path.clone()) {
+                    files.push(path);
+                }
+            }
+            continue;
+        }
+
+        // Regular files only. A symlink belongs to whatever it points at, and
+        // restoring one as text would replace the link with a file.
+        if !file_type.is_file() {
+            continue;
+        }
+        if files.len() >= MAX_FILES {
+            return None;
+        }
+        let path = entry.into_path();
+        if seen.insert(path.clone()) {
+            files.push(path);
+        }
+    }
+
+    Some(files)
+}
+
 /// The first pass: everything, with contents where they fit.
 fn index(root: &Path) -> Sweep {
+    let Some(paths) = sweepable(root) else {
+        return Sweep::abandoned(format!(
+            "This workspace holds more than {MAX_FILES} files, too many to record a command's \
+             changes against, so this one cannot be undone."
+        ));
+    };
+
     let mut files = HashMap::new();
     let mut ignores = HashMap::new();
     let mut held: u64 = 0;
 
-    for entry in walker(root) {
-        let Ok(entry) = entry else { continue };
-        // Regular files only. A symlink belongs to whatever it points at, and
-        // restoring one as text would replace the link with a file.
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        if files.len() >= MAX_FILES {
-            return Sweep::abandoned(format!(
-                "This workspace holds more than {MAX_FILES} files, too many to record a \
-                 command's changes against, so this one cannot be undone."
-            ));
-        }
-
-        let path = entry.into_path();
+    for path in paths {
         let Ok(meta) = path.metadata() else { continue };
         let len = meta.len();
         let modified = meta.modified().ok();
@@ -348,6 +456,7 @@ fn index(root: &Path) -> Sweep {
     Sweep {
         files,
         ignores,
+        git: git_state(root),
         abandoned: None,
     }
 }
@@ -358,31 +467,104 @@ fn index(root: &Path) -> Sweep {
 /// which makes the comparison meaningless rather than merely incomplete.
 fn current(root: &Path) -> Option<HashMap<PathBuf, (u64, Option<SystemTime>)>> {
     let mut now = HashMap::new();
-    for entry in walker(root) {
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        if now.len() >= MAX_FILES {
-            return None;
-        }
-        let path = entry.into_path();
+    for path in sweepable(root)? {
         let Ok(meta) = path.metadata() else { continue };
         now.insert(path, (meta.len(), meta.modified().ok()));
     }
     Some(now)
 }
 
-/// The traversal, shared with the search tools so that "the workspace" means
-/// one set of files whether the agent is grepping it or changing it.
+/// Where git stood, in the three places a command usually moves it.
 ///
-/// With one directory more skipped. `.taurus/` is the harness's own state —
-/// this project's permission grants and settings — and a rewind that put it
-/// back would revoke permissions the user granted, which is not a file change
-/// they asked to undo. The agent may still read it; it just does not travel
-/// with the turn.
+/// Not enough to put anything back — that would mean snapshotting the object
+/// store, which is a feature rather than a field. Enough to *notice*, which is
+/// what separates a rewind that leaves a tree matching neither commit from one
+/// that leaves it that way and says so.
+///
+/// `.git` is excluded from the sweep and stays excluded: this reads it, and
+/// nothing here records or restores it.
+#[derive(PartialEq, Eq)]
+struct GitState {
+    /// `.git/HEAD`: which branch is checked out, or which commit when
+    /// detached. Moved by `git checkout` and `git switch`.
+    head: String,
+    /// The ref `HEAD` names, read through. `git commit` and `git reset` leave
+    /// `HEAD` pointing at the same branch and move the branch instead, so
+    /// without this the two most common cases look like nothing happened.
+    reference: Option<String>,
+}
+
+// `.git/index` is deliberately not here, though a rewind does not carry staging
+// either. `git status` refreshes the index's stat cache and writes it back, and
+// a model runs `git status` constantly — so watching the index would attach a
+// warning to most turns that ran one alongside an edit. A caveat that appears
+// on ordinary turns is one nobody reads by the time it matters. The cost is
+// that a bare `git add` goes unremarked; every case that moves the working tree
+// moves `HEAD` or a branch, and those are watched.
+
+/// Reads that state, or `None` where there is no repository to read.
+fn git_state(root: &Path) -> Option<GitState> {
+    let dir = git_dir(root)?;
+    let head = std::fs::read_to_string(dir.join("HEAD")).ok()?;
+
+    let reference = head
+        .strip_prefix("ref:")
+        .map(str::trim)
+        // `HEAD` is a file in the workspace being worked on, so joining
+        // whatever it holds would follow `../` wherever it liked. A ref name is
+        // the only thing worth following, and it is easy to insist on.
+        .filter(|name| name.starts_with("refs/") && !name.contains(".."))
+        // Absent when the ref is packed rather than loose. That reads as `None`
+        // both times and so reports nothing, which is the right way for this to
+        // fail: git writes a loose ref whenever it moves one, so the update
+        // itself is still seen.
+        .and_then(|name| std::fs::read_to_string(dir.join(name)).ok());
+
+    Some(GitState { head, reference })
+}
+
+/// The directory git keeps its state in, which is not always `.git` itself.
+///
+/// In a worktree `.git` is a regular file naming the real directory, and
+/// reading `HEAD` from the file would find nothing at all.
+fn git_dir(root: &Path) -> Option<PathBuf> {
+    let dot_git = root.join(".git");
+    if std::fs::metadata(&dot_git).ok()?.is_dir() {
+        return Some(dot_git);
+    }
+
+    let pointer = std::fs::read_to_string(&dot_git).ok()?;
+    let target = Path::new(pointer.strip_prefix("gitdir:")?.trim());
+    Some(match target.is_absolute() {
+        true => target.to_path_buf(),
+        false => root.join(target),
+    })
+}
+
+/// Never swept, whatever the ignore rules say about them.
+///
+/// `.git` is the object store: a rewind that restored it would put `HEAD` and
+/// the index back without the commits they name. `.taurus/` is the harness's
+/// own state — this project's permission grants and settings — and a rewind
+/// that put that back would revoke permissions the user granted, which is not
+/// a file change they asked to undo. The agent may still read either; they
+/// just do not travel with the turn.
+const SKIP: &[&str] = &[".git", ".taurus"];
+
+fn skipped(name: &std::ffi::OsStr) -> bool {
+    SKIP.iter().any(|skip| name == *skip)
+}
+
+/// The traversal, shared with the search tools so that "the workspace" means
+/// one set of directories whether the agent is grepping it or changing it.
+///
+/// Which *files* come back differs, and deliberately: search skips what an
+/// ignore rule excludes, and [`sweepable`] looks once more inside every
+/// directory this enters. The asymmetry only runs one way — a file the agent
+/// cannot grep may still be recorded, never the reverse — so nothing the agent
+/// can destroy goes unrecorded.
 fn walker(root: &Path) -> ignore::Walk {
-    crate::builtin::search::walker_skipping(root, &[".git", ".taurus"])
+    crate::builtin::search::walker_skipping(root, SKIP)
 }
 
 fn is_ignore_file(path: &Path) -> bool {
@@ -598,18 +780,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_ignored_file_is_left_alone() {
-        // Documents the bound rather than defending it: walking `target/` and
-        // `node_modules/` on every command is not affordable, and the cost is
-        // that an ignored file is neither recorded nor restorable.
+    async fn a_file_ignored_by_name_still_goes_back() {
+        // The case this exists for. `.env` is ignored precisely because it
+        // matters, and a command that clobbers it is the one a user reaches
+        // for undo on. Looking past a rule that names a file costs one flat
+        // read of a directory already being walked.
         let f = Fixture::new();
-        f.write(".gitignore", "secrets.txt\n");
-        f.write("secrets.txt", "before");
+        f.write(".gitignore", ".env\n");
+        f.write(".env", "SECRET_KEY=hunter2");
 
-        let change = f.around(|| f.write("secrets.txt", "clobbered")).await;
+        let change = f.around(|| f.write(".env", "clobbered")).await;
 
-        assert!(change.files.is_empty());
-        assert_eq!(f.read("secrets.txt"), "clobbered");
+        assert_eq!(change.files, vec![".env"]);
+        f.rewind();
+        assert_eq!(f.read(".env"), "SECRET_KEY=hunter2");
+    }
+
+    #[tokio::test]
+    async fn a_file_inside_an_ignored_directory_is_left_alone() {
+        // The other half of the same rule, and the reason it is drawn at
+        // directories. Indexing `target/` and `node_modules/` would cost
+        // gigabytes on every command, and a rewind that deleted build output
+        // would be a worse surprise than one that leaves it be.
+        let f = Fixture::new();
+        f.write(".gitignore", "build/\n");
+        f.write("build/out.o", "before");
+
+        let change = f.around(|| f.write("build/out.o", "rebuilt")).await;
+
+        assert!(change.files.is_empty(), "{:?}", change.files);
+        assert_eq!(f.read("build/out.o"), "rebuilt");
+    }
+
+    #[tokio::test]
+    async fn a_worktrees_git_file_does_not_travel_with_the_turn() {
+        // `.git` is normally a directory and the walk prunes it by name. In a
+        // git worktree it is a regular *file* pointing elsewhere, and the flat
+        // read that finds `.env` would hand it over as ordinary content —
+        // leaving a rewind able to detach the worktree from its repository.
+        let f = Fixture::new();
+        f.write(".git", "gitdir: /elsewhere/.git/worktrees/w\n");
+
+        let change = f
+            .around(|| f.write(".git", "gitdir: /somewhere/else\n"))
+            .await;
+
+        assert!(change.files.is_empty(), "{:?}", change.files);
+        f.rewind_expecting_nothing();
+    }
+
+    #[tokio::test]
+    async fn an_ignored_file_a_command_created_is_deleted_again() {
+        // Creation has to follow the same rule as modification, or a rewind
+        // leaves behind exactly the file it was asked to remove.
+        let f = Fixture::new();
+        f.write(".gitignore", ".env\n");
+
+        let change = f.around(|| f.write(".env", "written by the command")).await;
+
+        assert_eq!(change.files, vec![".env"]);
+        f.rewind();
+        assert!(!f.exists(".env"), "a created file must not survive");
     }
 
     #[tokio::test]
@@ -732,6 +963,161 @@ mod tests {
         assert!(change.files.is_empty());
         f.rewind_expecting_nothing();
         assert!(f.read(".taurus/permissions.json").contains("run_command"));
+    }
+
+    impl Fixture {
+        /// A repository, as far as anything here reads one: `HEAD` naming a
+        /// branch, that branch naming a commit, and an index.
+        fn repo(&self, branch: &str, commit: &str) {
+            self.write(".git/HEAD", &format!("ref: refs/heads/{branch}\n"));
+            self.write(&format!(".git/refs/heads/{branch}"), &format!("{commit}\n"));
+            self.write(".git/index", "an index");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_that_checked_out_a_branch_says_a_rewind_will_not_undo_it() {
+        // The turn undo looks equal to and is not. The files come back; `HEAD`
+        // stays where the checkout left it, and the result is a tree matching
+        // neither commit.
+        let f = Fixture::new();
+        f.repo("main", "aaaaaaa");
+        f.write("a.txt", "on main");
+
+        let change = f
+            .around(|| {
+                f.write("a.txt", "on the other branch");
+                f.write(".git/HEAD", "ref: refs/heads/other\n");
+            })
+            .await;
+
+        assert_eq!(change.files, vec!["a.txt"], "the file is still recorded");
+        let caveat = change.caveat.expect("moving HEAD has to be said");
+        assert!(caveat.contains("git reflog"), "{caveat}");
+    }
+
+    #[tokio::test]
+    async fn a_branch_that_moved_under_a_still_head_is_noticed() {
+        // `git reset --hard` and `git commit` both leave `HEAD` pointing at the
+        // same branch and move the branch instead. Reading only `HEAD` would
+        // call the two most common cases uneventful.
+        let f = Fixture::new();
+        f.repo("main", "aaaaaaa");
+        f.write("a.txt", "before");
+
+        let change = f
+            .around(|| {
+                f.write("a.txt", "after");
+                f.write(".git/refs/heads/main", "bbbbbbb\n");
+            })
+            .await;
+
+        assert_eq!(change.files, vec!["a.txt"]);
+        assert!(change.caveat.is_some(), "a moved branch has to be said");
+    }
+
+    #[tokio::test]
+    async fn a_command_that_left_git_alone_says_nothing_about_it() {
+        // Every ordinary edit happens inside a repository. If this spoke up for
+        // those, it would be noise on almost every turn and read as nothing.
+        let f = Fixture::new();
+        f.repo("main", "aaaaaaa");
+        f.write("a.txt", "before");
+
+        let change = f.around(|| f.write("a.txt", "after")).await;
+
+        assert_eq!(change.files, vec!["a.txt"]);
+        assert!(change.caveat.is_none(), "{:?}", change.caveat);
+    }
+
+    #[tokio::test]
+    async fn git_moving_with_nothing_to_undo_is_not_worth_saying() {
+        // `git commit` moves the branch and touches no working-tree file. There
+        // is no turn in the log, so nothing looks undoable, so there is nothing
+        // to correct — and a note on every commit would drown the ones that
+        // matter.
+        let f = Fixture::new();
+        f.repo("main", "aaaaaaa");
+
+        let change = f
+            .around(|| f.write(".git/refs/heads/main", "bbbbbbb\n"))
+            .await;
+
+        assert!(change.files.is_empty());
+        assert!(change.caveat.is_none(), "{:?}", change.caveat);
+    }
+
+    #[tokio::test]
+    async fn a_refreshed_index_is_not_mistaken_for_a_command_that_moved_git() {
+        // `git status` rewrites the index to refresh its stat cache, and a
+        // model runs `git status` constantly. Watching the index would put a
+        // warning on most turns that ran one next to an edit, and a caveat that
+        // shows up on ordinary turns is one nobody reads by the time it counts.
+        let f = Fixture::new();
+        f.repo("main", "aaaaaaa");
+        f.write("a.txt", "before");
+
+        let change = f
+            .around(|| {
+                f.write("a.txt", "after");
+                f.write(".git/index", "a refreshed index");
+            })
+            .await;
+
+        assert_eq!(change.files, vec!["a.txt"]);
+        assert!(change.caveat.is_none(), "{:?}", change.caveat);
+    }
+
+    #[tokio::test]
+    async fn a_workspace_that_is_not_a_repository_has_nothing_to_say() {
+        let f = Fixture::new();
+        f.write("a.txt", "before");
+
+        let change = f.around(|| f.write("a.txt", "after")).await;
+
+        assert_eq!(change.files, vec!["a.txt"]);
+        assert!(change.caveat.is_none(), "{:?}", change.caveat);
+    }
+
+    #[tokio::test]
+    async fn a_worktree_keeps_its_state_somewhere_else_and_is_still_read() {
+        // In a worktree `.git` is a regular file naming the real directory.
+        // Reading `HEAD` from beside it finds nothing, and a checkout would go
+        // unremarked in exactly the setup where branches move most.
+        let f = Fixture::new();
+        let elsewhere = TempDir::new().unwrap();
+        let git = elsewhere.path().canonicalize().unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        f.write(".git", &format!("gitdir: {}\n", git.display()));
+        f.write("a.txt", "before");
+
+        let change = f
+            .around(|| {
+                f.write("a.txt", "after");
+                std::fs::write(git.join("HEAD"), "ref: refs/heads/other\n").unwrap();
+            })
+            .await;
+
+        assert_eq!(change.files, vec!["a.txt"]);
+        assert!(
+            change.caveat.is_some(),
+            "a worktree's HEAD moved unremarked"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_head_pointing_outside_the_repository_is_not_followed() {
+        // `HEAD` is a file in the workspace being worked on. Joining whatever
+        // it holds would read wherever it pointed, so only a ref name is
+        // followed and anything else reads as no ref at all.
+        let f = Fixture::new();
+        f.write(".git/HEAD", "ref: ../../../../etc/passwd\n");
+        f.write("a.txt", "before");
+
+        let change = f.around(|| f.write("a.txt", "after")).await;
+
+        assert_eq!(change.files, vec!["a.txt"]);
+        assert!(change.caveat.is_none(), "{:?}", change.caveat);
     }
 
     #[tokio::test]

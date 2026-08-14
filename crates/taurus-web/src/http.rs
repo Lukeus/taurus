@@ -15,20 +15,61 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// self-hosted instance to block you.
 const USER_AGENT: &str = concat!("taurus/", env!("CARGO_PKG_VERSION"));
 
+/// Everything both clients below share. The only thing that separates them is
+/// which resolver they connect through.
+fn builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .user_agent(USER_AGENT)
+        .redirect(same_host_only())
+}
+
 /// One client for the process: it owns the connection pool, and building a new
 /// one per call would throw away every kept-alive connection.
+///
+/// Unguarded, and deliberately so. What reaches this is a URL the user wrote in
+/// a config file — a search backend, usually their own — and a private address
+/// there is a self-hosted instance, not an attack. See [`crate::address`].
 pub fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .user_agent(USER_AGENT)
-            .redirect(same_host_only())
+        builder()
             .build()
             // Only fails if the TLS backend cannot initialize, which is not a
             // condition the rest of the harness could do anything about either.
             .unwrap_or_default()
     })
+}
+
+/// The client for a URL the model chose, resolving through
+/// [`crate::address::PublicOnly`] so a name cannot answer publicly for the
+/// check and privately for the connection.
+///
+/// A second pool rather than a second configuration of the first, because the
+/// guard belongs to the client and a shared one would have to apply it to the
+/// user's own search backend too.
+///
+/// Fails rather than falling back. The same TLS initialization that would sink
+/// this sinks [`client`] as well, but *that* one degrading to a default client
+/// costs a connection pool, and this one degrading to a default client costs
+/// the guard — silently, on the single call it exists to protect.
+pub fn guarded_client() -> Result<&'static reqwest::Client, ToolError> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            builder()
+                .dns_resolver(crate::address::PublicOnly)
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .ok_or_else(|| {
+            ToolError::Failed(
+                "the HTTP client that checks where a request goes could not be built, so this \
+                 fetch was refused rather than sent unchecked."
+                    .into(),
+            )
+        })
 }
 
 /// How many same-host hops to follow before calling it a loop.
@@ -122,9 +163,25 @@ pub fn describe(error: &reqwest::Error) -> String {
         return format!("timed out after {}s", TIMEOUT.as_secs());
     }
     if error.is_connect() {
-        return format!("could not connect: {error}");
+        return format!("could not connect: {}", cause(error));
     }
     error.to_string()
+}
+
+/// The innermost reason, rather than the wrapper naming the URL.
+///
+/// A connect failure's `Display` says a request could not be sent and repeats
+/// the URL the caller already has; what happened — the port was refused, the
+/// certificate did not verify, [`crate::address::PublicOnly`] would not resolve
+/// the name — is underneath it. For the address refusal in particular that
+/// message is the whole answer, and dropping it would leave the one guard the
+/// model needs to understand looking like an ordinary network blip.
+fn cause(error: &reqwest::Error) -> String {
+    let mut deepest: &dyn std::error::Error = error;
+    while let Some(next) = deepest.source() {
+        deepest = next;
+    }
+    deepest.to_string()
 }
 
 /// Strips HTML tags and unescapes the handful of entities that show up in

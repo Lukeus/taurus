@@ -7,11 +7,17 @@ license.workspace = true
 description = "Sub-agent definitions and discovery for the Taurus agent harness"
 
 [dependencies]
+# All external. This crate stays free of workspace dependencies — see the
+# module header in `lib.rs` — and `proposal` needs an id and an async trait for
+# the sink, neither of which brings a taurus crate with it.
+async-trait.workspace = true
 serde.workspace = true
 serde_yaml_ng.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 ts-rs.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 # A dev-only cycle back to the crates that consume this one: the delegation

@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import type { AgentSummary } from "../lib/api";
-import { partition } from "./AgentsDrawer";
+import { chips, partition } from "./AgentsDrawer";
 
 const agent = (patch: Partial<AgentSummary> = {}): AgentSummary => ({
   name: "reviewer",
@@ -38,9 +38,9 @@ describe("agent filters", () => {
     expect(partition(roster, "all").shown).toHaveLength(4);
   });
 
-  it("narrows to what this project added", () => {
-    const { shown } = partition(roster, "project");
-    expect(shown.map((a) => a.name)).toEqual(["b", "c"]);
+  it("narrows to the built-ins, which are the ones with no file to open", () => {
+    const { shown } = partition(roster, "builtin");
+    expect(shown.map((a) => a.name)).toEqual(["explorer"]);
   });
 
   it("finds the broken one, which is the reason to open this list", () => {
@@ -49,18 +49,14 @@ describe("agent filters", () => {
   });
 
   it("counts the same regardless of which filter is showing", () => {
-    for (const filter of ["all", "project", "attention"] as const) {
+    // The pills read their counts off this, so a count that moved with the
+    // filter would have the list disagree with the label above it.
+    for (const filter of ["all", "builtin", "attention"] as const) {
       const counts = partition(roster, filter);
       expect(counts.all).toHaveLength(4);
-      expect(counts.project).toHaveLength(2);
+      expect(counts.builtin).toHaveLength(1);
       expect(counts.attention).toHaveLength(1);
     }
-  });
-
-  it("treats a degraded project agent as both, not either", () => {
-    const { project, attention } = partition(roster, "all");
-    expect(project.map((a) => a.name)).toContain("c");
-    expect(attention.map((a) => a.name)).toContain("c");
   });
 
   it("survives an empty roster without inventing a count", () => {
@@ -68,5 +64,26 @@ describe("agent filters", () => {
     expect(empty.all).toEqual([]);
     expect(empty.attention).toEqual([]);
     expect(empty.shown).toEqual([]);
+  });
+});
+
+describe("tool chips on a card", () => {
+  it("shows a short scope in full", () => {
+    expect(chips(["read_file", "grep"])).toEqual({
+      shown: ["read_file", "grep"],
+      hidden: 0,
+    });
+  });
+
+  it("counts what it had to leave out rather than truncating silently", () => {
+    // A card that showed three of eleven tools and said nothing would read as
+    // a read-only agent that can in fact write.
+    const { shown, hidden } = chips(["a", "b", "c", "d", "e"]);
+    expect(shown).toEqual(["a", "b", "c"]);
+    expect(hidden).toBe(2);
+  });
+
+  it("never reports a negative overflow", () => {
+    expect(chips([]).hidden).toBe(0);
   });
 });

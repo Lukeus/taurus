@@ -13,9 +13,11 @@
 pub mod agent;
 pub mod builtin;
 pub mod catalog;
+pub mod proposal;
 
 pub use agent::{
     parse_agent_md, validate, AgentDefinition, AgentError, AgentFrontmatter, AgentSummary,
     AgentTier, DESCRIPTION_LIMIT, MAX_ITERATIONS_LIMIT,
 };
 pub use catalog::{AgentCatalog, AgentSource};
+pub use proposal::{AgentProposal, AgentProposalSink, SaveTarget};

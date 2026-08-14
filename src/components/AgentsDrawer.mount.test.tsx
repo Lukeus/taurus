@@ -42,7 +42,11 @@ describe("opening the agents drawer", () => {
 
     const { html, unmount } = mount(<AgentsDrawer onClose={() => {}} />);
     expect(html).toContain("Agents");
-    expect(html).toContain("Where agents live");
+    // The shadowing rule, which is the one thing about this list that cannot
+    // be worked out by looking at it.
+    expect(html).toContain("overrides a built-in");
+    // And a way in for someone who has never written the frontmatter.
+    expect(html).toContain("New agent");
     unmount();
   });
 

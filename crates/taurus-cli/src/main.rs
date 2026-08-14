@@ -19,6 +19,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
+use taurus_agents::proposal::CollectingSink as AgentCollectingSink;
 use taurus_host::Host;
 use taurus_skills::proposal::CollectingSink;
 use tracing_subscriber::EnvFilter;
@@ -396,6 +397,8 @@ pub struct Runtime {
     /// Proposals are collected during a turn and dealt with after it, so a
     /// review prompt never cuts into streaming output.
     pub proposals: Arc<CollectingSink>,
+    /// The same, for proposed sub-agents.
+    pub agent_proposals: Arc<AgentCollectingSink>,
     /// False when there is no terminal, which changes how proposals and
     /// refusals are reported.
     pub interactive: bool,
@@ -420,12 +423,19 @@ async fn build_host(args: &SessionArgs, policy: Policy) -> Result<Runtime, Strin
     let interactive = TerminalPrompt::new(policy.clone()).is_interactive();
     let prompts = Arc::new(session::TerminalPrompts::new(policy));
     let proposals = Arc::new(CollectingSink::default());
+    let agent_proposals = Arc::new(AgentCollectingSink::default());
 
-    let host = Arc::new(Host::new(workspace, prompts, proposals.clone()));
+    let host = Arc::new(Host::new(
+        workspace,
+        prompts,
+        proposals.clone(),
+        agent_proposals.clone(),
+    ));
     host.reload().await;
     Ok(Runtime {
         host,
         proposals,
+        agent_proposals,
         interactive,
     })
 }

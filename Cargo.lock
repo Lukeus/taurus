@@ -4781,6 +4781,7 @@ dependencies = [
 name = "taurus-agents"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -4793,6 +4794,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]
@@ -4831,6 +4833,7 @@ dependencies = [
  "clap",
  "rpassword",
  "serde_json",
+ "taurus-agents",
  "taurus-core",
  "taurus-host",
  "taurus-provider",
@@ -4895,6 +4898,7 @@ dependencies = [
  "async-trait",
  "reqwest",
  "rmcp",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "taurus-tools",

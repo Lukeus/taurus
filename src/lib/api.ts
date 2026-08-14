@@ -22,6 +22,8 @@ import type { PermissionRequest } from "../bindings/PermissionRequest";
 import type { Problem } from "../bindings/Problem";
 import type { ProblemSource } from "../bindings/ProblemSource";
 import type { ProviderConfig } from "../bindings/ProviderConfig";
+import type { AgentProposal } from "../bindings/AgentProposal";
+import type { AgentSaveTarget } from "../bindings/AgentSaveTarget";
 import type { ProviderKind } from "../bindings/ProviderKind";
 import type { Restored } from "../bindings/Restored";
 import type { ResumedSession } from "../bindings/ResumedSession";
@@ -37,6 +39,8 @@ import type { Theme } from "../bindings/Theme";
 import type { UiEvent } from "../bindings/UiEvent";
 
 export type {
+  AgentProposal,
+  AgentSaveTarget,
   AgentSummary,
   AgentTier,
   AllowedRule,
@@ -69,6 +73,7 @@ export type {
 
 export const EVENT_PERMISSION_REQUEST = "taurus://permission-request";
 export const EVENT_SKILL_PROPOSAL = "taurus://skill-proposal";
+export const EVENT_AGENT_PROPOSAL = "taurus://agent-proposal";
 
 export const getStatus = () => invoke<AppStatus>("get_status");
 
@@ -146,6 +151,30 @@ export const agentRosterCost = () => invoke<number>("agent_roster_cost");
  * Disk stays the source of truth; this only means nobody has to already know
  * the frontmatter to write their first one.
  */
+/** Every tool this session has, for the agent editor's picker. */
+export const listTools = () => invoke<string[]>("list_tools");
+
+/**
+ * Writes an agent from the editor. `draft` is an `AgentProposal` minus the
+ * fields only a model-made proposal carries — the backend fills in the id and
+ * the review-card metadata.
+ */
+export const saveAgent = (
+  draft: Pick<
+    AgentProposal,
+    "name" | "description" | "prompt" | "tools" | "max_iterations"
+  >,
+  target: AgentSaveTarget,
+) => invoke<string>("save_agent", { draft, target });
+
+/** Drafts an agent from a description, for the editor to fill in. */
+export const generateAgent = (
+  description: string,
+  providerId: string,
+  model: string,
+) =>
+  invoke<AgentProposal>("generate_agent", { description, providerId, model });
+
 export const createAgent = (scope: Scope, name: string) =>
   invoke<string>("create_agent", { scope, name });
 
@@ -178,6 +207,19 @@ export const respondSkillProposal = (
 
 export const setSkillSynthesis = (enabled: boolean) =>
   invoke<void>("set_skill_synthesis", { enabled });
+
+export const respondAgentProposal = (
+  id: string,
+  approve: boolean,
+  target?: AgentSaveTarget,
+  edited?: AgentProposal,
+) =>
+  invoke<string | null>("respond_agent_proposal", {
+    response: { id, approve, target: target ?? null, edited: edited ?? null },
+  });
+
+export const setAgentSynthesis = (enabled: boolean) =>
+  invoke<void>("set_agent_synthesis", { enabled });
 
 export const setTheme = (theme: Theme) => invoke<void>("set_theme", { theme });
 
@@ -259,3 +301,8 @@ export const onSkillProposal = (
   handler: (proposal: SkillProposal) => void,
 ): Promise<UnlistenFn> =>
   listen<SkillProposal>(EVENT_SKILL_PROPOSAL, (e) => handler(e.payload));
+
+export const onAgentProposal = (
+  handler: (proposal: AgentProposal) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentProposal>(EVENT_AGENT_PROPOSAL, (e) => handler(e.payload));

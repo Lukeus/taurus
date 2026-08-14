@@ -92,13 +92,19 @@ impl Tool for FetchUrl {
         let parsed = reqwest::Url::parse(url)
             .map_err(|e| ToolError::InvalidInput(format!("'{url}' is not a valid URL: {e}")))?;
 
-        if !self.allow_private_hosts {
+        // Two halves of one guard. The check is what produces a readable
+        // refusal; the client is what enforces it, by resolving the name once
+        // and connecting to what it vetted. See [`crate::address`].
+        let client = if self.allow_private_hosts {
+            http::client()
+        } else {
             crate::address::ensure_public(&parsed)
                 .await
                 .map_err(ToolError::Failed)?;
-        }
+            http::guarded_client()?
+        };
 
-        let response = http::send(http::client().get(parsed), ctx).await?;
+        let response = http::send(client.get(parsed), ctx).await?;
         let status = response.status();
         // Same-host redirects are followed, so this may not be the URL that was
         // asked for. Reporting where the text actually came from is the

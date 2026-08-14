@@ -255,6 +255,25 @@ export function Settings({ onClose }: { onClose: () => void }) {
               </span>
             </label>
 
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                checked={status?.settings.agent_synthesis_enabled ?? true}
+                onChange={async (e) => {
+                  await api.setAgentSynthesis(e.target.checked);
+                  await refresh();
+                }}
+              />
+              <span>
+                Let Taurus propose sub-agents
+                <span className="hint">
+                  It offers a delegate for work that recurs. It can never be
+                  given a tool you do not have, and nothing is saved without
+                  your approval.
+                </span>
+              </span>
+            </label>
+
             <ThemePicker theme={status?.settings.theme ?? "system"} />
           </>
         )}
