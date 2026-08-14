@@ -810,7 +810,7 @@ into the project file.
 ## Development
 
 ```bash
-cargo test --workspace     # 528 tests
+cargo test --workspace     # 568 tests
 pnpm test                  # transcript reducer, replay, settings, rewind
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
