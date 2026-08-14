@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 32 32">
+  <title>Taurus</title>
+  <desc>
+    The app mark, and the source every generated icon comes from: the T on its
+    rounded square. Not a second drawing of it — this is the Logo in
+    src/components/icons.tsx on the same 32-unit grid, with the same radius,
+    stroke weight and round caps. Only the colours differ, because they are
+    resolved rather than named: Finder and Explorer do not know what
+    var(--accent) means, so the dark theme's cyan and ink are written out.
+    Regenerate the set with `pnpm tauri icon app-icon.svg`.
+  </desc>
+  <rect width="32" height="32" rx="8" fill="#7cd2ff"/>
+  <path
+    d="M8 11h16M16 11v11"
+    stroke="#0b0f14"
+    stroke-width="2.6"
+    stroke-linecap="round"
+    fill="none"
+  />
+</svg>

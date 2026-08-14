@@ -821,6 +821,29 @@ cargo fmt --all
 pnpm bindings
 ```
 
+### The app icon
+
+Every icon the bundles use is generated from `app-icon.svg` at the repository
+root, which is the same mark the rail draws — the `Logo` in
+`src/components/icons.tsx`, on the same grid, with the colours resolved because
+Finder and Explorer do not know what `var(--accent)` means.
+
+```bash
+pnpm tauri icon app-icon.svg     # regenerates src-tauri/icons/
+```
+
+Both halves of that matter. `src-tauri/icons/` held a flat purple square for
+long enough to ship in a release, which nothing caught because no test can look
+at a picture — so the mark and the icon are now one file apart rather than two
+unrelated drawings. The mobile output the generator also writes is deleted;
+there is no Android or iOS project here to consume it.
+
+On Windows the executable's icon does not come from the bundler at all.
+`tauri-build` reads the first `.ico` in `bundle.icon` and embeds it as resource
+`32512` while compiling, which is why a plain `cargo build --release -p
+taurus-app` — what CI runs, producing `taurus-app.exe` — carries the icon
+without any bundling step. Keep an `.ico` first in that list.
+
 ### Live checks
 
 These run against a real Ollama server and are the fastest way to confirm a
