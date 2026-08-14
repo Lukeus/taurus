@@ -719,6 +719,60 @@ async fn a_failing_call_that_changes_is_not_a_stall() {
 }
 
 #[tokio::test]
+async fn alternating_between_two_failing_calls_stops_the_turn() {
+    // A model going A, B, A, B, A is as stuck as one going A, A, A — but every
+    // round differs from the round before it, so comparing against that one
+    // alone saw progress and let the whole iteration budget drain.
+    let h = harness(vec![
+        failing_read("t1", "one.txt"),
+        failing_read("t2", "two.txt"),
+        failing_read("t3", "one.txt"),
+        failing_read("t4", "two.txt"),
+        failing_read("t5", "one.txt"),
+        ScriptedTurn::text("never reached"),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "read it").await;
+
+    assert!(
+        matches!(outcome, Err(AgentError::Stalled(3))),
+        "expected a stall on the third failure of the same call: {outcome:?}"
+    );
+    assert_eq!(
+        h.provider.request_count().await,
+        5,
+        "the turn should stop on the third `one.txt`, not run to the ceiling"
+    );
+}
+
+#[tokio::test]
+async fn anything_succeeding_clears_the_count() {
+    // The guard against the widened check ending turns it should not. This
+    // fails on `missing.txt` four times in all, which would trip a counter that
+    // simply accumulated — but something worked in between, and a model that is
+    // getting somewhere is allowed to come back to a call that failed earlier.
+    let h = harness(vec![
+        failing_read("t1", "missing.txt"),
+        failing_read("t2", "missing.txt"),
+        ScriptedTurn::tool_call("t3", "list_dir", serde_json::json!({ "path": "." })),
+        failing_read("t4", "missing.txt"),
+        failing_read("t5", "missing.txt"),
+        ScriptedTurn::text("It really is not there."),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "find it").await;
+
+    assert!(
+        outcome.is_ok(),
+        "progress in between must reset the count: {outcome:?}"
+    );
+    assert_eq!(
+        session.messages.last().unwrap().text(),
+        "It really is not there."
+    );
+}
+
+#[tokio::test]
 async fn repeating_a_call_that_succeeds_is_not_a_stall() {
     // A model may legitimately repeat a call while it works — polling a build,
     // re-listing a directory it is changing. Only a repeat that keeps failing

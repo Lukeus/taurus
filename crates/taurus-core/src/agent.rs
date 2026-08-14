@@ -49,13 +49,18 @@ pub struct AgentConfig {
     /// real backoffs would put seconds of sleeping into the suite to prove
     /// something that has nothing to do with wall-clock time.
     pub retry_backoff: Duration,
-    /// How many times the model may repeat a tool call that just failed,
-    /// unchanged, before the turn is stopped.
+    /// How many times the model may make a tool call that fails, unchanged,
+    /// with nothing succeeding in between, before the turn is stopped.
     ///
     /// The system prompt already tells it not to. This is what makes that true:
     /// left alone, a model on a bad path spends the whole iteration budget
     /// rediscovering the same error, and the user waits for all of it to be
     /// told nothing happened.
+    ///
+    /// Counted across rounds rather than consecutively, so alternating between
+    /// two dead ends is caught as readily as insisting on one. Anything that
+    /// succeeds resets the count, which is what keeps a model working through
+    /// genuinely different candidates from tripping it.
     pub stall_limit: u32,
     /// Whether a turn that changed files without running anything afterwards
     /// gets asked, once, to check its work before it is allowed to finish.
@@ -102,7 +107,7 @@ pub enum AgentError {
     Provider(#[from] taurus_provider::ProviderError),
     #[error("reached the {0}-iteration limit for one turn")]
     IterationLimit(u32),
-    #[error("the same failing tool call was repeated {0} times without change")]
+    #[error("the same failing tool call was repeated {0} times with no progress in between")]
     Stalled(u32),
 }
 
@@ -164,12 +169,17 @@ impl Agent {
 
         let mut total = TokenUsage::default();
         let mut iteration = 0;
-        // The last round of calls where *everything* failed, and how many times
-        // it has now arrived unchanged. Only all-failed rounds are tracked: a
-        // round where something succeeded is progress, whatever else went wrong
-        // alongside it.
-        let mut last_failed: Option<Vec<(String, serde_json::Value)>> = None;
-        let mut repeats = 0;
+        // Every round since the last sign of progress where *everything*
+        // failed, oldest first. Only all-failed rounds are kept: a round where
+        // something succeeded is progress, whatever else went wrong alongside
+        // it, and it empties this.
+        //
+        // A list rather than the previous round alone, because a model
+        // alternating between two calls that both fail is as stuck as one
+        // repeating a single call, and comparing only against the round before
+        // would see every round differ from the one before it. Bounded by the
+        // iteration ceiling, since anything succeeding clears it.
+        let mut failures: Vec<Vec<(String, serde_json::Value)>> = Vec::new();
 
         // Whether this turn has changed files without running anything since.
         // See `verify_nudge`.
@@ -295,20 +305,30 @@ impl Agent {
             // Checked before the results are pushed, so the transcript ends on
             // the failure the model kept repeating rather than on a stop notice
             // with no visible cause.
-            let failed = all_failed(&assistant, &results);
-            match &failed {
-                Some(calls) if last_failed.as_ref() == Some(calls) => repeats += 1,
-                _ => repeats = 1,
-            }
-            last_failed = failed;
+            // How many times this exact round has now failed with nothing
+            // succeeding in between — not how many times it has arrived in a
+            // row. What matters is that the model has been told this answer
+            // before and has learned nothing since; whether it tried something
+            // else and came back does not change that.
+            let repeats = match all_failed(&assistant, &results) {
+                Some(calls) => {
+                    let seen = failures.iter().filter(|round| **round == calls).count() + 1;
+                    failures.push(calls);
+                    seen as u32
+                }
+                None => {
+                    failures.clear();
+                    0
+                }
+            };
 
             session.push(Message::new(Role::User, results));
 
             if repeats >= self.config.stall_limit {
                 let message = format!(
-                    "Stopped after the same tool call failed {repeats} times unchanged. Nothing \
-                     about it will succeed on a further attempt; a different approach is needed, \
-                     or the obstacle needs reporting."
+                    "Stopped after the same tool call failed {repeats} times with nothing \
+                     succeeding in between. Nothing about it will succeed on a further attempt; a \
+                     different approach is needed, or the obstacle needs reporting."
                 );
                 // Recorded in the transcript, so a resumed session can see why
                 // it stopped rather than finding a turn that simply ends.
