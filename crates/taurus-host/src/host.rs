@@ -14,9 +14,10 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use taurus_agents::catalog::{AgentCatalog, AgentSource};
+use taurus_agents::catalog::{AgentCatalog, AgentSource, SharedAgentCatalog};
+use taurus_agents::proposal::AgentProposalSink;
 use taurus_agents::{AgentDefinition, AgentSummary, AgentTier};
-use taurus_core::{Agent, AgentConfig, AgentModel, ModelOverrides, SpawnSubagent};
+use taurus_core::{Agent, AgentConfig, AgentModel, ModelOverrides, ProposeAgent, SpawnSubagent};
 use taurus_mcp::{McpManager, ServerStatus};
 use taurus_provider::Provider;
 use taurus_provider_ollama::OllamaProvider;
@@ -75,7 +76,11 @@ pub struct Host {
     catalog: SharedCatalog,
     /// The sub-agent roster. Seeded with the built-ins so `explorer` and
     /// `worker` work before anything has been scanned.
-    agents: RwLock<AgentCatalog>,
+    ///
+    /// Shared rather than owned so `propose_agent` can check a proposed name
+    /// against the roster as it stands now. A turn delegates against a frozen
+    /// snapshot; a duplicate check has to see the live set.
+    agents: SharedAgentCatalog,
     /// Each agent's `(provider, model)`, resolved once per reload. Resolving it
     /// here rather than per turn keeps a keychain read off the hot path.
     agent_models: RwLock<ModelOverrides>,
@@ -87,6 +92,10 @@ pub struct Host {
     problems: RwLock<Vec<Problem>>,
     prompts: Arc<dyn PermissionPromptFactory>,
     proposals: Arc<dyn ProposalSink>,
+    /// Where a proposed *agent* goes. Separate from `proposals` because the two
+    /// carry different payloads and land on different review cards, not because
+    /// a frontend would ever want one and not the other.
+    agent_proposals: Arc<dyn AgentProposalSink>,
 }
 
 impl Host {
@@ -94,6 +103,7 @@ impl Host {
         workspace: PathBuf,
         prompts: Arc<dyn PermissionPromptFactory>,
         proposals: Arc<dyn ProposalSink>,
+        agent_proposals: Arc<dyn AgentProposalSink>,
     ) -> Self {
         let permissions = Arc::new(PermissionEngine::new(
             &workspace,
@@ -109,7 +119,7 @@ impl Host {
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
             catalog: Arc::new(RwLock::new(SkillCatalog::default())),
-            agents: RwLock::new(AgentCatalog::default()),
+            agents: Arc::new(RwLock::new(AgentCatalog::default())),
             agent_models: RwLock::new(ModelOverrides::new()),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             permissions: RwLock::new(permissions),
@@ -117,6 +127,7 @@ impl Host {
             problems: RwLock::new(Vec::new()),
             prompts,
             proposals,
+            agent_proposals,
         }
     }
 
@@ -190,6 +201,13 @@ impl Host {
                 self.proposals.clone(),
             )));
         }
+        if self.settings.read().await.agent_synthesis_enabled {
+            registry.register(Arc::new(ProposeAgent::new(
+                self.agents.clone(),
+                self.registry.clone(),
+                self.agent_proposals.clone(),
+            )));
+        }
 
         // Both web tools stand or fall together: a `fetch_url` with no way to
         // find a URL is a tool the model can only use on links the user pastes,
@@ -209,6 +227,16 @@ impl Host {
             )));
             registry.register(Arc::new(taurus_web::WebSearch::new(backend)));
         }
+
+        // Unconditional, unlike everything else registered here. It is how a
+        // user with no MCP servers gets their first one, so gating it on having
+        // some would take it away from exactly the person who needs it. Safe to
+        // offer unconditionally because it does the opposite of what its name
+        // suggests to a reader in a hurry: it writes nothing and starts
+        // nothing. See `taurus_mcp::draft`.
+        registry.register(Arc::new(
+            taurus_mcp::DraftMcpServer::new(config::home_dir()),
+        ));
 
         // Reconnecting drops the previous connections, stopping the old child
         // processes; leaving them would leak one per workspace change.
@@ -477,6 +505,7 @@ impl Host {
         let workspace = self.workspace.read().await.clone();
         let skill_section = self.catalog.read().await.prompt_section();
         let synthesis = self.settings.read().await.skill_synthesis_enabled;
+        let agent_synthesis = self.settings.read().await.agent_synthesis_enabled;
 
         // Opened here rather than by the loop, because a sub-agent runs its own
         // loop and must record into the turn that spawned it, not one of its
@@ -491,7 +520,7 @@ impl Host {
             registry,
             self.tool_context(cancel).await.with_checkpoints(recorder),
             AgentConfig {
-                system_prompt: prompt::build(&workspace, skill_section, synthesis),
+                system_prompt: prompt::build(&workspace, skill_section, synthesis, agent_synthesis),
                 ..Default::default()
             },
         )
@@ -681,6 +710,34 @@ impl Host {
         }
     }
 
+    /// Toggles sub-agent synthesis for every workspace.
+    ///
+    /// The twin of [`Host::set_skill_synthesis`], down to not rebuilding the
+    /// registry: a checkbox has no business dropping every MCP connection.
+    pub async fn set_agent_synthesis(&self, enabled: bool) {
+        config::edit_settings(Scope::Global, None, |s| {
+            s.agent_synthesis_enabled = Some(enabled)
+        });
+        let workspace = self.workspace.read().await.clone();
+        *self.settings.write().await = config::load_settings(Some(&workspace));
+
+        let resolved = self.settings.read().await.clone();
+        let mut registry = self.registry.write().await;
+        registry.remove(taurus_core::PROPOSE_AGENT_TOOL);
+        if resolved.agent_synthesis_enabled
+            && !resolved
+                .disabled_tools
+                .iter()
+                .any(|d| d == taurus_core::PROPOSE_AGENT_TOOL)
+        {
+            registry.register(Arc::new(ProposeAgent::new(
+                self.agents.clone(),
+                self.registry.clone(),
+                self.agent_proposals.clone(),
+            )));
+        }
+    }
+
     /// Sets the palette for every workspace.
     ///
     /// Global only, like every other edit from the UI: a theme is a property of
@@ -717,6 +774,19 @@ impl Host {
 
     pub fn catalog(&self) -> &SharedCatalog {
         &self.catalog
+    }
+
+    /// The live roster, for a caller re-checking a proposal before it is saved.
+    /// [`Host::agents`] returns the summaries a drawer renders; this is the
+    /// catalog itself.
+    pub fn agent_catalog(&self) -> &SharedAgentCatalog {
+        &self.agents
+    }
+
+    /// The live registry, for the same reason: a proposal naming a tool has to
+    /// be checked against what this session actually has.
+    pub fn registry(&self) -> &Arc<RwLock<ToolRegistry>> {
+        &self.registry
     }
 
     pub async fn skills(&self) -> Vec<SkillSummary> {
@@ -764,6 +834,7 @@ impl Host {
             &self.workspace.read().await.clone(),
             self.catalog.read().await.prompt_section(),
             self.settings.read().await.skill_synthesis_enabled,
+            self.settings.read().await.agent_synthesis_enabled,
         )
     }
 
@@ -965,6 +1036,11 @@ mod tests {
         async fn submit(&self, _: taurus_skills::SkillProposal) {}
     }
 
+    #[async_trait]
+    impl AgentProposalSink for NoProposals {
+        async fn submit(&self, _: taurus_agents::AgentProposal) {}
+    }
+
     /// A host over an isolated config home.
     ///
     /// The guard comes back with it and must be held for the whole test:
@@ -975,6 +1051,7 @@ mod tests {
         let host = Host::new(
             workspace.to_path_buf(),
             Arc::new(DenyingPrompts),
+            Arc::new(NoProposals),
             Arc::new(NoProposals),
         );
         (host, home)
@@ -1211,6 +1288,59 @@ mod tests {
         }
         // The spawn tool is deliberately absent here; it is added per turn.
         assert!(!tools.iter().any(|t| t == taurus_core::SPAWN_TOOL));
+    }
+
+    #[tokio::test]
+    async fn the_agent_proposal_tool_follows_its_own_setting() {
+        // Two capabilities, two switches. Wanting the model to write procedures
+        // is no reason to want it writing delegates, and the schemas are paid
+        // for separately on every request.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/settings.json"),
+            r#"{"agent_synthesis_enabled": false}"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let tools = host.tool_names().await;
+        assert!(!tools.iter().any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
+        assert!(
+            tools.iter().any(|t| t == taurus_skills::PROPOSE_TOOL),
+            "turning one off must not take the other with it"
+        );
+    }
+
+    #[tokio::test]
+    async fn toggling_agent_synthesis_adds_and_removes_the_tool_without_a_reload() {
+        // A checkbox must not restart every MCP server to take effect, which is
+        // what rebuilding the registry here would do.
+        let dir = TempDir::new().unwrap();
+        let (host, _home) = host(&dir.path().canonicalize().unwrap());
+        host.reload().await;
+        assert!(host
+            .tool_names()
+            .await
+            .iter()
+            .any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
+
+        host.set_agent_synthesis(false).await;
+        assert!(!host
+            .tool_names()
+            .await
+            .iter()
+            .any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
+
+        host.set_agent_synthesis(true).await;
+        assert!(host
+            .tool_names()
+            .await
+            .iter()
+            .any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
     }
 
     #[tokio::test]

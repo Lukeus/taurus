@@ -815,6 +815,22 @@ body.resizing * {
   flex-direction: column;
   gap: 22px;
 }
+/*
+ * Entries keep their size; the column scrolls.
+ *
+ * A flex item defaults to `flex-shrink: 1`, and this container is a flex
+ * column with a bounded height — so every entry was compressed a little
+ * further with each one added, and a long turn squeezed the ones above it
+ * until they were unreadable. `.run` clips (`overflow: hidden`), so it lost
+ * its step rows off the bottom rather than merely tightening.
+ *
+ * `overflow-y: auto` does not prevent this on its own: shrinking happens
+ * first, and the scrollbar only appears once the children can give no more.
+ */
+.transcript > * {
+  flex: none;
+}
+
 .transcript.empty {
   justify-content: center;
   align-items: center;
@@ -936,8 +952,6 @@ body.resizing * {
 .thinking-body,
 .tool-output,
 .proposal-body {
-  font-family: var(--mono);
-  font-size: 12px;
   background: var(--bg-sunken);
   border: 1px solid var(--rule);
   border-radius: var(--r-sm);
@@ -948,6 +962,33 @@ body.resizing * {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text-dim);
+}
+/* Command output and generated scripts are code, and read as code. */
+.tool-output,
+.proposal-body {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+/* Scoped rather than a second bare `.proposal-body`, which would be the same
+   name declared twice — see the stylesheet test. */
+.proposal .proposal-body {
+  margin-bottom: 14px;
+}
+
+/*
+ * Reasoning is prose, not output.
+ *
+ * It sat in the block above with `run_command`'s stdout, which put a model
+ * thinking in sentences into 12px monospace — the reply above it is 14.5px
+ * sans, so opening Reasoning made the text visibly shrink. The panel stays
+ * (it is an aside, and the surface says so), the typography follows the
+ * reply, and it is a step down in size rather than two.
+ */
+.thinking-body {
+  font-family: var(--sans);
+  font-size: 13.5px;
+  line-height: 1.6;
+  padding: 10px 13px;
 }
 
 /* ---------------------------------------------------------------- tool run */
@@ -1478,9 +1519,6 @@ body.resizing * {
   font-size: 11.5px;
   color: var(--text-dim);
 }
-.proposal-body {
-  margin-bottom: 14px;
-}
 .proposal-actions {
   display: flex;
   align-items: center;
@@ -1865,3 +1903,169 @@ button.link:hover {
   font-size: 12px;
   color: var(--text-dim);
 }
+
+/* ── Agents ─────────────────────────────────────────────────────────────
+   The roster drawer and the editor behind its New agent button. Both are
+   built out of the shared card / pill / tag shapes above; what is here is
+   only what those did not already cover. */
+
+/* A project agent carries a tinted border as well as its tag. The roster is
+   read by scanning, and the one question asked of it most — which of these
+   did this repo add — should be answerable without reading a single word. */
+.card.agent.own {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--rule));
+}
+.card.agent:hover {
+  background: var(--bg-elevated);
+}
+
+/* A tool name, as a scope reads rather than as prose. Mono because these are
+   identifiers and the eye should be able to run down a column of them. */
+.tool-chips {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.tool-chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-faint);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+/* The picker's version, which is a control rather than a label. */
+.tool-chip.pick {
+  cursor: pointer;
+  background: transparent;
+  border-color: var(--border);
+  font-size: 11.5px;
+  padding: 4px 11px;
+}
+.tool-chip.pick:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.tool-chip.pick.on {
+  background: var(--bg-active);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.tool-chip.pick:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.drawer-foot .card-add {
+  margin-bottom: 8px;
+}
+.agent-cost {
+  margin: 0;
+}
+
+/*
+ * A modal rather than a second drawer: the editor is a form you finish and
+ * leave, not a panel you work alongside, and stacking two drawers would put
+ * the roster behind the thing that edits it.
+ */
+.modal-scrim {
+  align-items: center;
+  justify-content: center;
+}
+.modal {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.agent-editor {
+  width: 680px;
+  max-width: 94vw;
+  max-height: 92vh;
+}
+.agent-editor .drawer-head {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--rule);
+  margin: 0;
+}
+
+/* Tinted, because this is the one part of the form nobody has to use: the
+   fields below it are the agent, and this is a way of filling them in. */
+.agent-generate {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-generate-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.agent-generate-row .hint {
+  flex: 1;
+}
+
+.agent-fields {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field-row {
+  display: flex;
+  gap: 14px;
+}
+.field-row .field {
+  flex: 1;
+}
+.field-row .field.narrow {
+  width: 150px;
+  flex: none;
+}
+/* A label with something on its right — a character count, a checkbox. */
+.field-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.field-label .micro {
+  flex: 1;
+}
+/* The count only earns attention once it is a problem. */
+.hint.over {
+  color: var(--danger);
+}
+.inherit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.agent-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--rule);
+}
+
+
+
+

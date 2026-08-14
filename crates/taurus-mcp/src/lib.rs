@@ -6,6 +6,7 @@
 //! namespace.
 
 pub mod config;
+pub mod draft;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -22,6 +23,7 @@ use tracing::{info, warn};
 use taurus_tools::{expand_env, Effect, Tool, ToolContext, ToolError, ToolResult};
 
 pub use config::{load, McpConfig, ServerConfig};
+pub use draft::{DraftMcpServer, DRAFT_MCP_TOOL};
 
 /// Prefix that keeps MCP tools from colliding with built-ins or each other.
 pub const NAMESPACE: &str = "mcp__";

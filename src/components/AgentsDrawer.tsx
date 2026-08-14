@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
-import type { AgentSummary, AgentTier, Scope } from "../lib/api";
+import type { AgentSummary, AgentTier } from "../lib/api";
+import { AgentEditor } from "./AgentEditor";
 import { useStore } from "../state/store";
 
-type Filter = "all" | "project" | "attention";
+type Filter = "all" | "builtin" | "attention";
 
 /**
  * Every sub-agent this workspace can delegate to, and what each one is scoped
@@ -21,9 +22,6 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
   const [cost, setCost] = useState<number | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
-  const [scope, setScope] = useState<Scope>("workspace");
-  const [error, setError] = useState<string | null>(null);
 
   /*
    * One stable slice, narrowed here rather than in the selector — see the same
@@ -53,68 +51,26 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const create = async () => {
-    setError(null);
-    try {
-      await api.createAgent(scope, name.trim());
-      setCreating(false);
-      setName("");
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const { all, project, attention, shown } = partition(agents ?? [], filter);
+  const { all, builtin, attention, shown } = partition(agents ?? [], filter);
 
   return (
     <div className="scrim" onClick={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
           <h2>Agents</h2>
-          <button onClick={() => setCreating((open) => !open)}>New agent…</button>
+          {/* The roster is a directory, and a directory changes under a drawer
+              that is already open. Mounting rescans; this is how you rescan
+              without closing and reopening. */}
+          <button onClick={() => refresh().catch(() => {})}>Rescan</button>
           <button className="drawer-close" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </header>
 
-        {creating && (
-          <section className="section">
-            {/* A file, not a form: this writes a commented template and opens
-                it in whatever edits markdown here. Disk stays the source of
-                truth — this only means nobody has to already know the
-                frontmatter to write their first agent. */}
-            <div className="section-head">
-              <span className="micro">New agent</span>
-            </div>
-            <input
-              autoFocus
-              value={name}
-              placeholder="code-reviewer"
-              aria-label="Agent name"
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && create()}
-            />
-            <div className="pill-row">
-              <button
-                className={`pill${scope === "workspace" ? " on" : ""}`}
-                onClick={() => setScope("workspace")}
-              >
-                This project
-              </button>
-              <button
-                className={`pill${scope === "global" ? " on" : ""}`}
-                onClick={() => setScope("global")}
-              >
-                All projects
-              </button>
-            </div>
-            <button className="primary" disabled={!name.trim()} onClick={create}>
-              Create and open
-            </button>
-            {error && <p className="settings-problem">{error}</p>}
-          </section>
-        )}
+        <p className="drawer-intro">
+          Sub-agents Taurus can delegate to. A project file overrides a user
+          file of the same name; either overrides a built-in.
+        </p>
 
         <div className="pill-row">
           <button
@@ -124,10 +80,10 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
             All {all.length}
           </button>
           <button
-            className={`pill${filter === "project" ? " on" : ""}`}
-            onClick={() => setFilter("project")}
+            className={`pill${filter === "builtin" ? " on" : ""}`}
+            onClick={() => setFilter("builtin")}
           >
-            This project {project.length}
+            Built-in {builtin.length}
           </button>
           <button
             className={`pill${filter === "attention" ? " on" : ""}`}
@@ -144,67 +100,9 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
 
         <ul className="card-list">
           {shown.map((agent) => (
-            <li key={agent.name} className="card">
-              <div className="card-body">
-                <div className="card-row">
-                  <span className="card-title">{agent.name}</span>
-                  <span
-                    className={`tag ${agent.tier === "project" ? "project" : ""}`}
-                  >
-                    {TIER_LABEL[agent.tier]}
-                  </span>
-                  {agent.degraded && <span className="tag warn">degraded</span>}
-                </div>
-                <span className="card-sub">{agent.description}</span>
-                {/* Enforced, unlike a skill's tool list: this is the set the
-                    child is actually offered. */}
-                <span className="card-files">
-                  {agent.tools
-                    ? `can use ${agent.tools.join(", ")}`
-                    : "inherits every tool the main agent has"}
-                </span>
-                {agent.model && (
-                  <span className="card-files">
-                    runs on {agent.model}
-                    {agent.provider ? ` · ${agent.provider}` : ""}
-                  </span>
-                )}
-                {/* The fact a person opens this drawer to check. */}
-                {agent.shadows && (
-                  <span className="card-files">
-                    replaces the {TIER_LABEL[agent.shadows]} agent of the same
-                    name
-                  </span>
-                )}
-                {agent.degraded && (
-                  <span className="card-files warn">{agent.degraded}</span>
-                )}
-                {agent.path && <span className="card-files">{agent.path}</span>}
-              </div>
-            </li>
+            <AgentCard key={agent.name} agent={agent} />
           ))}
         </ul>
-
-        <section className="section">
-          <div className="section-head">
-            <span className="micro">Where agents live</span>
-          </div>
-          <p className="drawer-empty">
-            Any <code>.md</code> file in <code>~/.taurus/agents</code> or{" "}
-            <code>&lt;workspace&gt;/.taurus/agents</code>. The file name is the
-            agent's name, and the body below the frontmatter is its system
-            prompt. A project agent replaces a personal one; either replaces a
-            built-in.
-          </p>
-          {cost !== null && (
-            <div className="section-row">
-              <span className="name">Roster cost</span>
-              <span className="value">
-                {cost.toLocaleString()} characters of every request
-              </span>
-            </div>
-          )}
-        </section>
 
         {problems.length > 0 && (
           <section className="section">
@@ -216,8 +114,87 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
             ))}
           </section>
         )}
+
+        <div className="drawer-foot">
+          <button className="card-add" onClick={() => setCreating(true)}>
+            New agent — .md with frontmatter
+          </button>
+          {cost !== null && (
+            <p className="agent-cost">
+              Roster costs {cost.toLocaleString()} characters of every request.
+            </p>
+          )}
+        </div>
       </aside>
+
+      {creating && (
+        <AgentEditor
+          onClose={() => setCreating(false)}
+          onSaved={async () => {
+            setCreating(false);
+            await refresh();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * One agent, as the roster shows it.
+ *
+ * The order is what someone scanning the list actually asks: what is it called
+ * and where did it come from, what is it for, what can it reach, and — only if
+ * something is wrong — why. The file path comes last because it is what you
+ * need once you have decided to go and edit it.
+ */
+function AgentCard({ agent }: { agent: AgentSummary }) {
+  const tools = agent.tools ? chips(agent.tools) : null;
+  // Everything that is true of every agent, on one line, because separately
+  // they are four lines of grey that push the next card off the screen.
+  const meta = [
+    `max ${agent.max_iterations} iterations`,
+    agent.model && `runs on ${agent.model}`,
+    agent.shadows && `replaces the ${TIER_LABEL[agent.shadows]} agent`,
+    agent.path,
+  ].filter(Boolean);
+
+  return (
+    <li className={`card agent${agent.tier === "project" ? " own" : ""}`}>
+      <div className="card-body">
+        <div className="card-row">
+          <span className="card-title">{agent.name}</span>
+          <span className={`tag ${agent.tier === "project" ? "project" : ""}`}>
+            {TIER_LABEL[agent.tier]}
+          </span>
+          {agent.degraded && <span className="tag warn">degraded</span>}
+        </div>
+        <span className="card-sub">{agent.description}</span>
+
+        {/* Enforced, unlike a skill's tool list: this is the set the child is
+            actually offered, so it is shown as the scope it is rather than
+            buried in a sentence. */}
+        {tools ? (
+          <div className="tool-chips">
+            {tools.shown.map((tool) => (
+              <span key={tool} className="tool-chip">
+                {tool}
+              </span>
+            ))}
+            {tools.hidden > 0 && (
+              <span className="tool-chip">+{tools.hidden} more</span>
+            )}
+          </div>
+        ) : (
+          <span className="card-files">inherits the caller's tools</span>
+        )}
+
+        {agent.degraded && (
+          <span className="card-files warn">{agent.degraded}</span>
+        )}
+        <span className="card-files">{meta.join(" · ")}</span>
+      </div>
+    </li>
   );
 }
 
@@ -229,16 +206,29 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
  * never disagree.
  */
 export function partition(agents: AgentSummary[], filter: Filter) {
-  const project = agents.filter((a) => a.tier === "project");
+  const builtin = agents.filter((a) => a.tier === "builtin");
   const attention = agents.filter((a) => a.degraded);
   return {
     all: agents,
-    project,
+    builtin,
     attention,
     shown:
-      filter === "project" ? project : filter === "attention" ? attention : agents,
+      filter === "builtin" ? builtin : filter === "attention" ? attention : agents,
   };
 }
+
+/**
+ * The tools a card shows, and how many it had to leave out.
+ *
+ * A scope of eleven tools would push everything below it off the card, and the
+ * first few are enough to tell a read-only agent from one that can write. The
+ * whole list is in the editor, where it is the thing being edited.
+ */
+export function chips(tools: string[], limit = CHIP_LIMIT) {
+  return { shown: tools.slice(0, limit), hidden: Math.max(0, tools.length - limit) };
+}
+
+const CHIP_LIMIT = 3;
 
 const TIER_LABEL: Record<AgentTier, string> = {
   builtin: "built-in",

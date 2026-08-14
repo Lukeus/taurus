@@ -12,11 +12,13 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 use tracing::warn;
 
+use taurus_agents::proposal::{AgentProposal, AgentProposalSink};
 use taurus_skills::proposal::{ProposalSink, SkillProposal};
 use taurus_tools::{PermissionDecision, PermissionPrompt, PermissionRequest};
 
 pub const EVENT_PERMISSION_REQUEST: &str = "taurus://permission-request";
 pub const EVENT_SKILL_PROPOSAL: &str = "taurus://skill-proposal";
+pub const EVENT_AGENT_PROPOSAL: &str = "taurus://agent-proposal";
 
 /// Permission prompt backed by the UI.
 ///
@@ -83,6 +85,29 @@ impl ProposalSink for UiProposalSink {
         self.pending.insert(proposal.id.clone(), proposal.clone());
         if let Err(e) = self.app.emit(EVENT_SKILL_PROPOSAL, &proposal) {
             warn!(error = %e, "could not deliver skill proposal");
+        }
+    }
+}
+
+/// The same, for proposed sub-agents. Approval is handled by
+/// `respond_agent_proposal`.
+pub struct UiAgentProposalSink {
+    app: AppHandle,
+    pending: Arc<DashMap<String, AgentProposal>>,
+}
+
+impl UiAgentProposalSink {
+    pub fn new(app: AppHandle, pending: Arc<DashMap<String, AgentProposal>>) -> Self {
+        Self { app, pending }
+    }
+}
+
+#[async_trait]
+impl AgentProposalSink for UiAgentProposalSink {
+    async fn submit(&self, proposal: AgentProposal) {
+        self.pending.insert(proposal.id.clone(), proposal.clone());
+        if let Err(e) = self.app.emit(EVENT_AGENT_PROPOSAL, &proposal) {
+            warn!(error = %e, "could not deliver agent proposal");
         }
     }
 }

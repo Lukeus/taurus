@@ -24,6 +24,7 @@ const state = {
   entries: [],
   changed: [],
   proposals: [],
+  agentProposals: [],
   busy: false,
   error: null,
   init: vi.fn(),

@@ -694,6 +694,15 @@ pub struct Settings {
     /// Whether the agent may propose skills on its own after a turn.
     #[serde(default = "default_true")]
     pub skill_synthesis_enabled: bool,
+    /// Whether the agent may propose sub-agents on its own.
+    ///
+    /// Separate from skills because they are separate capabilities: a skill is
+    /// a procedure the agent follows, an agent is a worker it hands a task to,
+    /// and wanting one is no reason to want the other. Both default on, and
+    /// both are gated by the same thing that makes that safe — nothing is
+    /// written until the user approves the card.
+    #[serde(default = "default_true")]
+    pub agent_synthesis_enabled: bool,
     /// Tools to leave out of the harness entirely, by the exact name
     /// `taurus tools` prints.
     ///
@@ -727,6 +736,7 @@ impl Default for Settings {
             last_provider: None,
             last_model: None,
             skill_synthesis_enabled: true,
+            agent_synthesis_enabled: true,
             disabled_tools: Vec::new(),
             theme: Theme::System,
         }
@@ -748,6 +758,8 @@ pub struct StoredSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_synthesis_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_synthesis_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<Theme>,
@@ -761,6 +773,9 @@ impl StoredSettings {
         self.skill_synthesis_enabled = other
             .skill_synthesis_enabled
             .or(self.skill_synthesis_enabled);
+        self.agent_synthesis_enabled = other
+            .agent_synthesis_enabled
+            .or(self.agent_synthesis_enabled);
         // Replaced rather than merged, like every other field: a workspace that
         // sets this is stating the list it wants, and a merge would make a
         // global entry impossible to undo for one project.
@@ -777,6 +792,9 @@ impl StoredSettings {
             skill_synthesis_enabled: self
                 .skill_synthesis_enabled
                 .unwrap_or(defaults.skill_synthesis_enabled),
+            agent_synthesis_enabled: self
+                .agent_synthesis_enabled
+                .unwrap_or(defaults.agent_synthesis_enabled),
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
             theme: self.theme.unwrap_or(defaults.theme),
         }

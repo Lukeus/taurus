@@ -16,6 +16,7 @@ import type {
   PermissionDecision,
   PermissionRequest,
   SessionMeta,
+  AgentProposal,
   SkillProposal,
   UiEvent,
 } from "../lib/api";
@@ -72,6 +73,7 @@ interface Store {
   /** Set while a turn is running so the composer can show Stop instead of Send. */
   permission: PermissionRequest | null;
   proposals: SkillProposal[];
+  agentProposals: AgentProposal[];
   error: string | null;
 
   init: () => Promise<void>;
@@ -87,6 +89,11 @@ interface Store {
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
   resolveProposal: (
+    id: string,
+    approve: boolean,
+    target?: "project" | "user",
+  ) => Promise<void>;
+  resolveAgentProposal: (
     id: string,
     approve: boolean,
     target?: "project" | "user",
@@ -118,6 +125,7 @@ export const useStore = create<Store>((set, get) => ({
   busy: false,
   permission: null,
   proposals: [],
+  agentProposals: [],
   error: null,
 
   init: async () => {
@@ -130,6 +138,9 @@ export const useStore = create<Store>((set, get) => ({
     api.onPermissionRequest((permission) => set({ permission }));
     api.onSkillProposal((proposal) =>
       set((s) => ({ proposals: [...s.proposals, proposal] })),
+    );
+    api.onAgentProposal((proposal) =>
+      set((s) => ({ agentProposals: [...s.agentProposals, proposal] })),
     );
 
     // Reopen this workspace's most recent conversation. Failing that — a first
@@ -165,7 +176,14 @@ export const useStore = create<Store>((set, get) => ({
 
   startSession: async (providerId, model) => {
     const session = await api.createSession(providerId, model);
-    set({ session, entries: [], changed: [], error: null, proposals: [] });
+    set({
+      session,
+      entries: [],
+      changed: [],
+      error: null,
+      proposals: [],
+      agentProposals: [],
+    });
     void get().reload();
     if (!session.native_tools) {
       set((s) => ({
@@ -190,6 +208,7 @@ export const useStore = create<Store>((set, get) => ({
       changed: [],
       error: null,
       proposals: [],
+      agentProposals: [],
     });
     void get().reload();
   },
@@ -210,7 +229,13 @@ export const useStore = create<Store>((set, get) => ({
     // The conversation on screen is the one that just went. Replacing it beats
     // leaving the transcript showing a conversation that no longer exists, and
     // its provider and model were both working a moment ago.
-    set({ session: null, entries: [], changed: [], proposals: [] });
+    set({
+      session: null,
+      entries: [],
+      changed: [],
+      proposals: [],
+      agentProposals: [],
+    });
     try {
       await get().startSession(open.provider_id, open.model);
     } catch (e) {
@@ -279,6 +304,23 @@ export const useStore = create<Store>((set, get) => ({
           id: nextId(),
           tone: "info",
           text: approve ? `Skill saved.` : `Skill discarded.`,
+        },
+      ],
+    }));
+    if (approve) await get().refresh();
+  },
+
+  resolveAgentProposal: async (id, approve, target = "project") => {
+    await api.respondAgentProposal(id, approve, approve ? target : undefined);
+    set((s) => ({
+      agentProposals: s.agentProposals.filter((p) => p.id !== id),
+      entries: [
+        ...s.entries,
+        {
+          kind: "notice",
+          id: nextId(),
+          tone: "info",
+          text: approve ? `Sub-agent saved.` : `Sub-agent discarded.`,
         },
       ],
     }));

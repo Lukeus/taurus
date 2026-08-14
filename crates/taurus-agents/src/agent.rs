@@ -63,16 +63,25 @@ pub struct AgentFrontmatter {
     /// the same as an empty list: an agent whose named tools all turned out to
     /// be unavailable must not silently widen into "everything". Keeping the
     /// distinction in the type is what makes that checkable downstream.
-    #[serde(default, deserialize_with = "deserialize_tools")]
+    ///
+    /// Skipped when absent on the way *out*, so a generated agent file reads
+    /// like a hand-written one. A person writing this file omits the key; a
+    /// serializer left alone writes `tools: null`, which is the same thing to
+    /// serde and an eyesore to the user who opens it next.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_tools",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub tools: Option<Vec<String>>,
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
     /// Run this agent on a different model than the session's. Optional.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Which configured provider `model` belongs to. Optional; defaults to the
     /// session's provider.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
 }
 

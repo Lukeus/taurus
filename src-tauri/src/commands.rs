@@ -11,10 +11,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use ts_rs::TS;
 
+use taurus_agents::proposal::{
+    save as save_agent_file, validate_proposal as validate_agent, AgentProposal,
+    SaveTarget as AgentSaveTarget,
+};
 use taurus_agents::AgentSummary;
 use taurus_core::{Session, UiEvent};
 use taurus_mcp::ServerStatus;
-use taurus_provider::{Message, ModelInfo};
+use taurus_provider::{ChatRequest, Message, ModelInfo, StreamAccumulator};
 use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, PermissionDecision, Scope};
@@ -584,6 +588,221 @@ pub async fn list_agents(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Agent
     Ok(state.host.agents().await)
 }
 
+/// Every tool this session has, for the editor's tool picker.
+///
+/// The live registry rather than a compiled-in list, so a skill or MCP tool
+/// approved earlier in the session is offered — and so an agent cannot be
+/// scoped to a tool that would be refused the moment it was saved.
+#[tauri::command]
+pub async fn list_tools(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<String>> {
+    Ok(state.host.tool_names().await)
+}
+
+/// Saves an agent written in the editor.
+///
+/// The same path an approved proposal takes — same validation, same writer,
+/// same rescan — because a hand-written agent and a generated one are the same
+/// file, and two writers would drift.
+#[tauri::command]
+pub async fn save_agent(
+    state: State<'_, Arc<AppState>>,
+    draft: AgentProposal,
+    target: AgentSaveTarget,
+) -> CmdResult<String> {
+    let available: Vec<String> = state
+        .host
+        .registry()
+        .read()
+        .await
+        .names()
+        .map(str::to_string)
+        .collect();
+    {
+        let catalog = state.host.agent_catalog().read().await;
+        validate_agent(&draft, &catalog, &available)
+            .map_err(|e| format!("this agent cannot be saved as written: {e}"))?;
+    }
+
+    let root = match target {
+        AgentSaveTarget::Project => {
+            taurus_host::config::workspace_agents_dir(&state.host.workspace().await)
+        }
+        AgentSaveTarget::User => taurus_host::config::user_agents_dir(),
+    };
+    let path = save_agent_file(&draft, &root).map_err(|e| format!("could not save agent: {e}"))?;
+    info!(agent = %draft.name, path = %path.display(), "agent saved from the editor");
+
+    state.host.rescan_agents().await;
+    Ok(path.display().to_string())
+}
+
+/// What the model is told to produce for the editor's Generate button.
+///
+/// Named fields rather than "write an agent file": the editor owns the format,
+/// and a model asked for YAML frontmatter returns YAML that is *nearly* right
+/// often enough to matter. JSON it can be checked against, and every field
+/// lands in a box the user can correct.
+const DRAFT_SYSTEM: &str = "\
+You draft a sub-agent definition for a coding agent, and reply with JSON only — \
+no prose, no markdown fence.
+
+Fields:
+- name: kebab-case, specific, e.g. \"migration-checker\"
+- description: one sentence under 200 characters saying when to delegate here. \
+This is the only text the caller sees when choosing, so describe the job.
+- tools: an array chosen ONLY from the allowed list you are given, or null to \
+inherit the caller's tools. Pick the narrowest set that can do the work.
+- max_iterations: 1 to 50. Around 20 for work that only reads, 25 if it writes.
+- prompt: the agent's system prompt. It shares none of the caller's context and \
+cannot ask questions, so say what to do, what not to do, and what to report \
+back. Several sentences.";
+
+/// Drafts an agent from a description, for the editor to fill in.
+///
+/// A one-shot completion rather than a turn: there are no tools to call and
+/// nothing to undo, and running it through the agent loop would put a draft
+/// nobody asked for into the transcript.
+///
+/// Whatever comes back is a starting point, not a result — it lands in the
+/// editor's fields, and the user is the one who saves it. So this repairs what
+/// it can (an out-of-range iteration count, a tool the session lacks) rather
+/// than refusing a draft over something the user can see and fix.
+#[tauri::command]
+pub async fn generate_agent(
+    state: State<'_, Arc<AppState>>,
+    description: String,
+    provider_id: String,
+    model: String,
+) -> CmdResult<AgentProposal> {
+    if description.trim().is_empty() {
+        return Err("describe what the agent should do first".into());
+    }
+
+    let available: Vec<String> = state
+        .host
+        .registry()
+        .read()
+        .await
+        .names()
+        .map(str::to_string)
+        .collect();
+
+    let provider = state.host.provider(&provider_id).await?;
+    let mut request = ChatRequest::new(
+        &model,
+        vec![Message::user(format!(
+            "Draft a sub-agent for: {}\n\nAllowed tools: {}",
+            description.trim(),
+            available.join(", ")
+        ))],
+    );
+    request.system = Some(DRAFT_SYSTEM.into());
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let cancel = CancellationToken::new();
+    let handle = tokio::spawn(async move { provider.stream(request, tx, cancel).await });
+
+    let mut acc = StreamAccumulator::new();
+    while let Some(event) = rx.recv().await {
+        acc.push(event);
+    }
+    handle
+        .await
+        .map_err(|e| format!("the draft did not finish: {e}"))?
+        .map_err(|e| format!("could not reach {provider_id}: {e}"))?;
+
+    let text = acc.finish().0.text();
+    let json = extract_json(&text).ok_or_else(|| {
+        format!(
+            "{model} did not answer with JSON. It said: {}",
+            brief(&text)
+        )
+    })?;
+    let drafted: DraftedAgent = serde_json::from_str(json)
+        .map_err(|e| format!("{model} answered with JSON that does not fit an agent: {e}"))?;
+
+    let mut proposal = AgentProposal::new(
+        drafted.name.trim(),
+        drafted.description.trim(),
+        drafted.prompt.trim(),
+    );
+    proposal.max_iterations = drafted.max_iterations.unwrap_or(20).clamp(1, 50);
+    // Silently dropped rather than refused: a model naming a tool that does not
+    // exist here has still drafted a usable agent, and the picker below shows
+    // exactly what survived.
+    proposal.tools = drafted.tools.map(|tools| {
+        tools
+            .into_iter()
+            .filter(|tool| available.contains(tool))
+            .collect()
+    });
+    // An empty list means "no tools" to the loader and "everything" to nobody.
+    // If filtering emptied it, inheriting is the honest reading of a draft that
+    // named only tools this session lacks.
+    if proposal.tools.as_ref().is_some_and(Vec::is_empty) {
+        proposal.tools = None;
+    }
+
+    info!(agent = %proposal.name, "agent drafted");
+    Ok(proposal)
+}
+
+#[derive(Deserialize)]
+struct DraftedAgent {
+    name: String,
+    description: String,
+    prompt: String,
+    #[serde(default)]
+    tools: Option<Vec<String>>,
+    #[serde(default)]
+    max_iterations: Option<u32>,
+}
+
+/// The first JSON object in a reply.
+///
+/// Models wrap JSON in prose and markdown fences however often they are asked
+/// not to, and a draft thrown away over a fence is a round trip spent on
+/// punctuation. Brace-counting rather than a regex because the prompt itself
+/// contains braces.
+fn extract_json(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, ch) in text[start..].char_indices() {
+        if in_string {
+            match ch {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..start + offset + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Enough of a reply to recognize it, for an error message.
+fn brief(text: &str) -> String {
+    let trimmed = text.trim();
+    match trimmed.chars().count() > 160 {
+        true => format!("{}…", trimmed.chars().take(160).collect::<String>()),
+        false => trimmed.to_string(),
+    }
+}
+
 /// What the roster costs on every request, in characters. Shown beside it,
 /// because an expense nobody can see is one nobody chose.
 #[tauri::command]
@@ -669,6 +888,86 @@ pub async fn respond_skill_proposal(
 #[tauri::command]
 pub async fn set_skill_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
     state.host.set_skill_synthesis(enabled).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_agent_proposals(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<Vec<AgentProposal>> {
+    Ok(state
+        .pending_agent_proposals
+        .iter()
+        .map(|e| e.value().clone())
+        .collect())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProposalResponse {
+    pub id: String,
+    pub approve: bool,
+    /// Where to save it. Ignored when rejecting.
+    #[serde(default)]
+    pub target: Option<AgentSaveTarget>,
+    /// The user's edits, if they changed anything in the review card.
+    #[serde(default)]
+    pub edited: Option<AgentProposal>,
+}
+
+#[tauri::command]
+pub async fn respond_agent_proposal(
+    state: State<'_, Arc<AppState>>,
+    response: AgentProposalResponse,
+) -> CmdResult<Option<String>> {
+    let Some((_, original)) = state.pending_agent_proposals.remove(&response.id) else {
+        return Err(format!("no pending agent proposal '{}'", response.id));
+    };
+
+    if !response.approve {
+        info!(agent = %original.name, "agent proposal rejected");
+        return Ok(None);
+    }
+
+    let proposal = response.edited.unwrap_or(original);
+
+    // Re-validated because the card is editable. What the model proposed passed
+    // on the way in; what the user is about to save may be something else
+    // entirely, and a hand-edited name or tool list has never been checked.
+    let available: Vec<String> = state
+        .host
+        .registry()
+        .read()
+        .await
+        .names()
+        .map(str::to_string)
+        .collect();
+    {
+        let catalog = state.host.agent_catalog().read().await;
+        validate_agent(&proposal, &catalog, &available)
+            .map_err(|e| format!("this agent cannot be saved as written: {e}"))?;
+    }
+
+    let root = match response.target.unwrap_or(AgentSaveTarget::Project) {
+        AgentSaveTarget::Project => {
+            taurus_host::config::workspace_agents_dir(&state.host.workspace().await)
+        }
+        AgentSaveTarget::User => taurus_host::config::user_agents_dir(),
+    };
+
+    let path =
+        save_agent_file(&proposal, &root).map_err(|e| format!("could not save agent: {e}"))?;
+    info!(agent = %proposal.name, path = %path.display(), "agent approved");
+
+    // Narrower than `reload`, which would restart every MCP server to pick up
+    // one markdown file.
+    state.host.rescan_agents().await;
+    Ok(Some(path.display().to_string()))
+}
+
+#[tauri::command]
+pub async fn set_agent_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
+    state.host.set_agent_synthesis(enabled).await;
     Ok(())
 }
 

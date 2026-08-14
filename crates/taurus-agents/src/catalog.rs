@@ -41,6 +41,14 @@ impl Default for AgentCatalog {
     }
 }
 
+/// A catalog shared between the host and the tools that read it.
+///
+/// The roster a *turn* delegates against is a frozen snapshot — see
+/// `SpawnSubagent` — but proposing an agent needs the live set, so a duplicate
+/// is caught against what is on disk now rather than what was there when the
+/// turn began.
+pub type SharedAgentCatalog = std::sync::Arc<tokio::sync::RwLock<AgentCatalog>>;
+
 impl AgentCatalog {
     /// Scans every source in order, on top of the built-ins. Later sources
     /// shadow earlier ones by name, so a project agent overrides a user agent
