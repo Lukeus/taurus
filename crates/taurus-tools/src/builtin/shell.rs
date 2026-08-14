@@ -39,9 +39,10 @@ impl Tool for RunCommand {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command in the workspace and return its output. Runs non-interactively with \
-         no stdin, so pass flags like -y rather than expecting a prompt. Prefer read_file, glob, \
-         and grep over cat, find, and grep -r."
+        "Run a shell command and return its output. It starts in the workspace root, so write \
+         paths relative to it and do not cd first — use the cwd argument for a subdirectory. Runs \
+         non-interactively with no stdin, so pass flags like -y rather than expecting a prompt. \
+         Prefer read_file, glob, and grep over cat, find, and grep -r."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -50,6 +51,10 @@ impl Tool for RunCommand {
 
     fn effect(&self) -> Effect {
         Effect::Execute
+    }
+
+    fn touches_unpredictably(&self) -> bool {
+        true
     }
 
     fn preview(&self, input: &serde_json::Value) -> String {

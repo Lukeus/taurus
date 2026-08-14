@@ -57,7 +57,26 @@ pub struct AgentConfig {
     /// rediscovering the same error, and the user waits for all of it to be
     /// told nothing happened.
     pub stall_limit: u32,
+    /// Whether a turn that changed files without running anything afterwards
+    /// gets asked, once, to check its work before it is allowed to finish.
+    ///
+    /// On by default because the alternative does not work: the system prompt
+    /// says to run the tests, and a small model edits a file and stops anyway.
+    /// Configurable because it costs a round trip, and a turn that only ever
+    /// edits prose has nothing to run.
+    pub verify_changes: bool,
 }
+
+/// Asked once per turn, when the model stops having changed files it never
+/// checked.
+///
+/// Phrased with a way out. A model that has genuinely nothing to run must be
+/// able to say so and finish, or the nudge turns into a round trip spent
+/// explaining itself on every documentation edit.
+const VERIFY_NUDGE: &str = "\
+You changed files and have not run anything since. Check that work now — run \
+the project's tests, or build it, or run the thing you changed. If there is \
+genuinely nothing to run against it, say so in one line and stop.";
 
 impl Default for AgentConfig {
     fn default() -> Self {
@@ -72,6 +91,7 @@ impl Default for AgentConfig {
             max_transient_retries: 3,
             retry_backoff: Duration::from_millis(500),
             stall_limit: 3,
+            verify_changes: true,
         }
     }
 }
@@ -151,6 +171,16 @@ impl Agent {
         let mut last_failed: Option<Vec<(String, serde_json::Value)>> = None;
         let mut repeats = 0;
 
+        // Whether this turn has changed files without running anything since.
+        // See `verify_nudge`.
+        let recorder = self.tools.checkpoints.clone();
+        let mut captured = match &recorder {
+            Some(recorder) => recorder.changed_count().await,
+            None => 0,
+        };
+        let mut unverified = false;
+        let mut nudged = false;
+
         loop {
             if self.tools.cancel.is_cancelled() {
                 let _ = ui
@@ -217,6 +247,18 @@ impl Agent {
             // and a prompted model can emit one without the provider noticing.
             // The message itself is the authority.
             if !has_tools {
+                // The model thinks it is done. If it changed files and never
+                // ran anything afterwards, it has not checked its own work —
+                // and being told to in the system prompt demonstrably does not
+                // make a small model do it. Once per turn, it is asked
+                // directly, and the turn continues.
+                if unverified && !nudged && self.config.verify_changes {
+                    nudged = true;
+                    info!("asking the model to check work it has not verified");
+                    session.push(Message::user(VERIFY_NUDGE));
+                    continue;
+                }
+
                 let _ = ui
                     .send(UiEvent::TurnFinished {
                         stop_reason: stop,
@@ -231,6 +273,24 @@ impl Agent {
             }
 
             let results = self.run_tool_calls(&assistant, &ui).await;
+
+            // Did this round change anything, and did it check anything?
+            //
+            // A round that captured new pre-images did work. A round that ran a
+            // command and captured nothing asked the project a question and got
+            // an answer back — that is what checking looks like from here, and
+            // it clears the debt. A command that did both is more work, not a
+            // check, so the debt stands.
+            if let Some(recorder) = &recorder {
+                let now = recorder.changed_count().await;
+                let wrote = now > captured;
+                captured = now;
+                if wrote {
+                    unverified = true;
+                } else if self.ran_a_check(&assistant) {
+                    unverified = false;
+                }
+            }
 
             // Checked before the results are pushed, so the transcript ends on
             // the failure the model kept repeating rather than on a stop notice
@@ -461,6 +521,20 @@ impl Agent {
         }
         ordered.extend(results.into_iter().map(|(_, block)| block));
         ordered
+    }
+
+    /// Whether this round ran something that could answer a question about the
+    /// project — a build, a test run, a script.
+    ///
+    /// Keyed off the same declaration the checkpoint sweep uses, so "the tools
+    /// that run a program" has one definition rather than a list here that
+    /// quietly falls behind the registry.
+    fn ran_a_check(&self, assistant: &Message) -> bool {
+        assistant.tool_uses().any(|(_, name, _)| {
+            self.registry
+                .get(name)
+                .is_some_and(|tool| tool.touches_unpredictably())
+        })
     }
 
     /// This turn's tool context, bound to one call so anything it reports lands

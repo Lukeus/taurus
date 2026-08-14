@@ -20,11 +20,27 @@ const MAX_GREP_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// storage is slow and every hit is noise. `.gitignore` is honored even when
 /// the workspace is not a git repository, which is the behavior users expect
 /// from a file they wrote specifically to exclude things.
+///
+/// Shared with [`crate::sweep`], which decides what a command changed. The two
+/// have to agree: a file the agent cannot find with `grep` but can silently
+/// destroy with `sed` would be the worst of both.
 fn walker(root: &std::path::Path) -> ignore::Walk {
+    walker_skipping(root, &[".git"])
+}
+
+/// The same traversal, with the skip list passed in.
+///
+/// [`crate::sweep`] skips one directory more than search does — see the list it
+/// passes. Sharing the builder rather than copying it is what keeps the two
+/// from drifting apart on everything else.
+pub(crate) fn walker_skipping(
+    root: &std::path::Path,
+    skip: &'static [&'static str],
+) -> ignore::Walk {
     WalkBuilder::new(root)
         .hidden(false)
         .require_git(false)
-        .filter_entry(|entry| entry.file_name() != ".git")
+        .filter_entry(move |entry| !skip.iter().any(|name| entry.file_name() == *name))
         .build()
 }
 

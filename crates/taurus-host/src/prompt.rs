@@ -22,10 +22,29 @@ same call unchanged.
 - If the user denies an action, do not attempt it another way. Ask what they \
 would prefer.
 
+# Running commands
+
+- Every command starts in the workspace root. You are already inside the \
+project — do not go looking for it, and do not `cd` anywhere before working.
+- Write paths relative to that root: `cargo test`, `ls src`, `python \
+scripts/build.py`. Do not paste absolute paths into a command.
+- To work in a subdirectory, pass `cwd` rather than putting `cd` in the command.
+
+# Finishing what you started
+
+- Keep going until the task is actually done. Do not stop after one step to \
+report progress, to describe what you are about to do next, or to ask whether \
+to carry on — you are expected to carry on.
+- Check your own work before you call it finished. If the project has tests, \
+run them. If you edited a file, the tool result already told you it applied; \
+what you have not verified is whether the result builds and behaves.
+- If something blocks you and no tool can get past it, stop and say what \
+blocked you. That is the one good reason to finish early.
+
 # Answering
 
 Be brief. Skip preamble, restating the question, and summaries of what you are \
-about to do. When you have done the work, say what changed and stop.
+about to do. When the work is done, say what changed and stop.
 ";
 
 const SKILL_AUTHORING: &str = "\
@@ -46,9 +65,17 @@ this one task.
 pub fn build(workspace: &Path, skill_section: Option<String>, synthesis_enabled: bool) -> String {
     let mut prompt = String::from(BASE);
 
+    // The path is named because a command's output will mention it and the
+    // model should recognize it. Naming it alone was not enough: given an
+    // absolute path and nothing else, a model builds absolute commands out of
+    // it, wanders into the parent directory looking for the project it is
+    // already standing in, and spends the whole iteration budget there. So the
+    // path comes with the only two facts that make it actionable — you are
+    // already in it, and relative is how you say so.
     prompt.push_str(&format!(
-        "\n# Workspace\n\nYou are working in `{}`. Every path you read or write must be inside \
-         it; attempts to reach outside are refused.\n",
+        "\n# Workspace\n\nYou are working in `{}`, and every tool call and command already starts \
+         there. Refer to files by paths relative to it — `src/main.rs`, not the full path. \
+         Anything outside it is refused.\n",
         workspace.display()
     ));
 
@@ -90,6 +117,26 @@ mod tests {
     fn includes_the_workspace_path() {
         let prompt = build(Path::new("/tmp/project"), None, false);
         assert!(prompt.contains("/tmp/project"));
+    }
+
+    #[test]
+    fn says_that_commands_already_start_in_the_workspace() {
+        // The fix for a model that goes hunting for the project it is already
+        // standing in: given only an absolute path, it built absolute commands
+        // out of it, `cd`ed into the parent, and spent an entire turn there.
+        let prompt = build(Path::new("/tmp/project"), None, false);
+        assert!(prompt.contains("already start"), "{prompt}");
+        assert!(prompt.contains("relative"), "{prompt}");
+    }
+
+    #[test]
+    fn tells_the_model_to_finish_and_check_its_work() {
+        let prompt = build(Path::new("/tmp/project"), None, false);
+        assert!(
+            prompt.contains("until the task is actually done"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("run them"), "{prompt}");
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod path_guard;
 pub mod permission;
 pub mod registry;
 pub mod schema;
+pub mod sweep;
 pub mod tool;
 
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, TurnRecorder};
@@ -17,6 +18,7 @@ pub use permission::{
     PermissionRequest, Scope,
 };
 pub use registry::ToolRegistry;
+pub use sweep::Sweep;
 pub use tool::{Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult};
 
 #[cfg(test)]
