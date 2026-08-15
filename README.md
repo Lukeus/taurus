@@ -994,7 +994,11 @@ key set anthropic` — or in a variable named by `api_key_env`.
 
 **Neither needs a `context_length`,** and neither should be given one except as
 a fallback. Anthropic reports a window and a capability tree per model, so
-Taurus asks; Gemini reports a window in its model listing. A configured value
+Taurus asks; Gemini reports a window in its model listing. Each answer is
+remembered per model for the life of the provider, because compaction asks the
+question once per iteration of the agent loop and the number cannot change while
+a turn runs — probing each time would put a round trip in front of every model
+call. A configured value
 that disagrees with the model is how a conversation compacts at the wrong
 moment, so the field is offered in Settings as "only used if the backend will
 not report its own window" and left empty by default.
@@ -1191,7 +1195,7 @@ into the project file.
 ## Development
 
 ```bash
-cargo test --workspace     # 789 tests
+cargo test --workspace     # 791 tests
 pnpm test                  # transcript reducer, replay, settings, rewind, diffs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all

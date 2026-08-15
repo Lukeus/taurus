@@ -14,9 +14,12 @@
 mod convert;
 mod wire;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use futures::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -63,6 +66,14 @@ pub struct GeminiProvider {
     client: reqwest::Client,
     capabilities: GeminiCapabilities,
     models: Vec<String>,
+    /// One listing per model, kept for the life of this provider.
+    ///
+    /// `capabilities` is asked once per iteration of the agent loop, because
+    /// that is where compaction reads the context window — and answering it
+    /// here means listing every model the account can see. Uncached, a ten-step
+    /// turn would spend ten full listings re-learning one number that cannot
+    /// change while the turn runs.
+    probed: Arc<RwLock<HashMap<String, Capabilities>>>,
 }
 
 impl GeminiProvider {
@@ -78,6 +89,7 @@ impl GeminiProvider {
             client: reqwest::Client::new(),
             capabilities: GeminiCapabilities::default(),
             models: Vec::new(),
+            probed: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -189,6 +201,10 @@ impl Provider for GeminiProvider {
     }
 
     async fn capabilities(&self, model: &str) -> Result<Capabilities> {
+        if let Some(cached) = self.probed.read().await.get(model) {
+            return Ok(*cached);
+        }
+
         // The listing carries the window, so it is asked for rather than
         // configured — but only that. Nothing there reports tool or image
         // support, so those two stay configuration.
@@ -204,12 +220,21 @@ impl Provider for GeminiProvider {
             })
             .unwrap_or(self.capabilities.context_length);
 
-        Ok(Capabilities {
+        let capabilities = Capabilities {
             native_tools: true,
             vision: self.capabilities.vision,
             thinking: true,
             context_length,
-        })
+        };
+
+        // Cached even when the listing failed and this is the fallback: a
+        // backend that would not answer once will not answer ten times in the
+        // same turn, and retrying is a stall per iteration.
+        self.probed
+            .write()
+            .await
+            .insert(model.to_string(), capabilities);
+        Ok(capabilities)
     }
 
     async fn stream(
@@ -575,6 +600,18 @@ mod tests {
         let provider = GeminiProvider::new("gemini", "http://127.0.0.1:1", None)
             .with_models(vec!["gemini-2.5-pro".into()]);
         assert_eq!(provider.models().await.unwrap()[0].id, "gemini-2.5-pro");
+    }
+
+    #[tokio::test]
+    async fn a_models_capabilities_are_listed_once_and_then_remembered() {
+        // Answering this here means listing every model the account can see,
+        // and the agent loop asks once per iteration. Uncached, a ten-step turn
+        // spends ten listings re-learning one number.
+        let provider = GeminiProvider::new("gemini", "http://127.0.0.1:1", None);
+        let first = provider.capabilities("gemini-2.5-pro").await.unwrap();
+        assert!(provider.probed.read().await.contains_key("gemini-2.5-pro"));
+        let second = provider.capabilities("gemini-2.5-pro").await.unwrap();
+        assert_eq!(first.context_length, second.context_length);
     }
 
     #[tokio::test]

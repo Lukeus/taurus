@@ -22,6 +22,9 @@ mod convert;
 mod wire;
 
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -117,6 +120,14 @@ pub struct AnthropicProvider {
     /// Models the config named. Non-empty means `/v1/models` is never listed,
     /// which is what a gateway with no listing route needs.
     models: Vec<String>,
+    /// One probe per model, kept for the life of this provider.
+    ///
+    /// Not an optimization but a correctness-adjacent fix: `capabilities` is
+    /// asked once per iteration of the agent loop, because that is where
+    /// compaction reads the context window. Probing each time would put a round
+    /// trip to the API — and a rate-limit slot — in front of every model call
+    /// in a turn, to re-learn a number that cannot change while the turn runs.
+    probed: Arc<RwLock<HashMap<String, Capabilities>>>,
 }
 
 impl AnthropicProvider {
@@ -133,6 +144,7 @@ impl AnthropicProvider {
             capabilities: AnthropicCapabilities::default(),
             thinking: Thinking::default(),
             models: Vec::new(),
+            probed: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -261,8 +273,12 @@ impl Provider for AnthropicProvider {
     }
 
     async fn capabilities(&self, model: &str) -> Result<Capabilities> {
+        if let Some(cached) = self.probed.read().await.get(model) {
+            return Ok(*cached);
+        }
+
         let probed = self.probe(model).await;
-        Ok(Capabilities {
+        let capabilities = Capabilities {
             // Not probed, because it is not in question: every Claude model
             // this API serves calls tools natively, and a prompted fallback
             // here would be a worse implementation of a feature that works.
@@ -279,7 +295,16 @@ impl Provider for AnthropicProvider {
                 .as_ref()
                 .and_then(|m| m.max_input_tokens)
                 .unwrap_or(self.capabilities.context_length),
-        })
+        };
+
+        // Cached even when the probe failed and these are the fallbacks. A
+        // backend that would not answer once will not answer forty times in
+        // the same turn either, and retrying is a stall per iteration.
+        self.probed
+            .write()
+            .await
+            .insert(model.to_string(), capabilities);
+        Ok(capabilities)
     }
 
     async fn stream(
@@ -761,6 +786,20 @@ mod tests {
         let caps = provider.capabilities("claude-opus-5").await.unwrap();
         assert!(caps.native_tools);
         assert_eq!(caps.context_length, 200_000);
+    }
+
+    #[tokio::test]
+    async fn a_models_capabilities_are_probed_once_and_then_remembered() {
+        // `capabilities` is asked once per iteration of the agent loop, so an
+        // uncached probe puts a round trip and a rate-limit slot in front of
+        // every model call in a turn. The unroutable base URL makes the first
+        // call slow and the rest instant; what is asserted is that the answer
+        // is stable and cheap, not that a network call did not happen.
+        let provider = AnthropicProvider::new("anthropic", "http://127.0.0.1:1", None);
+        let first = provider.capabilities("claude-opus-5").await.unwrap();
+        assert!(provider.probed.read().await.contains_key("claude-opus-5"));
+        let second = provider.capabilities("claude-opus-5").await.unwrap();
+        assert_eq!(first.context_length, second.context_length);
     }
 
     #[test]
