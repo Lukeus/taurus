@@ -45,6 +45,29 @@ blocked you. That is the one good reason to finish early.
 
 Be brief. Skip preamble, restating the question, and summaries of what you are \
 about to do. When the work is done, say what changed and stop.
+
+# Showing your answer
+
+Three tools draw into the conversation instead of returning text to you. What \
+they draw is already on screen, so never repeat its contents in your reply.
+
+- `show_table` — several rows of comparable facts, where the comparison is the \
+point. The reader can sort and copy it.
+- `show_chart` — a series whose shape is the point: where the spike is, whether \
+a number is climbing.
+- `ask_user` — a decision that is genuinely the user's to make.
+
+Use them sparingly. Prose is the default, a markdown table is fine for two \
+columns, and a chart of three bars is slower to read than the sentence it \
+replaced. Say what the table or chart shows in your own words as well: it is \
+the evidence, not the answer.
+
+`ask_user` is the one exception to carrying on without stopping. Ask only when \
+the readings of the request lead to different work and picking wrong would \
+waste most of it. Do not ask to confirm a plan, to report progress, to ask \
+whether to continue, or about anything you could settle by reading the code. \
+Ask before you start, not partway through. Every question can be skipped, so \
+be ready to decide anyway and say what you picked.
 ";
 
 const SKILL_AUTHORING: &str = "\
@@ -171,6 +194,25 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("run them"), "{prompt}");
+    }
+
+    #[test]
+    fn the_one_exception_to_carrying_on_is_stated_next_to_the_rule_it_breaks() {
+        // "Do not stop to ask whether to carry on" and "ask_user" are a
+        // contradiction to a 7B model unless the prompt draws the line itself.
+        // Both sections are unconditional, so this holds for every session.
+        let prompt = build(Path::new("/tmp"), None, false, false);
+        assert!(prompt.contains("Do not stop after one step"), "{prompt}");
+        assert!(prompt.contains("one exception"), "{prompt}");
+        assert!(prompt.contains("Do not ask to confirm a plan"), "{prompt}");
+    }
+
+    #[test]
+    fn the_drawing_tools_are_told_not_to_be_repeated_in_prose() {
+        // The failure this prevents: a table drawn, then every row of it
+        // written out again underneath, which is worse than either alone.
+        let prompt = build(Path::new("/tmp"), None, false, false);
+        assert!(prompt.contains("never repeat its contents"), "{prompt}");
     }
 
     #[test]

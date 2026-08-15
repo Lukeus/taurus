@@ -1182,6 +1182,334 @@ body.resizing * {
   color: var(--text-faint);
 }
 
+/* ------------------------------------------------------- drawn tool results
+ *
+ * The three tools that address the reader rather than the machine: a table, a
+ * chart, and a question. They are not steps in a run and are not drawn as one —
+ * a run card summarizes work on the way to an answer, and these are part of the
+ * answer, so they sit in the transcript at full weight beside the prose.
+ *
+ * All three share one frame — raised surface, hairline, the same head and foot
+ * — because the reader should recognize "Taurus is showing me something" before
+ * reading what. The question card is the only one that departs from it, and
+ * only while it is waiting: an accent border, because a turn is parked behind
+ * it and it must not be scrolled past.
+ */
+
+.view-card,
+.questions {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-xl);
+  background: var(--bg-raised);
+  padding: 16px;
+  max-width: 80ch;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.view-head,
+.questions-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+.view-head h3,
+.questions-head h3 {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+.view-caption {
+  margin: 3px 0 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.view-head .micro,
+.questions-head .micro {
+  white-space: nowrap;
+  padding-top: 4px;
+}
+
+.view-foot,
+.questions-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.view-foot {
+  border-top: 1px solid var(--rule);
+  padding-top: 11px;
+}
+
+/* --------------------------------------------------------------- the table */
+
+/* Sunken, the same step down code and command output take: a panel inside a
+   panel needs the ladder rather than a second border to separate it. */
+.table-box {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.table-row {
+  display: grid;
+  gap: 0;
+  align-items: center;
+  padding: 8px 12px;
+}
+.table-row + .table-row {
+  border-top: 1px solid var(--rule);
+}
+.table-row:not(.head):hover {
+  background: var(--bg-hover);
+}
+.table-row.head {
+  padding: 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.table-sort {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 9px 12px;
+  text-align: left;
+}
+.table-sort.right {
+  text-align: right;
+}
+.table-sort:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+}
+.table-sort.on {
+  color: var(--accent);
+}
+
+.table-cell {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.table-cell.right {
+  text-align: right;
+  color: var(--text-dim);
+}
+/* Up is the bad direction: every delta a table like this carries is a cost —
+   build time, error count, bundle size. Nothing here can tell a cost from a
+   benefit, so it commits to the common case rather than colouring at random. */
+.table-cell.delta {
+  text-align: right;
+}
+.table-cell.delta.up {
+  color: var(--danger);
+}
+.table-cell.delta.down {
+  color: var(--ok);
+}
+.table-cell.delta.flat {
+  color: var(--text-faint);
+}
+
+/* --------------------------------------------------------------- the chart */
+
+.chart-plot {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 150px;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--rule);
+}
+.chart-bar {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* Reserved whether or not a value is in it, so hovering along the row does not
+   shunt every bar down by a line. */
+.chart-value {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--accent);
+  height: 13px;
+  white-space: nowrap;
+}
+.chart-fill {
+  width: 100%;
+  max-width: 34px;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  transition: background 0.12s;
+}
+.chart-bar.on .chart-fill {
+  background: var(--accent);
+}
+.chart-labels {
+  display: flex;
+  gap: 8px;
+  padding: 0 2px;
+}
+.chart-labels span {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chart-labels span.on {
+  color: var(--text-dim);
+}
+
+/* ----------------------------------------------------------- the questions */
+
+/* Only while it is waiting. Once answered it is a record like any other, and a
+   card that keeps shouting after the fact trains the reader to ignore the
+   colour that means "this one needs you". */
+.questions.live {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--rule));
+}
+.questions-glyph {
+  color: var(--accent);
+  display: inline-flex;
+  padding-top: 4px;
+}
+
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding-top: 13px;
+  border-top: 1px solid var(--rule);
+}
+.question-prompt {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+.question-prompt > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+}
+.question-no {
+  flex: none;
+  width: 16px;
+  text-transform: none;
+}
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 26px;
+}
+
+.question-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-sunken);
+  font-size: 13px;
+  color: var(--text);
+}
+.question-option:hover:not(:disabled) {
+  background: var(--bg-sunken);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.question-option.on {
+  background: var(--bg-elevated);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* An answered card is not a disabled form: the picks are the record of what
+   happened, and greying them out would make the transcript harder to read
+   than it was to fill in. */
+.question-option:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.question-label {
+  flex: 1;
+  min-width: 0;
+}
+/* Mono like a micro-label, but not uppercased: these carry filenames and
+   paths, and `SETTINGS.TEST.TSX` is a worse answer than the thing it names. */
+.option-note {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+/* Radio or checkbox, drawn rather than native: the native controls carry their
+   own platform palette and cannot be made to sit in this one. */
+.question-option .pick {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+}
+.question-option .pick.multi {
+  border-radius: 4px;
+  font-size: 10px;
+}
+.question-option.on .pick {
+  border-color: var(--accent);
+}
+.question-option.on .pick.multi {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.question-other {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.questions-record {
+  margin: 0;
+  padding: 11px 13px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ---------------------------------------------------------------- markdown */
 
 .markdown {

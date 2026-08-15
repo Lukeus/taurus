@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use taurus_provider::{StopReason, TokenUsage};
+use taurus_tools::view::TranscriptView;
 use ts_rs::TS;
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -28,6 +29,17 @@ pub enum UiEvent {
         name: String,
         /// Human-readable summary of the specific call.
         preview: String,
+        /// Drawn in place of this call's row, for the handful of tools whose
+        /// output is something to look at rather than something they did. See
+        /// [`taurus_tools::view`].
+        ///
+        /// Carried on the announcement rather than the result because that is
+        /// when the payload is known — it is the call's own input — and because
+        /// a question card that only appeared once its call finished would be
+        /// waiting on the answer it is asking for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        view: Option<TranscriptView>,
     },
     /// Something a still-running tool has done. Only tools slow enough for
     /// silence to be ambiguous emit these — in practice, delegation.

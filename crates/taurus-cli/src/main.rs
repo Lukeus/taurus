@@ -5,6 +5,7 @@
 //! only decides how to talk to a terminal.
 
 mod agents_cmd;
+mod ask;
 mod key_cmd;
 mod markdown;
 mod permission;
@@ -13,6 +14,7 @@ mod rewind_cmd;
 mod session;
 mod skills_cmd;
 mod usage_cmd;
+mod views;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -428,6 +430,7 @@ async fn build_host(args: &SessionArgs, policy: Policy) -> Result<Runtime, Strin
     let host = Arc::new(Host::new(
         workspace,
         prompts,
+        Arc::new(ask::TerminalAsker::new()),
         proposals.clone(),
         agent_proposals.clone(),
     ));

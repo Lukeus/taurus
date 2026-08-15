@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Message, UiEvent } from "../lib/api";
-import { entriesFromMessages, reduce, type Entry } from "./store";
+import { entriesFromMessages, reduce, viewFromCall, type Entry } from "./store";
 
 /** Folds a whole event sequence, as a real turn would arrive. */
 const run = (...events: UiEvent[]): Entry[] => events.reduce(reduce, []);
@@ -287,5 +287,109 @@ describe("replaying a saved conversation", () => {
 
   it("replays an empty transcript as an empty view", () => {
     expect(entriesFromMessages([])).toEqual([]);
+  });
+});
+
+describe("drawn tool results", () => {
+  const TABLE = {
+    title: "Crates by build time",
+    caption: "cargo build --timings",
+    columns: [{ label: "Crate", kind: "text" }],
+    rows: [["taurus-core"]],
+  };
+
+  const started = (view?: UiEvent & { type: "tool_call_started" }): UiEvent => ({
+    type: "tool_call_started",
+    id: "t1",
+    name: "show_table",
+    preview: "Table: Crates by build time",
+    view: { type: "table", ...TABLE } as never,
+    ...view,
+  });
+
+  it("carries the view onto the entry the moment the call is announced", () => {
+    // A question card that only appeared once its call finished would be
+    // waiting on the answer it exists to ask for.
+    const entries = run(started());
+    expect(entries[0]).toMatchObject({ status: "running", view: { type: "table" } });
+  });
+
+  it("drops the view when the call turns out to have failed", () => {
+    // The view goes out before the call runs, so a chart the harness then
+    // refuses is already on screen — and a wrong chart beside the word
+    // "failed" is still a wrong chart.
+    const entries = run(
+      started(),
+      { type: "tool_call_finished", id: "t1", ok: false, output: "row 1 has 2 cells" },
+    );
+    expect(entries[0]).toMatchObject({ status: "error", view: undefined });
+  });
+
+  it("redraws a table from a reopened conversation", () => {
+    // Only possible because the drawing tools take their view payload as
+    // their input, unchanged. Nothing about the rendering is saved.
+    const saved: Message[] = [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "show_table", input: TABLE }],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "t1", content: "Drew it.", is_error: false },
+        ],
+      },
+    ];
+
+    expect(entriesFromMessages(saved)[0]).toMatchObject({
+      kind: "tool",
+      status: "ok",
+      view: { type: "table", title: "Crates by build time", rows: [["taurus-core"]] },
+    });
+  });
+
+  it("keys a reopened question card to the call it belonged to", () => {
+    const saved: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "call-7",
+            name: "ask_user",
+            input: { questions: [{ prompt: "Which?", kind: "single", options: [], allow_other: false }] },
+          },
+        ],
+      },
+    ];
+
+    expect(entriesFromMessages(saved)[0]).toMatchObject({
+      view: { type: "questions", id: "call-7" },
+    });
+  });
+
+  it("draws nothing for a saved call that failed", () => {
+    const saved: Message[] = [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "show_table", input: TABLE }],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "t1", content: "refused", is_error: true },
+        ],
+      },
+    ];
+
+    expect(entriesFromMessages(saved)[0]).toMatchObject({ view: undefined });
+  });
+
+  it("ignores a payload an older build wrote in a shape this one cannot draw", () => {
+    // A card that throws mid-render takes the whole transcript with it,
+    // including the parts that were fine.
+    expect(viewFromCall("t1", "show_table", { title: "t", columns: [] })).toBeUndefined();
+    expect(viewFromCall("t1", "show_table", "not an object")).toBeUndefined();
+    expect(viewFromCall("t1", "read_file", { path: "a.rs" })).toBeUndefined();
   });
 });

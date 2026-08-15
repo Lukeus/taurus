@@ -9,6 +9,28 @@ connects to MCP servers, delegates to sub-agents — and writes down procedures 
 works out as reusable **skills**, which you approve before they are kept. Every
 file it edits is recorded first, so any turn can be **rewound**.
 
+![The Taurus desktop app: a conversation, a folded run of tool calls, and a
+table the model drew](docs/screenshots/app-dark.png)
+
+A turn folds its tool calls into one card, so a nine-step turn reads as one step
+of the conversation. Results the model means you to *look* at — a table, a chart
+— stand on their own beside the prose rather than inside that card.
+
+![The same app in its light theme, showing a bar chart with a tab per series and
+a question card below it](docs/screenshots/app-light.png)
+
+When a decision is genuinely yours, it asks and waits rather than guessing. Every
+question can be skipped — "You decide" answers all of them at once — so the turn
+never blocks on an answer that is not coming.
+
+![A question card in the transcript, with single-choice and multiple-choice
+questions and a free-text box](docs/screenshots/questions.png)
+
+<sub>Regenerate with `pnpm screenshots`. These are the real interface driven by
+fixtures in headless Chrome rather than photographs of a running window — see
+[`scripts/screenshots/`](scripts/screenshots/capture.mjs) for why, and for what
+that costs.</sub>
+
 ## Quick start
 
 ```bash
@@ -521,6 +543,13 @@ permission gap wearing a token-saving costume. A name matching nothing is
 reported rather than ignored, because a typo otherwise looks exactly like a tool
 that is quietly still on.
 
+Four tools a turn adds for itself can be named here too, though `taurus tools`
+does not list them: it prints the set a *sub-agent* could be scoped to, and
+these four are exactly the ones a sub-agent never gets. They are
+`spawn_subagent`, which is the delegation depth cap, and `show_table`,
+`show_chart`, and `ask_user`, which address the person watching this
+conversation.
+
 **Where it went is a question you can ask.**
 
 ```bash
@@ -580,6 +609,45 @@ The trade-off is that CLI prose appears a line at a time rather than a token at
 a time, since a line has to be complete before it can be styled. The
 alternative — redrawing the current line with cursor escapes — corrupts output
 as soon as a line wraps.
+
+### Tables, charts, and questions
+
+Three tools address the person watching rather than the machine. They change
+nothing, need no permission, and their result to the model is only a
+confirmation — what matters is what they put on screen.
+
+| Tool | Draws | Reach for it when |
+| --- | --- | --- |
+| `show_table` | A sortable table, copyable as CSV | Several rows of comparable facts, and the comparison is the point |
+| `show_chart` | A bar chart, with a tab per series | The shape of a series is the answer — where the spike is, whether a number is climbing |
+| `ask_user` | A question card, and waits for it | A decision that is genuinely yours and would change what gets built |
+
+Each is drawn from the call's own input, unchanged. That identity is what lets
+a reopened conversation redraw the table rather than show a row saying one was
+drawn once: a transcript records the model's messages and nothing about how
+they were rendered, so a view that *is* its input survives a restart and a
+derived one would not. A call the harness refuses draws nothing at all — the
+view goes out before the tool runs, so it is withdrawn again if the tool then
+rejects the arguments, live and on reload alike.
+
+`ask_user` is the only one that blocks. The call parks until the card is
+answered, exactly as a permission prompt does, and every question can be
+skipped — "You decide" answers all of them at once and sends. This is the one
+exception to the system prompt's instruction to keep going without stopping,
+and the prompt says so beside the rule it breaks, because a small local model
+given both and no reconciliation will pick the wrong one. It is not available
+to sub-agents: a delegate has no user watching it, so `ask_user`, `show_table`,
+and `show_chart` are all registered per turn alongside `spawn_subagent` rather
+than in the shared registry the children inherit.
+
+On the CLI, a table and a chart print in full to stdout in place of the usual
+one-line "called a tool" annotation, so `taurus run > out.txt` keeps them.
+Charts are drawn horizontally there — vertical bars need a height a scrollback
+does not have — and every series prints, since a terminal has no tabs. A
+question numbers its options and reads a line, with Enter alone to skip. Where
+there is no terminal at all — a pipe, a git hook, CI — nothing hangs: the tool
+comes back saying nobody was available, and the model is told to decide and say
+which way it went.
 
 ## Configuration
 
@@ -954,6 +1022,9 @@ pnpm test                  # transcript reducer, replay, settings, rewind
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 
+# The README's screenshots. Needs Chrome or Chromium; nothing else does.
+pnpm screenshots
+
 # TypeScript types are generated from Rust; regenerate after changing a payload.
 # `src/bindings` is not committed, so this is also the first thing a fresh clone
 # needs — without it `pnpm build` cannot find a single frontend type.
@@ -982,6 +1053,30 @@ On Windows the executable's icon does not come from the bundler at all.
 `32512` while compiling, which is why a plain `cargo build --release -p
 taurus-app` — what CI runs, producing `taurus-app.exe` — carries the icon
 without any bundling step. Keep an `.ico` first in that list.
+
+### The README's screenshots
+
+```bash
+pnpm screenshots     # rewrites docs/screenshots/*.png
+```
+
+The images are the real frontend — the real `App`, the real store, the real
+stylesheet — served on its own and driven in headless Chrome, with the Tauri IPC
+bridge answering fixtures. They are not photographs of a running desktop app:
+there is no window chrome, and the conversation is canned. That trade is
+deliberate, and it is the same argument the app icon makes above. A hand-taken
+screenshot is a picture nothing can check, so it goes stale silently and ends up
+documenting a version of the app that no longer exists; one that regenerates
+from the components in `src/` cannot drift further than the last person who ran
+the command.
+
+The fixtures are the `UiEvent` stream a turn emits, folded by the store's own
+reducer — not hand-built view state. A screenshot assembled around the
+components would look right while the code that feeds them was broken.
+
+Regenerate after a visible UI change, and eyeball the result: this is the only
+check in the repository that looks at pixels, and reviewing the PNG in the diff
+is the whole of it.
 
 ### Live checks
 
@@ -1015,6 +1110,20 @@ cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async boo
 # changed. Needs no provider. Run it on something large before touching the
 # caps in `sweep.rs` — every command pays this twice.
 cargo run -p taurus-tools --example sweep -- .
+```
+
+The drawn results have no example of their own, because the check worth making
+is that a model reaches for them unprompted and that what it sends survives the
+trip. One turn does both:
+
+```bash
+# Draws a table on stdout, then answers in prose beside it.
+taurus run "Four crates and their build times: taurus-core 42.1s, taurus-tauri
+31.7s, taurus-mcp 18.4s, taurus-agents 11.9s. Show me the comparison."
+
+# No terminal to ask on, so this must decide and say so rather than hang.
+echo "" | taurus run "Ask me whether to rename everywhere or only in settings,
+then act on the answer."
 ```
 
 The CLI doubles as a live check on the whole stack:

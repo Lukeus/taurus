@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
+import { CopyButton } from "./CopyButton";
+
 /**
  * Markdown rendering for assistant output.
  *
@@ -144,7 +146,7 @@ function Code({
     <div className="md-code">
       <div className="md-code-head">
         <span className="md-code-lang">{language ?? "text"}</span>
-        <CopyButton text={body.replace(/\n$/, "")} />
+        <CopyButton className="md-copy" text={body.replace(/\n$/, "")} />
       </div>
       <pre>
         <code className={className}>{children}</code>
@@ -156,24 +158,4 @@ function Code({
 /** The `pre` wrapper is supplied by `Code`, so this one just passes through. */
 function Pre({ children }: { children?: React.ReactNode }) {
   return <>{children}</>;
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      className="md-copy"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        } catch {
-          // Clipboard access can be refused; saying nothing beats an alert.
-        }
-      }}
-    >
-      {copied ? "copied" : "copy"}
-    </button>
-  );
 }

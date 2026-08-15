@@ -4,9 +4,11 @@
 //! prose on stdout and its activity annotated around it; a script wants one
 //! JSON object per line and nothing else on stdout that it has to filter out.
 
+use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
 
 use taurus_core::UiEvent;
+use taurus_tools::view::TranscriptView;
 
 use crate::markdown::MarkdownStyler;
 
@@ -31,6 +33,12 @@ pub struct Renderer {
     styler: MarkdownStyler,
     /// Same, for reasoning, which streams to stderr on its own line.
     mid_thinking: bool,
+    /// Calls whose view was already printed in full.
+    ///
+    /// Their result says "Drew 'Crates by build time' — 5 rows", which is
+    /// written for a model that cannot see the table. Echoing it under a table
+    /// the reader is looking at describes the thing above it back to them.
+    drawn: HashSet<String>,
     quiet: bool,
     verbose: bool,
 }
@@ -45,6 +53,7 @@ impl Renderer {
             color,
             mid_text: false,
             mid_thinking: false,
+            drawn: HashSet::new(),
             pending: String::new(),
             styler: MarkdownStyler::new(color),
             quiet,
@@ -93,13 +102,32 @@ impl Renderer {
                 self.write_err(text);
             }
 
-            UiEvent::ToolCallStarted { name, preview, .. } => {
+            UiEvent::ToolCallStarted {
+                id,
+                name,
+                preview,
+                view,
+            } => {
                 if self.quiet {
                     return;
                 }
                 self.break_text();
                 self.break_thinking();
-                self.dim(&format!("  {} {}", glyph(name), preview));
+                // A table or a chart *is* the output, so it goes to stdout in
+                // full rather than being announced as a call that happened.
+                // Questions are the exception among the exceptions: the prompt
+                // that follows draws them itself, and printing them twice would
+                // ask everything before asking anything.
+                match view {
+                    Some(TranscriptView::Questions { .. }) | None => {
+                        self.dim(&format!("  {} {}", glyph(name), preview));
+                    }
+                    Some(view) => {
+                        self.drawn.insert(id.clone());
+                        println!();
+                        println!("{}", crate::views::render(view, self.color));
+                    }
+                }
             }
 
             // Indented under the call it belongs to. Delegation is the only
@@ -114,8 +142,8 @@ impl Renderer {
                 self.dim(&format!("    · {label}"));
             }
 
-            UiEvent::ToolCallFinished { ok, output, .. } => {
-                if self.quiet {
+            UiEvent::ToolCallFinished { id, ok, output } => {
+                if self.quiet || self.drawn.remove(id) {
                     return;
                 }
                 let first = output.lines().next().unwrap_or("").trim();
@@ -261,6 +289,10 @@ fn glyph(tool: &str) -> &'static str {
         "run_skill_script" => "script",
         "propose_skill" => "propose",
         "spawn_subagent" => "delegate",
+        // show_table and show_chart never reach here: their view is printed in
+        // full instead of announced. `ask_user` does, because the prompt that
+        // follows is what draws it.
+        "ask_user" => "ask",
         _ => "tool",
     }
 }
@@ -281,6 +313,22 @@ mod tests {
                 id: "t".into(),
                 name: "read_file".into(),
                 preview: "Read a".into(),
+                view: None,
+            },
+            UiEvent::ToolCallStarted {
+                id: "v".into(),
+                name: "show_chart".into(),
+                preview: "Chart: turns".into(),
+                view: Some(TranscriptView::Chart {
+                    title: "turns".into(),
+                    caption: None,
+                    labels: vec!["t1".into()],
+                    series: vec![taurus_tools::view::Series {
+                        name: "calls".into(),
+                        unit: String::new(),
+                        values: vec![4.0],
+                    }],
+                }),
             },
             UiEvent::ToolCallFinished {
                 id: "t".into(),

@@ -61,6 +61,7 @@ pub fn run() {
             commands::close_session,
             commands::delete_session,
             commands::respond_permission,
+            commands::answer_questions,
             commands::list_permission_rules,
             commands::revoke_permission_rule,
             commands::list_skills,

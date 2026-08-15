@@ -21,7 +21,7 @@ use taurus_mcp::ServerStatus;
 use taurus_provider::{ChatRequest, Message, ModelInfo, StreamAccumulator};
 use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
-use taurus_tools::{AllowedRule, PermissionDecision, Scope};
+use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
 use taurus_host::{
     sessions, BackendKind, Checkpoint, Host, KeyStatus, Problem, ProviderConfig, Restored,
@@ -373,6 +373,31 @@ pub async fn respond_permission(
         }
         // Not an error: a turn that was canceled removes its own pending
         // requests, and the UI may answer a moment later.
+        None => Ok(()),
+    }
+}
+
+/// Answers a question card, releasing the tool call parked behind it.
+///
+/// One answer per question, in the order they were asked, and every one of them
+/// may be empty — skipping is a first-class outcome, not a failure to respond.
+/// See [`taurus_tools::view::Answer`].
+#[tauri::command]
+pub async fn answer_questions(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    answers: Vec<Answer>,
+) -> CmdResult<()> {
+    match state.pending_questions.remove(&id) {
+        Some((_, sender)) => {
+            // Send failure means the call gave up first — a cancelled turn, or
+            // a closed window. Nothing left to release.
+            let _ = sender.send(answers);
+            Ok(())
+        }
+        // Not an error, for the same reason `respond_permission` is not: a card
+        // can still be on screen after the turn behind it was cancelled, and a
+        // click on it should do nothing rather than raise a banner.
         None => Ok(()),
     }
 }

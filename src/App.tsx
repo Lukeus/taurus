@@ -227,6 +227,7 @@ export default function App() {
           <Transcript
             entries={store.entries}
             busy={store.busy}
+            onAnswer={store.answerQuestions}
             empty={
               <FirstRun
                 workspace={workspace}

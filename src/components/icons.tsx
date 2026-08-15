@@ -226,3 +226,24 @@ export function DisplayIcon({ size }: { size?: number }) {
     </Icon>
   );
 }
+
+/**
+ * A question the user is being asked.
+ *
+ * Drawn open rather than inside a circle: the card it heads already has a
+ * border and an accent, and a ringed glyph beside a ringed card reads as a
+ * badge on a badge.
+ */
+export function QuestionIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path
+        d="M5.4 5.6a2.6 2.6 0 113.9 2.25c-.8.48-1.3 1-1.3 1.9"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <circle cx="8" cy="12.6" r="1" fill="currentColor" />
+    </Icon>
+  );
+}

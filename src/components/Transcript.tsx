@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
 
+import { ChartCard } from "./ChartCard";
 import { Markdown } from "./Markdown";
+import { QuestionsCard } from "./QuestionsCard";
+import { TableCard } from "./TableCard";
 import { duration, plural } from "../lib/format";
+import type { Answer } from "../lib/api";
 import type { Entry } from "../state/store";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -60,11 +64,14 @@ export function Transcript({
   entries,
   busy,
   empty,
+  onAnswer,
 }: {
   entries: Entry[];
   busy: boolean;
   /** Shown in place of the transcript before there is anything to show. */
   empty: React.ReactNode;
+  /** Answers a question card, releasing the tool call parked behind it. */
+  onAnswer: (id: string, answers: Answer[]) => void;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -99,7 +106,7 @@ export function Transcript({
         Array.isArray(item) ? (
           <ToolRun key={item[0].id} steps={item} />
         ) : (
-          <EntryView key={item.id} entry={item} />
+          <EntryView key={item.id} entry={item} onAnswer={onAnswer} />
         ),
       )}
       {busy && <div className="working">working…</div>}
@@ -116,12 +123,17 @@ export function Transcript({
  * side of it. Runs of one are grouped too — the header is still the right
  * place for its status, and a lone call that becomes two mid-stream must not
  * change shape as it does.
+ *
+ * A call that drew something is the exception, and stands alone. Folding a
+ * table into a run would file the answer under "6 steps · 11s" behind a
+ * disclosure triangle, and a question card there would be a question nobody
+ * saw. These are not steps on the way to the reply; they are part of it.
  */
 export function group(entries: Entry[]): (Entry | ToolEntry[])[] {
   const out: (Entry | ToolEntry[])[] = [];
   for (const entry of entries) {
     const last = out[out.length - 1];
-    if (entry.kind !== "tool") {
+    if (entry.kind !== "tool" || entry.view) {
       out.push(entry);
     } else if (Array.isArray(last)) {
       last.push(entry);
@@ -132,7 +144,31 @@ export function group(entries: Entry[]): (Entry | ToolEntry[])[] {
   return out;
 }
 
-function EntryView({ entry }: { entry: Entry }) {
+function EntryView({
+  entry,
+  onAnswer,
+}: {
+  entry: Entry;
+  onAnswer: (id: string, answers: Answer[]) => void;
+}) {
+  if (entry.kind === "tool" && entry.view) {
+    switch (entry.view.type) {
+      case "table":
+        return <TableCard view={entry.view} />;
+      case "chart":
+        return <ChartCard view={entry.view} />;
+      case "questions":
+        return (
+          <QuestionsCard
+            view={entry.view}
+            status={entry.status}
+            output={entry.output}
+            onAnswer={onAnswer}
+          />
+        );
+    }
+  }
+
   switch (entry.kind) {
     case "user":
       return (
