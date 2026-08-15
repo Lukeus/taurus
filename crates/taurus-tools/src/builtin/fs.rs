@@ -1,9 +1,12 @@
 //! Filesystem tools.
 
+use std::path::Path;
+
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::diff::FileDiff;
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
 
 /// Guards against a single read blowing the model's context window.
@@ -216,6 +219,17 @@ impl Tool for WriteFile {
         touched_path(input)
     }
 
+    /// The line above says which file and how many bytes. This says what the
+    /// bytes are — which for an overwrite is the whole decision.
+    async fn diff(&self, input: &serde_json::Value, workspace: &Path) -> Option<FileDiff> {
+        let path = input.get("path")?.as_str()?;
+        let content = input.get("content")?.as_str()?;
+        // Resolved through the same guard the call itself will use, so a path
+        // the write would refuse is never read to draw a picture of it.
+        let resolved = crate::path_guard::resolve(workspace, path).ok()?;
+        crate::diff::against_disk(workspace, &resolved, content)
+    }
+
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: WriteFileInput = parse_input(input)?;
         let path = ctx.resolve(&input.path)?;
@@ -282,6 +296,24 @@ impl Tool for EditFile {
         touched_path(input)
     }
 
+    /// Computed by running the same replacement the call will run.
+    ///
+    /// Through [`apply_edit`] rather than a second implementation of it: a
+    /// dialog that shows one change while the tool makes another is worse than
+    /// showing nothing, because it is the thing the user believed when they
+    /// approved it.
+    async fn diff(&self, input: &serde_json::Value, workspace: &Path) -> Option<FileDiff> {
+        let input: EditFileInput = serde_json::from_value(input.clone()).ok()?;
+        let path = crate::path_guard::resolve(workspace, &input.path).ok()?;
+        let original = std::fs::read_to_string(&path).ok()?;
+        let (updated, _) = apply_edit(&original, &input).ok()?;
+        Some(crate::diff::between(
+            crate::path_guard::display(workspace, &path),
+            &original,
+            &updated,
+        ))
+    }
+
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: EditFileInput = parse_input(input)?;
         if input.old_string == input.new_string {
@@ -294,46 +326,74 @@ impl Tool for EditFile {
             .await
             .map_err(|e| ToolError::Failed(format!("cannot read {}: {e}", ctx.display(&path))))?;
 
-        // The model reasons in LF because that is how read_file presented the
-        // file; translate its strings into the file's own convention.
-        let crlf = original.contains("\r\n");
-        let old = if crlf {
-            to_crlf(&input.old_string)
-        } else {
-            input.old_string.clone()
-        };
-        let new = if crlf {
-            to_crlf(&input.new_string)
-        } else {
-            input.new_string.clone()
-        };
-
-        let count = original.matches(&old).count();
         let display = ctx.display(&path);
-        match count {
-            0 => Err(ToolError::InvalidInput(format!(
+        let (updated, count) = apply_edit(&original, &input).map_err(|e| e.explain(&display))?;
+
+        tokio::fs::write(&path, updated)
+            .await
+            .map_err(|e| ToolError::Failed(format!("cannot write {display}: {e}")))?;
+        Ok(match count {
+            1 => format!("Edited {display}"),
+            n => format!("Edited {display} ({n} replacements)"),
+        })
+    }
+}
+
+/// Why a replacement could not be made, without the file's name in it.
+///
+/// Separate from the message so [`apply_edit`] can be called where there is
+/// nothing to name — the permission prompt resolves a path the user has not
+/// approved yet — while `execute` still produces the wording the model reads.
+enum EditProblem {
+    NotFound,
+    Ambiguous(usize),
+}
+
+impl EditProblem {
+    fn explain(self, display: &str) -> ToolError {
+        ToolError::InvalidInput(match self {
+            Self::NotFound => format!(
                 "old_string was not found in {display}. Read the file again and match its exact \
                  current text, including whitespace."
-            ))),
-            n if n > 1 && !input.replace_all => Err(ToolError::InvalidInput(format!(
+            ),
+            Self::Ambiguous(n) => format!(
                 "old_string appears {n} times in {display}. Include surrounding context to make \
                  it unique, or set replace_all."
-            ))),
-            n => {
-                let updated = if input.replace_all {
-                    original.replace(&old, &new)
-                } else {
-                    original.replacen(&old, &new, 1)
-                };
-                tokio::fs::write(&path, updated)
-                    .await
-                    .map_err(|e| ToolError::Failed(format!("cannot write {display}: {e}")))?;
-                Ok(match n {
-                    1 => format!("Edited {display}"),
-                    n => format!("Edited {display} ({n} replacements)"),
-                })
-            }
-        }
+            ),
+        })
+    }
+}
+
+/// Applies an edit and reports how many occurrences it replaced.
+///
+/// The one place the replacement is worked out, so the diff the user approves
+/// and the bytes that get written cannot disagree.
+fn apply_edit(original: &str, input: &EditFileInput) -> Result<(String, usize), EditProblem> {
+    // The model reasons in LF because that is how read_file presented the
+    // file; translate its strings into the file's own convention.
+    let crlf = original.contains("\r\n");
+    let old = if crlf {
+        to_crlf(&input.old_string)
+    } else {
+        input.old_string.clone()
+    };
+    let new = if crlf {
+        to_crlf(&input.new_string)
+    } else {
+        input.new_string.clone()
+    };
+
+    match original.matches(&old).count() {
+        0 => Err(EditProblem::NotFound),
+        n if n > 1 && !input.replace_all => Err(EditProblem::Ambiguous(n)),
+        n => Ok((
+            if input.replace_all {
+                original.replace(&old, &new)
+            } else {
+                original.replacen(&old, &new, 1)
+            },
+            n,
+        )),
     }
 }
 
@@ -401,6 +461,95 @@ fn to_crlf(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
+
+    /// The claim the whole feature rests on: the diff the user approves and the
+    /// bytes that get written are computed by the same code, so they cannot
+    /// disagree. A dialog showing one change while the tool makes another is
+    /// worse than showing none, because it is what the user believed.
+    #[tokio::test]
+    async fn the_edit_diff_is_what_the_edit_actually_does() {
+        let (ctx, dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        std::fs::write(dir.path().join("a.rs"), "one\ntwo\nthree\n").unwrap();
+        let input = serde_json::json!({
+            "path": "a.rs", "old_string": "two", "new_string": "TWO",
+        });
+
+        let diff = EditFile.diff(&input, &root).await.expect("a diff");
+        assert_eq!((diff.added, diff.removed), (1, 1));
+        assert!(!diff.created);
+
+        EditFile.execute(input, &ctx).await.unwrap();
+        let after = std::fs::read_to_string(dir.path().join("a.rs")).unwrap();
+
+        // Replay the diff's added lines and check they are the file that exists.
+        let added: Vec<&str> = diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind != crate::diff::DiffLineKind::Removed)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(added.join("\n") + "\n", after);
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_cannot_apply_offers_no_diff_and_still_prompts() {
+        // A diff is evidence offered with the decision, never a precondition
+        // for making one — the prompt still has to appear.
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("a.rs"), "one\n").unwrap();
+        let input = serde_json::json!({
+            "path": "a.rs", "old_string": "nowhere", "new_string": "x",
+        });
+        assert!(EditFile.diff(&input, &ctx.workspace).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn writing_a_new_file_reads_as_a_creation() {
+        let (ctx, _dir) = test_ctx();
+        let diff = WriteFile
+            .diff(
+                &serde_json::json!({"path": "new.txt", "content": "hello\n"}),
+                &ctx.workspace,
+            )
+            .await
+            .expect("a diff");
+        assert!(diff.created);
+        assert_eq!(diff.removed, 0);
+    }
+
+    #[tokio::test]
+    async fn overwriting_shows_what_is_being_destroyed() {
+        // The case the byte count could not speak to.
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("a.txt"), "keep\nlose\n").unwrap();
+        let diff = WriteFile
+            .diff(
+                &serde_json::json!({"path": "a.txt", "content": "keep\n"}),
+                &ctx.workspace,
+            )
+            .await
+            .expect("a diff");
+        assert!(!diff.created);
+        assert_eq!(diff.removed, 1);
+        let removed: Vec<&str> = diff.hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == crate::diff::DiffLineKind::Removed)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(removed, ["lose"]);
+    }
+
+    #[tokio::test]
+    async fn a_path_outside_the_workspace_is_not_read_to_draw_a_picture_of_it() {
+        // Resolved through the same guard the write will use, so the prompt
+        // cannot become a way to read a file the tool would refuse to touch.
+        let (ctx, _dir) = test_ctx();
+        let escaped = serde_json::json!({"path": "../outside.txt", "content": "x"});
+        assert!(WriteFile.diff(&escaped, &ctx.workspace).await.is_none());
+    }
 
     #[tokio::test]
     async fn read_file_numbers_lines() {

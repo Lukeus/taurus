@@ -172,10 +172,7 @@ mod tests {
             "m",
             vec![
                 Message::user("hi"),
-                Message::new(
-                    Role::Assistant,
-                    vec![ContentBlock::Thinking { text: "hmm".into() }],
-                ),
+                Message::new(Role::Assistant, vec![ContentBlock::thinking("hmm")]),
             ],
         );
         let wire = messages_to_wire(&req);

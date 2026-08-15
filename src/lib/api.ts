@@ -14,7 +14,12 @@ import type { Answer } from "../bindings/Answer";
 import type { AppStatus } from "../bindings/AppStatus";
 import type { Checkpoint } from "../bindings/Checkpoint";
 import type { ContentBlock } from "../bindings/ContentBlock";
+import type { DiffHunk } from "../bindings/DiffHunk";
+import type { DiffLine } from "../bindings/DiffLine";
+import type { DiffLineKind } from "../bindings/DiffLineKind";
+import type { FileDiff } from "../bindings/FileDiff";
 import type { CreatedSession } from "../bindings/CreatedSession";
+import type { Instructions } from "../bindings/Instructions";
 import type { KeyStatus } from "../bindings/KeyStatus";
 import type { Message } from "../bindings/Message";
 import type { ModelInfo } from "../bindings/ModelInfo";
@@ -51,6 +56,11 @@ export type {
   Checkpoint,
   ContentBlock,
   CreatedSession,
+  DiffHunk,
+  DiffLine,
+  DiffLineKind,
+  FileDiff,
+  Instructions,
   KeyStatus,
   Message,
   ModelEntry,
@@ -147,6 +157,10 @@ export const revokePermissionRule = (rule: string, scope: Scope) =>
   invoke<void>("revoke_permission_rule", { rule, scope });
 
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
+
+/** The standing brief in force, in the order it reaches the prompt. */
+export const listInstructions = () =>
+  invoke<Instructions[]>("list_instructions");
 
 /** Skills runnable as `/name`, for completion in the composer. */
 export const listCommands = () => invoke<SkillSummary[]>("list_commands");

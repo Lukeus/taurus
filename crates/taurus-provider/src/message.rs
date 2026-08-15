@@ -29,6 +29,21 @@ pub enum ContentBlock {
     /// so the UI can collapse it and compaction can drop it first.
     Thinking {
         text: String,
+        /// Opaque proof-of-origin, for providers that issue one and require it
+        /// back verbatim.
+        ///
+        /// Anthropic is the case: a turn that thought and then called a tool is
+        /// only legal on the next request if its thinking blocks come back
+        /// signed and unedited, and dropping them is a 400 rather than a
+        /// degradation. Carried rather than regenerated because it is a
+        /// signature — the whole point is that this harness cannot produce one.
+        ///
+        /// `None` on every other backend, and on transcripts written before
+        /// this field existed, which is why it defaults rather than being
+        /// required.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        signature: Option<String>,
     },
     ToolUse {
         id: String,
@@ -53,6 +68,14 @@ impl ContentBlock {
         Self::Text { text: text.into() }
     }
 
+    /// Reasoning with no signature, which is every provider but Anthropic.
+    pub fn thinking(text: impl Into<String>) -> Self {
+        Self::Thinking {
+            text: text.into(),
+            signature: None,
+        }
+    }
+
     pub fn tool_result(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self::ToolResult {
             tool_use_id: tool_use_id.into(),
@@ -73,7 +96,7 @@ impl ContentBlock {
     /// token estimation care about their size.
     pub fn as_text(&self) -> Option<&str> {
         match self {
-            Self::Text { text } | Self::Thinking { text } => Some(text),
+            Self::Text { text } | Self::Thinking { text, .. } => Some(text),
             Self::ToolResult { content, .. } => Some(content),
             _ => None,
         }

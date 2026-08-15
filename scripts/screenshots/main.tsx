@@ -14,7 +14,15 @@
  */
 import { createRoot } from "react-dom/client";
 
-import { CHECKPOINTS, EVENTS, MODELS, PROMPT, SESSIONS, STATUS } from "./fixtures";
+import {
+  CHECKPOINTS,
+  EVENTS,
+  MODELS,
+  PERMISSION,
+  PROMPT,
+  SESSIONS,
+  STATUS,
+} from "./fixtures";
 
 /** Which part of the conversation to frame. See `capture.mjs` for the set. */
 const shot = new URLSearchParams(location.search).get("shot") ?? "top";
@@ -86,6 +94,9 @@ requestAnimationFrame(() => {
       entries: EVENTS.reduce(reduce, [
         { kind: "user", id: "u1", text: PROMPT },
       ] as never),
+      // The dialog is state, not a route, so seeding it is all it takes to
+      // photograph the moment a write is actually approved.
+      ...(shot === "permission" ? { permission: PERMISSION as never } : {}),
     });
 
     const transcript = document.querySelector(".transcript");
@@ -93,6 +104,8 @@ requestAnimationFrame(() => {
       top: () => transcript?.scrollTo({ top: 0 }),
       chart: () => scrollTo(transcript, document.querySelectorAll(".view-card")[1]),
       questions: () => scrollTo(transcript, document.querySelector(".questions")),
+      // The dialog centres itself over the scrim, so there is nothing to scroll.
+      permission: () => {},
     }[shot];
     // A frame for React to paint the seeded entries before anything is
     // measured; the scroll targets do not exist until it has.

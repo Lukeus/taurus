@@ -1,13 +1,16 @@
 # Taurus AI Shell
 
-An agent harness that runs against any model provider, starting with local
-Ollama. Rust underneath, with two frontends over one shared core: a Tauri v2
-desktop app and a `taurus` CLI. macOS, Windows, and Linux from one codebase.
+An agent harness that runs against any model provider — local Ollama, anything
+OpenAI-compatible, Anthropic, or Google Gemini. Rust underneath, with two
+frontends over one shared core: a Tauri v2 desktop app and a `taurus` CLI.
+macOS, Windows, and Linux from one codebase.
 
 It reads and edits files in a workspace, runs commands, searches the web,
 connects to MCP servers, delegates to sub-agents — and writes down procedures it
-works out as reusable **skills**, which you approve before they are kept. Every
-file it edits is recorded first, so any turn can be **rewound**.
+works out as reusable **skills**, which you approve before they are kept. It
+reads the `AGENTS.md` and `CLAUDE.md` you already have rather than asking for a
+seventh copy. Every file it edits is recorded first, so any turn can be
+**rewound**, and every write is shown as a **diff** before you approve it.
 
 ![The Taurus desktop app: a conversation, a folded run of tool calls, and a
 table the model drew](docs/screenshots/app-dark.png)
@@ -65,6 +68,8 @@ crates/
   taurus-provider/          Provider trait + normalized message/stream types
   taurus-provider-ollama/   Ollama adapter (NDJSON, per-model capabilities)
   taurus-provider-openai/   OpenAI-compatible adapter (SSE, vLLM/LM Studio/…)
+  taurus-provider-anthropic/ Anthropic Messages API (probed capabilities, caching)
+  taurus-provider-gemini/   Google Gemini (generateContent, OpenAPI-subset schemas)
   taurus-tools/             Tool registry, built-in tools, permission gate, undo
   taurus-skills/            Skill discovery, execution, and authoring
   taurus-agents/            Sub-agent definitions and discovery
@@ -94,16 +99,72 @@ The normalized types use Anthropic-style content blocks rather than OpenAI's
 with interleaved text, reasoning, and several tool calls survives the round
 trip; the other direction does not.
 
-Two things prove the abstraction rather than assert it:
+Three things prove the abstraction rather than assert it:
 
-- **The OpenAI adapter required no change to `taurus-core`**, despite a
-  different transport (SSE vs NDJSON) and a different tool-call encoding
-  (arguments as a string assembled across frames vs a whole object).
+- **Every adapter after the first required no change to `taurus-core`.** The
+  OpenAI one differs in transport (SSE vs NDJSON) and tool-call encoding
+  (arguments as a string assembled across frames vs a whole object). Gemini
+  differs in what a conversation *is*: the assistant is called `model`, tool
+  calls carry no ids at all, results pair with calls by name, schemas are an
+  OpenAPI subset rather than JSON Schema, and every streamed chunk is a whole
+  response object rather than a delta envelope. None of that reached the core.
 - **Models without tool support still call tools.** `gemma3` accepts no `tools`
   parameter at all. The harness detects that from Ollama's capability probe and
   switches to prompted tool calling, parsing `<tool_call>` blocks out of the
   text stream into the exact same events a native adapter emits. `taurus-core`
   cannot tell which path a turn took.
+- **A backend that reports itself is asked rather than configured.** Ollama and
+  Anthropic both answer questions about their own models, so neither needs a
+  `context_length` in `providers.json` and neither can be told the wrong one.
+
+### Instructions
+
+A skill is a procedure the model loads when it needs one. Instructions are the
+opposite: a short standing brief that applies to every turn — this project's
+conventions, how you want work done, what not to touch. Taurus reads the files
+you already have rather than asking for a seventh copy, on the same rule the
+skill library follows. Six locations, lowest precedence first:
+
+```
+~/.agents/AGENTS.md         <workspace>/AGENTS.md
+~/.claude/CLAUDE.md         <workspace>/CLAUDE.md
+~/.taurus/TAURUS.md         <workspace>/.taurus/TAURUS.md
+```
+
+The project files sit at the repository root rather than inside a dotdir,
+because that is where they actually live — a repo's brief is `AGENTS.md` beside
+the README, and looking anywhere else would find nothing in the projects this
+exists for.
+
+**They accumulate rather than shadow**, which is the one deliberate difference
+from skills. Two skills named `deploy` are rival answers to one question, so the
+project's wins. "I prefer terse commit messages" and "this repo pins its
+toolchain" are both true at once, and dropping either because the other exists
+would be a silent loss. Each file is labelled in the prompt with where it came
+from, so a model can tell a personal preference from a project requirement — and
+the section says the project's win where they disagree.
+
+Two files with identical bytes are read once. `CLAUDE.md` symlinked to
+`AGENTS.md` is the common shape, and a rule the model is told twice is a rule it
+weights twice.
+
+**`@path` imports are resolved**, one level deep. Claude Code's format lets a
+file be a list of pointers, and real ones are: a global `CLAUDE.md` whose entire
+content is `@RTK.md` is a file Taurus would otherwise read as a single
+meaningless line. A line qualifies only when the whole of it is `@` followed by
+a path, so `Ask @alice before releasing` is prose and stays prose. An import of
+a missing file is reported rather than passed through — a pointer at nothing
+tells the model less than nothing.
+
+A file longer than 12 KB is cut on a line boundary and says so, in the prompt
+and in the Skills drawer. These bytes are paid on every request of every turn,
+so a checked-in handbook would otherwise spend an 8k model's whole context
+before it read a line of code.
+
+The brief lands directly after the harness's own rules and before the skill
+catalog. That ordering is the design: a brief saying "ask before touching the
+database" argues with "keep going until the task is done", and a small model
+settles a contradiction by recency — so the brief comes second, where it wins.
 
 ### Skills
 
@@ -271,6 +332,28 @@ leading command word, so approving `git` does not also approve `rm`. A call that
 names a URL is keyed the same way by that URL's host: approving `fetch_url` for
 `docs.rs` is a decision about a site, not a standing grant to reach anywhere.
 
+**A write is shown as a diff.** `Write src/widget.rs (2140 bytes)` says a file is
+about to be replaced and nothing about what with. For a new file that is the
+whole story; for an overwrite it is the least informative moment in the product,
+since the bytes being destroyed are on disk and the bytes replacing them are in
+the tool call. So they are diffed, in the desktop dialog and on the terminal —
+the pre-image read is the one the checkpoint log takes a moment later, so this
+costs a read that was going to happen anyway.
+
+![The permission dialog showing a diff of the change a write would
+make](docs/screenshots/permission-diff.png)
+
+The diff `edit_file` shows is computed by running the replacement the call will
+run, through the same function. A dialog that shows one change while the tool
+makes another is worse than showing none, because it is what the user believed
+when they approved it. Both are capped at 160 lines and say how many they left
+out — a wall of lines in a modal gets approved unread, which is the failure this
+prevents arrived at from the other side. A write that would change nothing says
+so rather than showing an empty frame; that is usually a model looping, and it
+is a decision worth not making. A file that is not text produces no diff at all,
+because a diff of replacement characters is the same non-answer the byte count
+already gave.
+
 An "allow always" decision persists into one of two layers, and both are
 consulted:
 
@@ -311,6 +394,42 @@ throwaway or already-sandboxed environments.
 Skills are never saved unattended. If the agent proposes one during a piped
 run, the CLI reports it and discards it rather than writing something nobody
 reviewed.
+
+### Running commands
+
+Commands run with three pipes and no stdin by default, which is right for almost
+everything an agent runs: a model cannot answer a `[y/N]` prompt, so a command
+that waits for one must fail on the timeout rather than hang the session.
+
+The exception is the program that asks whether it is talking to a terminal. Told
+no, `git` pages and colors nothing, `npm create` declines to scaffold, and
+anything built on a full-screen prompt library fails at startup — behavior a
+person would never see and cannot easily explain. Those are not exotic commands.
+They are the ones somebody would reach for.
+
+So `run_command` takes two more arguments:
+
+- **`pty: true`** runs the command under a real pseudo-terminal — `forkpty` on
+  Unix, ConPTY on Windows, from the one codebase. The program believes in a
+  terminal because there is one.
+- **`stdin`** hands it the keystrokes up front. A pty is a different thing from
+  interactivity: under one, a program that wants an answer still waits for it,
+  so the two arrive together. This is what turns "behaves correctly" into
+  "completes", and it works on the piped path too.
+
+A terminal has one stream, so under a pty stdout and stderr are interleaved and
+the `[stderr]` split the model reads elsewhere is not recoverable. That is a
+property of the thing rather than of this implementation. Terminal control
+sequences are stripped before the output reaches the model: a `cargo build`
+under a pty is more escape bytes than text, and the model pays tokens for every
+one of them. Bare carriage returns go with them, so a progress bar does not
+produce a transcript that scrolls over itself.
+
+The timeout still holds, and has to: under a pty an interactive program waits
+rather than hitting end-of-file, so a ceiling that did not fire would hang a
+session for good. It kills the child rather than abandoning it — a blocking read
+cannot be cancelled, and a worker parked on a child that will never exit would
+otherwise outlive the session that started it.
 
 ### Sessions
 
@@ -855,6 +974,65 @@ than the model spending a turn discovering it has no credential. Picking a
 backend and it still not running is a state the tab names explicitly, since a
 selection alone is not the same as a working one.
 
+### Anthropic and Google Gemini
+
+Both are their own `kind` rather than a `base_url` pointed at a different host,
+because neither is OpenAI-shaped. Anthropic reads the key from `x-api-key`, puts
+the system prompt in a top-level field, and sends tool input as an object;
+Gemini calls the assistant `model`, gives tool calls no ids at all, and takes an
+OpenAPI subset where the others take JSON Schema.
+
+```jsonc
+[
+  { "id": "anthropic", "kind": "anthropic", "base_url": "https://api.anthropic.com" },
+  { "id": "gemini", "kind": "gemini", "base_url": "https://generativelanguage.googleapis.com" }
+]
+```
+
+That is the whole configuration. Keys go in the OS keychain as usual — `taurus
+key set anthropic` — or in a variable named by `api_key_env`.
+
+**Neither needs a `context_length`,** and neither should be given one except as
+a fallback. Anthropic reports a window and a capability tree per model, so
+Taurus asks; Gemini reports a window in its model listing. Each answer is
+remembered per model for the life of the provider, because compaction asks the
+question once per iteration of the agent loop and the number cannot change while
+a turn runs — probing each time would put a round trip in front of every model
+call. A configured value
+that disagrees with the model is how a conversation compacts at the wrong
+moment, so the field is offered in Settings as "only used if the backend will
+not report its own window" and left empty by default.
+
+**Prompt caching is on by default on Anthropic.** The system prompt and tool
+schemas are exactly the fixed overhead [`taurus usage`](#the-context-window)
+exists to report — re-sent on every iteration of every turn — and this is the
+one backend here that will serve them back at about a tenth of the price. Two
+breakpoints of the four allowed: one after the system prompt, which also covers
+the tools rendered before it, and one on the newest turn, so the cached prefix
+grows with the conversation rather than resetting each iteration. Cached tokens
+are counted into the input total, so a well-cached turn reports what the request
+carried rather than only the part that missed.
+
+**Thinking is left to the model by default.** Sending no `thinking` field is the
+only setting valid on every model that API has served — the newer ones reason by
+default and the older ones do not, and neither rejects a request that says
+nothing. `"thinking": "adaptive"` or `"disabled"` overrides it, and the wrong
+one is a 400 rather than a preference, which is why it is not guessed.
+
+Reasoning blocks are replayed with the signature the provider issued them under.
+That is not a nicety: a turn that reasoned and then called a tool is only legal
+on the next request if its thinking comes back signed and unedited, so a
+signature that did not survive the stream is a rejected request one turn later.
+
+**Gemini's schemas are sanitized on the way out.** It accepts an OpenAPI 3
+subset and refuses a request outright on a keyword it does not know, with an
+error naming the tool rather than the offending word — so `$schema`, `title`,
+`additionalProperties`, and the integer-width `format`s that `schemars` emits
+are stripped at every level of every tool schema. Its tool calls carry no ids,
+so Taurus synthesizes them and resolves them back to names on the way out;
+without that, two calls to the same tool in one turn would be indistinguishable
+and so would their results.
+
 ### Azure OpenAI, and gateways in front of it
 
 Azure is an OpenAI-compatible backend that disagrees about one thing: where the
@@ -1017,8 +1195,8 @@ into the project file.
 ## Development
 
 ```bash
-cargo test --workspace     # 609 tests
-pnpm test                  # transcript reducer, replay, settings, rewind
+cargo test --workspace     # 791 tests
+pnpm test                  # transcript reducer, replay, settings, rewind, diffs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 
@@ -1090,6 +1268,11 @@ cargo run -p taurus-provider-ollama --example smoke -- gemma3      # prompted fa
 
 # The OpenAI adapter, against Ollama's own /v1 endpoint.
 cargo run -p taurus-provider-openai --example smoke -- llama3.2:latest
+
+# The hosted adapters. Each prints the capabilities it probed before the turn,
+# which is the half of these two that has no local equivalent.
+ANTHROPIC_API_KEY=… cargo run -p taurus-provider-anthropic --example smoke -- claude-opus-5
+GEMINI_API_KEY=…    cargo run -p taurus-provider-gemini    --example smoke -- gemini-2.5-pro
 
 # The whole harness: read files, write a file, report what happened.
 cargo run -p taurus-core --example e2e -- qwen3.6:27b
@@ -1165,14 +1348,36 @@ ships its own `.taurus` directory.
   takes deliberate effort; on one with coarse timestamps, a command that
   rewrites a file to the same length within the same tick would slip through.
   Closing it means reading every file twice per command.
-- **`run_command` has no PTY.** Commands run non-interactively with stdin
-  closed, which is right for an agent but means programs that check `isatty`
-  behave as though piped, and interactive prompts hit the timeout instead of
-  hanging forever. Their output streams to the transcript as it is produced —
-  batched every 100ms, kept as a bounded scrollback, and dropped from the
-  *display* rather than allowed to stall the child if the UI falls behind. What
-  the model receives is always the complete output; only what you are watching
-  scroll past can skip.
+- **A pty command's stdout and stderr cannot be told apart.** A terminal has one
+  stream, so `pty: true` gives up the `[stderr]` split the piped path reports.
+  That is the format rather than the implementation, and it is why the pty is
+  opt-in rather than the default. Output streams to the transcript as it is
+  produced on both paths — batched every 100ms, kept as a bounded scrollback,
+  and dropped from the *display* rather than allowed to stall the child if the
+  UI falls behind. What the model receives is always the complete output; only
+  what you are watching scroll past can skip.
+- **A pty command answers prompts it was given, not prompts it was not.** `stdin`
+  is written up front and closed, so a program that asks something unanticipated
+  still waits for the timeout. Driving a genuine back-and-forth would mean
+  keeping the turn open on a running child and deciding what the model is
+  allowed to type into it, which is a larger surface than this opens.
+- **Reasoning the provider returns redacted cannot be replayed.** Anthropic
+  signs its thinking blocks and requires them back unedited; a redacted one has
+  no signature this harness can carry, so it is left out of the next request.
+  Where that matters the API says so explicitly rather than failing quietly, but
+  it is a turn that has to be retried. Carrying the encrypted form would mean a
+  second shape in the normalized types for one provider's edge case.
+- **An instructions file is read, not watched.** `AGENTS.md` is re-read on every
+  reload and on every workspace switch, so an edit lands on the next reload
+  rather than the next turn. The Skills drawer's Rescan is the manual way; a
+  file watcher is the same surface — config reloads racing a running turn — that
+  the agent roster deliberately leaves closed.
+- **A diff is shown for `write_file` and `edit_file` and nothing else.** A
+  command line has no before-and-after to compute, which is exactly why
+  `run_command` is swept afterwards rather than predicted. So the most
+  consequential writes in a session — the ones a script made — are still
+  approved on the command line alone, and only become visible in the **Changes**
+  drawer once they have happened.
 - **A sub-agent's answer is summarized, not streamed.** Its tool calls now
   appear under the delegation card as it makes them, so a long delegation looks
   alive rather than hung, but its reasoning and prose stay inside the child.

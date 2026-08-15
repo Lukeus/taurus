@@ -187,9 +187,7 @@ mod tests {
             "m",
             vec![Message::new(
                 Role::Assistant,
-                vec![ContentBlock::Thinking {
-                    text: "internal".into(),
-                }],
+                vec![ContentBlock::thinking("internal")],
             )],
         );
         assert!(messages_to_wire(&req).is_empty());

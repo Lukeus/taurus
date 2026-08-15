@@ -102,7 +102,7 @@ pub fn workspace_skills_dir(workspace: &Path) -> PathBuf {
 /// scan somewhere the user never pointed at — for the tests, which set that
 /// variable specifically so they cannot touch real state, a shared system temp
 /// directory.
-fn home_root() -> PathBuf {
+pub(crate) fn home_root() -> PathBuf {
     if let Some(dir) = std::env::var_os(HOME_ENV).filter(|d| !d.is_empty()) {
         return PathBuf::from(dir);
     }
@@ -404,6 +404,16 @@ pub struct ProviderConfig {
     /// Model Server from 2026.3 on; earlier OVMS builds need `/v3`.
     #[serde(default)]
     pub api_prefix: Option<String>,
+    /// How an Anthropic provider asks the model to reason: `adaptive`,
+    /// `disabled`, or unset for the model's own default.
+    ///
+    /// Unset is not a missing setting but the only one valid on every model
+    /// that API has served — newer ones reason by default, older ones do not,
+    /// and neither rejects a request that says nothing. Naming a mode is an
+    /// override, and the wrong one is a 400 rather than a preference. Ignored
+    /// by every other kind.
+    #[serde(default)]
+    pub thinking: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -413,6 +423,13 @@ pub enum ProviderKind {
     Ollama,
     /// Anything speaking the OpenAI chat-completions API.
     OpenAiCompatible,
+    /// Anthropic's Messages API. Not OpenAI-shaped: the key rides `x-api-key`,
+    /// the system prompt is a top-level field, and tool input is an object
+    /// rather than a string, so it is a kind of its own rather than a `base_url`
+    /// pointed at a different host.
+    Anthropic,
+    /// Google's Gemini `generateContent` API.
+    Gemini,
 }
 
 /// One model a provider serves.
@@ -547,6 +564,8 @@ pub struct ProviderEntry {
     pub context_length: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 impl ProviderEntry {
@@ -582,6 +601,9 @@ impl ProviderEntry {
         if self.api_prefix.is_some() {
             base.api_prefix = self.api_prefix.clone();
         }
+        if self.thinking.is_some() {
+            base.thinking = self.thinking.clone();
+        }
     }
 
     /// Turns a standalone entry into a provider, or explains what it is missing.
@@ -609,6 +631,7 @@ impl ProviderEntry {
             native_tools: self.native_tools,
             context_length: self.context_length,
             api_prefix: self.api_prefix,
+            thinking: self.thinking,
         })
     }
 }
@@ -628,6 +651,7 @@ impl From<&ProviderConfig> for ProviderEntry {
             native_tools: config.native_tools,
             context_length: config.context_length,
             api_prefix: config.api_prefix.clone(),
+            thinking: config.thinking.clone(),
         }
     }
 }
@@ -644,6 +668,7 @@ fn default_providers() -> Vec<ProviderConfig> {
         native_tools: None,
         context_length: None,
         api_prefix: None,
+        thinking: None,
     }]
 }
 
@@ -1088,6 +1113,7 @@ mod tests {
             native_tools: None,
             context_length: None,
             api_prefix: None,
+            thinking: None,
         };
 
         ProviderEntry {

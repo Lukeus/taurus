@@ -20,6 +20,10 @@ use taurus_agents::{AgentDefinition, AgentSummary, AgentTier};
 use taurus_core::{Agent, AgentConfig, AgentModel, ModelOverrides, ProposeAgent, SpawnSubagent};
 use taurus_mcp::{McpManager, ServerStatus};
 use taurus_provider::Provider;
+use taurus_provider_anthropic::{
+    AnthropicCapabilities, AnthropicProvider, Thinking as AnthropicThinking,
+};
+use taurus_provider_gemini::{GeminiCapabilities, GeminiProvider};
 use taurus_provider_ollama::OllamaProvider;
 use taurus_provider_openai::{ModelSpec, OpenAiCapabilities, OpenAiProvider};
 use taurus_skills::catalog::SkillCatalog;
@@ -32,6 +36,7 @@ use taurus_tools::{
 };
 
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
+use crate::instructions::{self, Instructions};
 use crate::problem::{self, Problem, ProblemSource};
 use crate::prompt;
 use crate::secrets;
@@ -93,6 +98,11 @@ pub struct Host {
     providers: RwLock<Vec<ProviderConfig>>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
+    /// The standing brief for this machine and this workspace, re-read on every
+    /// reload. Held rather than read per turn for the reason the skill catalog
+    /// is: this is six `stat`s and a handful of file reads, and a turn is not
+    /// the place to pay for them again.
+    instructions: RwLock<Vec<Instructions>>,
     /// The sub-agent roster. Seeded with the built-ins so `explorer` and
     /// `worker` work before anything has been scanned.
     ///
@@ -142,6 +152,7 @@ impl Host {
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
             catalog: Arc::new(RwLock::new(SkillCatalog::default())),
+            instructions: RwLock::new(Vec::new()),
             agents: Arc::new(RwLock::new(AgentCatalog::default())),
             agent_models: RwLock::new(ModelOverrides::new()),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
@@ -196,6 +207,17 @@ impl Host {
             skill_problems.iter().map(|p| p.to_string()),
         ));
         *self.catalog.write().await = catalog;
+
+        // Re-read on every reload for the reason providers are: these files
+        // belong to the workspace, and a switch changes which of them exist.
+        let (loaded, instruction_problems) =
+            instructions::load(instructions::sources(Some(&workspace)));
+        info!(files = loaded.len(), "instructions loaded");
+        problems.extend(Problem::tag(
+            ProblemSource::Instructions,
+            instruction_problems,
+        ));
+        *self.instructions.write().await = loaded;
 
         let mut registry = ToolRegistry::with_builtins();
         registry.register(Arc::new(taurus_skills::LoadSkill::new(
@@ -491,6 +513,45 @@ impl Host {
                     ),
                 )
             }
+
+            // Neither of the next two takes `native_tools`: both back model
+            // families that call tools natively, and a prompted fallback there
+            // would be a worse implementation of something that works. Both
+            // take `context_length` only as a fallback — each can ask its own
+            // backend, and a configured value that disagrees with the model is
+            // how a conversation compacts at the wrong moment.
+            ProviderKind::Anthropic => Arc::new(
+                AnthropicProvider::new(
+                    config.id.clone(),
+                    config.base_url.clone(),
+                    config.api_key(),
+                )
+                .with_thinking(
+                    config
+                        .thinking
+                        .as_deref()
+                        .map(AnthropicThinking::parse)
+                        .unwrap_or_default(),
+                )
+                .with_fallback_capabilities(AnthropicCapabilities {
+                    vision: AnthropicCapabilities::default().vision,
+                    context_length: config
+                        .context_length
+                        .unwrap_or(AnthropicCapabilities::default().context_length),
+                })
+                .with_models(config.models.iter().map(|m| m.id.clone()).collect()),
+            ),
+
+            ProviderKind::Gemini => Arc::new(
+                GeminiProvider::new(config.id.clone(), config.base_url.clone(), config.api_key())
+                    .with_fallback_capabilities(GeminiCapabilities {
+                        vision: GeminiCapabilities::default().vision,
+                        context_length: config
+                            .context_length
+                            .unwrap_or(GeminiCapabilities::default().context_length),
+                    })
+                    .with_models(config.models.iter().map(|m| m.id.clone()).collect()),
+            ),
         })
     }
 
@@ -555,6 +616,7 @@ impl Host {
 
         let workspace = self.workspace.read().await.clone();
         let skill_section = self.catalog.read().await.prompt_section();
+        let instructions_section = instructions::section(&self.instructions.read().await);
         let synthesis = self.settings.read().await.skill_synthesis_enabled;
         let agent_synthesis = self.settings.read().await.agent_synthesis_enabled;
 
@@ -571,7 +633,13 @@ impl Host {
             registry,
             self.tool_context(cancel).await.with_checkpoints(recorder),
             AgentConfig {
-                system_prompt: prompt::build(&workspace, skill_section, synthesis, agent_synthesis),
+                system_prompt: prompt::build(
+                    &workspace,
+                    skill_section,
+                    instructions_section,
+                    synthesis,
+                    agent_synthesis,
+                ),
                 ..Default::default()
             },
         )
@@ -897,6 +965,15 @@ impl Host {
         config::skill_sources(Some(&self.workspace.read().await.clone()))
     }
 
+    /// The standing brief in force, in the order it reaches the prompt.
+    ///
+    /// Exposed for the same reason the skill roster is: a file being read is
+    /// invisible otherwise, and "why is it doing that" has no answer if the
+    /// user cannot see which briefs are loaded.
+    pub async fn instructions(&self) -> Vec<Instructions> {
+        self.instructions.read().await.clone()
+    }
+
     pub async fn tool_names(&self) -> Vec<String> {
         self.registry
             .read()
@@ -921,6 +998,7 @@ impl Host {
         prompt::build(
             &self.workspace.read().await.clone(),
             self.catalog.read().await.prompt_section(),
+            instructions::section(&self.instructions.read().await),
             self.settings.read().await.skill_synthesis_enabled,
             self.settings.read().await.agent_synthesis_enabled,
         )

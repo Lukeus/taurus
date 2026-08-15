@@ -32,6 +32,8 @@ pub enum ProblemSource {
     Agents,
     /// `settings.json` — the tools the agent is allowed to have.
     Tools,
+    /// An `AGENTS.md`, `CLAUDE.md`, or `TAURUS.md` that could not be read whole.
+    Instructions,
 }
 
 impl ProblemSource {
@@ -45,7 +47,9 @@ impl ProblemSource {
             Self::Agents => "Agents",
             // The screen that lists what the agent can reach, which is exactly
             // what a disabled tool changes.
-            Self::Mcp | Self::Skills | Self::Tools => "Skills",
+            // The drawer that lists what the agent knows and can reach, which
+            // is where a brief that is not arriving belongs.
+            Self::Mcp | Self::Skills | Self::Tools | Self::Instructions => "Skills",
         }
     }
 
@@ -58,6 +62,7 @@ impl ProblemSource {
             Self::Skills => "skills",
             Self::Agents => "agents",
             Self::Tools => "tools",
+            Self::Instructions => "instructions",
         }
     }
 }
@@ -152,6 +157,7 @@ mod tests {
             ProblemSource::Skills,
             ProblemSource::Agents,
             ProblemSource::Tools,
+            ProblemSource::Instructions,
         ] {
             assert!(!source.where_to_fix().is_empty());
         }

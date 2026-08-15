@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
-import type { SkillSummary } from "../lib/api";
+import type { Instructions, SkillSummary } from "../lib/api";
 import { plural } from "../lib/format";
 import { useStore } from "../state/store";
 
@@ -34,12 +34,19 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   // to Settings, which is where they can be fixed — an untagged list put them
   // here, under a heading about skills.
   const problems = (status?.problems ?? []).filter(
-    (p) => p.source === "skills" || p.source === "mcp",
+    (p) =>
+      p.source === "skills" || p.source === "mcp" || p.source === "instructions",
   );
   const mcpServers = status?.mcp_servers ?? [];
 
+  const [instructions, setInstructions] = useState<Instructions[]>([]);
+
   useEffect(() => {
     api.listSkills().then(setSkills).catch(() => setSkills([]));
+    api
+      .listInstructions()
+      .then(setInstructions)
+      .catch(() => setInstructions([]));
   }, []);
 
   const { all, project, attention, shown } = partition(skills ?? [], filter);
@@ -53,6 +60,7 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
             onClick={async () => {
               await api.reloadConfig();
               setSkills(await api.listSkills());
+              setInstructions(await api.listInstructions().catch(() => []));
             }}
           >
             Rescan
@@ -149,6 +157,8 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
             </li>
           ))}
         </ul>
+
+        <InstructionsSection instructions={instructions} />
 
         <section className="section">
           <div className="section-head">
@@ -249,4 +259,42 @@ export function originLabel(origin: SkillSummary["origin"]): string | null {
     case "taurus":
       return null;
   }
+}
+
+/**
+ * The standing brief, listed above MCP because it is the thing already in the
+ * prompt: a skill is loaded when the model reaches for it, a brief applies to
+ * every turn whether or not anyone remembers writing it.
+ *
+ * Paths in full rather than filenames, because which of six possible locations
+ * a rule came from is the question being answered — `CLAUDE.md` alone does not
+ * distinguish the one in this repo from the one in the home directory.
+ */
+export function InstructionsSection({
+  instructions,
+}: {
+  instructions: Instructions[];
+}) {
+  return (
+    <section className="section">
+      <div className="section-head">
+        <span className="micro">Instructions</span>
+      </div>
+      {instructions.length === 0 && (
+        <p className="drawer-empty">
+          No AGENTS.md, CLAUDE.md, or TAURUS.md found. Add one to the project
+          root or your home directory, then Rescan.
+        </p>
+      )}
+      {instructions.map((entry) => (
+        <div key={entry.source.path} className="section-row">
+          <span className="name">{entry.source.path}</span>
+          <span className="value">
+            {entry.source.tier === "project" ? "project" : "personal"}
+            {entry.truncated && " \u00b7 truncated"}
+          </span>
+        </div>
+      ))}
+    </section>
+  );
 }

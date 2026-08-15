@@ -619,6 +619,20 @@ pub async fn list_skills(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Skill
     Ok(state.host.skills().await)
 }
 
+/// The standing brief in force, in the order it reaches the prompt.
+///
+/// Shown beside the skill library because it belongs to the same question —
+/// what is in the model's context before this conversation started — and
+/// because a file being read silently is the kind of thing that makes
+/// behaviour inexplicable. It is also where `ProblemSource::Instructions`
+/// points, so a brief that did not load whole has somewhere to say so.
+#[tauri::command]
+pub async fn list_instructions(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<Vec<taurus_host::Instructions>> {
+    Ok(state.host.instructions().await)
+}
+
 /// Skills the user can run as `/name`, for completion in the composer.
 ///
 /// A separate call from [`list_skills`] rather than a filter in the UI: which

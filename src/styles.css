@@ -2474,3 +2474,114 @@ button.link:hover {
 
 
 
+
+/* ------------------------------------------------------------------ diff */
+
+/* Shown in the permission dialog, where the decision is being made. Sized so a
+   typical edit is read without scrolling and a large one is visibly larger than
+   the frame — a wall of lines that fits reads as "all of it", which is the one
+   impression this view must not give. */
+.diff {
+  margin: 0 0 14px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.diff-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+}
+.diff-verb {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--text-faint);
+}
+.diff-path {
+  font-family: var(--mono);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.diff-stat {
+  margin-left: auto;
+  font-family: var(--mono);
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+.diff-stat .added {
+  color: var(--ok);
+}
+.diff-stat .removed {
+  color: var(--danger);
+}
+
+.diff-body {
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* A gap between hunks, so two edits a hundred lines apart do not read as one
+   continuous change. */
+.diff-hunk + .diff-hunk {
+  border-top: 1px dashed var(--rule);
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 3.2em 3.2em 1.2em 1fr;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-line.added {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+.diff-line.removed {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.diff-num {
+  text-align: right;
+  padding-right: 8px;
+  color: var(--text-faint);
+  user-select: none;
+}
+/* The gutter carries the meaning on its own: colour is the fast read, and the
+   one that fails in a screenshot, on a projector, and for a reader who cannot
+   tell red from green. */
+.diff-gutter {
+  text-align: center;
+  user-select: none;
+  color: var(--text-dim);
+}
+.diff-line.added .diff-gutter {
+  color: var(--ok);
+}
+.diff-line.removed .diff-gutter {
+  color: var(--danger);
+}
+.diff-text {
+  padding-right: 10px;
+  color: var(--text);
+}
+.diff-line.context .diff-text {
+  color: var(--text-dim);
+}
+
+.diff-note {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-faint);
+  border-top: 1px solid var(--rule);
+}

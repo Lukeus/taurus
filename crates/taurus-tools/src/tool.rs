@@ -9,6 +9,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
+use crate::diff::FileDiff;
 use crate::permission::PermissionEngine;
 
 /// What a tool does to the world. Drives the permission tier.
@@ -214,6 +215,23 @@ pub trait Tool: Send + Sync {
     /// general, so it must reflect the arguments.
     fn preview(&self, input: &serde_json::Value) -> String {
         format!("{} {}", self.name(), compact(input))
+    }
+
+    /// The change this call would make to a file, when the tool can work one out.
+    ///
+    /// The default is `None`, which is right for every tool whose effect is not
+    /// a file rewrite. `write_file` and `edit_file` override it, because for
+    /// those the one-line preview names a file and a byte count and stops
+    /// exactly where the interesting part begins.
+    ///
+    /// Given the workspace rather than a [`ToolContext`] because this runs
+    /// inside the permission gate, before a context exists for the call — and
+    /// because the only thing it needs from one is the root to resolve against.
+    /// Returning `None` on any failure is deliberate: a diff is evidence
+    /// offered alongside the decision, never a precondition for making it, so a
+    /// file that cannot be read still gets a prompt with the preview on it.
+    async fn diff(&self, _input: &serde_json::Value, _workspace: &Path) -> Option<FileDiff> {
+        None
     }
 
     /// Files this call may change, as the caller wrote them.

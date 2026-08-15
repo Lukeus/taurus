@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
+use std::sync::OnceLock;
 
 use taurus_core::UiEvent;
 use taurus_tools::view::TranscriptView;
@@ -41,6 +42,41 @@ pub struct Renderer {
     drawn: HashSet<String>,
     quiet: bool,
     verbose: bool,
+}
+
+/// Whether stderr can carry color.
+///
+/// Asked separately from the transcript renderer's decision, which is about
+/// stdout, because prompts go to stderr: `taurus run > out.md` sends the answer
+/// to a file while the questions stay on a terminal that can still be colored.
+/// Answered once — it cannot change within a run, and the alternative was an
+/// `isatty` per line of a diff.
+fn stderr_color() -> bool {
+    static COLOR: OnceLock<bool> = OnceLock::new();
+    *COLOR.get_or_init(|| std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
+}
+
+fn paint(code: &str, text: &str) -> String {
+    if stderr_color() {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Styling for anything written to stderr, which in practice is the permission
+/// prompt. With color off each returns its input unchanged, so a piped run's
+/// stderr stays plain text.
+pub fn dim_text(text: &str) -> String {
+    paint("2", text)
+}
+
+pub fn green_text(text: &str) -> String {
+    paint("32", text)
+}
+
+pub fn red_text(text: &str) -> String {
+    paint("31", text)
 }
 
 impl Renderer {

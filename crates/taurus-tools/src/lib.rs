@@ -3,6 +3,7 @@
 pub mod builtin;
 pub mod checkpoint;
 pub mod coerce;
+pub mod diff;
 pub mod env;
 pub mod path_guard;
 pub mod permission;
@@ -14,6 +15,7 @@ pub mod tool;
 pub mod view;
 
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, TurnRecorder};
+pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::expand_env;
 pub use permission::{
     AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,

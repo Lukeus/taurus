@@ -174,6 +174,44 @@ const done = (id: string, output: string) => ({
  * What the user asked. Not an event — the store appends this itself when the
  * message is sent, so the harness has to as well.
  */
+/**
+ * The moment the diff exists for: a write that replaces lines already on disk.
+ *
+ * A byte count would say a file is about to change and nothing about what to,
+ * which is the whole reason this view was added — so the fixture is an
+ * overwrite rather than a creation.
+ */
+export const PERMISSION = {
+  id: "perm-1",
+  tool: "edit_file",
+  effect: "write",
+  preview: "Edit crates/taurus-core/src/agent.rs",
+  always_scope: "Allows edit_file in this workspace",
+  always_global_scope: "Allows edit_file in every workspace",
+  input: {},
+  diff: {
+    path: "crates/taurus-core/src/agent.rs",
+    created: false,
+    added: 3,
+    removed: 2,
+    elided: 0,
+    hunks: [
+      {
+        lines: [
+          { kind: "context", text: "    let mut usage = TokenUsage::default();", old_line: 411, new_line: 411 },
+          { kind: "context", text: "", old_line: 412, new_line: 412 },
+          { kind: "removed", text: "    for round in 0..MAX_ITERATIONS {", old_line: 413, new_line: null },
+          { kind: "removed", text: "        let request = self.build_request();", old_line: 414, new_line: null },
+          { kind: "added", text: "    for round in 0..self.config.max_iterations {", old_line: null, new_line: 413 },
+          { kind: "added", text: "        let request = self.build_request();", old_line: null, new_line: 414 },
+          { kind: "added", text: "        self.compact_if_needed(&mut usage).await;", old_line: null, new_line: 415 },
+          { kind: "context", text: "        let (tx, rx) = mpsc::channel(64);", old_line: 415, new_line: 416 },
+        ],
+      },
+    ],
+  },
+} as const;
+
 export const PROMPT = "Where is the build time going? Show me the shape of it.";
 
 /** One turn: real work, a table, a chart, and a question left open. */
