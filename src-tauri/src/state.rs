@@ -16,9 +16,9 @@ use taurus_agents::proposal::AgentProposal;
 use taurus_core::Session;
 use taurus_host::{Host, PermissionPromptFactory, SessionLog};
 use taurus_skills::proposal::SkillProposal;
-use taurus_tools::{PermissionDecision, PermissionPrompt};
+use taurus_tools::{Answer, PermissionDecision, PermissionPrompt};
 
-use crate::bridge::{UiAgentProposalSink, UiPermissionPrompt, UiProposalSink};
+use crate::bridge::{UiAgentProposalSink, UiAsker, UiPermissionPrompt, UiProposalSink};
 
 /// One live conversation.
 pub struct SessionEntry {
@@ -51,6 +51,8 @@ pub struct AppState {
     pub host: Host,
     pub sessions: DashMap<String, Arc<SessionEntry>>,
     pub pending_permissions: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>>,
+    /// Tool calls parked on a question card, keyed by call id.
+    pub pending_questions: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>>,
     pub pending_proposals: Arc<DashMap<String, SkillProposal>>,
     pub pending_agent_proposals: Arc<DashMap<String, AgentProposal>>,
 }
@@ -58,6 +60,8 @@ pub struct AppState {
 impl AppState {
     pub fn new(app: AppHandle) -> Self {
         let pending_permissions: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>> =
+            Arc::new(DashMap::new());
+        let pending_questions: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>> =
             Arc::new(DashMap::new());
         let pending_proposals: Arc<DashMap<String, SkillProposal>> = Arc::new(DashMap::new());
         let pending_agent_proposals: Arc<DashMap<String, AgentProposal>> = Arc::new(DashMap::new());
@@ -68,6 +72,7 @@ impl AppState {
                 app: app.clone(),
                 pending: pending_permissions.clone(),
             }),
+            Arc::new(UiAsker::new(pending_questions.clone())),
             Arc::new(UiProposalSink::new(app.clone(), pending_proposals.clone())),
             Arc::new(UiAgentProposalSink::new(
                 app,
@@ -79,6 +84,7 @@ impl AppState {
             host,
             sessions: DashMap::new(),
             pending_permissions,
+            pending_questions,
             pending_proposals,
             pending_agent_proposals,
         }

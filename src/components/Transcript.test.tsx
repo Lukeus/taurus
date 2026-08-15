@@ -40,6 +40,43 @@ describe("grouping a turn", () => {
     expect(Array.isArray(grouped[1]) && grouped[1]).toHaveLength(3);
   });
 
+  it("leaves a call that drew something standing on its own", () => {
+    // Folded into the run, the answer would be filed under "4 steps" behind a
+    // disclosure triangle, one click further away than the work that made it.
+    const drew: ToolEntry = {
+      ...tool("t3", "show_table"),
+      view: {
+        type: "table",
+        title: "Crates by build time",
+        caption: null,
+        columns: [{ label: "Crate", kind: "text" }],
+        rows: [["taurus-core"]],
+      },
+    };
+    const grouped = group([tool("t1", "grep"), tool("t2", "read_file"), drew]);
+
+    expect(grouped).toHaveLength(2);
+    expect(Array.isArray(grouped[0]) && grouped[0]).toHaveLength(2);
+    expect(grouped[1]).toBe(drew);
+  });
+
+  it("does not swallow the run that follows a drawn one", () => {
+    const drew: ToolEntry = {
+      ...tool("t1", "show_chart"),
+      view: {
+        type: "chart",
+        title: "Turns",
+        caption: null,
+        labels: ["t1"],
+        series: [{ name: "calls", unit: "", values: [4] }],
+      },
+    };
+    const grouped = group([drew, tool("t2", "grep"), tool("t3", "read_file")]);
+
+    expect(grouped).toHaveLength(2);
+    expect(Array.isArray(grouped[1]) && grouped[1]).toHaveLength(2);
+  });
+
   it("starts a new run after the model speaks between calls", () => {
     // Two runs separated by a sentence are two steps of the conversation, and
     // merging them would put the sentence after work it came before.

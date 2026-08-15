@@ -10,6 +10,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentSummary } from "../bindings/AgentSummary";
 import type { AgentTier } from "../bindings/AgentTier";
 import type { AllowedRule } from "../bindings/AllowedRule";
+import type { Answer } from "../bindings/Answer";
 import type { AppStatus } from "../bindings/AppStatus";
 import type { Checkpoint } from "../bindings/Checkpoint";
 import type { ContentBlock } from "../bindings/ContentBlock";
@@ -36,6 +37,7 @@ import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
 import type { Theme } from "../bindings/Theme";
+import type { TranscriptView } from "../bindings/TranscriptView";
 import type { UiEvent } from "../bindings/UiEvent";
 
 export type {
@@ -44,6 +46,7 @@ export type {
   AgentSummary,
   AgentTier,
   AllowedRule,
+  Answer,
   AppStatus,
   Checkpoint,
   ContentBlock,
@@ -68,6 +71,7 @@ export type {
   SkillProposal,
   SkillSummary,
   Theme,
+  TranscriptView,
   UiEvent,
 };
 
@@ -125,6 +129,15 @@ export const deleteSession = (sessionId: string) =>
 
 export const respondPermission = (id: string, decision: PermissionDecision) =>
   invoke<void>("respond_permission", { response: { id, decision } });
+
+/**
+ * Answers a question card, releasing the tool call waiting behind it.
+ *
+ * `id` is the call's own id, which is what the card was drawn from. One answer
+ * per question, in the order they were asked; an empty one is a skip.
+ */
+export const answerQuestions = (id: string, answers: Answer[]) =>
+  invoke<void>("answer_questions", { id, answers });
 
 export const listPermissionRules = () =>
   invoke<AllowedRule[]>("list_permission_rules");

@@ -487,16 +487,18 @@ impl Agent {
             .collect();
 
         for (id, name, input) in &calls {
-            let preview = self
-                .registry
-                .get(name)
+            let tool = self.registry.get(name);
+            let preview = tool
+                .as_ref()
                 .map(|t| t.preview(input))
                 .unwrap_or_else(|| format!("{name} {input}"));
+            let view = tool.and_then(|t| t.view(id, input));
             let _ = ui
                 .send(UiEvent::ToolCallStarted {
                     id: id.clone(),
                     name: name.clone(),
                     preview,
+                    view,
                 })
                 .await;
         }
@@ -560,10 +562,13 @@ impl Agent {
     /// This turn's tool context, bound to one call so anything it reports lands
     /// on that call's card rather than loose in the transcript.
     fn context_for(&self, id: &str, ui: &mpsc::Sender<UiEvent>) -> ToolContext {
-        self.tools.clone().with_progress(Arc::new(CallProgress {
-            id: id.to_string(),
-            ui: ui.clone(),
-        }))
+        self.tools
+            .clone()
+            .with_progress(Arc::new(CallProgress {
+                id: id.to_string(),
+                ui: ui.clone(),
+            }))
+            .with_call_id(id)
     }
 
     async fn execute_one(

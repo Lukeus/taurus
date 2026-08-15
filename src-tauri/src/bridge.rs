@@ -1,8 +1,15 @@
 //! Connects the harness's decision points to the user interface.
 //!
-//! Two things in `taurus-core` need a human: a permission prompt, which blocks
-//! the tool call until answered, and a skill proposal, which does not block
-//! anything. Both are traits there and become Tauri events here.
+//! Three things need a human: a permission prompt, which blocks the tool call
+//! until answered; a skill proposal, which blocks nothing; and `ask_user`,
+//! which blocks like the first and is delivered like neither.
+//!
+//! The odd one out is `ask_user`, and deliberately so. The other two emit a
+//! Tauri event because the frontend has no other way to hear about them. Its
+//! question card arrives on the turn's own event stream, as part of the tool
+//! call being announced, which is what puts it in the transcript in the order
+//! it was asked. So there is nothing to emit here — only somewhere for the call
+//! to wait while the card is on screen.
 
 use std::sync::Arc;
 
@@ -14,7 +21,9 @@ use tracing::warn;
 
 use taurus_agents::proposal::{AgentProposal, AgentProposalSink};
 use taurus_skills::proposal::{ProposalSink, SkillProposal};
-use taurus_tools::{PermissionDecision, PermissionPrompt, PermissionRequest};
+use taurus_tools::{
+    Answer, Asker, PermissionDecision, PermissionPrompt, PermissionRequest, Question,
+};
 
 pub const EVENT_PERMISSION_REQUEST: &str = "taurus://permission-request";
 pub const EVENT_SKILL_PROPOSAL: &str = "taurus://skill-proposal";
@@ -59,6 +68,41 @@ impl PermissionPrompt for UiPermissionPrompt {
             Err(_) => {
                 self.pending.remove(&id);
                 PermissionDecision::Deny
+            }
+        }
+    }
+}
+
+/// Where a blocked `ask_user` call waits for the card to be answered.
+///
+/// Keyed by the tool call's id, which is the same id the card in the transcript
+/// was drawn from — so a click on it can find the call it belongs to.
+/// `answer_questions` completes it.
+pub struct UiAsker {
+    pending: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>>,
+}
+
+impl UiAsker {
+    pub fn new(pending: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>>) -> Self {
+        Self { pending }
+    }
+}
+
+#[async_trait]
+impl Asker for UiAsker {
+    async fn ask(&self, id: &str, _questions: &[Question]) -> Option<Vec<Answer>> {
+        let (tx, rx) = oneshot::channel();
+        self.pending.insert(id.to_string(), tx);
+
+        match rx.await {
+            Ok(answers) => Some(answers),
+            // Sender dropped: the window closed, or the session was torn down
+            // with a card still on screen. Answering nothing lets the turn
+            // finish on its own judgement instead of holding the loop open on a
+            // card nobody can reach.
+            Err(_) => {
+                self.pending.remove(id);
+                None
             }
         }
     }

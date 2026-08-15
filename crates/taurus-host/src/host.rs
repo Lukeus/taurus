@@ -26,8 +26,9 @@ use taurus_skills::catalog::SkillCatalog;
 use taurus_skills::proposal::ProposalSink;
 use taurus_skills::skill::SkillSummary;
 use taurus_skills::SharedCatalog;
+use taurus_tools::builtin::present::{AskUser, ShowChart, ShowTable};
 use taurus_tools::{
-    CheckpointStore, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
+    Asker, CheckpointStore, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
 };
 
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
@@ -49,6 +50,24 @@ pub const MAX_CONCURRENT_SUBAGENTS: usize = 2;
 /// rather than dropping anything. Roughly a dozen agents at the 200-character
 /// description cap, which is well past what a person curates by hand.
 pub const ROSTER_BUDGET_CHARS: usize = 2_400;
+
+/// Tools a parent turn registers for itself, rather than into the shared
+/// registry every reload rebuilds.
+///
+/// All four are here for the same reason: a sub-agent must not have them.
+/// `spawn_subagent` is the depth cap, and the other three speak to the person
+/// watching this conversation, which a delegate does not have.
+///
+/// Named as a set because `disabled_tools` has to know about them twice over —
+/// once to take one away in [`Host::build_agent`], and once so
+/// [`Host::reload`], which is looking at a registry that does not contain them,
+/// does not report a working name as a typo.
+pub const PER_TURN_TOOLS: &[&str] = &[
+    taurus_core::SPAWN_TOOL,
+    taurus_tools::builtin::present::SHOW_TABLE_TOOL,
+    taurus_tools::builtin::present::SHOW_CHART_TOOL,
+    taurus_tools::builtin::present::ASK_USER_TOOL,
+];
 
 /// Makes a permission prompt on demand.
 ///
@@ -91,6 +110,9 @@ pub struct Host {
     mcp: McpManager,
     problems: RwLock<Vec<Problem>>,
     prompts: Arc<dyn PermissionPromptFactory>,
+    /// Where `ask_user` puts its questions. Not a factory like `prompts`: it is
+    /// bound to nothing that a workspace change rebuilds.
+    asker: Arc<dyn Asker>,
     proposals: Arc<dyn ProposalSink>,
     /// Where a proposed *agent* goes. Separate from `proposals` because the two
     /// carry different payloads and land on different review cards, not because
@@ -102,6 +124,7 @@ impl Host {
     pub fn new(
         workspace: PathBuf,
         prompts: Arc<dyn PermissionPromptFactory>,
+        asker: Arc<dyn Asker>,
         proposals: Arc<dyn ProposalSink>,
         agent_proposals: Arc<dyn AgentProposalSink>,
     ) -> Self {
@@ -126,6 +149,7 @@ impl Host {
             mcp: McpManager::new(),
             problems: RwLock::new(Vec::new()),
             prompts,
+            asker,
             proposals,
             agent_proposals,
         }
@@ -250,9 +274,19 @@ impl Host {
         // skill tools, web, MCP — rather than to whichever of them happened to
         // register before the setting was read.
         let disabled = self.settings.read().await.disabled_tools.clone();
+        // The per-turn tools are not in this registry to be removed from — a
+        // turn adds them to its own copy, and takes them away there. Held back
+        // so that naming one is not reported as naming a tool that does not
+        // exist, which is the one message that would send someone looking for a
+        // typo in a line that works.
+        let here: Vec<String> = disabled
+            .iter()
+            .filter(|name| !PER_TURN_TOOLS.contains(&name.as_str()))
+            .cloned()
+            .collect();
         problems.extend(Problem::tag(
             ProblemSource::Tools,
-            disable(&mut registry, &disabled),
+            disable(&mut registry, &here),
         ));
 
         // After the registry is finished, and deliberately so: an agent scoped
@@ -491,6 +525,33 @@ impl Host {
                 self.agent_models.read().await.clone(),
             ),
         ));
+
+        // Registered per turn, alongside the spawn tool and for the same
+        // reason: these three address the person watching this conversation,
+        // and a sub-agent has no such person. It shares the registry above,
+        // which is what keeps `ask_user` away from a worker that cannot ask
+        // anyone anything, and keeps a delegate from drawing a chart into a
+        // transcript it is not part of.
+        registry.register(Arc::new(ShowTable));
+        registry.register(Arc::new(ShowChart));
+        registry.register(Arc::new(AskUser::new(self.asker.clone())));
+
+        // `reload` applies this to the shared registry, which is everything
+        // registered *there* — so without a second pass here, the per-turn
+        // tools were the one set `disabled_tools` could not reach, and the
+        // guarantee that a disabled tool is not registered at all held for
+        // every tool but the four the parent turn adds for itself. Silent, and
+        // exactly the direction that matters: a name typed to take a tool away
+        // that quietly leaves it on.
+        //
+        // Unmatched names are not reported from here. `reload` already reports
+        // them once, against the full set including these, and a turn is not a
+        // place to raise a configuration problem — it would arrive once per
+        // message for as long as the typo lived.
+        disable(
+            &mut registry,
+            &self.settings.read().await.disabled_tools.clone(),
+        );
 
         let workspace = self.workspace.read().await.clone();
         let skill_section = self.catalog.read().await.prompt_section();
@@ -1079,6 +1140,7 @@ mod tests {
         let host = Host::new(
             workspace.to_path_buf(),
             Arc::new(DenyingPrompts),
+            Arc::new(taurus_tools::Unattended),
             Arc::new(NoProposals),
             Arc::new(NoProposals),
         );
@@ -1466,6 +1528,83 @@ mod tests {
             .definitions()
             .iter()
             .any(|d| d.name == "run_command"));
+    }
+
+    /// The tools one turn actually gets, which is the shared registry plus the
+    /// four a parent adds for itself.
+    async fn turn_tools(host: &Host) -> Vec<String> {
+        let agent = host
+            .build_agent(
+                taurus_core::testing::FakeProvider::new(Vec::new()),
+                "test-model",
+                CancellationToken::new(),
+                TurnRef {
+                    session_id: "s1",
+                    prompt: "hello",
+                },
+            )
+            .await;
+        agent.registry().names().map(str::to_string).collect()
+    }
+
+    #[tokio::test]
+    async fn a_turn_can_draw_and_ask_but_a_sub_agent_cannot() {
+        // The three drawing tools address the person watching this
+        // conversation. A delegate has no such person, and it shares the
+        // registry below — so `ask_user` reaching it would be a worker blocked
+        // on a question nobody will ever see.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let turn = turn_tools(&host).await;
+        let shared: Vec<String> = host
+            .registry
+            .read()
+            .await
+            .names()
+            .map(str::to_string)
+            .collect();
+
+        for tool in PER_TURN_TOOLS {
+            assert!(turn.contains(&tool.to_string()), "turn is missing {tool}");
+            assert!(
+                !shared.contains(&tool.to_string()),
+                "{tool} leaked to children"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_per_turn_tool_can_be_disabled_like_any_other() {
+        // The set a turn adds for itself was the one `disabled_tools` could not
+        // reach, which made the guarantee — a disabled tool is not registered
+        // at all — quietly false for exactly four names.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/settings.json"),
+            r#"{"disabled_tools": ["show_chart", "spawn_subagent"]}"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let turn = turn_tools(&host).await;
+        assert!(!turn.contains(&"show_chart".to_string()), "{turn:?}");
+        assert!(!turn.contains(&"spawn_subagent".to_string()), "{turn:?}");
+        assert!(turn.contains(&"show_table".to_string()), "{turn:?}");
+
+        // And naming one is not reported as naming a tool that does not exist,
+        // which would send someone hunting for a typo in a line that works.
+        let problems = host.problems().await;
+        assert!(
+            !problems.iter().any(|p| p.source == ProblemSource::Tools),
+            "{problems:?}"
+        );
     }
 
     #[tokio::test]

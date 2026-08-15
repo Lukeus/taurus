@@ -123,6 +123,13 @@ pub struct ToolContext {
     /// card. `None` outside a loop that draws anything — the CLI's piped mode,
     /// examples, tests.
     pub progress: Option<Arc<dyn ToolProgress>>,
+    /// The id of the call this context was built for.
+    ///
+    /// Only [`crate::builtin::present::AskUser`] reads it, and only because it
+    /// has to: the question card the user is looking at was drawn from this id,
+    /// so the wait for their answer has to be registered under the same one.
+    /// `None` wherever the caller runs a tool outside the agent loop.
+    pub call_id: Option<String>,
 }
 
 impl ToolContext {
@@ -138,6 +145,7 @@ impl ToolContext {
             cancel,
             checkpoints: None,
             progress: None,
+            call_id: None,
         }
     }
 
@@ -156,6 +164,12 @@ impl ToolContext {
     /// Binds this context to one tool call's progress reporting.
     pub fn with_progress(mut self, progress: Arc<dyn ToolProgress>) -> Self {
         self.progress = Some(progress);
+        self
+    }
+
+    /// Tells the call which call it is. See [`ToolContext::call_id`].
+    pub fn with_call_id(mut self, id: impl Into<String>) -> Self {
+        self.call_id = Some(id.into());
         self
     }
 
@@ -227,6 +241,23 @@ pub trait Tool: Send + Sync {
     /// index the entire workspace twice.
     fn touches_unpredictably(&self) -> bool {
         false
+    }
+
+    /// What this call wants drawn in the transcript, instead of a row saying it
+    /// happened.
+    ///
+    /// `None` for every tool that does work, which is nearly all of them — a
+    /// row is the right size for "read 459 lines". The three in
+    /// [`crate::builtin::present`] answer with a table, a chart, or a question
+    /// card, because none of those fits on a line.
+    ///
+    /// Called before the tool runs, from the raw input, so a view appears the
+    /// moment the call is announced rather than after it finishes. `id` is the
+    /// call's id, which a view that expects an answer back must carry.
+    /// Unparseable input answers `None` and the call goes on to fail properly
+    /// in `execute`, where the error message can say what was wrong with it.
+    fn view(&self, _id: &str, _input: &serde_json::Value) -> Option<crate::view::TranscriptView> {
+        None
     }
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult;

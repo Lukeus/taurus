@@ -10,6 +10,7 @@ import { create } from "zustand";
 
 import * as api from "../lib/api";
 import type {
+  Answer,
   AppStatus,
   CreatedSession,
   Message,
@@ -18,6 +19,7 @@ import type {
   SessionMeta,
   AgentProposal,
   SkillProposal,
+  TranscriptView,
   UiEvent,
 } from "../lib/api";
 
@@ -40,6 +42,16 @@ export type Entry =
        * For every other tool the array stays empty and nothing is drawn.
        */
       steps: string[];
+      /**
+       * Drawn in place of the call's row, for the three tools whose output is
+       * something to look at. Set the moment the call is announced, so a
+       * question card is on screen while the call it belongs to is waiting.
+       *
+       * Dropped again if the call fails, in both the live and the resumed
+       * path: a table the harness refused to accept must not be left on
+       * screen looking like an answer.
+       */
+      view?: TranscriptView;
       /**
        * Wall-clock bounds of the call, in epoch milliseconds, so a run of
        * steps can report how long it took. Absent on a resumed conversation:
@@ -92,6 +104,11 @@ interface Store {
   send: (text: string) => Promise<void>;
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
+  /**
+   * Releases the tool call parked behind a question card. One answer per
+   * question, in order; an empty one is a skip, which every question allows.
+   */
+  answerQuestions: (id: string, answers: Answer[]) => Promise<void>;
   resolveProposal: (
     id: string,
     approve: boolean,
@@ -297,6 +314,14 @@ export const useStore = create<Store>((set, get) => ({
     await api.respondPermission(permission.id, decision);
   },
 
+  answerQuestions: async (id, answers) => {
+    // No optimistic update: the card reads its own state from the call it
+    // belongs to, and that call turns from running to done when the harness
+    // releases it. Marking it answered here would show it as settled a beat
+    // before the turn had actually resumed.
+    await api.answerQuestions(id, answers);
+  },
+
   resolveProposal: async (id, approve, target = "project") => {
     await api.respondSkillProposal(id, approve, approve ? target : undefined);
     set((s) => ({
@@ -383,10 +408,15 @@ export function entriesFromMessages(messages: Message[]): Entry[] {
             (e) => e.kind === "tool" && e.id === block.tool_use_id,
           );
           if (index >= 0) {
+            const call = entries[index] as Extract<Entry, { kind: "tool" }>;
             entries[index] = {
-              ...(entries[index] as Extract<Entry, { kind: "tool" }>),
+              ...call,
               status: block.is_error ? "error" : "ok",
               output: block.content,
+              // The same rule the live reducer applies: a call the harness
+              // refused drew nothing, so a reopened conversation must not
+              // show it having drawn something.
+              view: block.is_error ? undefined : call.view,
             };
           }
         }
@@ -427,6 +457,7 @@ export function entriesFromMessages(messages: Message[]): Entry[] {
         // Nothing to replay: progress is live-only, and a transcript records
         // what a call did, not what it said while doing it.
         steps: [],
+        view: viewFromCall(block.id, block.name, block.input),
         // Overwritten by the result below. A call left running is one whose
         // result never made it to disk — the turn the process died in.
         status: "running",
@@ -435,6 +466,74 @@ export function entriesFromMessages(messages: Message[]): Entry[] {
   }
 
   return entries;
+}
+
+/**
+ * The view a saved call drew, rebuilt from the call itself.
+ *
+ * A transcript on disk records the model's messages and nothing about how they
+ * were drawn, so this is only possible because the three drawing tools take
+ * their view payload *as* their input, unchanged — see `taurus_tools::view`,
+ * where that identity is the stated reason for the shape. Reopening a
+ * conversation therefore redraws a table rather than showing a row saying one
+ * was drawn once.
+ *
+ * The payload is checked rather than trusted. It was written by whichever build
+ * of Taurus was running at the time, and a card that throws mid-render takes the
+ * whole transcript with it, including the parts that were fine.
+ */
+export function viewFromCall(
+  id: string,
+  name: string,
+  input: unknown,
+): TranscriptView | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  const payload = input as Record<string, unknown>;
+
+  switch (name) {
+    case "show_table":
+      return typeof payload.title === "string" &&
+        Array.isArray(payload.columns) &&
+        Array.isArray(payload.rows) &&
+        payload.rows.every(Array.isArray)
+        ? {
+            type: "table",
+            title: payload.title,
+            caption: asCaption(payload.caption),
+            columns: payload.columns,
+            rows: payload.rows,
+          }
+        : undefined;
+
+    case "show_chart":
+      return typeof payload.title === "string" &&
+        Array.isArray(payload.labels) &&
+        Array.isArray(payload.series)
+        ? {
+            type: "chart",
+            title: payload.title,
+            caption: asCaption(payload.caption),
+            labels: payload.labels,
+            series: payload.series,
+          }
+        : undefined;
+
+    case "ask_user":
+      // Keyed to the call, exactly as the live event was — though nothing is
+      // waiting on it any more, and the card knows to draw itself read-only
+      // from the call's own finished status.
+      return Array.isArray(payload.questions)
+        ? { type: "questions", id, questions: payload.questions }
+        : undefined;
+
+    default:
+      return undefined;
+  }
+}
+
+/** `caption` is optional to the model and nullable across the boundary. */
+function asCaption(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 const PREVIEW_MAX_CHARS = 120;
@@ -493,6 +592,7 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           preview: event.preview,
           status: "running",
           steps: [],
+          view: event.view,
           startedAt: Date.now(),
         },
       ];
@@ -511,6 +611,11 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
               ...e,
               status: event.ok ? "ok" : "error",
               output: event.output,
+              // A refused call leaves nothing behind. The view went out before
+              // the call ran, so a chart whose series did not line up is on
+              // screen by the time the harness says so — and a wrong chart
+              // beside the word "failed" is still a wrong chart.
+              view: event.ok ? e.view : undefined,
               endedAt: Date.now(),
             }
           : e,
