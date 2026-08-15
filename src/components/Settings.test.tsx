@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import type { ProviderConfig, SearchSettings } from "../lib/api";
 import {
+  FIELDS,
   Settings,
   ModelList,
   blankProvider,
@@ -31,6 +32,7 @@ const provider = (patch: Partial<ProviderConfig> = {}): ProviderConfig => ({
   native_tools: null,
   context_length: null,
   api_prefix: null,
+  thinking: null,
   ...patch,
 });
 
@@ -246,5 +248,49 @@ describe("statusHint", () => {
     const hint = statusHint(settings({ selected: "brave", active: false }));
     expect(hint).toContain("not running yet");
     expect(hint).toContain("brave");
+  });
+});
+
+describe("which settings each provider kind shows", () => {
+  it("offers every kind the harness can build", () => {
+    // A kind in the config enum with no row here falls back to the
+    // OpenAI-compatible layout, which shows a header and prefix that adapter
+    // ignores.
+    expect(Object.keys(FIELDS).sort()).toEqual([
+      "anthropic",
+      "gemini",
+      "ollama",
+      "open_ai_compatible",
+    ]);
+  });
+
+  it("asks Ollama for nothing, because it answers for itself", () => {
+    expect(FIELDS.ollama.key).toBe(false);
+    expect(FIELDS.ollama.declareContext).toBe(false);
+    expect(FIELDS.ollama.declareTools).toBe(false);
+  });
+
+  it("does not offer a key header or prefix where the route is fixed", () => {
+    // Anthropic always reads `x-api-key` and Gemini `x-goog-api-key`. A field
+    // to change that is a setting someone will change and then wonder about.
+    expect(FIELDS.anthropic.routing).toBe(false);
+    expect(FIELDS.gemini.routing).toBe(false);
+    expect(FIELDS.open_ai_compatible.routing).toBe(true);
+  });
+
+  it("does not ask a probing backend to declare what it reports", () => {
+    // Both new adapters read their own context window per model. A declared
+    // one that disagrees is how a conversation compacts at the wrong moment,
+    // so it is offered only as a fallback.
+    expect(FIELDS.anthropic.declareContext).toBe(false);
+    expect(FIELDS.anthropic.contextFallback).toBe(true);
+    expect(FIELDS.gemini.contextFallback).toBe(true);
+    expect(FIELDS.open_ai_compatible.declareContext).toBe(true);
+  });
+
+  it("shows the thinking setting only where one exists", () => {
+    expect(FIELDS.anthropic.thinking).toBe(true);
+    expect(FIELDS.gemini.thinking).toBe(false);
+    expect(FIELDS.ollama.thinking).toBe(false);
   });
 });

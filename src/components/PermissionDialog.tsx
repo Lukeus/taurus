@@ -1,4 +1,5 @@
 import type { PermissionDecision, PermissionRequest } from "../lib/api";
+import { DiffView } from "./DiffView";
 
 const EFFECT_LABEL: Record<string, string> = {
   write: "wants to change a file",
@@ -36,6 +37,11 @@ export function PermissionDialog({
           {request.effect === "execute" && <span className="prompt">❯ </span>}
           {request.preview}
         </pre>
+
+        {/* Present only for the two tools that can work out a before and an
+            after. A command line and a URL have none, and the line above is
+            already the whole of what is being approved for those. */}
+        {request.diff && <DiffView diff={request.diff} />}
 
         <p className="dialog-footnote">{request.always_scope}.</p>
 

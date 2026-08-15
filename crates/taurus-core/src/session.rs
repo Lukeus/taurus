@@ -284,7 +284,7 @@ pub fn estimate_tokens(text: &str) -> u32 {
 /// What a single block costs, on the same basis.
 pub fn estimate_block(block: &ContentBlock) -> u32 {
     match block {
-        ContentBlock::Text { text } | ContentBlock::Thinking { text } => estimate_tokens(text),
+        ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => estimate_tokens(text),
         ContentBlock::ToolResult { content, .. } => estimate_tokens(content),
         ContentBlock::ToolUse { name, input, .. } => {
             estimate_tokens(name) + estimate_tokens(&input.to_string())
@@ -306,7 +306,7 @@ pub fn estimate_message(message: &Message) -> u32 {
         .content
         .iter()
         .map(|block| match block {
-            ContentBlock::Text { text } | ContentBlock::Thinking { text } => text.len(),
+            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => text.len(),
             ContentBlock::ToolResult { content, .. } => content.len(),
             ContentBlock::ToolUse { name, input, .. } => name.len() + input.to_string().len(),
             ContentBlock::Image { .. } => 4000,

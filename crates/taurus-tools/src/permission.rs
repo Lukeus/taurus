@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::diff::FileDiff;
 use crate::tool::{Effect, Tool, ToolError};
 
 /// Where workspace decisions live, relative to the workspace root.
@@ -47,6 +48,13 @@ pub struct PermissionRequest {
     pub effect: Effect,
     /// One line describing this specific call.
     pub preview: String,
+    /// What the call would do to a file, when that is knowable before it runs.
+    ///
+    /// Set for `write_file` and `edit_file`, and `None` everywhere else — a
+    /// command line and a URL have no before-and-after to show. Also `None`
+    /// when the target is not text or cannot be read: a diff is evidence
+    /// offered with the decision, never a precondition for making one.
+    pub diff: Option<FileDiff>,
     /// What "always allow" would grant, in words, so the user knows the scope
     /// of the broader decision they are being offered.
     pub always_scope: String,
@@ -198,6 +206,7 @@ impl PermissionEngine {
             tool: tool.name().to_string(),
             effect: tool.effect(),
             preview: tool.preview(input),
+            diff: tool.diff(input, &self.workspace).await,
             always_scope: describe_rule(&rule, tool.effect(), Scope::Workspace),
             always_global_scope: offer_global
                 .then(|| describe_rule(&rule, tool.effect(), Scope::Global)),

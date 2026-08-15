@@ -512,7 +512,76 @@ const SCOPE_LABEL: Record<Scope, string> = {
 const KINDS: { value: ProviderKind; label: string }[] = [
   { value: "ollama", label: "Ollama" },
   { value: "open_ai_compatible", label: "OpenAI-compatible" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "gemini", label: "Google Gemini" },
 ];
+
+/**
+ * Which fields a kind actually reads.
+ *
+ * Written out per kind rather than inferred from "is it Ollama", because the
+ * answer stopped being binary: an Anthropic provider takes a key but has no
+ * header to choose, probes its own context window but accepts a fallback, and
+ * has a thinking setting nothing else does. A field on screen that the adapter
+ * ignores is a setting someone will change and then wonder about.
+ */
+export const FIELDS: Record<
+  ProviderKind,
+  {
+    key: boolean;
+    models: boolean;
+    /** Route shape: a prefix and a header to put the key in. */
+    routing: boolean;
+    /** Tool support has to be declared because it cannot be probed. */
+    declareTools: boolean;
+    /** A context length the backend cannot report. */
+    declareContext: boolean;
+    /** A context length used only when the backend will not answer. */
+    contextFallback: boolean;
+    thinking: boolean;
+  }
+> = {
+  // Probes everything about itself, locally, with no credential.
+  ollama: {
+    key: false,
+    models: false,
+    routing: false,
+    declareTools: false,
+    declareContext: false,
+    contextFallback: false,
+    thinking: false,
+  },
+  // Reports nothing about itself, so all of it has to be declared.
+  open_ai_compatible: {
+    key: true,
+    models: true,
+    routing: true,
+    declareTools: true,
+    declareContext: true,
+    contextFallback: false,
+    thinking: false,
+  },
+  // Reports its own window and capabilities per model; the key always rides
+  // `x-api-key`, so there is no header or prefix to choose.
+  anthropic: {
+    key: true,
+    models: true,
+    routing: false,
+    declareTools: false,
+    declareContext: false,
+    contextFallback: true,
+    thinking: true,
+  },
+  gemini: {
+    key: true,
+    models: true,
+    routing: false,
+    declareTools: false,
+    declareContext: false,
+    contextFallback: true,
+    thinking: false,
+  },
+};
 
 /**
  * The API key field.
@@ -647,10 +716,11 @@ function ProviderForm({
   onChange: (patch: Partial<ProviderConfig>) => void;
   onRemove: () => void;
 }) {
-  // Only the OpenAI-compatible adapter has these; Ollama probes its own
-  // capabilities per model, so showing them there would invite settings that
-  // are silently ignored.
-  const compatible = provider.kind === "open_ai_compatible";
+  // What this kind reads, rather than "is it the OpenAI one". Showing a field
+  // the adapter ignores invites a setting someone changes and then wonders
+  // about; hiding one it needs makes the provider unusable from this screen.
+  const fields = FIELDS[provider.kind] ?? FIELDS.open_ai_compatible;
+  const compatible = fields.models;
 
   return (
     <div className="card settings-provider">
@@ -708,7 +778,7 @@ function ProviderForm({
         />
       </Field>
 
-      {compatible && (
+      {fields.key && (
         <>
           <ApiKeyField
             status={keyStatus}
@@ -730,57 +800,87 @@ function ProviderForm({
             />
           </Field>
 
-          <Field
-            label="API key header"
-            hint="Leave blank for Authorization: Bearer. Azure OpenAI reads api-key; an Azure APIM gateway reads Ocp-Apim-Subscription-Key."
-          >
-            <input
-              value={provider.api_key_header ?? ""}
-              placeholder="Authorization: Bearer"
-              onChange={(e) => onChange({ api_key_header: blank(e.target.value) })}
-            />
-          </Field>
+          {fields.routing && (
+            <>
+              <Field
+                label="API key header"
+                hint="Leave blank for Authorization: Bearer. Azure OpenAI reads api-key; an Azure APIM gateway reads Ocp-Apim-Subscription-Key."
+              >
+                <input
+                  value={provider.api_key_header ?? ""}
+                  placeholder="Authorization: Bearer"
+                  onChange={(e) =>
+                    onChange({ api_key_header: blank(e.target.value) })
+                  }
+                />
+              </Field>
 
-          <Field
-            label="API prefix"
-            hint="Defaults to /v1. Azure OpenAI behind APIM usually needs /openai/v1; OpenVINO Model Server before 2026.3 needs /v3."
-          >
-            <input
-              value={provider.api_prefix ?? ""}
-              placeholder="/v1"
-              onChange={(e) => onChange({ api_prefix: blank(e.target.value) })}
-            />
-          </Field>
+              <Field
+                label="API prefix"
+                hint="Defaults to /v1. Azure OpenAI behind APIM usually needs /openai/v1; OpenVINO Model Server before 2026.3 needs /v3."
+              >
+                <input
+                  value={provider.api_prefix ?? ""}
+                  placeholder="/v1"
+                  onChange={(e) => onChange({ api_prefix: blank(e.target.value) })}
+                />
+              </Field>
+            </>
+          )}
 
-          <Field
-            label="Tool calling"
-            hint="These cannot be probed over the OpenAI API, so they have to be declared."
-          >
-            <select
-              value={triState(provider.native_tools)}
-              onChange={(e) =>
-                onChange({ native_tools: fromTriState(e.target.value) })
+          {fields.declareTools && (
+            <Field
+              label="Tool calling"
+              hint="These cannot be probed over the OpenAI API, so they have to be declared."
+            >
+              <select
+                value={triState(provider.native_tools)}
+                onChange={(e) =>
+                  onChange({ native_tools: fromTriState(e.target.value) })
+                }
+              >
+                <option value="auto">Assume supported</option>
+                <option value="yes">Native</option>
+                <option value="no">Prompted — model has no tool support</option>
+              </select>
+            </Field>
+          )}
+
+          {fields.thinking && (
+            <Field
+              label="Thinking"
+              hint="Leave on the model's default unless you have a reason: it is the only setting valid on every Claude model, and the wrong one is rejected rather than ignored."
+            >
+              <select
+                value={provider.thinking ?? ""}
+                onChange={(e) => onChange({ thinking: blank(e.target.value) })}
+              >
+                <option value="">Model's default</option>
+                <option value="adaptive">Adaptive — the model decides</option>
+                <option value="disabled">Off</option>
+              </select>
+            </Field>
+          )}
+
+          {(fields.declareContext || fields.contextFallback) && (
+            <Field
+              label="Context length"
+              hint={
+                fields.contextFallback
+                  ? "Only used if the backend will not report its own window. Drives when history is compacted."
+                  : "Drives when history is compacted. 8192 for OpenVINO on NPU."
               }
             >
-              <option value="auto">Assume supported</option>
-              <option value="yes">Native</option>
-              <option value="no">Prompted — model has no tool support</option>
-            </select>
-          </Field>
-
-          <Field
-            label="Context length"
-            hint="Drives when history is compacted. 8192 for OpenVINO on NPU."
-          >
-            <input
-              inputMode="numeric"
-              value={provider.context_length ?? ""}
-              placeholder="128000"
-              onChange={(e) =>
-                onChange({ context_length: parseContextLength(e.target.value) })
-              }
-            />
-          </Field>
+              <input
+                inputMode="numeric"
+                value={provider.context_length ?? ""}
+                placeholder={fields.contextFallback ? "probed" : "128000"}
+                onChange={(e) =>
+                  onChange({ context_length: parseContextLength(e.target.value) })
+                }
+              />
+            </Field>
+          )}
         </>
       )}
 
@@ -1012,6 +1112,7 @@ export function blankProvider(existing: ProviderConfig[]): ProviderConfig {
     native_tools: null,
     context_length: null,
     api_prefix: null,
+    thinking: null,
   };
 }
 

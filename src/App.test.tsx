@@ -53,6 +53,7 @@ const provider = (id: string): ProviderConfig => ({
   native_tools: null,
   context_length: null,
   api_prefix: null,
+  thinking: null,
 });
 
 const configured = [provider("ollama"), provider("openai"), provider("azure")];

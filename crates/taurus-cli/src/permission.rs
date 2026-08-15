@@ -95,6 +95,9 @@ impl TerminalPrompt {
         // the redirected stdout stays clean for the model's answer.
         let mut err = std::io::stderr();
         let _ = writeln!(err, "\n  {} — {}", label(request.effect), request.preview);
+        if let Some(diff) = &request.diff {
+            let _ = write!(err, "{}", render_diff(diff));
+        }
         // The everywhere option appears only where the engine offers it, so
         // the prompt never advertises a key that would be quietly narrowed.
         let _ = if request.always_global_scope.is_some() {
@@ -122,6 +125,58 @@ impl TerminalPrompt {
             _ => PermissionDecision::Deny,
         }
     }
+}
+
+/// The change, as `diff` would print it.
+///
+/// Deliberately the familiar `+`/`-` gutter rather than a scheme of this
+/// program's own: the reader has spent years learning to skim one of these, and
+/// the moment they are being asked to read it carefully is the wrong moment to
+/// ask them to learn a new one.
+///
+/// Colored through the same helpers the transcript uses, so `NO_COLOR` and a
+/// redirected stderr strip it here too. Without color the gutter still carries
+/// the whole meaning, which is why it is a character rather than a shade.
+fn render_diff(diff: &taurus_tools::FileDiff) -> String {
+    use taurus_tools::DiffLineKind;
+
+    let mut out = String::new();
+    let verb = if diff.created { "create" } else { "replace" };
+    out.push_str(&crate::render::dim_text(&format!(
+        "  {verb} {} (+{} −{})\n",
+        diff.path, diff.added, diff.removed
+    )));
+
+    if diff.is_empty() {
+        // Usually a model looping. Saying so is more use than an empty box.
+        out.push_str(&crate::render::dim_text("  (no change to the file)\n"));
+        return out;
+    }
+
+    for (i, hunk) in diff.hunks.iter().enumerate() {
+        if i > 0 {
+            out.push_str(&crate::render::dim_text("  ⋯\n"));
+        }
+        for line in &hunk.lines {
+            let (gutter, body) = match line.kind {
+                DiffLineKind::Added => ("+", crate::render::green_text(&line.text)),
+                DiffLineKind::Removed => ("-", crate::render::red_text(&line.text)),
+                DiffLineKind::Context => (" ", crate::render::dim_text(&line.text)),
+            };
+            out.push_str(&format!("  {gutter} {body}\n"));
+        }
+    }
+
+    if diff.elided > 0 {
+        // A cut that does not announce itself reads as the whole change, which
+        // is the one thing a permission prompt must never do.
+        out.push_str(&crate::render::dim_text(&format!(
+            "  ⋯ {} more line{} not shown\n",
+            diff.elided,
+            if diff.elided == 1 { "" } else { "s" }
+        )));
+    }
+    out
 }
 
 fn label(effect: Effect) -> &'static str {
@@ -176,6 +231,7 @@ mod tests {
             tool: tool.into(),
             effect,
             preview: "preview".into(),
+            diff: None,
             always_scope: "scope".into(),
             always_global_scope: None,
             input,

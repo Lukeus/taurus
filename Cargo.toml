@@ -9,6 +9,8 @@ members = [
     "crates/taurus-skills",
     "crates/taurus-web",
     "crates/taurus-provider-openai",
+    "crates/taurus-provider-anthropic",
+    "crates/taurus-provider-gemini",
     "crates/taurus-mcp",
     "crates/taurus-host",
     "crates/taurus-cli",
@@ -25,6 +27,8 @@ license = "MIT"
 taurus-provider = { path = "crates/taurus-provider" }
 taurus-provider-ollama = { path = "crates/taurus-provider-ollama" }
 taurus-provider-openai = { path = "crates/taurus-provider-openai" }
+taurus-provider-anthropic = { path = "crates/taurus-provider-anthropic" }
+taurus-provider-gemini = { path = "crates/taurus-provider-gemini" }
 taurus-tools = { path = "crates/taurus-tools" }
 taurus-agents = { path = "crates/taurus-agents" }
 taurus-skills = { path = "crates/taurus-skills" }
@@ -57,6 +61,14 @@ directories = "6"
 # there is no default backend, and the wrong one is a compile error rather than
 # a silent no-op.
 keyring = { version = "3.6", default-features = false }
+# Line diffing for the permission prompt and the Changes drawer. The pre-image
+# it reads is the one the checkpoint log takes a moment later, so showing a diff
+# costs a read that was going to happen anyway.
+similar = "2"
+# Pseudo-terminals for `run_command`. Real ones per platform — forkpty on unix,
+# ConPTY on Windows — so a program that checks `isatty` behaves the way it does
+# in a terminal on all three from the one codebase.
+portable-pty = "0.9"
 ignore = "0.4"
 globset = "0.4"
 # HTML to Markdown for `fetch_url`. A page arrives as markup and reaches the

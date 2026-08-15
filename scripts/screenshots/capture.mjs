@@ -39,6 +39,7 @@ const SHOTS = [
   { name: "app-dark", shot: "top", theme: "dark" },
   { name: "app-light", shot: "chart", theme: "light" },
   { name: "questions", shot: "questions", theme: "dark" },
+  { name: "permission-diff", shot: "permission", theme: "dark" },
 ];
 
 const CHROME = [

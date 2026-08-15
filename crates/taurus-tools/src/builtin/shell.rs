@@ -1,8 +1,16 @@
 //! Shell execution.
 //!
-//! Commands run non-interactively with stdin closed. A model cannot answer a
-//! `[y/N]` prompt, so a command that waits for one must fail on the timeout
-//! rather than hang the session forever.
+//! Two paths. By default a command gets three pipes and no stdin, which is right
+//! for almost everything an agent runs: a model cannot answer a `[y/N]` prompt,
+//! so a command that waits for one must fail on the timeout rather than hang the
+//! session forever.
+//!
+//! The exception is the program that asks whether it is talking to a terminal.
+//! Told no, `git` pages and colors nothing, `npm create` declines to scaffold,
+//! and a full-screen prompt library fails at startup — behavior a person would
+//! never see and cannot easily explain. Passing `pty` runs the command under a
+//! real pseudo-terminal instead, and `stdin` hands it the answers up front,
+//! which is what turns "behaves correctly" into "completes". See [`super::pty`].
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -37,7 +45,7 @@ const FLUSH_BYTES: usize = 8 * 1024;
 
 /// Lines held for the UI while a batch is in flight. Beyond this the display
 /// drops output rather than making the child wait — see [`spawn_stream`].
-const STREAM_BACKLOG: usize = 512;
+pub(super) const STREAM_BACKLOG: usize = 512;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RunCommandInput {
@@ -49,6 +57,13 @@ pub struct RunCommandInput {
     /// Seconds before the command is killed. Defaults to 120, maximum 600.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Run under a pseudo-terminal, so the command believes it is talking to a
+    /// terminal. Combines stdout and stderr into one stream.
+    #[serde(default)]
+    pub pty: bool,
+    /// Text to feed the command's input, followed by end-of-file.
+    #[serde(default)]
+    pub stdin: Option<String>,
 }
 
 pub struct RunCommand;
@@ -61,9 +76,11 @@ impl Tool for RunCommand {
 
     fn description(&self) -> &str {
         "Run a shell command and return its output. It starts in the workspace root, so write \
-         paths relative to it and do not cd first — use the cwd argument for a subdirectory. Runs \
-         non-interactively with no stdin, so pass flags like -y rather than expecting a prompt. \
-         Prefer read_file, glob, and grep over cat, find, and grep -r."
+         paths relative to it and do not cd first — use the cwd argument for a subdirectory. By \
+         default it runs with no stdin, so prefer flags like -y over expecting a prompt. Set pty \
+         to true for a command that behaves differently outside a terminal — git without a pager, \
+         npm create, anything that draws a full-screen prompt — and pass stdin to answer prompts \
+         it still asks. Prefer read_file, glob, and grep over cat, find, and grep -r."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -105,11 +122,37 @@ impl Tool for RunCommand {
         );
 
         let (program, args) = shell_invocation(&input.command);
+
+        if input.pty {
+            let output = crate::builtin::pty::run(
+                program,
+                &args,
+                &cwd,
+                input.stdin.clone(),
+                timeout,
+                ctx.cancel.clone(),
+                ctx.progress.clone(),
+            )
+            .await?;
+            return Ok(report_for(
+                output.exit_code,
+                &truncate(&output.text),
+                // A terminal has one stream, so there is no stderr to label.
+                // Saying so keeps the model from reading its absence as the
+                // command having written nothing to it.
+                None,
+            ));
+        }
+
         let mut command = Command::new(program);
         command
             .args(args)
             .current_dir(&cwd)
-            .stdin(Stdio::null())
+            .stdin(if input.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         // Without this the child outlives a canceled turn and keeps writing.
@@ -121,6 +164,16 @@ impl Tool for RunCommand {
         let mut child = command
             .spawn()
             .map_err(|e| ToolError::Failed(format!("cannot start shell: {e}")))?;
+
+        // Written and closed before the output is drained. A program waiting on
+        // input needs the end-of-file as much as the bytes.
+        if let Some(text) = &input.stdin {
+            if let Some(mut pipe) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                let _ = pipe.write_all(text.as_bytes()).await;
+                let _ = pipe.shutdown().await;
+            }
+        }
 
         // Drain the pipes concurrently with the wait. A child that fills its
         // stdout buffer blocks forever if nobody is reading, which would turn
@@ -158,30 +211,39 @@ impl Tool for RunCommand {
         let code = status.code();
         let stdout = truncate(&drain_stdout.await);
         let stderr = truncate(&drain_stderr.await);
+        Ok(report_for(code, &stdout, Some(&stderr)))
+    }
+}
 
-        let mut report = String::new();
-        if !stdout.trim().is_empty() {
-            report.push_str(&stdout);
+/// Assembles what the model reads from a finished command.
+///
+/// Shared by both paths so an exit code means the same thing however the
+/// command was run. `stderr` is `None` under a pseudo-terminal, where there is
+/// only one stream to have.
+///
+/// A non-zero exit is information for the model, not a harness failure:
+/// returning it as `Ok` lets the model read the compiler errors it just asked
+/// for instead of a bare error string.
+fn report_for(code: Option<i32>, stdout: &str, stderr: Option<&str>) -> String {
+    let mut report = String::new();
+    if !stdout.trim().is_empty() {
+        report.push_str(stdout);
+    }
+    if let Some(stderr) = stderr.filter(|s| !s.trim().is_empty()) {
+        if !report.is_empty() {
+            report.push('\n');
         }
-        if !stderr.trim().is_empty() {
-            if !report.is_empty() {
-                report.push('\n');
-            }
-            report.push_str("[stderr]\n");
-            report.push_str(&stderr);
-        }
-        if report.trim().is_empty() {
-            report.push_str("(no output)");
-        }
+        report.push_str("[stderr]\n");
+        report.push_str(stderr);
+    }
+    if report.trim().is_empty() {
+        report.push_str("(no output)");
+    }
 
-        // A non-zero exit is information for the model, not a harness failure:
-        // returning it as Ok lets the model read the compiler errors it just
-        // asked for instead of seeing a bare error string.
-        match code {
-            Some(0) => Ok(report),
-            Some(code) => Ok(format!("Exit code {code}\n{report}")),
-            None => Ok(format!("Killed by signal\n{report}")),
-        }
+    match code {
+        Some(0) => report,
+        Some(code) => format!("Exit code {code}\n{report}"),
+        None => format!("Killed by signal\n{report}"),
     }
 }
 
@@ -236,7 +298,10 @@ where
 }
 
 /// Collects streamed lines into batches and reports each one.
-async fn batch_to_progress(mut rx: mpsc::Receiver<String>, progress: Arc<dyn ToolProgress>) {
+pub(super) async fn batch_to_progress(
+    mut rx: mpsc::Receiver<String>,
+    progress: Arc<dyn ToolProgress>,
+) {
     let mut pending = String::new();
     loop {
         match tokio::time::timeout(FLUSH_INTERVAL, rx.recv()).await {
@@ -314,6 +379,105 @@ fn ceil_boundary(s: &str, mut i: usize) -> usize {
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
+
+    /// Unix-only: these assert on shell behavior that `cmd.exe` does not share,
+    /// and the pty path itself is covered per-platform in [`super::pty`].
+    #[tokio::test]
+    async fn a_pty_command_is_told_it_has_a_terminal() {
+        if cfg!(windows) {
+            return;
+        }
+        let (ctx, _dir) = test_ctx();
+        let out = RunCommand
+            .execute(
+                serde_json::json!({
+                    "command": "test -t 1 && echo tty || echo pipe",
+                    "pty": true,
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("tty"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn without_a_pty_the_same_command_is_told_it_is_a_pipe() {
+        // The default has to stay exactly what it was: almost everything an
+        // agent runs is better off piped, and a silent switch would change how
+        // every existing command behaves.
+        if cfg!(windows) {
+            return;
+        }
+        let (ctx, _dir) = test_ctx();
+        let out = RunCommand
+            .execute(
+                serde_json::json!({"command": "test -t 1 && echo tty || echo pipe"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("pipe"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn supplied_input_reaches_a_piped_command() {
+        // Answering a prompt does not require a pty — only being able to write
+        // to the child and then close the pipe.
+        if cfg!(windows) {
+            return;
+        }
+        let (ctx, _dir) = test_ctx();
+        let out = RunCommand
+            .execute(
+                serde_json::json!({
+                    "command": "read answer; echo \"got:$answer\"",
+                    "stdin": "yes\n",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("got:yes"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_pty_command_reports_a_non_zero_exit_the_same_way() {
+        // Both paths go through one assembler, so an exit code means the same
+        // thing however the command was run.
+        if cfg!(windows) {
+            return;
+        }
+        let (ctx, _dir) = test_ctx();
+        let out = RunCommand
+            .execute(
+                serde_json::json!({"command": "echo oops; exit 3", "pty": true}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.starts_with("Exit code 3"), "{out}");
+        assert!(out.contains("oops"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_pty_command_still_answers_to_the_timeout() {
+        // The risk this feature could add: under a pty an interactive program
+        // waits rather than hitting end-of-file, so a session could hang for
+        // good if the ceiling did not hold.
+        if cfg!(windows) {
+            return;
+        }
+        let (ctx, _dir) = test_ctx();
+        let err = RunCommand
+            .execute(
+                serde_json::json!({"command": "read answer", "pty": true, "timeout_secs": 1}),
+                &ctx,
+            )
+            .await
+            .expect_err("a command waiting for input must not hang the session");
+        assert!(err.to_string().contains("timed out"), "{err}");
+    }
 
     #[tokio::test]
     async fn captures_stdout() {

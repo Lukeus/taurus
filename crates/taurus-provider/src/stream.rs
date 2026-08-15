@@ -59,6 +59,15 @@ pub enum StreamEvent {
     ToolUseEnd {
         id: String,
     },
+    /// Proof of origin for the thinking block currently open.
+    ///
+    /// Emitted by adapters whose provider issues one and demands it back
+    /// unedited on the next request. Arrives while the block is still open, so
+    /// there is no separate close event for reasoning the way there is for a
+    /// tool call.
+    ThinkingSignature {
+        signature: String,
+    },
     Usage {
         usage: TokenUsage,
     },
@@ -114,6 +123,19 @@ impl StreamAccumulator {
                 }
             }
             StreamEvent::ToolUseEnd { .. } => self.close_open(),
+            // Attached to the open block rather than closing it: the provider
+            // sends this before the block ends, and a signature with no
+            // thinking to sign is nothing to keep.
+            StreamEvent::ThinkingSignature { signature } => {
+                if let Some(Open::Thinking(i)) = self.open {
+                    if let Some(ContentBlock::Thinking {
+                        signature: slot, ..
+                    }) = self.blocks.get_mut(i)
+                    {
+                        *slot = Some(signature);
+                    }
+                }
+            }
             StreamEvent::Usage { usage } => self.usage = usage,
         }
     }
@@ -126,7 +148,7 @@ impl StreamAccumulator {
         match reuse {
             Some(i) => {
                 if let Some(
-                    ContentBlock::Text { text: buf } | ContentBlock::Thinking { text: buf },
+                    ContentBlock::Text { text: buf } | ContentBlock::Thinking { text: buf, .. },
                 ) = self.blocks.get_mut(i)
                 {
                     buf.push_str(&text);
@@ -135,7 +157,10 @@ impl StreamAccumulator {
             None => {
                 self.close_open();
                 self.blocks.push(if thinking {
-                    ContentBlock::Thinking { text }
+                    ContentBlock::Thinking {
+                        text,
+                        signature: None,
+                    }
                 } else {
                     ContentBlock::Text { text }
                 });
@@ -208,10 +233,7 @@ mod tests {
         let (msg, _, _) = acc.finish();
         assert_eq!(
             msg.content,
-            vec![
-                ContentBlock::Thinking { text: "hmm".into() },
-                ContentBlock::text("answer")
-            ]
+            vec![ContentBlock::thinking("hmm"), ContentBlock::text("answer")]
         );
         assert_eq!(msg.text(), "answer");
     }

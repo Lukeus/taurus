@@ -1,3 +1,4 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 // The command layer reaches into Tauri internals that do not exist outside the
@@ -7,8 +8,8 @@ vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {},
 }));
 
-import type { SkillSummary } from "../lib/api";
-import { originLabel, partition } from "./SkillsDrawer";
+import type { Instructions, SkillSummary } from "../lib/api";
+import { InstructionsSection, originLabel, partition } from "./SkillsDrawer";
 
 const skill = (patch: Partial<SkillSummary> = {}): SkillSummary => ({
   name: "release-notes",
@@ -94,5 +95,57 @@ describe("skill origin", () => {
     // answers is "where did this come from", and `.taurus` is the answer that
     // needed no asking.
     expect(originLabel("taurus")).toBeNull();
+  });
+});
+
+describe("the instructions section", () => {
+  const brief = (patch: Partial<Instructions> = {}): Instructions => ({
+    source: { tier: "project", origin: "agents", path: "/repo/AGENTS.md" },
+    body: "Run the tests before saying you are done.",
+    truncated: false,
+    ...patch,
+  });
+
+  it("names each file that is already in the prompt", () => {
+    // A brief applies to every turn whether or not anyone remembers writing
+    // it. A file read silently is what makes behaviour inexplicable.
+    const html = renderToStaticMarkup(
+      <InstructionsSection instructions={[brief()]} />,
+    );
+    expect(html).toContain("/repo/AGENTS.md");
+    expect(html).toContain("project");
+  });
+
+  it("separates a personal brief from a project one", () => {
+    // They carry different weight when they disagree, and one of them came
+    // from a repository the user may have just cloned.
+    const html = renderToStaticMarkup(
+      <InstructionsSection
+        instructions={[
+          brief({
+            source: {
+              tier: "user",
+              origin: "claude",
+              path: "/home/me/.claude/CLAUDE.md",
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(html).toContain("personal");
+  });
+
+  it("says when a file did not arrive whole", () => {
+    const html = renderToStaticMarkup(
+      <InstructionsSection instructions={[brief({ truncated: true })]} />,
+    );
+    expect(html).toContain("truncated");
+  });
+
+  it("says where to put one when there is none", () => {
+    // An empty section reads as a feature that is broken rather than unused.
+    const html = renderToStaticMarkup(<InstructionsSection instructions={[]} />);
+    expect(html).toContain("AGENTS.md");
+    expect(html).toContain("Rescan");
   });
 });
