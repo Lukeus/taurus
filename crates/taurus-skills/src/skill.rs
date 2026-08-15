@@ -261,6 +261,20 @@ impl Skill {
         format!("- {}: {}", self.frontmatter.name, self.trigger())
     }
 
+    /// The absolute path of one bundled resource.
+    ///
+    /// Resources are held as logical paths joined with `/`, which is what the
+    /// scripts listing shows and what `starts_with("scripts/")` tests against.
+    /// Joining one of those onto a directory whole would hand Windows
+    /// `C:\skills\alpha\references/REFERENCE.md` — a path that happens to open,
+    /// but written in two separators at once, in a line whose whole purpose is
+    /// to be copied into another tool call.
+    pub fn resource_path(&self, resource: &str) -> PathBuf {
+        let mut path = self.dir.clone();
+        path.extend(resource.split('/'));
+        path
+    }
+
     /// The full skill, as the model receives it.
     ///
     /// One rendering for both ways in — the `load_skill` tool and a slash
@@ -314,7 +328,7 @@ impl Skill {
         if !listable.is_empty() {
             out.push_str("\nBundled files, to read only if the procedure calls for one:\n\n");
             for resource in listable {
-                out.push_str(&format!("- `{}`\n", self.dir.join(resource).display()));
+                out.push_str(&format!("- `{}`\n", self.resource_path(resource).display()));
             }
         }
         out

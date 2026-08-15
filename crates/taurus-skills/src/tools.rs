@@ -186,7 +186,10 @@ impl Tool for RunSkillScript {
                     })
                 })?;
             (
-                skill.dir.join(&script.path),
+                // Not `join`: a discovered script's path is `scripts/run.py`,
+                // and joining that whole onto a Windows directory mixes
+                // separators in the path handed to the interpreter.
+                skill.resource_path(&script.path),
                 script.interpreter.clone(),
                 skill.dir.clone(),
             )
@@ -571,6 +574,37 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("hi there"));
+    }
+
+    #[tokio::test]
+    async fn run_skill_script_runs_a_script_discovered_in_the_scripts_directory() {
+        // The path of a discovered script always contains a forward slash,
+        // because that is how the catalog writes logical paths. Joining it onto
+        // a Windows skill directory whole would mix separators, and no other
+        // test here uses a script that lives in a subdirectory at all.
+        // Declared rather than discovered, so the interpreter is `sh` — the one
+        // every other script test here already proves resolves on all three
+        // platforms. What is under test is the path, not the lookup.
+        let f = fixture(&[(
+            "bundled",
+            "scripts:\n  - path: scripts/greet.sh\n    interpreter: sh\n    description: greets\n",
+        )]);
+        std::fs::create_dir_all(f.skills.path().join("bundled/scripts")).unwrap();
+        write_script(
+            f.skills.path(),
+            "bundled",
+            "scripts/greet.sh",
+            "#!/bin/sh\necho \"from a subdirectory\"\n",
+        );
+
+        let out = RunSkillScript::new(f.catalog.clone())
+            .execute(
+                serde_json::json!({"skill": "bundled", "script": "scripts/greet.sh"}),
+                &f.ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("from a subdirectory"), "{out}");
     }
 
     #[tokio::test]
