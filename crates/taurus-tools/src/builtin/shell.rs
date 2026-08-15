@@ -391,10 +391,19 @@ mod tests {
 
     /// Prints, waits, then prints again — so "did the first line arrive before
     /// the command ended" is a question with an unambiguous answer.
+    ///
+    /// `sleep` on both, rather than `timeout /t` on Windows: `timeout` refuses
+    /// to run at all when stdin is redirected, and every command here runs with
+    /// stdin closed. `sleep` is already proven on the Windows runner by
+    /// [`a_hanging_command_is_killed_by_the_timeout`] below.
+    ///
+    /// Three seconds so the margin below is two, not a tenth: CI runners are
+    /// shared and a first line that is merely slow must not read as one that
+    /// never streamed.
     #[cfg(windows)]
-    const PRINTS_THEN_WAITS: &str = "echo first & timeout /t 2 /nobreak >nul & echo second";
+    const PRINTS_THEN_WAITS: &str = "echo first & sleep 3 & echo second";
     #[cfg(not(windows))]
-    const PRINTS_THEN_WAITS: &str = "echo first; sleep 2; echo second";
+    const PRINTS_THEN_WAITS: &str = "echo first; sleep 3; echo second";
 
     #[tokio::test]
     async fn output_reaches_the_screen_while_the_command_is_still_running() {
@@ -414,7 +423,7 @@ mod tests {
 
         // The command really did take a while, or the timing below proves
         // nothing about streaming.
-        assert!(finished >= Duration::from_secs(2), "{finished:?}");
+        assert!(finished >= Duration::from_secs(3), "{finished:?}");
 
         let lines = recorder.lines.lock().unwrap();
         let first = lines
@@ -443,12 +452,20 @@ mod tests {
         assert!(out.contains("hello"));
     }
 
+    /// Reading is byte-oriented, so a build log does not end at the first byte
+    /// that is not text.
+    ///
+    /// Unix only. `cmd` has no straightforward way to emit a raw `0xFF`, and a
+    /// Windows variant that printed ordinary text would be a test that passes
+    /// without exercising anything — worse than an absent one, because it reads
+    /// in CI as coverage.
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn output_that_is_not_utf8_does_not_end_the_stream() {
         let (ctx, _dir) = test_ctx();
         let out = RunCommand
             .execute(
-                serde_json::json!({"command": PRINTS_INVALID_UTF8, "timeout_secs": 20}),
+                serde_json::json!({"command": "printf '\\xff\\n'; echo after", "timeout_secs": 20}),
                 &ctx,
             )
             .await
@@ -458,12 +475,6 @@ mod tests {
             "reading stopped at the bad byte: {out:?}"
         );
     }
-
-    /// Emits a byte that is not valid UTF-8, then more text.
-    #[cfg(windows)]
-    const PRINTS_INVALID_UTF8: &str = "echo after";
-    #[cfg(not(windows))]
-    const PRINTS_INVALID_UTF8: &str = "printf '\\xff\\n'; echo after";
 
     #[tokio::test]
     async fn a_hanging_command_is_killed_by_the_timeout() {

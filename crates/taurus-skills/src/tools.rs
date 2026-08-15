@@ -492,7 +492,11 @@ mod tests {
     #[tokio::test]
     async fn load_skill_names_bundled_files_without_reading_them() {
         let f = fixture(&[("alpha", "")]);
-        let refs = f.skills.path().join("alpha/references");
+        // One component per `join`. Passing "alpha/references" whole would put
+        // a forward slash inside a Windows path, and the expectation below is
+        // compared against rendered text rather than used to open a file — so
+        // it has to be spelled the way the platform spells it.
+        let refs = f.skills.path().join("alpha").join("references");
         std::fs::create_dir_all(&refs).unwrap();
         std::fs::write(refs.join("REFERENCE.md"), "the whole reference text").unwrap();
         reload(&f).await;
