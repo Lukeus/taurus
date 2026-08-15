@@ -5,18 +5,39 @@
 //! rather than hang the session forever.
 
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
-use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
+use crate::tool::{
+    parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult,
+};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 600;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// How long output may pool before it reaches the screen.
+///
+/// The point of streaming is that a slow command looks alive, and a tenth of a
+/// second is under what reads as a delay. Sending every line the instant it
+/// arrives would instead put a `cargo build` through the IPC channel one line
+/// at a time, which is thousands of messages to draw the same text.
+const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How much may pool within one interval before it is sent early, so a burst
+/// of output does not sit waiting on a timer.
+const FLUSH_BYTES: usize = 8 * 1024;
+
+/// Lines held for the UI while a batch is in flight. Beyond this the display
+/// drops output rather than making the child wait — see [`spawn_stream`].
+const STREAM_BACKLOG: usize = 512;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RunCommandInput {
@@ -93,6 +114,9 @@ impl Tool for RunCommand {
             .stderr(Stdio::piped());
         // Without this the child outlives a canceled turn and keeps writing.
         command.kill_on_drop(true);
+        // Taurus has no console of its own, so on Windows starting `cmd` here
+        // would open one — a black window flashing up on every command.
+        crate::spawn::no_console(&mut command);
 
         let mut child = command
             .spawn()
@@ -101,8 +125,13 @@ impl Tool for RunCommand {
         // Drain the pipes concurrently with the wait. A child that fills its
         // stdout buffer blocks forever if nobody is reading, which would turn
         // every chatty command into a timeout.
-        let drain_stdout = spawn_drain(child.stdout.take());
-        let drain_stderr = spawn_drain(child.stderr.take());
+        //
+        // Both streams report to the same place and interleave there, which is
+        // what a terminal shows and what the user is picturing. The split back
+        // into stdout and stderr is kept for the model, which is reading the
+        // result rather than watching it.
+        let drain_stdout = spawn_stream(child.stdout.take(), ctx.progress.clone());
+        let drain_stderr = spawn_stream(child.stderr.take(), ctx.progress.clone());
 
         let status = tokio::select! {
             biased;
@@ -156,20 +185,84 @@ impl Tool for RunCommand {
     }
 }
 
-/// Reads a child pipe to end in the background, yielding its text.
-fn spawn_drain<R>(pipe: Option<R>) -> impl std::future::Future<Output = String>
+/// Reads a child pipe to end in the background, reporting it as it arrives.
+///
+/// Two jobs at once, and they have different standards. The returned text is
+/// what the model gets, so it must be complete. What goes to `progress` is what
+/// the user watches scroll past, so it must be prompt — and may be incomplete,
+/// because the alternative is worse: a display that cannot keep up would
+/// otherwise stall the reader, fill the child's pipe buffer, and hang the
+/// command. Lines are dropped from the view before that is allowed to happen.
+///
+/// Read as bytes rather than as lines of text, because a command is free to
+/// emit something that is not UTF-8 and a build log should not end at the first
+/// byte that isn't.
+fn spawn_stream<R>(
+    pipe: Option<R>,
+    progress: Option<Arc<dyn ToolProgress>>,
+) -> impl std::future::Future<Output = String>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
+    let (tx, rx) = mpsc::channel::<String>(STREAM_BACKLOG);
+    if let Some(progress) = progress {
+        tokio::spawn(batch_to_progress(rx, progress));
+    }
+
     let handle = tokio::spawn(async move {
+        let mut full = String::new();
+        let Some(pipe) = pipe else {
+            return full;
+        };
+
+        let mut reader = BufReader::new(pipe);
         let mut buf = Vec::new();
-        if let Some(mut pipe) = pipe {
-            use tokio::io::AsyncReadExt;
-            let _ = pipe.read_to_end(&mut buf).await;
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let text = String::from_utf8_lossy(&buf).into_owned();
+            full.push_str(&text);
+            // Never `send`, which would wait. A full channel means the UI is
+            // behind; the model's copy is already safe in `full`.
+            let _ = tx.try_send(text);
         }
-        String::from_utf8_lossy(&buf).into_owned()
+        full
     });
+
     async move { handle.await.unwrap_or_default() }
+}
+
+/// Collects streamed lines into batches and reports each one.
+async fn batch_to_progress(mut rx: mpsc::Receiver<String>, progress: Arc<dyn ToolProgress>) {
+    let mut pending = String::new();
+    loop {
+        match tokio::time::timeout(FLUSH_INTERVAL, rx.recv()).await {
+            Ok(Some(line)) => {
+                pending.push_str(&line);
+                if pending.len() >= FLUSH_BYTES {
+                    progress.step(std::mem::take(&mut pending)).await;
+                }
+            }
+            // The pipe closed. Whatever is left is the tail of the output, and
+            // is the part most worth seeing.
+            Ok(None) => {
+                if !pending.is_empty() {
+                    progress.step(pending).await;
+                }
+                return;
+            }
+            // The interval elapsed. A command that prints one line and then
+            // thinks for a minute must show that line now, not on its next.
+            Err(_) => {
+                if !pending.is_empty() {
+                    progress.step(std::mem::take(&mut pending)).await;
+                }
+            }
+        }
+    }
 }
 
 /// The shell to run a command line through on this platform.
@@ -279,6 +372,98 @@ mod tests {
             .unwrap();
         assert_eq!(out, "(no output)");
     }
+
+    /// Records progress reports with the moment each one arrived.
+    #[derive(Default)]
+    struct Recorder {
+        lines: std::sync::Mutex<Vec<(std::time::Instant, String)>>,
+    }
+
+    #[async_trait]
+    impl ToolProgress for Recorder {
+        async fn step(&self, label: String) {
+            self.lines
+                .lock()
+                .unwrap()
+                .push((std::time::Instant::now(), label));
+        }
+    }
+
+    /// Prints, waits, then prints again — so "did the first line arrive before
+    /// the command ended" is a question with an unambiguous answer.
+    #[cfg(windows)]
+    const PRINTS_THEN_WAITS: &str = "echo first & timeout /t 2 /nobreak >nul & echo second";
+    #[cfg(not(windows))]
+    const PRINTS_THEN_WAITS: &str = "echo first; sleep 2; echo second";
+
+    #[tokio::test]
+    async fn output_reaches_the_screen_while_the_command_is_still_running() {
+        let (ctx, _dir) = test_ctx();
+        let recorder = Arc::new(Recorder::default());
+        let ctx = ctx.with_progress(recorder.clone());
+
+        let started = std::time::Instant::now();
+        let out = RunCommand
+            .execute(
+                serde_json::json!({"command": PRINTS_THEN_WAITS, "timeout_secs": 30}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let finished = started.elapsed();
+
+        // The command really did take a while, or the timing below proves
+        // nothing about streaming.
+        assert!(finished >= Duration::from_secs(2), "{finished:?}");
+
+        let lines = recorder.lines.lock().unwrap();
+        let first = lines
+            .iter()
+            .find(|(_, text)| text.contains("first"))
+            .expect("the first line must have been reported");
+        assert!(
+            first.0.duration_since(started) < Duration::from_secs(2),
+            "the first line arrived after the command ended, which is not streaming"
+        );
+
+        // And the model still gets everything, in one piece.
+        assert!(out.contains("first") && out.contains("second"));
+    }
+
+    #[tokio::test]
+    async fn a_command_with_no_progress_listener_still_returns_its_output() {
+        // The CLI's piped mode and every test binds no progress handle. The
+        // streaming path must not depend on anyone watching.
+        let (ctx, _dir) = test_ctx();
+        assert!(ctx.progress.is_none());
+        let out = RunCommand
+            .execute(serde_json::json!({"command": "echo hello"}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn output_that_is_not_utf8_does_not_end_the_stream() {
+        let (ctx, _dir) = test_ctx();
+        let out = RunCommand
+            .execute(
+                serde_json::json!({"command": PRINTS_INVALID_UTF8, "timeout_secs": 20}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.contains("after"),
+            "reading stopped at the bad byte: {out:?}"
+        );
+    }
+
+    /// Emits a byte that is not valid UTF-8, then more text.
+    #[cfg(windows)]
+    const PRINTS_INVALID_UTF8: &str = "echo after";
+    #[cfg(not(windows))]
+    const PRINTS_INVALID_UTF8: &str = "printf '\\xff\\n'; echo after";
 
     #[tokio::test]
     async fn a_hanging_command_is_killed_by_the_timeout() {

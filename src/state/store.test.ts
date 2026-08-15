@@ -65,6 +65,25 @@ describe("transcript reducer", () => {
     expect(tool.steps).toEqual(["read_file config.rs", "grep load_config"]);
   });
 
+  it("keeps a command's streamed output as a bounded scrollback", () => {
+    // A build emits tens of thousands of lines. Holding all of them would grow
+    // without limit and re-render the lot on every batch that arrives.
+    const flood = Array.from({ length: 500 }, (_, i) => ({
+      type: "tool_progress" as const,
+      id: "t1",
+      label: `line ${i}\n`,
+    }));
+    const entries = run(
+      { type: "tool_call_started", id: "t1", name: "run_command", preview: "Run: cargo build" },
+      ...flood,
+    );
+    const tool = entries[0] as Extract<Entry, { kind: "tool" }>;
+
+    expect(tool.steps.length).toBeLessThanOrEqual(200);
+    // The tail is what a running command is watched for.
+    expect(tool.steps[tool.steps.length - 1]).toBe("line 499\n");
+  });
+
   it("does not attach progress to a different call", () => {
     // Two delegations can run at once, and steps landing on the wrong card
     // would read as one agent doing all the work.

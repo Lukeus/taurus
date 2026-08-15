@@ -69,8 +69,16 @@ impl SkillProposal {
         SkillFrontmatter {
             name: self.name.clone(),
             description: self.description.clone(),
-            when_to_use: self.when_to_use.clone(),
+            // Always written, even though the format makes it optional: a
+            // skill Taurus authors should carry the sharper trigger line, and
+            // other clients ignore the field rather than choke on it.
+            when_to_use: Some(self.when_to_use.clone()),
             version: 1,
+            compatibility: None,
+            // A skill Taurus writes is reachable both ways: the model chose to
+            // write it down, and the user can call for it by name.
+            disable_model_invocation: false,
+            user_invocable: true,
             allowed_tools: Vec::new(),
             scripts: self
                 .scripts
@@ -134,7 +142,15 @@ pub fn validate_proposal(
     catalog: &SkillCatalog,
 ) -> Result<(), ProposalRejected> {
     let frontmatter = proposal.frontmatter();
-    validate(&frontmatter, "proposal").map_err(|e| ProposalRejected(e.to_string()))?;
+    // Loading from disk tolerates these, because a skill someone already has
+    // installed is better read than refused. Nothing is already installed here:
+    // the file does not exist yet, and writing one that only loads by leniency
+    // would be choosing to create the problem the leniency exists to survive.
+    let warnings =
+        validate(&frontmatter, "proposal").map_err(|e| ProposalRejected(e.to_string()))?;
+    if let Some(first) = warnings.first() {
+        return Err(ProposalRejected(first.clone()));
+    }
 
     if proposal.body.trim().len() < 40 {
         return Err(ProposalRejected(
@@ -180,10 +196,14 @@ pub fn validate_proposal(
 
 /// Finds an existing skill that covers the same ground.
 ///
-/// Deliberately shallow — token overlap on `when_to_use`, which is the field
-/// that decides when a skill fires. Two skills with different names and near
+/// Deliberately shallow — token overlap on the trigger line, which is what
+/// decides when a skill fires. Two skills with different names and near
 /// identical triggers are the failure mode that makes a library useless, and
 /// this catches it without an embedding model.
+///
+/// Compared against the resolved trigger rather than the raw field, so a
+/// proposal is also checked against skills borrowed from another client, which
+/// carry no `when_to_use` at all.
 fn near_duplicate(proposal: &SkillProposal, catalog: &SkillCatalog) -> Option<String> {
     let proposed = token_set(&proposal.when_to_use);
     if proposed.is_empty() {
@@ -195,7 +215,7 @@ fn near_duplicate(proposal: &SkillProposal, catalog: &SkillCatalog) -> Option<St
             // Same name is an update, handled separately by `replaces_existing`.
             continue;
         }
-        let existing = token_set(&skill.frontmatter.when_to_use);
+        let existing = token_set(&skill.trigger());
         let shared = proposed.iter().filter(|t| existing.contains(*t)).count();
         let smaller = proposed.len().min(existing.len());
         if smaller >= 3 && shared * 4 >= smaller * 3 {
@@ -290,7 +310,7 @@ impl ProposalSink for CollectingSink {
 mod tests {
     use super::*;
     use crate::catalog::SkillSource;
-    use crate::skill::SkillTier;
+    use crate::skill::{SkillOrigin, SkillTier};
     use tempfile::TempDir;
 
     fn proposal() -> SkillProposal {
@@ -315,6 +335,7 @@ mod tests {
         }
         let (catalog, _) = SkillCatalog::discover(&[SkillSource {
             tier: SkillTier::User,
+            origin: SkillOrigin::Taurus,
             dir: dir.path().to_path_buf(),
         }]);
         (catalog, dir)
@@ -408,15 +429,56 @@ mod tests {
         // not load back is worse than one that is rejected.
         let (reloaded, problems) = SkillCatalog::discover(&[SkillSource {
             tier: SkillTier::Project,
+            origin: SkillOrigin::Taurus,
             dir: root.path().to_path_buf(),
         }]);
         assert!(problems.is_empty(), "{problems:?}");
         let skill = reloaded
             .get("release-notes")
             .expect("skill did not load back");
-        assert_eq!(skill.frontmatter.when_to_use, p.when_to_use);
+        assert_eq!(
+            skill.frontmatter.when_to_use.as_deref(),
+            Some(p.when_to_use.as_str())
+        );
         assert_eq!(skill.frontmatter.scripts.len(), 1);
         assert!(skill.body.contains("List merged PRs"));
+        assert!(
+            skill.warnings.is_empty(),
+            "a skill Taurus writes must not need leniency to load: {:?}",
+            skill.warnings
+        );
+    }
+
+    #[test]
+    fn what_gets_written_is_a_file_other_clients_can_read() {
+        let (catalog, _d) = catalog_with(&[]);
+        let p = proposal();
+        validate_proposal(&p, &catalog).unwrap();
+
+        let root = TempDir::new().unwrap();
+        let dir = save(&p, root.path()).unwrap();
+        let text = std::fs::read_to_string(dir.join(SKILL_FILE)).unwrap();
+
+        // The two fields the specification requires, and none of the empty
+        // ones: a frontmatter full of `null` and `[]` is a worse file to hand
+        // somebody than a short one.
+        assert!(text.contains("name: release-notes"));
+        assert!(text.contains("description:"));
+        for empty in ["compatibility:", "allowed_tools:", "scripts:"] {
+            assert!(!text.contains(empty), "{empty} should be omitted:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_proposal_that_would_only_load_by_leniency_is_rejected() {
+        // Loading from disk warns and carries on for a name in the wrong case.
+        // Writing a new one is a choice, and this is the moment to refuse it.
+        let (catalog, _d) = catalog_with(&[]);
+        let mut p = proposal();
+        p.name = "Release_Notes".into();
+
+        let err = validate_proposal(&p, &catalog).unwrap_err();
+        assert!(err.to_string().contains("kebab-case"), "{err}");
     }
 
     #[tokio::test]

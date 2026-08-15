@@ -8,6 +8,7 @@ pub mod path_guard;
 pub mod permission;
 pub mod registry;
 pub mod schema;
+pub mod spawn;
 pub mod sweep;
 pub mod tool;
 
@@ -18,6 +19,7 @@ pub use permission::{
     PermissionRequest, Scope,
 };
 pub use registry::ToolRegistry;
+pub use spawn::no_console;
 pub use sweep::Sweep;
 pub use tool::{Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult};
 

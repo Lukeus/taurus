@@ -64,6 +64,7 @@ pub fn run() {
             commands::list_permission_rules,
             commands::revoke_permission_rule,
             commands::list_skills,
+            commands::list_commands,
             commands::list_agents,
             commands::agent_roster_cost,
             commands::create_agent,

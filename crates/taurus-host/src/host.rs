@@ -22,9 +22,9 @@ use taurus_mcp::{McpManager, ServerStatus};
 use taurus_provider::Provider;
 use taurus_provider_ollama::OllamaProvider;
 use taurus_provider_openai::{ModelSpec, OpenAiCapabilities, OpenAiProvider};
-use taurus_skills::catalog::{SkillCatalog, SkillSource};
+use taurus_skills::catalog::SkillCatalog;
 use taurus_skills::proposal::ProposalSink;
-use taurus_skills::skill::{SkillSummary, SkillTier};
+use taurus_skills::skill::SkillSummary;
 use taurus_skills::SharedCatalog;
 use taurus_tools::{
     CheckpointStore, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
@@ -160,17 +160,7 @@ impl Host {
         *self.providers.write().await = providers;
         *self.settings.write().await = config::load_settings(Some(&workspace));
 
-        let sources = vec![
-            SkillSource {
-                tier: SkillTier::User,
-                dir: config::user_skills_dir(),
-            },
-            SkillSource {
-                tier: SkillTier::Project,
-                dir: config::workspace_skills_dir(&workspace),
-            },
-        ];
-
+        let sources = config::skill_sources(Some(&workspace));
         let (catalog, skill_problems) = SkillCatalog::discover(&sources);
         info!(
             skills = catalog.len(),
@@ -539,6 +529,11 @@ impl Host {
             self.permissions.read().await.clone(),
             cancel,
         )
+        // Read-only, and only the skills actually loaded. A skill's procedure
+        // points at its own bundled files, and the ones under the home
+        // directory are outside the workspace the guard confines everything
+        // else to.
+        .with_readable_roots(self.catalog.read().await.dirs())
     }
 
     pub async fn workspace(&self) -> PathBuf {
@@ -809,6 +804,38 @@ impl Host {
         self.catalog.read().await.len()
     }
 
+    /// Resolves a leading `/name` into the skill it refers to.
+    ///
+    /// `None` for anything that is not a command, which is almost every
+    /// message. Callers send the user's own text in that case — expansion is
+    /// something that happens on the way to the model, and never changes what
+    /// the transcript shows the user having typed.
+    pub async fn expand_command(
+        &self,
+        text: &str,
+    ) -> Option<Result<taurus_skills::Invocation, taurus_skills::CommandError>> {
+        self.catalog.read().await.expand_command(text)
+    }
+
+    /// Skills a person can run as `/name`, for completion as they type.
+    pub async fn commands(&self) -> Vec<SkillSummary> {
+        self.catalog
+            .read()
+            .await
+            .commands()
+            .map(SkillSummary::from)
+            .collect()
+    }
+
+    /// Every directory the last scan read, in precedence order.
+    ///
+    /// Resolved rather than described, so an empty library can be explained
+    /// with the paths actually consulted — including the shared locations,
+    /// which the user did not configure and may not know are read.
+    pub async fn skill_sources(&self) -> Vec<taurus_skills::SkillSource> {
+        config::skill_sources(Some(&self.workspace.read().await.clone()))
+    }
+
     pub async fn tool_names(&self) -> Vec<String> {
         self.registry
             .read()
@@ -1018,7 +1045,8 @@ mod tests {
     use super::*;
     use crate::testing::{isolated_home, HomeGuard};
     use async_trait::async_trait;
-    use taurus_tools::DenyAll;
+    use taurus_tools::builtin::fs::{ReadFile, WriteFile};
+    use taurus_tools::{DenyAll, Tool, ToolError};
     use tempfile::TempDir;
 
     struct DenyingPrompts;
@@ -1566,6 +1594,173 @@ mod tests {
 
         host.set_workspace(&workspace).await.unwrap();
         assert_eq!(host.skill_count().await, 1);
+    }
+
+    /// Writes a skill in the shape another client leaves behind: `SKILL.md`
+    /// with only the two fields the Agent Skills specification requires.
+    fn write_borrowed_skill(root: &Path, name: &str, description: &str) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nDo the thing."),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn skills_installed_by_another_client_are_discovered() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_borrowed_skill(
+            &workspace.join(".agents/skills"),
+            "shared-convention",
+            "Use when the task is shared between clients.",
+        );
+        write_borrowed_skill(
+            &workspace.join(".claude/skills"),
+            "installed-elsewhere",
+            "Use when the skill was installed by another client.",
+        );
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let names: Vec<String> = host.skills().await.into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["installed-elsewhere", "shared-convention"]);
+
+        // The description stands in for the trigger line, so a borrowed skill
+        // is not merely counted — it is selectable.
+        let prompt = host.system_prompt().await;
+        assert!(
+            prompt.contains("- shared-convention: Use when the task is shared between clients."),
+            "{prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_taurus_skill_shadows_a_borrowed_one_of_the_same_name() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_borrowed_skill(
+            &workspace.join(".claude/skills"),
+            "review",
+            "the borrowed one",
+        );
+        let native = workspace.join(".taurus/skills/review");
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::write(
+            native.join("SKILL.md"),
+            "---\nname: review\ndescription: d\nwhen_to_use: the native one\n---\nSteps here.",
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let skills = host.skills().await;
+        assert_eq!(skills.len(), 1, "the name resolves to exactly one skill");
+        assert_eq!(skills[0].origin, taurus_skills::SkillOrigin::Taurus);
+        assert_eq!(skills[0].when_to_use, "the native one");
+    }
+
+    #[tokio::test]
+    async fn a_slash_command_runs_a_skill_written_for_another_client() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let skill = workspace.join(".claude/skills/speckit-specify");
+        std::fs::create_dir_all(&skill).unwrap();
+        // The shape spec-kit generates: no `when_to_use`, an `$ARGUMENTS`
+        // placeholder, and the invocation flags spelled with hyphens.
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: speckit-specify\n\
+             description: Create or update the feature specification.\n\
+             user-invocable: true\ndisable-model-invocation: false\n---\n\
+             ## User Input\n\n$ARGUMENTS\n\nBuild the spec.",
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let invocation = host
+            .expand_command("/speckit-specify add a dark mode toggle")
+            .await
+            .expect("a leading /name is a command")
+            .expect("and this skill exists");
+
+        assert_eq!(invocation.name, "speckit-specify");
+        assert!(invocation.prompt.contains("add a dark mode toggle"));
+        assert!(invocation.prompt.contains("Build the spec."));
+        assert!(!invocation.prompt.contains("$ARGUMENTS"));
+
+        // Still model-invocable, so it stays in the catalog as well.
+        assert!(host.system_prompt().await.contains("- speckit-specify:"));
+        let offered: Vec<String> = host.commands().await.into_iter().map(|c| c.name).collect();
+        assert_eq!(offered, ["speckit-specify"], "and offerable as a command");
+    }
+
+    #[tokio::test]
+    async fn a_message_that_merely_starts_with_a_slash_is_left_alone() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(host
+            .expand_command("/usr/bin/env is portable")
+            .await
+            .is_none());
+        assert!(host.expand_command("what does /etc hold?").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_skills_own_reference_file_is_readable_from_outside_the_workspace() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+
+        // A user-tier skill: it lives under the home directory, so every file
+        // it bundles is outside the workspace the path guard confines reads to.
+        let skill = home.path().join(".claude/skills/pdf-processing");
+        std::fs::create_dir_all(skill.join("references")).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: pdf-processing\ndescription: Use when handling PDFs.\n---\n\
+             See references/REFERENCE.md.",
+        )
+        .unwrap();
+        std::fs::write(skill.join("references/REFERENCE.md"), "the reference text").unwrap();
+        host.reload().await;
+
+        let ctx = host.tool_context(CancellationToken::new()).await;
+        let reference = skill.join("references/REFERENCE.md");
+
+        let read = ReadFile
+            .execute(
+                serde_json::json!({ "path": reference.to_str().unwrap() }),
+                &ctx,
+            )
+            .await
+            .expect("a skill's own reference file must be readable");
+        assert!(read.contains("the reference text"));
+
+        // The allowance is for reading. Nothing about it lets the agent write
+        // to a directory another client owns.
+        let write = WriteFile
+            .execute(
+                serde_json::json!({
+                    "path": reference.to_str().unwrap(),
+                    "content": "rewritten",
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(
+            matches!(write, Err(ToolError::OutsideWorkspace { .. })),
+            "writes must stay in the workspace, got {write:?}"
+        );
     }
 
     #[tokio::test]

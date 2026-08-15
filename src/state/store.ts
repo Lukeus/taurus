@@ -32,8 +32,12 @@ export type Entry =
       status: "running" | "ok" | "error";
       output?: string;
       /**
-       * What a still-running tool has reported doing. Only delegation emits
-       * these; for everything else the array stays empty and nothing is drawn.
+       * What a still-running tool has reported doing.
+       *
+       * Two kinds of thing arrive here. Delegation reports labels — one line
+       * per step it takes. A command reports its own output, in batches, as it
+       * is produced. Both are progress; they differ only in how they are drawn.
+       * For every other tool the array stays empty and nothing is drawn.
        */
       steps: string[];
       /**
@@ -447,6 +451,20 @@ function preview(input: unknown): string {
     : text;
 }
 
+/**
+ * How many progress batches one call keeps.
+ *
+ * A build can emit tens of thousands of lines, and every one of them would
+ * otherwise be held in memory and re-rendered on the next. A terminal keeps a
+ * scrollback rather than the whole history, for the same reason.
+ */
+const MAX_SCROLLBACK = 200;
+
+/** Keeps the tail, which for a running command is the part being watched. */
+export function trimScrollback(steps: string[]): string[] {
+  return steps.length > MAX_SCROLLBACK ? steps.slice(-MAX_SCROLLBACK) : steps;
+}
+
 /** Folds one event into the transcript. */
 export function reduce(entries: Entry[], event: UiEvent): Entry[] {
   switch (event.type) {
@@ -482,7 +500,7 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
     case "tool_progress":
       return entries.map((e) =>
         e.kind === "tool" && e.id === event.id
-          ? { ...e, steps: [...e.steps, event.label] }
+          ? { ...e, steps: trimScrollback([...e.steps, event.label]) }
           : e,
       );
 

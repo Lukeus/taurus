@@ -222,6 +222,15 @@ async fn turn(
 ) -> Result<bool, String> {
     runtime.host.remember_session(provider_id, model).await;
 
+    // A leading `/name` runs that skill. Resolved before the turn starts so a
+    // mistyped command costs nothing: the user gets told, and no request is
+    // made. `task` stays what names the turn, being what was actually asked.
+    let prompt = match runtime.host.expand_command(task).await {
+        Some(Ok(invocation)) => invocation.prompt,
+        Some(Err(e)) => return Err(e.to_string()),
+        None => task.to_string(),
+    };
+
     let agent = runtime
         .host
         .build_agent(
@@ -244,7 +253,7 @@ async fn turn(
         renderer.finish();
     });
 
-    let outcome = agent.run_turn(session, Message::user(task), tx).await;
+    let outcome = agent.run_turn(session, Message::user(prompt), tx).await;
     printer.await.map_err(|e| e.to_string())?;
 
     // Recorded whatever the outcome: an interrupted or failed turn still

@@ -85,12 +85,66 @@ Two things prove the abstraction rather than assert it:
 
 ### Skills
 
-A skill is a `SKILL.md` with YAML frontmatter plus optional bundled scripts,
-discovered from `~/.taurus/skills` and `<workspace>/.taurus/skills`.
+A skill is a `SKILL.md` with YAML frontmatter plus optional bundled scripts, in
+the format defined by the [Agent Skills specification](https://agentskills.io/specification).
+Taurus reads the shared locations as well as its own, so a skill installed by
+another client works here without being copied. Six directories, lowest
+precedence first:
 
-Only one line per skill — its `when_to_use` — enters the system prompt. The
-procedure itself loads on demand via the `load_skill` tool. That is what makes
-a fifty-skill library affordable on a model with an 8k context window.
+```
+~/.agents/skills            <workspace>/.agents/skills
+~/.claude/skills            <workspace>/.claude/skills
+~/.taurus/skills            <workspace>/.taurus/skills
+```
+
+A project skill shadows a personal one of the same name, and within either
+tier a `.taurus` skill shadows a borrowed one — so you can override a skill you
+did not write without editing it. The drawer tags each row with where it came
+from, and a shadowed skill is logged rather than silently dropped.
+
+Only one line per skill enters the system prompt: its `when_to_use` when it has
+one, and a condensed `description` otherwise, which is every skill written for
+another client. The procedure itself loads on demand via the `load_skill` tool.
+That is what makes a fifty-skill library affordable on a model with an 8k
+context window.
+
+`when_to_use` is a Taurus field and optional. It is worth writing for skills
+you keep here: the specification's `description` does two jobs at once — what
+the skill does and when to use it — and 200 characters aimed squarely at the
+decision beats 1024 aimed at a catalog listing when the whole context is 8k.
+
+Loading is lenient, because a skill you already have installed is more useful
+read than refused. A name in the wrong case, a name that disagrees with its
+directory, a value with an unquoted colon — each is repaired or tolerated,
+reported on the skill's row in the drawer and by `taurus skills check`, and the
+skill loads. Only an empty description or YAML no quoting can rescue stops it.
+Skills Taurus writes itself are held to the strict rules: a proposal that would
+only load by leniency is rejected rather than written.
+
+Any skill can also be run directly as a slash command — `/speckit-specify add a
+dark mode toggle` — in the app and in `taurus run` alike. The harness resolves
+the name against the library, fills the skill's `$ARGUMENTS` placeholder with
+the rest of the line, and hands the model the procedure instead of the command;
+a skill with no placeholder gets the text appended under a heading rather than
+losing it. The composer completes names as you type `/`, and a name nothing
+matches is reported to you rather than sent, with the skill it resembles.
+
+Two frontmatter flags decide the ways in. `disable-model-invocation: true`
+keeps a skill out of the prompt catalog while leaving it runnable by name — for
+procedures that should run when a person asks and not before. `user-invocable:
+false` does the reverse. Both are optional and both default to available.
+
+Ordinary text that begins with a slash is never treated as a command:
+`/usr/bin/env is portable` is sent as written. A command has to name a skill,
+start with a letter, and be followed by a space or nothing.
+
+A skill's `scripts/`, `references/`, and `assets/` are listed when the skill is
+opened and read only if the procedure calls for one — the third tier of
+progressive disclosure. Scripts left in `scripts/` without being declared in
+the frontmatter are picked up by extension, so a skill written for another
+client is runnable rather than merely readable. For the same reason, read-only
+tools may reach into the directories of loaded skills; writes stay inside the
+workspace.
 
 The agent proposes new skills through `propose_skill`. Every proposal is
 validated (kebab-case name, non-empty trigger under 200 characters, no
@@ -1005,7 +1059,11 @@ ships its own `.taurus` directory.
 - **`run_command` has no PTY.** Commands run non-interactively with stdin
   closed, which is right for an agent but means programs that check `isatty`
   behave as though piped, and interactive prompts hit the timeout instead of
-  hanging forever.
+  hanging forever. Their output streams to the transcript as it is produced —
+  batched every 100ms, kept as a bounded scrollback, and dropped from the
+  *display* rather than allowed to stall the child if the UI falls behind. What
+  the model receives is always the complete output; only what you are watching
+  scroll past can skip.
 - **A sub-agent's answer is summarized, not streamed.** Its tool calls now
   appear under the delegation card as it makes them, so a long delegation looks
   alive rather than hung, but its reasoning and prose stay inside the child.

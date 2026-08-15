@@ -211,6 +211,9 @@ fn http_headers(
 /// execute directly; they have to go through the command interpreter. This is
 /// the single most common reason an MCP config that works on macOS fails on
 /// Windows.
+/// A stdio server is a long-lived child, so the console window it would
+/// otherwise get is not a flicker — it sits on screen for the whole session,
+/// one per configured server.
 #[cfg(windows)]
 fn spawn_command(command: &str) -> tokio::process::Command {
     let needs_shell = matches!(
@@ -219,18 +222,22 @@ fn spawn_command(command: &str) -> tokio::process::Command {
             .and_then(|e| e.to_str()),
         Some("cmd") | Some("bat")
     ) || !command.contains('.');
-    if needs_shell {
+    let mut c = if needs_shell {
         let mut c = tokio::process::Command::new("cmd");
         c.arg("/C").arg(command);
         c
     } else {
         tokio::process::Command::new(command)
-    }
+    };
+    taurus_tools::no_console(&mut c);
+    c
 }
 
 #[cfg(not(windows))]
 fn spawn_command(command: &str) -> tokio::process::Command {
-    tokio::process::Command::new(command)
+    let mut c = tokio::process::Command::new(command);
+    taurus_tools::no_console(&mut c);
+    c
 }
 
 /// One remote tool, wearing the local [`Tool`] interface.
@@ -346,6 +353,30 @@ mod tests {
             namespaced("github", "create_issue"),
             "mcp__github__create_issue"
         );
+    }
+
+    #[tokio::test]
+    async fn a_spawned_server_command_runs_and_pipes_its_output() {
+        // `spawn_command` carries two pieces of platform-specific behavior: the
+        // `cmd /C` shim for batch-script launchers, and the flag that stops a
+        // console window opening. Both are easy to get wrong in a way that only
+        // shows up as a server that will not start on somebody else's machine,
+        // so the assertion is simply that what comes back still works.
+        let program = if cfg!(windows) { "cmd" } else { "echo" };
+        let output = spawn_command(program)
+            .configure(|c| {
+                if cfg!(windows) {
+                    c.args(["/C", "echo hello"]);
+                } else {
+                    c.arg("hello");
+                }
+            })
+            .output()
+            .await
+            .expect("a configured server command must still be runnable");
+
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
     }
 
     #[tokio::test]

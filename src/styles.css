@@ -1110,6 +1110,35 @@ body.resizing * {
   margin: 0 13px 10px;
 }
 
+/* A command's own output, streaming under its row.
+   Short by default: enough to see the command is alive and how it is going,
+   without a build log pushing the conversation off the screen. Opening the row
+   gives it the height of any other tool result. */
+.tool-stream {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  background: var(--bg-sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  margin: 0 13px 10px 34px;
+  padding: 7px 9px;
+  max-height: 150px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tool-stream.expanded {
+  max-height: 420px;
+}
+/* Live output is the one thing on screen that is still changing, and reads a
+   shade brighter than the finished result it will become. */
+.tool-stream.live {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--rule));
+}
+
 /* What a delegation is doing right now. Indented under its own row and set
    fainter than it, so a glance reads "this call, still going" rather than
    mistaking the child's steps for the parent's. */
@@ -1311,6 +1340,54 @@ body.resizing * {
 }
 .composer-box:focus-within {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+/* The skill menu sits inside the composer box and above the textarea, so it
+   grows upward into the conversation rather than pushing the box down and
+   moving the caret out from under the user mid-word. */
+.command-menu {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.command-row {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: var(--r-md);
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+.command-row:hover,
+.command-row.on {
+  background: var(--bg-sunken);
+}
+.command-name {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  flex: none;
+}
+.command-row.on .command-name {
+  color: var(--accent);
+}
+/* The trigger line, which is the whole reason to show a list rather than
+   demand the name be remembered. Truncated to one line: it is here to tell
+   two similar skills apart, not to be read in full. */
+.command-when {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .composer textarea {
   border: none;

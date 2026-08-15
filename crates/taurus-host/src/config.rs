@@ -17,10 +17,21 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use taurus_skills::{SkillOrigin, SkillSource, SkillTier};
 use ts_rs::TS;
 
 pub const HOME_DIR_NAME: &str = ".taurus";
 pub const WORKSPACE_DIR_NAME: &str = ".taurus";
+
+/// The cross-client convention for shared skills, from the Agent Skills
+/// specification. Anything installed here is visible to every client that
+/// follows it, Taurus included.
+pub const AGENTS_DIR_NAME: &str = ".agents";
+
+/// Read for compatibility rather than convention: a large number of skills are
+/// already installed here, and copying them into `.taurus` to use them would
+/// leave the user maintaining two of everything.
+pub const CLAUDE_DIR_NAME: &str = ".claude";
 
 /// Overrides the config location. Set by tests so they cannot write to the
 /// real `~/.taurus`, and usable to run an isolated instance.
@@ -80,6 +91,75 @@ pub fn user_skills_dir() -> PathBuf {
 
 pub fn workspace_skills_dir(workspace: &Path) -> PathBuf {
     workspace_dir(workspace).join("skills")
+}
+
+/// The directory the shared skill conventions hang off.
+///
+/// Normally the user's home, so the conventions sit beside `~/.taurus` where
+/// every other client writes them. Under `TAURUS_HOME` they move *inside* the
+/// override instead of beside it: an override means "this instance keeps all
+/// its config here", and reaching for a sibling of the override directory would
+/// scan somewhere the user never pointed at — for the tests, which set that
+/// variable specifically so they cannot touch real state, a shared system temp
+/// directory.
+fn home_root() -> PathBuf {
+    if let Some(dir) = std::env::var_os(HOME_ENV).filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    directories::BaseDirs::new()
+        .map(|d| d.home_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Every directory a skill can come from, lowest precedence first.
+///
+/// Two axes decide the order. Tier: a project skill shadows a user one, which
+/// is the convention every client shares and the one users already expect.
+/// Origin within a tier: the shared locations are read first and `.taurus`
+/// last, so a skill written for Taurus wins over a borrowed one of the same
+/// name — you can override a skill you did not write without editing it.
+///
+/// Reading the shared locations is what lets a skill installed by another
+/// client work here untouched. It also means a skill in a repository can now
+/// arrive from a directory Taurus does not own, so this is the list to revisit
+/// if project skills ever need a trust gate.
+pub fn skill_sources(workspace: Option<&Path>) -> Vec<SkillSource> {
+    let home = home_root();
+    let mut sources = Vec::new();
+
+    let mut push = |tier, origin, dir: PathBuf| sources.push(SkillSource { tier, origin, dir });
+
+    push(
+        SkillTier::User,
+        SkillOrigin::Agents,
+        home.join(AGENTS_DIR_NAME).join("skills"),
+    );
+    push(
+        SkillTier::User,
+        SkillOrigin::Claude,
+        home.join(CLAUDE_DIR_NAME).join("skills"),
+    );
+    push(SkillTier::User, SkillOrigin::Taurus, user_skills_dir());
+
+    if let Some(workspace) = workspace {
+        push(
+            SkillTier::Project,
+            SkillOrigin::Agents,
+            workspace.join(AGENTS_DIR_NAME).join("skills"),
+        );
+        push(
+            SkillTier::Project,
+            SkillOrigin::Claude,
+            workspace.join(CLAUDE_DIR_NAME).join("skills"),
+        );
+        push(
+            SkillTier::Project,
+            SkillOrigin::Taurus,
+            workspace_skills_dir(workspace),
+        );
+    }
+
+    sources
 }
 
 pub fn user_agents_dir() -> PathBuf {

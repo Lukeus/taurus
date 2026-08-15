@@ -101,9 +101,29 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
                   <span className={`tag ${skill.tier === "project" ? "project" : ""}`}>
                     {TIER_LABEL[skill.tier]}
                   </span>
+                  {/* Only for skills Taurus did not install. Where a borrowed
+                      skill came from is the first thing you want to know about
+                      it; where Taurus's own skills live is not news. */}
+                  {originLabel(skill.origin) && (
+                    <span className="tag">{originLabel(skill.origin)}</span>
+                  )}
                   {skill.degraded && <span className="tag warn">degraded</span>}
                 </div>
                 <span className="card-sub">{skill.when_to_use}</span>
+                {/* The skill's own claim about what it needs to run. Taurus
+                    cannot check it, and says so by placing it here rather than
+                    beside `degraded`, which is a fact Taurus established. */}
+                {skill.compatibility && (
+                  <span className="card-files">needs {skill.compatibility}</span>
+                )}
+                {/* Wrong but survivable — a name in the wrong case, a colon
+                    the YAML never quoted. The skill works, so it belongs on
+                    its own row rather than under "Could not load". */}
+                {skill.warnings.map((warning) => (
+                  <span key={warning} className="card-files warn">
+                    {warning}
+                  </span>
+                ))}
                 {skill.degraded ? (
                   <span className="card-files warn">
                     {skill.degraded} — Taurus will follow the written steps.
@@ -187,7 +207,7 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
 
 /**
  * The three questions actually asked of the skill list: what is there, what
- * did this project add, and what is broken.
+ * did this project add, and what needs looking at.
  *
  * Every count comes out of one pass so the pills and the list below them can
  * never disagree — a filter reading "Needs attention 2" over a list of three
@@ -195,7 +215,10 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
  */
 export function partition(skills: SkillSummary[], filter: Filter) {
   const project = skills.filter((s) => s.tier === "project");
-  const attention = skills.filter((s) => s.degraded);
+  // Both kinds of "something is off with this one": scripts that will not run
+  // here, and a file that loaded only because Taurus was lenient about it.
+  // Separating them would mean two filters answering the same question.
+  const attention = skills.filter((s) => s.degraded || s.warnings.length > 0);
   return {
     all: skills,
     project,
@@ -209,3 +232,21 @@ const TIER_LABEL: Record<SkillSummary["tier"], string> = {
   user: "all projects",
   project: "project",
 };
+
+/**
+ * Where a skill was installed, for skills Taurus did not install itself.
+ *
+ * The directory name rather than a friendlier word, because that is what you
+ * will type to go find it. `taurus` returns null on purpose: it is the default
+ * location, and a badge saying so on every row is one nobody reads.
+ */
+export function originLabel(origin: SkillSummary["origin"]): string | null {
+  switch (origin) {
+    case "agents":
+      return ".agents";
+    case "claude":
+      return ".claude";
+    case "taurus":
+      return null;
+  }
+}

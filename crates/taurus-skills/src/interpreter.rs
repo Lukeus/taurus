@@ -60,6 +60,25 @@ pub fn resolve(name: &str) -> Result<Interpreter, String> {
     ))
 }
 
+/// The logical interpreter a file extension implies, for scripts found in a
+/// skill's `scripts/` directory rather than declared in its frontmatter.
+///
+/// Extension only. A shebang would be more accurate, but this runs on every
+/// file of every skill at load time, and a wrong guess here is not silent — the
+/// script is listed with the interpreter it was guessed to need, and an
+/// unsupported guess simply yields nothing.
+pub fn for_extension(extension: &str) -> Option<&'static str> {
+    Some(match extension.to_ascii_lowercase().as_str() {
+        "py" => "python3",
+        "js" | "mjs" | "cjs" => "node",
+        "ts" => "deno",
+        "sh" | "bash" => "bash",
+        "ps1" => "pwsh",
+        "rb" => "ruby",
+        _ => return None,
+    })
+}
+
 /// Whether every interpreter a set of scripts needs is available here.
 pub fn missing_interpreters<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut missing = Vec::new();
