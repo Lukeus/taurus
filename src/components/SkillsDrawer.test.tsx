@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import type { SkillSummary } from "../lib/api";
-import { partition } from "./SkillsDrawer";
+import { originLabel, partition } from "./SkillsDrawer";
 
 const skill = (patch: Partial<SkillSummary> = {}): SkillSummary => ({
   name: "release-notes",
@@ -16,8 +16,11 @@ const skill = (patch: Partial<SkillSummary> = {}): SkillSummary => ({
   when_to_use: "Preparing release notes",
   version: 1,
   tier: "user",
+  origin: "taurus",
+  compatibility: null,
   allowed_tools: [],
   scripts: [],
+  warnings: [],
   degraded: null,
   dir: "/home/me/.taurus/skills/release-notes",
   ...patch,
@@ -56,6 +59,14 @@ describe("skill filters", () => {
     }
   });
 
+  it("surfaces a skill that only loaded because Taurus was lenient", () => {
+    // It runs, so it is not degraded — but a name that disagrees with its
+    // directory is exactly what this filter exists to help someone find.
+    const lenient = skill({ name: "d", warnings: ["directory is named 'x'"] });
+    const { attention } = partition([...library, lenient], "all");
+    expect(attention.map((s) => s.name)).toEqual(["c", "d"]);
+  });
+
   it("treats a degraded project skill as both, not either", () => {
     // `c` is degraded *and* from the project. A partition that moved it out of
     // the project list would make the counts add up and the answer wrong.
@@ -69,5 +80,19 @@ describe("skill filters", () => {
     expect(empty.all).toEqual([]);
     expect(empty.attention).toEqual([]);
     expect(empty.shown).toEqual([]);
+  });
+});
+
+describe("skill origin", () => {
+  it("names the directory a borrowed skill came from", () => {
+    expect(originLabel("agents")).toBe(".agents");
+    expect(originLabel("claude")).toBe(".claude");
+  });
+
+  it("says nothing about a skill in Taurus's own location", () => {
+    // A badge on every row is a badge nobody reads. The question the label
+    // answers is "where did this come from", and `.taurus` is the answer that
+    // needed no asking.
+    expect(originLabel("taurus")).toBeNull();
   });
 });

@@ -15,7 +15,7 @@ use taurus_provider::{Message, Provider};
 use taurus_provider_ollama::{OllamaProvider, DEFAULT_BASE_URL};
 use taurus_skills::catalog::{SkillCatalog, SkillSource};
 use taurus_skills::proposal::{save, validate_proposal, CollectingSink};
-use taurus_skills::skill::SkillTier;
+use taurus_skills::skill::{SkillOrigin, SkillTier};
 use taurus_skills::{LoadSkill, ProposeSkill, RunSkillScript};
 use taurus_tools::{AllowAll, PermissionEngine, ToolContext, ToolRegistry};
 use tokio::sync::{mpsc, RwLock};
@@ -128,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The real assertion: does it come back?
     let (reloaded, problems) = SkillCatalog::discover(&[SkillSource {
         tier: SkillTier::Project,
+        origin: SkillOrigin::Taurus,
         dir: skills_root.clone(),
     }]);
     println!(

@@ -15,6 +15,25 @@ use crate::tool::ToolError;
 /// Relative paths are taken as relative to `root`. The returned path is
 /// absolute and symlink-free up to the first component that does not exist.
 pub fn resolve(root: &Path, candidate: &str) -> Result<PathBuf, ToolError> {
+    resolve_within(root, &[], candidate)
+}
+
+/// Resolves `candidate` against `root`, also accepting anything under one of
+/// `also`.
+///
+/// For read-only tools, whose reach is widened by the skill directories the
+/// catalog loaded. Writes never call this: a skill's own files are somebody
+/// else's — often another client's — and the workspace stays the only place
+/// this agent modifies.
+///
+/// `root` alone anchors relative paths, so which directory `references/x.md`
+/// means never depends on the allowlist. A skill's procedure is given absolute
+/// paths for exactly that reason.
+pub fn resolve_within(
+    root: &Path,
+    also: &[PathBuf],
+    candidate: &str,
+) -> Result<PathBuf, ToolError> {
     if candidate.trim().is_empty() {
         return Err(ToolError::InvalidInput("path must not be empty".into()));
     }
@@ -58,7 +77,15 @@ pub fn resolve(root: &Path, candidate: &str) -> Result<PathBuf, ToolError> {
         full.push(name);
     }
 
-    if !full.starts_with(&root) {
+    // Each allowed root is canonicalized too, or a symlinked skill directory
+    // would never match the resolved path it is supposed to permit.
+    let permitted = full.starts_with(&root)
+        || also
+            .iter()
+            .filter_map(|dir| dir.canonicalize().ok())
+            .any(|dir| full.starts_with(&dir));
+
+    if !permitted {
         return Err(ToolError::OutsideWorkspace {
             path: full.display().to_string(),
             root: root.display().to_string(),
@@ -138,6 +165,49 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub/file.txt"), "hi").unwrap();
         dir
+    }
+
+    #[test]
+    fn accepts_a_path_under_an_allowed_root() {
+        let ws = workspace();
+        let skill = workspace();
+        let target = skill.path().join("sub/file.txt");
+
+        // Refused without the allowance, permitted with it. Both halves matter:
+        // the first is the boundary still doing its job.
+        let candidate = target.to_str().unwrap();
+        assert!(matches!(
+            resolve(ws.path(), candidate),
+            Err(ToolError::OutsideWorkspace { .. })
+        ));
+        let allowed = vec![skill.path().to_path_buf()];
+        assert!(resolve_within(ws.path(), &allowed, candidate).is_ok());
+    }
+
+    #[test]
+    fn an_allowed_root_does_not_open_its_neighbours() {
+        let ws = workspace();
+        let skill = workspace();
+        let other = workspace();
+        let allowed = vec![skill.path().to_path_buf()];
+
+        let outside = other.path().join("sub/file.txt");
+        assert!(matches!(
+            resolve_within(ws.path(), &allowed, outside.to_str().unwrap()),
+            Err(ToolError::OutsideWorkspace { .. })
+        ));
+    }
+
+    #[test]
+    fn a_relative_path_still_means_the_workspace() {
+        let ws = workspace();
+        let skill = workspace();
+        let allowed = vec![skill.path().to_path_buf()];
+
+        // Both roots contain `sub/file.txt`. Which one a bare relative path
+        // means must not depend on what happens to be allowlisted.
+        let resolved = resolve_within(ws.path(), &allowed, "sub/file.txt").unwrap();
+        assert!(resolved.starts_with(ws.path().canonicalize().unwrap()));
     }
 
     #[test]

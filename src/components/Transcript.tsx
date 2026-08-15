@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+
 import { Markdown } from "./Markdown";
 import { duration, plural } from "../lib/format";
 import type { Entry } from "../state/store";
@@ -207,9 +208,27 @@ function ToolRun({ steps }: { steps: ToolEntry[] }) {
   );
 }
 
+/**
+ * Tools whose progress reports are their own output rather than labels.
+ *
+ * These get a terminal: monospace, whitespace kept, and a view that stays put
+ * once the command finishes. Everything else finishes fast enough that the
+ * collapsed row is the better reading experience, and streaming all of them
+ * would turn a transcript into a wall.
+ */
+const STREAMS_OUTPUT = new Set(["run_command", "run_skill_script"]);
+
 function ToolRow({ step }: { step: ToolEntry }) {
   const [open, setOpen] = useState(false);
   const kind = TOOL_CLASS[step.name] ?? "other";
+  const terminal = STREAMS_OUTPUT.has(step.name);
+
+  // While it runs, what has been streamed; once it is done, the result — which
+  // is the authoritative copy, truncated at both ends rather than the tail
+  // alone. Same place on screen either way, so the row does not jump when the
+  // command exits.
+  const streamed = step.steps.join("");
+  const body = step.status === "running" ? streamed : (step.output ?? streamed);
 
   return (
     <div className={`run-row ${kind} ${step.status}`}>
@@ -225,19 +244,71 @@ function ToolRow({ step }: { step: ToolEntry }) {
           {step.status === "running" ? "…" : step.status === "ok" ? "✓" : "failed"}
         </span>
       </button>
+
+      {terminal && body && (
+        <Terminal text={body} following={step.status === "running"} expanded={open} />
+      )}
+
       {/* What a delegation is doing while it does it. Shown without needing
           the row opened: the point is that a long call looks alive, and that
           is no use behind a click. Dropped once it finishes, when the result
           is the more useful thing to have in the same space. */}
-      {step.status === "running" && step.steps.length > 0 && (
+      {!terminal && step.status === "running" && step.steps.length > 0 && (
         <ul className="run-substeps">
           {step.steps.slice(-MAX_VISIBLE_SUBSTEPS).map((label, i) => (
             <li key={`${i}-${label}`}>{label}</li>
           ))}
         </ul>
       )}
-      {open && step.output && <pre className="tool-output">{step.output}</pre>}
+      {!terminal && open && step.output && (
+        <pre className="tool-output">{step.output}</pre>
+      )}
     </div>
+  );
+}
+
+/**
+ * A command's output, following it as it arrives.
+ *
+ * Scrolled rather than grown: a `cargo build` would otherwise push the
+ * conversation off the screen and take the composer with it. The view sticks to
+ * the bottom while the command runs and stops the moment the user scrolls up,
+ * the same bargain the transcript itself makes.
+ */
+function Terminal({
+  text,
+  following,
+  expanded,
+}: {
+  text: string;
+  following: boolean;
+  expanded: boolean;
+}) {
+  const box = useRef<HTMLPreElement>(null);
+  const pinned = useRef(true);
+
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const onScroll = () => {
+      pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    };
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    const el = box.current;
+    if (el && following && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [text, following]);
+
+  return (
+    <pre
+      ref={box}
+      className={`tool-stream${expanded ? " expanded" : ""}${following ? " live" : ""}`}
+    >
+      {text.replace(/\n+$/, "")}
+    </pre>
   );
 }
 

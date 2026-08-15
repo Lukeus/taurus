@@ -135,6 +135,9 @@ export const revokePermissionRule = (rule: string, scope: Scope) =>
 
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 
+/** Skills runnable as `/name`, for completion in the composer. */
+export const listCommands = () => invoke<SkillSummary[]>("list_commands");
+
 /**
  * The sub-agent roster. Rescans the agent directories first, so what comes back
  * is what is on disk rather than what was there at startup — the whole

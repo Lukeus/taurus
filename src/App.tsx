@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { ChangesDrawer } from "./components/ChangesDrawer";
+import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { Rail, type ProviderHealth } from "./components/Rail";
 import {
@@ -16,7 +17,7 @@ import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript } from "./components/Transcript";
 import * as api from "./lib/api";
-import type { ModelInfo, ProviderConfig, Theme } from "./lib/api";
+import type { ModelInfo, ProviderConfig, SkillSummary, Theme } from "./lib/api";
 import { basename, plural } from "./lib/format";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
 import { useStore } from "./state/store";
@@ -458,23 +459,74 @@ function Composer({
   onStop: () => void;
 }) {
   const [text, setText] = useState("");
+  const [commands, setCommands] = useState<SkillSummary[]>([]);
+  const [active, setActive] = useState(0);
+
+  // Fetched once the composer is usable, and again whenever a workspace change
+  // could have brought a different library with it.
+  useEffect(() => {
+    if (!ready) return;
+    api.listCommands().then(setCommands).catch(() => setCommands([]));
+  }, [ready, workspace]);
+
+  const query = commandQuery(text);
+  const shown = query === null ? [] : matches(commands, query);
+  // Clamped rather than reset: the list narrows as the user types, and a
+  // highlight left pointing past the end would send the wrong skill on Enter.
+  const index = Math.min(active, Math.max(shown.length - 1, 0));
+
+  const complete = (command: SkillSummary) => {
+    // Trailing space, because every one of these takes arguments and the next
+    // thing to happen is typing them.
+    setText(`/${command.name} `);
+    setActive(0);
+  };
 
   const submit = () => {
     if (!text.trim() || busy) return;
     onSend(text);
     setText("");
+    setActive(0);
   };
 
   return (
     <footer className="composer">
       <div className="composer-box">
+        {shown.length > 0 && (
+          <CommandMenu commands={shown} active={index} onPick={complete} />
+        )}
         <textarea
           value={text}
           placeholder={ready ? "Ask Taurus to do something…" : "Connect a model to begin"}
           disabled={!ready}
           rows={1}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            setActive(0);
+          }}
           onKeyDown={(e) => {
+            // The menu takes the keys it needs and lets every other one
+            // through, so typing never has to wait for it to be dismissed.
+            if (shown.length > 0) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const step = e.key === "ArrowDown" ? 1 : -1;
+                setActive((index + step + shown.length) % shown.length);
+                return;
+              }
+              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                e.preventDefault();
+                complete(shown[index]);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                // Settles the name so the menu closes without discarding what
+                // was typed — Escape here means "stop suggesting", not "undo".
+                setText(`${text} `);
+                return;
+              }
+            }
             // Enter sends; Shift+Enter is a newline, matching every chat UI.
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -491,7 +543,11 @@ function Composer({
             ▤ {workspace ? basename(workspace) : "no workspace"}
           </button>
           <div className="spacer" />
-          <span className="composer-hint">↵ send · ⇧↵ newline</span>
+          {/* The hint is the only place a skill library announces it can be
+              run by name, and only while there is one to run. */}
+          <span className="composer-hint">
+            ↵ send · ⇧↵ newline{commands.length > 0 && " · / skills"}
+          </span>
           {busy ? (
             <button className="danger composer-send" onClick={onStop}>
               Stop

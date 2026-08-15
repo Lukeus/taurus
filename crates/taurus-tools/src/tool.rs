@@ -103,6 +103,13 @@ pub trait ToolProgress: Send + Sync {
 #[derive(Clone)]
 pub struct ToolContext {
     pub workspace: PathBuf,
+    /// Directories read-only tools may reach into besides the workspace.
+    ///
+    /// In practice the loaded skills' own directories, so a procedure that says
+    /// "see references/REFERENCE.md" can be followed when the skill lives under
+    /// the home directory. Reads only — nothing here widens what may be
+    /// written, and the workspace remains the only place this agent changes.
+    pub readable_roots: Vec<PathBuf>,
     pub permissions: Arc<PermissionEngine>,
     pub cancel: CancellationToken,
     /// The open turn that file changes are checkpointed into.
@@ -126,11 +133,18 @@ impl ToolContext {
     ) -> Self {
         Self {
             workspace: workspace.into(),
+            readable_roots: Vec::new(),
             permissions,
             cancel,
             checkpoints: None,
             progress: None,
         }
+    }
+
+    /// Widens what read-only tools may open, without widening what may change.
+    pub fn with_readable_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.readable_roots = roots;
+        self
     }
 
     /// Makes changes made through this context undoable.
@@ -152,8 +166,15 @@ impl ToolContext {
         }
     }
 
+    /// Resolves a path a tool is about to change. Workspace only.
     pub fn resolve(&self, candidate: &str) -> Result<PathBuf, ToolError> {
         crate::path_guard::resolve(&self.workspace, candidate)
+    }
+
+    /// Resolves a path a tool is only going to read, which may also sit in one
+    /// of the skill directories the session loaded.
+    pub fn resolve_read(&self, candidate: &str) -> Result<PathBuf, ToolError> {
+        crate::path_guard::resolve_within(&self.workspace, &self.readable_roots, candidate)
     }
 
     pub fn display(&self, path: &Path) -> String {

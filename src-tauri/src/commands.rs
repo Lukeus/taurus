@@ -236,6 +236,21 @@ pub async fn send_message(
     let entry = state.session(&session_id)?;
     let provider = state.host.provider(&entry.provider_id).await?;
 
+    // `/name args` becomes the skill's procedure before the model sees it. The
+    // user's own line stays what the transcript shows and what names the turn:
+    // an expansion is how the request is carried out, not what was asked.
+    let prompt = match state.host.expand_command(&text).await {
+        Some(Ok(invocation)) => {
+            info!(session = %session_id, skill = %invocation.name, "ran a skill as a command");
+            invocation.prompt
+        }
+        // Returned rather than sent. A mistyped command is a message to the
+        // user, and passing it to the model would answer a question about a
+        // skill instead of running one.
+        Some(Err(e)) => return Err(e.to_string()),
+        None => text.clone(),
+    };
+
     // A fresh token per turn: reusing a canceled one would abort the next turn
     // before it started.
     let cancel = CancellationToken::new();
@@ -266,7 +281,9 @@ pub async fn send_message(
     });
 
     let mut session = entry.session.lock().await;
-    let outcome = agent.run_turn(&mut session, Message::user(text), tx).await;
+    let outcome = agent
+        .run_turn(&mut session, Message::user(prompt), tx)
+        .await;
     // Recorded whatever the outcome, and before the session lock is released:
     // an interrupted turn still produced the messages that led there, and they
     // must reach disk in the order they happened.
@@ -575,6 +592,16 @@ pub async fn revoke_permission_rule(
 #[tauri::command]
 pub async fn list_skills(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<SkillSummary>> {
     Ok(state.host.skills().await)
+}
+
+/// Skills the user can run as `/name`, for completion in the composer.
+///
+/// A separate call from [`list_skills`] rather than a filter in the UI: which
+/// skills are user-invocable is the library's answer to give, and a composer
+/// offering one the harness would then refuse is a dead end typed in full.
+#[tauri::command]
+pub async fn list_commands(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<SkillSummary>> {
+    Ok(state.host.commands().await)
 }
 
 /// The sub-agent roster, rescanned from disk first.

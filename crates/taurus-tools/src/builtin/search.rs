@@ -73,7 +73,7 @@ impl Tool for Glob {
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: GlobInput = parse_input(input)?;
-        let root = ctx.resolve(input.path.as_deref().unwrap_or("."))?;
+        let root = ctx.resolve_read(input.path.as_deref().unwrap_or("."))?;
         let matcher = globset::Glob::new(&input.pattern)
             .map_err(|e| ToolError::InvalidInput(format!("bad glob pattern: {e}")))?
             .compile_matcher();
@@ -133,7 +133,7 @@ impl Tool for Grep {
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: GrepInput = parse_input(input)?;
-        let root = ctx.resolve(input.path.as_deref().unwrap_or("."))?;
+        let root = ctx.resolve_read(input.path.as_deref().unwrap_or("."))?;
         let regex = regex::Regex::new(&input.pattern)
             .map_err(|e| ToolError::InvalidInput(format!("bad regex: {e}")))?;
         let include = input

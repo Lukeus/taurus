@@ -70,7 +70,7 @@ impl Tool for ReadFile {
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: ReadFileInput = parse_input(input)?;
-        let path = ctx.resolve(&input.path)?;
+        let path = ctx.resolve_read(&input.path)?;
 
         if path.is_dir() {
             return Err(ToolError::InvalidInput(format!(
@@ -363,7 +363,7 @@ impl Tool for ListDir {
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: ListDirInput = parse_input(input)?;
-        let path = ctx.resolve(input.path.as_deref().unwrap_or("."))?;
+        let path = ctx.resolve_read(input.path.as_deref().unwrap_or("."))?;
 
         let mut entries = tokio::fs::read_dir(&path)
             .await

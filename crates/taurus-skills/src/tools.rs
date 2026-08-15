@@ -80,38 +80,9 @@ impl Tool for LoadSkill {
             }));
         };
 
-        let mut out = String::new();
-        out.push_str(&format!(
-            "# Skill: {}\n\n{}\n\n",
-            skill.frontmatter.name, skill.frontmatter.description
-        ));
-
-        if let Some(reason) = &skill.degraded {
-            // Surfaced prominently: silently letting the model call a script
-            // that cannot run wastes a whole round trip on a confusing error.
-            out.push_str(&format!(
-                "> This skill's scripts cannot run on this machine ({reason}). Follow the written \
-                 steps manually instead of calling run_skill_script.\n\n"
-            ));
-        } else if !skill.frontmatter.scripts.is_empty() {
-            out.push_str("## Scripts\n\nCall these with `run_skill_script`:\n\n");
-            for script in &skill.frontmatter.scripts {
-                out.push_str(&format!(
-                    "- `{}` ({}) — {}\n",
-                    script.path, script.interpreter, script.description
-                ));
-            }
-            out.push('\n');
-        }
-
-        out.push_str("## Procedure\n\n");
-        out.push_str(&skill.body);
-        out.push_str(&format!(
-            "\n\nSkill files are in `{}`; read them with read_file if the procedure refers to \
-             one.\n",
-            skill.dir.display()
-        ));
-        Ok(out)
+        // No arguments: a tool call carries its request in the conversation
+        // already, unlike a slash command where the user's line is the input.
+        Ok(skill.render(""))
     }
 }
 
@@ -215,7 +186,10 @@ impl Tool for RunSkillScript {
                     })
                 })?;
             (
-                skill.dir.join(&script.path),
+                // Not `join`: a discovered script's path is `scripts/run.py`,
+                // and joining that whole onto a Windows directory mixes
+                // separators in the path handed to the interpreter.
+                skill.resource_path(&script.path),
                 script.interpreter.clone(),
                 skill.dir.clone(),
             )
@@ -248,6 +222,9 @@ impl Tool for RunSkillScript {
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
         command.kill_on_drop(true);
+        // A skill's interpreter is a console program like any other, and would
+        // otherwise flash up a window on Windows for the length of the script.
+        taurus_tools::no_console(&mut command);
 
         let mut child = command
             .spawn()
@@ -440,7 +417,7 @@ mod tests {
     use super::*;
     use crate::catalog::{SkillSource, SKILL_FILE};
     use crate::proposal::CollectingSink;
-    use crate::skill::SkillTier;
+    use crate::skill::{SkillOrigin, SkillTier};
     use std::path::Path;
     use taurus_tools::{AllowAll, PermissionEngine};
     use tempfile::TempDir;
@@ -469,6 +446,7 @@ mod tests {
         }
         let (catalog, problems) = SkillCatalog::discover(&[SkillSource {
             tier: SkillTier::User,
+            origin: SkillOrigin::Taurus,
             dir: skills_dir.path().to_path_buf(),
         }]);
         assert!(problems.is_empty(), "{problems:?}");
@@ -509,6 +487,48 @@ mod tests {
             .unwrap();
         assert!(out.contains("Procedure for alpha."));
         assert!(out.contains("# Skill: alpha"));
+    }
+
+    #[tokio::test]
+    async fn load_skill_names_bundled_files_without_reading_them() {
+        let f = fixture(&[("alpha", "")]);
+        // One component per `join`. Passing "alpha/references" whole would put
+        // a forward slash inside a Windows path, and the expectation below is
+        // compared against rendered text rather than used to open a file — so
+        // it has to be spelled the way the platform spells it.
+        let refs = f.skills.path().join("alpha").join("references");
+        std::fs::create_dir_all(&refs).unwrap();
+        std::fs::write(refs.join("REFERENCE.md"), "the whole reference text").unwrap();
+        reload(&f).await;
+
+        let out = LoadSkill::new(f.catalog.clone())
+            .execute(serde_json::json!({"name": "alpha"}), &f.ctx)
+            .await
+            .unwrap();
+
+        // Absolute: the model resolves a bare relative path against the
+        // workspace, and a skill under the home directory is not there.
+        let expected = refs.join("REFERENCE.md");
+        assert!(
+            out.contains(&expected.display().to_string()),
+            "expected {} in:\n{out}",
+            expected.display()
+        );
+        assert!(
+            !out.contains("the whole reference text"),
+            "a reference file must cost nothing until it is asked for"
+        );
+    }
+
+    /// Rediscovers after files are added beside an already-loaded skill.
+    async fn reload(f: &Fixture) {
+        let (catalog, problems) = SkillCatalog::discover(&[SkillSource {
+            tier: SkillTier::User,
+            origin: SkillOrigin::Taurus,
+            dir: f.skills.path().to_path_buf(),
+        }]);
+        assert!(problems.is_empty(), "{problems:?}");
+        *f.catalog.write().await = catalog;
     }
 
     #[tokio::test]
@@ -558,6 +578,37 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("hi there"));
+    }
+
+    #[tokio::test]
+    async fn run_skill_script_runs_a_script_discovered_in_the_scripts_directory() {
+        // The path of a discovered script always contains a forward slash,
+        // because that is how the catalog writes logical paths. Joining it onto
+        // a Windows skill directory whole would mix separators, and no other
+        // test here uses a script that lives in a subdirectory at all.
+        // Declared rather than discovered, so the interpreter is `sh` — the one
+        // every other script test here already proves resolves on all three
+        // platforms. What is under test is the path, not the lookup.
+        let f = fixture(&[(
+            "bundled",
+            "scripts:\n  - path: scripts/greet.sh\n    interpreter: sh\n    description: greets\n",
+        )]);
+        std::fs::create_dir_all(f.skills.path().join("bundled/scripts")).unwrap();
+        write_script(
+            f.skills.path(),
+            "bundled",
+            "scripts/greet.sh",
+            "#!/bin/sh\necho \"from a subdirectory\"\n",
+        );
+
+        let out = RunSkillScript::new(f.catalog.clone())
+            .execute(
+                serde_json::json!({"skill": "bundled", "script": "scripts/greet.sh"}),
+                &f.ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("from a subdirectory"), "{out}");
     }
 
     #[tokio::test]

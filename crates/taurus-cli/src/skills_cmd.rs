@@ -19,7 +19,13 @@ pub async fn run(host: &Host, command: SkillsCommand) -> Result<ExitCode, String
             let skills = host.skills().await;
             if skills.is_empty() {
                 println!("No skills found.");
-                println!("Looked in ~/.taurus/skills and <workspace>/.taurus/skills.");
+                // Named in full, because "no skills found" is only actionable
+                // if you know which directories were actually read — and there
+                // are now six of them, not two.
+                println!("Looked in, in order:");
+                for source in host.skill_sources().await {
+                    println!("  {}", source.dir.display());
+                }
                 return Ok(ExitCode::SUCCESS);
             }
             for skill in skills {
@@ -29,9 +35,10 @@ pub async fn run(host: &Host, command: SkillsCommand) -> Result<ExitCode, String
                     ""
                 };
                 println!(
-                    "{:<24} {:<8}{degraded}",
+                    "{:<24} {:<8} {:<7}{degraded}",
                     skill.name,
-                    format!("{:?}", skill.tier).to_lowercase()
+                    format!("{:?}", skill.tier).to_lowercase(),
+                    format!("{:?}", skill.origin).to_lowercase()
                 );
                 println!("    {}", skill.when_to_use);
             }
@@ -44,12 +51,9 @@ pub async fn run(host: &Host, command: SkillsCommand) -> Result<ExitCode, String
             // developer runs locally would not start reports the wrong thing
             // about the wrong repository.
             let problems = host.problems_from(&[ProblemSource::Skills]).await;
-            let degraded: Vec<_> = host
-                .skills()
-                .await
-                .into_iter()
-                .filter(|s| s.degraded.is_some())
-                .collect();
+            let skills = host.skills().await;
+            let degraded: Vec<_> = skills.iter().filter(|s| s.degraded.is_some()).collect();
+            let warned: Vec<_> = skills.iter().filter(|s| !s.warnings.is_empty()).collect();
 
             for problem in &problems {
                 println!("could not load: {}", problem.message);
@@ -61,9 +65,24 @@ pub async fn run(host: &Host, command: SkillsCommand) -> Result<ExitCode, String
                     skill.degraded.as_deref().unwrap_or_default()
                 );
             }
+            // Reported but never fatal. These skills work; the exit code is a
+            // CI gate, and failing a build over a skill that loaded fine —
+            // often one written for another client and not ours to fix — would
+            // make the gate something people switch off.
+            for skill in &warned {
+                for warning in &skill.warnings {
+                    println!("warning: {} — {warning}", skill.name);
+                }
+            }
 
             if problems.is_empty() && degraded.is_empty() {
-                println!("All skills loaded and are fully runnable here.");
+                if warned.is_empty() {
+                    println!("All skills loaded and are fully runnable here.");
+                } else {
+                    println!(
+                        "All skills loaded and are fully runnable here, with the warnings above."
+                    );
+                }
                 return Ok(ExitCode::SUCCESS);
             }
             // A non-zero exit makes this usable as a CI check on a skill
