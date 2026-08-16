@@ -15,10 +15,15 @@ const STEPS: Step[] = [
   { text: "Update the tests", state: "todo" },
 ];
 
+const allDone = STEPS.map((s) => ({ ...s, state: "done" as const }));
+
 describe("the plan card", () => {
   it("shows every step in the order the model sent them", () => {
+    // Measured over the list alone: the live step is also named in the summary
+    // above it, which is earlier in the markup than any row.
     const html = renderToStaticMarkup(<PlanCard view={plan(STEPS)} />);
-    const order = STEPS.map((s) => html.indexOf(s.text));
+    const list = html.slice(html.indexOf("<ol"));
+    const order = STEPS.map((s) => list.indexOf(s.text));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
@@ -27,31 +32,97 @@ describe("the plan card", () => {
     // The one number worth having in the header: it is the answer to "how far
     // through is this" without reading the list.
     const html = renderToStaticMarkup(<PlanCard view={plan(STEPS)} />);
-    expect(html).toContain("1 of 3 done");
+    expect(html).toContain("1 / 3");
+  });
+
+  it("names the live step above the list", () => {
+    // So the card answers "what is it doing" when it is read out of context —
+    // a screenshot, a glance, a scroll past.
+    const html = renderToStaticMarkup(<PlanCard view={plan(STEPS)} />);
+    expect(html).toContain("Working on: Add the token type");
+    expect(html).toContain("step 2 of 3 running");
+  });
+
+  it("leaves a step's text exactly as the model wrote it", () => {
+    // The mockup lower-cases the step in the summary line. A step is as likely
+    // to begin with an identifier as with a verb, and recasing one is a
+    // wrong answer that reads like a right one.
+    const html = renderToStaticMarkup(
+      <PlanCard view={plan([{ text: "Rename providerKey", state: "active" }])} />,
+    );
+    expect(html).toContain("Working on: Rename providerKey");
+  });
+
+  it("says the live step in the model's own running phrasing when it wrote one", () => {
+    // The whole point of `active_form`: a status line the model authored,
+    // rather than one this card derived by mangling the imperative.
+    const html = renderToStaticMarkup(
+      <PlanCard
+        view={plan([
+          {
+            text: "Rename providerKey",
+            state: "active",
+            active_form: "Renaming providerKey",
+          },
+        ])}
+      />,
+    );
+    expect(html).toContain("Renaming providerKey");
+    expect(html).not.toContain("Working on:");
+    // The list itself stays imperative, so rows do not rewrite themselves as
+    // the plan advances.
+    expect(html.slice(html.indexOf("<ol"))).toContain("Rename providerKey");
+  });
+
+  it("ignores an active form on a step that is not the live one", () => {
+    const html = renderToStaticMarkup(
+      <PlanCard
+        view={plan([
+          { text: "Read the parser", state: "done", active_form: "Reading the parser" },
+          { text: "Add the token type", state: "todo", active_form: "Adding it" },
+        ])}
+      />,
+    );
+    expect(html).toContain("No step in progress.");
+    expect(html).not.toContain("Reading the parser");
+    expect(html).not.toContain("Adding it");
   });
 
   it("says so plainly when every step is finished", () => {
-    // "3 of 3 done" is arithmetic the reader should not have to do.
-    const html = renderToStaticMarkup(
-      <PlanCard view={plan(STEPS.map((s) => ({ ...s, state: "done" as const })))} />,
+    // "3 / 3" is arithmetic the reader should not have to do.
+    const html = renderToStaticMarkup(<PlanCard view={plan(allDone)} />);
+    expect(html).toContain("All steps complete.");
+    expect(html).toContain("3 steps complete");
+  });
+
+  it("fills the bar by the share of steps that are done", () => {
+    expect(renderToStaticMarkup(<PlanCard view={plan(STEPS)} />)).toContain(
+      "width:33.33",
     );
-    expect(html).toContain("all done");
+    expect(renderToStaticMarkup(<PlanCard view={plan(allDone)} />)).toContain(
+      "width:100%",
+    );
   });
 
-  it("names the live step's state in words, not only in styling", () => {
-    // The single fact this card exists to convey. A tint and a bold weight are
-    // the fast read and the one that fails in a screenshot, at a glance, and
-    // for a reader who cannot pick the contrast out.
-    const html = renderToStaticMarkup(<PlanCard view={plan(STEPS)} />);
-    expect(html).toContain("in progress");
+  it("does not claim a step is running when none is", () => {
+    // Legal: the model can mark a step done and not start the next one in the
+    // same call. Saying "paused" there would name a feature that does not
+    // exist; the card just reports what it has.
+    const html = renderToStaticMarkup(
+      <PlanCard view={plan(STEPS.map((s) => ({ ...s, state: "todo" as const })))} />,
+    );
+    expect(html).toContain("No step in progress.");
+    expect(html).not.toContain("running");
   });
 
-  it("leaves every step's state readable without the marker", () => {
-    // The markers are aria-hidden, so each row has to carry its state as text
-    // somewhere — visible for the live one, screen-reader-only for the rest.
+  it("states every step's state in words, not only in styling", () => {
+    // The mark is a shape and the tint is a colour; both fail in a screenshot,
+    // at a glance, and for a reader who cannot pick the contrast out. The word
+    // on each row is the rendering that does not.
     const html = renderToStaticMarkup(<PlanCard view={plan(STEPS)} />);
     expect(html).toContain("done");
-    expect(html).toContain("to do");
+    expect(html).toContain("running");
+    expect(html).toContain("queued");
     expect(html).toContain('aria-hidden="true"');
   });
 
@@ -61,6 +132,6 @@ describe("the plan card", () => {
       <PlanCard view={plan([{ text: "Just the one", state: "todo" }])} />,
     );
     expect(html).toContain("Just the one");
-    expect(html).toContain("0 of 1 done");
+    expect(html).toContain("0 / 1");
   });
 });

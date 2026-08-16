@@ -300,8 +300,83 @@ pub fn parse_input<T: serde::de::DeserializeOwned>(
     serde_json::from_value(input).map_err(|e| ToolError::InvalidInput(e.to_string()))
 }
 
-/// JSON Schema for a tool's input struct.
+/// JSON Schema for a tool's input struct, with every nested type written out
+/// where it is used.
+///
+/// `schemars` factors a nested struct into `$defs` and points at it with a
+/// `$ref`, which is correct and unreadable. A model does not dereference: shown
+/// `"items": {"$ref": "#/$defs/Step"}` it sees an array of *something* and
+/// invents field names for it, which is a tool call that fails on a schema the
+/// model was never actually told. Inlining costs a few duplicated bytes in the
+/// one case a type is used twice and buys the model the field names it is being
+/// asked to produce.
+///
+/// A type that contains itself cannot be written out this way, and `schemars`
+/// overflows the stack rather than declining. Nothing here is recursive, and
+/// `every_tool_advertises_a_schema_with_no_refs_left` fails loudly if that
+/// changes.
 pub fn schema_for<T: schemars::JsonSchema>() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(T))
-        .unwrap_or_else(|_| serde_json::json!({ "type": "object" }))
+    let settings = schemars::generate::SchemaSettings::default().with(|s| {
+        s.inline_subschemas = true;
+    });
+    let schema = settings.into_generator().into_root_schema_for::<T>();
+    serde_json::to_value(schema).unwrap_or_else(|_| serde_json::json!({ "type": "object" }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every position in `schema` where a `$ref` survived.
+    fn refs(schema: &serde_json::Value) -> Vec<String> {
+        match schema {
+            serde_json::Value::Object(map) => map
+                .iter()
+                .flat_map(|(key, value)| match (key.as_str(), value.as_str()) {
+                    ("$ref", Some(target)) => vec![target.to_string()],
+                    _ => refs(value),
+                })
+                .collect(),
+            serde_json::Value::Array(items) => items.iter().flat_map(refs).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The four tools whose input holds a nested type, and so the only four
+    /// that `schemars` would factor into `$defs` at all.
+    ///
+    /// A model does not resolve a `$ref`. When this failed, `update_plan` was
+    /// advertising an array of `#/$defs/Step` and models were filling it with
+    /// objects keyed on whatever they guessed a step was called.
+    #[test]
+    fn every_tool_advertises_a_schema_with_no_refs_left() {
+        use crate::builtin::plan::UpdatePlanInput;
+        use crate::builtin::present::{AskUserInput, ShowChartInput, ShowTableInput};
+
+        for (name, schema) in [
+            ("update_plan", schema_for::<UpdatePlanInput>()),
+            ("show_table", schema_for::<ShowTableInput>()),
+            ("show_chart", schema_for::<ShowChartInput>()),
+            ("ask_user", schema_for::<AskUserInput>()),
+        ] {
+            assert!(
+                refs(&schema).is_empty(),
+                "{name} still points at {:?}; a model reads the schema it is sent and nothing else",
+                refs(&schema)
+            );
+            assert!(
+                schema.get("$defs").is_none(),
+                "{name} carries a $defs nothing references"
+            );
+        }
+    }
+
+    #[test]
+    fn an_inlined_schema_still_names_the_nested_fields() {
+        // The specific thing the model was missing: `text` one level down.
+        let schema = schema_for::<crate::builtin::plan::UpdatePlanInput>();
+        let step = &schema["properties"]["steps"]["items"];
+        assert_eq!(step["properties"]["text"]["type"], "string");
+        assert_eq!(step["required"], serde_json::json!(["text"]));
+    }
 }

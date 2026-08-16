@@ -1239,30 +1239,84 @@ body.resizing * {
  * the mark, the order, and the state are the same facts the system prompt
  * carries back. What is added here is emphasis, which prose cannot do — the
  * live step is the one thing this card exists to make findable in a glance.
+ *
+ * The state of a step is said three times over: a mark, a tint, and a word.
+ * That is not redundancy to trim. The mark carries it fastest, the tint groups
+ * it, and only the word survives a screenshot, a colour-blind reader, and a
+ * screen reader — so the word is the one that is never dropped, and the other
+ * two are what make the card readable at a glance rather than at a read.
  */
+
+/* How far through, as a shape. Paired with the count in the header, which is
+   the same fact for anyone the shape does not reach. */
+.plan-bar {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--rule);
+  overflow: hidden;
+}
+.plan-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 180ms ease;
+}
+
 .plan-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
+/* The mockup keeps a row to one line and ellipsizes the overflow, which it can
+   afford at a fixed 560px with a second line of detail under each step. Here a
+   step runs to 120 characters and is the only thing the row says, and this card
+   is read against the copy of itself in the model's prompt — so a step that is
+   cut short is the one rendering that stops agreeing with the other. It wraps
+   instead, and the mark and the status hold the first line. */
 .plan-step {
   display: grid;
-  grid-template-columns: 1.4em 1fr auto;
-  align-items: baseline;
-  gap: 9px;
-  padding: 5px 8px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 11px;
+  padding: 10px;
   border-radius: var(--r);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13.5px;
+  line-height: 1.45;
 }
+.plan-text {
+  overflow-wrap: anywhere;
+}
+
+/* A ring the state fills in, rather than a glyph that changes. The row's
+   progress is then legible down the left edge of the card as a column of
+   marks, without reading any of the text beside them. */
 .plan-mark {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--on-accent);
+  /* Centred on the row's first line, not on the row: a step that wrapped would
+     otherwise float its mark into the middle of the text. */
+  margin-top: 2px;
+}
+.plan-status {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  white-space: nowrap;
   color: var(--text-faint);
-  text-align: center;
+  /* Same line as the mark opposite it. Mono at 10px sits higher in its box
+     than the 13.5px label, so it needs a little more. */
+  margin-top: 4px;
 }
 
 /* Finished work recedes; it is context for the step that is live, not the
@@ -1273,27 +1327,40 @@ body.resizing * {
   text-decoration: line-through;
 }
 .plan-step.done .plan-mark {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+.plan-step.done .plan-status {
   color: var(--ok);
 }
 
-/* The one row worth finding without reading. Tinted rather than bordered so it
-   does not fight the card's own edge. */
+/* The one row worth finding without reading. Raised a step up the surface
+   ladder rather than bordered, so it does not fight the card's own edge, and
+   its mark carries the only halo in the card. */
 .plan-step.active {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  background: var(--bg-active);
 }
 .plan-step.active .plan-text {
   color: var(--text);
-  font-weight: 600;
 }
 .plan-step.active .plan-mark {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.plan-step.active .plan-status {
   color: var(--accent);
 }
-.plan-state {
+
+/* Where the card is up to, in the same words the run header uses. Ruled off
+   because it counts the list above it rather than continuing it. */
+.plan-foot {
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: var(--tracking-label);
-  text-transform: uppercase;
-  color: var(--accent);
-  white-space: nowrap;
+  color: var(--text-faint);
 }
 
 /* Present for a screen reader, absent for everyone else. The marker beside

@@ -61,12 +61,17 @@ impl Tool for UpdatePlan {
         "Write or update the checklist for this task. Use it as soon as a request needs more than \
          two or three steps, before you start the first one, and again every single time a step \
          starts or finishes — the plan is shown to the user and repeated back to you on every \
-         step, so it is how you keep track of where you are. Send the complete list every time, \
-         with each step's state: 'todo', 'active', or 'done'. It replaces the previous plan, so \
-         anything you leave out is gone. Exactly one step may be 'active' — the one you are \
-         working on right now. Steps are things to do, in order, each a short imperative like \
+         step, so it is how you keep track of where you are. Send the complete list every time as \
+         'steps', each one an object with 'text' (what is to be done) and 'state' ('todo', \
+         'active', or 'done'), like {\"steps\": [{\"text\": \"Add the token type\", \"state\": \
+         \"active\", \"active_form\": \"Adding the token type\"}]}. It replaces the previous \
+         plan, so anything you leave out is gone. Exactly one step may be 'active' — the one you \
+         are working on right now. Steps are things to do, in order, each a short imperative like \
          'Add the token type'; do not use it for a task that is one action, and do not restate \
-         the plan in your reply, since the user is already looking at it."
+         the plan in your reply, since the user is already looking at it. Give every step an \
+         'active_form' as well: the same step written as something under way — 'Add the token \
+         type' becomes 'Adding the token type' — which is what the user sees while that step is \
+         the one running."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -148,6 +153,22 @@ fn check(steps: &[Step]) -> Result<(), ToolError> {
         )));
     }
 
+    // The same cap on the other phrasing, for the same reason: it is the same
+    // step said differently, and it is shown in a single line above the list.
+    if let Some((n, form)) = steps.iter().enumerate().find_map(|(n, s)| {
+        s.active_form
+            .as_ref()
+            .filter(|f| f.chars().count() > MAX_STEP_CHARS)
+            .map(|f| (n, f))
+    }) {
+        return Err(ToolError::InvalidInput(format!(
+            "step {}'s 'active_form' is {} characters, past the {MAX_STEP_CHARS}-character \
+             limit. It is the same step as 'Adding the token type', not a longer one",
+            n + 1,
+            form.chars().count()
+        )));
+    }
+
     // The rule that makes the checklist mean something. Three steps in progress
     // says nothing about where the turn is, which is the one question the plan
     // exists to answer.
@@ -182,6 +203,7 @@ mod tests {
         Step {
             text: text.into(),
             state,
+            active_form: None,
         }
     }
 
@@ -304,6 +326,25 @@ mod tests {
             .await
             .expect_err("an over-long step");
         assert!(error.to_string().contains("not an explanation"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_active_form_that_grew_into_a_sentence_is_refused_too() {
+        // It is shown in one line above the list, so it is capped like the
+        // step it restates — otherwise the cap is trivially routed around.
+        let (ctx, _dir) = test_ctx();
+        let tool = UpdatePlan::new(PlanBoard::new());
+        let error = tool
+            .execute(
+                serde_json::json!({ "steps": [{
+                    "text": "Add the token type",
+                    "active_form": "x".repeat(MAX_STEP_CHARS + 1),
+                }] }),
+                &ctx,
+            )
+            .await
+            .expect_err("an over-long active form");
+        assert!(error.to_string().contains("'active_form' is"), "{error}");
     }
 
     #[tokio::test]
