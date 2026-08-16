@@ -8,6 +8,7 @@ description = "Frontend-agnostic assembly of the Taurus harness: config, prompts
 
 [dependencies]
 taurus-core.workspace = true
+taurus-index.workspace = true
 taurus-mcp.workspace = true
 taurus-provider.workspace = true
 taurus-provider-anthropic.workspace = true
@@ -20,6 +21,7 @@ taurus-tools.workspace = true
 taurus-web.workspace = true
 
 async-trait.workspace = true
+base64.workspace = true
 directories.workspace = true
 serde.workspace = true
 serde_json.workspace = true

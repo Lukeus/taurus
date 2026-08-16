@@ -535,3 +535,70 @@ describe("the plan card supersedes itself", () => {
     expect(viewFromCall("p1", "update_plan", { steps: "nope" })).toBeUndefined();
   });
 });
+
+describe("images on a user message", () => {
+  it("attaches a resumed message's images to the bubble that asked about them", () => {
+    // Images precede the text in the message they belong to, so a resumed
+    // conversation has to show the screenshot beside the question rather than
+    // a question referring to one that is nowhere on screen.
+    const entries = entriesFromMessages([
+      {
+        role: "user",
+        content: [
+          { type: "image", mime_type: "image/png", data: "AAAA" },
+          { type: "text", text: "what is wrong with this?" },
+        ],
+      },
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "user",
+      text: "what is wrong with this?",
+      images: [{ mime_type: "image/png", data: "AAAA" }],
+    });
+  });
+
+  it("keeps several images in the order they were sent", () => {
+    const [entry] = entriesFromMessages([
+      {
+        role: "user",
+        content: [
+          { type: "image", mime_type: "image/png", data: "FIRST" },
+          { type: "image", mime_type: "image/jpeg", data: "SECOND" },
+          { type: "text", text: "compare these" },
+        ],
+      },
+    ]) as Extract<Entry, { kind: "user" }>[];
+
+    expect(entry.images?.map((i) => i.data)).toEqual(["FIRST", "SECOND"]);
+  });
+
+  it("leaves an ordinary message without an images field", () => {
+    // Every turn takes this path, and an empty array on each one would be a
+    // strip rendered for nothing.
+    const [entry] = entriesFromMessages([
+      { role: "user", content: [{ type: "text", text: "just a question" }] },
+    ]) as Extract<Entry, { kind: "user" }>[];
+
+    expect(entry.images).toBeUndefined();
+  });
+
+  it("does not repeat the images under a second text block", () => {
+    // A user message has one text block, but a hand-written transcript could
+    // have two, and repeating the strip would double the pictures.
+    const entries = entriesFromMessages([
+      {
+        role: "user",
+        content: [
+          { type: "image", mime_type: "image/png", data: "AAAA" },
+          { type: "text", text: "first" },
+          { type: "text", text: "second" },
+        ],
+      },
+    ]) as Extract<Entry, { kind: "user" }>[];
+
+    expect(entries[0].images).toHaveLength(1);
+    expect(entries[1].images).toBeUndefined();
+  });
+});

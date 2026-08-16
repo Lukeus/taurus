@@ -23,7 +23,7 @@ use taurus_provider::{
     TokenUsage,
 };
 
-use wire::{ChatBody, ChatChunk, Options, ShowResponse, TagsResponse};
+use wire::{ChatBody, ChatChunk, EmbedResponse, Options, ShowResponse, TagsResponse};
 
 pub const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 const PROVIDER_ID: &str = "ollama";
@@ -155,6 +155,61 @@ impl Provider for OllamaProvider {
         debug!(model, ?caps, "resolved ollama capabilities");
         self.caps.lock().await.insert(model.to_string(), caps);
         Ok(caps)
+    }
+
+    /// `/api/embed`, which takes a batch and answers in the order it was given.
+    ///
+    /// Batched by the caller rather than here: the index knows how many chunks
+    /// it is willing to hold in memory at once and this does not, and a request
+    /// split behind the caller's back would make the progress it reports a
+    /// fiction.
+    ///
+    /// Two failures are worth recognising by hand, because both are ordinary
+    /// setup states that arrive looking like faults. An embedding model that
+    /// was never pulled comes back the same way any missing model does, which
+    /// `check_status` already turns into `ModelNotFound` — the message just has
+    /// to name the pull. A server built without embedding support answers 400
+    /// with prose, and passing that through as a raw API error would send
+    /// someone looking for a bad request they did not make.
+    async fn embed(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let response = self
+            .post_json(
+                "/api/embed",
+                &serde_json::json!({ "model": model, "input": inputs }),
+            )
+            .await
+            .map_err(|e| match e {
+                ProviderError::ModelNotFound { provider, model } => ProviderError::Protocol(
+                    format!("'{model}' is not pulled on {provider}. Run `ollama pull {model}`."),
+                ),
+                ProviderError::Api { body, .. } if body.contains("does not support embeddings") => {
+                    ProviderError::Protocol(
+                        "this Ollama server was started without embedding support. Restart it \
+                         with `--embeddings`, or point the index at one that has them."
+                            .into(),
+                    )
+                }
+                other => other,
+            })?;
+
+        let embedded: EmbedResponse = response.json().await.map_err(|e| self.unreachable(e))?;
+
+        // A backend that answered with a different number of vectors than it
+        // was given texts has broken the only contract that makes the result
+        // usable: position is the only thing tying a vector to its chunk.
+        if embedded.embeddings.len() != inputs.len() {
+            return Err(ProviderError::Protocol(format!(
+                "asked {} for {} embeddings and got {}",
+                PROVIDER_ID,
+                inputs.len(),
+                embedded.embeddings.len()
+            )));
+        }
+        Ok(embedded.embeddings)
     }
 
     async fn stream(

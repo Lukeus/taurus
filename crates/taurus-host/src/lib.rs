@@ -5,6 +5,7 @@
 //! prompt, same tool registry, same skill library. That shared part lives here
 //! so the two cannot drift apart.
 
+pub mod attach;
 pub mod config;
 pub mod git;
 pub mod host;
@@ -16,6 +17,7 @@ pub mod sessions;
 #[cfg(test)]
 mod testing;
 
+pub use attach::Attachment;
 pub use config::{ProviderConfig, ProviderKind, Scope, Settings, Theme};
 pub use git::{Commit, Repo, RepoStatus};
 pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};

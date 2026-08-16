@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ChartCard } from "./ChartCard";
 import { Markdown } from "./Markdown";
+import { Attachments } from "./Attachments";
 import { PlanCard } from "./PlanCard";
 import { QuestionsCard } from "./QuestionsCard";
 import { TableCard } from "./TableCard";
@@ -176,6 +177,11 @@ function EntryView({
     case "user":
       return (
         <div className="entry user">
+          {/* Above the bubble, matching the order they were sent in and the
+              order the model reads them: the picture, then the question. */}
+          {entry.images && entry.images.length > 0 && (
+            <Attachments images={entry.images} />
+          )}
           <div className="bubble">{entry.text}</div>
         </div>
       );
