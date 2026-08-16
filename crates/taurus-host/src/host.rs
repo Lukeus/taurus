@@ -37,6 +37,7 @@ use taurus_tools::{
     Asker, CheckpointStore, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
 };
 
+use crate::command;
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
 use crate::instructions::{self, Instructions};
 use crate::problem::{self, Problem, ProblemSource};
@@ -131,6 +132,15 @@ pub struct Host {
     /// carry different payloads and land on different review cards, not because
     /// a frontend would ever want one and not the other.
     agent_proposals: Arc<dyn AgentProposalSink>,
+    /// One checklist per conversation, so an unfinished plan survives the
+    /// message that interrupted it. Keyed by session id and dropped with the
+    /// session — see [`Host::forget_plan`].
+    ///
+    /// Held here rather than in the session log because a plan is working state,
+    /// not a record: it is rebuilt by the model from the transcript if this
+    /// process restarts, and writing it to disk would create a second copy that
+    /// could disagree with the tool calls that made it.
+    plans: RwLock<std::collections::HashMap<String, PlanBoard>>,
 }
 
 impl Host {
@@ -166,6 +176,7 @@ impl Host {
             asker,
             proposals,
             agent_proposals,
+            plans: RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -288,13 +299,7 @@ impl Host {
             // the same server as the chat model in every local setup, and a
             // second provider entry naming the same machine would be one more
             // thing to keep in step.
-            let id = self
-                .settings
-                .read()
-                .await
-                .last_provider
-                .clone()
-                .or_else(|| self.providers.blocking_read().first().map(|p| p.id.clone()));
+            let id = self.embedding_provider_id().await;
             match id {
                 Some(id) => match self.provider(&id).await {
                     Ok(provider) => {
@@ -653,11 +658,13 @@ impl Host {
         registry.register(Arc::new(ShowChart));
         registry.register(Arc::new(AskUser::new(self.asker.clone())));
 
-        // The plan is per turn twice over: the tool belongs to this
-        // conversation like the three above, and the board itself is built here
-        // and dropped when the turn ends. A delegate writing into the parent's
-        // checklist would report progress against a task nobody gave it.
-        let plan = PlanBoard::new();
+        // The *tool* is per turn, like the three above: a delegate writing into
+        // the parent's checklist would report progress against a task nobody
+        // gave it. The *board* is per conversation, so an unfinished plan
+        // survives the message that interrupted it — `start_turn` is what drops
+        // a finished one, and is the whole of the staleness rule.
+        let plan = self.plan_board(turn.session_id).await;
+        plan.start_turn().await;
         registry.register(Arc::new(UpdatePlan::new(plan.clone())));
 
         // `reload` applies this to the shared registry, which is everything
@@ -954,6 +961,87 @@ impl Host {
         *self.settings.write().await = config::load_settings(Some(&workspace));
     }
 
+    /// Which provider serves the embedding model.
+    ///
+    /// The one the conversation is on, falling back to the first configured:
+    /// an embedding model lives on the same server as the chat model in every
+    /// local setup, and a second provider entry naming the same machine would
+    /// be one more thing to keep in step.
+    ///
+    /// A method rather than an expression at each of its two call sites because
+    /// the first version was written twice and the copy reached for
+    /// `blocking_read` inside an async fn — which tokio answers by panicking,
+    /// on the one path nobody exercises: a machine with no remembered provider.
+    async fn embedding_provider_id(&self) -> Option<String> {
+        if let Some(id) = self.settings.read().await.last_provider.clone() {
+            return Some(id);
+        }
+        self.providers.read().await.first().map(|p| p.id.clone())
+    }
+
+    /// Which embedding model semantic search runs on. Empty means off.
+    ///
+    /// Global only. It names a model on the machine's own server, which is a
+    /// property of the machine rather than of any one project.
+    pub async fn set_embedding_model(&self, model: &str) {
+        let model = model.trim().to_string();
+        config::edit_settings(Scope::Global, None, |s| s.embedding_model = Some(model));
+        let workspace = self.workspace.read().await.clone();
+        *self.settings.write().await = config::load_settings(Some(&workspace));
+    }
+
+    /// Brings this workspace's semantic index up to date, outside any turn.
+    ///
+    /// The first index of a repository takes the better part of a minute, and
+    /// until this existed the only way to pay that was to be halfway through a
+    /// turn when the model first reached for `search_code` — a turn that then
+    /// sat on an unreturned tool call for the whole of it. Run here, the cost
+    /// is paid when someone chose to pay it, against a progress bar, with a
+    /// Stop that stops indexing rather than a conversation.
+    ///
+    /// It is the same `refresh` the tool calls, deliberately: an index built
+    /// here and an index brought up to date by a search have to be the same
+    /// thing, or one of the two paths is quietly writing a second format.
+    pub async fn build_index(
+        &self,
+        cancel: CancellationToken,
+        progress: Option<&dyn taurus_index::IndexProgress>,
+    ) -> Result<String, String> {
+        let model = self
+            .settings
+            .read()
+            .await
+            .embedding_model
+            .trim()
+            .to_string();
+        if model.is_empty() {
+            return Err(
+                "No embedding model is set, so there is no index to build. Name one under \
+                 Settings → Search."
+                    .into(),
+            );
+        }
+
+        let id = self
+            .embedding_provider_id()
+            .await
+            .ok_or("No provider is configured, so there is nothing to embed with.")?;
+        let provider = self.provider(&id).await.map_err(|e| e.to_string())?;
+
+        let workspace = self.workspace.read().await.clone();
+        let index = taurus_index::Index::new(
+            taurus_index::index_dir(
+                &config::home_dir(),
+                &crate::sessions::workspace_key(&workspace),
+            ),
+            &workspace,
+        );
+
+        let (_, report) =
+            taurus_index::refresh(&index, &workspace, &provider, &model, &cancel, progress).await?;
+        Ok(report.summary())
+    }
+
     /// Records the provider and model just used, in both layers.
     ///
     /// The workspace copy is what makes a repo reopen on the model it was last
@@ -1013,7 +1101,30 @@ impl Host {
         self.catalog.read().await.len()
     }
 
-    /// Resolves a leading `/name` into the skill it refers to.
+    /// This conversation's checklist, created on first use.
+    async fn plan_board(&self, session_id: &str) -> PlanBoard {
+        if let Some(board) = self.plans.read().await.get(session_id) {
+            return board.clone();
+        }
+        self.plans
+            .write()
+            .await
+            .entry(session_id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// Drops a conversation's checklist.
+    ///
+    /// Called when a session is deleted. Without it the map is the one thing in
+    /// the host that only ever grows — a few hundred bytes per conversation
+    /// opened, which is nothing until a long-running window has opened a
+    /// thousand of them.
+    pub async fn forget_plan(&self, session_id: &str) {
+        self.plans.write().await.remove(session_id);
+    }
+
+    /// Resolves a leading `/name` into the skill or sub-agent it refers to.
     ///
     /// `None` for anything that is not a command, which is almost every
     /// message. Callers send the user's own text in that case — expansion is
@@ -1022,18 +1133,39 @@ impl Host {
     pub async fn expand_command(
         &self,
         text: &str,
-    ) -> Option<Result<taurus_skills::Invocation, taurus_skills::CommandError>> {
-        self.catalog.read().await.expand_command(text)
+    ) -> Option<Result<command::Invocation, command::CommandError>> {
+        self.rosters(|rosters| rosters.expand(text)).await
     }
 
-    /// Skills a person can run as `/name`, for completion as they type.
-    pub async fn commands(&self) -> Vec<SkillSummary> {
-        self.catalog
+    /// Skills and sub-agents a person can run as `/name`, for completion as
+    /// they type.
+    pub async fn commands(&self) -> Vec<command::CommandSummary> {
+        self.rosters(|rosters| rosters.summaries()).await
+    }
+
+    /// Borrows both catalogs at once for the slash namespace.
+    ///
+    /// A closure rather than a returned `Rosters` because the two guards have
+    /// to outlive it, and holding both across an `.await` in a caller is how a
+    /// reload deadlocks against a keystroke.
+    async fn rosters<T>(&self, f: impl FnOnce(command::Rosters<'_>) -> T) -> T {
+        let skills = self.catalog.read().await;
+        let agents = self.agents.read().await;
+        // Read here rather than passed in: whether a turn can delegate is a
+        // setting, and the composer asking what it may offer should get the
+        // same answer the send path will act on.
+        let can_delegate = !self
+            .settings
             .read()
             .await
-            .commands()
-            .map(SkillSummary::from)
-            .collect()
+            .disabled_tools
+            .iter()
+            .any(|tool| tool == taurus_core::SPAWN_TOOL);
+        f(command::Rosters {
+            skills: &skills,
+            agents: &agents,
+            can_delegate,
+        })
     }
 
     /// Every directory the last scan read, in precedence order.
@@ -1995,7 +2127,74 @@ mod tests {
         // Still model-invocable, so it stays in the catalog as well.
         assert!(host.system_prompt().await.contains("- speckit-specify:"));
         let offered: Vec<String> = host.commands().await.into_iter().map(|c| c.name).collect();
-        assert_eq!(offered, ["speckit-specify"], "and offerable as a command");
+        assert!(
+            offered.contains(&"speckit-specify".to_string()),
+            "and offerable as a command: {offered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conversation_keeps_its_checklist_and_does_not_share_it() {
+        use taurus_tools::view::{Step, StepState};
+
+        let dir = TempDir::new().unwrap();
+        let (host, _home) = host(&dir.path().canonicalize().unwrap());
+
+        let board = host.plan_board("s1").await;
+        board
+            .set(vec![Step {
+                text: "Add the token type".into(),
+                state: StepState::Active,
+                active_form: None,
+            }])
+            .await;
+
+        // The same conversation, a message later.
+        assert!(
+            host.plan_board("s1")
+                .await
+                .reminder()
+                .await
+                .is_some_and(|r| r.contains("Add the token type")),
+            "an unfinished plan has to survive the message that interrupted it"
+        );
+        // A different one, which must start empty however busy the first is.
+        assert_eq!(host.plan_board("s2").await.reminder().await, None);
+
+        host.forget_plan("s1").await;
+        assert_eq!(host.plan_board("s1").await.reminder().await, None);
+    }
+
+    #[tokio::test]
+    async fn the_slash_namespace_covers_sub_agents_too() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        // Nothing was written: these are the built-ins, which is the roster a
+        // machine with no agents directory has and the one people type first.
+        let offered: Vec<(String, crate::command::CommandKind)> = host
+            .commands()
+            .await
+            .into_iter()
+            .map(|c| (c.name, c.kind))
+            .collect();
+        assert!(
+            offered.contains(&("explorer".to_string(), crate::command::CommandKind::Agent)),
+            "{offered:?}"
+        );
+
+        let invocation = host
+            .expand_command("/explorer find every caller of build_agent")
+            .await
+            .expect("a leading /name is a command")
+            .expect("and this agent exists");
+        assert_eq!(invocation.name, "explorer");
+        assert!(invocation.prompt.contains(taurus_core::SPAWN_TOOL));
+        assert!(invocation
+            .prompt
+            .contains("find every caller of build_agent"));
     }
 
     #[tokio::test]

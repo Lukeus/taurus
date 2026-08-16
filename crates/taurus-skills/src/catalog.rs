@@ -123,47 +123,13 @@ impl SkillCatalog {
     }
 
     /// Skills a person can run directly as `/name`, in catalog order.
+    ///
+    /// Half the slash namespace: sub-agents hold the other half, and which one
+    /// a typed name resolves to is settled a layer up, in `taurus-host`.
     pub fn commands(&self) -> impl Iterator<Item = &Skill> {
         self.skills
             .values()
             .filter(|s| s.frontmatter.user_invocable)
-    }
-
-    /// Expands `/name args` into the skill the user asked for.
-    ///
-    /// Returns `None` when the text is not a command at all, which is the
-    /// common case and must stay cheap and unsurprising: a message that merely
-    /// begins with a slash — a path, a fraction, a closing tag — is left
-    /// exactly as typed.
-    pub fn expand_command(&self, text: &str) -> Option<Result<Invocation, CommandError>> {
-        let (name, args) = split_command(text)?;
-
-        let Some(skill) = self.skills.get(name) else {
-            // Near misses first: the reason a command fails is almost always a
-            // half-remembered name, and a list of every skill installed is a
-            // worse answer than the two it might have been.
-            let mut suggestions: Vec<String> = self
-                .commands()
-                .map(|s| s.name().to_string())
-                .filter(|known| known.contains(name) || name.contains(known.as_str()))
-                .collect();
-            suggestions.sort();
-            return Some(Err(CommandError::Unknown {
-                name: name.to_string(),
-                suggestions,
-            }));
-        };
-
-        if !skill.frontmatter.user_invocable {
-            return Some(Err(CommandError::NotUserInvocable {
-                name: name.to_string(),
-            }));
-        }
-
-        Some(Ok(Invocation {
-            name: skill.name().to_string(),
-            prompt: skill.render(args),
-        }))
     }
 
     /// The section appended to the system prompt. `None` when there are no
@@ -190,66 +156,6 @@ impl SkillCatalog {
         }
         Some(out)
     }
-}
-
-/// A slash command resolved against the library.
-#[derive(Clone, Debug)]
-pub struct Invocation {
-    /// The skill that matched, by its own name rather than what was typed.
-    pub name: String,
-    /// What the model receives in place of the user's line.
-    pub prompt: String,
-}
-
-#[derive(Clone, Debug, thiserror::Error)]
-pub enum CommandError {
-    #[error("There is no skill named '{name}'.{}", suggest(.suggestions))]
-    Unknown {
-        name: String,
-        suggestions: Vec<String>,
-    },
-
-    #[error("The skill '{name}' is not meant to be run directly; it says so in its frontmatter.")]
-    NotUserInvocable { name: String },
-}
-
-fn suggest(names: &[String]) -> String {
-    match names {
-        [] => String::new(),
-        [one] => format!(" Did you mean /{one}?"),
-        many => format!(
-            " Did you mean one of {}?",
-            many.iter()
-                .map(|n| format!("/{n}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
-}
-
-/// Splits `/name rest` into its two halves, or `None` if this is not a command.
-///
-/// Two rules keep ordinary text out, and both were written against real
-/// messages rather than in the abstract. The name must be followed by
-/// whitespace or nothing, so `/usr/bin/env is portable` stays prose. And it
-/// must begin with a letter, so `/2 of the tests fail` does too — the
-/// specification allows a name to start with a digit, but a message starting
-/// with a slash and a number is a fraction or a date far more often than it is
-/// a skill nobody has written yet.
-///
-/// Getting this wrong is asymmetric. Failing to recognize a command shows the
-/// user their own text; recognizing one that was not there refuses to send what
-/// they wrote.
-fn split_command(text: &str) -> Option<(&str, &str)> {
-    let rest = text.strip_prefix('/')?;
-    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-    let (name, args) = rest.split_at(end);
-
-    let plausible = name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    plausible.then_some((name, args))
 }
 
 /// Directories a skill may bundle resources in, per the specification.
@@ -650,87 +556,6 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_text_that_begins_with_a_slash_is_not_a_command() {
-        let dir = TempDir::new().unwrap();
-        write_skill(dir.path(), "usr", "when usr", "");
-        let (catalog, _) = SkillCatalog::discover(&sources(vec![(SkillTier::User, dir.path())]));
-
-        for text in [
-            "/usr/bin/env is the portable way",
-            "/2 of the tests fail",
-            "look in /etc",
-            "/",
-            "//comment",
-            "/-leading-dash",
-            "/Not_A_Skill do the thing",
-        ] {
-            assert!(
-                catalog.expand_command(text).is_none(),
-                "'{text}' must be sent as written"
-            );
-        }
-    }
-
-    #[test]
-    fn a_command_expands_to_the_skill_with_its_arguments() {
-        let dir = TempDir::new().unwrap();
-        let skill = dir.path().join("speckit-specify");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join(SKILL_FILE),
-            "---\nname: speckit-specify\ndescription: Write a spec.\n---\n\
-             Build a spec from:\n\n$ARGUMENTS\n",
-        )
-        .unwrap();
-        let (catalog, _) = SkillCatalog::discover(&sources(vec![(SkillTier::User, dir.path())]));
-
-        let invocation = catalog
-            .expand_command("/speckit-specify add a dark mode toggle")
-            .expect("this is a command")
-            .expect("and the skill exists");
-
-        assert_eq!(invocation.name, "speckit-specify");
-        assert!(invocation.prompt.contains("Build a spec from:"));
-        assert!(
-            invocation.prompt.contains("add a dark mode toggle"),
-            "the placeholder must be filled: {}",
-            invocation.prompt
-        );
-        assert!(
-            !invocation.prompt.contains("$ARGUMENTS"),
-            "no placeholder may survive into the prompt"
-        );
-    }
-
-    #[test]
-    fn a_command_with_no_placeholder_still_carries_what_was_typed() {
-        let dir = TempDir::new().unwrap();
-        write_skill(dir.path(), "review", "when reviewing", "");
-        let (catalog, _) = SkillCatalog::discover(&sources(vec![(SkillTier::User, dir.path())]));
-
-        let invocation = catalog
-            .expand_command("/review the auth module")
-            .unwrap()
-            .unwrap();
-        assert!(
-            invocation.prompt.contains("the auth module"),
-            "dropping the request because the author wrote no placeholder loses the ask"
-        );
-    }
-
-    #[test]
-    fn an_unknown_command_suggests_the_name_it_resembles() {
-        let dir = TempDir::new().unwrap();
-        write_skill(dir.path(), "speckit-specify", "when specifying", "");
-        let (catalog, _) = SkillCatalog::discover(&sources(vec![(SkillTier::User, dir.path())]));
-
-        let err = catalog.expand_command("/specify").unwrap().unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains("no skill named 'specify'"), "{message}");
-        assert!(message.contains("/speckit-specify"), "{message}");
-    }
-
-    #[test]
     fn the_invocation_flags_decide_which_way_in_a_skill_has() {
         let dir = TempDir::new().unwrap();
         write_skill(
@@ -760,10 +585,6 @@ mod tests {
         // And the user only what they may run.
         let commands: Vec<&str> = catalog.commands().map(|s| s.name()).collect();
         assert_eq!(commands, ["user-only"]);
-        assert!(matches!(
-            catalog.expand_command("/model-only").unwrap(),
-            Err(CommandError::NotUserInvocable { .. })
-        ));
     }
 
     #[test]

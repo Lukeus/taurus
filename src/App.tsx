@@ -5,6 +5,7 @@ import { Attachments } from "./components/Attachments";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { PermissionDialog } from "./components/PermissionDialog";
+import { PlanPanel } from "./components/PlanPanel";
 import { Rail, type ProviderHealth } from "./components/Rail";
 import {
   RAIL_WIDTH,
@@ -20,15 +21,15 @@ import { Transcript } from "./components/Transcript";
 import * as api from "./lib/api";
 import type {
   Attachment,
+  CommandSummary,
   ModelInfo,
   ProviderConfig,
-  SkillSummary,
   Theme,
 } from "./lib/api";
 import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
-import { useStore } from "./state/store";
+import { pinnedPlan, useStore } from "./state/store";
 
 export default function App() {
   const store = useStore();
@@ -38,6 +39,7 @@ export default function App() {
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
+  const plan = pinnedPlan(store.entries);
 
   useEffect(() => {
     store.init();
@@ -281,6 +283,12 @@ export default function App() {
           </div>
         )}
 
+        {/* Between the error banner and the composer, so its position does not
+            move when an error arrives and clears. The plan is the thing you
+            look at while typing the next message; it belongs against the box
+            you type in. */}
+        {plan && <PlanPanel view={plan} />}
+
         <Composer
           busy={store.busy}
           ready={!!store.session}
@@ -479,7 +487,7 @@ function Composer({
   onStop: () => void;
 }) {
   const [text, setText] = useState("");
-  const [commands, setCommands] = useState<SkillSummary[]>([]);
+  const [commands, setCommands] = useState<CommandSummary[]>([]);
   const [active, setActive] = useState(0);
   const [images, setImages] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -514,10 +522,10 @@ function Composer({
   const query = commandQuery(text);
   const shown = query === null ? [] : matches(commands, query);
   // Clamped rather than reset: the list narrows as the user types, and a
-  // highlight left pointing past the end would send the wrong skill on Enter.
+  // highlight left pointing past the end would send the wrong command on Enter.
   const index = Math.min(active, Math.max(shown.length - 1, 0));
 
-  const complete = (command: SkillSummary) => {
+  const complete = (command: CommandSummary) => {
     // Trailing space, because every one of these takes arguments and the next
     // thing to happen is typing them.
     setText(`/${command.name} `);
@@ -631,11 +639,11 @@ function Composer({
             ▤ {workspace ? basename(workspace) : "no workspace"}
           </button>
           <div className="spacer" />
-          {/* The hint is the only place a skill library announces it can be
-              run by name, and only while there is one to run. Paste is the
+          {/* The hint is the only place the slash namespace announces itself,
+              and only while there is something in it to run. Paste is the
               same: a model that cannot see must not advertise it. */}
           <span className="composer-hint">
-            ↵ send · ⇧↵ newline{commands.length > 0 && " · / skills"}
+            ↵ send · ⇧↵ newline{commands.length > 0 && " · / commands"}
             {vision && " · paste an image"}
           </span>
           {busy ? (

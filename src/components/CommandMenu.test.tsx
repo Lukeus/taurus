@@ -1,21 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import type { SkillSummary } from "../lib/api";
+import type { CommandSummary } from "../lib/api";
 import { commandQuery, matches } from "./CommandMenu";
 
-const skill = (name: string): SkillSummary => ({
+const skill = (name: string): CommandSummary => ({
   name,
-  description: `does ${name}`,
+  kind: "skill",
   when_to_use: `when you need ${name}`,
-  version: 1,
-  tier: "project",
-  origin: "claude",
-  compatibility: null,
-  allowed_tools: [],
-  scripts: [],
-  warnings: [],
-  degraded: null,
-  dir: `/ws/.claude/skills/${name}`,
+});
+
+const agent = (name: string): CommandSummary => ({
+  name,
+  kind: "agent",
+  when_to_use: `delegate ${name} work`,
 });
 
 describe("reading the command being typed", () => {
@@ -38,7 +35,7 @@ describe("reading the command being typed", () => {
   });
 });
 
-describe("narrowing to a skill", () => {
+describe("narrowing to a command", () => {
   const library = [
     skill("speckit-plan"),
     skill("speckit-specify"),
@@ -64,7 +61,18 @@ describe("narrowing to a skill", () => {
     ]);
   });
 
-  it("returns nothing for a name no skill has", () => {
+  it("returns nothing for a name nothing has", () => {
     expect(matches(library, "nonsense")).toEqual([]);
+  });
+
+  it("ranks skills and agents against each other on the name alone", () => {
+    // Which kind a name belongs to is settled by the harness before the list
+    // gets here. Sorting agents to the bottom would make the highlighted row
+    // depend on something the user did not type.
+    const mixed = [skill("review-diff"), agent("reviewer"), skill("rewind")];
+    expect(matches(mixed, "review").map((c) => c.name)).toEqual([
+      "review-diff",
+      "reviewer",
+    ]);
   });
 });

@@ -209,21 +209,16 @@ Skills Taurus writes itself are held to the strict rules: a proposal that would
 only load by leniency is rejected rather than written.
 
 Any skill can also be run directly as a slash command — `/speckit-specify add a
-dark mode toggle` — in the app and in `taurus run` alike. The harness resolves
-the name against the library, fills the skill's `$ARGUMENTS` placeholder with
-the rest of the line, and hands the model the procedure instead of the command;
-a skill with no placeholder gets the text appended under a heading rather than
-losing it. The composer completes names as you type `/`, and a name nothing
-matches is reported to you rather than sent, with the skill it resembles.
+dark mode toggle` — in the app and in `taurus run` alike. The harness fills the
+skill's `$ARGUMENTS` placeholder with the rest of the line and hands the model
+the procedure instead of the command; a skill with no placeholder gets the text
+appended under a heading rather than losing it. Sub-agents share the same `/`
+namespace — see [Slash commands](#slash-commands).
 
 Two frontmatter flags decide the ways in. `disable-model-invocation: true`
 keeps a skill out of the prompt catalog while leaving it runnable by name — for
 procedures that should run when a person asks and not before. `user-invocable:
 false` does the reverse. Both are optional and both default to available.
-
-Ordinary text that begins with a slash is never treated as a command:
-`/usr/bin/env is portable` is sent as written. A command has to name a skill,
-start with a letter, and be followed by a space or nothing.
 
 A skill's `scripts/`, `references/`, and `assets/` are listed when the skill is
 opened and read only if the procedure calls for one — the third tier of
@@ -327,6 +322,42 @@ Approving rescans the roster rather than reloading everything, so saving an
 agent does not restart every MCP server. It is not usable in the turn that
 proposed it — a turn's roster is frozen when it starts — and the tool result
 says so, rather than letting the model spend a round trip finding out.
+
+### Slash commands
+
+One `/` namespace covers both libraries, in the app and in `taurus run` alike:
+
+```
+/speckit-specify add a dark mode toggle    # runs that skill's procedure
+/reviewer check the auth module            # hands the job to that sub-agent
+```
+
+The composer completes as you type `/` and tags each row **skill** or **agent**,
+because the two do different things with the rest of the line. A skill's
+procedure replaces your message. An agent's name becomes an instruction to
+delegate: the turn calls `spawn_subagent` with the line as the task, and what
+comes back is the child's conclusion rather than the thirty files it read.
+Delegation stays a tool call rather than a separate code path, so a command runs
+exactly the agent the model would have run on its own — same tool scoping, same
+permission gate, same depth cap.
+
+`/explorer` with nothing after it points the agent at what the conversation has
+already established, which is what "now do that part with the explorer" means.
+Both built-ins are reachable this way on a machine with no agents directory.
+
+A name held by both a skill and an agent runs the skill. That is not a judgement
+about which is more useful — it is that a command which quietly starts doing
+something else is worse than a name that is awkward to reach. Rename one of the
+two if you want both. A model-only skill (`user-invocable: false`) does not
+reserve its name, so an agent behind one is still reachable.
+
+A name nothing matches is reported to you rather than sent, with the near misses
+from both rosters. Turning `spawn_subagent` off in `disabled_tools` takes agents
+out of the menu, and typing one anyway says that rather than "no such command".
+
+Ordinary text that begins with a slash is never treated as a command:
+`/usr/bin/env is portable` is sent as written. A command has to name a skill or
+an agent, start with a letter, and be followed by a space or nothing.
 
 ### Permissions
 
@@ -733,15 +764,47 @@ copy pushed per iteration would accumulate, each staler than the last, leaving
 the model to work out which of nine checklists is current. There is only ever
 one, and it is always live.
 
-The plan card supersedes itself in the transcript too. The model rewrites the
-whole list every time a step starts or finishes, so a six-step task ends with
-seven calls; drawn as seven cards, a checklist saying *where you are* would
-become a history of everywhere you have been. The superseded calls keep their
-row in the run header and stop drawing.
+**The checklist is pinned above the composer, not drawn in the transcript.**
+That follows from what it is: not a thing that happened at a moment, but where
+the work is *now*. In the flow it scrolls away behind the twenty tool calls it
+was written to organize, and the panel that answers "where are we" is the one
+you have to go looking for. Pinned, it is on screen at the moment anyone asks.
 
-A plan does not outlive the turn that made it. That is the scope the problem
-has — a six-step task is one turn with many iterations — and what the next turn
-sees is the card still sitting in the transcript, like every other tool call.
+It is one line by default — a bar, the live step, a count — and opens to the
+full list on a click. The transcript is the window's whole purpose, and a
+seven-step list nailed permanently across the bottom of it would spend a third
+of the reading area saying what 30px says. Opened, it stays open: the model
+rewriting the plan is not a reason to shut it under someone who was watching
+the steps.
+
+Only the newest plan is pinned. The model rewrites the whole list every time a
+step starts or finishes, so a six-step task ends with seven calls; each keeps
+its row in the run header, and only the last one has a checklist to show. A
+finished plan stays up until you ask for something else — "done" is worth
+getting to see, and last hour's completed checklist sitting over an unrelated
+question is not. An unfinished one stays regardless, which is most of the point.
+
+**An unfinished plan survives into the next message**, in the prompt as well as
+on screen. It has to: a six-step task is very often six steps and a question in
+the middle of it, and a checklist that evaporated the moment you answered "yes,
+go on" was one the model then rebuilt from memory — the drift the plan exists to
+stop, arriving one turn later.
+
+What does not survive is a *finished* plan. Every step marked `[x]` means the
+work it described is over, and restating it would tell a model asked about
+something else that its standing instruction is "say what you did and stop".
+That is the whole staleness rule, and it is the same one the panel follows —
+which is not a coincidence: what you read above the composer and what the model
+reads in its prompt are the same checklist, and they would be worse than useless
+if they disagreed about whether it was still live.
+
+A carried plan is labelled as carried. The model is told these steps predate the
+message it is answering, and that it should call `update_plan` with a new list
+if the request has moved on. Only the model has read the follow-up, so only the
+model can decide whether it continues the task or changes it; the harness
+declining to guess is the honest version of that. Rewinding a turn drops the
+plan, for the same reason it drops the files: it was working state for work that
+has been undone.
 
 **Whether a model reaches for it is the model's own judgement.** On a five-step
 mechanical task, both `qwen3.6:27b` and `qwen3.5:9b` did the work correctly and
@@ -956,8 +1019,8 @@ and `ask_user`, which address the person watching this conversation; and
 `update_plan`, whose checklist belongs to the turn that wrote it.
 
 **Semantic search is off until a model is named.** `search_code` needs
-something to embed with, so it is not registered until `settings.json` says
-what:
+something to embed with, so it is not registered until one is set — under
+**Settings → Search**, or in `settings.json`, which is the same field:
 
 ```json
 { "embedding_model": "nomic-embed-text" }
@@ -970,6 +1033,16 @@ Pull one first (`ollama pull nomic-embed-text`); the name is what the index is
 keyed on, so changing it discards the index rather than mixing vectors that mean
 different things. See [Finding code by what it
 does](#finding-code-by-what-it-does).
+
+**The first index can be paid up front.** Embedding a repository takes the
+better part of a minute, and left to itself that lands inside whichever turn
+first reaches for `search_code` — a tool call that does not return while it
+runs. **Build index now**, beside the model field, does the same work outside
+any conversation, against a bar you can watch and a Stop that stops indexing
+rather than a turn. It is the same refresh a search would have done, so nothing
+is duplicated: build it here and the first `search_code` finds it current. Every
+refresh after the first is cheap either way — only files whose length or
+modification time moved are re-read.
 
 **Where it went is a question you can ask.**
 
@@ -1728,15 +1801,22 @@ ships its own `.taurus` directory.
   an iteration and a card on turns that never needed one.
 - **A plan can end in progress.** Nothing requires the last `update_plan` of a
   turn to mark the final step done, and a model that finishes the work and goes
-  straight to its answer leaves a card reading `[>]` on a step that is
-  complete. The turn is over so nothing reads it back, but the transcript keeps
-  the stale version. Closing it means the harness deciding a plan is finished,
-  which it cannot know.
-- **A plan does not survive the turn.** The board is built per turn, so a
-  follow-up message starts with no checklist even when it is obviously the same
-  task. The card is still in the transcript for the model to re-read; it is just
-  no longer in the system prompt. Carrying it across turns means session-scoped
-  state and a rule for when a plan is stale, neither of which exists.
+  straight to its answer leaves a step reading `[>]` that is actually complete.
+  The turn is over so nothing reads it back, but the pinned panel keeps the
+  stale version — and being pinned, it keeps it somewhere you cannot miss.
+  Closing it means the harness deciding a plan is finished, which it cannot
+  know; the panel clears on the next request instead.
+- **A plan does not survive the process.** The board is held per session in
+  memory, not written to disk, so an unfinished plan carries across messages and
+  is gone if the app restarts. Reopening the conversation redraws the panel from
+  the transcript, because that is derived; the model's copy has to be rebuilt by
+  the model. Persisting it means a second record that can disagree with the tool
+  calls that made it, which is a worse failure than re-deriving.
+- **Whether a carried plan still applies is the model's call.** The harness
+  clears a finished plan and labels an unfinished one as belonging to an earlier
+  message. It cannot tell whether a follow-up continues the task or changes the
+  subject, so a model that ignores the label works the old checklist against the
+  new request.
 - **A branch is recorded, not enforced.** A conversation started on `feat/x` and
   resumed on `main` is labelled in the rail and nothing more — its rewind will
   still restore pre-images from a tree that is no longer checked out, and its
@@ -1787,11 +1867,14 @@ ships its own `.taurus` directory.
   a rewind neither restores nor reports it. That is correct — there is nothing
   to put back — but it means a conversation's disk footprint grows in a place
   the **Changes** drawer does not account for.
-- **The first index is slow and nothing says so while it runs.** Embedding this
-  repository took 44 seconds, paid on the first `search_code` of a workspace,
-  and the model sees only a tool call that has not returned. Progress is
-  reported to the transcript but the turn is blocked either way, and there is no
-  way to index ahead of time from the UI.
+- **The first index is slow, and inside a turn it still blocks it.** Embedding
+  this repository takes around 44 seconds. **Settings → Search → Build index
+  now** pays that where you can watch it move and stop it, which is the way to
+  avoid the problem rather than a fix for it: a workspace whose index is built
+  on the first `search_code` still spends a tool call on the whole of it. The
+  turn reports its way through now — a passage count every few per cent, rather
+  than one line and forty-four seconds of silence — but the model still sees
+  only a call that has not returned.
 - **The index does not notice a file that changed without moving.** Length and
   modification time, the same comparison the sweep uses and blind in the same
   place: a rewrite to the same length within one filesystem tick is invisible,

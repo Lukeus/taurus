@@ -37,7 +37,13 @@ const state = {
   stop: vi.fn(),
   dismissError: vi.fn(),
 };
-vi.mock("./state/store", () => ({ useStore: () => state }));
+// `pinnedPlan` is a pure selector over `entries`, which is empty here — the
+// real one is exercised in the store's own tests, and stubbing it would only
+// let App call something that does not exist.
+vi.mock("./state/store", async (original) => ({
+  ...(await original<typeof import("./state/store")>()),
+  useStore: () => state,
+}));
 
 import type { ProviderConfig } from "./lib/api";
 import App, { currentProvider, offered } from "./App";

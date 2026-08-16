@@ -24,14 +24,27 @@
 //! what lets a reopened conversation redraw a plan card it never computed. See
 //! [`crate::view`].
 //!
-//! # Why it does not outlive the turn
+//! # How far it outlives the turn
 //!
-//! The board is built with the turn, in `Host::build_agent`, so a plan is gone
-//! when the turn that made it ends. That is the scope the problem has: a
-//! six-step task is one turn with many iterations, and the drift this exists to
-//! stop happens inside it. What the *next* turn sees is the plan card still
-//! sitting in the transcript, which is the same thing every other tool call
-//! leaves behind.
+//! The board is held per *session*, in `Host`, so an unfinished plan survives
+//! into the next message. It has to: a six-step task is very often six steps
+//! and a question in the middle of it, and a checklist that evaporates the
+//! moment you answer "yes, go on" is one the model then rebuilds from memory —
+//! which is the drift this exists to stop, arriving one turn later.
+//!
+//! What does not survive is a *finished* plan. [`PlanBoard::start_turn`] clears
+//! it, and that is the whole staleness rule: every step marked `[x]` means the
+//! work it described is over, and restating it would tell a model asked about
+//! something else that its instructions are "say what you did and stop". An
+//! unfinished plan is carried and labelled as carried, so the model can see it
+//! belongs to an earlier message and replace it if the request has moved on.
+//! That judgement is the model's; the harness cannot read a follow-up and know
+//! whether it continues the task or changes it.
+//!
+//! The rule is the same one the pinned panel in the desktop app follows, which
+//! is not a coincidence: what the reader sees above the composer and what the
+//! model reads in its prompt are the same checklist, and they would be worse
+//! than useless if they disagreed about whether it was still live.
 
 use std::sync::Arc;
 
@@ -39,8 +52,8 @@ use tokio::sync::Mutex;
 
 use crate::view::{Step, StepState};
 
-/// The plan for one turn, shared between the tool that writes it and the agent
-/// loop that reads it back.
+/// The plan for one conversation, shared between the tool that writes it and
+/// the agent loop that reads it back.
 ///
 /// Cloning shares the board, the way cloning a [`crate::ToolContext`] shares
 /// its checkpoint recorder — but unlike that one, this is deliberately *not*
@@ -48,7 +61,15 @@ use crate::view::{Step, StepState};
 /// checklist would report progress against a task nobody asked it to own.
 #[derive(Clone, Default)]
 pub struct PlanBoard {
-    steps: Arc<Mutex<Vec<Step>>>,
+    state: Arc<Mutex<Board>>,
+}
+
+#[derive(Default)]
+struct Board {
+    steps: Vec<Step>,
+    /// Whether these steps were written before the current turn began. Only
+    /// ever changes at a turn boundary; see [`PlanBoard::start_turn`].
+    carried: bool,
 }
 
 impl PlanBoard {
@@ -59,12 +80,36 @@ impl PlanBoard {
     /// Replaces the plan. Returns what the tool should tell the model it did.
     pub async fn set(&self, steps: Vec<Step>) -> String {
         let summary = summarize(&steps);
-        *self.steps.lock().await = steps;
+        let mut board = self.state.lock().await;
+        board.steps = steps;
+        // Written in this turn, so it is no longer somebody else's checklist.
+        board.carried = false;
         summary
     }
 
     pub async fn steps(&self) -> Vec<Step> {
-        self.steps.lock().await.clone()
+        self.state.lock().await.steps.clone()
+    }
+
+    /// Readies the board for a new turn, and reports whether a plan survived.
+    ///
+    /// A finished plan is dropped: the work it described is over, and a model
+    /// asked about something else would otherwise read "when every step is [x],
+    /// say what you did and stop" as its instructions for the new request.
+    /// Anything unfinished is kept and marked as carried — see the module doc
+    /// for why that judgement belongs to the model rather than here.
+    pub async fn start_turn(&self) -> bool {
+        let mut board = self.state.lock().await;
+        if board.steps.is_empty() {
+            return false;
+        }
+        if board.steps.iter().all(|s| s.state == StepState::Done) {
+            board.steps.clear();
+            board.carried = false;
+            return false;
+        }
+        board.carried = true;
+        true
     }
 
     /// The plan as it goes into the system prompt, or `None` when there is no
@@ -75,16 +120,21 @@ impl PlanBoard {
     /// has not been asked to make a plan, which is how a turn that needed two
     /// steps ends up with a checklist for them.
     pub async fn reminder(&self) -> Option<String> {
-        let steps = self.steps.lock().await;
-        if steps.is_empty() {
+        let board = self.state.lock().await;
+        if board.steps.is_empty() {
             return None;
         }
 
-        let mut out = String::from(
-            "# Your current plan\n\nYou wrote this with update_plan. It is restated here every \
-             time because it is the record of where you are:\n\n",
-        );
-        for (index, step) in steps.iter().enumerate() {
+        let mut out = String::from("# Your current plan\n\n");
+        out.push_str(if board.carried {
+            "You wrote this with update_plan earlier in this conversation, before the message you \
+             are answering now. It is restated here every time because it is the record of where \
+             you are:\n\n"
+        } else {
+            "You wrote this with update_plan. It is restated here every time because it is the \
+             record of where you are:\n\n"
+        });
+        for (index, step) in board.steps.iter().enumerate() {
             out.push_str(&format!(
                 "{}. {} {}\n",
                 index + 1,
@@ -97,6 +147,14 @@ impl PlanBoard {
              back with the states updated. Work the step marked [>], and do not start another \
              until it is [x]. When every step is [x], say what you did and stop.",
         );
+        if board.carried {
+            // The one thing the harness cannot decide. A follow-up may continue
+            // the task or change the subject, and only the model has read it.
+            out.push_str(
+                "\n\nIf this message asks for something the plan above does not cover, call \
+                 update_plan with the new list instead of working the old one.",
+            );
+        }
         Some(out)
     }
 }
@@ -188,6 +246,93 @@ mod tests {
             ])
             .await;
         assert!(result.contains("Every step is done"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn an_unfinished_plan_survives_into_the_next_turn() {
+        // The case this exists for: six steps and a question in the middle.
+        // A checklist that evaporates when you answer "yes, go on" is one the
+        // model rebuilds from memory, which is the drift it exists to stop.
+        let board = PlanBoard::new();
+        board
+            .set(vec![
+                step("Read the parser", StepState::Done),
+                step("Add the token type", StepState::Active),
+            ])
+            .await;
+
+        assert!(board.start_turn().await, "a plan survived");
+        let reminder = board.reminder().await.expect("and is still restated");
+        assert!(reminder.contains("[>] Add the token type"), "{reminder}");
+    }
+
+    #[tokio::test]
+    async fn a_carried_plan_says_it_came_from_an_earlier_message() {
+        // Two things the model cannot work out for itself: that it wrote this
+        // before the message it is answering, and that replacing it is allowed
+        // when the request has moved on.
+        let board = PlanBoard::new();
+        board.set(vec![step("One", StepState::Active)]).await;
+
+        let fresh = board.reminder().await.unwrap();
+        assert!(!fresh.contains("earlier in this conversation"), "{fresh}");
+
+        board.start_turn().await;
+        let carried = board.reminder().await.unwrap();
+        assert!(
+            carried.contains("earlier in this conversation"),
+            "{carried}"
+        );
+        assert!(
+            carried.contains("call update_plan with the new list"),
+            "{carried}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_plan_does_not_survive_into_the_next_turn() {
+        // The whole staleness rule. Restating a completed checklist would tell
+        // a model asked about something else that its instructions are "say
+        // what you did and stop".
+        let board = PlanBoard::new();
+        board
+            .set(vec![
+                step("One", StepState::Done),
+                step("Two", StepState::Done),
+            ])
+            .await;
+
+        assert!(!board.start_turn().await, "nothing survived");
+        assert_eq!(board.reminder().await, None);
+        assert!(board.steps().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_writes_a_plan_stops_calling_it_carried() {
+        // Otherwise a plan written in turn two would keep apologizing for
+        // belonging to turn one for the rest of the conversation.
+        let board = PlanBoard::new();
+        board.set(vec![step("One", StepState::Active)]).await;
+        board.start_turn().await;
+        board
+            .set(vec![
+                step("One", StepState::Done),
+                step("Two", StepState::Active),
+            ])
+            .await;
+
+        let reminder = board.reminder().await.unwrap();
+        assert!(
+            !reminder.contains("earlier in this conversation"),
+            "{reminder}"
+        );
+    }
+
+    #[tokio::test]
+    async fn starting_a_turn_on_an_empty_board_is_a_no_op() {
+        let board = PlanBoard::new();
+        assert!(!board.start_turn().await);
+        assert_eq!(board.reminder().await, None);
     }
 
     #[tokio::test]

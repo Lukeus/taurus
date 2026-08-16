@@ -581,20 +581,54 @@ function asCaption(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+export type PlanView = Extract<TranscriptView, { type: "plan" }>;
+
 /**
- * Leaves only the newest plan card drawn.
+ * The checklist to pin above the composer, or `null` when there is none.
+ *
+ * Derived rather than held, so it is right by construction on every route into
+ * the transcript — a live turn, a resumed conversation, a rewind — instead of
+ * being a second copy of the plan that each of those has to remember to update.
+ *
+ * A finished plan stays up until the user asks for something else. That is the
+ * one rule here worth stating: it is what makes "done" a thing you get to see,
+ * while stopping last hour's completed checklist from sitting over an unrelated
+ * question. An unfinished one keeps showing regardless — work left undone is
+ * exactly what a pinned panel is for.
+ */
+export function pinnedPlan(entries: Entry[]): PlanView | null {
+  let plan: PlanView | null = null;
+  let at = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.kind === "tool" && entry.view?.type === "plan") {
+      plan = entry.view;
+      at = i;
+      break;
+    }
+  }
+  // An empty plan is legal on the wire and says nothing worth a panel — and
+  // every proportion drawn from it would be a division by zero.
+  if (!plan || plan.steps.length === 0) return null;
+
+  if (!plan.steps.every((step) => step.state === "done")) return plan;
+  return entries.some((e, i) => i > at && e.kind === "user") ? null : plan;
+}
+
+/**
+ * Leaves only the newest plan's steps in the transcript.
  *
  * Every other view is a thing that happened once — a table of the numbers as
  * they were, a question that was asked and answered — so two of them are two
  * facts and both belong on screen. A plan is not that. It is one evolving
  * object, and the model rewrites the whole list every time a step starts or
- * finishes, so a six-step task ends with seven `update_plan` calls. Drawn as
- * seven cards, the checklist that exists to say *where you are* would instead
- * be a history of everywhere you have been, with the current state at the
- * bottom of it.
+ * finishes, so a six-step task ends with seven `update_plan` calls.
  *
- * The superseded calls keep their row — they happened, and the run header still
- * counts them — they just stop drawing. Nothing is removed from the transcript.
+ * Nothing draws them in the transcript any more — the newest is pinned above
+ * the composer by `pinnedPlan`, which reads the view left here. Dropping the
+ * superseded ones is still what makes that read a single unambiguous answer.
+ * Their rows stay either way: they happened, and the run header still counts
+ * them.
  */
 function supersedePlans(entries: Entry[]): Entry[] {
   // Walked backwards rather than with `findLastIndex`, which needs a newer

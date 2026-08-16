@@ -225,9 +225,10 @@ async fn turn(
 ) -> Result<bool, String> {
     runtime.host.remember_session(provider_id, model).await;
 
-    // A leading `/name` runs that skill. Resolved before the turn starts so a
-    // mistyped command costs nothing: the user gets told, and no request is
-    // made. `task` stays what names the turn, being what was actually asked.
+    // A leading `/name` runs that skill, or hands the line to that sub-agent.
+    // Resolved before the turn starts so a mistyped command costs nothing: the
+    // user gets told, and no request is made. `task` stays what names the turn,
+    // being what was actually asked.
     let prompt = match runtime.host.expand_command(task).await {
         Some(Ok(invocation)) => invocation.prompt,
         Some(Err(e)) => return Err(e.to_string()),

@@ -6,6 +6,7 @@
 //! so the two cannot drift apart.
 
 pub mod attach;
+pub mod command;
 pub mod config;
 pub mod git;
 pub mod host;
@@ -18,6 +19,7 @@ pub mod sessions;
 mod testing;
 
 pub use attach::Attachment;
+pub use command::{CommandError, CommandKind, CommandSummary, Invocation};
 pub use config::{ProviderConfig, ProviderKind, Scope, Settings, Theme};
 pub use git::{Commit, Repo, RepoStatus};
 pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};
@@ -28,5 +30,8 @@ pub use sessions::{SessionLog, SessionMeta};
 pub use taurus_tools::{Checkpoint, Restored, TurnChange};
 // Re-exported so a frontend can edit search config without depending on the
 // crate that runs the searches — the same reason `Checkpoint` comes through
-// here rather than from `taurus-tools`.
+// here rather than from `taurus-tools`. `IndexProgress` is here for the same
+// reason once removed: the desktop app implements it to draw a progress bar,
+// and has no other business with the indexer.
+pub use taurus_index::IndexProgress;
 pub use taurus_web::{BackendEntry, BackendKind, SearchFile};

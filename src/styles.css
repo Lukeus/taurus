@@ -1233,29 +1233,121 @@ body.resizing * {
 }
 
 /*
- * The plan card.
+ * The plan panel, pinned between the transcript and the composer.
  *
  * Read by the model as well as the reader, so the two renderings have to agree:
  * the mark, the order, and the state are the same facts the system prompt
  * carries back. What is added here is emphasis, which prose cannot do — the
- * live step is the one thing this card exists to make findable in a glance.
+ * live step is the one thing this panel exists to make findable in a glance.
  *
  * The state of a step is said three times over: a mark, a tint, and a word.
  * That is not redundancy to trim. The mark carries it fastest, the tint groups
  * it, and only the word survives a screenshot, a colour-blind reader, and a
  * screen reader — so the word is the one that is never dropped, and the other
- * two are what make the card readable at a glance rather than at a read.
+ * two are what make the panel readable at a glance rather than at a read.
+ *
+ * Everything below the summary row is what the transcript card used to be, and
+ * is unchanged: opening the panel gets the same list it always drew.
  */
 
-/* How far through, as a shape. Paired with the count in the header, which is
-   the same fact for anyone the shape does not reach. */
+.plan-panel {
+  flex: none;
+  /* Flush with the composer box below it, which sets the same 32px gutter. The
+     two read as one block against the bottom of the window. */
+  margin: 0 32px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-xl);
+  background: var(--bg-raised);
+  /* The list is the only thing here that can grow without bound, and it must
+     never push the composer off the bottom of the window. */
+  max-height: 42vh;
+  overflow-y: auto;
+}
+/* Open, it stops being a status line and becomes something being read. The
+   accent edge is the same one a waiting question card wears, for the same
+   reason: it is the thing on screen with the reader's attention. */
+.plan-panel.open {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--rule));
+}
+
+/* The whole collapsed panel is the toggle: it is one row, and a hit target the
+   width of the panel is the difference between glancing and aiming. */
+.plan-summary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 13px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-xl);
+  text-align: left;
+  cursor: pointer;
+}
+.plan-summary:hover {
+  background: var(--bg-sunken);
+}
+.plan-chevron {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.plan-label {
+  flex: none;
+  font-family: var(--display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* The live step, which is what the row is for. Truncated rather than wrapped:
+   this row is a fixed-height status line, and the full text is one click away
+   in the list below. */
+.plan-live {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-count {
+  flex: none;
+  white-space: nowrap;
+}
+
+.plan-body {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 0 13px 13px;
+}
+
+/* The index build in Settings, which borrows the plan's bar rather than
+   growing a second one: they say the same thing — how far through a long job
+   is — and two bars that looked different would be two things to learn. */
+.index-actions {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.index-bar {
+  width: 100%;
+}
+
+/* How far through, as a shape. Paired with the count beside it, which is the
+   same fact for anyone the shape does not reach. Fixed-width in the summary
+   row so the step text starts at the same place whatever the numbers are. */
 .plan-bar {
+  flex: none;
+  width: 64px;
   height: 3px;
   border-radius: 999px;
   background: var(--rule);
   overflow: hidden;
 }
 .plan-bar-fill {
+  display: block;
   height: 100%;
   border-radius: 999px;
   background: var(--accent);
@@ -1937,13 +2029,29 @@ body.resizing * {
 }
 /* The trigger line, which is the whole reason to show a list rather than
    demand the name be remembered. Truncated to one line: it is here to tell
-   two similar skills apart, not to be read in full. */
+   two similar commands apart, not to be read in full. It takes the slack in
+   the row, which is what pushes the kind tag out to a column of its own. */
 .command-when {
+  flex: 1;
   font-size: 11.5px;
   color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Skill or agent. The shared tag shape, one step smaller: a menu row is denser
+   than a drawer row, and this label is a qualifier on the name rather than
+   something to read first. Only the agent kind is tinted — an agent spends a
+   whole second model on the line, which is the one thing worth noticing before
+   pressing Enter. */
+.command-kind {
+  flex: none;
+  font-size: 9px;
+  padding: 1px 6px;
+}
+.command-kind.agent {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .composer textarea {
   border: none;
