@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { ChartCard } from "./ChartCard";
 import { Markdown } from "./Markdown";
 import { Attachments } from "./Attachments";
-import { PlanCard } from "./PlanCard";
 import { QuestionsCard } from "./QuestionsCard";
 import { TableCard } from "./TableCard";
 import { duration, plural } from "../lib/format";
@@ -168,8 +167,10 @@ function EntryView({
             onAnswer={onAnswer}
           />
         );
-      case "plan":
-        return <PlanCard view={entry.view} />;
+      // No case for `plan`. It is pinned above the composer instead — see
+      // `PlanPanel` — so the call falls through to its own row here, which is
+      // what the run header counts. The view is still on the entry: that is
+      // where `pinnedPlan` reads it from.
     }
   }
 

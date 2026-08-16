@@ -4978,6 +4978,7 @@ dependencies = [
  "taurus-tools",
  "taurus-web",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",

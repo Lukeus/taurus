@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import type {
   AllowedRule,
+  IndexProgress,
   KeyStatus,
   ModelEntry,
   ProviderConfig,
@@ -187,7 +188,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
           </>
         )}
 
-        {tab === "search" && <SearchTab />}
+        {tab === "search" && (
+          <>
+            <SearchTab />
+            <CodeSearch model={status?.settings.embedding_model ?? ""} />
+          </>
+        )}
 
         {tab === "permissions" && (
           <>
@@ -482,6 +488,104 @@ export function SearchTab() {
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Semantic search over the workspace: which model embeds it, and a way to pay
+ * the first index before a turn has to.
+ *
+ * The build button is the whole reason this section exists. Indexing this
+ * repository takes the better part of a minute, and the only way to pay that
+ * used to be to be halfway through a turn when the model first reached for
+ * `search_code` — which then sat on a tool call that did not return, with no
+ * way to start one earlier and no way to stop it that did not also stop the
+ * conversation. The model field comes with it because a button that builds an
+ * index needs somewhere to say what to build it with, and `embedding_model` was
+ * reachable only by hand-editing `~/.taurus/settings.json`.
+ */
+export function CodeSearch({ model }: { model: string }) {
+  const refresh = useStore((s) => s.refresh);
+  const [draft, setDraft] = useState(model);
+  const [progress, setProgress] = useState<IndexProgress | null>(null);
+  const [outcome, setOutcome] = useState<string | null>(null);
+  const building = progress !== null;
+
+  const save = async (next: string) => {
+    if (next.trim() === model.trim()) return;
+    await api.setEmbeddingModel(next);
+    await refresh();
+  };
+
+  const build = async () => {
+    // Seeded before the first report so the button switches to Stop on the
+    // click rather than whenever the first batch lands — which on a cold
+    // Ollama is several seconds of a button that looks like it did nothing.
+    setProgress({ done: 0, total: 0 });
+    setOutcome(null);
+    try {
+      setOutcome(await api.buildIndex(setProgress));
+    } catch (e) {
+      setOutcome(String(e));
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const pct =
+    progress && progress.total > 0
+      ? Math.round((progress.done / progress.total) * 100)
+      : 0;
+
+  return (
+    <section className="section">
+      <span className="micro">Search the codebase</span>
+      <Field
+        label="Embedding model"
+        hint={
+          model.trim()
+            ? "Runs on the same server as your chat model. Leave empty to turn semantic search off."
+            : "Off. Name a model your server has pulled — nomic-embed-text is the usual one — to let Taurus find code by meaning rather than by string."
+        }
+      >
+        <input
+          value={draft}
+          spellCheck={false}
+          placeholder="nomic-embed-text"
+          disabled={building}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => save(draft)}
+        />
+      </Field>
+
+      {model.trim() && (
+        <>
+          <div className="index-actions">
+            <button onClick={building ? api.stopIndexBuild : build}>
+              {building ? "Stop" : "Build index now"}
+            </button>
+            {building && (
+              <span className="hint">
+                {progress.total > 0
+                  ? `${progress.done} of ${progress.total} passages`
+                  : "reading the workspace…"}
+              </span>
+            )}
+          </div>
+          {building && (
+            <div className="plan-bar index-bar" aria-hidden="true">
+              <span className="plan-bar-fill" style={{ width: `${pct}%` }} />
+            </div>
+          )}
+          {outcome && !building && <p className="hint">{outcome}</p>}
+          <p className="hint">
+            A search builds this itself the first time, inside whichever turn
+            reaches for it. Building it here pays the same cost where you can
+            watch it and stop it.
+          </p>
+        </>
+      )}
+    </section>
   );
 }
 

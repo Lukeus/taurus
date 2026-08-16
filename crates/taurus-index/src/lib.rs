@@ -30,7 +30,7 @@ pub mod chunk;
 pub mod store;
 pub mod tool;
 
-pub use build::{refresh, Refreshed};
+pub use build::{refresh, IndexProgress, Refreshed};
 pub use chunk::Chunk;
 pub use store::{search, Entry, Hit, Index};
 pub use tool::{SearchCode, SEARCH_CODE_TOOL};

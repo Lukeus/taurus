@@ -52,7 +52,7 @@ async fn main() {
     println!("workspace: {}\nmodel:     {model}\n", root.display());
 
     let started = Instant::now();
-    let (entries, report) = refresh(&index, &root, &provider, &model, &cancel)
+    let (entries, report) = refresh(&index, &root, &provider, &model, &cancel, None)
         .await
         .unwrap_or_else(|e| panic!("indexing failed: {e}"));
     let first = started.elapsed();
@@ -61,7 +61,7 @@ async fn main() {
     // The property the whole design turns on. If this is not near-instant, the
     // staleness rule is broken and every search pays the full cost.
     let started = Instant::now();
-    let (_, again) = refresh(&index, &root, &provider, &model, &cancel)
+    let (_, again) = refresh(&index, &root, &provider, &model, &cancel, None)
         .await
         .expect("the second pass");
     println!(

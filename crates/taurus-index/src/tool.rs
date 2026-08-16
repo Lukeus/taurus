@@ -133,6 +133,7 @@ impl Tool for SearchCode {
             &self.provider,
             &self.model,
             &ctx.cancel,
+            Some(&Reporting(ctx)),
         )
         .await
         .map_err(ToolError::Failed)?;
@@ -164,6 +165,23 @@ impl Tool for SearchCode {
         }
 
         Ok(render(query, &hits, ctx.workspace.as_path()))
+    }
+}
+
+/// Carries the refresh's progress into the transcript.
+///
+/// The first index of a repository takes the better part of a minute, and until
+/// this existed the whole of it was one line saying "indexing the workspace"
+/// followed by silence — which reads as a hung tool rather than a slow one, to
+/// the person watching and to anyone deciding whether to press Stop.
+struct Reporting<'a>(&'a ToolContext);
+
+#[async_trait]
+impl crate::build::IndexProgress for Reporting<'_> {
+    async fn embedding(&self, done: usize, total: usize) {
+        self.0
+            .report(format!("indexing: {done} of {total} passages"))
+            .await;
     }
 }
 

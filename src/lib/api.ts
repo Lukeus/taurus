@@ -14,6 +14,8 @@ import type { Answer } from "../bindings/Answer";
 import type { AppStatus } from "../bindings/AppStatus";
 import type { Attachment } from "../bindings/Attachment";
 import type { Checkpoint } from "../bindings/Checkpoint";
+import type { CommandKind } from "../bindings/CommandKind";
+import type { CommandSummary } from "../bindings/CommandSummary";
 import type { Commit } from "../bindings/Commit";
 import type { ContentBlock } from "../bindings/ContentBlock";
 import type { DiffHunk } from "../bindings/DiffHunk";
@@ -21,6 +23,7 @@ import type { DiffLine } from "../bindings/DiffLine";
 import type { DiffLineKind } from "../bindings/DiffLineKind";
 import type { FileDiff } from "../bindings/FileDiff";
 import type { CreatedSession } from "../bindings/CreatedSession";
+import type { IndexProgress } from "../bindings/IndexProgress";
 import type { Instructions } from "../bindings/Instructions";
 import type { KeyStatus } from "../bindings/KeyStatus";
 import type { Message } from "../bindings/Message";
@@ -62,6 +65,8 @@ export type {
   AppStatus,
   Attachment,
   Checkpoint,
+  CommandKind,
+  CommandSummary,
   Commit,
   ContentBlock,
   CreatedSession,
@@ -69,6 +74,7 @@ export type {
   DiffLine,
   DiffLineKind,
   FileDiff,
+  IndexProgress,
   Instructions,
   KeyStatus,
   Message,
@@ -177,8 +183,8 @@ export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 export const listInstructions = () =>
   invoke<Instructions[]>("list_instructions");
 
-/** Skills runnable as `/name`, for completion in the composer. */
-export const listCommands = () => invoke<SkillSummary[]>("list_commands");
+/** Skills and sub-agents runnable as `/name`, for completion in the composer. */
+export const listCommands = () => invoke<CommandSummary[]>("list_commands");
 
 /**
  * The sub-agent roster. Rescans the agent directories first, so what comes back
@@ -267,6 +273,25 @@ export const setAgentSynthesis = (enabled: boolean) =>
   invoke<void>("set_agent_synthesis", { enabled });
 
 export const setTheme = (theme: Theme) => invoke<void>("set_theme", { theme });
+
+/** Which embedding model semantic search runs on. Empty turns it off. */
+export const setEmbeddingModel = (model: string) =>
+  invoke<void>("set_embedding_model", { model });
+
+/**
+ * Builds this workspace's code index now, resolving to its one-line summary.
+ *
+ * The alternative is paying for it inside the first turn that reaches for
+ * `search_code`, where it is a tool call that does not return for most of a
+ * minute. `onProgress` fires about twenty times over a build.
+ */
+export const buildIndex = (onProgress: (p: IndexProgress) => void) => {
+  const channel = new Channel<IndexProgress>();
+  channel.onmessage = onProgress;
+  return invoke<string>("build_index", { onProgress: channel });
+};
+
+export const stopIndexBuild = () => invoke<void>("stop_index_build");
 
 export const saveProviders = (providers: ProviderConfig[]) =>
   invoke<void>("save_providers", { providers });

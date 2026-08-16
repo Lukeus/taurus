@@ -260,12 +260,18 @@ pub async fn send_message(
     let entry = state.session(&session_id)?;
     let provider = state.host.provider(&entry.provider_id).await?;
 
-    // `/name args` becomes the skill's procedure before the model sees it. The
-    // user's own line stays what the transcript shows and what names the turn:
-    // an expansion is how the request is carried out, not what was asked.
+    // `/name args` becomes the skill's procedure — or the instruction to
+    // delegate to that sub-agent — before the model sees it. The user's own
+    // line stays what the transcript shows and what names the turn: an
+    // expansion is how the request is carried out, not what was asked.
     let prompt = match state.host.expand_command(&text).await {
         Some(Ok(invocation)) => {
-            info!(session = %session_id, skill = %invocation.name, "ran a skill as a command");
+            info!(
+                session = %session_id,
+                command = %invocation.name,
+                kind = ?invocation.kind,
+                "ran a command",
+            );
             invocation.prompt
         }
         // Returned rather than sent. A mistyped command is a message to the
@@ -398,6 +404,7 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
 
     sessions::delete(&session_id)?;
     state.host.checkpoints().await.forget(&session_id)?;
+    state.host.forget_plan(&session_id).await;
     info!(session = %session_id, "session deleted");
     Ok(())
 }
@@ -682,13 +689,17 @@ pub async fn list_instructions(
     Ok(state.host.instructions().await)
 }
 
-/// Skills the user can run as `/name`, for completion in the composer.
+/// Skills and sub-agents the user can run as `/name`, for completion in the
+/// composer.
 ///
-/// A separate call from [`list_skills`] rather than a filter in the UI: which
-/// skills are user-invocable is the library's answer to give, and a composer
-/// offering one the harness would then refuse is a dead end typed in full.
+/// A separate call from [`list_skills`] and [`list_agents`] rather than a merge
+/// in the UI: which of either is user-invocable is the harness's answer to
+/// give, and a composer offering one it would then refuse is a dead end typed
+/// in full.
 #[tauri::command]
-pub async fn list_commands(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<SkillSummary>> {
+pub async fn list_commands(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<Vec<taurus_host::CommandSummary>> {
     Ok(state.host.commands().await)
 }
 
@@ -1093,6 +1104,69 @@ pub async fn set_theme(state: State<'_, Arc<AppState>>, theme: Theme) -> CmdResu
 }
 
 #[tauri::command]
+pub async fn set_embedding_model(state: State<'_, Arc<AppState>>, model: String) -> CmdResult<()> {
+    state.host.set_embedding_model(&model).await;
+    // The tool is registered by `reload`, so without this a model named here
+    // does not become a `search_code` until the next workspace change — which
+    // reads as the setting not having taken.
+    state.host.reload().await;
+    Ok(())
+}
+
+/// How far through a build is, as the UI draws it.
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
+pub struct IndexProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
+/// Builds this workspace's semantic index now, rather than inside the first
+/// turn that reaches for it.
+///
+/// The whole point is that it is not a turn: the first index of a repository
+/// takes the better part of a minute, and paying it here means paying it
+/// against a progress bar that someone chose to start, instead of inside a tool
+/// call that has not returned.
+///
+/// A `Channel` for the same reason `send_message` uses one — delivery is
+/// ordered and scoped to this call, so a second window building a different
+/// workspace cannot interleave into this one's bar.
+#[tauri::command]
+pub async fn build_index(
+    state: State<'_, Arc<AppState>>,
+    on_progress: Channel<IndexProgress>,
+) -> CmdResult<String> {
+    struct ToChannel(Channel<IndexProgress>);
+
+    #[async_trait::async_trait]
+    impl taurus_host::IndexProgress for ToChannel {
+        async fn embedding(&self, done: usize, total: usize) {
+            // A dropped channel means the settings pane closed. The build is
+            // still worth finishing — the index is the point, not the bar.
+            let _ = self.0.send(IndexProgress { done, total });
+        }
+    }
+
+    // Its own token rather than a session's: this belongs to no conversation,
+    // and cancelling it must not cancel a turn that happens to be running.
+    let cancel = CancellationToken::new();
+    *state.index_build.lock().await = cancel.clone();
+
+    state
+        .host
+        .build_index(cancel, Some(&ToChannel(on_progress)))
+        .await
+}
+
+/// Stops a running index build. Safe to call when none is running.
+#[tauri::command]
+pub async fn stop_index_build(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
+    state.index_build.lock().await.cancel();
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn save_providers(
     state: State<'_, Arc<AppState>>,
     providers: Vec<ProviderConfig>,
@@ -1146,11 +1220,21 @@ pub async fn rewind_to(
     }
 
     let workspace = state.host.workspace().await;
-    state
+    let restored = state
         .host
         .checkpoints()
         .await
-        .rewind(&session_id, &workspace, turn, dry_run)
+        .rewind(&session_id, &workspace, turn, dry_run)?;
+
+    // The checklist is working state, and rewinding is undoing the work it
+    // tracked. Kept, it would be the one thing in the session that still
+    // believes in a turn nothing else remembers — the model reading a plan for
+    // files that have been put back. A dry run changes nothing, so it clears
+    // nothing.
+    if !dry_run {
+        state.host.forget_plan(&session_id).await;
+    }
+    Ok(restored)
 }
 
 /// What one turn changed, file by file, as a diff.

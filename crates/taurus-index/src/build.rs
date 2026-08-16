@@ -38,6 +38,40 @@ use crate::store::{encode, stamp, Entry, Index, MAX_FILES, MAX_FILE_BYTES};
 /// work rather than a minute's.
 const BATCH: usize = 16;
 
+/// How many times a refresh says where it has got to.
+///
+/// Not once per batch. A first index of this repository is around seventy
+/// batches, and seventy near-identical lines is a wall of text rather than a
+/// progress report — while one line at the start and nothing for forty-four
+/// seconds is what made this feel hung. Twenty is a bar you can watch move.
+const PROGRESS_STEPS: usize = 20;
+
+/// Where a refresh reports what it is doing while it does it.
+///
+/// A trait rather than a callback because the two callers report to completely
+/// different places: a tool call streams into the transcript through
+/// [`taurus_tools::ToolProgress`], and the desktop app's **Build index** button
+/// streams into a Tauri channel with no turn behind it at all.
+#[async_trait::async_trait]
+pub trait IndexProgress: Send + Sync {
+    /// `done` of `total` passages embedded. Called at most [`PROGRESS_STEPS`]
+    /// times plus once at the end, never on a refresh that embeds nothing.
+    async fn embedding(&self, done: usize, total: usize);
+}
+
+/// Which `done` values are worth reporting, given how many there are in total.
+///
+/// Pure so the cadence can be tested without a backend, because getting it
+/// wrong is invisible in the obvious direction: too few reports and the thing
+/// looks hung again, which is the bug being fixed.
+fn reports_at(done: usize, previous: usize, total: usize) -> bool {
+    if done >= total {
+        return true;
+    }
+    let bucket = |n: usize| n * PROGRESS_STEPS / total.max(1);
+    bucket(done) > bucket(previous)
+}
+
 /// What a refresh did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Refreshed {
@@ -92,6 +126,7 @@ pub async fn refresh(
     provider: &Arc<dyn Provider>,
     model: &str,
     cancel: &CancellationToken,
+    progress: Option<&dyn IndexProgress>,
 ) -> Result<(Vec<Entry>, Refreshed), String> {
     let held = index.load(model);
 
@@ -158,6 +193,8 @@ pub async fn refresh(
     report.removed = by_file.keys().filter(|path| !seen.contains(*path)).count();
 
     report.chunks = pending.len();
+    let total = pending.len();
+    let mut done = 0;
     for batch in pending.chunks(BATCH) {
         if cancel.is_cancelled() {
             return Err("indexing was canceled".into());
@@ -177,6 +214,18 @@ pub async fn refresh(
                 modified: *modified,
                 vector: encode(&vector),
             });
+        }
+
+        // Reported after the batch lands rather than before it is sent, so the
+        // number is work finished rather than work started. On a first index
+        // this is the only thing between the caller and forty-four seconds of
+        // nothing.
+        let before = done;
+        done += batch.len();
+        if let Some(progress) = progress {
+            if reports_at(done, before, total) {
+                progress.embedding(done, total).await;
+            }
         }
     }
 
@@ -332,15 +381,29 @@ mod tests {
         write(&f.root, "src/b.rs", 50);
         let provider = counting();
 
-        let (_, first) = refresh(&f.index, &f.root, &provider, "m", &CancellationToken::new())
-            .await
-            .unwrap();
+        let (_, first) = refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(first.embedded, 2);
         assert!(first.chunks > 0);
 
-        let (_, second) = refresh(&f.index, &f.root, &provider, "m", &CancellationToken::new())
-            .await
-            .unwrap();
+        let (_, second) = refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(second.embedded, 0);
         assert_eq!(second.unchanged, 2);
         assert_eq!(second.chunks, 0);
@@ -352,15 +415,29 @@ mod tests {
         write(&f.root, "src/a.rs", 50);
         write(&f.root, "src/b.rs", 50);
         let provider = counting();
-        refresh(&f.index, &f.root, &provider, "m", &CancellationToken::new())
-            .await
-            .unwrap();
+        refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
 
         // A different length, so the stamp moves whatever the clock did.
         write(&f.root, "src/a.rs", 80);
-        let (_, report) = refresh(&f.index, &f.root, &provider, "m", &CancellationToken::new())
-            .await
-            .unwrap();
+        let (_, report) = refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(report.embedded, 1);
         assert_eq!(report.unchanged, 1);
@@ -372,15 +449,28 @@ mod tests {
         write(&f.root, "src/a.rs", 50);
         write(&f.root, "src/gone.rs", 50);
         let provider = counting();
-        refresh(&f.index, &f.root, &provider, "m", &CancellationToken::new())
-            .await
-            .unwrap();
+        refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
 
         std::fs::remove_file(f.root.join("src/gone.rs")).unwrap();
-        let (entries, report) =
-            refresh(&f.index, &f.root, &provider, "m", &CancellationToken::new())
-                .await
-                .unwrap();
+        let (entries, report) = refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(report.removed, 1);
         assert!(!entries.iter().any(|e| e.path.contains("gone.rs")));
@@ -402,6 +492,7 @@ mod tests {
             &counting(),
             "m",
             &CancellationToken::new(),
+            None,
         )
         .await
         .unwrap();
@@ -425,6 +516,7 @@ mod tests {
             &counting(),
             "m",
             &CancellationToken::new(),
+            None,
         )
         .await
         .unwrap();
@@ -444,6 +536,7 @@ mod tests {
             &counting(),
             "m",
             &CancellationToken::new(),
+            None,
         )
         .await
         .unwrap();
@@ -458,17 +551,31 @@ mod tests {
         let f = fixture();
         write(&f.root, "src/a.rs", 50);
         let provider = counting();
-        refresh(&f.index, &f.root, &provider, "m", &CancellationToken::new())
-            .await
-            .unwrap();
+        refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
 
         let before = std::fs::metadata(f.index.path())
             .unwrap()
             .modified()
             .unwrap();
-        refresh(&f.index, &f.root, &provider, "m", &CancellationToken::new())
-            .await
-            .unwrap();
+        refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
         let after = std::fs::metadata(f.index.path())
             .unwrap()
             .modified()
@@ -485,8 +592,98 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
 
-        let result = refresh(&f.index, &f.root, &counting(), "m", &cancel).await;
+        let result = refresh(&f.index, &f.root, &counting(), "m", &cancel, None).await;
         assert!(result.is_err());
+    }
+
+    /// Collects what a refresh reported, so the cadence can be asserted on.
+    #[derive(Default)]
+    struct Recording(std::sync::Mutex<Vec<(usize, usize)>>);
+
+    #[async_trait]
+    impl IndexProgress for Recording {
+        async fn embedding(&self, done: usize, total: usize) {
+            self.0.lock().unwrap().push((done, total));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_first_index_reports_its_way_through_rather_than_going_quiet() {
+        // The bug this closes: one line at the start and nothing for the next
+        // forty-four seconds, which reads as a hung tool rather than a slow one.
+        let f = fixture();
+        for n in 0..12 {
+            write(&f.root, &format!("src/f{n}.rs"), 120);
+        }
+        let progress = Recording::default();
+
+        let (_, report) = refresh(
+            &f.index,
+            &f.root,
+            &counting(),
+            "m",
+            &CancellationToken::new(),
+            Some(&progress),
+        )
+        .await
+        .unwrap();
+
+        let seen = progress.0.lock().unwrap().clone();
+        assert!(seen.len() > 1, "one report is the silence being fixed");
+        assert!(
+            seen.len() <= PROGRESS_STEPS + 1,
+            "{} reports is a wall of text, not a progress bar",
+            seen.len()
+        );
+        // Monotonic, and it finishes on the total rather than near it: a bar
+        // that stops at 94% is worse than one that never moved.
+        assert!(seen.windows(2).all(|w| w[0].0 < w[1].0), "{seen:?}");
+        assert_eq!(seen.last(), Some(&(report.chunks, report.chunks)));
+    }
+
+    #[tokio::test]
+    async fn a_refresh_with_nothing_to_do_reports_nothing() {
+        // Every search refreshes first, and almost every one of those has no
+        // work in it. A progress line there is noise on every single call.
+        let f = fixture();
+        write(&f.root, "src/a.rs", 50);
+        let provider = counting();
+        refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let progress = Recording::default();
+        refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "m",
+            &CancellationToken::new(),
+            Some(&progress),
+        )
+        .await
+        .unwrap();
+        assert!(progress.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_last_passage_always_reports_however_the_buckets_fall() {
+        // 7 chunks into 20 buckets: every step crosses a boundary, and the
+        // final one has to report even when it does not.
+        assert!(reports_at(7, 6, 7));
+        assert!(reports_at(1, 0, 7));
+        // 1000 chunks into 20 buckets is one report per 50, not per batch.
+        assert!(!reports_at(17, 16, 1000));
+        assert!(reports_at(50, 49, 1000));
+        // A total of zero never divides by zero and never reports a step.
+        assert!(reports_at(0, 0, 0));
     }
 
     #[test]

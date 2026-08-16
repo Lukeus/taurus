@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { Message, UiEvent } from "../lib/api";
-import { entriesFromMessages, reduce, viewFromCall, type Entry } from "./store";
+import {
+  entriesFromMessages,
+  pinnedPlan,
+  reduce,
+  viewFromCall,
+  type Entry,
+} from "./store";
 
 /** Folds a whole event sequence, as a real turn would arrive. */
 const run = (...events: UiEvent[]): Entry[] => events.reduce(reduce, []);
@@ -394,7 +400,7 @@ describe("drawn tool results", () => {
   });
 });
 
-describe("the plan card supersedes itself", () => {
+describe("the plan supersedes itself", () => {
   const planEvent = (id: string, steps: unknown[]): UiEvent => ({
     type: "tool_call_started",
     id,
@@ -533,6 +539,92 @@ describe("the plan card supersedes itself", () => {
     // Written by whichever build was running at the time. A card that throws
     // mid-render takes the whole transcript with it.
     expect(viewFromCall("p1", "update_plan", { steps: "nope" })).toBeUndefined();
+  });
+});
+
+describe("the plan pinned above the composer", () => {
+  const planEvent = (id: string, steps: unknown[]): UiEvent => ({
+    type: "tool_call_started",
+    id,
+    name: "update_plan",
+    preview: `Plan: ${steps.length} steps`,
+    view: { type: "plan", steps } as never,
+  });
+
+  it("pins nothing when the conversation has no plan in it", () => {
+    expect(pinnedPlan(run(text("no checklist here")))).toBeNull();
+  });
+
+  it("pins the newest plan, not the one the turn started with", () => {
+    const entries = run(
+      planEvent("p1", [{ text: "One", state: "active" }]),
+      planEvent("p2", [
+        { text: "One", state: "done" },
+        { text: "Two", state: "active" },
+      ]),
+    );
+    expect(pinnedPlan(entries)?.steps).toHaveLength(2);
+  });
+
+  it("keeps an unfinished plan up after the turn ends", () => {
+    // The case the pinning exists for: work left undone, and twenty tool calls
+    // between it and the bottom of the transcript.
+    const entries = [
+      ...run(
+        planEvent("p1", [
+          { text: "One", state: "done" },
+          { text: "Two", state: "todo" },
+        ]),
+      ),
+      { kind: "user" as const, id: "u1", text: "any news?" },
+    ];
+    expect(pinnedPlan(entries)).not.toBeNull();
+  });
+
+  it("keeps a finished plan up until something else is asked for", () => {
+    // "Done" is a thing worth getting to see. Last hour's completed checklist
+    // sitting over an unrelated question is not.
+    const finished = run(
+      planEvent("p1", [{ text: "One", state: "done" }]),
+    );
+    expect(pinnedPlan(finished)).not.toBeNull();
+
+    expect(
+      pinnedPlan([
+        ...finished,
+        { kind: "user", id: "u1", text: "something else entirely" },
+      ]),
+    ).toBeNull();
+  });
+
+  it("pins nothing for a plan with no steps in it", () => {
+    // Legal on the wire, says nothing worth a panel, and every proportion
+    // drawn from it would be a division by zero.
+    expect(pinnedPlan(run(planEvent("p1", [])))).toBeNull();
+  });
+
+  it("finds the plan in a reopened conversation", () => {
+    // Derived from the transcript rather than held beside it, so a resumed
+    // session pins what it left off with and no extra bookkeeping is needed.
+    const entries = entriesFromMessages([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "p1",
+            name: "update_plan",
+            input: {
+              steps: [
+                { text: "One", state: "done" },
+                { text: "Two", state: "active" },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+    expect(pinnedPlan(entries)?.steps[1]).toMatchObject({ state: "active" });
   });
 });
 

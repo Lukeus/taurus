@@ -55,6 +55,13 @@ pub struct AppState {
     pub pending_questions: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>>,
     pub pending_proposals: Arc<DashMap<String, SkillProposal>>,
     pub pending_agent_proposals: Arc<DashMap<String, AgentProposal>>,
+    /// Cancels a **Build index** started from Settings.
+    ///
+    /// One, not one per session: the index belongs to the workspace rather than
+    /// to any conversation, and there is one settings pane. Replaced at the
+    /// start of each build, the same way a session's token is — reusing a
+    /// cancelled one would stop the next build before it began.
+    pub index_build: Mutex<CancellationToken>,
 }
 
 impl AppState {
@@ -87,6 +94,7 @@ impl AppState {
             pending_questions,
             pending_proposals,
             pending_agent_proposals,
+            index_build: Mutex::new(CancellationToken::new()),
         }
     }
 

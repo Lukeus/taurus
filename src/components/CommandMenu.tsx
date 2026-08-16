@@ -1,13 +1,20 @@
-import type { SkillSummary } from "../lib/api";
+import type { CommandSummary } from "../lib/api";
 
 /**
- * The skills a `/` prefix is currently narrowing to.
+ * The commands a `/` prefix is currently narrowing to.
  *
  * Exported and pure so the matching rules are testable without a DOM: which
- * skill a half-typed name resolves to is the part that has to be right, and it
- * is the part a mounted-component test proves least about.
+ * command a half-typed name resolves to is the part that has to be right, and
+ * it is the part a mounted-component test proves least about.
+ *
+ * Skills and agents rank against each other on the name alone. The harness
+ * settles a name they both hold before the list ever gets here, so a row's kind
+ * is something to show, never something to sort by.
  */
-export function matches(commands: SkillSummary[], query: string): SkillSummary[] {
+export function matches(
+  commands: CommandSummary[],
+  query: string,
+): CommandSummary[] {
   const typed = query.toLowerCase();
   return (
     commands
@@ -42,17 +49,17 @@ export function CommandMenu({
   active,
   onPick,
 }: {
-  commands: SkillSummary[];
+  commands: CommandSummary[];
   /** Index of the highlighted row. */
   active: number;
-  onPick: (command: SkillSummary) => void;
+  onPick: (command: CommandSummary) => void;
 }) {
   if (commands.length === 0) return null;
 
   return (
-    <ul className="command-menu" role="listbox" aria-label="Skills">
+    <ul className="command-menu" role="listbox" aria-label="Commands">
       {commands.map((command, i) => (
-        <li key={command.name}>
+        <li key={`${command.kind}/${command.name}`}>
           <button
             type="button"
             role="option"
@@ -67,6 +74,14 @@ export function CommandMenu({
           >
             <span className="command-name">/{command.name}</span>
             <span className="command-when">{command.when_to_use}</span>
+            {/* The two kinds do different things with the rest of the line —
+                one runs a procedure here, the other hands the job to an agent
+                with its own context — so which it is belongs on the row rather
+                than in the sending. Last, so it lands in a column of its own
+                and the trigger lines stay a block of text to read down. */}
+            <span className={`tag command-kind ${command.kind}`}>
+              {command.kind}
+            </span>
           </button>
         </li>
       ))}
