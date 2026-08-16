@@ -130,6 +130,7 @@ mod tests {
         Step {
             text: text.into(),
             state,
+            active_form: None,
         }
     }
 

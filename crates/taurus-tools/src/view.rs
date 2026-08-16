@@ -18,6 +18,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use ts_rs::TS;
 
 /// A view to draw in place of a tool call's row.
@@ -54,14 +55,153 @@ pub enum TranscriptView {
     Plan { steps: Vec<Step> },
 }
 
+// Doc comments on this struct and its fields are advertised to the model
+// verbatim, so they say what a step is and nothing about how it is read. The
+// note on how much `Deserialize` forgives lives on `from_json` below.
 /// One item on the model's checklist.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema, TS)]
 #[ts(export)]
 pub struct Step {
     /// What is to be done, as a short imperative — `Add the token type`.
     pub text: String,
     #[serde(default)]
     pub state: StepState,
+    /// The same step as something in progress — `Adding the token type`.
+    /// Optional, and only ever shown while this is the step being worked on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_form: Option<String>,
+}
+
+/// Keys a model reaches for when it means `text`, best first.
+///
+/// Not a wish list. Every one of these is a name a model picked for the same
+/// field when it was guessing, and guessing is the normal case for a nested
+/// object: the schema names `text` one level down from the array, and plenty of
+/// models read the array and stop.
+const TEXT_KEYS: &[&str] = &[
+    "text",
+    "step",
+    "task",
+    "title",
+    "name",
+    "description",
+    "content",
+];
+
+/// The same, for `state`.
+const STATE_KEYS: &[&str] = &["state", "status"];
+
+/// The same, for `active_form`.
+///
+/// `activeForm` is here because it is the name Claude Code's own checklist
+/// tool uses, and a model that has seen that one reaches for it.
+const ACTIVE_FORM_KEYS: &[&str] = &["active_form", "activeForm", "active_text"];
+
+impl Step {
+    /// Reads a step from whatever the model actually sent.
+    ///
+    /// The strict reading of this struct is one shape; a model that has not
+    /// resolved the schema produces a dozen, and all of them are unambiguous to
+    /// a reader. Refusing them spends an iteration re-deriving a plan that was
+    /// already perfectly clear — the argument
+    /// [`crate::builtin::plan`] already makes for defaulting an omitted state,
+    /// applied to the field the state hangs off.
+    ///
+    /// This is not the same permissiveness the plan tool's own checks refuse.
+    /// Those reject plans the model got *wrong* — two steps in
+    /// progress, a step that is a paragraph — where quietly repairing it would
+    /// hand the model back a checklist it did not write. Naming the field
+    /// `task` instead of `text` is not a plan the model got wrong. It is the
+    /// same plan, spelled differently.
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut map = match value {
+            // A bare string is a step with nothing said about its state, which
+            // is exactly what the state's default is for.
+            Value::String(text) => {
+                return Ok(Self {
+                    text,
+                    state: StepState::default(),
+                    active_form: None,
+                })
+            }
+            Value::Object(map) => map,
+            other => {
+                return Err(format!(
+                    "a step should be {{\"text\": \"Add the token type\", \"state\": \"todo\"}}, \
+                     or just the text on its own, not {}",
+                    describe(&other)
+                ))
+            }
+        };
+
+        let text = TEXT_KEYS
+            .iter()
+            .find_map(|key| map.remove(*key))
+            .ok_or_else(|| match map.keys().cloned().collect::<Vec<_>>() {
+                keys if keys.is_empty() => {
+                    "a step needs a `text` field saying what is to be done".to_string()
+                }
+                keys => format!(
+                    "a step needs a `text` field saying what is to be done; this one has {}",
+                    keys.join(", ")
+                ),
+            })?;
+        let text = match text {
+            Value::String(text) => text,
+            other => {
+                return Err(format!(
+                    "a step's `text` should be a string, not {}",
+                    describe(&other)
+                ))
+            }
+        };
+
+        let state = match STATE_KEYS.iter().find_map(|key| map.remove(*key)) {
+            None | Some(Value::Null) => StepState::default(),
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                format!("a step's `state` should be 'todo', 'active', or 'done', not {value}")
+            })?,
+        };
+
+        // Absent and blank are the same thing here. A model that has nothing to
+        // say in this field says it by sending "", and a summary line reading
+        // as empty is worse than one that falls back to the imperative.
+        let active_form = match ACTIVE_FORM_KEYS.iter().find_map(|key| map.remove(*key)) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(form)) if form.trim().is_empty() => None,
+            Some(Value::String(form)) => Some(form),
+            Some(other) => {
+                return Err(format!(
+                    "a step's `active_form` should be a string, not {}",
+                    describe(&other)
+                ))
+            }
+        };
+
+        Ok(Self {
+            text,
+            state,
+            active_form,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Step {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::from_json(Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A JSON value in the words an error message can use.
+fn describe(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a true/false",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "an object",
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -70,12 +210,26 @@ pub struct Step {
 pub enum StepState {
     /// Not started.
     #[default]
+    #[serde(
+        alias = "pending",
+        alias = "not_started",
+        alias = "open",
+        alias = "waiting"
+    )]
     Todo,
     /// Being worked on right now. At most one step may be this: a checklist
     /// with three things in progress is a list, not a plan, and it tells the
     /// reader — and the model reading it back — nothing about where it is.
+    #[serde(
+        alias = "in_progress",
+        alias = "in-progress",
+        alias = "doing",
+        alias = "current",
+        alias = "running"
+    )]
     Active,
     /// Finished.
+    #[serde(alias = "completed", alias = "complete", alias = "finished")]
     Done,
 }
 
@@ -258,5 +412,153 @@ mod tests {
         };
         assert!(blank.is_empty());
         assert_eq!(blank.render(), "");
+    }
+
+    fn step(value: serde_json::Value) -> Result<Step, String> {
+        serde_json::from_value::<Step>(value).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn the_shape_the_schema_asks_for_reads_as_itself() {
+        assert_eq!(
+            step(serde_json::json!({
+                "text": "Add the token type",
+                "state": "active",
+                "active_form": "Adding the token type",
+            })),
+            Ok(Step {
+                text: "Add the token type".into(),
+                state: StepState::Active,
+                active_form: Some("Adding the token type".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn a_step_that_is_just_its_text_is_a_step() {
+        // What a model sends when it reads `steps` as an array of strings.
+        assert_eq!(
+            step(serde_json::json!("Add the token type")),
+            Ok(Step {
+                text: "Add the token type".into(),
+                state: StepState::Todo,
+                active_form: None,
+            })
+        );
+    }
+
+    #[test]
+    fn the_active_form_is_optional_and_taken_under_either_spelling() {
+        // `activeForm` is what Claude Code's checklist tool calls it, so it is
+        // the name a model is most likely to reach for unprompted.
+        for key in ACTIVE_FORM_KEYS {
+            assert_eq!(
+                step(serde_json::json!({ "text": "Add it", *key: "Adding it" }))
+                    .map(|s| s.active_form),
+                Ok(Some("Adding it".to_string())),
+                "for {key}"
+            );
+        }
+        assert_eq!(
+            step(serde_json::json!({ "text": "Add it" })).map(|s| s.active_form),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_blank_active_form_is_no_active_form() {
+        // Otherwise the summary line above the list renders as empty, which
+        // reads as a bug rather than as an omission.
+        assert_eq!(
+            step(serde_json::json!({ "text": "Add it", "active_form": "   " }))
+                .map(|s| s.active_form),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn the_text_field_is_taken_under_any_of_its_usual_names() {
+        // The live failure: `missing field \`text\`` on a plan that said
+        // exactly what it meant under a different key.
+        for key in TEXT_KEYS {
+            assert_eq!(
+                step(serde_json::json!({ *key: "Add the token type" })).map(|s| s.text),
+                Ok("Add the token type".to_string()),
+                "for {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_state_is_taken_under_its_usual_names_and_spellings() {
+        for (sent, expected) in [
+            ("todo", StepState::Todo),
+            ("pending", StepState::Todo),
+            ("active", StepState::Active),
+            ("in_progress", StepState::Active),
+            ("in-progress", StepState::Active),
+            ("done", StepState::Done),
+            ("completed", StepState::Done),
+        ] {
+            for key in STATE_KEYS {
+                assert_eq!(
+                    step(serde_json::json!({ "text": "One", *key: sent })).map(|s| s.state),
+                    Ok(expected),
+                    "for {key}={sent}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_step_with_no_text_at_all_is_told_what_it_sent_instead() {
+        // Refusal is still the answer when there is nothing to read as text.
+        // What changes is that the model is told what it actually sent, rather
+        // than the name of a field it never chose.
+        let error = step(serde_json::json!({ "id": 3, "notes": "later" })).unwrap_err();
+        assert!(error.contains("needs a `text` field"), "{error}");
+        assert!(error.contains("id, notes"), "{error}");
+    }
+
+    #[test]
+    fn a_state_that_is_not_one_of_the_three_names_them() {
+        let error = step(serde_json::json!({ "text": "One", "state": "blocked" })).unwrap_err();
+        assert!(error.contains("'todo', 'active', or 'done'"), "{error}");
+    }
+
+    #[test]
+    fn a_step_that_is_neither_text_nor_an_object_says_so() {
+        let error = step(serde_json::json!(7)).unwrap_err();
+        assert!(error.contains("not a number"), "{error}");
+    }
+
+    #[test]
+    fn what_a_step_deserializes_from_is_what_it_serializes_back_to() {
+        // The forgiving reading only ever produces the canonical shape, so a
+        // plan read from a sloppy call and a plan read from a saved
+        // conversation are the same plan.
+        let sloppy = step(serde_json::json!({
+            "task": "One",
+            "status": "in_progress",
+            "activeForm": "Doing one",
+        }))
+        .unwrap();
+        let written = serde_json::to_value(&sloppy).unwrap();
+        assert_eq!(
+            written,
+            serde_json::json!({ "text": "One", "state": "active", "active_form": "Doing one" })
+        );
+        assert_eq!(step(written), Ok(sloppy));
+    }
+
+    #[test]
+    fn a_step_without_an_active_form_does_not_write_the_field_at_all() {
+        // Every plan is written into the saved conversation. A null per step
+        // per rewrite is noise in a file that is read back on every reopen.
+        let written = serde_json::to_value(step(serde_json::json!("One")).unwrap()).unwrap();
+        assert_eq!(
+            written,
+            serde_json::json!({ "text": "One", "state": "todo" })
+        );
     }
 }
