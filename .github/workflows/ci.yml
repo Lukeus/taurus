@@ -10,6 +10,23 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # The workflows are the one thing here no other job compiles. A release.yml
+  # that references an undefined context or a nonexistent runner is only found
+  # by running it, and running it means pushing a tag — so it stayed broken
+  # through several merges without a single red check. actionlint reads them as
+  # code; the `jobs.release.outputs` reference that made every tag a no-op is
+  # exactly what it reports, and it takes about ten seconds.
+  workflows:
+    name: Lint workflows
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned. Unpinned, a new actionlint release turns unrelated pull requests
+      # red for a rule nobody in them chose to adopt.
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
   # Lint and unit tests run once on Linux — they are platform-independent and
   # repeating them on three OSes buys nothing.
   check:

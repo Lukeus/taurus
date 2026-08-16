@@ -4,16 +4,111 @@ on:
   push:
     tags:
       - 'v*'
+  # A dry run: builds all three platforms, uploads nothing, publishes nothing.
+  # Worth having because the alternative way to test this file is to cut a real
+  # tag against the real repository, and every bug found that way is found in
+  # public. The bundles land as workflow artifacts so a run can be inspected as
+  # well as passed.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Everything that can fail in seconds, before anything that takes twenty
+  # minutes. Both steps here guard a failure that a green build would otherwise
+  # hand straight to whoever downloads it.
+  prepare:
+    name: Check the version and open a draft
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # No pnpm install: the script imports nothing outside node's standard
+      # library, precisely so this job stays a few seconds long.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The version lives in `package.json`, `Cargo.toml`, and
+      # `tauri.conf.json`, and the tag is a fourth copy. `tauri-action` names
+      # the release from the tag and the bundles from `tauri.conf.json`, so a
+      # tag pushed against an unbumped tree produces a v0.2.0 release full of
+      # `Taurus_0.1.0_…` files — green, published, and wrong on every asset.
+      - name: The version in the tree matches the tag
+        env:
+          # Empty on a dry run, which the script reads as "no tag to match" and
+          # still uses to check the three files against each other.
+          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+        run: node scripts/version.mjs check "$TAG"
+
+      # Created here, as a draft, rather than left to `tauri-action`. Three
+      # reasons, in order of how badly each bites:
+      #
+      # Published-by-default is wrong for a matrix. `releaseDraft` defaults to
+      # false, so the first platform to finish publishes the release and the
+      # other two upload into something the world can already see. macOS builds
+      # two architectures for the universal target and finishes last by a wide
+      # margin, so the visible state for most of the run is a live release with
+      # no Mac build in it.
+      #
+      # `tauri-action` cannot create a release without `releaseName`. Its create
+      # path logs "releaseName not set but required to create release" and then
+      # throws `Release not found or created.` — so on a first tag, with no
+      # release to find, every platform fails on a message that names neither
+      # the input nor this file.
+      #
+      # And three jobs racing to get-or-create the same release is a race worth
+      # not having. One job, once, before any of them start.
+      - name: Open the draft release
+        id: draft
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A draft has no tag as far as the API is concerned, so it cannot be
+          # looked up by one — the list endpoint is the only way to find it.
+          # This is what makes a re-run after one platform fails attach to the
+          # draft that is already there instead of opening a second one.
+          #
+          # Captured whole and trimmed to its first line rather than piped into
+          # `head`. A pipe would hide a failed `gh` behind head's exit status,
+          # and `pipefail` would trade that for the opposite bug: `head` closing
+          # the pipe early, `gh --paginate` taking a SIGPIPE for it, and a
+          # successful lookup failing the job.
+          ids=$(gh api "repos/$REPO/releases" --paginate \
+            --jq '.[] | select(.tag_name == env.TAG) | .id')
+          id=${ids%%$'\n'*}
+
+          if [ -n "$id" ]; then
+            echo "Reusing the draft already open for $TAG (release $id)."
+          else
+            # `generate_release_notes` fills in both the title and the body from
+            # the commits since the last tag. Notes worth reading still want
+            # writing by hand — this is the floor, applied before the release is
+            # visible, so the draft is never empty while it waits to be edited.
+            id=$(gh api "repos/$REPO/releases" \
+              -f tag_name="$TAG" \
+              -F draft=true \
+              -F generate_release_notes=true \
+              --jq .id)
+            echo "Opened draft release $id for $TAG."
+          fi
+
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   release:
     name: Tauri release (${{ matrix.os }})
-    # Creating the release and uploading to it is a write to the repository.
-    # Without this the run reaches `tauri-action` and fails on a 403 from the
-    # default token, which reads as an auth problem rather than a missing line.
+    needs: prepare
+    # Uploading assets to the release is a write to the repository. Without this
+    # the run reaches `tauri-action` and fails on a 403 from the default token,
+    # which reads as an auth problem rather than a missing line.
     permissions:
       contents: write
 
@@ -71,15 +166,19 @@ jobs:
       - name: Generate TypeScript bindings
         run: pnpm bindings
 
-      # `tauri-action` creates the release for this tag and uploads each
-      # platform's bundles to it. Which bundles those are comes from
-      # `tauri.conf.json` (`bundle.targets: all`), not from anything here.
-      - name: Build and upload to GitHub Release
+      # Builds the bundles named by `tauri.conf.json` (`bundle.targets: all`),
+      # then uploads them to the draft `prepare` opened. On a dry run
+      # `releaseId` and `tagName` are both empty, which is how this action is
+      # told to build and upload nothing; the bundles come back as workflow
+      # artifacts instead.
+      - name: Build and upload to the draft release
         uses: tauri-apps/tauri-action@v0
         with:
-          tagName: ${{ github.ref_name }}
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
           args: ${{ matrix.args }}
           includeDebug: false
+          uploadWorkflowArtifacts: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signing keys, kept for when there is an updater to sign for.
@@ -89,3 +188,28 @@ jobs:
           # a decision about the product, not about this file.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PASSWORD }}
+
+  # `needs` is the whole point: the release becomes visible when all three
+  # platforms have uploaded, and not before. If one fails, the draft stays a
+  # draft with the other two attached — a re-run adds the missing platform to
+  # that same draft rather than starting over.
+  publish:
+    name: Publish the release
+    needs: [prepare, release]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      # By id, not by tag: a draft cannot be addressed by its tag, which is why
+      # `gh release edit "$TAG"` would not find this one.
+      - name: Take the release out of draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          url=$(gh api -X PATCH "repos/$REPO/releases/$RELEASE_ID" \
+            -F draft=false --jq .html_url)
+          echo "Published: $url"
+          echo "Published: $url" >> "$GITHUB_STEP_SUMMARY"
