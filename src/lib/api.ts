@@ -12,6 +12,7 @@ import type { AgentTier } from "../bindings/AgentTier";
 import type { AllowedRule } from "../bindings/AllowedRule";
 import type { Answer } from "../bindings/Answer";
 import type { AppStatus } from "../bindings/AppStatus";
+import type { Attachment } from "../bindings/Attachment";
 import type { Checkpoint } from "../bindings/Checkpoint";
 import type { Commit } from "../bindings/Commit";
 import type { ContentBlock } from "../bindings/ContentBlock";
@@ -59,6 +60,7 @@ export type {
   AllowedRule,
   Answer,
   AppStatus,
+  Attachment,
   Checkpoint,
   Commit,
   ContentBlock,
@@ -120,10 +122,11 @@ export function sendMessage(
   sessionId: string,
   text: string,
   onEvent: (event: UiEvent) => void,
+  images: Attachment[] = [],
 ): Promise<void> {
   const channel = new Channel<UiEvent>();
   channel.onmessage = onEvent;
-  return invoke("send_message", { sessionId, text, onEvent: channel });
+  return invoke("send_message", { sessionId, text, images, onEvent: channel });
 }
 
 export const cancelSession = (sessionId: string) =>

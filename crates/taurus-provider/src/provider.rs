@@ -69,4 +69,28 @@ pub trait Provider: Send + Sync {
         tx: mpsc::Sender<StreamEvent>,
         cancel: CancellationToken,
     ) -> Result<StopReason>;
+
+    /// Turns text into vectors, one per input, in the order given.
+    ///
+    /// A method on `Provider` rather than a trait of its own because embedding
+    /// is a thing a *backend* does or does not do, and every caller that wants
+    /// one is already holding a provider. A second trait would mean a second
+    /// registry, a second configuration entry naming the same server, and a
+    /// way for the two to disagree about which machine to talk to.
+    ///
+    /// The default refuses, which is right for every backend that has no
+    /// embedding endpoint. It names the provider so the message is actionable
+    /// rather than a bare "unsupported": the fix is to point the index at a
+    /// backend that can, and the user has to know which one this was.
+    ///
+    /// `model` is an embedding model, not a chat model, and the two namespaces
+    /// are separate on every backend that has both.
+    async fn embed(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        let _ = (model, inputs);
+        Err(crate::error::ProviderError::Protocol(format!(
+            "{} does not produce embeddings. Point the index at a backend that does — a local \
+             Ollama with an embedding model pulled is the usual answer.",
+            self.id()
+        )))
+    }
 }

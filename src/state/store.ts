@@ -18,13 +18,26 @@ import type {
   PermissionRequest,
   SessionMeta,
   AgentProposal,
+  Attachment,
   SkillProposal,
   TranscriptView,
   UiEvent,
 } from "../lib/api";
 
 export type Entry =
-  | { kind: "user"; id: string; text: string }
+  | {
+      kind: "user";
+      id: string;
+      text: string;
+      /**
+       * Images sent with this message, base64, in the order they were attached.
+       *
+       * Held for the live view only. A resumed conversation rebuilds them from
+       * the transcript's own `image` blocks, which is the same data by a
+       * different route — see `entriesFromMessages`.
+       */
+      images?: Attachment[];
+    }
   | { kind: "assistant"; id: string; text: string; thinking: string; open: boolean }
   | {
       kind: "tool";
@@ -101,7 +114,7 @@ interface Store {
    * the same provider and model, so the app is never left without a session.
    */
   remove: (sessionId: string) => Promise<void>;
-  send: (text: string) => Promise<void>;
+  send: (text: string, images?: Attachment[]) => Promise<void>;
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
   /**
@@ -267,19 +280,24 @@ export const useStore = create<Store>((set, get) => ({
     await get().reload();
   },
 
-  send: async (text) => {
+  send: async (text, images = []) => {
     const { session } = get();
+    // Text is still required with an image attached. "What is wrong with this?"
+    // is a question; a bare screenshot is a guess about what was wanted.
     if (!session || !text.trim()) return;
 
     set((s) => ({
       busy: true,
       error: null,
-      entries: [...s.entries, { kind: "user", id: nextId(), text }],
+      entries: [...s.entries, { kind: "user", id: nextId(), text, images }],
     }));
 
     try {
-      await api.sendMessage(session.id, text, (event) =>
-        set((s) => ({ entries: reduce(s.entries, event) })),
+      await api.sendMessage(
+        session.id,
+        text,
+        (event) => set((s) => ({ entries: reduce(s.entries, event) })),
+        images,
       );
     } catch (e) {
       set((s) => ({
@@ -400,9 +418,27 @@ export function entriesFromMessages(messages: Message[]): Entry[] {
 
   for (const message of messages) {
     if (message.role === "user") {
+      // Images precede the text they belong to, so they are collected first and
+      // attached to the bubble that follows. A resumed conversation therefore
+      // shows the screenshot that was asked about, not a message referring to
+      // one that is no longer on screen.
+      const attached: Attachment[] = message.content
+        .filter((b) => b.type === "image")
+        .map((b) =>
+          b.type === "image" ? { mime_type: b.mime_type, data: b.data } : null!,
+        );
+
       for (const block of message.content) {
         if (block.type === "text") {
-          entries.push({ kind: "user", id: nextId(), text: block.text });
+          entries.push({
+            kind: "user",
+            id: nextId(),
+            text: block.text,
+            // On the first text block only. A user message has one, but a
+            // hand-written transcript could have two, and repeating the images
+            // under each would double them.
+            images: attached.length > 0 ? attached.splice(0) : undefined,
+          });
         } else if (block.type === "tool_result") {
           const index = entries.findIndex(
             (e) => e.kind === "tool" && e.id === block.tool_use_id,

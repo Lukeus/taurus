@@ -267,6 +267,59 @@ impl Host {
             registry.register(Arc::new(taurus_web::WebSearch::new(backend)));
         }
 
+        // Semantic search, when an embedding model is named. Off by default and
+        // on the same rule the web tools follow: a tool the model can see is a
+        // tool it will try, and one with no embedding model pulled costs it a
+        // turn to find that out.
+        //
+        // Registered into the shared registry rather than per turn, unlike the
+        // tools that address the person watching. A delegate sent to explore an
+        // unfamiliar codebase is exactly who needs this most, and the per-turn
+        // set is the one sub-agents do not get.
+        let embedding_model = self
+            .settings
+            .read()
+            .await
+            .embedding_model
+            .trim()
+            .to_string();
+        if !embedding_model.is_empty() {
+            // The provider the conversation is on. An embedding model lives on
+            // the same server as the chat model in every local setup, and a
+            // second provider entry naming the same machine would be one more
+            // thing to keep in step.
+            let id = self
+                .settings
+                .read()
+                .await
+                .last_provider
+                .clone()
+                .or_else(|| self.providers.blocking_read().first().map(|p| p.id.clone()));
+            match id {
+                Some(id) => match self.provider(&id).await {
+                    Ok(provider) => {
+                        info!(model = %embedding_model, provider = %id, "semantic search enabled");
+                        registry.register(Arc::new(taurus_index::SearchCode::new(
+                            provider,
+                            &embedding_model,
+                            taurus_index::index_dir(
+                                &config::home_dir(),
+                                &crate::sessions::workspace_key(&workspace),
+                            ),
+                        )));
+                    }
+                    Err(e) => problems.push(Problem {
+                        source: ProblemSource::Providers,
+                        message: format!("semantic search is configured but {e}"),
+                    }),
+                },
+                None => problems.push(Problem {
+                    source: ProblemSource::Providers,
+                    message: "semantic search is configured but no provider is".into(),
+                }),
+            }
+        }
+
         // Unconditional, unlike everything else registered here. It is how a
         // user with no MCP servers gets their first one, so gating it on having
         // some would take it away from exactly the person who needs it. Safe to

@@ -4960,12 +4960,14 @@ name = "taurus-host"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "directories",
  "keyring",
  "serde",
  "serde_json",
  "taurus-agents",
  "taurus-core",
+ "taurus-index",
  "taurus-mcp",
  "taurus-provider",
  "taurus-provider-anthropic",
@@ -4980,6 +4982,25 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ts-rs",
+]
+
+[[package]]
+name = "taurus-index"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "ignore",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "taurus-provider",
+ "taurus-provider-ollama",
+ "taurus-tools",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

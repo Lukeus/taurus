@@ -15,6 +15,7 @@ const OPEN = {
   model: "qwen3.6:27b",
   provider_id: "ollama",
   native_tools: true,
+  vision: false,
   context_length: 32_000,
 };
 

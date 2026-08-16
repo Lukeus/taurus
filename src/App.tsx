@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
+import { Attachments } from "./components/Attachments";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { PermissionDialog } from "./components/PermissionDialog";
@@ -17,8 +18,15 @@ import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript } from "./components/Transcript";
 import * as api from "./lib/api";
-import type { ModelInfo, ProviderConfig, SkillSummary, Theme } from "./lib/api";
+import type {
+  Attachment,
+  ModelInfo,
+  ProviderConfig,
+  SkillSummary,
+  Theme,
+} from "./lib/api";
 import { basename, plural } from "./lib/format";
+import { isImage, toAttachments } from "./lib/images";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
 import { useStore } from "./state/store";
 
@@ -276,6 +284,7 @@ export default function App() {
         <Composer
           busy={store.busy}
           ready={!!store.session}
+          vision={store.session?.vision ?? false}
           workspace={workspace}
           onPickWorkspace={pickWorkspace}
           onSend={store.send}
@@ -448,6 +457,7 @@ function FirstRun({
 function Composer({
   busy,
   ready,
+  vision,
   workspace,
   onPickWorkspace,
   onSend,
@@ -455,14 +465,44 @@ function Composer({
 }: {
   busy: boolean;
   ready: boolean;
+  /**
+   * Whether this session's model reads images.
+   *
+   * Decides whether a paste or a drop is taken at all. Accepting one on a model
+   * that cannot see would be an invitation to a refusal — the backend would
+   * turn it down, correctly, one round trip later.
+   */
+  vision: boolean;
   workspace: string | null;
   onPickWorkspace: () => void;
-  onSend: (text: string) => void;
+  onSend: (text: string, images: Attachment[]) => void;
   onStop: () => void;
 }) {
   const [text, setText] = useState("");
   const [commands, setCommands] = useState<SkillSummary[]>([]);
   const [active, setActive] = useState(0);
+  const [images, setImages] = useState<Attachment[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  // Tracked with a counter rather than a boolean: dragging over a child fires
+  // `dragleave` on the parent, so a boolean flickers the highlight off while
+  // the file is still over the composer.
+  const [dragDepth, setDragDepth] = useState(0);
+
+  const attach = async (files: File[]) => {
+    const wanted = files.filter(isImage);
+    // A drag carrying no image at all is not this component's business — a
+    // file dropped on the composer is a mistake worth naming, but text dragged
+    // from another window is not.
+    if (wanted.length === 0) {
+      if (files.length > 0) {
+        setAttachError("Only images can be attached. Use PNG, JPEG, WebP, or GIF.");
+      }
+      return;
+    }
+    const { attachments, errors } = await toAttachments(wanted, images.length);
+    if (attachments.length > 0) setImages((held) => [...held, ...attachments]);
+    setAttachError(errors.length > 0 ? errors.join(" ") : null);
+  };
 
   // Fetched once the composer is usable, and again whenever a workspace change
   // could have brought a different library with it.
@@ -486,17 +526,48 @@ function Composer({
 
   const submit = () => {
     if (!text.trim() || busy) return;
-    onSend(text);
+    onSend(text, images);
     setText("");
+    setImages([]);
+    setAttachError(null);
     setActive(0);
   };
 
   return (
     <footer className="composer">
-      <div className="composer-box">
+      <div
+        className={`composer-box${dragDepth > 0 ? " dropping" : ""}`}
+        // The whole box is the target, not the textarea: someone dragging a
+        // screenshot aims at the thing that looks like the message, and the
+        // textarea is one row tall until it is typed into.
+        onDragEnter={(e) => {
+          if (!vision || !ready) return;
+          e.preventDefault();
+          setDragDepth((d) => d + 1);
+        }}
+        onDragOver={(e) => {
+          if (vision && ready) e.preventDefault();
+        }}
+        onDragLeave={() => setDragDepth((d) => Math.max(0, d - 1))}
+        onDrop={(e) => {
+          if (!vision || !ready) return;
+          e.preventDefault();
+          setDragDepth(0);
+          void attach([...e.dataTransfer.files]);
+        }}
+      >
         {shown.length > 0 && (
           <CommandMenu commands={shown} active={index} onPick={complete} />
         )}
+
+        {images.length > 0 && (
+          <Attachments images={images} onRemove={(i) =>
+            setImages((held) => held.filter((_, n) => n !== i))
+          } />
+        )}
+
+        {attachError && <p className="composer-problem">{attachError}</p>}
+
         <textarea
           value={text}
           placeholder={ready ? "Ask Taurus to do something…" : "Connect a model to begin"}
@@ -505,6 +576,21 @@ function Composer({
           onChange={(e) => {
             setText(e.target.value);
             setActive(0);
+          }}
+          onPaste={(e) => {
+            const files = [...e.clipboardData.files];
+            if (files.length === 0) return;
+            // Only once there is an image in it: pasting a file path as text
+            // is still a paste, and stealing it would break copying a path in.
+            if (!files.some(isImage)) return;
+            if (!vision) {
+              setAttachError(
+                "This model cannot read images. Switch to a vision model — on Ollama that is one like qwen3-vl or llava.",
+              );
+              return;
+            }
+            e.preventDefault();
+            void attach(files);
           }}
           onKeyDown={(e) => {
             // The menu takes the keys it needs and lets every other one
@@ -546,9 +632,11 @@ function Composer({
           </button>
           <div className="spacer" />
           {/* The hint is the only place a skill library announces it can be
-              run by name, and only while there is one to run. */}
+              run by name, and only while there is one to run. Paste is the
+              same: a model that cannot see must not advertise it. */}
           <span className="composer-hint">
             ↵ send · ⇧↵ newline{commands.length > 0 && " · / skills"}
+            {vision && " · paste an image"}
           </span>
           {busy ? (
             <button className="danger composer-send" onClick={onStop}>

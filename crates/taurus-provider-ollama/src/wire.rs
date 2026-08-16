@@ -147,3 +147,11 @@ impl ShowResponse {
             .and_then(|v| u32::try_from(v).ok())
     }
 }
+
+/// `/api/embed`. One vector per input, in the order they were sent — position
+/// is the only thing tying a vector back to the text it came from.
+#[derive(Debug, serde::Deserialize)]
+pub struct EmbedResponse {
+    #[serde(default)]
+    pub embeddings: Vec<Vec<f32>>,
+}

@@ -24,8 +24,9 @@ use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
 use taurus_host::{
-    sessions, BackendKind, Checkpoint, Commit, Host, KeyStatus, Problem, ProviderConfig, Repo,
-    RepoStatus, Restored, SessionLog, SessionMeta, Settings, Theme, TurnChange, TurnRef,
+    sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, Problem,
+    ProviderConfig, Repo, RepoStatus, Restored, SessionLog, SessionMeta, Settings, Theme,
+    TurnChange, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -107,6 +108,10 @@ pub struct CreatedSession {
     /// False when the model has no native tool support and the prompted
     /// fallback will be used. Shown in the UI because it changes reliability.
     pub native_tools: bool,
+    /// Whether this model reads images. Decides whether the composer offers to
+    /// attach one at all — an attach button on a model that cannot see is an
+    /// invitation to a refusal.
+    pub vision: bool,
     pub context_length: u32,
 }
 
@@ -146,6 +151,7 @@ pub async fn create_session(
         model,
         provider_id,
         native_tools: capabilities.native_tools,
+        vision: capabilities.vision,
         context_length: capabilities.context_length,
     })
 }
@@ -168,6 +174,8 @@ pub struct ResumedSession {
     pub model: String,
     pub provider_id: String,
     pub native_tools: bool,
+    /// Whether this model reads images. See [`CreatedSession::vision`].
+    pub vision: bool,
     pub context_length: u32,
     /// The whole transcript, for the frontend to rebuild the view from.
     pub messages: Vec<Message>,
@@ -215,6 +223,7 @@ pub async fn resume_session(
         model: session.model.clone(),
         provider_id: provider_id.clone(),
         native_tools: capabilities.native_tools,
+        vision: capabilities.vision,
         context_length: capabilities.context_length,
         messages: session.messages.clone(),
     };
@@ -245,6 +254,7 @@ pub async fn send_message(
     state: State<'_, Arc<AppState>>,
     session_id: String,
     text: String,
+    images: Option<Vec<Attachment>>,
     on_event: Channel<UiEvent>,
 ) -> CmdResult<()> {
     let entry = state.session(&session_id)?;
@@ -265,12 +275,28 @@ pub async fn send_message(
         None => text.clone(),
     };
 
+    // Checked before anything is started, and against this model rather than
+    // this provider: on Ollama one model on a server reads images and the next
+    // one does not. Refusing here costs the user a retry with the same text;
+    // letting it through costs a round trip and comes back as a wire error
+    // naming a field in the request body.
+    let model = session_model(&entry).await;
+    let images = images.unwrap_or_default();
+    let blocks = if images.is_empty() {
+        Vec::new()
+    } else {
+        let capabilities = provider
+            .capabilities(&model)
+            .await
+            .map_err(|e| e.to_string())?;
+        taurus_host::attach::to_blocks(&images, &capabilities)?
+    };
+
     // A fresh token per turn: reusing a canceled one would abort the next turn
     // before it started.
     let cancel = CancellationToken::new();
     *entry.cancel.lock().await = cancel.clone();
 
-    let model = session_model(&entry).await;
     let agent = state
         .host
         .build_agent(
@@ -294,10 +320,19 @@ pub async fn send_message(
         }
     });
 
+    // Images first, then the text. A model answers "what is wrong with this?"
+    // better having already seen the thing, and every adapter here preserves
+    // block order.
+    let message = if blocks.is_empty() {
+        Message::user(prompt)
+    } else {
+        let mut content = blocks;
+        content.push(taurus_provider::ContentBlock::text(prompt));
+        Message::new(taurus_provider::Role::User, content)
+    };
+
     let mut session = entry.session.lock().await;
-    let outcome = agent
-        .run_turn(&mut session, Message::user(prompt), tx)
-        .await;
+    let outcome = agent.run_turn(&mut session, message, tx).await;
     // Recorded whatever the outcome, and before the session lock is released:
     // an interrupted turn still produced the messages that led there, and they
     // must reach disk in the order they happened.
