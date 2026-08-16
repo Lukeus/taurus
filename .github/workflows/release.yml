@@ -169,16 +169,21 @@ jobs:
       # Builds the bundles named by `tauri.conf.json` (`bundle.targets: all`),
       # then uploads them to the draft `prepare` opened. On a dry run
       # `releaseId` and `tagName` are both empty, which is how this action is
-      # told to build and upload nothing; the bundles come back as workflow
-      # artifacts instead.
+      # told to build and upload nothing; the two steps below keep the bundles.
+      #
+      # Pinned at `@v0`, and worth knowing which docs describe it: the README
+      # on this action's default branch is v1's, and v1 renamed or added
+      # several inputs. An input v0 does not know is not an error — it is a
+      # warning in the log and an input nothing reads. Check a name against
+      # `action.yml` on the `action-v0.x` tag rather than against the README.
       - name: Build and upload to the draft release
+        id: build
         uses: tauri-apps/tauri-action@v0
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
           args: ${{ matrix.args }}
           includeDebug: false
-          uploadWorkflowArtifacts: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signing keys, kept for when there is an updater to sign for.
@@ -188,6 +193,46 @@ jobs:
           # a decision about the product, not about this file.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PASSWORD }}
+
+      # What makes a dry run inspectable rather than merely green. `v0` has no
+      # `uploadWorkflowArtifacts` input to do this — passing one built three
+      # platforms and left nothing behind, which a passing run said nothing
+      # about. Done here instead, from the paths the build reports, so an empty
+      # build fails the step rather than uploading an empty directory.
+      #
+      # Node rather than jq or shell: `setup-node` has already run on all three
+      # runners, `artifactPaths` arrives as a JSON array, and a `.app` is a
+      # directory while a `.dmg` is a file — one `cpSync` handles both, on an
+      # OS where `/bin/bash` is still 3.2.
+      - name: Stage the bundles
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.build.outputs.artifactPaths }}
+        run: |
+          node -e '
+            const { cpSync, mkdirSync } = require("node:fs");
+            const { basename, join } = require("node:path");
+            const paths = JSON.parse(process.env.ARTIFACT_PATHS ?? "[]");
+            if (paths.length === 0) {
+              console.error("the build reported no bundles to stage");
+              process.exit(1);
+            }
+            mkdirSync("dry-run-bundles", { recursive: true });
+            for (const path of paths) {
+              console.log(path);
+              cpSync(path, join("dry-run-bundles", basename(path)), { recursive: true });
+            }
+          '
+
+      - name: Keep the bundles from the dry run
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          # Per-OS, so the three legs cannot collide on a name.
+          name: bundles-${{ matrix.os }}
+          path: dry-run-bundles/
+          if-no-files-found: error
 
   # `needs` is the whole point: the release becomes visible when all three
   # platforms have uploaded, and not before. If one fails, the draft stays a
