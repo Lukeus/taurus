@@ -1749,6 +1749,88 @@ body.resizing * {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
 }
 
+/* A file is over the composer and would be taken. Dashed rather than solid,
+   because the box already goes solid-accent on focus and the two states are
+   otherwise indistinguishable at a glance. */
+.composer-box.dropping {
+  border-style: dashed;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-raised));
+}
+
+/* Why an attachment was refused. Sits with the thumbnails rather than in the
+   transcript: it is about the message being composed, and the message has not
+   been sent. */
+.composer-problem {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+/*
+ * Attached images, in the composer and again in the transcript.
+ *
+ * Deliberately one rule for both. They answer the same question — what am I
+ * sending, what did I send — and a thumbnail that changed size between the two
+ * would read as a different object rather than the same one, a moment later.
+ */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.attachment {
+  position: relative;
+  margin: 0;
+  width: 88px;
+  height: 88px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--bg-sunken);
+  flex: none;
+}
+.attachment img {
+  width: 100%;
+  height: 100%;
+  /* Cropped rather than letterboxed: at this size the shape of the image says
+     less than the middle of it does, and a row of ragged boxes is harder to
+     scan than a row of squares. The full image is one click away in any
+     screenshot tool the user already has. */
+  object-fit: cover;
+  display: block;
+}
+
+/* Visible on hover and on keyboard focus alike — a control that only appears
+   under a pointer cannot be reached by anyone who is not using one. */
+.attachment-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--bg);
+  background: color-mix(in srgb, var(--text) 78%, transparent);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.attachment:hover .attachment-remove,
+.attachment-remove:focus-visible {
+  opacity: 1;
+}
+
+/* In the transcript the strip sits above the bubble and shares its alignment,
+   so the picture and the question read as one message. */
+.entry.user .attachments {
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
 /* The skill menu sits inside the composer box and above the textarea, so it
    grows upward into the conversation rather than pushing the box down and
    moving the caret out from under the user mid-word. */

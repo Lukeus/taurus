@@ -12,6 +12,7 @@ members = [
     "crates/taurus-provider-anthropic",
     "crates/taurus-provider-gemini",
     "crates/taurus-mcp",
+    "crates/taurus-index",
     "crates/taurus-host",
     "crates/taurus-cli",
     "src-tauri",
@@ -34,6 +35,7 @@ taurus-agents = { path = "crates/taurus-agents" }
 taurus-skills = { path = "crates/taurus-skills" }
 taurus-web = { path = "crates/taurus-web" }
 taurus-mcp = { path = "crates/taurus-mcp" }
+taurus-index = { path = "crates/taurus-index" }
 taurus-host = { path = "crates/taurus-host" }
 taurus-core = { path = "crates/taurus-core" }
 
@@ -65,6 +67,10 @@ keyring = { version = "3.6", default-features = false }
 # it reads is the one the checkpoint log takes a moment later, so showing a diff
 # costs a read that was going to happen anyway.
 similar = "2"
+# Decoding pasted images, to check they are what they claim before a turn
+# starts. Only ever decoded to look at — the base64 a frontend sends is the
+# base64 the provider receives, so nothing here re-encodes.
+base64 = "0.23"
 # Pseudo-terminals for `run_command`. Real ones per platform — forkpty on unix,
 # ConPTY on Windows — so a program that checks `isatty` behaves the way it does
 # in a terminal on all three from the one codebase.

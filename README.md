@@ -6,8 +6,10 @@ frontends over one shared core: a Tauri v2 desktop app and a `taurus` CLI.
 macOS, Windows, and Linux from one codebase.
 
 It reads and edits files in a workspace, runs commands, searches the web,
-connects to MCP servers, delegates to sub-agents — and writes down procedures it
-works out as reusable **skills**, which you approve before they are kept. It
+connects to MCP servers, delegates to sub-agents, reads screenshots you paste in,
+and finds code by what it does rather than what it is called — and writes down
+procedures it works out as reusable **skills**, which you approve before they are
+kept. It
 reads the `AGENTS.md` and `CLAUDE.md` you already have rather than asking for a
 seventh copy. Every file it edits is recorded first, so any turn can be
 **rewound** — or read back as a diff and **committed on its own** — and every
@@ -76,6 +78,7 @@ crates/
   taurus-agents/            Sub-agent definitions and discovery
   taurus-mcp/               MCP client
   taurus-web/               Web search and page fetching
+  taurus-index/             Local semantic search: chunking, embedding, ranking
   taurus-core/              Session state, the agent loop, sub-agents
   taurus-host/              Config, system prompt, registry assembly
   taurus-cli/               The `taurus` binary
@@ -746,6 +749,110 @@ never called it; asked to plan, the 27B kept the list accurate through every
 step. The prompt now says when to plan and when to update, which is the whole of
 what the harness can do about it. See [Known gaps](#known-gaps).
 
+### Showing it a picture
+
+Every provider adapter here could always *send* an image — `ContentBlock::Image`
+maps onto Ollama's `images` array, OpenAI's `image_url`, Anthropic's `source`,
+and Gemini's `inline_data` without loss. What none of them had was a way for one
+to arrive. Now paste or drop one into the composer:
+
+```
+┌──────────────────────────────────────────┐
+│  [thumb] [thumb] ✕                       │
+│  why is this layout wrong?               │
+│  ▤ taurus-ai-shell   ↵ send · paste an image │
+└──────────────────────────────────────────┘
+```
+
+Both are refused outright on a model that cannot see, rather than accepted and
+turned down a round trip later. That check is per *model*, not per provider:
+on one Ollama server `gemma4:12b` reads images and `llama3.2` does not, and the
+composer only advertises paste when the session's model reports vision.
+
+Everything else checkable is checked before the turn starts, because an image
+rejected by a provider comes back as a wire error naming a field in the request
+body — the least useful thing to hand someone holding a screenshot. So:
+
+- **The format is one every backend takes** — PNG, JPEG, WebP, GIF. The
+  intersection, not the union: Gemini would accept HEIC and Anthropic would not,
+  and a format that works until the day you switch provider is worse than one
+  that never worked.
+- **The bytes really are that format.** A clipboard flavour and a file extension
+  are both wrong often enough to matter, so the magic number is compared against
+  what the file claims. A `.png` that is really a JPEG is named here rather than
+  on the wire.
+- **Four at most, five megabytes each.** An image is budgeted at a flat 1000
+  tokens because its real cost has nothing to do with its base64 length, and
+  this harness is built for 8k windows — four images is already half of one.
+
+Images precede the text in the message, which is the order the model reads them
+in and the order the transcript draws them. A reopened conversation rebuilds the
+strip from the transcript's own `image` blocks, so the screenshot is still
+beside the question that asked about it.
+
+### Finding code by what it does
+
+`grep` answers *where does this string appear*. The question someone actually
+has on an unfamiliar repository is *where is the code that does this*, and the
+only way to answer it with grep is to already know what the thing is called.
+
+An embedding index is normally a cloud dependency: a service to send your code
+to, a bill, and a vector database to run. For a local-first harness it is none
+of those — the machine already has a model server on it, so the index is one
+more endpoint on the same server and the vectors are a file in the config home.
+
+```
+search_code  "where the conversation transcript is written to disk"
+
+  0.677  crates/taurus-host/src/sessions.rs:121-160
+  0.635  src/state/store.ts:61-100
+  0.593  scripts/screenshots/fixtures.ts:1-40
+```
+
+Those are real results from this repository, and the first one is right. It
+matters most at 8k, which is the size everything here is shaped around: a
+context that small cannot afford three wrong `read_file` calls, and each one is
+a page of tokens spent on a file that turned out not to be the answer.
+
+**It refreshes before it searches, not on a timer.** A model that just wrote a
+file and then looks for it has to find it; an index refreshed on a schedule
+answers from before the edit, which is worse than no index because the answer
+looks right. Only files whose length or modification time moved are re-read —
+the same comparison `make` and `rsync` have always used. On this repository:
+
+```
+first pass:     44.4s  Indexed 212 files (2498 chunks)
+second pass:   53.4ms  Index is current: 212 files, nothing to re-read
+               2498 passages, 10.1 MB on disk
+```
+
+Three deliberate simplicities:
+
+- **Line windows, not syntax.** Forty lines with ten of overlap, in every
+  language. A parser per language would cut at function boundaries and produce
+  better chunks — and would need a grammar for everything in the workspace,
+  would silently fall back on the ones it lacked, and would go wrong quietly on
+  a file it half understood. The overlap is what stops a seam being a blind
+  spot: a function split across a boundary is otherwise half in each chunk and
+  whole in neither.
+- **A loop over every vector, not an ANN index.** Twenty thousand vectors of 768
+  dimensions is fifteen million multiply-adds — under a millisecond, and dwarfed
+  by the round trip to embed the query. An approximate structure would buy
+  nothing measurable and would add something that can be subtly wrong, returning
+  *nearly* the right answers, which is far harder to notice than returning none.
+- **One hit per file.** A query that matches a file usually matches three
+  consecutive chunks of it, and three windows of one function is a worse answer
+  than three places to look.
+
+The index lives in `~/.taurus/index/<workspace>/`, beside the transcripts and
+checkpoints and keyed the same way, for the same reason: it holds the contents
+of files in the project. It is readable by its owner and nobody else. Unlike the
+sweep, it respects ignore rules for *files* as well as directories — the sweep
+looks past an ignored `.env` because that is exactly the file you want to undo,
+while an index is a thing the model searches, and putting secrets in front of it
+is the opposite of what anyone wants. `.taurus` is excluded too, so a search
+over the project cannot answer with the conversation about the project.
+
 ### When a turn stops
 
 A turn runs until the model stops asking for tools. Three things end one early,
@@ -841,12 +948,28 @@ permission gap wearing a token-saving costume. A name matching nothing is
 reported rather than ignored, because a typo otherwise looks exactly like a tool
 that is quietly still on.
 
-Four tools a turn adds for itself can be named here too, though `taurus tools`
+Five tools a turn adds for itself can be named here too, though `taurus tools`
 does not list them: it prints the set a *sub-agent* could be scoped to, and
-these four are exactly the ones a sub-agent never gets. They are
-`spawn_subagent`, which is the delegation depth cap, and `show_table`,
-`show_chart`, and `ask_user`, which address the person watching this
-conversation.
+these five are exactly the ones a sub-agent never gets. They are
+`spawn_subagent`, which is the delegation depth cap; `show_table`, `show_chart`,
+and `ask_user`, which address the person watching this conversation; and
+`update_plan`, whose checklist belongs to the turn that wrote it.
+
+**Semantic search is off until a model is named.** `search_code` needs
+something to embed with, so it is not registered until `settings.json` says
+what:
+
+```json
+{ "embedding_model": "nomic-embed-text" }
+```
+
+It runs on the provider the conversation is already using — an embedding model
+lives on the same server as the chat model in every local setup, and a second
+provider entry naming the same machine would be one more thing to keep in step.
+Pull one first (`ollama pull nomic-embed-text`); the name is what the index is
+keyed on, so changing it discards the index rather than mixing vectors that mean
+different things. See [Finding code by what it
+does](#finding-code-by-what-it-does).
 
 **Where it went is a question you can ask.**
 
@@ -1478,6 +1601,19 @@ cargo run -p taurus-tools --example sweep -- .
 # provider. This is the only check that proves the reasons a file was left out
 # of a commit are the true ones.
 cargo run -p taurus-host --example turn
+
+# An image, attached and answered. Prints the capability it probed, then whether
+# the model named both colours in the right order — a model that received no
+# image still answers confidently, so "it replied" is not evidence.
+cargo run -p taurus-host --example vision -- gemma4:12b
+cargo run -p taurus-host --example vision -- llama3.2:latest   # refused, and why
+
+# Index a real workspace and ask it real questions. Proves the second pass is
+# near-free, which is the property the whole design turns on, and prints
+# rankings a reader of this repository can check by eye. Run it on something
+# large before changing the caps in `store.rs`.
+ollama pull nomic-embed-text
+cargo run -p taurus-index --example probe -- . nomic-embed-text
 ```
 
 The drawn results have no example of their own, because the check worth making
@@ -1641,6 +1777,31 @@ ships its own `.taurus` directory.
   that would mean deciding when two calls are *near* enough to be the same
   mistake, which is a guess the iteration ceiling makes unnecessary. See
   [When a turn stops](#when-a-turn-stops).
+- **An image can only be sent, never received.** The model reads pictures and
+  cannot produce or edit one, so a turn that would be best answered with a
+  diagram answers in prose. That is a limit of what the normalized types carry
+  in the other direction, and closing it means a shape for image output that
+  only some backends could fill.
+- **An attached image is not in the checkpoint log.** It goes into the
+  transcript, so it survives and redraws; it is not a file in the workspace, so
+  a rewind neither restores nor reports it. That is correct — there is nothing
+  to put back — but it means a conversation's disk footprint grows in a place
+  the **Changes** drawer does not account for.
+- **The first index is slow and nothing says so while it runs.** Embedding this
+  repository took 44 seconds, paid on the first `search_code` of a workspace,
+  and the model sees only a tool call that has not returned. Progress is
+  reported to the transcript but the turn is blocked either way, and there is no
+  way to index ahead of time from the UI.
+- **The index does not notice a file that changed without moving.** Length and
+  modification time, the same comparison the sweep uses and blind in the same
+  place: a rewrite to the same length within one filesystem tick is invisible,
+  and the stale chunk stays until something else about the file moves.
+- **Semantic search is only as good as the embedding model.** `search_code`
+  ranks by cosine similarity and nothing else — no reranking, no keyword
+  fallback, no blend with grep. A query that lands badly returns three confident
+  near-misses, and the tool says they are leads rather than answers, which is
+  the whole of what it can do about it. Where the literal text is known, grep is
+  exact and this is only close.
 - **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
   that renders its content client-side comes back near-empty. Closing this
   means shipping a browser engine, so it is a limit rather than a to-do.

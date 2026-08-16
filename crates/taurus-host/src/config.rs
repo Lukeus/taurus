@@ -828,6 +828,20 @@ pub struct Settings {
     /// than state stranded in the webview's local storage.
     #[serde(default)]
     pub theme: Theme,
+    /// Model used to embed the workspace for `search_code`, on the same
+    /// provider the conversation is using. Empty means no semantic search.
+    ///
+    /// Off by default, and deliberately so: it needs an embedding model pulled
+    /// — `ollama pull nomic-embed-text` — and a tool the model can see is a
+    /// tool it will try. One that cannot work costs it a turn to find that out,
+    /// which is the same rule the web tools follow.
+    ///
+    /// Naming a *model* rather than a boolean because two indexes built by
+    /// different models are not comparable, so the name is what the index is
+    /// keyed on. Changing it discards the index rather than mixing vectors that
+    /// mean different things.
+    #[serde(default)]
+    pub embedding_model: String,
 }
 
 fn default_true() -> bool {
@@ -844,6 +858,7 @@ impl Default for Settings {
             agent_synthesis_enabled: true,
             disabled_tools: Vec::new(),
             theme: Theme::System,
+            embedding_model: String::new(),
         }
     }
 }
@@ -868,6 +883,11 @@ pub struct StoredSettings {
     pub disabled_tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<Theme>,
+    /// See [`Settings::embedding_model`]. Per-layer like everything else here,
+    /// so one project can index with a different model — or not at all —
+    /// without touching the global setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
 }
 
 impl StoredSettings {
@@ -886,6 +906,7 @@ impl StoredSettings {
         // global entry impossible to undo for one project.
         self.disabled_tools = other.disabled_tools.or(self.disabled_tools.take());
         self.theme = other.theme.or(self.theme);
+        self.embedding_model = other.embedding_model.or(self.embedding_model.take());
     }
 
     fn resolve(self) -> Settings {
@@ -902,6 +923,7 @@ impl StoredSettings {
                 .unwrap_or(defaults.agent_synthesis_enabled),
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
             theme: self.theme.unwrap_or(defaults.theme),
+            embedding_model: self.embedding_model.unwrap_or(defaults.embedding_model),
         }
     }
 }
