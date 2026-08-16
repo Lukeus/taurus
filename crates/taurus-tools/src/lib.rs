@@ -7,6 +7,7 @@ pub mod diff;
 pub mod env;
 pub mod path_guard;
 pub mod permission;
+pub mod plan;
 pub mod registry;
 pub mod schema;
 pub mod spawn;
@@ -14,18 +15,19 @@ pub mod sweep;
 pub mod tool;
 pub mod view;
 
-pub use checkpoint::{Checkpoint, CheckpointStore, Restored, TurnRecorder};
+pub use checkpoint::{Checkpoint, CheckpointStore, Restored, TurnChange, TurnRecorder};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::expand_env;
 pub use permission::{
     AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,
     PermissionRequest, Scope,
 };
+pub use plan::PlanBoard;
 pub use registry::ToolRegistry;
 pub use spawn::no_console;
 pub use sweep::Sweep;
 pub use tool::{Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult};
-pub use view::{Answer, Asker, Question, TranscriptView, Unattended};
+pub use view::{Answer, Asker, Question, Step, StepState, TranscriptView, Unattended};
 
 #[cfg(test)]
 mod test_support {

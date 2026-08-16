@@ -115,6 +115,19 @@ struct Header {
     workspace: String,
     model: String,
     started: u64,
+    /// The branch checked out when the conversation began.
+    ///
+    /// Recorded for the same reason `workspace` is: it is part of what the
+    /// conversation is *about*. Every file path in the transcript, and every
+    /// pre-image in the matching checkpoint log, describes the tree as it stood
+    /// on this branch, so resuming somewhere else is a thing worth being told
+    /// about rather than discovering through a rewind.
+    ///
+    /// `None` for a workspace with no repository, a detached HEAD, and every
+    /// transcript written before this field existed — which is why it defaults
+    /// rather than being required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
 }
 
 /// What a listing shows, read from a transcript's own opening lines.
@@ -137,6 +150,10 @@ pub struct SessionMeta {
     pub updated: u64,
     /// The first thing asked, shortened. Empty for a session with no turns.
     pub title: String,
+    /// The branch this conversation was started on, when there was one. See
+    /// [`Header::branch`].
+    #[ts(optional)]
+    pub branch: Option<String>,
 }
 
 /// An open transcript, appended to as turns complete.
@@ -164,10 +181,15 @@ pub struct SessionLog {
 
 impl SessionLog {
     /// Starts a transcript for a new session and writes its header.
-    pub fn create(session: &Session, workspace: &Path) -> Self {
+    ///
+    /// `branch` is passed in rather than looked up, because asking git is an
+    /// async round trip and this crate's transcript layer has no business
+    /// knowing that git exists. `None` covers a workspace with no repository, a
+    /// detached HEAD, and every caller that does not care.
+    pub fn create(session: &Session, workspace: &Path, branch: Option<String>) -> Self {
         let mut log = Self {
             path: transcript_path(session, workspace),
-            header: Some(header_for(session, workspace)),
+            header: Some(header_for(session, workspace, branch)),
             persisted: 0,
             off: false,
             warned: false,
@@ -185,9 +207,10 @@ impl SessionLog {
             path: transcript_path(session, workspace),
             // Carried but almost never written: a transcript that loaded has a
             // header by definition, so this is only reached if the file lost
-            // one. `started` is unrecoverable in that case, and the listing
-            // does not show it.
-            header: Some(header_for(session, workspace)),
+            // one. `started` and `branch` are unrecoverable in that case — the
+            // branch this is resuming on is not the one it began on, and
+            // writing today's would be a worse record than none.
+            header: Some(header_for(session, workspace, None)),
             persisted: session.messages.len(),
             off: false,
             warned: false,
@@ -305,13 +328,14 @@ fn transcript_path(session: &Session, workspace: &Path) -> PathBuf {
         .join(format!("{}.{EXTENSION}", session.id))
 }
 
-fn header_for(session: &Session, workspace: &Path) -> Header {
+fn header_for(session: &Session, workspace: &Path, branch: Option<String>) -> Header {
     Header {
         version: FORMAT_VERSION,
         id: session.id.clone(),
         workspace: workspace.display().to_string(),
         model: session.model.clone(),
         started: now(),
+        branch,
     }
 }
 
@@ -469,6 +493,7 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
         started: header.started,
         updated,
         title: title.unwrap_or_default(),
+        branch: header.branch,
     })
 }
 
@@ -550,7 +575,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 4,
         });
-        let mut log = SessionLog::create(&session, workspace);
+        let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
 
         let (loaded, _) = load("abc123").expect("the transcript should reload");
@@ -561,12 +586,70 @@ mod tests {
     }
 
     #[test]
+    fn a_listing_remembers_the_branch_the_conversation_started_on() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/branchy");
+
+        let session = session_with("onbranch", &["do a thing"]);
+        let mut log = SessionLog::create(&session, workspace, Some("feat/widgets".into()));
+        log.record(&session);
+
+        let listed = list(Some(workspace));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].branch.as_deref(), Some("feat/widgets"));
+    }
+
+    #[test]
+    fn a_transcript_written_before_branches_were_recorded_still_lists() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/nobranch");
+
+        // The literal shape of an older header: no `branch` key at all. A
+        // required field here would have made every existing conversation
+        // unlistable on upgrade, which is why it defaults.
+        let dir = sessions_dir().join(workspace_key(workspace));
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = serde_json::json!({
+            "type": "header",
+            "version": FORMAT_VERSION,
+            "id": "old1",
+            "workspace": workspace.display().to_string(),
+            "model": "test-model",
+            "started": 1,
+        });
+        std::fs::write(dir.join("old1.jsonl"), format!("{header}\n")).unwrap();
+
+        let listed = list(Some(workspace));
+        assert_eq!(listed.len(), 1, "an older transcript must still be listed");
+        assert_eq!(listed[0].branch, None);
+        load("old1").expect("and must still open");
+    }
+
+    #[test]
+    fn a_session_with_no_branch_writes_no_branch_key() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/plainrepo");
+
+        // A workspace with no repository is the common case, and its header
+        // should read the same as one written before the field existed rather
+        // than carrying `"branch": null` on every line.
+        let session = session_with("plain1", &["hello"]);
+        SessionLog::create(&session, workspace, None);
+
+        let path = sessions_dir()
+            .join(workspace_key(workspace))
+            .join("plain1.jsonl");
+        let written = std::fs::read_to_string(path).unwrap();
+        assert!(!written.contains("branch"), "{written}");
+    }
+
+    #[test]
     fn recording_twice_appends_only_what_is_new() {
         let _home = isolated_home();
         let workspace = Path::new("/tmp/project");
 
         let mut session = session_with("append1", &["one"]);
-        let mut log = SessionLog::create(&session, workspace);
+        let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
 
         session.push(Message::user("two"));
@@ -583,7 +666,7 @@ mod tests {
         let workspace = Path::new("/tmp/project");
 
         let session = session_with("resume1", &["one", "two"]);
-        let mut log = SessionLog::create(&session, workspace);
+        let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
 
         let (mut loaded, _) = load("resume1").unwrap();
@@ -602,7 +685,7 @@ mod tests {
 
         for id in ["keep1", "drop1"] {
             let session = session_with(id, &["a question"]);
-            let mut log = SessionLog::create(&session, workspace);
+            let mut log = SessionLog::create(&session, workspace, None);
             log.record(&session);
         }
 
@@ -636,7 +719,7 @@ mod tests {
         let workspace = Path::new("/tmp/project");
 
         let session = session_with("torn1", &["a question"]);
-        let mut log = SessionLog::create(&session, workspace);
+        let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
 
         // What a process killed mid-write leaves behind.
@@ -663,7 +746,7 @@ mod tests {
             ("s2", theirs, "fix the build"),
         ] {
             let session = session_with(id, &[question]);
-            let mut log = SessionLog::create(&session, workspace);
+            let mut log = SessionLog::create(&session, workspace, None);
             log.record(&session);
         }
 
@@ -699,7 +782,7 @@ mod tests {
         let _home = isolated_home();
         let workspace = Path::new("/tmp/empty");
         let session = session_with("empty1", &[]);
-        SessionLog::create(&session, workspace);
+        SessionLog::create(&session, workspace, None);
 
         let listed = list(Some(workspace));
         assert_eq!(listed.len(), 1);
@@ -733,7 +816,7 @@ mod tests {
         let obstruction = block_writes(workspace);
 
         let mut session = session_with("blocked1", &["first question"]);
-        let mut log = SessionLog::create(&session, workspace);
+        let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
         assert!(
             load("blocked1").is_err(),
@@ -769,7 +852,7 @@ mod tests {
         let workspace = Path::new("/tmp/onceonly");
 
         let mut session = session_with("once1", &["one"]);
-        let mut log = SessionLog::create(&session, workspace);
+        let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
         session.push(Message::user("two"));
         session.push(Message::assistant("ok"));
@@ -799,6 +882,7 @@ mod tests {
             workspace: workspace.display().to_string(),
             model: "test-model".into(),
             started: 1,
+            branch: None,
         }))
         .unwrap();
         std::fs::write(dir.join("ooo1.jsonl"), format!("{message}\n{header}\n")).unwrap();

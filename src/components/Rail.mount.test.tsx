@@ -34,6 +34,7 @@ const mount = (props: Partial<Parameters<typeof Rail>[0]> = {}) => {
         sessions={[session("a", "Rename it"), session("b", "Summarize it")]}
         currentId={undefined}
         changedCount={0}
+        branch={null}
         busy={false}
         skillCount={12}
         agentCount={3}

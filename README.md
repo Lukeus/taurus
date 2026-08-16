@@ -10,7 +10,8 @@ connects to MCP servers, delegates to sub-agents — and writes down procedures 
 works out as reusable **skills**, which you approve before they are kept. It
 reads the `AGENTS.md` and `CLAUDE.md` you already have rather than asking for a
 seventh copy. Every file it edits is recorded first, so any turn can be
-**rewound**, and every write is shown as a **diff** before you approve it.
+**rewound** — or read back as a diff and **committed on its own** — and every
+write is shown as a diff before you approve it.
 
 ![The Taurus desktop app: a conversation, a folded run of tool calls, and a
 table the model drew](docs/screenshots/app-dark.png)
@@ -460,6 +461,12 @@ instead of poisoning the file. There is no index — everything a listing shows 
 in each transcript's own opening lines, and an index is a second copy of the
 truth that can disagree with it.
 
+The header records the workspace, the model, and the branch that was checked
+out — see [Conversations know their branch](#conversations-know-their-branch).
+A transcript written before that field existed simply has no branch, which is
+why it defaults rather than being required: an upgrade must not make every
+existing conversation unlistable.
+
 ### Rewinding a turn
 
 A transcript remembers that the model called `edit_file`. It does not remember
@@ -566,6 +573,178 @@ plain words rather than letting the turn look undoable:
 [taurus] This workspace holds more than 50000 files, too many to record a
 command's changes against, so this one cannot be undone.
 ```
+
+### Keeping a turn
+
+A rewind is the way back. This is the way forward, and it is the same list read
+in the other direction.
+
+The **Changes** drawer knows precisely which files each turn touched, and it
+already holds what they looked like before. That is both halves of a diff, so
+every turn can be opened up and read as one:
+
+```
+Turn 3 · 4m ago                                        2 files
+  rename Widget to Gadget
+  src/widget.rs · src/lib.rs
+
+  [ Hide changes ]  [ Rewind to before this ]
+
+  ┌ replace  src/widget.rs                             +12  −9
+  │ 41  41    impl Widget {
+  │ 42    -       pub fn new() -> Self {
+  │     42 +      pub fn new(name: &str) -> Self {
+  └ …
+```
+
+Nothing extra is written to produce those. A turn records what a file held
+*before* it touched it, so the pre-image the next turn to touch that file
+recorded is, by construction, what this turn left behind — and for the last turn
+to touch it, what it left behind is still on disk. No post-images, no second
+store. The seam is a hand edit between two turns, which lands in the later
+turn's diff rather than being attributed to nobody; that is the same assumption
+the rewind already states when it warns it will overwrite "anything you changed
+by hand since".
+
+A file whose pre-image could not be held — not text, or too large — is named
+with its reason rather than left out, the same files a rewind reports as
+`skipped`. A turn that looks smaller than it was would be the worst version of
+this view.
+
+#### Committing a turn
+
+Below the diffs, in a workspace that is a git repository, is the offer to keep
+it:
+
+```
+Commit message  [ rename Widget to Gadget                      ]
+
+[ Commit this turn ]
+Only this turn's files, and only these. Anything you have staged stays staged.
+```
+
+The message is seeded from what the turn was asked to do and is editable,
+because a prompt says what someone wanted and a commit message says what
+changed — those agree often enough to be a useful start and rarely enough that
+committing one unread is a habit worth not building.
+
+What goes in is decided by the checkpoint log, not by the frontend: the turn is
+named, the backend re-reads which files it recorded, and those are the paths
+committed. `git commit -- <paths>` is `--only`, so the working-tree state of
+exactly those paths is committed and the index is left alone — someone who has
+staged unrelated work still has it staged afterwards, and a turn that touched
+four files commits four files however dirty the rest of the tree is.
+
+Three different things stop a path from being committable, and each is reported
+in its own words rather than one shrug covering all of them:
+
+```
+a1b2c3d  rename Widget to Gadget — 2 files
+  not committed  .env — is ignored by git, so it is not in the repository to commit
+```
+
+The others are "already matches the last commit", for a file a later turn or you
+put back, and a file that is gone and was never tracked. When *nothing* survives
+that filter the commit is refused rather than made empty, and the refusal
+carries every reason it collected — "nothing to commit" on its own would send
+you looking for a bug that is not there.
+
+Committing is refused while a turn is running, for the reason a rewind is: the
+tool calls are still writing.
+
+There is no git *tool*. The model reaches git the way it always has, through
+`run_command`, where the permission engine sees the command and the sweep
+records what it did. A second path would be two things to keep in step, and two
+places to reason about the sweep's caveat that `.git` is not restored.
+
+Reading a turn as a diff and committing it are the desktop app's, not the CLI's.
+`taurus rewind` still lists and undoes turns, and the shared core is where the
+diffing and the commit live, so a `taurus commit` is a command away — but a
+terminal already has `git diff` and `git commit` a keystroke away, and the drawer
+is where someone is looking when they decide a turn was worth keeping.
+
+#### Conversations know their branch
+
+A new conversation records the branch it was started on, beside the workspace
+and the model in its transcript header. Every file path in that conversation,
+and every pre-image behind its rewind, describes the tree as it stood on that
+branch.
+
+So the rail names a branch only when it is *not* the one checked out now:
+
+```
+Fix the parser
+on feat/parser · 3 files changed · 2h ago
+```
+
+Printing it on every row would make the common case noisier in order to make the
+rare case visible, which is the wrong trade in a list that dense. Sessions
+written before this existed, and those started outside a repository, carry no
+branch and are not labelled — neither is "elsewhere", and guessing would put a
+warning on every old conversation.
+
+### Planning a long task
+
+A frontier model keeps a six-step task in its head. A 9B model does not — and
+not because it forgot the steps. They are still there, twenty messages back,
+behind a wall of tool output, competing with everything else for attention.
+
+So `update_plan` writes a checklist, and the checklist is not left in the
+history. It is rebuilt into the system prompt on **every** iteration, where it
+is the last thing the model reads before deciding what to do next:
+
+```
+# Your current plan
+
+You wrote this with update_plan. It is restated here every time because it is
+the record of where you are:
+
+1. [x] Change the greeting in main.rs
+2. [>] Add version to config.toml
+3. [ ] Compile and confirm it prints hello
+
+Call update_plan again the moment a step's state changes — send the whole list
+back with the states updated. Work the step marked [>], and do not start
+another until it is [x]. When every step is [x], say what you did and stop.
+```
+
+The same list is drawn in the transcript, so the user is reading what the model
+is reading.
+
+Three properties do the work, and each one is a test:
+
+- **The whole list, every time.** There is no step id to quote back and no
+  add/complete/remove protocol to get half right. A small model cannot reach a
+  state it did not literally write out, and the payload being identical to its
+  own input is what lets a reopened conversation redraw a plan nothing
+  recomputed — the same identity `show_table` and `ask_user` rely on.
+- **One step in progress.** Refused if more, naming which ones. A checklist with
+  three things active says nothing about where the turn is, which is the single
+  question it exists to answer.
+- **Nothing when there is no plan.** Not an empty section — nothing at all. A
+  standing instruction to keep a checklist is exactly how a two-step turn grows
+  a six-step plan.
+
+It is rebuilt rather than appended for the same reason it is not a message: a
+copy pushed per iteration would accumulate, each staler than the last, leaving
+the model to work out which of nine checklists is current. There is only ever
+one, and it is always live.
+
+The plan card supersedes itself in the transcript too. The model rewrites the
+whole list every time a step starts or finishes, so a six-step task ends with
+seven calls; drawn as seven cards, a checklist saying *where you are* would
+become a history of everywhere you have been. The superseded calls keep their
+row in the run header and stop drawing.
+
+A plan does not outlive the turn that made it. That is the scope the problem
+has — a six-step task is one turn with many iterations — and what the next turn
+sees is the card still sitting in the transcript, like every other tool call.
+
+**Whether a model reaches for it is the model's own judgement.** On a five-step
+mechanical task, both `qwen3.6:27b` and `qwen3.5:9b` did the work correctly and
+never called it; asked to plan, the 27B kept the list accurate through every
+step. The prompt now says when to plan and when to update, which is the whole of
+what the harness can do about it. See [Known gaps](#known-gaps).
 
 ### When a turn stops
 
@@ -1293,6 +1472,12 @@ cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async boo
 # changed. Needs no provider. Run it on something large before touching the
 # caps in `sweep.rs` — every command pays this twice.
 cargo run -p taurus-tools --example sweep -- .
+
+# A turn recorded, read back as a diff, and committed — against the git binary
+# on this machine, in a repository it builds and throws away. Needs no
+# provider. This is the only check that proves the reasons a file was left out
+# of a commit are the true ones.
+cargo run -p taurus-host --example turn
 ```
 
 The drawn results have no example of their own, because the check worth making
@@ -1376,8 +1561,52 @@ ships its own `.taurus` directory.
   command line has no before-and-after to compute, which is exactly why
   `run_command` is swept afterwards rather than predicted. So the most
   consequential writes in a session — the ones a script made — are still
-  approved on the command line alone, and only become visible in the **Changes**
-  drawer once they have happened.
+  approved on the command line alone. They are at least *readable* afterwards
+  now: the **Changes** drawer diffs what the sweep recorded, so a `sed -i` across
+  a dozen files can be inspected line by line once it has happened. That is
+  review after the fact, not before it.
+- **A turn's diff attributes a hand edit to the wrong turn.** What a turn
+  changed is computed as its own pre-image against the next recorded pre-image
+  of the same file, which is exact for anything Taurus did and silently wrong
+  for anything you did in between — your edit appears inside the later turn's
+  diff. Closing it means post-images, which is a second copy of every file
+  written per turn to attribute a case the rewind already warns about in the
+  same words. See [Keeping a turn](#keeping-a-turn).
+- **Committing a turn does not know about the turns around it.** Each commit is
+  offered on its own, so committing turn 3 and then turn 5 leaves turn 4's work
+  in the tree, uncommitted and now sitting on top of a commit that does not
+  include it. Nothing warns about that ordering, and nothing offers to squash a
+  run of turns into one commit. Both want a model of which turns are already in
+  `HEAD`, which is a record the checkpoint log does not keep.
+- **A committed turn can still be rewound.** The two features do not know about
+  each other: rewinding past a turn you committed restores the files and leaves
+  the commit in place, so the tree no longer matches it. `git` has the way back
+  and the drawer does not say so at that moment. Wiring them together means the
+  checkpoint log recording commits, which is a record shape and a format version.
+- **Nothing makes a model plan.** `update_plan` is offered and the prompt says
+  when to reach for it, and that is the end of the harness's leverage. On a
+  five-step mechanical task neither `qwen3.6:27b` nor `qwen3.5:9b` called it
+  unprompted — both simply did the work — so the feature earns its keep on the
+  long, exploratory turns where drift actually happens, and on the models that
+  take the instruction. Forcing a plan on every multi-step request would spend
+  an iteration and a card on turns that never needed one.
+- **A plan can end in progress.** Nothing requires the last `update_plan` of a
+  turn to mark the final step done, and a model that finishes the work and goes
+  straight to its answer leaves a card reading `[>]` on a step that is
+  complete. The turn is over so nothing reads it back, but the transcript keeps
+  the stale version. Closing it means the harness deciding a plan is finished,
+  which it cannot know.
+- **A plan does not survive the turn.** The board is built per turn, so a
+  follow-up message starts with no checklist even when it is obviously the same
+  task. The card is still in the transcript for the model to re-read; it is just
+  no longer in the system prompt. Carrying it across turns means session-scoped
+  state and a rule for when a plan is stale, neither of which exists.
+- **A branch is recorded, not enforced.** A conversation started on `feat/x` and
+  resumed on `main` is labelled in the rail and nothing more — its rewind will
+  still restore pre-images from a tree that is no longer checked out, and its
+  file references still point where they pointed. Refusing or warning at the
+  moment of a rewind would be the useful version; it needs the branch carried
+  into the checkpoint log rather than only the transcript header.
 - **A sub-agent's answer is summarized, not streamed.** Its tool calls now
   appear under the delegation card as it makes them, so a long delegation looks
   alive rather than hung, but its reasoning and prose stay inside the child.

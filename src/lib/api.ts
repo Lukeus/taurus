@@ -13,6 +13,7 @@ import type { AllowedRule } from "../bindings/AllowedRule";
 import type { Answer } from "../bindings/Answer";
 import type { AppStatus } from "../bindings/AppStatus";
 import type { Checkpoint } from "../bindings/Checkpoint";
+import type { Commit } from "../bindings/Commit";
 import type { ContentBlock } from "../bindings/ContentBlock";
 import type { DiffHunk } from "../bindings/DiffHunk";
 import type { DiffLine } from "../bindings/DiffLine";
@@ -31,6 +32,7 @@ import type { ProviderConfig } from "../bindings/ProviderConfig";
 import type { AgentProposal } from "../bindings/AgentProposal";
 import type { AgentSaveTarget } from "../bindings/AgentSaveTarget";
 import type { ProviderKind } from "../bindings/ProviderKind";
+import type { RepoStatus } from "../bindings/RepoStatus";
 import type { Restored } from "../bindings/Restored";
 import type { ResumedSession } from "../bindings/ResumedSession";
 import type { SaveTarget } from "../bindings/SaveTarget";
@@ -41,8 +43,12 @@ import type { ModelEntry } from "../bindings/ModelEntry";
 import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
+import type { Skipped } from "../bindings/Skipped";
+import type { Step } from "../bindings/Step";
+import type { StepState } from "../bindings/StepState";
 import type { Theme } from "../bindings/Theme";
 import type { TranscriptView } from "../bindings/TranscriptView";
+import type { TurnChange } from "../bindings/TurnChange";
 import type { UiEvent } from "../bindings/UiEvent";
 
 export type {
@@ -54,6 +60,7 @@ export type {
   Answer,
   AppStatus,
   Checkpoint,
+  Commit,
   ContentBlock,
   CreatedSession,
   DiffHunk,
@@ -71,6 +78,7 @@ export type {
   ProblemSource,
   ProviderConfig,
   ProviderKind,
+  RepoStatus,
   Restored,
   ResumedSession,
   SaveTarget,
@@ -80,8 +88,12 @@ export type {
   SessionMeta,
   SkillProposal,
   SkillSummary,
+  Skipped,
+  Step,
+  StepState,
   Theme,
   TranscriptView,
+  TurnChange,
   UiEvent,
 };
 
@@ -321,6 +333,28 @@ export const listCheckpoints = (sessionId: string) =>
  */
 export const rewindTo = (sessionId: string, turn: number, dryRun: boolean) =>
   invoke<Restored[]>("rewind_to", { sessionId, turn, dryRun });
+
+/**
+ * What one turn changed, file by file, as a diff.
+ *
+ * Fetched per turn rather than with the listing: a long conversation would
+ * otherwise ship every diff it ever made to draw a drawer showing one.
+ */
+export const turnChanges = (sessionId: string, turn: number) =>
+  invoke<TurnChange[]>("turn_changes", { sessionId, turn });
+
+/** Where the workspace stands with git. Never throws for "not a repository". */
+export const repoStatus = () => invoke<RepoStatus>("repo_status");
+
+/**
+ * Commits exactly the files one turn changed, leaving the index and every
+ * other path alone.
+ *
+ * The turn is named rather than the paths: the checkpoint log is the only
+ * thing that decides what goes in.
+ */
+export const commitTurn = (sessionId: string, turn: number, message: string) =>
+  invoke<Commit>("commit_turn", { sessionId, turn, message });
 
 export const onPermissionRequest = (
   handler: (request: PermissionRequest) => void,

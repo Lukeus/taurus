@@ -36,6 +36,7 @@ export function Rail({
   sessions,
   currentId,
   changedCount,
+  branch,
   busy,
   skillCount,
   agentCount,
@@ -56,6 +57,13 @@ export function Rail({
   sessions: SessionMeta[];
   currentId: string | undefined;
   changedCount: number;
+  /**
+   * The branch checked out right now, or null where there is no repository.
+   *
+   * Used to spot the conversations that were started somewhere else — see
+   * [`subtitle`].
+   */
+  branch: string | null;
   busy: boolean;
   skillCount: number | null;
   agentCount: number | null;
@@ -105,7 +113,7 @@ export function Rail({
           <span className={armed ? "warn" : undefined}>
             {armed
               ? "delete this and its undo history?"
-              : subtitle(session, current ? changedCount : null)}
+              : subtitle(session, current ? changedCount : null, branch)}
           </span>
         </button>
 
@@ -250,13 +258,28 @@ export function Rail({
  * For the open one that is how much of the workspace it has rewritten, which
  * is the fact you want before switching away from it. For the rest the model
  * and the time are all that has been read off disk.
+ *
+ * A branch is named only when it is not the one checked out now. Every file
+ * path in that conversation, and every pre-image behind its rewind, describes
+ * a tree that is no longer there — so the row that would otherwise look like
+ * any other says where it came from. Printing the branch on every row instead
+ * would make the common case noisier to make the rare case visible, which is
+ * the wrong trade in a list this dense.
  */
-function subtitle(session: SessionMeta, changed: number | null): string {
+function subtitle(
+  session: SessionMeta,
+  changed: number | null,
+  branch: string | null,
+): string {
   const ago = when(session.updated);
-  if (changed === null) return `${session.model} · ${ago}`;
+  // Only when both are known. A session with no recorded branch predates the
+  // field or was started outside a repository, and neither is "elsewhere".
+  const elsewhere =
+    session.branch && branch && session.branch !== branch ? `on ${session.branch} · ` : "";
+  if (changed === null) return `${elsewhere}${session.model} · ${ago}`;
   return changed === 0
-    ? `read-only · ${ago}`
-    : `${plural(changed, "file")} changed · ${ago}`;
+    ? `${elsewhere}read-only · ${ago}`
+    : `${elsewhere}${plural(changed, "file")} changed · ${ago}`;
 }
 
 const NEXT_THEME: Record<Theme, Theme> = {

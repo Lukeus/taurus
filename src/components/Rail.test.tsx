@@ -23,6 +23,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       sessions={[]}
       currentId={undefined}
       changedCount={0}
+      branch={null}
       busy={false}
       skillCount={12}
       agentCount={3}
@@ -39,6 +40,38 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       {...props}
     />,
   );
+
+describe("branch awareness", () => {
+  it("marks a conversation started on a branch that is no longer checked out", () => {
+    // Every file path in it, and every pre-image behind its rewind, describes
+    // a tree that is not there any more. The row must not look like the rest.
+    const html = draw({
+      sessions: [{ ...session("a", "Fix the parser", now), branch: "feat/parser" }],
+      branch: "main",
+    });
+    expect(html).toContain("on feat/parser");
+  });
+
+  it("stays quiet when the conversation is on the branch you are on", () => {
+    // The common case. Printing the branch on every row would make it noisier
+    // to make the rare case visible, which is the wrong trade in this list.
+    const html = draw({
+      sessions: [{ ...session("a", "Fix the parser", now), branch: "main" }],
+      branch: "main",
+    });
+    expect(html).not.toContain("on main");
+  });
+
+  it("says nothing about branches for a workspace that has none", () => {
+    // No repository, or a transcript written before branches were recorded.
+    // Neither is "elsewhere", and guessing would label every old conversation.
+    const html = draw({
+      sessions: [session("a", "Fix the parser", now)],
+      branch: null,
+    });
+    expect(html).not.toContain(" on ");
+  });
+});
 
 describe("the workspace button", () => {
   it("leads with the folder name and keeps the path underneath", () => {

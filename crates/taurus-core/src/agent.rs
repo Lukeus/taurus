@@ -14,7 +14,7 @@ use taurus_provider::{
     ChatRequest, ContentBlock, Message, Provider, Role, StopReason, StreamAccumulator, StreamEvent,
     TokenUsage,
 };
-use taurus_tools::{Effect, ToolContext, ToolError, ToolProgress, ToolRegistry};
+use taurus_tools::{Effect, PlanBoard, ToolContext, ToolError, ToolProgress, ToolRegistry};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -122,6 +122,13 @@ pub struct Agent {
     registry: ToolRegistry,
     tools: ToolContext,
     config: AgentConfig,
+    /// The checklist this turn is working through, restated to the model on
+    /// every iteration.
+    ///
+    /// `None` for anything with no `update_plan` tool — every sub-agent, the
+    /// examples, most tests — which costs those exactly nothing: no board, no
+    /// lock, and not a word added to the prompt. See [`taurus_tools::plan`].
+    plan: Option<PlanBoard>,
 }
 
 /// What a completed turn produced.
@@ -144,7 +151,19 @@ impl Agent {
             registry,
             tools,
             config,
+            plan: None,
         }
+    }
+
+    /// Gives this agent a checklist, and the prompt that restates it.
+    ///
+    /// A builder rather than an argument to [`Agent::new`]: the board belongs
+    /// to the same caller that registered `update_plan`, and every caller that
+    /// did not register it — sub-agents, examples, tests — should not have to
+    /// pass a `None` to say so.
+    pub fn with_plan(mut self, board: PlanBoard) -> Self {
+        self.plan = Some(board);
+        self
     }
 
     pub fn config(&self) -> &AgentConfig {
@@ -407,7 +426,7 @@ impl Agent {
         session: &Session,
         ui: &mpsc::Sender<UiEvent>,
     ) -> Result<(Message, TokenUsage, StopReason), FailedAttempt> {
-        let request = self.build_request(session);
+        let request = self.build_request(session).await;
         let (tx, mut rx) = mpsc::channel(128);
         let provider = self.provider.clone();
         let cancel = self.tools.cancel.clone();
@@ -451,7 +470,13 @@ impl Agent {
         Ok((message, usage, stop))
     }
 
-    fn build_request(&self, session: &Session) -> ChatRequest {
+    /// Assembles the request for one iteration.
+    ///
+    /// Async only because of the plan: the checklist is re-read here rather
+    /// than captured when the turn started, which is the entire point of it.
+    /// A model on iteration nine gets the plan as it stands on iteration nine,
+    /// including the step it marked done on iteration eight.
+    async fn build_request(&self, session: &Session) -> ChatRequest {
         let tools = if self.config.allowed_tools.is_empty() {
             self.registry.definitions()
         } else {
@@ -460,13 +485,41 @@ impl Agent {
 
         ChatRequest {
             model: session.model.clone(),
-            system: (!self.config.system_prompt.trim().is_empty())
-                .then(|| self.config.system_prompt.clone()),
+            system: self.system_prompt().await,
             messages: session.messages.clone(),
             tools,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             stop_sequences: Vec::new(),
+        }
+    }
+
+    /// The system prompt for this iteration, with the plan appended when there
+    /// is one.
+    ///
+    /// Appended to the system prompt rather than pushed as another message,
+    /// for two reasons. A message would be part of the history — compacted,
+    /// trimmed, and eventually summarized away, which is exactly the drift the
+    /// plan exists to survive. And a second copy would accumulate: one per
+    /// iteration, each slightly staler than the last, until the model is
+    /// reading nine versions of its own checklist and has to work out which one
+    /// is current. The system prompt is rebuilt every iteration, so there is
+    /// only ever one, and it is always the live one.
+    async fn system_prompt(&self) -> Option<String> {
+        let base = self.config.system_prompt.trim();
+        let plan = match &self.plan {
+            Some(board) => board.reminder().await,
+            None => None,
+        };
+
+        match (base.is_empty(), plan) {
+            (true, None) => None,
+            (true, Some(plan)) => Some(plan),
+            (false, None) => Some(self.config.system_prompt.clone()),
+            // Last, so it is the nearest thing to the conversation. A model
+            // that reads the end of its prompt most closely is reading the
+            // thing this feature exists to put there.
+            (false, Some(plan)) => Some(format!("{}\n\n{plan}", self.config.system_prompt)),
         }
     }
 

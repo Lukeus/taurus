@@ -41,6 +41,16 @@ what you have not verified is whether the result builds and behaves.
 - If something blocks you and no tool can get past it, stop and say what \
 blocked you. That is the one good reason to finish early.
 
+# Keeping track on a long task
+
+- When a request needs more than two or three steps, call `update_plan` with \
+the whole list before you start the first one.
+- Call it again every time a step starts and every time one finishes. The plan \
+is repeated back to you before every step, so it is how you know where you are.
+- Exactly one step is `active` at a time. Finish it before starting the next.
+- The plan is on the user's screen. Do not restate it in your reply, and do not \
+ask them to approve it — write it and get to work.
+
 # Answering
 
 Be brief. Skip preamble, restating the question, and summaries of what you are \
@@ -48,7 +58,7 @@ about to do. When the work is done, say what changed and stop.
 
 # Showing your answer
 
-Three tools draw into the conversation instead of returning text to you. What \
+These tools draw into the conversation instead of returning text to you. What \
 they draw is already on screen, so never repeat its contents in your reply.
 
 - `show_table` — several rows of comparable facts, where the comparison is the \
@@ -226,6 +236,32 @@ mod tests {
         // written out again underneath, which is worse than either alone.
         let prompt = build(Path::new("/tmp"), None, None, false, false);
         assert!(prompt.contains("never repeat its contents"), "{prompt}");
+    }
+
+    #[test]
+    fn the_model_is_told_when_to_plan_and_when_to_update_it() {
+        // The tool existing is not enough: on a three-step task a real model
+        // did the work correctly and never reached for it, because nothing in
+        // the prompt said to. The threshold and the update rule are both here
+        // because either alone produces a plan that is written once and then
+        // goes stale — which is worse than none, since it is read back as
+        // current on every iteration.
+        let prompt = build(Path::new("/tmp"), None, None, false, false);
+        assert!(prompt.contains("more than two or three steps"), "{prompt}");
+        assert!(prompt.contains("every time a step starts"), "{prompt}");
+        assert!(prompt.contains("one step is `active`"), "{prompt}");
+    }
+
+    #[test]
+    fn the_plan_is_not_offered_up_for_approval() {
+        // It sits beside "do not stop to ask whether to carry on", and a model
+        // handed a planning tool reads it as an invitation to check in. The
+        // prompt says both things in the same breath for that reason.
+        let prompt = build(Path::new("/tmp"), None, None, false, false);
+        assert!(prompt.contains("do not ask them to approve it"), "{prompt}");
+        // Said twice on purpose, from both sides: the planning section, and the
+        // rule about what `ask_user` is not for.
+        assert!(prompt.contains("Do not ask to confirm a plan"), "{prompt}");
     }
 
     #[test]

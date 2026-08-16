@@ -30,7 +30,9 @@ use taurus_skills::catalog::SkillCatalog;
 use taurus_skills::proposal::ProposalSink;
 use taurus_skills::skill::SkillSummary;
 use taurus_skills::SharedCatalog;
+use taurus_tools::builtin::plan::UpdatePlan;
 use taurus_tools::builtin::present::{AskUser, ShowChart, ShowTable};
+use taurus_tools::PlanBoard;
 use taurus_tools::{
     Asker, CheckpointStore, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
 };
@@ -72,6 +74,7 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_tools::builtin::present::SHOW_TABLE_TOOL,
     taurus_tools::builtin::present::SHOW_CHART_TOOL,
     taurus_tools::builtin::present::ASK_USER_TOOL,
+    taurus_tools::builtin::plan::UPDATE_PLAN_TOOL,
 ];
 
 /// Makes a permission prompt on demand.
@@ -588,14 +591,21 @@ impl Host {
         ));
 
         // Registered per turn, alongside the spawn tool and for the same
-        // reason: these three address the person watching this conversation,
-        // and a sub-agent has no such person. It shares the registry above,
-        // which is what keeps `ask_user` away from a worker that cannot ask
-        // anyone anything, and keeps a delegate from drawing a chart into a
-        // transcript it is not part of.
+        // reason: these address the person watching this conversation, and a
+        // sub-agent has no such person. It shares the registry above, which is
+        // what keeps `ask_user` away from a worker that cannot ask anyone
+        // anything, and keeps a delegate from drawing a chart into a transcript
+        // it is not part of.
         registry.register(Arc::new(ShowTable));
         registry.register(Arc::new(ShowChart));
         registry.register(Arc::new(AskUser::new(self.asker.clone())));
+
+        // The plan is per turn twice over: the tool belongs to this
+        // conversation like the three above, and the board itself is built here
+        // and dropped when the turn ends. A delegate writing into the parent's
+        // checklist would report progress against a task nobody gave it.
+        let plan = PlanBoard::new();
+        registry.register(Arc::new(UpdatePlan::new(plan.clone())));
 
         // `reload` applies this to the shared registry, which is everything
         // registered *there* — so without a second pass here, the per-turn
@@ -643,6 +653,9 @@ impl Host {
                 ..Default::default()
             },
         )
+        // The same board the tool writes to, so what the model wrote on the
+        // last iteration is what it reads on the next one.
+        .with_plan(plan)
     }
 
     /// This workspace's checkpoint logs, for listing and rewinding.
@@ -650,6 +663,20 @@ impl Host {
         CheckpointStore::new(crate::sessions::checkpoints_dir(
             &self.workspace.read().await,
         ))
+    }
+
+    /// Where this workspace stands with git.
+    ///
+    /// Read on demand rather than cached: a user switches branches in a
+    /// terminal beside this window, and a cached answer would be wrong exactly
+    /// when it matters — the moment before someone commits a turn.
+    pub async fn repo_status(&self) -> crate::git::RepoStatus {
+        crate::git::Repo::status(&self.workspace.read().await.clone()).await
+    }
+
+    /// The branch this workspace is on, for stamping onto a new conversation.
+    pub async fn branch(&self) -> Option<String> {
+        self.repo_status().await.branch
     }
 
     pub async fn tool_context(&self, cancel: CancellationToken) -> ToolContext {

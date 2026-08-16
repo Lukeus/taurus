@@ -1232,6 +1232,85 @@ body.resizing * {
   padding-top: 4px;
 }
 
+/*
+ * The plan card.
+ *
+ * Read by the model as well as the reader, so the two renderings have to agree:
+ * the mark, the order, and the state are the same facts the system prompt
+ * carries back. What is added here is emphasis, which prose cannot do — the
+ * live step is the one thing this card exists to make findable in a glance.
+ */
+.plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plan-step {
+  display: grid;
+  grid-template-columns: 1.4em 1fr auto;
+  align-items: baseline;
+  gap: 9px;
+  padding: 5px 8px;
+  border-radius: var(--r);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.plan-mark {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* Finished work recedes; it is context for the step that is live, not the
+   thing being read. Struck through as well as dimmed, so the state survives a
+   screenshot and a reader who cannot pick the contrast out. */
+.plan-step.done .plan-text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+.plan-step.done .plan-mark {
+  color: var(--ok);
+}
+
+/* The one row worth finding without reading. Tinted rather than bordered so it
+   does not fight the card's own edge. */
+.plan-step.active {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.plan-step.active .plan-text {
+  color: var(--text);
+  font-weight: 600;
+}
+.plan-step.active .plan-mark {
+  color: var(--accent);
+}
+.plan-state {
+  font-size: 11px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* Present for a screen reader, absent for everyone else. The marker beside
+   each step is decorative, so the state it stands for has to be named
+   somewhere the row can still be understood from. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .view-foot,
 .questions-foot {
   display: flex;
@@ -2093,6 +2172,49 @@ body.resizing * {
 .rewind-plan .actions {
   display: flex;
   gap: 8px;
+}
+
+/*
+ * A turn opened up to show what it changed. Same elevated surface as the
+ * rewind confirmation, because both hang off the turn they are about — but
+ * this one is a reading surface rather than a question, so it carries the
+ * diffs at full width and keeps its own scroll off.
+ */
+.turn-detail {
+  border-top: 1px solid var(--rule);
+  padding: 12px 13px 2px;
+  background: var(--bg-elevated);
+}
+/* The diff's own bottom margin is the gap between files here. */
+.turn-detail .diff-body {
+  max-height: 320px;
+}
+.turn-detail .card-files {
+  margin: 0 0 10px;
+}
+
+/*
+ * Keeping a turn, rather than undoing it. Sits under the diffs it describes,
+ * so the message is written with the change on screen.
+ */
+.commit-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 0 4px;
+  border-top: 1px dashed var(--rule);
+}
+.commit-turn input {
+  width: 100%;
+  font-size: 13px;
+}
+.commit-turn .actions {
+  display: flex;
+  gap: 8px;
+}
+.commit-turn .drawer-foot {
+  padding: 0;
+  border: 0;
 }
 
 .section {

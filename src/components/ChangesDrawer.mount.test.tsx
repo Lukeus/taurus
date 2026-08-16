@@ -1,0 +1,280 @@
+// @vitest-environment jsdom
+//
+// The static tests in `ChangesDrawer.test.tsx` ask one question: what does the
+// first paint look like. Everything this file covers happens after that — the
+// turn list arrives, a turn is expanded, its diff is fetched, a commit is made
+// and reported back. None of it exists in a first paint.
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const invoke = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => invoke(...args),
+  Channel: class {},
+}));
+
+import { ChangesDrawer } from "./ChangesDrawer";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
+
+const TURN = {
+  turn: 1,
+  prompt: "rename the widget",
+  at: Math.floor(Date.now() / 1000),
+  files: ["src/widget.rs"],
+};
+
+const DIFF = {
+  kind: "diff",
+  diff: {
+    path: "src/widget.rs",
+    created: false,
+    deleted: false,
+    added: 1,
+    removed: 1,
+    elided: 0,
+    hunks: [
+      {
+        lines: [
+          { kind: "removed", text: "let old = 1;", old_line: 1, new_line: null },
+          { kind: "added", text: "let new = 2;", old_line: null, new_line: 1 },
+        ],
+      },
+    ],
+  },
+};
+
+/**
+ * Answers each Tauri command with whatever the test set for it.
+ *
+ * Keyed by command name rather than call order, because the drawer fires the
+ * checkpoint list and the repository status together and neither is promised
+ * to land first.
+ */
+function backend(replies: Record<string, unknown>) {
+  invoke.mockImplementation((command: string) => {
+    if (command in replies) {
+      const reply = replies[command];
+      return reply instanceof Error
+        ? Promise.reject(reply)
+        : Promise.resolve(reply);
+    }
+    return Promise.resolve([]);
+  });
+}
+
+/** Mounts the drawer and flushes the effects its open fires. */
+async function open() {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => {
+    root.render(<ChangesDrawer sessionId="s1" busy={false} onClose={() => {}} />);
+  });
+  return {
+    host,
+    html: () => host.innerHTML,
+    /** Clicks the first button whose visible text matches. */
+    click: async (text: string) => {
+      const button = [...host.querySelectorAll("button")].find((b) =>
+        (b.textContent ?? "").includes(text),
+      );
+      if (!button) throw new Error(`no button reading "${text}"`);
+      await act(async () => button.click());
+    },
+    type: async (value: string) => {
+      const input = host.querySelector("input");
+      if (!input) throw new Error("no message field");
+      await act(async () => {
+        // React tracks the last value it set, so assigning through the
+        // prototype setter is what makes it see this as a change.
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value",
+        )?.set;
+        setter?.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    },
+    unmount: () => act(() => root.unmount()),
+  };
+}
+
+beforeEach(() => invoke.mockReset());
+afterEach(() => {
+  document.body.innerHTML = "";
+});
+
+describe("reading a turn", () => {
+  it("fetches nothing until a turn is expanded", async () => {
+    // A conversation of thirty turns would otherwise build thirty diffs to
+    // draw a drawer that shows one.
+    backend({ list_checkpoints: [TURN], repo_status: { repository: false } });
+    const ui = await open();
+
+    expect(invoke.mock.calls.map(([c]) => c)).not.toContain("turn_changes");
+
+    await ui.click("View changes");
+    expect(invoke.mock.calls.map(([c]) => c)).toContain("turn_changes");
+    ui.unmount();
+  });
+
+  it("shows the diff of what that turn changed", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+    });
+    const ui = await open();
+    await ui.click("View changes");
+
+    expect(ui.html()).toContain("let old = 1;");
+    expect(ui.html()).toContain("let new = 2;");
+    ui.unmount();
+  });
+
+  it("names a file it could not diff rather than leaving it out", async () => {
+    // The same files a rewind reports as skipped. Dropping them would make the
+    // turn look smaller than it was.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [
+        {
+          kind: "opaque",
+          path: "assets/logo.png",
+          reason: "was not text when it was recorded",
+        },
+      ],
+    });
+    const ui = await open();
+    await ui.click("View changes");
+
+    expect(ui.html()).toContain("assets/logo.png");
+    expect(ui.html()).toContain("was not text when it was recorded");
+    ui.unmount();
+  });
+});
+
+describe("committing a turn", () => {
+  it("offers no commit for a workspace that is not a repository", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+    });
+    const ui = await open();
+    await ui.click("View changes");
+
+    expect(ui.html()).not.toContain("Commit this turn");
+    expect(ui.html()).toContain("not a git repository");
+    ui.unmount();
+  });
+
+  it("seeds the message from what the turn was asked to do", async () => {
+    // The prompt and the commit message agree often enough to be a useful
+    // start — and the field is editable because they agree rarely enough that
+    // committing one unread is a bad habit to build.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: true, branch: "main" },
+      turn_changes: [DIFF],
+    });
+    const ui = await open();
+    await ui.click("View changes");
+
+    expect(ui.host.querySelector("input")?.value).toBe("rename the widget");
+    ui.unmount();
+  });
+
+  it("sends the edited message and reports the commit back", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: true, branch: "main" },
+      turn_changes: [DIFF],
+      commit_turn: {
+        sha: "a1b2c3d",
+        subject: "rename Widget to Gadget",
+        files: ["src/widget.rs"],
+        skipped: [],
+      },
+    });
+    const ui = await open();
+    await ui.click("View changes");
+    await ui.type("rename Widget to Gadget");
+    await ui.click("Commit this turn");
+
+    const call = invoke.mock.calls.find(([c]) => c === "commit_turn");
+    expect(call?.[1]).toMatchObject({
+      sessionId: "s1",
+      turn: 1,
+      message: "rename Widget to Gadget",
+    });
+    expect(ui.html()).toContain("a1b2c3d");
+    ui.unmount();
+  });
+
+  it("says which of the turn's files did not go in", async () => {
+    // A commit that quietly covered three of a turn's four files is the
+    // failure this whole surface exists to prevent.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: true, branch: "main" },
+      turn_changes: [DIFF],
+      commit_turn: {
+        sha: "a1b2c3d",
+        subject: "rename the widget",
+        files: ["src/widget.rs"],
+        skipped: [
+          {
+            path: ".env",
+            reason: "is ignored by git, so it is not in the repository to commit",
+          },
+        ],
+      },
+    });
+    const ui = await open();
+    await ui.click("View changes");
+    await ui.click("Commit this turn");
+
+    expect(ui.html()).toContain(".env");
+    expect(ui.html()).toContain("ignored by git");
+    ui.unmount();
+  });
+
+  it("shows the reason a commit was refused and keeps the field", async () => {
+    // The refusal carries every reason it collected, and it is the whole point
+    // that the user gets to read it rather than watch the button do nothing.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: true, branch: "main" },
+      turn_changes: [DIFF],
+      commit_turn: new Error(
+        "Nothing to commit from that turn: src/widget.rs already matches the last commit.",
+      ),
+    });
+    const ui = await open();
+    await ui.click("View changes");
+    await ui.click("Commit this turn");
+
+    expect(ui.html()).toContain("already matches the last commit");
+    expect(ui.host.querySelector("input")).not.toBeNull();
+    ui.unmount();
+  });
+
+  it("names the branch a commit would land on", async () => {
+    // A detached HEAD is the case worth catching: a commit made there is hard
+    // to find again, and the drawer says so before the button is pressed.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: true, head: "9f8e7d6" },
+      turn_changes: [DIFF],
+    });
+    const ui = await open();
+
+    expect(ui.html()).toContain("detached at 9f8e7d6");
+    ui.unmount();
+  });
+});

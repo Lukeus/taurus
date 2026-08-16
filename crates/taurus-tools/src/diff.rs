@@ -68,6 +68,11 @@ pub struct FileDiff {
     /// Nothing was there before. The dialog says "create", not "replace", and
     /// there is no removed side to show.
     pub created: bool,
+    /// Nothing is there after. Only a recorded change can be this — a write
+    /// never removes a file — and it is worth its own flag because an
+    /// all-removed diff is otherwise indistinguishable from a file truncated
+    /// to nothing, which is a different thing to have done.
+    pub deleted: bool,
     pub added: usize,
     pub removed: usize,
     pub hunks: Vec<DiffHunk>,
@@ -109,7 +114,7 @@ pub fn against_disk(workspace: &Path, path: &Path, updated: &str) -> Option<File
 
     let created = original.is_none();
     let original = original.unwrap_or_default();
-    Some(build(display, created, &original, updated))
+    Some(build(display, created, false, &original, updated))
 }
 
 /// Diffs two strings that have already been read.
@@ -117,10 +122,28 @@ pub fn against_disk(workspace: &Path, path: &Path, updated: &str) -> Option<File
 /// Used by `edit_file`, which computes its replacement from the original and
 /// has both halves in hand.
 pub fn between(display: String, original: &str, updated: &str) -> FileDiff {
-    build(display, false, original, updated)
+    build(display, false, false, original, updated)
 }
 
-fn build(path: String, created: bool, original: &str, updated: &str) -> FileDiff {
+/// Diffs a change that has already happened, where either side may be nothing.
+///
+/// [`against_disk`] and [`between`] both describe a write that is about to
+/// happen, and a write always leaves a file behind. A recorded change does not:
+/// a turn that ran `rm` has an original and no replacement, and rendering that
+/// as a file truncated to zero lines would describe the wrong act. `None` on
+/// either side means the file was not there, which is how a creation and a
+/// deletion tell themselves apart.
+pub fn of_change(path: String, before: Option<&str>, after: Option<&str>) -> FileDiff {
+    build(
+        path,
+        before.is_none(),
+        after.is_none(),
+        before.unwrap_or_default(),
+        after.unwrap_or_default(),
+    )
+}
+
+fn build(path: String, created: bool, deleted: bool, original: &str, updated: &str) -> FileDiff {
     let diff = TextDiff::from_lines(original, updated);
 
     let mut added = 0;
@@ -168,6 +191,7 @@ fn build(path: String, created: bool, original: &str, updated: &str) -> FileDiff
     FileDiff {
         path,
         created,
+        deleted,
         added,
         removed,
         hunks,
@@ -256,6 +280,28 @@ mod tests {
         let path = dir.path().join("blob.bin");
         std::fs::write(&path, [0xff, 0xfe, 0x00, 0x01]).unwrap();
         assert!(against_disk(dir.path(), &path, "text").is_none());
+    }
+
+    #[test]
+    fn a_recorded_deletion_is_not_a_file_truncated_to_nothing() {
+        // Both have every line on the removed side. Only one of them means the
+        // file is gone, and the Changes drawer has to say which.
+        let deleted = of_change("gone.txt".into(), Some("a\nb\n"), None);
+        let emptied = of_change("kept.txt".into(), Some("a\nb\n"), Some(""));
+
+        assert!(deleted.deleted && !deleted.created);
+        assert!(!emptied.deleted && !emptied.created);
+        assert_eq!((deleted.added, deleted.removed), (0, 2));
+        assert_eq!(emptied.removed, 2);
+    }
+
+    #[test]
+    fn a_recorded_creation_has_no_removed_side() {
+        // `State::Absent` is how the checkpoint log records a file the turn
+        // brought into being, and it reads as a creation from either direction.
+        let diff = of_change("new.rs".into(), None, Some("fn main() {}\n"));
+        assert!(diff.created && !diff.deleted);
+        assert_eq!((diff.added, diff.removed), (1, 0));
     }
 
     #[test]
