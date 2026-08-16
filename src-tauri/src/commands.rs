@@ -24,8 +24,8 @@ use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
 use taurus_host::{
-    sessions, BackendKind, Checkpoint, Host, KeyStatus, Problem, ProviderConfig, Restored,
-    SessionLog, SessionMeta, Settings, Theme, TurnRef,
+    sessions, BackendKind, Checkpoint, Commit, Host, KeyStatus, Problem, ProviderConfig, Repo,
+    RepoStatus, Restored, SessionLog, SessionMeta, Settings, Theme, TurnChange, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -55,6 +55,16 @@ pub struct AppStatus {
     pub problems: Vec<Problem>,
     pub tool_names: Vec<String>,
     pub mcp_servers: Vec<ServerStatus>,
+    /// The branch checked out in this workspace, when there is one.
+    ///
+    /// A snapshot taken with the rest of the status, which is enough for what
+    /// the rail does with it — mark the conversations that were started
+    /// somewhere else. Anything about to *write* asks
+    /// [`repo_status`] instead, which reads afresh: a branch switched in a
+    /// terminal beside this window must not be answered from a cache at the
+    /// moment before someone commits.
+    #[ts(optional)]
+    pub branch: Option<String>,
 }
 
 #[tauri::command]
@@ -68,6 +78,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus>
         problems: state.host.problems().await,
         tool_names: state.host.tool_names().await,
         mcp_servers: state.host.mcp_statuses().await,
+        branch: state.host.branch().await,
     })
 }
 
@@ -112,7 +123,10 @@ pub async fn create_session(
         .map_err(|e| e.to_string())?;
 
     let session = Session::new(&model);
-    let log = SessionLog::create(&session, &state.host.workspace().await);
+    // Stamped at creation rather than looked up later: which branch the work
+    // was done on is only knowable while it is happening.
+    let branch = state.host.branch().await;
+    let log = SessionLog::create(&session, &state.host.workspace().await, branch);
     let id = session.id.clone();
     state.sessions.insert(
         id.clone(),
@@ -1102,4 +1116,81 @@ pub async fn rewind_to(
         .checkpoints()
         .await
         .rewind(&session_id, &workspace, turn, dry_run)
+}
+
+/// What one turn changed, file by file, as a diff.
+///
+/// Read on demand rather than sent with the listing: a session of thirty turns
+/// would otherwise ship every diff it ever made to draw a drawer, and the
+/// drawer shows one turn expanded at a time.
+#[tauri::command]
+pub async fn turn_changes(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    turn: u32,
+) -> CmdResult<Vec<TurnChange>> {
+    let workspace = state.host.workspace().await;
+    state
+        .host
+        .checkpoints()
+        .await
+        .changes(&session_id, &workspace, turn)
+}
+
+/// Where the workspace stands with git, for the branch label and the commit
+/// button.
+#[tauri::command]
+pub async fn repo_status(state: State<'_, Arc<AppState>>) -> CmdResult<RepoStatus> {
+    Ok(state.host.repo_status().await)
+}
+
+/// Commits exactly the files one turn changed.
+///
+/// The turn is named rather than the paths, so the frontend cannot ask for a
+/// commit of files that turn did not touch — the checkpoint log is the only
+/// thing that decides what goes in.
+#[tauri::command]
+pub async fn commit_turn(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    turn: u32,
+    message: String,
+) -> CmdResult<Commit> {
+    // The same rule `rewind_to` applies: a turn holds this lock for its whole
+    // run, and committing underneath one would capture a tree that is still
+    // being written.
+    if let Ok(entry) = state.session(&session_id) {
+        if entry.session.try_lock().is_err() {
+            return Err(
+                "this conversation is mid-turn; wait for it to finish before committing".into(),
+            );
+        }
+    }
+
+    let workspace = state.host.workspace().await;
+    let checkpoints = state.host.checkpoints().await;
+
+    // Re-read rather than trusting a path list from the frontend, so what is
+    // committed is what was recorded.
+    let files = checkpoints
+        .turns(&session_id)?
+        .into_iter()
+        .find(|checkpoint| checkpoint.turn == turn)
+        .map(|checkpoint| checkpoint.files)
+        .ok_or_else(|| format!("turn {turn} is not in this conversation's checkpoint log"))?;
+
+    let repo = Repo::discover(&workspace)
+        .await?
+        .ok_or("This workspace is not a git repository, so there is nothing to commit to.")?;
+
+    let commit = repo.commit(&files, &message).await?;
+    info!(
+        session = %session_id,
+        turn,
+        sha = %commit.sha,
+        files = commit.files.len(),
+        skipped = commit.skipped.len(),
+        "committed a turn"
+    );
+    Ok(commit)
 }

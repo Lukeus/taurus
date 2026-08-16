@@ -94,6 +94,9 @@ pub fn run() {
             commands::open_mcp_config,
             commands::list_checkpoints,
             commands::rewind_to,
+            commands::turn_changes,
+            commands::repo_status,
+            commands::commit_turn,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Taurus");

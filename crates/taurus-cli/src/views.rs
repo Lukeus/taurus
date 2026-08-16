@@ -10,7 +10,7 @@
 //! vertical bars need a height a scrollback does not have and a width every
 //! label has to fit inside.
 
-use taurus_tools::view::{ColumnKind, Series, TranscriptView};
+use taurus_tools::view::{ColumnKind, Series, StepState, TranscriptView};
 
 /// Longest a single table cell may print before it is cut.
 ///
@@ -93,8 +93,35 @@ pub fn render(view: &TranscriptView, color: bool) -> String {
             out
         }
 
+        // A checklist needs neither columns nor scale, so this is the one view
+        // the terminal draws as well as the app does. The markers are the
+        // model's own — `[x]`, `[>]`, `[ ]` — so a plan read here and a plan
+        // read in the transcript say the same thing in the same characters.
+        TranscriptView::Plan { steps } => {
+            let mut out = String::new();
+            for (index, step) in steps.iter().enumerate() {
+                let line = format!("  {} {} {}\n", index + 1, step.state.marker(), step.text);
+                out.push_str(&match step.state {
+                    // The step being worked on is the one fact worth finding at
+                    // a glance in a scrollback; the finished ones are context.
+                    StepState::Active => bold(&line, color),
+                    StepState::Done => dim(&line, color),
+                    StepState::Todo => line,
+                });
+            }
+            out
+        }
+
         // Drawn by the prompt that is about to ask them, not here.
         TranscriptView::Questions { .. } => String::new(),
+    }
+}
+
+fn bold(text: &str, color: bool) -> String {
+    if color {
+        format!("\x1b[1m{text}\x1b[0m")
+    } else {
+        text.to_string()
     }
 }
 
@@ -355,5 +382,37 @@ mod tests {
     fn whole_numbers_do_not_grow_a_decimal_point() {
         assert_eq!(number(318.0), "318");
         assert_eq!(number(42.1), "42.1");
+    }
+
+    #[test]
+    fn a_plan_prints_its_steps_with_the_markers_the_model_uses() {
+        // The terminal and the transcript have to agree character for
+        // character: someone reading a piped run and someone reading the app
+        // are looking at the same checklist.
+        use taurus_tools::view::Step;
+        let view = TranscriptView::Plan {
+            steps: vec![
+                Step {
+                    text: "Read the parser".into(),
+                    state: StepState::Done,
+                },
+                Step {
+                    text: "Add the token type".into(),
+                    state: StepState::Active,
+                },
+                Step {
+                    text: "Update the tests".into(),
+                    state: StepState::Todo,
+                },
+            ],
+        };
+
+        let out = render(&view, false);
+        assert!(out.contains("1 [x] Read the parser"), "{out}");
+        assert!(out.contains("2 [>] Add the token type"), "{out}");
+        assert!(out.contains("3 [ ] Update the tests"), "{out}");
+        // Uncoloured output must carry no escapes at all — it is what a piped
+        // run writes, and what ends up pasted into an issue.
+        assert!(!out.contains('\x1b'), "{out:?}");
     }
 }

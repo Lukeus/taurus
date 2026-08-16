@@ -465,7 +465,9 @@ export function entriesFromMessages(messages: Message[]): Entry[] {
     }
   }
 
-  return entries;
+  // Applied once at the end rather than per call: the rule is about the whole
+  // conversation, and a resumed transcript has every update in it at once.
+  return supersedePlans(entries);
 }
 
 /**
@@ -526,6 +528,13 @@ export function viewFromCall(
         ? { type: "questions", id, questions: payload.questions }
         : undefined;
 
+    case "update_plan":
+      // Only the last one drawn — see `supersedePlans`, which the callers of
+      // this apply once they have the whole conversation.
+      return Array.isArray(payload.steps)
+        ? { type: "plan", steps: payload.steps }
+        : undefined;
+
     default:
       return undefined;
   }
@@ -534,6 +543,40 @@ export function viewFromCall(
 /** `caption` is optional to the model and nullable across the boundary. */
 function asCaption(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+/**
+ * Leaves only the newest plan card drawn.
+ *
+ * Every other view is a thing that happened once — a table of the numbers as
+ * they were, a question that was asked and answered — so two of them are two
+ * facts and both belong on screen. A plan is not that. It is one evolving
+ * object, and the model rewrites the whole list every time a step starts or
+ * finishes, so a six-step task ends with seven `update_plan` calls. Drawn as
+ * seven cards, the checklist that exists to say *where you are* would instead
+ * be a history of everywhere you have been, with the current state at the
+ * bottom of it.
+ *
+ * The superseded calls keep their row — they happened, and the run header still
+ * counts them — they just stop drawing. Nothing is removed from the transcript.
+ */
+function supersedePlans(entries: Entry[]): Entry[] {
+  // Walked backwards rather than with `findLastIndex`, which needs a newer
+  // lib target than this project sets — not worth moving for one call.
+  let last = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.kind === "tool" && entry.view?.type === "plan") {
+      last = i;
+      break;
+    }
+  }
+  if (last < 0) return entries;
+  return entries.map((e, i) =>
+    i !== last && e.kind === "tool" && e.view?.type === "plan"
+      ? { ...e, view: undefined }
+      : e,
+  );
 }
 
 const PREVIEW_MAX_CHARS = 120;
@@ -580,7 +623,7 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
       }));
 
     case "tool_call_started":
-      return [
+      return supersedePlans([
         // Any streaming text before a tool call is finished text.
         ...entries.map((e) =>
           e.kind === "assistant" ? { ...e, open: false } : e,
@@ -595,7 +638,7 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           view: event.view,
           startedAt: Date.now(),
         },
-      ];
+      ]);
 
     case "tool_progress":
       return entries.map((e) =>

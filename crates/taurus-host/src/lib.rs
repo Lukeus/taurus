@@ -6,6 +6,7 @@
 //! so the two cannot drift apart.
 
 pub mod config;
+pub mod git;
 pub mod host;
 pub mod instructions;
 pub mod problem;
@@ -16,12 +17,13 @@ pub mod sessions;
 mod testing;
 
 pub use config::{ProviderConfig, ProviderKind, Scope, Settings, Theme};
+pub use git::{Commit, Repo, RepoStatus};
 pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};
 pub use instructions::{Instructions, InstructionsOrigin, InstructionsSource, InstructionsTier};
 pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;
 pub use sessions::{SessionLog, SessionMeta};
-pub use taurus_tools::{Checkpoint, Restored};
+pub use taurus_tools::{Checkpoint, Restored, TurnChange};
 // Re-exported so a frontend can edit search config without depending on the
 // crate that runs the searches — the same reason `Checkpoint` comes through
 // here rather than from `taurus-tools`.

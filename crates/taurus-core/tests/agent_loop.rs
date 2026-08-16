@@ -1060,3 +1060,219 @@ async fn the_check_can_be_turned_off() {
     assert_eq!(provider.request_count().await, 2);
     assert_eq!(nudges(&provider.last_request().await.unwrap()), 0);
 }
+
+// ------------------------------------------------------------------ the plan
+
+/// A harness whose registry carries `update_plan`, wired to the same board the
+/// agent restates from — which is what `Host::build_agent` does for a real turn.
+fn planning(turns: Vec<ScriptedTurn>) -> (Agent, Arc<FakeProvider>, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let cancel = CancellationToken::new();
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
+
+    let board = taurus_tools::PlanBoard::new();
+    let mut registry = ToolRegistry::with_builtins();
+    registry.register(Arc::new(taurus_tools::builtin::plan::UpdatePlan::new(
+        board.clone(),
+    )));
+
+    let provider = FakeProvider::new(turns);
+    let agent = Agent::new(
+        provider.clone(),
+        registry,
+        ToolContext::new(workspace, permissions, cancel),
+        AgentConfig::default(),
+    )
+    .with_plan(board);
+    (agent, provider, dir)
+}
+
+fn plan_call(id: &str, steps: serde_json::Value) -> ScriptedTurn {
+    ScriptedTurn::tool_call(id, "update_plan", serde_json::json!({ "steps": steps }))
+}
+
+#[tokio::test]
+async fn a_plan_is_restated_to_the_model_on_every_later_iteration() {
+    // The whole feature. A 9B model does not lose the steps because it forgot
+    // them — they are still in the history — it loses them because by iteration
+    // nine they are twenty messages back behind a wall of tool output. So the
+    // plan is not left in the history: it is rebuilt into the system prompt
+    // every time, and this is the test that it actually arrives there.
+    let (agent, provider, _dir) = planning(vec![
+        plan_call(
+            "t1",
+            serde_json::json!([
+                {"text": "Read the parser", "state": "active"},
+                {"text": "Add the token type", "state": "todo"},
+            ]),
+        ),
+        ScriptedTurn::tool_call("t2", "list_dir", serde_json::json!({"path": "."})),
+        ScriptedTurn::text("Done."),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("do the thing"), tx)
+        .await
+        .unwrap();
+
+    let seen = provider.seen.lock().await;
+    assert_eq!(seen.len(), 3);
+
+    // Nothing on the first request: the plan did not exist when it was built.
+    let first = seen[0].system.clone().unwrap_or_default();
+    assert!(!first.contains("Read the parser"), "{first}");
+
+    // On both requests after the call, in the state the model set.
+    for request in &seen[1..] {
+        let system = request.system.clone().expect("a system prompt");
+        assert!(system.contains("[>] Read the parser"), "{system}");
+        assert!(system.contains("[ ] Add the token type"), "{system}");
+    }
+}
+
+#[tokio::test]
+async fn the_prompt_carries_the_plan_as_it_stands_rather_than_as_it_started() {
+    // Restated, not captured. A model that marked step one done on iteration
+    // two must not read it as still in progress on iteration three — that is
+    // the exact drift this exists to stop, reintroduced by caching.
+    let (agent, provider, _dir) = planning(vec![
+        plan_call(
+            "t1",
+            serde_json::json!([{"text": "Read the parser", "state": "active"}]),
+        ),
+        plan_call(
+            "t2",
+            serde_json::json!([{"text": "Read the parser", "state": "done"}]),
+        ),
+        ScriptedTurn::text("Done."),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("do the thing"), tx)
+        .await
+        .unwrap();
+
+    let last = provider.last_request().await.unwrap().system.unwrap();
+    assert!(last.contains("[x] Read the parser"), "{last}");
+    assert!(!last.contains("[>] Read the parser"), "{last}");
+}
+
+#[tokio::test]
+async fn only_one_copy_of_the_plan_is_ever_in_front_of_the_model() {
+    // Pushed as a message instead, this would accumulate: one copy per
+    // iteration, each staler than the last, leaving the model to work out which
+    // of nine checklists is current. The system prompt is rebuilt each time, so
+    // there is only ever the live one.
+    let (agent, provider, _dir) = planning(vec![
+        plan_call(
+            "t1",
+            serde_json::json!([{"text": "Read the parser", "state": "active"}]),
+        ),
+        ScriptedTurn::tool_call("t2", "list_dir", serde_json::json!({"path": "."})),
+        ScriptedTurn::tool_call("t3", "list_dir", serde_json::json!({"path": "."})),
+        ScriptedTurn::text("Done."),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("do the thing"), tx)
+        .await
+        .unwrap();
+
+    let last = provider.last_request().await.unwrap();
+    let system = last.system.unwrap();
+    assert_eq!(
+        system.matches("# Your current plan").count(),
+        1,
+        "the plan was stacked rather than rebuilt: {system}"
+    );
+    // And it is nowhere in the history, which is what compaction would erode.
+    let in_messages = last
+        .messages
+        .iter()
+        .any(|m| m.text().contains("# Your current plan"));
+    assert!(!in_messages, "the plan leaked into the conversation");
+}
+
+#[tokio::test]
+async fn a_turn_that_never_plans_carries_no_planning_text_at_all() {
+    // The cost of this feature for every short turn has to be zero — not a
+    // small section, not an empty heading. A standing instruction to keep a
+    // checklist is exactly how a two-step turn grows a six-step plan.
+    let (agent, provider, _dir) = planning(vec![ScriptedTurn::text("Hello there")]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("hi"), tx)
+        .await
+        .unwrap();
+
+    let system = provider
+        .last_request()
+        .await
+        .unwrap()
+        .system
+        .unwrap_or_default();
+    assert!(!system.contains("plan"), "{system}");
+}
+
+#[tokio::test]
+async fn a_refused_plan_leaves_the_previous_one_standing() {
+    // A model that sends two steps in progress gets an error, and the plan it
+    // set a moment ago has to survive that — a rejected update that wiped the
+    // checklist would be worse than one that was accepted wrongly.
+    let (agent, provider, _dir) = planning(vec![
+        plan_call(
+            "t1",
+            serde_json::json!([{"text": "Read the parser", "state": "active"}]),
+        ),
+        plan_call(
+            "t2",
+            serde_json::json!([
+                {"text": "Read the parser", "state": "active"},
+                {"text": "Add the token type", "state": "active"},
+            ]),
+        ),
+        ScriptedTurn::text("Done."),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("do the thing"), tx)
+        .await
+        .unwrap();
+
+    let last = provider.last_request().await.unwrap();
+    let system = last.system.unwrap();
+    assert!(system.contains("[>] Read the parser"), "{system}");
+    assert!(!system.contains("Add the token type"), "{system}");
+    // And the model was told what was wrong with it, in terms it can act on.
+    let told = last.messages.iter().any(|m| {
+        m.text().contains("exactly one step may be in progress")
+            || m.content.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::ToolResult { content, .. }
+                        if content.contains("exactly one step may be in progress")
+                )
+            })
+    });
+    assert!(told, "the model was not told why: {:#?}", last.messages);
+}

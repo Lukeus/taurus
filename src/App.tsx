@@ -140,6 +140,7 @@ export default function App() {
         sessions={store.sessions}
         currentId={store.session?.id}
         changedCount={store.changed.length}
+        branch={store.status?.branch ?? null}
         busy={store.busy}
         skillCount={store.status?.skill_count ?? null}
         agentCount={store.status?.agent_count ?? null}

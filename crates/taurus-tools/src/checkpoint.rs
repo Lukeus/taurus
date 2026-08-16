@@ -40,6 +40,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
+use crate::diff::FileDiff;
+
 /// Bumped when a record shape changes incompatibly. A log written by a newer
 /// Taurus is refused rather than half-understood — a partial rewind is the one
 /// outcome worse than no rewind.
@@ -134,6 +136,41 @@ pub struct Checkpoint {
     pub files: Vec<String>,
 }
 
+/// What one turn did to one file.
+///
+/// The log already holds both halves of this. A turn records what a file held
+/// before it touched it, so the pre-image the *next* turn to touch that file
+/// recorded is, by construction, what this turn left behind — and for the last
+/// turn to touch it, what it left behind is what is on disk now. No second
+/// store, no post-images, and nothing extra written per turn.
+///
+/// The seam is a hand edit between two turns, which lands in the later turn's
+/// diff rather than being attributed to nobody. That is the same assumption
+/// [`CheckpointStore::rewind`] already makes when it says a rewind will
+/// overwrite "anything you changed by hand since", and it fails the same way:
+/// visibly, in a direction the user can reason about.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum TurnChange {
+    /// The before and after, ready to draw.
+    Diff { diff: FileDiff },
+    /// The file changed, and one side of it is not here to show. A rewind
+    /// reports the same files as skipped, for the same reason.
+    ///
+    /// `reason` is a complete phrase following the file's name.
+    Opaque { path: String, reason: String },
+}
+
+impl TurnChange {
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Diff { diff } => &diff.path,
+            Self::Opaque { path, .. } => path,
+        }
+    }
+}
+
 /// What a rewind did to one file.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -215,6 +252,46 @@ impl CheckpointStore {
             .collect())
     }
 
+    /// What one turn changed, file by file, as a diff.
+    ///
+    /// The turn numbers are the ones [`Self::turns`] hands out, and the files
+    /// are that turn's own — the ones it was the first to touch. See
+    /// [`TurnChange`] for where the after-image comes from.
+    pub fn changes(
+        &self,
+        session_id: &str,
+        workspace: &Path,
+        turn: u32,
+    ) -> Result<Vec<TurnChange>, String> {
+        let Some(path) = self.log_path(session_id) else {
+            return Err(format!("'{session_id}' is not a usable session id"));
+        };
+        let turns = read_log(&path)?;
+        let index = check_turn(session_id, turn, turns.len())?;
+
+        // Split rather than indexed twice, so the "what came after" search
+        // cannot accidentally include the turn being described.
+        let (through, later) = turns.split_at(index + 1);
+        let entry = through.last().expect("check_turn bounded the index");
+
+        Ok(entry
+            .changes
+            .iter()
+            .map(|(file, before)| {
+                // The earliest later pre-image of this same file is what this
+                // turn left behind. Iterating turns in order and taking the
+                // first match is exactly that; nothing later can be closer.
+                let after = later
+                    .iter()
+                    .flat_map(|turn| turn.changes.iter())
+                    .find(|(seen, _)| seen == file)
+                    .map(|(_, state)| state.clone())
+                    .unwrap_or_else(|| state_now(workspace, file));
+                describe(file, before, &after)
+            })
+            .collect())
+    }
+
     /// Discards a session's log, and with it every turn it could have undone.
     ///
     /// For a conversation being deleted: the log is keyed by session id and
@@ -255,19 +332,12 @@ impl CheckpointStore {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
         let turns = read_log(&path)?;
-
-        if turn == 0 || turn as usize > turns.len() {
-            return Err(format!(
-                "session '{session_id}' has {} checkpointed turn{}; {turn} is not one of them",
-                turns.len(),
-                if turns.len() == 1 { "" } else { "s" }
-            ));
-        }
+        let index = check_turn(session_id, turn, turns.len())?;
 
         // First writer wins, so iterating forward from the target turn leaves
         // each path holding the oldest pre-image at or after it.
         let mut earliest: Vec<(String, State)> = Vec::new();
-        for entry in &turns[turn as usize - 1..] {
+        for entry in &turns[index..] {
             for (file, state) in &entry.changes {
                 if !earliest.iter().any(|(seen, _)| seen == file) {
                     earliest.push((file.clone(), state.clone()));
@@ -280,6 +350,74 @@ impl CheckpointStore {
             .into_iter()
             .map(|(file, state)| restore(workspace, &file, &state, dry_run))
             .collect())
+    }
+}
+
+/// Turns a 1-based turn number into an index, or says why it is not one.
+///
+/// Shared so that asking to *see* turn 9 of a five-turn session and asking to
+/// *rewind* to it fail with the same sentence. Two spellings of one refusal is
+/// how a user concludes the two features disagree about what exists.
+fn check_turn(session_id: &str, turn: u32, len: usize) -> Result<usize, String> {
+    if turn == 0 || turn as usize > len {
+        return Err(format!(
+            "session '{session_id}' has {len} checkpointed turn{}; {turn} is not one of them",
+            if len == 1 { "" } else { "s" }
+        ));
+    }
+    Ok(turn as usize - 1)
+}
+
+/// What a file holds right now, for the after-side of the last turn to touch it.
+///
+/// Deliberately not [`read_state`], whose `Opaque` reasons are written in the
+/// past tense because it always describes a capture. Here the read is happening
+/// now, and a reason that says "when it was recorded" would point the user at
+/// the wrong moment to go looking.
+fn state_now(workspace: &Path, file: &str) -> State {
+    let path = match crate::path_guard::resolve(workspace, file) {
+        Ok(path) => path,
+        Err(e) => {
+            return State::Opaque {
+                reason: e.to_string(),
+            }
+        }
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(content) => State::Text { content },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => State::Absent,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => State::Opaque {
+            reason: "is not text, so there is nothing to diff against".into(),
+        },
+        Err(e) => State::Opaque {
+            reason: format!("cannot be read now ({e})"),
+        },
+    }
+}
+
+/// Pairs two states into something the drawer can draw.
+fn describe(file: &str, before: &State, after: &State) -> TurnChange {
+    /// `Ok(None)` for a file that was not there, which is a side of the diff
+    /// rather than a failure to produce one.
+    fn text(state: &State) -> Result<Option<&str>, String> {
+        match state {
+            State::Absent => Ok(None),
+            State::Text { content } => Ok(Some(content.as_str())),
+            State::Opaque { reason } => Err(reason.clone()),
+        }
+    }
+
+    match (text(before), text(after)) {
+        (Ok(before), Ok(after)) => TurnChange::Diff {
+            diff: crate::diff::of_change(file.to_string(), before, after),
+        },
+        // Either side missing costs the whole diff — half of one would show a
+        // file being created out of nothing or emptied to nothing, neither of
+        // which happened.
+        (Err(reason), _) | (Ok(_), Err(reason)) => TurnChange::Opaque {
+            path: file.to_string(),
+            reason,
+        },
     }
 }
 
@@ -663,6 +801,138 @@ mod tests {
         fn log(&self, session: &str) -> PathBuf {
             self.logs.path().join(format!("{session}.jsonl"))
         }
+    }
+
+    /// The diff for one file of one turn, or a panic naming what came back
+    /// instead. Every `changes` test wants this and nothing else.
+    fn only_diff(changes: Vec<TurnChange>) -> FileDiff {
+        match changes.as_slice() {
+            [TurnChange::Diff { diff }] => diff.clone(),
+            other => panic!("expected one diff, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turns_diff_ends_where_the_next_turn_to_touch_the_file_begins() {
+        // The point of the whole design: no post-images are written, because
+        // the next turn's pre-image already is one. A turn in the middle of a
+        // session must show what *it* did, not everything since.
+        let f = Fixture::new();
+        let file = f.path("a.txt");
+        std::fs::write(&file, "one\n").unwrap();
+
+        let first = f.store.begin_turn("s1", &f.root, "make it two");
+        first.capture(&file).await;
+        std::fs::write(&file, "two\n").unwrap();
+
+        let second = f.store.begin_turn("s1", &f.root, "make it three");
+        second.capture(&file).await;
+        std::fs::write(&file, "three\n").unwrap();
+
+        let diff = only_diff(f.store.changes("s1", &f.root, 1).unwrap());
+        let lines: Vec<_> = diff.hunks.iter().flat_map(|h| h.lines.iter()).collect();
+        assert!(
+            lines.iter().any(|l| l.text == "two"),
+            "turn 1 ended at 'two', not at what is on disk now: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.text == "three"),
+            "turn 2's work leaked into turn 1: {lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_last_turn_to_touch_a_file_is_diffed_against_the_disk() {
+        // Nothing recorded an after-image for it, and there is no need: what it
+        // left behind is still sitting there.
+        let f = Fixture::new();
+        let file = f.path("a.txt");
+        std::fs::write(&file, "before\n").unwrap();
+
+        let recorder = f.store.begin_turn("s1", &f.root, "rewrite it");
+        recorder.capture(&file).await;
+        std::fs::write(&file, "after\n").unwrap();
+
+        let diff = only_diff(f.store.changes("s1", &f.root, 1).unwrap());
+        assert_eq!((diff.added, diff.removed), (1, 1));
+        assert!(!diff.created && !diff.deleted);
+        assert_eq!(diff.path, "a.txt");
+    }
+
+    #[tokio::test]
+    async fn a_file_the_turn_created_reads_as_a_creation() {
+        let f = Fixture::new();
+        let file = f.path("new.txt");
+
+        let recorder = f.store.begin_turn("s1", &f.root, "add a file");
+        // Captured before it exists, which is how `write_file` records one.
+        recorder.capture(&file).await;
+        std::fs::write(&file, "hello\n").unwrap();
+
+        let diff = only_diff(f.store.changes("s1", &f.root, 1).unwrap());
+        assert!(diff.created, "{diff:?}");
+        assert_eq!((diff.added, diff.removed), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_file_the_turn_deleted_reads_as_a_deletion() {
+        // A `run_command` that removed it. Rendering this as a file truncated
+        // to nothing would describe a different act.
+        let f = Fixture::new();
+        let file = f.path("doomed.txt");
+        std::fs::write(&file, "a\nb\n").unwrap();
+
+        let recorder = f.store.begin_turn("s1", &f.root, "remove it");
+        recorder.capture(&file).await;
+        std::fs::remove_file(&file).unwrap();
+
+        let diff = only_diff(f.store.changes("s1", &f.root, 1).unwrap());
+        assert!(diff.deleted && !diff.created, "{diff:?}");
+        assert_eq!((diff.added, diff.removed), (0, 2));
+    }
+
+    #[tokio::test]
+    async fn a_file_with_no_pre_image_is_named_rather_than_shown() {
+        // The same files a rewind reports as skipped. Leaving them out of the
+        // list entirely would make the turn look smaller than it was.
+        let f = Fixture::new();
+        let file = f.path("blob.bin");
+
+        let recorder = f.store.begin_turn("s1", &f.root, "write a blob");
+        recorder
+            .capture_state(
+                &file,
+                State::Opaque {
+                    reason: "was too large to copy when it was recorded".into(),
+                },
+            )
+            .await;
+
+        match f.store.changes("s1", &f.root, 1).unwrap().as_slice() {
+            [TurnChange::Opaque { path, reason }] => {
+                assert_eq!(path, "blob.bin");
+                assert!(reason.contains("too large"), "{reason}");
+            }
+            other => panic!("expected an opaque change, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn asking_for_a_turn_that_is_not_there_fails_the_way_a_rewind_does() {
+        // Two spellings of one refusal is how a user concludes the two
+        // features disagree about what exists.
+        let f = Fixture::new();
+        let file = f.path("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        f.store
+            .begin_turn("s1", &f.root, "touch it")
+            .capture(&file)
+            .await;
+
+        let shown = f.store.changes("s1", &f.root, 9).unwrap_err();
+        let rewound = f.store.rewind("s1", &f.root, 9, true).unwrap_err();
+        assert_eq!(shown, rewound);
+        assert!(shown.contains("has 1 checkpointed turn;"), "{shown}");
     }
 
     #[cfg(unix)]

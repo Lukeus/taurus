@@ -8,6 +8,7 @@ import { PermissionDialog } from "./PermissionDialog";
 const diff = (patch: Partial<FileDiff> = {}): FileDiff => ({
   path: "src/widget.rs",
   created: false,
+  deleted: false,
   added: 1,
   removed: 1,
   elided: 0,
@@ -63,6 +64,17 @@ describe("diff view", () => {
       <DiffView diff={diff({ created: true, removed: 0 })} />,
     );
     expect(html).toContain("create");
+    expect(html).not.toContain("replace");
+  });
+
+  it("says delete rather than replace for a file that is gone", () => {
+    // Only a recorded change can be this, and it has to be said: every line is
+    // on the removed side either way, so an all-removed diff otherwise reads
+    // identically to a file truncated to nothing.
+    const html = renderToStaticMarkup(
+      <DiffView diff={diff({ deleted: true, added: 0 })} />,
+    );
+    expect(html).toContain("delete");
     expect(html).not.toContain("replace");
   });
 

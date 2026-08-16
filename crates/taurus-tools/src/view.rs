@@ -46,6 +46,49 @@ pub enum TranscriptView {
         id: String,
         questions: Vec<Question>,
     },
+    /// The checklist the model is working through.
+    ///
+    /// The odd one out here: a table and a chart are shown to the person and
+    /// then forgotten, while this is read back to the *model* on every
+    /// iteration as well. See [`crate::plan`].
+    Plan { steps: Vec<Step> },
+}
+
+/// One item on the model's checklist.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct Step {
+    /// What is to be done, as a short imperative — `Add the token type`.
+    pub text: String,
+    #[serde(default)]
+    pub state: StepState,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum StepState {
+    /// Not started.
+    #[default]
+    Todo,
+    /// Being worked on right now. At most one step may be this: a checklist
+    /// with three things in progress is a list, not a plan, and it tells the
+    /// reader — and the model reading it back — nothing about where it is.
+    Active,
+    /// Finished.
+    Done,
+}
+
+impl StepState {
+    /// The marker this state wears in a plain-text rendering, sized so a
+    /// column of them lines up.
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Todo => "[ ]",
+            Self::Active => "[>]",
+            Self::Done => "[x]",
+        }
+    }
 }
 
 /// One column of a table, and how to read the cells under it.

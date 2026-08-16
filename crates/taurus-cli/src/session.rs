@@ -66,7 +66,10 @@ async fn open_session(
 
     let Some(id) = requested else {
         let session = Session::new(model);
-        let log = SessionLog::create(&session, &workspace);
+        // The CLI records the branch too: a transcript is a transcript, and one
+        // started from a terminal must list the same way as one started from
+        // the app.
+        let log = SessionLog::create(&session, &workspace, runtime.host.branch().await);
         return Ok((session, log));
     };
 

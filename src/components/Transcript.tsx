@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ChartCard } from "./ChartCard";
 import { Markdown } from "./Markdown";
+import { PlanCard } from "./PlanCard";
 import { QuestionsCard } from "./QuestionsCard";
 import { TableCard } from "./TableCard";
 import { duration, plural } from "../lib/format";
@@ -166,6 +167,8 @@ function EntryView({
             onAnswer={onAnswer}
           />
         );
+      case "plan":
+        return <PlanCard view={entry.view} />;
     }
   }
 

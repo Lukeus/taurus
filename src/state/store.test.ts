@@ -393,3 +393,145 @@ describe("drawn tool results", () => {
     expect(viewFromCall("t1", "read_file", { path: "a.rs" })).toBeUndefined();
   });
 });
+
+describe("the plan card supersedes itself", () => {
+  const planEvent = (id: string, steps: unknown[]): UiEvent => ({
+    type: "tool_call_started",
+    id,
+    name: "update_plan",
+    preview: `Plan: ${steps.length} steps`,
+    view: { type: "plan", steps } as never,
+  });
+
+  it("draws only the newest plan while a turn runs", () => {
+    // The model rewrites the whole list every time a step starts or finishes,
+    // so a six-step task ends with seven calls. Seven cards would turn the
+    // checklist that says *where you are* into a history of where you have been.
+    const entries = run(
+      planEvent("p1", [{ text: "One", state: "active" }]),
+      { type: "tool_call_finished", id: "p1", ok: true, output: "ok" },
+      planEvent("p2", [
+        { text: "One", state: "done" },
+        { text: "Two", state: "active" },
+      ]),
+    );
+
+    const drawn = entries.filter(
+      (e) => e.kind === "tool" && e.view?.type === "plan",
+    );
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]).toMatchObject({ id: "p2" });
+  });
+
+  it("keeps the superseded call's row rather than removing it", () => {
+    // It happened, and the run header still counts it. Only the drawing stops.
+    const entries = run(
+      planEvent("p1", [{ text: "One", state: "active" }]),
+      planEvent("p2", [{ text: "One", state: "done" }]),
+    );
+
+    const rows = entries.filter(
+      (e) => e.kind === "tool" && e.name === "update_plan",
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ id: "p1", view: undefined });
+  });
+
+  it("leaves other views alone", () => {
+    // A table and a chart are each a thing that happened once, so two of them
+    // are two facts and both belong on screen.
+    const entries = run(
+      {
+        type: "tool_call_started",
+        id: "t1",
+        name: "show_table",
+        preview: "Table: A",
+        view: {
+          type: "table",
+          title: "A",
+          caption: null,
+          columns: [{ label: "x", kind: "text" }],
+          rows: [["1"]],
+        } as never,
+      },
+      planEvent("p1", [{ text: "One", state: "active" }]),
+      {
+        type: "tool_call_started",
+        id: "t2",
+        name: "show_table",
+        preview: "Table: B",
+        view: {
+          type: "table",
+          title: "B",
+          caption: null,
+          columns: [{ label: "x", kind: "text" }],
+          rows: [["2"]],
+        } as never,
+      },
+    );
+
+    const tables = entries.filter(
+      (e) => e.kind === "tool" && e.view?.type === "table",
+    );
+    expect(tables).toHaveLength(2);
+  });
+
+  it("applies the same rule to a reopened conversation", () => {
+    // A resumed transcript has every update in it at once, and must be
+    // indistinguishable from one that was streamed.
+    const entries = entriesFromMessages([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "p1",
+            name: "update_plan",
+            input: { steps: [{ text: "One", state: "active" }] },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "p1", content: "ok", is_error: false },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "p2",
+            name: "update_plan",
+            input: { steps: [{ text: "One", state: "done" }] },
+          },
+        ],
+      },
+    ]);
+
+    const drawn = entries.filter(
+      (e) => e.kind === "tool" && e.view?.type === "plan",
+    );
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]).toMatchObject({ id: "p2" });
+  });
+
+  it("rebuilds a saved plan from the call that made it", () => {
+    // Only possible because the tool takes its view payload as its input.
+    expect(
+      viewFromCall("p1", "update_plan", {
+        steps: [{ text: "Read the parser", state: "done" }],
+      }),
+    ).toEqual({
+      type: "plan",
+      steps: [{ text: "Read the parser", state: "done" }],
+    });
+  });
+
+  it("draws nothing for a saved call whose steps are missing", () => {
+    // Written by whichever build was running at the time. A card that throws
+    // mid-render takes the whole transcript with it.
+    expect(viewFromCall("p1", "update_plan", { steps: "nope" })).toBeUndefined();
+  });
+});
