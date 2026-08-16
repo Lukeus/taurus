@@ -1716,6 +1716,55 @@ taurus key status               # where each provider's API key comes from
 `skills check`, `agents check`, and `mcp` are meant for CI on a repository that
 ships its own `.taurus` directory.
 
+### Cutting a release
+
+```bash
+node scripts/version.mjs set 0.2.0     # package.json, Cargo.toml, tauri.conf.json, Cargo.lock
+git commit -am "release: 0.2.0"
+git tag v0.2.0 && git push origin main v0.2.0
+```
+
+The version lives in four places and only one of them is a file the tag can be
+checked against by eye. `set` writes all of them at once, including the fifteen
+workspace entries in `Cargo.lock` — a bump that stops at `Cargo.toml` leaves a
+lock the next `cargo` command rewrites underneath the build. `.github/workflows/release.yml`
+runs `node scripts/version.mjs check "$TAG"` before it compiles anything, so the
+mismatch costs twenty seconds rather than three platforms' worth of build:
+
+```bash
+node scripts/version.mjs check         # the files agree with each other
+node scripts/version.mjs check v0.2.0  # …and with this tag
+```
+
+That check earns its place because the failure it prevents is invisible in a
+green run. `tauri-action` takes the release name from the tag and the bundle
+filenames from `tauri.conf.json`, so a tag pushed against an unbumped tree
+publishes a release called v0.2.0 in which every downloadable file is named
+`Taurus_0.1.0_…`.
+
+The tag builds macOS (one universal `.dmg` covering both architectures), Windows,
+and Linux into a **draft** release, and publishes it only once all three have
+uploaded. Draft-until-complete is the point: published-by-default means the first
+platform to finish makes the release visible and the other two upload into
+something the world can already see — and macOS, building two architectures, is
+last by a wide margin. If one platform fails, the draft stays a draft with the
+others attached, and re-running the workflow adds the missing one to that same
+draft rather than opening a second.
+
+Release notes are generated from the commits since the previous tag. That is a
+floor, not a substitute for writing them: the draft is editable for as long as
+the slowest platform is still building.
+
+To exercise the workflow without cutting a tag, run it from the Actions tab —
+`workflow_dispatch` builds all three platforms, publishes nothing, and leaves the
+bundles as workflow artifacts to download and open.
+
+Two things a release does **not** do yet. Nothing is code-signed — there are no
+Apple Developer or Windows certificates wired up, so a downloaded `.dmg` is
+stopped by Gatekeeper and the `.msi` by SmartScreen until the user works around
+it. And no release carries the `taurus` CLI; `cargo install --path
+crates/taurus-cli` from a clone is still the only way to get it.
+
 ## Known gaps
 
 - **A rewind does not cover ignored directories.** A file an ignore rule
