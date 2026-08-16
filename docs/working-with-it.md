@@ -1,0 +1,468 @@
+# Working with it
+
+<sub>[← Taurus AI Shell](../README.md)</sub>
+
+What a turn looks like in use — where the transcript lives, how a long task
+is planned, what you can hand it besides text, and how it decides when to
+stop.
+
+## Sessions
+
+Every conversation is written as it happens, so closing the app or the terminal
+does not end it:
+
+```bash
+taurus sessions                       # this workspace's, newest first
+taurus repl --resume                  # pick up the most recent one
+taurus run --resume <ID> "and now…"   # continue a named one
+```
+
+The desktop app reopens its last conversation for the workspace on launch, and
+its left rail lists the rest — today's, then everything earlier — so switching
+between them is one click rather than a drawer.
+
+Transcripts live in `~/.taurus/sessions/<workspace>/<id>.jsonl`, in the global
+config home rather than in the project. They hold file contents, command
+output, and MCP responses; kept inside the workspace they would be committed by
+accident. Keying the directory by workspace gives back the only thing that
+location cost — "show me this project's sessions" — without putting any of it in
+the repository.
+
+The file is append-only, one JSON object per line: a header, then each message
+as it is produced. Nothing is rewritten, so a crash costs the turn in flight
+rather than the conversation, and a half-written final line is dropped on load
+instead of poisoning the file. There is no index — everything a listing shows is
+in each transcript's own opening lines, and an index is a second copy of the
+truth that can disagree with it.
+
+The header records the workspace, the model, and the branch that was checked
+out — see [Conversations know their branch](safety.md#conversations-know-their-branch).
+A transcript written before that field existed simply has no branch, which is
+why it defaults rather than being required: an upgrade must not make every
+existing conversation unlistable.
+
+## Planning a long task
+
+A frontier model keeps a six-step task in its head. A 9B model does not — and
+not because it forgot the steps. They are still there, twenty messages back,
+behind a wall of tool output, competing with everything else for attention.
+
+So `update_plan` writes a checklist, and the checklist is not left in the
+history. It is rebuilt into the system prompt on **every** iteration, where it
+is the last thing the model reads before deciding what to do next:
+
+```
+# Your current plan
+
+You wrote this with update_plan. It is restated here every time because it is
+the record of where you are:
+
+1. [x] Change the greeting in main.rs
+2. [>] Add version to config.toml
+3. [ ] Compile and confirm it prints hello
+
+Call update_plan again the moment a step's state changes — send the whole list
+back with the states updated. Work the step marked [>], and do not start
+another until it is [x]. When every step is [x], say what you did and stop.
+```
+
+The same list is drawn in the transcript, so the user is reading what the model
+is reading.
+
+Three properties do the work, and each one is a test:
+
+- **The whole list, every time.** There is no step id to quote back and no
+  add/complete/remove protocol to get half right. A small model cannot reach a
+  state it did not literally write out, and the payload being identical to its
+  own input is what lets a reopened conversation redraw a plan nothing
+  recomputed — the same identity `show_table` and `ask_user` rely on.
+- **One step in progress.** Refused if more, naming which ones. A checklist with
+  three things active says nothing about where the turn is, which is the single
+  question it exists to answer.
+- **Nothing when there is no plan.** Not an empty section — nothing at all. A
+  standing instruction to keep a checklist is exactly how a two-step turn grows
+  a six-step plan.
+
+It is rebuilt rather than appended for the same reason it is not a message: a
+copy pushed per iteration would accumulate, each staler than the last, leaving
+the model to work out which of nine checklists is current. There is only ever
+one, and it is always live.
+
+**The checklist is pinned above the composer, not drawn in the transcript.**
+That follows from what it is: not a thing that happened at a moment, but where
+the work is *now*. In the flow it scrolls away behind the twenty tool calls it
+was written to organize, and the panel that answers "where are we" is the one
+you have to go looking for. Pinned, it is on screen at the moment anyone asks.
+
+It is one line by default — a bar, the live step, a count — and opens to the
+full list on a click. The transcript is the window's whole purpose, and a
+seven-step list nailed permanently across the bottom of it would spend a third
+of the reading area saying what 30px says. Opened, it stays open: the model
+rewriting the plan is not a reason to shut it under someone who was watching
+the steps.
+
+Only the newest plan is pinned. The model rewrites the whole list every time a
+step starts or finishes, so a six-step task ends with seven calls; each keeps
+its row in the run header, and only the last one has a checklist to show. A
+finished plan stays up until you ask for something else — "done" is worth
+getting to see, and last hour's completed checklist sitting over an unrelated
+question is not. An unfinished one stays regardless, which is most of the point.
+
+**An unfinished plan survives into the next message**, in the prompt as well as
+on screen. It has to: a six-step task is very often six steps and a question in
+the middle of it, and a checklist that evaporated the moment you answered "yes,
+go on" was one the model then rebuilt from memory — the drift the plan exists to
+stop, arriving one turn later.
+
+What does not survive is a *finished* plan. Every step marked `[x]` means the
+work it described is over, and restating it would tell a model asked about
+something else that its standing instruction is "say what you did and stop".
+That is the whole staleness rule, and it is the same one the panel follows —
+which is not a coincidence: what you read above the composer and what the model
+reads in its prompt are the same checklist, and they would be worse than useless
+if they disagreed about whether it was still live.
+
+A carried plan is labelled as carried. The model is told these steps predate the
+message it is answering, and that it should call `update_plan` with a new list
+if the request has moved on. Only the model has read the follow-up, so only the
+model can decide whether it continues the task or changes it; the harness
+declining to guess is the honest version of that. Rewinding a turn drops the
+plan, for the same reason it drops the files: it was working state for work that
+has been undone.
+
+**Whether a model reaches for it is the model's own judgement.** On a five-step
+mechanical task, both `qwen3.6:27b` and `qwen3.5:9b` did the work correctly and
+never called it; asked to plan, the 27B kept the list accurate through every
+step. The prompt now says when to plan and when to update, which is the whole of
+what the harness can do about it. See [Known gaps](known-gaps.md).
+
+## Showing it a picture
+
+Every provider adapter here could always *send* an image — `ContentBlock::Image`
+maps onto Ollama's `images` array, OpenAI's `image_url`, Anthropic's `source`,
+and Gemini's `inline_data` without loss. What none of them had was a way for one
+to arrive. Now paste or drop one into the composer:
+
+```
+┌──────────────────────────────────────────┐
+│  [thumb] [thumb] ✕                       │
+│  why is this layout wrong?               │
+│  ▤ taurus-ai-shell   ↵ send · paste an image │
+└──────────────────────────────────────────┘
+```
+
+Both are refused outright on a model that cannot see, rather than accepted and
+turned down a round trip later. That check is per *model*, not per provider:
+on one Ollama server `gemma4:12b` reads images and `llama3.2` does not, and the
+composer only advertises paste when the session's model reports vision.
+
+Everything else checkable is checked before the turn starts, because an image
+rejected by a provider comes back as a wire error naming a field in the request
+body — the least useful thing to hand someone holding a screenshot. So:
+
+- **The format is one every backend takes** — PNG, JPEG, WebP, GIF. The
+  intersection, not the union: Gemini would accept HEIC and Anthropic would not,
+  and a format that works until the day you switch provider is worse than one
+  that never worked.
+- **The bytes really are that format.** A clipboard flavour and a file extension
+  are both wrong often enough to matter, so the magic number is compared against
+  what the file claims. A `.png` that is really a JPEG is named here rather than
+  on the wire.
+- **Four at most, five megabytes each.** An image is budgeted at a flat 1000
+  tokens because its real cost has nothing to do with its base64 length, and
+  this harness is built for 8k windows — four images is already half of one.
+
+Images precede the text in the message, which is the order the model reads them
+in and the order the transcript draws them. A reopened conversation rebuilds the
+strip from the transcript's own `image` blocks, so the screenshot is still
+beside the question that asked about it.
+
+## Finding code by what it does
+
+`grep` answers *where does this string appear*. The question someone actually
+has on an unfamiliar repository is *where is the code that does this*, and the
+only way to answer it with grep is to already know what the thing is called.
+
+An embedding index is normally a cloud dependency: a service to send your code
+to, a bill, and a vector database to run. For a local-first harness it is none
+of those — the machine already has a model server on it, so the index is one
+more endpoint on the same server and the vectors are a file in the config home.
+
+```
+search_code  "where the conversation transcript is written to disk"
+
+  0.677  crates/taurus-host/src/sessions.rs:121-160
+  0.635  src/state/store.ts:61-100
+  0.593  scripts/screenshots/fixtures.ts:1-40
+```
+
+Those are real results from this repository, and the first one is right. It
+matters most at 8k, which is the size everything here is shaped around: a
+context that small cannot afford three wrong `read_file` calls, and each one is
+a page of tokens spent on a file that turned out not to be the answer.
+
+**It refreshes before it searches, not on a timer.** A model that just wrote a
+file and then looks for it has to find it; an index refreshed on a schedule
+answers from before the edit, which is worse than no index because the answer
+looks right. Only files whose length or modification time moved are re-read —
+the same comparison `make` and `rsync` have always used. On this repository:
+
+```
+first pass:     44.4s  Indexed 212 files (2498 chunks)
+second pass:   53.4ms  Index is current: 212 files, nothing to re-read
+               2498 passages, 10.1 MB on disk
+```
+
+Three deliberate simplicities:
+
+- **Line windows, not syntax.** Forty lines with ten of overlap, in every
+  language. A parser per language would cut at function boundaries and produce
+  better chunks — and would need a grammar for everything in the workspace,
+  would silently fall back on the ones it lacked, and would go wrong quietly on
+  a file it half understood. The overlap is what stops a seam being a blind
+  spot: a function split across a boundary is otherwise half in each chunk and
+  whole in neither.
+- **A loop over every vector, not an ANN index.** Twenty thousand vectors of 768
+  dimensions is fifteen million multiply-adds — under a millisecond, and dwarfed
+  by the round trip to embed the query. An approximate structure would buy
+  nothing measurable and would add something that can be subtly wrong, returning
+  *nearly* the right answers, which is far harder to notice than returning none.
+- **One hit per file.** A query that matches a file usually matches three
+  consecutive chunks of it, and three windows of one function is a worse answer
+  than three places to look.
+
+The index lives in `~/.taurus/index/<workspace>/`, beside the transcripts and
+checkpoints and keyed the same way, for the same reason: it holds the contents
+of files in the project. It is readable by its owner and nobody else. Unlike the
+sweep, it respects ignore rules for *files* as well as directories — the sweep
+looks past an ignored `.env` because that is exactly the file you want to undo,
+while an index is a thing the model searches, and putting secrets in front of it
+is the opposite of what anyone wants. `.taurus` is excluded too, so a search
+over the project cannot answer with the conversation about the project.
+
+## When a turn stops
+
+A turn runs until the model stops asking for tools. Three things end one early,
+and each records its reason in the transcript so a resumed session finds an
+explanation rather than a conversation that simply stops:
+
+- **The iteration ceiling** — twenty-five model/tool round trips. A ceiling
+  rather than a budget the model is shown, because one it could see is one it
+  could argue with.
+- **A stall** — the same tool call, with the same arguments, failing three
+  times with nothing succeeding in between. The system prompt already tells the
+  model not to retry a failed call unchanged; this is what makes that true
+  rather than merely stated. Counted across rounds rather than consecutively,
+  so a model alternating between two dead ends — A, B, A, B, A — is caught as
+  readily as one insisting on a single call. Anything that succeeds clears the
+  count, which is what keeps a model working through genuinely different
+  candidates from tripping it: a model re-reading a file it is editing is
+  working, not stuck.
+- **A provider failure no retry could fix** — a rejected key, an unknown model,
+  a response that would not parse.
+
+A rate limit or a 5xx is not in that last group. Those are retried up to three
+times with a doubling backoff, and the wait is reported rather than silent,
+because a pause nobody explained is indistinguishable from a hang. Cancelling
+during a backoff returns immediately instead of serving out the delay.
+
+One case is deliberately never retried: a request that had already begun
+streaming an answer. The user has read the first half, and a second attempt
+would write it again.
+
+### One thing extends a turn
+
+A turn that changed files and never ran anything afterwards is asked, once, to
+check its own work before it is allowed to finish:
+
+> You changed files and have not run anything since. Check that work now — run
+> the project's tests, or build it, or run the thing you changed. If there is
+> genuinely nothing to run against it, say so in one line and stop.
+
+The system prompt says the same thing, and saying it there is not enough: a 9B
+model edits a file and stops anyway. Asked at the moment it tries to finish, it
+goes and runs the build. What counts as having checked is a command that ran
+and changed nothing — the model asking the project a question and getting an
+answer. A command that changed files as well is more work, not a check.
+
+Once per turn, and phrased with a way out, so a documentation edit costs one
+round trip rather than an argument. `verify_changes` in `AgentConfig` turns it
+off. The checkpoint log is what it reads to know whether anything changed,
+which means it is exactly as accurate as the log — a command that only touched
+files inside an ignored directory reads as having changed nothing.
+
+## The context window
+
+A local 8k model runs out of room in a way a hosted 200k one does not, so the
+budget is managed rather than hoped for. Three things do the work.
+
+**Reads come back a window at a time.** `read_file` returns 2000 lines by
+default and takes `offset` and `limit` for the rest. Line numbers stay absolute,
+so a number from a windowed read still means what it says, and a partial answer
+always says it is partial — a window that does not announce itself is
+indistinguishable from a short file, and a model that thinks it read the whole
+thing will act on what is missing.
+
+**Old tool output shrinks before anything is summarized.** Tool results are most
+of what a working session holds, and every byte is re-sent on each iteration of
+the turn. When history crosses the compaction threshold, two cheap rules run
+first, with no model call involved: a result whose call was later repeated with
+the same input is dropped down to a pointer at the newer one, and results older
+than the verbatim tail keep their first few lines and say what went. Only if
+that does not get under budget is the older half summarized. The block itself
+always stays either way — replacing its text keeps every tool call paired with a
+result, which is the thing providers actually validate.
+
+**Nothing is advertised that the prompt cannot explain.** Every tool's schema
+goes out with every request — not once per session, once per iteration of every
+turn — so it is the one part of the prompt that is pure overhead. Three things
+keep it down. Schemas are slimmed on the way out: `$schema`, the Rust struct
+name `schemars` leaves in `title`, `"default": null`, and integer-width formats
+are dropped, which is about a quarter of the built-in schema bytes and applies
+to MCP servers' schemas too. `propose_skill` and `propose_agent` are each only
+registered when their own setting is on, matching the prompt section that
+explains each — they are the largest schemas here, and offering one while saying
+nothing about it was paying for a tool the model had no reason to call. And
+anything a project does not want can be named in `settings.json`:
+
+```json
+{ "disabled_tools": ["fetch_url", "mcp__some-server__rarely_used"] }
+```
+
+A disabled tool is not registered at all, so skills and sub-agents cannot reach
+it either — a tool hidden from the model but still callable would be a
+permission gap wearing a token-saving costume. A name matching nothing is
+reported rather than ignored, because a typo otherwise looks exactly like a tool
+that is quietly still on.
+
+Five tools a turn adds for itself can be named here too, though `taurus tools`
+does not list them: it prints the set a *sub-agent* could be scoped to, and
+these five are exactly the ones a sub-agent never gets. They are
+`spawn_subagent`, which is the delegation depth cap; `show_table`, `show_chart`,
+and `ask_user`, which address the person watching this conversation; and
+`update_plan`, whose checklist belongs to the turn that wrote it.
+
+**Semantic search is off until a model is named.** `search_code` needs
+something to embed with, so it is not registered until one is set — under
+**Settings → Search**, or in `settings.json`, which is the same field:
+
+```json
+{ "embedding_model": "nomic-embed-text" }
+```
+
+It runs on the provider the conversation is already using — an embedding model
+lives on the same server as the chat model in every local setup, and a second
+provider entry naming the same machine would be one more thing to keep in step.
+Pull one first (`ollama pull nomic-embed-text`); the name is what the index is
+keyed on, so changing it discards the index rather than mixing vectors that mean
+different things. See [Finding code by what it
+does](#finding-code-by-what-it-does).
+
+**The first index can be paid up front.** Embedding a repository takes the
+better part of a minute, and left to itself that lands inside whichever turn
+first reaches for `search_code` — a tool call that does not return while it
+runs. **Build index now**, beside the model field, does the same work outside
+any conversation, against a bar you can watch and a Stop that stops indexing
+rather than a turn. It is the same refresh a search would have done, so nothing
+is duplicated: build it here and the first `search_code` finds it current. Every
+refresh after the first is cheap either way — only files whose length or
+modification time moved are re-read.
+
+**Where it went is a question you can ask.**
+
+```bash
+taurus usage            # this workspace's most recent session, by tool
+taurus usage --all      # every session in this workspace
+```
+
+```
+Turns              1
+Messages           16
+Billed by provider 20,440 in / 496 out
+Transcript holds   ~1,407 tokens
+
+Tool                    calls    ~tokens   share
+read_file                   7      1,144    100%
+
+Sent again with every request  ~1,982 tokens
+  system prompt                 430
+  10 tool schemas             1,552
+
+Heaviest tool schemas
+  propose_skill                 456
+  read_file                     166
+  run_command                   160
+  edit_file                     156
+  run_skill_script              151
+  5 more                        463
+```
+
+The gap between the first two figures is the point: a transcript holding 1,407
+tokens billed 20,440, and the bottom half is where the difference went — ~1,982
+tokens of fixed overhead on each of seven requests. Per-tool numbers are
+estimates, since a provider reports one total per request and never says which
+part of the prompt was whose, but they use the same arithmetic that drives
+compaction, so the report and the trigger cannot disagree. They are read back
+out of the transcript rather than tracked beside it, for the reason the
+transcript format already gives: a second copy of the truth can disagree with
+it.
+
+## Output formatting
+
+Models answer in markdown, so both frontends render it.
+
+The app parses markdown progressively as tokens arrive, tolerating the
+half-finished constructs that streaming produces — an unclosed `**`, a code
+fence with no terminator yet. Raw HTML is never rendered: model output is not
+trusted markup, so `rehype-raw` is deliberately absent and any tags arrive
+escaped as visible text. Links open in your browser rather than navigating the
+webview away from the app.
+
+The CLI applies ANSI attributes line by line: headings bold, `•` for bullets,
+colored inline code, dimmed fenced blocks. With color off — piped, redirected,
+or `NO_COLOR` — every line passes through byte for byte, so `taurus run >
+out.md` still produces valid markdown.
+
+The trade-off is that CLI prose appears a line at a time rather than a token at
+a time, since a line has to be complete before it can be styled. The
+alternative — redrawing the current line with cursor escapes — corrupts output
+as soon as a line wraps.
+
+## Tables, charts, and questions
+
+Three tools address the person watching rather than the machine. They change
+nothing, need no permission, and their result to the model is only a
+confirmation — what matters is what they put on screen.
+
+| Tool | Draws | Reach for it when |
+| --- | --- | --- |
+| `show_table` | A sortable table, copyable as CSV | Several rows of comparable facts, and the comparison is the point |
+| `show_chart` | A bar chart, with a tab per series | The shape of a series is the answer — where the spike is, whether a number is climbing |
+| `ask_user` | A question card, and waits for it | A decision that is genuinely yours and would change what gets built |
+
+Each is drawn from the call's own input, unchanged. That identity is what lets
+a reopened conversation redraw the table rather than show a row saying one was
+drawn once: a transcript records the model's messages and nothing about how
+they were rendered, so a view that *is* its input survives a restart and a
+derived one would not. A call the harness refuses draws nothing at all — the
+view goes out before the tool runs, so it is withdrawn again if the tool then
+rejects the arguments, live and on reload alike.
+
+`ask_user` is the only one that blocks. The call parks until the card is
+answered, exactly as a permission prompt does, and every question can be
+skipped — "You decide" answers all of them at once and sends. This is the one
+exception to the system prompt's instruction to keep going without stopping,
+and the prompt says so beside the rule it breaks, because a small local model
+given both and no reconciliation will pick the wrong one. It is not available
+to sub-agents: a delegate has no user watching it, so `ask_user`, `show_table`,
+and `show_chart` are all registered per turn alongside `spawn_subagent` rather
+than in the shared registry the children inherit.
+
+On the CLI, a table and a chart print in full to stdout in place of the usual
+one-line "called a tool" annotation, so `taurus run > out.txt` keeps them.
+Charts are drawn horizontally there — vertical bars need a height a scrollback
+does not have — and every series prints, since a terminal has no tabs. A
+question numbers its options and reads a line, with Enter alone to skip. Where
+there is no terminal at all — a pipe, a git hook, CI — nothing hangs: the tool
+comes back saying nobody was available, and the model is told to decide and say
+which way it went.
