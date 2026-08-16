@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Tauri release (${{ matrix.os }})
+    # Creating the release and uploading to it is a write to the repository.
+    # Without this the run reaches `tauri-action` and fails on a 403 from the
+    # default token, which reads as an auth problem rather than a missing line.
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-14 is Apple Silicon. Left to itself the bundle it produces is
+          # arm64-only, so an Intel Mac gets nothing out of the release at all —
+          # the universal target is what puts both architectures in one .dmg,
+          # and it needs both Rust targets installed to build.
+          - os: macos-14
+            args: --target universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+          # Matching the CI profile exactly, down to the runner image.
+          - os: ubuntu-22.04
+            args: ''
+            rust_targets: ''
+          - os: windows-latest
+            args: ''
+            rust_targets: ''
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux WebView dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # `src/bindings` is generated and gitignored, so on a fresh checkout it
+      # does not exist. `tauri build` runs `pnpm build` as its beforeBuildCommand
+      # and that starts with `tsc --noEmit`, which means without this step every
+      # platform fails on `Cannot find module "../bindings/…"` before a single
+      # bundle is written. CI regenerates them before every typecheck for the
+      # same reason; this is the one workflow that has to do it too.
+      - name: Generate TypeScript bindings
+        run: pnpm bindings
+
+      # `tauri-action` creates the release for this tag and uploads each
+      # platform's bundles to it. Which bundles those are comes from
+      # `tauri.conf.json` (`bundle.targets: all`), not from anything here.
+      - name: Build and upload to GitHub Release
+        uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: ${{ github.ref_name }}
+          args: ${{ matrix.args }}
+          includeDebug: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing keys, kept for when there is an updater to sign for.
+          # `tauri.conf.json` declares no `plugins.updater` and asks for no
+          # updater artifacts, so today these are read and nothing uses them.
+          # Left in place rather than deleted because turning the updater on is
+          # a decision about the product, not about this file.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PASSWORD }}
