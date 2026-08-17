@@ -19,7 +19,7 @@ file every other project reads.
 | File | Global | Workspace |
 | --- | --- | --- |
 | `providers.json` | Backends, including the header a key is sent in. Never the key itself — that lives in the OS keychain or an env var. | Overrides and additions for this project. |
-| `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Header values and URLs may name env vars. Skills › **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
+| `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Values may name env vars. The **MCP** panel reads and writes it; **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `search.json` | Web search backends and which one is active. Never the key itself — that lives in the OS keychain or an env var, as with providers. | A different backend for this project, or field overrides on an inherited one. |
 | `settings.json` | Last workspace, the two synthesis toggles, theme, fallback model, `max_iterations`. | The provider and model this project was last worked in, and a step limit for turns here. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
@@ -94,14 +94,63 @@ and Claude Code use, so an existing `mcpServers` block pastes in unchanged:
 }
 ```
 
-`${VAR}` in a header value or a URL is read from the environment. That matters
-because a remote server almost always needs a credential, and the workspace
-layer of `mcp.json` is meant to be hand-written and version-controlled — a
-literal token there is a token in the repository. It is the same bargain
-`providers.json` already makes for API keys. A variable that is not set fails
-the server with its own name in the message, rather than sending an empty
-`Authorization` header and producing a 401 that looks like a bad token instead
-of a missing one. A literal value still passes through untouched.
+`${VAR}` is read from the environment wherever a value appears — a URL, a header
+value, a stdio `command`, an argument, an `env` value. That matters because a
+server almost always needs a credential, and the workspace layer of `mcp.json`
+is meant to be hand-written and version-controlled — a literal token there is a
+token in the repository. It is the same bargain `providers.json` already makes
+for API keys. A variable that is not set fails the server with its own name in
+the message, rather than sending an empty `Authorization` header and producing a
+401 that looks like a bad token instead of a missing one. A literal value still
+passes through untouched.
+
+### The MCP panel
+
+**MCP** in the rail lists every configured server across both layers, with what
+each one is, whether it connected, and what it offers. Adding, editing,
+enabling, and removing all write `mcp.json`, one entry at a time — everything
+else in the file is copied through untouched, including keys this version does
+not model. So a server added in the panel and one pasted in by hand are the same
+thing, and neither route disturbs the other's work. **Edit mcp.json** is still
+there for anything the form cannot express.
+
+**Test** connects the entry in front of you, reports the tools it found, and
+disconnects. It registers nothing and leaves any live connection alone, so an
+edit can be checked before it is saved rather than after.
+
+A stored value that is not a `${VAR}` reference is treated as a secret: the
+panel is told the key is set and never given the value. Leaving that field alone
+keeps what is on disk; typing over it replaces it.
+
+Saving reconnects the MCP servers and nothing else — skills, agents, providers,
+and the index are untouched, which is the same rule agent edits already follow.
+
+### When a server will not start
+
+The most common failure is not a wrong entry. An app launched from the Dock or
+Finder inherits the launcher's environment, and on macOS that PATH is
+`/usr/bin:/bin:/usr/sbin:/sbin` — no Homebrew, no nvm, no pyenv, no
+`~/.local/bin`. `npx` and `uvx` live in exactly those places, so a correct entry
+for an installed program fails with "command not found".
+
+Taurus asks your login shell for its PATH once at startup and merges what it
+finds, which fixes this for most setups. `-l -i`, because nvm and pyenv install
+themselves into `.zshrc` rather than `.zprofile`. The panel's **Program search
+path** section shows the result: the directories being searched, which of them
+the shell contributed, and — when a server's command is not among them — that it
+could not be found. Set `TAURUS_SKIP_LOGIN_PATH=1` to skip the probe; a program
+named by its full path never needed it.
+
+Other things the panel will tell you rather than leave you to find:
+
+- A server that will not parse is reported **by name, with the key that is
+  wrong**, and its neighbours still load. One typo used to discard every server
+  in the file.
+- A server switched off is listed as `off` rather than disappearing.
+- A server that never answers is given up on after 60 seconds, so one hung
+  program cannot stall the reload the others are waiting for.
+
+### What the agent may and may not do
 
 **The agent can draft an entry but never install one.** `draft_mcp_server`
 takes a name and a command line and hands back a block to paste, the file it
@@ -115,8 +164,13 @@ a pointer to code nobody in the loop has seen — the reviewable part of `npx -y
 launch, before any tool call, outside the permission engine. A review card
 there would be asking for a decision with the information missing. So the model
 does the part it is good at, which is knowing what the server is called and
-which arguments it takes, and installing stays something you do in your editor
-having read it.
+which arguments it takes, and installing stays something you do.
+
+The panel does not change that. It is a form *you* fill in — the agent cannot
+reach it, and drafting still writes nothing and starts nothing. What it changes
+is where you do the installing: in a window that can tell you the entry is
+malformed, that the program is not on the PATH, and whether the server actually
+answers, rather than in a text editor that can tell you none of those.
 
 Secrets are never carried through the draft. `env` and `headers` take variable
 and header *names*; the block comes back with `<replace-me>` where each value

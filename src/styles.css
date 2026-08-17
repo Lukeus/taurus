@@ -2996,3 +2996,124 @@ button.link:hover {
   color: var(--text-faint);
   border-top: 1px solid var(--rule);
 }
+
+/* ------------------------------------------------------------ mcp servers */
+
+/*
+ * A server card carries more than a skill or an agent does — a state, an
+ * address, where its program actually is, and a row of things to do to it — so
+ * it gets a little more room between its lines than the roster cards beside it.
+ */
+.card.mcp .card-sub {
+  overflow-wrap: anywhere;
+}
+/* Switched off, and saying so without disappearing. A disabled server used to
+   vanish from the list entirely, which reads as one that was never configured. */
+.card.mcp.off .card-title,
+.card.mcp.off .card-sub {
+  color: var(--text-faint);
+}
+
+/* The row of verbs under a card. Wraps rather than scrolls: the confirm step of
+   a delete widens this row, and pushing the confirmation off the edge would put
+   the destructive button somewhere it cannot be read. */
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.card-actions button {
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+/* Opens the tool list. A link rather than a button because it reveals rather
+   than acts, and it sits inside a card of things that act. */
+.tools-toggle {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+/* The lead chip is the program; the rest are its arguments. Distinguished
+   because "did the quoting work" is the question this row answers, and the
+   first item is the one whose answer is a different kind of thing. */
+.tool-chip.lead {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+/* The rail badge goes amber when some server is not answering. The number is
+   already `3/4` in that case — the colour is the part you catch without
+   reading, and the fraction is the part that survives not seeing colour. */
+.rail-link .count.warn {
+  color: var(--warn);
+}
+
+/* Name and value side by side, because they are read as a pair, with the
+   remove button on the end where it cannot be hit while tabbing between them. */
+.value-row {
+  display: flex;
+  gap: 8px;
+}
+.value-row input {
+  flex: 1;
+  min-width: 0;
+}
+.value-row button {
+  flex: none;
+  padding: 0 10px;
+}
+
+/* The search path, in the order it is searched. Scrolls rather than wraps: the
+   order is the information, and a wrapped path list loses which line is which. */
+.path-list {
+  max-height: 160px;
+  overflow: auto;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--bg-sunken);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+/* What the login shell contributed. Marked because these are the directories
+   that were missing, and seeing them present is the confirmation that the
+   startup probe did its job. */
+.path-list .added {
+  color: var(--ok);
+}
+
+.hint.warn {
+  color: var(--warn);
+}
+
+/* The test result, beside the fields that produced it rather than in a banner:
+   the whole point of testing here is that the answer and the cause are on
+   screen together. */
+.test-result {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.test-result.ok {
+  color: var(--ok);
+}
+.test-result.error {
+  color: var(--danger);
+}
+
+.mcp-editor {
+  width: 640px;
+  max-width: 94vw;
+  max-height: 92vh;
+}
+.mcp-editor .drawer-head {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--rule);
+  margin: 0;
+}

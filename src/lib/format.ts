@@ -48,7 +48,15 @@ export function parentDir(path: string): string {
   return home ? `~${home[1]}` : dir;
 }
 
-/** `1 file`, `2 files` — the pluralisation this app keeps needing. */
-export function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+/**
+ * `1 file`, `2 files` — the pluralisation this app keeps needing.
+ *
+ * `many` is for the nouns an `s` does not fix. There are few enough of those
+ * that a rules engine would be more code than the words it replaced, and one
+ * `plural(n, "directory", "directories")` at the call site is legible where a
+ * lookup table two files away is not.
+ */
+export function plural(count: number, noun: string, many?: string): string {
+  if (count === 1) return `${count} ${noun}`;
+  return `${count} ${many ?? `${noun}s`}`;
 }

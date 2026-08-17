@@ -45,14 +45,14 @@ afterEach(() => {
 describe("opening the drawer", () => {
   it("mounts and stays mounted with nothing loaded yet", () => {
     // The state the drawer is always opened from at least once: launched, no
-    // status back from the backend. Selecting `s.status?.mcp_servers ?? []`
-    // hands React a brand new array on every snapshot here, and it tears the
-    // tree down rather than loop — the drawer opened onto nothing at all.
+    // status back from the backend. A selector ending in `?? []` hands React a
+    // brand new array on every snapshot here, and it tears the tree down rather
+    // than loop — the drawer opened onto nothing at all.
     useStore.setState({ status: null });
 
     const { html, unmount } = mount(<SkillsDrawer onClose={() => {}} />);
     expect(html).toContain("Skills");
-    expect(html).toContain("MCP servers");
+    expect(html).toContain("Instructions");
     unmount();
   });
 
@@ -65,18 +65,19 @@ describe("opening the drawer", () => {
         problems: [
           { source: "skills", message: "release-notes: python3 not found" },
           { source: "provider", message: "not this drawer's problem" },
+          { source: "mcp", message: "belongs in the MCP panel now" },
         ],
-        mcp_servers: [
-          { name: "filesystem", connected: true, tool_count: 11, error: null },
-        ],
+        mcp_servers: [],
       } as never,
     });
 
     const { html, unmount } = mount(<SkillsDrawer onClose={() => {}} />);
-    expect(html).toContain("filesystem");
     expect(html).toContain("python3 not found");
-    // Settings owns provider failures; this drawer must not repeat them.
+    // Settings owns provider failures; this drawer must not repeat them. MCP
+    // moved out with its servers, on the same rule: a problem belongs on the
+    // screen that can fix it.
     expect(html).not.toContain("not this drawer's problem");
+    expect(html).not.toContain("belongs in the MCP panel now");
     unmount();
   });
 });

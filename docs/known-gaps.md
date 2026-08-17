@@ -130,10 +130,18 @@ Each entry says what is missing, and what covering it would cost.
   shows it in full, unelided and editable, and nothing is written until you
   approve it. There is no check that reads what it says. See
   [Sub-agents](capabilities.md#sub-agents).
-- **Taurus will not install an MCP server for you.** `draft_mcp_server` writes
-  a block to paste; adding it is yours to do. The command line is the whole of
-  what a review could show, and it does not say what the program does, so this
-  is a limit rather than a to-do. See [MCP servers](configuration.md#mcp-servers).
+- **The agent will not install an MCP server for you.** `draft_mcp_server` hands
+  back an entry; adding it is yours to do, in the MCP panel or in the file. The
+  command line is the whole of what a review could show, and it does not say
+  what the program does, so this is a limit rather than a to-do. See
+  [MCP servers](configuration.md#mcp-servers).
+- **A PATH read from your login shell is a snapshot, not a subscription.**
+  Taurus asks the shell once at startup, because a window launched from the Dock
+  inherits the launcher's PATH and not yours. A server installed after that —
+  `npm i -g` in a terminal beside the app — is invisible until Taurus is
+  restarted, or until the entry names the program by its full path. The MCP
+  panel says which directories it is searching rather than leaving that to be
+  guessed at.
 - **An agent's tools narrow what it is offered, not what it may do.** Every call
   a child makes goes through the same permission engine as the parent's, so
   `tools:` is a scope, not a sandbox. A per-agent permission policy would be a

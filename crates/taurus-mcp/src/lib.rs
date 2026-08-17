@@ -10,6 +10,7 @@ pub mod draft;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderName, HeaderValue};
@@ -22,14 +23,31 @@ use tracing::{info, warn};
 
 use taurus_tools::{expand_env, Effect, Tool, ToolContext, ToolError, ToolResult};
 
-pub use config::{load, McpConfig, ServerConfig};
+pub use config::{load, parse, McpConfig, ServerConfig};
 pub use draft::{DraftMcpServer, DRAFT_MCP_TOOL};
 
 /// Prefix that keeps MCP tools from colliding with built-ins or each other.
 pub const NAMESPACE: &str = "mcp__";
 
+/// How long one server gets to start up, hand shake, and list its tools.
+///
+/// There has to be a limit, and it has to be here rather than left to the
+/// caller: connecting happens inside `Host::reload`, which the Rescan button
+/// awaits, so a server that never answers is a window that never comes back.
+/// Generous enough for the common worst case, which is `npx` downloading a
+/// package it has not cached yet.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub fn namespaced(server: &str, tool: &str) -> String {
     format!("{NAMESPACE}{server}__{tool}")
+}
+
+/// Whether a tool name belongs to an MCP server.
+///
+/// Used to lift the MCP tools out of the registry and put a fresh set back
+/// without rebuilding everything else — see `Host::reload_mcp`.
+pub fn is_mcp_tool(name: &str) -> bool {
+    name.starts_with(NAMESPACE)
 }
 
 /// A live connection to one server.
@@ -49,6 +67,30 @@ pub struct ServerStatus {
     pub connected: bool,
     pub tool_count: usize,
     pub error: Option<String>,
+    /// Switched off in config, so never attempted.
+    ///
+    /// Recorded rather than skipped: a disabled server used to vanish from the
+    /// list entirely, which is indistinguishable from one that was never
+    /// configured — so the fix for "why is this not here" was to go and read the
+    /// file the panel exists to save you from reading.
+    pub disabled: bool,
+    /// The remote names of what it offers, unprefixed. What the panel lists
+    /// under a connected server, and what a test reports back.
+    pub tools: Vec<String>,
+}
+
+impl ServerStatus {
+    fn failed(name: &str, server: &ServerConfig, error: String) -> Self {
+        Self {
+            name: name.to_string(),
+            description: server.describe(),
+            connected: false,
+            tool_count: 0,
+            error: Some(error),
+            disabled: server.disabled(),
+            tools: Vec::new(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -72,6 +114,21 @@ impl McpManager {
 
         for (name, server) in &config.servers {
             if server.disabled() {
+                // Listed but not started. A server that vanished from the status
+                // list when switched off looked exactly like one that was never
+                // configured at all.
+                self.status.write().await.insert(
+                    name.clone(),
+                    ServerStatus {
+                        name: name.clone(),
+                        description: server.describe(),
+                        connected: false,
+                        tool_count: 0,
+                        error: None,
+                        disabled: true,
+                        tools: Vec::new(),
+                    },
+                );
                 continue;
             }
             match self.connect(name, server).await {
@@ -81,16 +138,10 @@ impl McpManager {
                 }
                 Err(e) => {
                     warn!(server = %name, error = %e, "mcp server failed to start");
-                    self.status.write().await.insert(
-                        name.clone(),
-                        ServerStatus {
-                            name: name.clone(),
-                            description: server.describe(),
-                            connected: false,
-                            tool_count: 0,
-                            error: Some(e),
-                        },
-                    );
+                    self.status
+                        .write()
+                        .await
+                        .insert(name.clone(), ServerStatus::failed(name, server, e));
                 }
             }
         }
@@ -102,48 +153,11 @@ impl McpManager {
         name: &str,
         server: &ServerConfig,
     ) -> Result<Vec<Arc<dyn Tool>>, String> {
-        let service = match server {
-            ServerConfig::Stdio {
-                command, args, env, ..
-            } => {
-                let transport = TokioChildProcess::new(spawn_command(command).configure(|c| {
-                    c.args(args);
-                    for (key, value) in env {
-                        c.env(key, value);
-                    }
-                }))
-                .map_err(|e| format!("could not start `{command}`: {e}"))?;
-                ().serve(transport)
-                    .await
-                    .map_err(|e| format!("handshake failed: {e}"))?
-            }
-            ServerConfig::Http { url, headers, .. } => {
-                let url = expand_env(url).map_err(|e| format!("url: {e}"))?;
-                let transport = StreamableHttpClientTransport::<reqwest::Client>::from_config(
-                    StreamableHttpClientTransportConfig::with_uri(url)
-                        .custom_headers(http_headers(headers)?),
-                );
-                ().serve(transport)
-                    .await
-                    .map_err(|e| format!("handshake failed: {e}"))?
-            }
-            // Layer merging resolves toggles against the server they name, so
-            // one reaching this far means it named nothing.
-            ServerConfig::Toggle(_) => {
-                return Err(format!(
-                    "'{name}' only sets `disabled`; it needs a `command` or a `url`"
-                ))
-            }
-        };
-
+        let (service, listed) = handshake(name, server).await?;
         let peer = service.peer().clone();
-        let listed = peer
-            .list_all_tools()
-            .await
-            .map_err(|e| format!("could not list tools: {e}"))?;
 
         let tools: Vec<Arc<dyn Tool>> = listed
-            .into_iter()
+            .iter()
             .map(|tool| {
                 Arc::new(McpTool {
                     name: namespaced(name, &tool.name),
@@ -168,6 +182,8 @@ impl McpManager {
                 connected: true,
                 tool_count: tools.len(),
                 error: None,
+                disabled: false,
+                tools: listed.iter().map(|t| t.name.to_string()).collect(),
             },
         );
         self.connections
@@ -187,6 +203,125 @@ impl McpManager {
         self.connections.write().await.clear();
         self.status.write().await.clear();
     }
+}
+
+/// Starts a server and asks it what it offers, under one deadline.
+///
+/// The deadline covers the whole exchange rather than each step: a stdio server
+/// that starts instantly and then never answers `tools/list` is the same
+/// unusable server as one that never starts, and only one of those two was
+/// bounded before.
+async fn handshake(
+    name: &str,
+    server: &ServerConfig,
+) -> Result<(RunningService<RoleClient, ()>, Vec<rmcp::model::Tool>), String> {
+    tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let service = match server {
+            ServerConfig::Stdio {
+                command, args, env, ..
+            } => {
+                // Expanded for the same reason HTTP headers are: the workspace
+                // layer of `mcp.json` is meant to be committed, and a server that
+                // needs a token would otherwise need that token written into the
+                // repository. An unset variable names itself here rather than
+                // handing the server an empty string it will report as a bad
+                // credential.
+                let command = expand_env(command).map_err(|e| format!("command: {e}"))?;
+                let mut expanded_args = Vec::with_capacity(args.len());
+                for (i, arg) in args.iter().enumerate() {
+                    expanded_args.push(expand_env(arg).map_err(|e| format!("args[{i}]: {e}"))?);
+                }
+                let mut expanded_env = Vec::with_capacity(env.len());
+                for (key, value) in env {
+                    expanded_env.push((
+                        key.clone(),
+                        expand_env(value).map_err(|e| format!("env {key}: {e}"))?,
+                    ));
+                }
+
+                let transport = TokioChildProcess::new(spawn_command(&command).configure(|c| {
+                    c.args(&expanded_args);
+                    for (key, value) in &expanded_env {
+                        c.env(key, value);
+                    }
+                }))
+                .map_err(|e| start_failure(&command, &e))?;
+                ().serve(transport)
+                    .await
+                    .map_err(|e| format!("handshake failed: {e}"))?
+            }
+            ServerConfig::Http { url, headers, .. } => {
+                let url = expand_env(url).map_err(|e| format!("url: {e}"))?;
+                let transport = StreamableHttpClientTransport::<reqwest::Client>::from_config(
+                    StreamableHttpClientTransportConfig::with_uri(url)
+                        .custom_headers(http_headers(headers)?),
+                );
+                ().serve(transport)
+                    .await
+                    .map_err(|e| format!("handshake failed: {e}"))?
+            }
+            // Layer merging resolves toggles against the server they name, so
+            // one reaching this far means it named nothing.
+            ServerConfig::Toggle(_) => {
+                return Err(format!(
+                    "'{name}' only sets `disabled`; it needs a `command` or a `url`"
+                ))
+            }
+        };
+
+        let listed = service
+            .peer()
+            .list_all_tools()
+            .await
+            .map_err(|e| format!("could not list tools: {e}"))?;
+        Ok((service, listed))
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "did not finish starting within {}s",
+            CONNECT_TIMEOUT.as_secs()
+        )
+    })?
+}
+
+/// Why the program would not start, said in terms of what to do about it.
+///
+/// `NotFound` is the single most common MCP failure and the least self-
+/// explanatory: the command is spelled correctly and works in a terminal, and
+/// the app cannot see it because a process started from the Dock inherits the
+/// launcher's PATH rather than the shell's. Saying which PATH was searched turns
+/// that from a mystery into a fact.
+fn start_failure(command: &str, error: &std::io::Error) -> String {
+    if error.kind() != std::io::ErrorKind::NotFound {
+        return format!("could not start `{command}`: {error}");
+    }
+    format!(
+        "`{command}` is not on this application's PATH. It searched: {}. If it is installed by \
+         nvm, pyenv, or Homebrew, either restart Taurus so it can read your shell's PATH, or give \
+         the full path to the program as `command`.",
+        taurus_tools::login_path::current()
+    )
+}
+
+/// Connects to one server, reports what it offers, and disconnects.
+///
+/// Separate from [`McpManager`] on purpose: this is the Test button, and testing
+/// an entry must not register its tools, replace a working connection, or leave
+/// a child process behind. The service is dropped at the end of this function,
+/// which is what stops the one it started.
+pub async fn probe(name: &str, server: &ServerConfig) -> Result<Vec<String>, String> {
+    if server.disabled() {
+        // Worth testing anyway — this is how you check an entry before switching
+        // it on — so this is a note rather than a refusal.
+        info!(server = %name, "probing a disabled server");
+    }
+    let (service, listed) = handshake(name, server).await?;
+    let tools = listed.iter().map(|t| t.name.to_string()).collect();
+    // Explicit rather than left to the drop glue, so the child is gone before
+    // this returns and a run of tests cannot pile them up.
+    let _ = service.cancel().await;
+    Ok(tools)
 }
 
 fn http_headers(
@@ -479,7 +614,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_disabled_server_is_not_started() {
+    async fn a_disabled_server_is_listed_but_never_started() {
+        // Both halves matter. Starting it would defeat the switch; leaving it
+        // out of the list made a server someone had turned off indistinguishable
+        // from one that was never configured, and the only way to tell was to go
+        // and read the file.
         let manager = McpManager::new();
         let mut config = McpConfig::default();
         config.servers.insert(
@@ -492,9 +631,109 @@ mod tests {
             },
         );
         assert!(manager.connect_all(&config).await.is_empty());
+
+        let statuses = manager.statuses().await;
+        assert_eq!(statuses.len(), 1);
+        assert!(statuses[0].disabled);
+        assert!(!statuses[0].connected);
+        assert!(
+            statuses[0].error.is_none(),
+            "switched off is not a failure: {:?}",
+            statuses[0].error
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_program_is_reported_against_the_path_that_was_searched() {
+        // The failure this whole feature keeps tripping over. `npx` is spelled
+        // correctly and works in a terminal; an app started from the Dock cannot
+        // see it. "No such file or directory (os error 2)" sends people to check
+        // the spelling, which was never wrong.
+        let manager = McpManager::new();
+        let mut config = McpConfig::default();
+        config.servers.insert(
+            "fs".into(),
+            ServerConfig::Stdio {
+                command: "definitely-not-a-real-program-xyz".into(),
+                args: vec![],
+                env: Default::default(),
+                disabled: false,
+            },
+        );
+
+        manager.connect_all(&config).await;
+        let error = manager.statuses().await[0].error.clone().unwrap();
+        assert!(error.contains("not on this application's PATH"), "{error}");
+        assert!(error.contains("It searched:"), "{error}");
+        assert!(error.contains("full path"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_stdio_server_can_name_an_environment_variable_instead_of_holding_the_secret() {
+        // The documented bargain for HTTP headers, which stdio `env` did not
+        // keep: the value was passed through literally, so a committed
+        // `"${GITHUB_TOKEN}"` reached the server as those fifteen characters and
+        // came back as an authentication failure.
+        std::env::set_var("TAURUS_TEST_MCP_STDIO_TOKEN", "s3cret");
+        let server = ServerConfig::Stdio {
+            command: "definitely-not-a-real-program-xyz".into(),
+            args: vec!["${TAURUS_TEST_MCP_STDIO_TOKEN}".into()],
+            env: BTreeMap::from([(
+                "TOKEN".to_string(),
+                "${TAURUS_TEST_MCP_STDIO_TOKEN}".to_string(),
+            )]),
+            disabled: false,
+        };
+        // Expansion happens before the spawn, so the failure that comes back is
+        // about the missing program rather than about the variable.
+        let error = probe("t", &server).await.unwrap_err();
+        assert!(error.contains("PATH"), "{error}");
+
+        let unset = ServerConfig::Stdio {
+            command: "echo".into(),
+            args: vec![],
+            env: BTreeMap::from([(
+                "TOKEN".to_string(),
+                "${TAURUS_TEST_MCP_STDIO_DEFINITELY_UNSET}".to_string(),
+            )]),
+            disabled: false,
+        };
+        let error = probe("t", &unset).await.unwrap_err();
+        assert!(
+            error.contains("TAURUS_TEST_MCP_STDIO_DEFINITELY_UNSET"),
+            "{error}"
+        );
+        assert!(
+            error.contains("TOKEN"),
+            "the key has to be named too: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_reports_without_registering_anything() {
+        // What the Test button is allowed to do. A test that replaced the live
+        // connection would mean checking an edit could take a working server
+        // down.
+        let manager = McpManager::new();
+        let server = ServerConfig::Http {
+            // Reserved by RFC 2606, so this cannot accidentally resolve.
+            url: "http://mcp.invalid/mcp".into(),
+            headers: Default::default(),
+            disabled: false,
+        };
+        assert!(probe("remote", &server).await.is_err());
         assert!(
             manager.statuses().await.is_empty(),
-            "disabled servers are not attempted"
+            "a probe must leave the manager untouched"
         );
+    }
+
+    #[test]
+    fn mcp_tools_are_recognisable_by_name_alone() {
+        // What lets `reload_mcp` swap the MCP tools out of a registry without
+        // rebuilding the built-ins, the skill tools, and the web tools with them.
+        assert!(is_mcp_tool(&namespaced("github", "create_issue")));
+        assert!(!is_mcp_tool("read_file"));
+        assert!(!is_mcp_tool(DRAFT_MCP_TOOL));
     }
 }

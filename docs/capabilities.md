@@ -230,7 +230,8 @@ can do. An approved agent inherits the session's model; change it by editing
 the file, where the decision is yours and visible.
 
 Approving rescans the roster rather than reloading everything, so saving an
-agent does not restart every MCP server. It is not usable in the turn that
+agent does not restart every MCP server — and saving a server, in the same
+spirit, reconnects the servers without rescanning the roster. It is not usable in the turn that
 proposed it — a turn's roster is frozen when it starts — and the tool result
 says so, rather than letting the model spend a round trip finding out.
 

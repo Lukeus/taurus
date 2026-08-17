@@ -38,6 +38,7 @@ const mount = (props: Partial<Parameters<typeof Rail>[0]> = {}) => {
         busy={false}
         skillCount={12}
         agentCount={3}
+        mcp={{ total: 2, connected: 2 }}
         health={{ state: "connected", id: "ollama", models: 4 }}
         theme="dark"
         onPickWorkspace={() => {}}
@@ -47,6 +48,7 @@ const mount = (props: Partial<Parameters<typeof Rail>[0]> = {}) => {
         onTheme={() => {}}
         onSkills={() => {}}
         onAgents={() => {}}
+        onMcp={() => {}}
         onSettings={() => {}}
         {...props}
       />,

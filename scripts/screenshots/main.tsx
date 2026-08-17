@@ -17,6 +17,8 @@ import { createRoot } from "react-dom/client";
 import {
   CHECKPOINTS,
   EVENTS,
+  MCP_ENVIRONMENT,
+  MCP_SERVERS,
   MODELS,
   PERMISSION,
   PROMPT,
@@ -38,6 +40,8 @@ const ANSWERS: Record<string, unknown> = {
   list_agents: [],
   list_tools: [],
   agent_roster_cost: 0,
+  list_mcp_servers: MCP_SERVERS,
+  mcp_environment: MCP_ENVIRONMENT,
   // Empty, because the turn below is replayed as live events instead. Resume
   // still runs — it is what binds the window to a session and fills the rail.
   resume_session: {
@@ -106,6 +110,16 @@ requestAnimationFrame(() => {
       questions: () => scrollTo(transcript, document.querySelector(".questions")),
       // The dialog centres itself over the scrim, so there is nothing to scroll.
       permission: () => {},
+      // The panel is opened by the rail, and which drawer is open is local
+      // state in `App` rather than in the store — so this presses the button
+      // instead of seeding it. That is also the more honest picture: the drawer
+      // in the image is one that was opened the way a user opens it.
+      mcp: () => {
+        const link = [...document.querySelectorAll(".rail-link")].find(
+          (button) => button.textContent?.startsWith("MCP"),
+        );
+        (link as HTMLButtonElement | undefined)?.click();
+      },
     }[shot];
     // A frame for React to paint the seeded entries before anything is
     // measured; the scroll targets do not exist until it has.

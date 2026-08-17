@@ -1069,6 +1069,13 @@ pub fn merge_mcp(layers: Vec<taurus_mcp::McpConfig>) -> (taurus_mcp::McpConfig, 
     let mut problems = Vec::new();
 
     for layer in layers {
+        // Carried through rather than dropped. An entry that would not parse is
+        // the one the user most needs told about, and it is the only thing in
+        // this file with nowhere else to be reported: it has no server to hang a
+        // failed status off.
+        for (name, reason) in layer.invalid {
+            problems.push(format!("mcp server '{name}' {reason}"));
+        }
         for (name, server) in layer.servers {
             match server {
                 // A bare `{"disabled": true}` toggles an inherited server
@@ -1089,7 +1096,109 @@ pub fn merge_mcp(layers: Vec<taurus_mcp::McpConfig>) -> (taurus_mcp::McpConfig, 
         }
     }
 
-    (taurus_mcp::McpConfig { servers }, problems)
+    (
+        taurus_mcp::McpConfig {
+            servers,
+            invalid: BTreeMap::new(),
+        },
+        problems,
+    )
+}
+
+/// One layer's `mcp.json` as text, or empty when there is no file yet.
+///
+/// Text rather than a parsed config because every edit below is a read-modify-
+/// write that has to preserve what this version does not model.
+fn read_mcp_text(scope: Scope, workspace: Option<&Path>) -> Result<(PathBuf, String), String> {
+    let path = mcp_file(scope, workspace)
+        .ok_or_else(|| "no workspace is open, so it has no config directory".to_string())?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    Ok((path, text))
+}
+
+/// Writes one layer's `mcp.json`, reporting a failure rather than swallowing it.
+///
+/// [`write_config`] logs and moves on, which is right for settings written as a
+/// side effect of normal operation. It is wrong here: this is someone pressing
+/// Save, and a save that did nothing has to say so.
+fn write_mcp_text(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    replace_file(path, text).map_err(|e| format!("could not write {}: {e}", path.display()))
+}
+
+/// Adds or replaces one server in one layer.
+///
+/// The whole edit surface for the MCP panel is these three functions, and all
+/// three go through `taurus_mcp::config`'s raw-JSON edits — so saving a server
+/// never rewrites the ones beside it. That is what makes a form safe to point at
+/// a file people also edit by hand.
+pub fn save_mcp_server(
+    scope: Scope,
+    workspace: Option<&Path>,
+    name: &str,
+    server: &taurus_mcp::ServerConfig,
+) -> Result<PathBuf, String> {
+    let name = name.trim();
+    validate_server_name(name)?;
+    let (path, text) = read_mcp_text(scope, workspace)?;
+    let updated = taurus_mcp::config::upsert_entry(&text, name, server)?;
+    write_mcp_text(&path, &updated)?;
+    Ok(path)
+}
+
+pub fn delete_mcp_server(
+    scope: Scope,
+    workspace: Option<&Path>,
+    name: &str,
+) -> Result<PathBuf, String> {
+    let (path, text) = read_mcp_text(scope, workspace)?;
+    let updated = taurus_mcp::config::remove_entry(&text, name)?;
+    write_mcp_text(&path, &updated)?;
+    Ok(path)
+}
+
+pub fn set_mcp_server_disabled(
+    scope: Scope,
+    workspace: Option<&Path>,
+    name: &str,
+    disabled: bool,
+) -> Result<PathBuf, String> {
+    let (path, text) = read_mcp_text(scope, workspace)?;
+    let updated = taurus_mcp::config::set_entry_disabled(&text, name, disabled)?;
+    write_mcp_text(&path, &updated)?;
+    Ok(path)
+}
+
+/// What a server may be called.
+///
+/// The name is not decoration: it becomes part of every one of that server's
+/// tool names, as `mcp__<server>__<tool>`. A name with a space or a double
+/// underscore in it produces a tool name the model cannot reliably call and that
+/// no provider's schema validation accepts, and the failure arrives much later,
+/// as a model that will not use a server that connected fine.
+fn validate_server_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("a server needs a name".into());
+    }
+    if name.contains("__") {
+        return Err(format!(
+            "'{name}' cannot contain a double underscore: tool names are built as \
+             `mcp__<server>__<tool>`, and a second one makes the server unidentifiable"
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "'{name}' must be letters, digits, hyphens, or underscores — it becomes part of every \
+             tool name this server offers"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1589,12 +1698,11 @@ mod tests {
 
     #[test]
     fn a_workspace_toggle_disables_an_inherited_mcp_server() {
-        let global: taurus_mcp::McpConfig = serde_json::from_str(
+        let global = taurus_mcp::parse(
             r#"{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "server-fs"]}}}"#,
         )
         .unwrap();
-        let workspace: taurus_mcp::McpConfig =
-            serde_json::from_str(r#"{"mcpServers": {"fs": {"disabled": true}}}"#).unwrap();
+        let workspace = taurus_mcp::parse(r#"{"mcpServers": {"fs": {"disabled": true}}}"#).unwrap();
 
         let (merged, problems) = merge_mcp(vec![global, workspace]);
         assert!(problems.is_empty(), "{problems:?}");
@@ -1605,8 +1713,8 @@ mod tests {
 
     #[test]
     fn a_toggle_with_nothing_to_toggle_is_reported() {
-        let workspace: taurus_mcp::McpConfig =
-            serde_json::from_str(r#"{"mcpServers": {"ghost": {"disabled": true}}}"#).unwrap();
+        let workspace =
+            taurus_mcp::parse(r#"{"mcpServers": {"ghost": {"disabled": true}}}"#).unwrap();
         let (merged, problems) = merge_mcp(vec![workspace]);
         assert!(merged.servers.is_empty());
         assert_eq!(problems.len(), 1);
@@ -1615,11 +1723,88 @@ mod tests {
 
     #[test]
     fn a_workspace_server_replaces_the_inherited_definition() {
-        let global: taurus_mcp::McpConfig =
-            serde_json::from_str(r#"{"mcpServers": {"fs": {"command": "old"}}}"#).unwrap();
-        let workspace: taurus_mcp::McpConfig =
-            serde_json::from_str(r#"{"mcpServers": {"fs": {"command": "new"}}}"#).unwrap();
+        let global = taurus_mcp::parse(r#"{"mcpServers": {"fs": {"command": "old"}}}"#).unwrap();
+        let workspace = taurus_mcp::parse(r#"{"mcpServers": {"fs": {"command": "new"}}}"#).unwrap();
         let (merged, _) = merge_mcp(vec![global, workspace]);
         assert_eq!(merged.servers["fs"].describe(), "new");
+    }
+
+    #[test]
+    fn an_entry_that_will_not_parse_is_reported_by_name_and_costs_nobody_their_other_servers() {
+        // Both halves of the fix, at the layer that reports them. The message
+        // has to name the server, because the file it came from can hold a dozen.
+        let layer = taurus_mcp::parse(
+            r#"{"mcpServers": {
+                 "works": {"command": "npx"},
+                 "broken": {"commnd": "npx"}
+               }}"#,
+        )
+        .unwrap();
+        let (merged, problems) = merge_mcp(vec![layer]);
+
+        assert!(merged.servers.contains_key("works"));
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("broken"), "{problems:?}");
+        assert!(problems[0].contains("command"), "{problems:?}");
+    }
+
+    #[test]
+    fn saving_one_server_creates_the_file_and_leaves_the_others_alone() {
+        let home = isolated_home();
+        {
+            let existing = taurus_mcp::ServerConfig::Stdio {
+                command: "old".into(),
+                args: vec![],
+                env: BTreeMap::new(),
+                disabled: false,
+            };
+            save_mcp_server(Scope::Global, None, "first", &existing).unwrap();
+            save_mcp_server(
+                Scope::Global,
+                None,
+                "second",
+                &taurus_mcp::ServerConfig::Http {
+                    url: "https://example.com/mcp".into(),
+                    headers: BTreeMap::new(),
+                    disabled: false,
+                },
+            )
+            .unwrap();
+
+            let config = taurus_mcp::load(home.path()).unwrap();
+            assert_eq!(config.servers.len(), 2, "{:?}", config.invalid);
+            assert_eq!(config.servers["first"].describe(), "old");
+
+            set_mcp_server_disabled(Scope::Global, None, "first", true).unwrap();
+            let config = taurus_mcp::load(home.path()).unwrap();
+            assert!(config.servers["first"].disabled());
+            assert!(!config.servers["second"].disabled());
+
+            delete_mcp_server(Scope::Global, None, "first").unwrap();
+            let config = taurus_mcp::load(home.path()).unwrap();
+            assert_eq!(config.servers.len(), 1);
+            assert!(config.servers.contains_key("second"));
+        }
+    }
+
+    #[test]
+    fn a_name_that_would_break_its_own_tool_names_is_refused_at_the_save() {
+        let _home = isolated_home();
+        let server = taurus_mcp::ServerConfig::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: BTreeMap::new(),
+            disabled: false,
+        };
+        // Every one of these produces `mcp__<name>__<tool>` that cannot be
+        // parsed back, or that a provider's schema validation rejects — and
+        // the symptom is a server that connects and is then never called.
+        for name in ["", "my server", "a__b", "sérveur"] {
+            assert!(
+                save_mcp_server(Scope::Global, None, name, &server).is_err(),
+                "{name:?} must not be savable"
+            );
+        }
+        assert!(save_mcp_server(Scope::Global, None, "my-server_2", &server).is_ok());
     }
 }

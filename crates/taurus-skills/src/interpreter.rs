@@ -93,46 +93,15 @@ pub fn missing_interpreters<'a>(names: impl Iterator<Item = &'a str>) -> Vec<Str
 }
 
 /// PATH lookup, including Windows' PATHEXT suffixes.
+///
+/// Shared with the MCP client rather than duplicated, because both are asking
+/// the same question of the same PATH and the answer has to be the same one. It
+/// is also the PATH `taurus_tools::login_path::adopt` repaired at startup: an
+/// interpreter installed by nvm or pyenv is invisible to an app launched from
+/// the Dock until that has run, and reporting it as "not installed" sends the
+/// user looking for a missing package they already have.
 fn find_on_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        for candidate in with_extensions(&dir.join(program)) {
-            if is_executable(&candidate) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(windows)]
-fn with_extensions(base: &std::path::Path) -> Vec<PathBuf> {
-    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-    let mut out = vec![base.to_path_buf()];
-    for ext in pathext.split(';').filter(|e| !e.is_empty()) {
-        let mut with = base.as_os_str().to_os_string();
-        with.push(ext);
-        out.push(PathBuf::from(with));
-    }
-    out
-}
-
-#[cfg(not(windows))]
-fn with_extensions(base: &std::path::Path) -> Vec<PathBuf> {
-    vec![base.to_path_buf()]
-}
-
-#[cfg(unix)]
-fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &std::path::Path) -> bool {
-    path.is_file()
+    taurus_tools::login_path::which(program)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ import {
   DisplayIcon,
   Logo,
   MoonIcon,
+  PlugIcon,
   SlidersIcon,
   SparkIcon,
   SunIcon,
@@ -40,6 +41,7 @@ export function Rail({
   busy,
   skillCount,
   agentCount,
+  mcp,
   health,
   theme,
   onPickWorkspace,
@@ -49,6 +51,7 @@ export function Rail({
   onTheme,
   onSkills,
   onAgents,
+  onMcp,
   onSettings,
 }: {
   /** Set by the handle beside it; the rail only has to wear the number. */
@@ -67,6 +70,15 @@ export function Rail({
   busy: boolean;
   skillCount: number | null;
   agentCount: number | null;
+  /**
+   * How many MCP servers there are and how many answered, or null before the
+   * first status lands.
+   *
+   * Two numbers rather than one: a bare count cannot tell four working servers
+   * from four broken ones, and a server that is configured and not connected is
+   * the whole thing this row exists to make visible.
+   */
+  mcp: { total: number; connected: number } | null;
   health: ProviderHealth;
   /** The preference, not the resolved palette — the row names what was chosen. */
   theme: Theme;
@@ -77,6 +89,7 @@ export function Rail({
   onTheme: (theme: Theme) => void;
   onSkills: () => void;
   onAgents: () => void;
+  onMcp: () => void;
   onSettings: () => void;
 }) {
   /**
@@ -225,6 +238,25 @@ export function Rail({
           <b>Agents</b>
           {agentCount !== null && <span className="count">{agentCount}</span>}
         </button>
+        <button className="rail-link" onClick={onMcp} title={mcpHint(mcp)}>
+          <span className="glyph">
+            <PlugIcon />
+          </span>
+          <b>MCP</b>
+          {mcp !== null && mcp.total > 0 && (
+            /* Marked when some server is not answering, so a failure is
+               visible from the rail rather than only from inside the panel.
+               A configured server that is not there is the one state this
+               feature keeps being reported for. */
+            <span
+              className={`count${mcp.connected < mcp.total ? " warn" : ""}`}
+            >
+              {mcp.connected < mcp.total
+                ? `${mcp.connected}/${mcp.total}`
+                : mcp.total}
+            </span>
+          )}
+        </button>
         <button className="rail-link" onClick={onSettings}>
           <span className="glyph">
             <SlidersIcon />
@@ -280,6 +312,18 @@ function subtitle(
   return changed === 0
     ? `${elsewhere}read-only · ${ago}`
     : `${elsewhere}${plural(changed, "file")} changed · ${ago}`;
+}
+
+/** What the MCP row says on hover, which is where the reason for a badge goes. */
+function mcpHint(mcp: { total: number; connected: number } | null): string {
+  if (mcp === null || mcp.total === 0)
+    return "External tool servers. None configured yet.";
+  if (mcp.connected === mcp.total)
+    return `${plural(mcp.total, "MCP server")} connected`;
+  return `${mcp.total - mcp.connected} of ${plural(
+    mcp.total,
+    "MCP server",
+  )} not connected`;
 }
 
 const NEXT_THEME: Record<Theme, Theme> = {

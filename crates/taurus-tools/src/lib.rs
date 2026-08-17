@@ -5,6 +5,7 @@ pub mod checkpoint;
 pub mod coerce;
 pub mod diff;
 pub mod env;
+pub mod login_path;
 pub mod path_guard;
 pub mod permission;
 pub mod plan;
@@ -18,6 +19,7 @@ pub mod view;
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, TurnChange, TurnRecorder};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::expand_env;
+pub use login_path::Outcome as LoginPath;
 pub use permission::{
     AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,
     PermissionRequest, Scope,
