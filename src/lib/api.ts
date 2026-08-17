@@ -259,6 +259,18 @@ export const respondSkillProposal = (
 export const setSkillSynthesis = (enabled: boolean) =>
   invoke<void>("set_skill_synthesis", { enabled });
 
+/** Model turns one message may take. Clamped by the host. */
+export const setMaxIterations = (limit: number) =>
+  invoke<void>("set_max_iterations", { limit });
+
+/**
+ * Retunes one agent's iteration limit in place, preserving everything else in
+ * its file. Resolves to the file that now holds it — for a built-in that is a
+ * user-tier override which did not exist before the call.
+ */
+export const setAgentIterations = (name: string, limit: number) =>
+  invoke<string>("set_agent_iterations", { name, limit });
+
 export const respondAgentProposal = (
   id: string,
   approve: boolean,

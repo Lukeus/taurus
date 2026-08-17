@@ -552,7 +552,7 @@ impl Host {
                         config.api_key(),
                         OpenAiCapabilities {
                             native_tools: config.native_tools.unwrap_or(defaults.native_tools),
-                            vision: defaults.vision,
+                            vision: config.vision.unwrap_or(defaults.vision),
                             context_length: config
                                 .context_length
                                 .unwrap_or(defaults.context_length),
@@ -569,6 +569,7 @@ impl Host {
                                 display_name: m.display_name.clone(),
                                 context_length: m.context_length,
                                 native_tools: m.native_tools,
+                                vision: m.vision,
                             })
                             .collect(),
                     ),
@@ -710,6 +711,10 @@ impl Host {
                     synthesis,
                     agent_synthesis,
                 ),
+                // Read per turn rather than captured once, so raising it in
+                // Settings applies to the next message instead of the next
+                // launch.
+                max_iterations: self.settings.read().await.max_iterations,
                 ..Default::default()
             },
         )
@@ -887,6 +892,62 @@ impl Host {
         secrets::clear(&config::search_key_id(backend_id))?;
         self.reload().await;
         Ok(())
+    }
+
+    /// Retunes one sub-agent's iteration limit, in place.
+    ///
+    /// Everything else about the agent is preserved, `model:` and `provider:`
+    /// included — see [`taurus_agents::AgentDefinition::write_to`] for why that
+    /// is not the same code path an approved proposal takes.
+    ///
+    /// A built-in has no file to edit, so changing one writes a user-tier
+    /// override: the built-in stays as it shipped, and the copy shadows it
+    /// everywhere. The path comes back so the caller can say which file now
+    /// exists, because a control that silently creates one is a control that
+    /// surprises whoever finds the file later.
+    pub async fn set_agent_iterations(&self, name: &str, limit: u32) -> Result<String, String> {
+        let limit = limit.clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT);
+
+        let (mut definition, path) = {
+            let catalog = self.agents.read().await;
+            let definition = catalog
+                .get(name)
+                .ok_or_else(|| format!("no agent named '{name}'"))?
+                .clone();
+            // A built-in is the only case with nothing to write back to.
+            let path = definition.path.clone().unwrap_or_else(|| {
+                config::user_agents_dir().join(format!("{}.md", definition.name()))
+            });
+            (definition, path)
+        };
+
+        if definition.frontmatter.max_iterations == limit && definition.path.is_some() {
+            return Ok(path.display().to_string());
+        }
+        definition.frontmatter.max_iterations = limit;
+        definition
+            .write_to(&path)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+
+        info!(agent = name, limit, path = %path.display(), "agent iteration limit changed");
+        self.rescan_agents().await;
+        Ok(path.display().to_string())
+    }
+
+    /// Sets how many model turns one message may take, for every workspace.
+    ///
+    /// Clamped on the way in as well as on the way out: `load_settings` brings a
+    /// hand-edited number back into range, and doing it here too means the
+    /// value written to the file is the value that will be used, rather than
+    /// one that silently reads back as something else.
+    ///
+    /// No registry work, unlike the two toggles below — this changes a number
+    /// the next turn reads, not which tools exist.
+    pub async fn set_max_iterations(&self, limit: u32) {
+        let limit = limit.clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT);
+        config::edit_settings(Scope::Global, None, |s| s.max_iterations = Some(limit));
+        let workspace = self.workspace.read().await.clone();
+        *self.settings.write().await = config::load_settings(Some(&workspace));
     }
 
     /// Toggles skill synthesis for every workspace.
@@ -1486,6 +1547,110 @@ mod tests {
             ]
         );
         assert!(agent_problems(&host.problems().await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn retuning_an_agent_keeps_everything_else_in_its_file() {
+        // The trap this exists for: the editor's save path rebuilds a file from
+        // an `AgentProposal`, which drops `model:` and `provider:` on purpose —
+        // a model does not get to choose what its delegate costs. Reusing it to
+        // change one number would silently strip both from a file whose author
+        // set them by hand.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_agent(
+            &workspace,
+            "reviewer",
+            "tools: [read_file, grep]\nmax_iterations: 12\nmodel: gpt-4o\nprovider: apim\n",
+        );
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        host.set_agent_iterations("reviewer", 40).await.unwrap();
+
+        let agent = host
+            .agents()
+            .await
+            .into_iter()
+            .find(|a| a.name == "reviewer")
+            .expect("reviewer should still be on the roster");
+        assert_eq!(agent.max_iterations, 40);
+        assert_eq!(agent.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(agent.provider.as_deref(), Some("apim"));
+        assert_eq!(
+            agent.tools.as_deref(),
+            Some(&["read_file".to_string(), "grep".to_string()][..])
+        );
+
+        // The body is this agent's system prompt; losing it would leave a file
+        // the loader rejects.
+        let text = std::fs::read_to_string(workspace.join(".taurus/agents/reviewer.md")).unwrap();
+        assert!(text.contains("Be reviewer."), "{text}");
+    }
+
+    #[tokio::test]
+    async fn retuning_a_builtin_writes_an_override_rather_than_failing() {
+        // A built-in has no file. Refusing would make the control dead on the
+        // three agents that ship, which are the ones most likely to need
+        // retuning before anyone has written one of their own.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let path = host.set_agent_iterations("worker", 45).await.unwrap();
+        assert!(path.ends_with("worker.md"), "{path}");
+        assert!(std::path::Path::new(&path).exists(), "{path} should exist");
+
+        let worker = host
+            .agents()
+            .await
+            .into_iter()
+            .find(|a| a.name == "worker")
+            .expect("worker should still be on the roster");
+        assert_eq!(worker.max_iterations, 45);
+        // The copy shadows the built-in rather than joining it — one `worker`,
+        // not two.
+        assert_eq!(
+            host.agents()
+                .await
+                .iter()
+                .filter(|a| a.name == "worker")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agents_limit_is_clamped_to_the_same_ceiling_a_file_is() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_agent(&workspace, "reviewer", "max_iterations: 12\n");
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        host.set_agent_iterations("reviewer", 100_000)
+            .await
+            .unwrap();
+
+        let agent = host
+            .agents()
+            .await
+            .into_iter()
+            .find(|a| a.name == "reviewer")
+            .unwrap();
+        assert_eq!(agent.max_iterations, taurus_agents::MAX_ITERATIONS_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn retuning_an_agent_nobody_has_says_so() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let err = host.set_agent_iterations("nobody", 30).await.unwrap_err();
+        assert!(err.contains("nobody"), "{err}");
     }
 
     #[tokio::test]

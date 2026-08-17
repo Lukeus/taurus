@@ -2750,6 +2750,38 @@ button.link:hover {
 }
 
 /*
+ * The one number on a card you can change, so it is the one thing on a card
+ * that looks like a control. Laid out on a single line with its hint after it:
+ * a stacked label would give four characters of input the height of the tool
+ * chips above it, and the roster is a list people scan.
+ */
+.agent-iterations {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.agent-iterations label {
+  align-items: baseline;
+  display: flex;
+  gap: 6px;
+}
+.agent-iterations input {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 12px;
+  padding: 2px 6px;
+  width: 4.5ch;
+}
+.agent-iterations input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/*
  * A modal rather than a second drawer: the editor is a form you finish and
  * leave, not a panel you work alongside, and stacking two drawers would put
  * the roster behind the thing that edits it.

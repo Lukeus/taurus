@@ -173,6 +173,16 @@ A project agent shadows a personal one of the same name, and either shadows a
 built-in — so a `explorer.md` of your own replaces the shipped explorer rather
 than sitting beside it. The drawer says on the row when that has happened.
 
+`max_iterations:` is how many model/tool round trips this agent gets before it
+is stopped, between 1 and 100. It is editable on the agent's card in the Agents
+drawer as well as in the file — that edit rewrites the file in place, so
+`model:` and anything else you set by hand survives it. Editing a built-in's
+limit has nowhere to write, so it saves a copy you own into `~/.taurus/agents`
+that shadows the built-in; the card says so before you change it. The same
+ceiling governs the conversation that delegates — see
+[the iteration ceiling](working-with-it.md#when-a-turn-stops), which is a
+separate number, in Settings › Behavior.
+
 `tools:` is **enforced**, unlike a skill's `allowed_tools`, which is advisory:
 it is exactly the set the child is offered. Leave the key out to inherit
 everything the main agent has. It narrows what the agent is *offered* and never

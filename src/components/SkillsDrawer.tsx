@@ -30,6 +30,7 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
    * open. `s.status` is one reference that only changes when the status does.
    */
   const status = useStore((s) => s.status);
+  const refreshStatus = useStore((s) => s.refresh);
   // Only what this drawer is actually about. Provider and search failures go
   // to Settings, which is where they can be fixed — an untagged list put them
   // here, under a heading about skills.
@@ -61,6 +62,11 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
               await api.reloadConfig();
               setSkills(await api.listSkills());
               setInstructions(await api.listInstructions().catch(() => []));
+              // The rescan replaced the host's catalog and its problems, so
+              // the count on the rail and the list in here have to come from
+              // after it. Without this a rescan that found a new skill showed
+              // it below and left the badge on the old number.
+              await refreshStatus();
             }}
           >
             Rescan

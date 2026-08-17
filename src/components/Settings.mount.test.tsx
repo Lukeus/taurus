@@ -25,6 +25,7 @@ vi.mock("../state/store", () => ({
 }));
 
 import { Settings } from "./Settings";
+import { MAX_ITERATIONS_LIMIT } from "../lib/limits";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -46,6 +47,7 @@ const status = (skills: boolean, agents: boolean) => ({
     agent_synthesis_enabled: agents,
     disabled_tools: [],
     theme: "system",
+    max_iterations: 25,
   },
 });
 
@@ -178,5 +180,85 @@ describe("the synthesis toggles", () => {
     const host = await mount();
     click(host, "Behavior");
     expect(host.textContent).toMatch(/never be given a tool you do not have/i);
+  });
+});
+
+/** The steps-per-message field, once the Behavior tab is open. */
+const steps = (host: HTMLElement): HTMLInputElement => {
+  const input = host.querySelector('input[aria-label="Steps per message"]');
+  if (!input) throw new Error(`no steps field in: ${host.innerHTML}`);
+  return input as HTMLInputElement;
+};
+
+/** Types a value and commits it the way leaving the field would. */
+const type = async (input: HTMLInputElement, value: string) => {
+  await act(async () => {
+    // React tracks the last value it set, so assigning `.value` directly reads
+    // as no change. The native setter is what makes the input event land.
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  // `focusout`, not `blur`: React delegates from the root, and `blur` does not
+  // bubble, so an `onBlur` handler never sees one dispatched at the element.
+  await act(async () => {
+    input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  });
+};
+
+describe("the iteration limit", () => {
+  it("shows what settings actually report rather than the default", async () => {
+    state.status = { ...status(true, true) };
+    (state.status as { settings: { max_iterations: number } }).settings.max_iterations = 40;
+    const host = await mount();
+    click(host, "Behavior");
+    expect(steps(host).value).toBe("40");
+  });
+
+  it("writes the new limit and refreshes", async () => {
+    const host = await mount();
+    click(host, "Behavior");
+    await type(steps(host), "40");
+    expect(invoke).toHaveBeenCalledWith("set_max_iterations", { limit: 40 });
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("pulls an over-range number back to the ceiling instead of sending it", async () => {
+    // The host clamps too, but a field that accepts 900 and then displays 900
+    // while the turn runs 50 is lying about what will happen.
+    const host = await mount();
+    click(host, "Behavior");
+    const input = steps(host);
+    await type(input, String(MAX_ITERATIONS_LIMIT * 10));
+    expect(input.value).toBe(String(MAX_ITERATIONS_LIMIT));
+    expect(invoke).toHaveBeenCalledWith("set_max_iterations", {
+      limit: MAX_ITERATIONS_LIMIT,
+    });
+  });
+
+  it("keeps the current limit when the field is left empty", async () => {
+    // Clearing the box is on the way to typing a number, not a request for a
+    // turn that cannot take a step.
+    const host = await mount();
+    click(host, "Behavior");
+    const input = steps(host);
+    await type(input, "");
+    expect(input.value).toBe("25");
+    expect(invoke).not.toHaveBeenCalledWith(
+      "set_max_iterations",
+      expect.anything(),
+    );
+  });
+
+  it("does not write when the number has not changed", async () => {
+    const host = await mount();
+    click(host, "Behavior");
+    await type(steps(host), "25");
+    expect(invoke).not.toHaveBeenCalledWith(
+      "set_max_iterations",
+      expect.anything(),
+    );
   });
 });

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tauri::AppHandle;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, watch, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use taurus_agents::proposal::AgentProposal;
@@ -62,7 +62,27 @@ pub struct AppState {
     /// start of each build, the same way a session's token is — reusing a
     /// cancelled one would stop the next build before it began.
     pub index_build: Mutex<CancellationToken>,
+    /// Whether the first [`Host::reload`] has finished.
+    ///
+    /// The window paints before the filesystem has been read — skill discovery
+    /// is deliberately kept off the setup path — so for the first moments the
+    /// host holds an empty skill catalog. A status answered in that window
+    /// reports zero skills, and the frontend takes that snapshot once and keeps
+    /// it, so the rail reads `0` beside a drawer full of skills until some
+    /// unrelated action happens to refresh it. Waiting here is the difference
+    /// between a status that is slightly later and one that is durably wrong.
+    ///
+    /// Only the *first* load is gated. A later reload replaces a populated
+    /// catalog with another populated one, and blocking every status on it
+    /// would put an MCP server's startup in front of the window.
+    loaded: watch::Sender<bool>,
 }
+
+/// How long a status waits for that first load before answering anyway.
+///
+/// Generous, because it is a backstop rather than the path: discovery reads a
+/// handful of directories and finishes in milliseconds.
+const FIRST_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl AppState {
     pub fn new(app: AppHandle) -> Self {
@@ -95,6 +115,7 @@ impl AppState {
             pending_proposals,
             pending_agent_proposals,
             index_build: Mutex::new(CancellationToken::new()),
+            loaded: watch::channel(false).0,
         }
     }
 
@@ -103,5 +124,31 @@ impl AppState {
             .get(id)
             .map(|e| e.clone())
             .ok_or_else(|| format!("no session '{id}'"))
+    }
+
+    /// Marks the first reload done, releasing anything waiting on it.
+    pub fn mark_loaded(&self) {
+        let _ = self.loaded.send(true);
+    }
+
+    /// Waits for the first reload, so a status cannot answer from an empty
+    /// catalog.
+    ///
+    /// Bounded, because a status that never answers is worse than one that
+    /// undercounts: past the wait this degrades to reporting whatever has
+    /// loaded so far, which is where it started.
+    pub async fn loaded(&self) {
+        let mut rx = self.loaded.subscribe();
+        let _ = tokio::time::timeout(FIRST_LOAD_WAIT, async {
+            loop {
+                if *rx.borrow_and_update() {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    return;
+                }
+            }
+        })
+        .await;
     }
 }

@@ -12,7 +12,14 @@ pub const DESCRIPTION_LIMIT: usize = 200;
 
 /// Ceiling on `max_iterations`. A file saying `100000` against a concurrency of
 /// two is a runaway, and the ceiling is cheaper than the incident.
-pub const MAX_ITERATIONS_LIMIT: u32 = 50;
+///
+/// A hundred is a long turn rather than an incident: past that, what catches a
+/// model going in circles is the stall detector, which notices a repeated
+/// failing call in three rounds rather than a hundred. This is the ceiling for
+/// both places iterations are counted — a parent turn's
+/// `settings.max_iterations` and a sub-agent's frontmatter — so the two cannot
+/// be governed by different rules.
+pub const MAX_ITERATIONS_LIMIT: u32 = 100;
 
 /// Where an agent came from. Later tiers shadow earlier ones by name, so a
 /// project can override a personal agent, and either can override a built-in.
@@ -146,6 +153,29 @@ impl AgentDefinition {
         format!(
             "- {}: {}",
             self.frontmatter.name, self.frontmatter.description
+        )
+    }
+
+    /// Writes this definition out as the `.md` file it came from.
+    ///
+    /// Deliberately not [`crate::proposal::save`], which writes a *proposal*
+    /// and drops `model:` and `provider:` — a model does not get to choose what
+    /// its delegate costs. Rewriting an existing agent through that path would
+    /// strip both keys from a file whose author set them by hand, so this
+    /// serializes the frontmatter this definition actually holds.
+    ///
+    /// The body is written back trimmed and newline-terminated, which is how
+    /// [`crate::proposal::save`] writes one too — so an agent edited here and
+    /// an agent created there produce the same shape of file.
+    pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let yaml = serde_yaml_ng::to_string(&self.frontmatter)
+            .unwrap_or_else(|_| format!("name: {}\n", self.frontmatter.name));
+        std::fs::write(
+            path,
+            format!("---\n{yaml}---\n\n{}\n", self.system_prompt.trim()),
         )
     }
 }

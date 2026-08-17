@@ -58,6 +58,7 @@ const provider = (id: string): ProviderConfig => ({
   api_key_header: null,
   native_tools: null,
   context_length: null,
+  vision: null,
   api_prefix: null,
   thinking: null,
 });

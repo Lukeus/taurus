@@ -399,6 +399,14 @@ pub struct ProviderConfig {
     pub native_tools: Option<bool>,
     #[serde(default)]
     pub context_length: Option<u32>,
+    /// Whether the models here read images. Unset means the provider's own
+    /// default, which for an OpenAI-compatible endpoint is yes — set it false
+    /// for a self-hosted server fronting text-only weights, so a screenshot is
+    /// refused here with an explanation rather than a round trip away with a
+    /// wire error. Ignored by every other kind: Ollama probes, and Anthropic
+    /// and Gemini take images on every model they serve.
+    #[serde(default)]
+    pub vision: Option<bool>,
     /// Path prefix the OpenAI-compatible routes live under. Defaults to `/v1`,
     /// which is right for OpenAI, vLLM, LM Studio, llama.cpp, and OpenVINO
     /// Model Server from 2026.3 on; earlier OVMS builds need `/v3`.
@@ -461,6 +469,8 @@ pub struct ModelEntry {
     pub context_length: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<bool>,
 }
 
 impl ModelEntry {
@@ -471,6 +481,7 @@ impl ModelEntry {
             display_name: None,
             context_length: None,
             native_tools: None,
+            vision: None,
         }
     }
 
@@ -502,6 +513,8 @@ impl<'de> Deserialize<'de> for ModelEntry {
                 context_length: Option<u32>,
                 #[serde(default)]
                 native_tools: Option<bool>,
+                #[serde(default)]
+                vision: Option<bool>,
             },
         }
         Ok(match Wire::deserialize(deserializer)? {
@@ -511,11 +524,13 @@ impl<'de> Deserialize<'de> for ModelEntry {
                 display_name,
                 context_length,
                 native_tools,
+                vision,
             } => Self {
                 id,
                 display_name,
                 context_length,
                 native_tools,
+                vision,
             },
         })
     }
@@ -563,6 +578,8 @@ pub struct ProviderEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_prefix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
@@ -598,6 +615,9 @@ impl ProviderEntry {
         if self.context_length.is_some() {
             base.context_length = self.context_length;
         }
+        if self.vision.is_some() {
+            base.vision = self.vision;
+        }
         if self.api_prefix.is_some() {
             base.api_prefix = self.api_prefix.clone();
         }
@@ -630,6 +650,7 @@ impl ProviderEntry {
             api_key_header: self.api_key_header,
             native_tools: self.native_tools,
             context_length: self.context_length,
+            vision: self.vision,
             api_prefix: self.api_prefix,
             thinking: self.thinking,
         })
@@ -650,6 +671,7 @@ impl From<&ProviderConfig> for ProviderEntry {
             api_key_header: config.api_key_header.clone(),
             native_tools: config.native_tools,
             context_length: config.context_length,
+            vision: config.vision,
             api_prefix: config.api_prefix.clone(),
             thinking: config.thinking.clone(),
         }
@@ -667,6 +689,7 @@ fn default_providers() -> Vec<ProviderConfig> {
         api_key_header: None,
         native_tools: None,
         context_length: None,
+        vision: None,
         api_prefix: None,
         thinking: None,
     }]
@@ -842,10 +865,29 @@ pub struct Settings {
     /// mean different things.
     #[serde(default)]
     pub embedding_model: String,
+    /// Model turns one message may take before the turn is stopped.
+    ///
+    /// A ceiling on a loop that has no other one: a model that keeps calling
+    /// tools without ever answering would otherwise run until the context
+    /// window did. Twenty-five is enough for the work most turns are, and low
+    /// enough that a model stuck in a loop is caught in seconds rather than
+    /// minutes.
+    ///
+    /// Raise it for long refactors that legitimately need more rounds. It is
+    /// bounded by [`taurus_agents::MAX_ITERATIONS_LIMIT`], the same ceiling a
+    /// sub-agent's `max_iterations` is validated against — one limit for the
+    /// two places iterations are counted, so a turn and the agent it delegates
+    /// to cannot be governed by different rules.
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: u32,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_max_iterations() -> u32 {
+    25
 }
 
 impl Default for Settings {
@@ -859,6 +901,7 @@ impl Default for Settings {
             disabled_tools: Vec::new(),
             theme: Theme::System,
             embedding_model: String::new(),
+            max_iterations: default_max_iterations(),
         }
     }
 }
@@ -888,6 +931,10 @@ pub struct StoredSettings {
     /// without touching the global setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
+    /// See [`Settings::max_iterations`]. Per-layer so one project that needs
+    /// long turns can raise it without loosening the ceiling everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<u32>,
 }
 
 impl StoredSettings {
@@ -907,6 +954,7 @@ impl StoredSettings {
         self.disabled_tools = other.disabled_tools.or(self.disabled_tools.take());
         self.theme = other.theme.or(self.theme);
         self.embedding_model = other.embedding_model.or(self.embedding_model.take());
+        self.max_iterations = other.max_iterations.or(self.max_iterations);
     }
 
     fn resolve(self) -> Settings {
@@ -924,6 +972,14 @@ impl StoredSettings {
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
             theme: self.theme.unwrap_or(defaults.theme),
             embedding_model: self.embedding_model.unwrap_or(defaults.embedding_model),
+            // Clamped rather than rejected: this file is hand-edited, and a
+            // settings file that will not load is a worse answer to a typo'd
+            // number than a number brought back into range. Zero would be a
+            // turn that cannot take a single step, so the floor is one.
+            max_iterations: self
+                .max_iterations
+                .unwrap_or(defaults.max_iterations)
+                .clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT),
         }
     }
 }
@@ -1110,6 +1166,19 @@ mod tests {
     }
 
     #[test]
+    fn a_model_can_declare_itself_text_only() {
+        // The one override a gateway needs that the others cannot express:
+        // vision defaults on for an OpenAI-compatible provider, so a text-only
+        // model behind one has to be able to say so per model.
+        let entries: Vec<ModelEntry> =
+            serde_json::from_str(r#"["gpt-4o", {"id": "llama-3.1-8b", "vision": false}]"#)
+                .expect("the vision override must parse");
+
+        assert_eq!(entries[1].vision, Some(false));
+        assert_eq!(entries[0].vision, None);
+    }
+
+    #[test]
     fn a_model_labels_itself_with_its_id_until_told_otherwise() {
         assert_eq!(ModelEntry::new("gpt-4o").label(), "gpt-4o");
         let named = ModelEntry {
@@ -1134,6 +1203,7 @@ mod tests {
             api_key_header: None,
             native_tools: None,
             context_length: None,
+            vision: None,
             api_prefix: None,
             thinking: None,
         };
@@ -1388,6 +1458,60 @@ mod tests {
             assert_eq!(settings.last_model.as_deref(), Some("project-model"));
             // Not reset to the default just because the workspace file omits it.
             assert!(!settings.skill_synthesis_enabled);
+        });
+    }
+
+    #[test]
+    fn a_turn_gets_twenty_five_steps_until_someone_says_otherwise() {
+        with_home(|home| {
+            write(home.join("settings.json"), r#"{"last_model": "m"}"#);
+            assert_eq!(load_settings(None).max_iterations, 25);
+        });
+    }
+
+    #[test]
+    fn a_hand_edited_step_count_is_clamped_rather_than_rejected() {
+        // This file is edited by hand, and a settings file that will not load
+        // is a worse answer to a typo than a number brought back into range.
+        // Zero is the one that matters most: it would be a turn that cannot
+        // take a single step, which reads as the app being broken.
+        let ceiling = taurus_agents::MAX_ITERATIONS_LIMIT;
+        for (written, resolved) in [
+            (0, 1),
+            (1, 1),
+            (30, 30),
+            (ceiling, ceiling),
+            (ceiling + 1, ceiling),
+            (100_000, ceiling),
+        ] {
+            with_home(|home| {
+                write(
+                    home.join("settings.json"),
+                    &format!(r#"{{"max_iterations": {written}}}"#),
+                );
+                assert_eq!(
+                    load_settings(None).max_iterations,
+                    resolved,
+                    "{written} should resolve to {resolved}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn a_workspace_can_raise_the_step_count_without_touching_the_global_one() {
+        // A repository whose refactors legitimately need more rounds should not
+        // have to loosen the limit for every other project.
+        with_home(|home| {
+            let ws = TempDir::new().unwrap();
+            write(home.join("settings.json"), r#"{"max_iterations": 10}"#);
+            write(
+                workspace_dir(ws.path()).join("settings.json"),
+                r#"{"max_iterations": 40}"#,
+            );
+
+            assert_eq!(load_settings(Some(ws.path())).max_iterations, 40);
+            assert_eq!(load_settings(None).max_iterations, 10);
         });
     }
 
