@@ -66,7 +66,8 @@ impl Tool for UpdatePlan {
          'active', or 'done'), like {\"steps\": [{\"text\": \"Add the token type\", \"state\": \
          \"active\", \"active_form\": \"Adding the token type\"}]}. It replaces the previous \
          plan, so anything you leave out is gone. Exactly one step may be 'active' — the one you \
-         are working on right now. Steps are things to do, in order, each a short imperative like \
+         are working on right now — and a step you have marked 'done' stays 'done' in every list \
+         you send after it. Steps are things to do, in order, each a short imperative like \
          'Add the token type'; do not use it for a task that is one action, and do not restate \
          the plan in your reply, since the user is already looking at it. Give every step an \
          'active_form' as well: the same step written as something under way — 'Add the token \
@@ -96,14 +97,19 @@ impl Tool for UpdatePlan {
         // Checked here as well as in `execute` because the view is drawn first.
         // Without it the user would watch a plan with three steps in progress
         // appear, and only then be told the call failed.
-        check(&input.steps).ok()?;
+        //
+        // Both paths read the same board, which is why it is behind a blocking
+        // lock — see [`crate::plan::PlanBoard`]. A check that ran only in
+        // `execute` would draw a card the call then rejects, and the card is
+        // what the pinned panel shows.
+        check(&input.steps, &self.board.steps()).ok()?;
         Some(TranscriptView::Plan { steps: input.steps })
     }
 
     async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
         let input: UpdatePlanInput = parse_input(input)?;
-        check(&input.steps)?;
-        Ok(self.board.set(input.steps).await)
+        check(&input.steps, &self.board.steps())?;
+        Ok(self.board.set(input.steps))
     }
 }
 
@@ -113,7 +119,11 @@ impl Tool for UpdatePlan {
 /// track of its own list, and a plan quietly corrected into something it did
 /// not write is worse than a rejected call: the checklist it then reads back
 /// would not be the one it believes it set.
-fn check(steps: &[Step]) -> Result<(), ToolError> {
+///
+/// `previous` is the plan on the board, which the last two rules are about. A
+/// whole-list replacement carries no memory, so the only place a step that
+/// silently un-finished itself can be noticed is here, against what it replaced.
+fn check(steps: &[Step], previous: &[Step]) -> Result<(), ToolError> {
     if steps.is_empty() {
         return Err(ToolError::InvalidInput(
             "a plan needs at least one step. To finish a plan, send it back with every step \
@@ -190,7 +200,59 @@ fn check(steps: &[Step]) -> Result<(), ToolError> {
         )));
     }
 
+    // A finished step sitting after an unfinished one. The list is worked in
+    // order — the model is told to work the step marked [>] and not to start
+    // another until it is [x] — so this is not a plan that ran out of order. It
+    // is a step whose state was never updated, and left alone it reads as
+    // "queued" on the panel beside work that visibly happened, and comes back
+    // in the prompt every iteration as work still to do.
+    if let Some(open) = steps.iter().position(|s| s.state != StepState::Done) {
+        if let Some(done) = steps.iter().rposition(|s| s.state == StepState::Done) {
+            if done > open {
+                return Err(ToolError::InvalidInput(format!(
+                    "step {} is marked 'done' but step {} before it is still '{}'. Steps are \
+                     worked in order, so either step {} is finished too and needs marking 'done', \
+                     or the list is in the wrong order and the finished steps belong first",
+                    done + 1,
+                    open + 1,
+                    word(steps[open].state),
+                    open + 1,
+                )));
+            }
+        }
+    }
+
+    // A step that was done and is not any more. Nearly always the model
+    // re-typing the list and leaving the state off, which reads as 'todo' by
+    // default — see `Step::from_json`, which is right to be forgiving about an
+    // omitted state on a step it has never seen and cannot be, here.
+    if let Some((n, step)) = steps.iter().enumerate().find(|(_, s)| {
+        s.state != StepState::Done
+            && previous
+                .iter()
+                .any(|p| p.state == StepState::Done && p.text.trim() == s.text.trim())
+    }) {
+        return Err(ToolError::InvalidInput(format!(
+            "step {} '{}' is marked '{}', but you had already marked it 'done'. A finished step \
+             does not reopen — send the whole list back with it still 'done'. If the request has \
+             moved on, write the new plan with its own steps instead",
+            n + 1,
+            step.text.trim(),
+            word(step.state),
+        )));
+    }
+
     Ok(())
+}
+
+/// A state in the word the model writes it with, for an error message that can
+/// be acted on by copying it.
+fn word(state: StepState) -> &'static str {
+    match state {
+        StepState::Todo => "todo",
+        StepState::Active => "active",
+        StepState::Done => "done",
+    }
 }
 
 #[cfg(test)]
@@ -229,7 +291,7 @@ mod tests {
         .await
         .expect("a valid plan");
 
-        let reminder = board.reminder().await.expect("the board holds it");
+        let reminder = board.reminder().expect("the board holds it");
         assert!(reminder.contains("[x] Read the parser"), "{reminder}");
         assert!(reminder.contains("[>] Add the token type"), "{reminder}");
     }
@@ -361,7 +423,128 @@ mod tests {
         .await
         .expect("a state-less step is fine");
 
-        assert_eq!(board.steps().await[0].state, StepState::Todo);
+        assert_eq!(board.steps()[0].state, StepState::Todo);
+    }
+
+    #[tokio::test]
+    async fn a_step_finished_out_of_turn_is_refused_and_names_the_one_left_open() {
+        // The reported failure: a two-step task where the second is marked done
+        // and the first never was. Nothing else catches it — one step is active,
+        // the texts are fine, and the list is the length it should be — so it
+        // sits on the panel as "queued" beside work that visibly happened.
+        let (ctx, _dir) = test_ctx();
+        let tool = UpdatePlan::new(PlanBoard::new());
+        let error = tool
+            .execute(
+                input(vec![
+                    step("Change the greeting", StepState::Active),
+                    step("Add the version field", StepState::Done),
+                ]),
+                &ctx,
+            )
+            .await
+            .expect_err("a done step above an open one");
+        let message = error.to_string();
+        assert!(message.contains("step 2 is marked 'done'"), "{message}");
+        assert!(message.contains("step 1 before it"), "{message}");
+        assert!(message.contains("'active'"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn working_down_the_list_in_order_is_not_refused() {
+        // The shape the rule above must not touch: done behind, active here,
+        // todo ahead. Every plan that is going well looks like this.
+        let (ctx, _dir) = test_ctx();
+        let tool = UpdatePlan::new(PlanBoard::new());
+        tool.execute(
+            input(vec![
+                step("One", StepState::Done),
+                step("Two", StepState::Active),
+                step("Three", StepState::Todo),
+            ]),
+            &ctx,
+        )
+        .await
+        .expect("ordinary progress");
+    }
+
+    #[tokio::test]
+    async fn a_step_that_un_finishes_itself_is_refused() {
+        // A whole-list replacement carries no memory, and an omitted state
+        // reads as 'todo' — so a model that re-types the list without the
+        // states silently undoes every step it had finished. The board is the
+        // only thing that can see it.
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        tool.execute(
+            input(vec![
+                step("Read the parser", StepState::Done),
+                step("Add the token type", StepState::Active),
+            ]),
+            &ctx,
+        )
+        .await
+        .expect("a valid plan");
+
+        let error = tool
+            .execute(
+                serde_json::json!({ "steps": [
+                    { "text": "Read the parser" },
+                    { "text": "Add the token type", "state": "active" },
+                ] }),
+                &ctx,
+            )
+            .await
+            .expect_err("step 1 went back to todo");
+        let message = error.to_string();
+        assert!(message.contains("'Read the parser'"), "{message}");
+        assert!(message.contains("already marked it 'done'"), "{message}");
+
+        // And the board still holds the plan it accepted.
+        assert_eq!(board.steps()[0].state, StepState::Done);
+    }
+
+    #[tokio::test]
+    async fn a_replaced_plan_may_use_states_freely_on_steps_it_never_had() {
+        // The escape the error names. A follow-up that changes the subject gets
+        // a new list, and nothing about the old one constrains it.
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        tool.execute(input(vec![step("Read the parser", StepState::Done)]), &ctx)
+            .await
+            .expect("a valid plan");
+
+        tool.execute(
+            input(vec![
+                step("Draft the release notes", StepState::Active),
+                step("Tag the release", StepState::Todo),
+            ]),
+            &ctx,
+        )
+        .await
+        .expect("a different task is a different plan");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_plan_draws_no_card_over_the_one_it_failed_to_replace() {
+        // `view` runs the same check against the same board as `execute`, so a
+        // plan that will be rejected never becomes the card the pinned panel
+        // reads. If the two disagreed, a refused call would blank the plan.
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        tool.execute(input(vec![step("One", StepState::Done)]), &ctx)
+            .await
+            .expect("a valid plan");
+
+        let reopened = input(vec![
+            step("One", StepState::Todo),
+            step("Two", StepState::Active),
+        ]);
+        assert!(tool.view("call-2", &reopened).is_none());
+        assert!(tool.execute(reopened, &ctx).await.is_err());
     }
 
     #[tokio::test]

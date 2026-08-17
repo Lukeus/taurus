@@ -1096,6 +1096,139 @@ fn plan_call(id: &str, steps: serde_json::Value) -> ScriptedTurn {
     ScriptedTurn::tool_call(id, "update_plan", serde_json::json!({ "steps": steps }))
 }
 
+/// How many times the model has been asked to close its plan.
+fn plan_nudges(request: &taurus_provider::ChatRequest) -> usize {
+    request
+        .messages
+        .iter()
+        .filter(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text } if text.contains("still has steps that are not marked done"))
+            })
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn a_turn_that_stops_with_steps_open_is_asked_to_close_them() {
+    // The reported failure, end to end. The model does all the work, marks the
+    // last step active, runs it, and reports finishing in prose — leaving a
+    // checklist that says 1 of 2 and a panel that would say so tomorrow. Being
+    // told in the prompt to close the list does not fix it: the plan is in the
+    // system prompt on every one of these iterations and it stops anyway.
+    let (agent, provider, _dir) = planning(vec![
+        plan_call(
+            "t1",
+            serde_json::json!([
+                {"text": "Change the greeting", "state": "active"},
+                {"text": "Add the version field", "state": "todo"},
+            ]),
+        ),
+        plan_call(
+            "t2",
+            serde_json::json!([
+                {"text": "Change the greeting", "state": "done"},
+                {"text": "Add the version field", "state": "active"},
+            ]),
+        ),
+        ScriptedTurn::text("All done — both steps are finished."),
+        plan_call(
+            "t3",
+            serde_json::json!([
+                {"text": "Change the greeting", "state": "done"},
+                {"text": "Add the version field", "state": "done"},
+            ]),
+        ),
+        ScriptedTurn::text("Done."),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("do the thing"), tx)
+        .await
+        .unwrap();
+
+    // Asked once, and the turn ran on rather than ending on the prose.
+    let last = provider.last_request().await.unwrap();
+    assert_eq!(plan_nudges(&last), 1);
+    // And the list it went back and closed is the one the prompt now carries.
+    let system = last.system.clone().unwrap();
+    assert!(system.contains("[x] Add the version field"), "{system}");
+}
+
+#[tokio::test]
+async fn a_plan_with_every_step_closed_is_left_alone() {
+    // The nudge costs a round trip, so it has to be silent on the turns that
+    // did the bookkeeping themselves — which is most of them.
+    let (agent, provider, _dir) = planning(vec![
+        plan_call(
+            "t1",
+            serde_json::json!([{"text": "Change the greeting", "state": "done"}]),
+        ),
+        ScriptedTurn::text("Done."),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("do the thing"), tx)
+        .await
+        .unwrap();
+
+    assert_eq!(provider.request_count().await, 2);
+    assert_eq!(plan_nudges(&provider.last_request().await.unwrap()), 0);
+}
+
+#[tokio::test]
+async fn a_turn_that_means_to_stop_early_is_only_asked_once() {
+    // The way out the wording offers has to be real. A turn that genuinely
+    // stopped — a question to ask, work it cannot do — says so and finishes,
+    // and asking again every time it tried would be an unbreakable loop.
+    let (agent, provider, _dir) = planning(vec![
+        plan_call(
+            "t1",
+            serde_json::json!([
+                {"text": "Change the greeting", "state": "done"},
+                {"text": "Add the version field", "state": "active"},
+            ]),
+        ),
+        ScriptedTurn::text("Stopping here."),
+        ScriptedTurn::text("I cannot do the second step: there is no config.toml."),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("do the thing"), tx)
+        .await
+        .unwrap();
+
+    assert_eq!(provider.request_count().await, 3);
+    assert_eq!(plan_nudges(&provider.last_request().await.unwrap()), 1);
+}
+
+#[tokio::test]
+async fn a_turn_with_no_plan_at_all_is_never_asked_about_one() {
+    // Every sub-agent, and every turn the model answered without planning. The
+    // board is empty rather than unfinished, and the two must not read alike.
+    let (agent, provider, _dir) = planning(vec![ScriptedTurn::text("It is 4pm.")]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("what time is it"), tx)
+        .await
+        .unwrap();
+
+    assert_eq!(provider.request_count().await, 1);
+    assert_eq!(plan_nudges(&provider.last_request().await.unwrap()), 0);
+}
+
 #[tokio::test]
 async fn a_plan_is_restated_to_the_model_on_every_later_iteration() {
     // The whole feature. A 9B model does not lose the steps because it forgot
@@ -1124,13 +1257,17 @@ async fn a_plan_is_restated_to_the_model_on_every_later_iteration() {
         .unwrap();
 
     let seen = provider.seen.lock().await;
-    assert_eq!(seen.len(), 3);
+    // Four, not three: this model says "Done." on a plan it never closed, so
+    // the third request is followed by one more asking it to — see
+    // `a_turn_that_stops_with_steps_open_is_asked_to_close_them`. It carries
+    // the same unclosed plan, which is what the loop below wants anyway.
+    assert_eq!(seen.len(), 4);
 
     // Nothing on the first request: the plan did not exist when it was built.
     let first = seen[0].system.clone().unwrap_or_default();
     assert!(!first.contains("Read the parser"), "{first}");
 
-    // On both requests after the call, in the state the model set.
+    // On every request after the call, in the state the model set.
     for request in &seen[1..] {
         let system = request.system.clone().expect("a system prompt");
         assert!(system.contains("[>] Read the parser"), "{system}");

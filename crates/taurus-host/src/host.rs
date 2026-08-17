@@ -664,7 +664,7 @@ impl Host {
         // survives the message that interrupted it — `start_turn` is what drops
         // a finished one, and is the whole of the staleness rule.
         let plan = self.plan_board(turn.session_id).await;
-        plan.start_turn().await;
+        plan.start_turn();
         registry.register(Arc::new(UpdatePlan::new(plan.clone())));
 
         // `reload` applies this to the shared registry, which is everything
@@ -1455,6 +1455,13 @@ mod tests {
         std::fs::write(workspace.join(".taurus/settings.json"), json).unwrap();
     }
 
+    /// How many agents a roster has before anything is read from disk. Derived,
+    /// so that shipping another built-in is a change to one file rather than to
+    /// every test that happens to count the roster.
+    fn builtins() -> usize {
+        taurus_agents::builtin::definitions().len()
+    }
+
     fn agent_problems(problems: &[Problem]) -> Vec<String> {
         problems
             .iter()
@@ -1470,7 +1477,14 @@ mod tests {
         host.reload().await;
 
         let names: Vec<String> = host.agents().await.into_iter().map(|a| a.name).collect();
-        assert_eq!(names, vec!["explorer".to_string(), "worker".to_string()]);
+        assert_eq!(
+            names,
+            vec![
+                "coder".to_string(),
+                "explorer".to_string(),
+                "worker".to_string()
+            ]
+        );
         assert!(agent_problems(&host.problems().await).is_empty());
     }
 
@@ -1596,7 +1610,7 @@ mod tests {
         );
         assert_eq!(
             host.agents().await.len(),
-            22,
+            builtins() + 20,
             "and nothing is dropped for it"
         );
     }
@@ -1609,7 +1623,7 @@ mod tests {
         let workspace = dir.path().canonicalize().unwrap();
         let (host, _home) = host(&workspace);
         host.reload().await;
-        assert_eq!(host.agents().await.len(), 2);
+        assert_eq!(host.agents().await.len(), builtins());
 
         write_agent(&workspace, "late-arrival", "");
         host.rescan_agents().await;
@@ -2141,28 +2155,25 @@ mod tests {
         let (host, _home) = host(&dir.path().canonicalize().unwrap());
 
         let board = host.plan_board("s1").await;
-        board
-            .set(vec![Step {
-                text: "Add the token type".into(),
-                state: StepState::Active,
-                active_form: None,
-            }])
-            .await;
+        board.set(vec![Step {
+            text: "Add the token type".into(),
+            state: StepState::Active,
+            active_form: None,
+        }]);
 
         // The same conversation, a message later.
         assert!(
             host.plan_board("s1")
                 .await
                 .reminder()
-                .await
                 .is_some_and(|r| r.contains("Add the token type")),
             "an unfinished plan has to survive the message that interrupted it"
         );
         // A different one, which must start empty however busy the first is.
-        assert_eq!(host.plan_board("s2").await.reminder().await, None);
+        assert_eq!(host.plan_board("s2").await.reminder(), None);
 
         host.forget_plan("s1").await;
-        assert_eq!(host.plan_board("s1").await.reminder().await, None);
+        assert_eq!(host.plan_board("s1").await.reminder(), None);
     }
 
     #[tokio::test]

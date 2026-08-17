@@ -46,9 +46,7 @@
 //! model reads in its prompt are the same checklist, and they would be worse
 //! than useless if they disagreed about whether it was still live.
 
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::view::{Step, StepState};
 
@@ -61,6 +59,13 @@ use crate::view::{Step, StepState};
 /// checklist would report progress against a task nobody asked it to own.
 #[derive(Clone, Default)]
 pub struct PlanBoard {
+    /// A blocking lock rather than `tokio`'s, because one reader cannot await:
+    /// [`crate::builtin::plan::UpdatePlan::view`] draws the card, and it has to
+    /// check the incoming list against the board to do it — see
+    /// [`crate::builtin::plan`] for why that check has to run in both places or
+    /// not at all. Every critical section here is a clone or a walk of a list a
+    /// dozen items long, and none of them holds the guard across an await, so
+    /// the blocking lock costs nothing.
     state: Arc<Mutex<Board>>,
 }
 
@@ -78,17 +83,36 @@ impl PlanBoard {
     }
 
     /// Replaces the plan. Returns what the tool should tell the model it did.
-    pub async fn set(&self, steps: Vec<Step>) -> String {
+    pub fn set(&self, steps: Vec<Step>) -> String {
         let summary = summarize(&steps);
-        let mut board = self.state.lock().await;
+        let mut board = self.board();
         board.steps = steps;
         // Written in this turn, so it is no longer somebody else's checklist.
         board.carried = false;
         summary
     }
 
-    pub async fn steps(&self) -> Vec<Step> {
-        self.state.lock().await.steps.clone()
+    pub fn steps(&self) -> Vec<Step> {
+        self.board().steps.clone()
+    }
+
+    /// Whether a plan is up and something on it is still open.
+    ///
+    /// The question the agent loop asks when the model stops: a `true` here is
+    /// a turn ending with work the checklist still says is in progress. See
+    /// `PLAN_NUDGE` in `taurus_core::agent`.
+    pub fn unfinished(&self) -> bool {
+        let board = self.board();
+        !board.steps.is_empty() && board.steps.iter().any(|s| s.state != StepState::Done)
+    }
+
+    /// Poisoning here would mean a panic while holding a lock over a list walk
+    /// that cannot panic. Taking the value back is better than bringing the
+    /// session down over a checklist.
+    fn board(&self) -> MutexGuard<'_, Board> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Readies the board for a new turn, and reports whether a plan survived.
@@ -98,8 +122,8 @@ impl PlanBoard {
     /// say what you did and stop" as its instructions for the new request.
     /// Anything unfinished is kept and marked as carried — see the module doc
     /// for why that judgement belongs to the model rather than here.
-    pub async fn start_turn(&self) -> bool {
-        let mut board = self.state.lock().await;
+    pub fn start_turn(&self) -> bool {
+        let mut board = self.board();
         if board.steps.is_empty() {
             return false;
         }
@@ -119,8 +143,8 @@ impl PlanBoard {
     /// a heading over no steps would be a standing instruction to a model that
     /// has not been asked to make a plan, which is how a turn that needed two
     /// steps ends up with a checklist for them.
-    pub async fn reminder(&self) -> Option<String> {
-        let board = self.state.lock().await;
+    pub fn reminder(&self) -> Option<String> {
+        let board = self.board();
         if board.steps.is_empty() {
             return None;
         }
@@ -145,7 +169,9 @@ impl PlanBoard {
         out.push_str(
             "\nCall update_plan again the moment a step's state changes — send the whole list \
              back with the states updated. Work the step marked [>], and do not start another \
-             until it is [x]. When every step is [x], say what you did and stop.",
+             until it is [x]. Closing the last step is a call to update_plan, not a sentence in \
+             your reply: when the work is done, send the whole list back with every step 'done' \
+             first, and then say what you did and stop.",
         );
         if board.carried {
             // The one thing the harness cannot decide. A follow-up may continue
@@ -192,25 +218,23 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn an_empty_board_adds_nothing_to_the_prompt() {
+    #[test]
+    fn an_empty_board_adds_nothing_to_the_prompt() {
         // Not an empty section — nothing. A heading over no steps is a standing
         // instruction to plan, given to a turn that was never asked to.
-        assert_eq!(PlanBoard::new().reminder().await, None);
+        assert_eq!(PlanBoard::new().reminder(), None);
     }
 
-    #[tokio::test]
-    async fn the_reminder_carries_every_step_and_its_state() {
+    #[test]
+    fn the_reminder_carries_every_step_and_its_state() {
         let board = PlanBoard::new();
-        board
-            .set(vec![
-                step("Read the parser", StepState::Done),
-                step("Add the token type", StepState::Active),
-                step("Update the tests", StepState::Todo),
-            ])
-            .await;
+        board.set(vec![
+            step("Read the parser", StepState::Done),
+            step("Add the token type", StepState::Active),
+            step("Update the tests", StepState::Todo),
+        ]);
 
-        let reminder = board.reminder().await.expect("a plan is set");
+        let reminder = board.reminder().expect("a plan is set");
         assert!(reminder.contains("[x] Read the parser"), "{reminder}");
         assert!(reminder.contains("[>] Add the token type"), "{reminder}");
         assert!(reminder.contains("[ ] Update the tests"), "{reminder}");
@@ -218,67 +242,61 @@ mod tests {
         assert!(reminder.contains("2. [>]"), "{reminder}");
     }
 
-    #[tokio::test]
-    async fn the_result_names_the_step_being_worked_on() {
+    #[test]
+    fn the_result_names_the_step_being_worked_on() {
         // What the model reads immediately after the call. The full list
         // arrives in the system prompt, so this is the one fact worth
         // repeating: which step it just said it was on.
         let board = PlanBoard::new();
-        let result = board
-            .set(vec![
-                step("Read the parser", StepState::Done),
-                step("Add the token type", StepState::Active),
-            ])
-            .await;
+        let result = board.set(vec![
+            step("Read the parser", StepState::Done),
+            step("Add the token type", StepState::Active),
+        ]);
         assert!(result.contains("1 of 2"), "{result}");
         assert!(result.contains("Add the token type"), "{result}");
     }
 
-    #[tokio::test]
-    async fn a_finished_plan_says_so_rather_than_reporting_no_progress() {
+    #[test]
+    fn a_finished_plan_says_so_rather_than_reporting_no_progress() {
         // "No step is marked in progress" is true of a finished plan and is
         // exactly the wrong thing to tell a model that has just finished one.
         let board = PlanBoard::new();
-        let result = board
-            .set(vec![
-                step("Read the parser", StepState::Done),
-                step("Add the token type", StepState::Done),
-            ])
-            .await;
+        let result = board.set(vec![
+            step("Read the parser", StepState::Done),
+            step("Add the token type", StepState::Done),
+        ]);
         assert!(result.contains("Every step is done"), "{result}");
     }
 
-    #[tokio::test]
-    async fn an_unfinished_plan_survives_into_the_next_turn() {
+    #[test]
+    fn an_unfinished_plan_survives_into_the_next_turn() {
         // The case this exists for: six steps and a question in the middle.
         // A checklist that evaporates when you answer "yes, go on" is one the
         // model rebuilds from memory, which is the drift it exists to stop.
         let board = PlanBoard::new();
-        board
-            .set(vec![
-                step("Read the parser", StepState::Done),
-                step("Add the token type", StepState::Active),
-            ])
-            .await;
+        board.set(vec![
+            step("Read the parser", StepState::Done),
+            step("Add the token type", StepState::Active),
+        ]);
 
-        assert!(board.start_turn().await, "a plan survived");
-        let reminder = board.reminder().await.expect("and is still restated");
+        assert!(board.start_turn(), "a plan survived");
+        let reminder = board.reminder().expect("and is still restated");
         assert!(reminder.contains("[>] Add the token type"), "{reminder}");
     }
 
-    #[tokio::test]
-    async fn a_carried_plan_says_it_came_from_an_earlier_message() {
+    #[test]
+    fn a_carried_plan_says_it_came_from_an_earlier_message() {
         // Two things the model cannot work out for itself: that it wrote this
         // before the message it is answering, and that replacing it is allowed
         // when the request has moved on.
         let board = PlanBoard::new();
-        board.set(vec![step("One", StepState::Active)]).await;
+        board.set(vec![step("One", StepState::Active)]);
 
-        let fresh = board.reminder().await.unwrap();
+        let fresh = board.reminder().unwrap();
         assert!(!fresh.contains("earlier in this conversation"), "{fresh}");
 
-        board.start_turn().await;
-        let carried = board.reminder().await.unwrap();
+        board.start_turn();
+        let carried = board.reminder().unwrap();
         assert!(
             carried.contains("earlier in this conversation"),
             "{carried}"
@@ -289,67 +307,95 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_finished_plan_does_not_survive_into_the_next_turn() {
+    #[test]
+    fn a_finished_plan_does_not_survive_into_the_next_turn() {
         // The whole staleness rule. Restating a completed checklist would tell
         // a model asked about something else that its instructions are "say
         // what you did and stop".
         let board = PlanBoard::new();
-        board
-            .set(vec![
-                step("One", StepState::Done),
-                step("Two", StepState::Done),
-            ])
-            .await;
+        board.set(vec![
+            step("One", StepState::Done),
+            step("Two", StepState::Done),
+        ]);
 
-        assert!(!board.start_turn().await, "nothing survived");
-        assert_eq!(board.reminder().await, None);
-        assert!(board.steps().await.is_empty());
+        assert!(!board.start_turn(), "nothing survived");
+        assert_eq!(board.reminder(), None);
+        assert!(board.steps().is_empty());
     }
 
-    #[tokio::test]
-    async fn a_turn_that_writes_a_plan_stops_calling_it_carried() {
+    #[test]
+    fn a_turn_that_writes_a_plan_stops_calling_it_carried() {
         // Otherwise a plan written in turn two would keep apologizing for
         // belonging to turn one for the rest of the conversation.
         let board = PlanBoard::new();
-        board.set(vec![step("One", StepState::Active)]).await;
-        board.start_turn().await;
-        board
-            .set(vec![
-                step("One", StepState::Done),
-                step("Two", StepState::Active),
-            ])
-            .await;
+        board.set(vec![step("One", StepState::Active)]);
+        board.start_turn();
+        board.set(vec![
+            step("One", StepState::Done),
+            step("Two", StepState::Active),
+        ]);
 
-        let reminder = board.reminder().await.unwrap();
+        let reminder = board.reminder().unwrap();
         assert!(
             !reminder.contains("earlier in this conversation"),
             "{reminder}"
         );
     }
 
-    #[tokio::test]
-    async fn starting_a_turn_on_an_empty_board_is_a_no_op() {
+    #[test]
+    fn a_board_knows_when_something_on_it_is_still_open() {
+        // What the agent loop asks when the model stops talking. The case it
+        // exists for is the last one: every step done but the one being worked,
+        // which is where a turn ends when the model reports finishing in prose
+        // instead of closing the list.
         let board = PlanBoard::new();
-        assert!(!board.start_turn().await);
-        assert_eq!(board.reminder().await, None);
+        assert!(!board.unfinished(), "no plan is not an unfinished plan");
+
+        board.set(vec![step("One", StepState::Done)]);
+        assert!(!board.unfinished());
+
+        board.set(vec![
+            step("One", StepState::Done),
+            step("Two", StepState::Active),
+        ]);
+        assert!(board.unfinished());
     }
 
-    #[tokio::test]
-    async fn replacing_the_plan_replaces_it_rather_than_appending() {
+    #[test]
+    fn the_reminder_says_closing_the_list_is_a_call_rather_than_a_sentence() {
+        // The failure this wording is aimed at: a model that finishes the work,
+        // writes "all three steps are done", and never sends the list back — so
+        // the panel reads 2 of 3 forever.
+        let board = PlanBoard::new();
+        board.set(vec![step("One", StepState::Active)]);
+
+        let reminder = board.reminder().unwrap();
+        assert!(
+            reminder.contains("not a sentence in your reply"),
+            "{reminder}"
+        );
+    }
+
+    #[test]
+    fn starting_a_turn_on_an_empty_board_is_a_no_op() {
+        let board = PlanBoard::new();
+        assert!(!board.start_turn());
+        assert_eq!(board.reminder(), None);
+    }
+
+    #[test]
+    fn replacing_the_plan_replaces_it_rather_than_appending() {
         // Whole-list replacement is the contract. A board that accumulated
         // would grow a second copy of every step on the first update.
         let board = PlanBoard::new();
-        board.set(vec![step("One", StepState::Todo)]).await;
-        board
-            .set(vec![
-                step("One", StepState::Done),
-                step("Two", StepState::Active),
-            ])
-            .await;
+        board.set(vec![step("One", StepState::Todo)]);
+        board.set(vec![
+            step("One", StepState::Done),
+            step("Two", StepState::Active),
+        ]);
 
-        assert_eq!(board.steps().await.len(), 2);
-        let reminder = board.reminder().await.unwrap();
+        assert_eq!(board.steps().len(), 2);
+        let reminder = board.reminder().unwrap();
         assert!(!reminder.contains("[ ] One"), "{reminder}");
         assert!(reminder.contains("[x] One"), "{reminder}");
     }

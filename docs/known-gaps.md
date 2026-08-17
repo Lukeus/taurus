@@ -86,13 +86,15 @@ Each entry says what is missing, and what covering it would cost.
   long, exploratory turns where drift actually happens, and on the models that
   take the instruction. Forcing a plan on every multi-step request would spend
   an iteration and a card on turns that never needed one.
-- **A plan can end in progress.** Nothing requires the last `update_plan` of a
-  turn to mark the final step done, and a model that finishes the work and goes
-  straight to its answer leaves a step reading `[>]` that is actually complete.
-  The turn is over so nothing reads it back, but the pinned panel keeps the
-  stale version — and being pinned, it keeps it somewhere you cannot miss.
-  Closing it means the harness deciding a plan is finished, which it cannot
-  know; the panel clears on the next request instead.
+- **A plan can still end in progress — but not silently.** A model that finishes
+  the work and goes straight to its answer leaves a step reading `[>]` that is
+  actually complete, and the pinned panel keeps that stale version somewhere you
+  cannot miss. The harness cannot decide a plan is finished, so it does the one
+  thing it can: when the model tries to end the turn with steps open, it is
+  asked once to send the list back closed, and the turn continues. That is the
+  same lever as the verify nudge and it has the same limit — a model that
+  answers the question without calling `update_plan` gets to stop, and the panel
+  then clears on the next request as before.
 - **A plan does not survive the process.** The board is held per session in
   memory, not written to disk, so an unfinished plan carries across messages and
   is gone if the app restarts. Reopening the conversation redraws the panel from

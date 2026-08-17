@@ -83,6 +83,25 @@ You changed files and have not run anything since. Check that work now — run \
 the project's tests, or build it, or run the thing you changed. If there is \
 genuinely nothing to run against it, say so in one line and stop.";
 
+/// Asked once per turn, when the model stops with steps still open on its plan.
+///
+/// The failure it exists for is not a model that gave up half way. It is a
+/// model that did all the work, marked the last step `active`, ran it, and then
+/// reported finishing *in prose* — leaving a checklist that says 2 of 3 and a
+/// panel that will still say so tomorrow. Telling it in the prompt to close the
+/// list does not fix this any more than telling it to run the tests fixes the
+/// other one: the plan is right there in the system prompt on every iteration,
+/// and it stops anyway.
+///
+/// Phrased with the same way out as [`VERIFY_NUDGE`], for the same reason. A
+/// turn that genuinely stopped early — a question to ask, work it cannot do —
+/// has to be able to say so and finish, or the nudge becomes a round trip spent
+/// re-explaining a plan the model already abandoned on purpose.
+const PLAN_NUDGE: &str = "\
+Your plan still has steps that are not marked done. If you finished them, call \
+update_plan now with the whole list and every finished step marked 'done'. If \
+you have stopped without finishing them, say why in one line and stop.";
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -209,6 +228,9 @@ impl Agent {
         };
         let mut unverified = false;
         let mut nudged = false;
+        // Tracked separately from `nudged`: they answer different questions and
+        // a turn can earn both. See `PLAN_NUDGE`.
+        let mut plan_nudged = false;
 
         loop {
             if self.tools.cancel.is_cancelled() {
@@ -285,6 +307,17 @@ impl Agent {
                     nudged = true;
                     info!("asking the model to check work it has not verified");
                     session.push(Message::user(VERIFY_NUDGE));
+                    continue;
+                }
+
+                // After the verify nudge, not before: checking the work can
+                // change what the plan should say, and a turn asked to close
+                // its list and then told to go and run something would have
+                // closed it one round too early.
+                if !plan_nudged && self.plan.as_ref().is_some_and(|b| b.unfinished()) {
+                    plan_nudged = true;
+                    info!("asking the model to close the steps it left open");
+                    session.push(Message::user(PLAN_NUDGE));
                     continue;
                 }
 
@@ -426,7 +459,7 @@ impl Agent {
         session: &Session,
         ui: &mpsc::Sender<UiEvent>,
     ) -> Result<(Message, TokenUsage, StopReason), FailedAttempt> {
-        let request = self.build_request(session).await;
+        let request = self.build_request(session);
         let (tx, mut rx) = mpsc::channel(128);
         let provider = self.provider.clone();
         let cancel = self.tools.cancel.clone();
@@ -472,11 +505,11 @@ impl Agent {
 
     /// Assembles the request for one iteration.
     ///
-    /// Async only because of the plan: the checklist is re-read here rather
-    /// than captured when the turn started, which is the entire point of it.
-    /// A model on iteration nine gets the plan as it stands on iteration nine,
-    /// including the step it marked done on iteration eight.
-    async fn build_request(&self, session: &Session) -> ChatRequest {
+    /// The plan is re-read here rather than captured when the turn started,
+    /// which is the entire point of it: a model on iteration nine gets the plan
+    /// as it stands on iteration nine, including the step it marked done on
+    /// iteration eight.
+    fn build_request(&self, session: &Session) -> ChatRequest {
         let tools = if self.config.allowed_tools.is_empty() {
             self.registry.definitions()
         } else {
@@ -485,7 +518,7 @@ impl Agent {
 
         ChatRequest {
             model: session.model.clone(),
-            system: self.system_prompt().await,
+            system: self.system_prompt(),
             messages: session.messages.clone(),
             tools,
             temperature: self.config.temperature,
@@ -505,10 +538,10 @@ impl Agent {
     /// reading nine versions of its own checklist and has to work out which one
     /// is current. The system prompt is rebuilt every iteration, so there is
     /// only ever one, and it is always the live one.
-    async fn system_prompt(&self) -> Option<String> {
+    fn system_prompt(&self) -> Option<String> {
         let base = self.config.system_prompt.trim();
         let plan = match &self.plan {
-            Some(board) => board.reminder().await,
+            Some(board) => board.reminder(),
             None => None,
         };
 

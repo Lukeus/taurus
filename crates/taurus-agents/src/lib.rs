@@ -2,8 +2,8 @@
 //!
 //! An agent is a markdown file with YAML frontmatter — the body is its system
 //! prompt — discovered from `~/.taurus/agents` and `<workspace>/.taurus/agents`
-//! on the same shadowing rule skills use. `explorer` and `worker` are compiled
-//! in and can be replaced by a file of the same name.
+//! on the same shadowing rule skills use. `explorer`, `worker`, and `coder` are
+//! compiled in and can be replaced by a file of the same name.
 //!
 //! This crate is pure data: it parses, validates, and discovers, and it knows
 //! nothing about providers, registries, or the tool that spawns anything. That
