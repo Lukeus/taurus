@@ -28,6 +28,7 @@ import type { Instructions } from "../bindings/Instructions";
 import type { KeyStatus } from "../bindings/KeyStatus";
 import type { McpEnvironment } from "../bindings/McpEnvironment";
 import type { McpServerDraft } from "../bindings/McpServerDraft";
+import type { McpServerRef } from "../bindings/McpServerRef";
 import type { McpServerView } from "../bindings/McpServerView";
 import type { McpTransport } from "../bindings/McpTransport";
 import type { McpValue } from "../bindings/McpValue";
@@ -85,6 +86,7 @@ export type {
   KeyStatus,
   McpEnvironment,
   McpServerDraft,
+  McpServerRef,
   McpServerView,
   McpTransport,
   McpValue,
@@ -267,12 +269,18 @@ export const mcpEnvironment = () => invoke<McpEnvironment>("mcp_environment");
 /**
  * Writes one server to its layer's `mcp.json` and reconnects.
  *
- * `previousName` renames: the new entry is written and the old one removed. All
- * of these return the fresh listing, so a caller never has to follow a write
- * with a read that could disagree with it.
+ * `previous` is the entry being edited, and is sent whenever this is an edit
+ * rather than an add. It is what a rename or a move between layers resolves
+ * against: the stored secrets come from there, and it is removed afterwards if
+ * the draft no longer lives at that name and scope.
+ *
+ * All of these return the fresh listing, so a caller never has to follow a
+ * write with a read that could disagree with it.
  */
-export const saveMcpServer = (draft: McpServerDraft, previousName?: string) =>
-  invoke<McpServerView[]>("save_mcp_server", { draft, previousName });
+export const saveMcpServer = (
+  draft: McpServerDraft,
+  previous?: McpServerRef,
+) => invoke<McpServerView[]>("save_mcp_server", { draft, previous });
 
 export const deleteMcpServer = (scope: Scope, name: string) =>
   invoke<McpServerView[]>("delete_mcp_server", { scope, name });
@@ -291,8 +299,10 @@ export const setMcpServerDisabled = (
  * is written — and nothing is registered, so testing cannot disturb a server
  * that is currently working.
  */
-export const testMcpServer = (draft: McpServerDraft) =>
-  invoke<string[]>("test_mcp_server", { draft });
+export const testMcpServer = (
+  draft: McpServerDraft,
+  previous?: McpServerRef,
+) => invoke<string[]>("test_mcp_server", { draft, previous });
 
 /**
  * Reconnects every MCP server without rescanning skills, agents, or providers.

@@ -77,7 +77,15 @@ const type = async (host: HTMLElement, label: string, value: string) => {
 
 const saved = () =>
   invoke.mock.calls.find(([command]) => command === "save_mcp_server")?.[1] as
-    | { draft: Record<string, unknown>; previousName?: string }
+    | {
+        draft: Record<string, unknown>;
+        previous?: { scope: string; name: string };
+      }
+    | undefined;
+
+const tested = () =>
+  invoke.mock.calls.find(([command]) => command === "test_mcp_server")?.[1] as
+    | { previous?: { scope: string; name: string } }
     | undefined;
 
 beforeEach(() => {
@@ -141,12 +149,15 @@ describe("saving", () => {
     unmount();
   });
 
-  it("names the old entry only when the name actually changed", async () => {
-    // Passing it unconditionally would make every save a delete of the entry it
-    // had just written.
+  it("always names the entry it is editing, so a secret is never lost", async () => {
+    // Sent on every save rather than only on a rename. It is what the backend
+    // reads the held-back token from, and sending it only when something had
+    // changed meant a plain save could not find the secret it was meant to keep.
+    // Whether the old entry is *removed* is then the backend's call, made by
+    // comparing it with where the draft ended up.
     const unchanged = mount(server());
     await press(unchanged.host, "Save and reconnect");
-    expect(saved()?.previousName).toBeUndefined();
+    expect(saved()?.previous).toEqual({ scope: "global", name: "github" });
     unchanged.unmount();
 
     invoke.mockReset();
@@ -155,8 +166,18 @@ describe("saving", () => {
     const renamed = mount(server());
     await type(renamed.host, "Name", "gh");
     await press(renamed.host, "Save and reconnect");
-    expect(saved()?.previousName).toBe("github");
+    expect(saved()?.draft.name).toBe("gh");
+    expect(saved()?.previous).toEqual({ scope: "global", name: "github" });
     renamed.unmount();
+  });
+
+  it("sends no previous entry when adding, because there is none", async () => {
+    const { host, unmount } = mount(null);
+    await type(host, "Name", "filesystem");
+    await type(host, "Command", "npx -y pkg");
+    await press(host, "Add and connect");
+    expect(saved()?.previous).toBeUndefined();
+    unmount();
   });
 
   it("will not save an entry that cannot work, and says why", async () => {
@@ -189,6 +210,10 @@ describe("testing before saving", () => {
     expect(
       invoke.mock.calls.some(([command]) => command === "save_mcp_server"),
     ).toBe(false);
+    // Testing needs the stored credential as much as saving does, or checking an
+    // entry whose token was not retyped would fail on the one thing the panel
+    // deliberately never showed it.
+    expect(tested()?.previous).toEqual({ scope: "global", name: "github" });
     unmount();
   });
 

@@ -3,6 +3,7 @@ import { useState } from "react";
 import * as api from "../lib/api";
 import type {
   McpServerDraft,
+  McpServerRef,
   McpServerView,
   McpTransport,
   McpValue,
@@ -82,12 +83,23 @@ export function McpServerEditor({
 
   const problem = draftProblem(resolved());
 
+  /*
+   * The entry being edited, sent on every save and every test rather than only
+   * on a rename. It is what the backend reads the held-back secrets from, and
+   * what it removes when the draft has moved — so a rename, a change of layer,
+   * and neither are all one code path. Sending it only when something changed
+   * meant a plain save could not find the token it was meant to keep.
+   */
+  const previous: McpServerRef | undefined = server
+    ? { scope: server.scope, name: server.name }
+    : undefined;
+
   const test = async () => {
     setTesting(true);
     setResult(null);
     setError(null);
     try {
-      setResult(await api.testMcpServer(resolved()));
+      setResult(await api.testMcpServer(resolved(), previous));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -99,12 +111,7 @@ export function McpServerEditor({
     setSaving(true);
     setError(null);
     try {
-      // The old name only when it changed: a rename writes the new entry and
-      // removes the old one, and passing it unconditionally would make every
-      // save a delete of the thing it just wrote.
-      const renamed =
-        server && server.name !== resolved().name.trim() ? server.name : undefined;
-      onSaved(await api.saveMcpServer(resolved(), renamed));
+      onSaved(await api.saveMcpServer(resolved(), previous));
     } catch (e) {
       setError(String(e));
       setSaving(false);

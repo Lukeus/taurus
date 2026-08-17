@@ -25,7 +25,7 @@ pub use config::{ProviderConfig, ProviderKind, Scope, Settings, Theme};
 pub use git::{Commit, Repo, RepoStatus};
 pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};
 pub use instructions::{Instructions, InstructionsOrigin, InstructionsSource, InstructionsTier};
-pub use mcp_view::{McpServerDraft, McpServerView, McpTransport, McpValue};
+pub use mcp_view::{McpServerDraft, McpServerRef, McpServerView, McpTransport, McpValue};
 pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;
 pub use sessions::{SessionLog, SessionMeta};

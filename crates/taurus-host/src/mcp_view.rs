@@ -183,6 +183,21 @@ impl McpServerView {
     }
 }
 
+/// The entry a save or a test is working from, when that is not simply the one
+/// being written.
+///
+/// A rename and a move between layers are the same operation from here: the
+/// entry that has to be read for its held-back secrets, and then removed, is not
+/// the one at the draft's own name and scope. Carrying both together rather than
+/// as two optional fields is what stops one being passed without the other,
+/// which would look up the right name in the wrong file.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct McpServerRef {
+    pub scope: Scope,
+    pub name: String,
+}
+
 /// What the panel sends when a server is saved.
 ///
 /// Separate from [`McpServerView`] because it carries less: no status, no
@@ -210,6 +225,17 @@ pub struct McpServerDraft {
 }
 
 impl McpServerDraft {
+    /// Where this draft would live if it were not replacing anything.
+    ///
+    /// The fallback when the panel sends no `previous`, which is what adding a
+    /// server does.
+    pub fn origin(&self) -> McpServerRef {
+        McpServerRef {
+            scope: self.scope,
+            name: self.name.trim().to_string(),
+        }
+    }
+
     /// The entry to write, with held-back secrets taken from `existing`.
     pub fn to_config(&self, existing: Option<&ServerConfig>) -> ServerConfig {
         match self.transport {
@@ -381,6 +407,27 @@ mod tests {
             panic!("a stdio draft must write a stdio server");
         };
         assert_eq!(env["TOKEN"], "${GITHUB_TOKEN}");
+    }
+
+    #[test]
+    fn a_draft_that_replaces_nothing_points_at_its_own_name_and_layer() {
+        // What a save falls back to when the panel sends no `previous`, which is
+        // what adding a server does. Trimmed, because the name it is looked up
+        // by has to be the name it is written under.
+        let draft = McpServerDraft {
+            name: "  github  ".into(),
+            scope: Scope::Workspace,
+            transport: McpTransport::Stdio,
+            command: "npx".into(),
+            args: vec![],
+            env: vec![],
+            url: String::new(),
+            headers: vec![],
+            disabled: false,
+        };
+        let origin = draft.origin();
+        assert_eq!(origin.name, "github");
+        assert_eq!(origin.scope, Scope::Workspace);
     }
 
     #[test]

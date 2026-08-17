@@ -25,8 +25,8 @@ use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
-    McpServerView, Problem, ProviderConfig, Repo, RepoStatus, Restored, SessionLog, SessionMeta,
-    Settings, Theme, TurnChange, TurnRef,
+    McpServerRef, McpServerView, Problem, ProviderConfig, Repo, RepoStatus, Restored, SessionLog,
+    SessionMeta, Settings, Theme, TurnChange, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -712,32 +712,42 @@ pub async fn mcp_environment() -> CmdResult<McpEnvironment> {
 /// started with — a server configured and not there — reproduced in the UI meant
 /// to fix it.
 ///
-/// `previous_name` is the name being replaced, when a rename is part of the
-/// save. Renaming writes the new entry and removes the old one; without it the
-/// old name would stay behind as a second copy of the same server.
+/// `previous` is the entry being replaced, which the panel sends whenever it is
+/// editing rather than adding. It is what a rename or a move between layers is
+/// resolved against: the stored secrets are read from there, and it is removed
+/// afterwards if the draft no longer lives at that name and scope.
 #[tauri::command]
 pub async fn save_mcp_server(
     state: State<'_, Arc<AppState>>,
     draft: McpServerDraft,
-    previous_name: Option<String>,
+    previous: Option<McpServerRef>,
 ) -> CmdResult<Vec<McpServerView>> {
     let workspace = state.host.workspace().await;
-
-    // The stored entry, so a held-back secret survives a save that did not
-    // retype it. Read from the layer being written, not from the merged view: a
-    // workspace save must not inherit the global server's token.
-    let existing = taurus_host::config::scope_dir(draft.scope, Some(&workspace))
-        .and_then(|dir| taurus_mcp::load(&dir).ok())
-        .and_then(|layer| layer.servers.get(draft.name.trim()).cloned());
-    let server = draft.to_config(existing.as_ref());
+    let source = previous.clone().unwrap_or_else(|| draft.origin());
+    let server = draft.to_config(stored(&workspace, &source).as_ref());
 
     taurus_host::config::save_mcp_server(draft.scope, Some(&workspace), &draft.name, &server)?;
-    if let Some(previous) = previous_name.filter(|p| p.trim() != draft.name.trim()) {
-        taurus_host::config::delete_mcp_server(draft.scope, Some(&workspace), previous.trim())?;
+
+    // Only when it actually moved. Deleting unconditionally would make every
+    // save a delete of the entry it had just written.
+    if source.scope != draft.scope || source.name.trim() != draft.name.trim() {
+        taurus_host::config::delete_mcp_server(source.scope, Some(&workspace), source.name.trim())?;
     }
 
     state.host.reload_mcp().await;
     Ok(state.host.mcp_servers().await)
+}
+
+/// One layer's stored entry for a server, for the secrets the panel was never
+/// given.
+///
+/// Read from the layer that entry actually lives in rather than from the merged
+/// view: a workspace server must not silently inherit the global server's token
+/// because the two share a name.
+fn stored(workspace: &std::path::Path, entry: &McpServerRef) -> Option<taurus_mcp::ServerConfig> {
+    taurus_host::config::scope_dir(entry.scope, Some(workspace))
+        .and_then(|dir| taurus_mcp::load(&dir).ok())
+        .and_then(|layer| layer.servers.get(entry.name.trim()).cloned())
 }
 
 #[tauri::command]
@@ -773,18 +783,18 @@ pub async fn set_mcp_server_disabled(
 pub async fn test_mcp_server(
     state: State<'_, Arc<AppState>>,
     draft: McpServerDraft,
+    previous: Option<McpServerRef>,
 ) -> CmdResult<Vec<String>> {
     let workspace = state.host.workspace().await;
     // A secret the form never had still has to reach the server being tested, or
-    // testing an unmodified entry would fail on a credential the file holds.
-    let existing = taurus_host::config::scope_dir(draft.scope, Some(&workspace))
-        .and_then(|dir| taurus_mcp::load(&dir).ok())
-        .and_then(|layer| layer.servers.get(draft.name.trim()).cloned());
+    // testing an entry whose credential was not retyped would fail on the one
+    // thing the panel deliberately never showed it. Resolved through `previous`
+    // for the same reason a save is: a rename in the form must not lose the
+    // token belonging to the entry it came from.
+    let source = previous.unwrap_or_else(|| draft.origin());
+    let server = draft.to_config(stored(&workspace, &source).as_ref());
 
-    state
-        .host
-        .test_mcp_server(&draft.name, &draft.to_config(existing.as_ref()))
-        .await
+    state.host.test_mcp_server(&draft.name, &server).await
 }
 
 /// Reconnects every MCP server without rescanning anything else.
