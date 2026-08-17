@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { breakdown, group, span } from "./Transcript";
+import { breakdown, group, span, turns } from "./Transcript";
 import type { Entry } from "../state/store";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -178,5 +178,67 @@ describe("how long a run took", () => {
     expect(
       span([tool("t1", "grep"), tool("t2", "edit_file", { startedAt: 5, endedAt: 9 })]),
     ).toBeNull();
+  });
+});
+
+const ask = (id: string, text: string): Entry => ({ kind: "user", id, text });
+
+describe("cutting the transcript into turns", () => {
+  it("heads each turn with the question that began it", () => {
+    const [first, second] = turns([
+      ask("u1", "why is it slow?"),
+      say("a1", "Timing it."),
+      ask("u2", "and now?"),
+      say("a2", "Better."),
+    ]);
+    expect(first.prompt?.id).toBe("u1");
+    expect(first.body).toEqual([expect.objectContaining({ id: "a1" })]);
+    expect(second.prompt?.id).toBe("u2");
+    expect(second.body).toEqual([expect.objectContaining({ id: "a2" })]);
+  });
+
+  it("folds a turn's tool calls into runs, as the flat list did", () => {
+    // The two groupings have to agree: a run is still a run inside a turn, and
+    // the rail hangs one segment off it rather than one per call.
+    const [turn] = turns([
+      ask("u1", "build it"),
+      tool("t1", "grep"),
+      tool("t2", "read_file"),
+      say("a1", "Done."),
+    ]);
+    expect(turn.body).toHaveLength(2);
+    expect(turn.body[0]).toEqual([
+      expect.objectContaining({ id: "t1" }),
+      expect.objectContaining({ id: "t2" }),
+    ]);
+  });
+
+  it("does not carry a run across the question that interrupted it", () => {
+    const [first, second] = turns([
+      ask("u1", "one"),
+      tool("t1", "grep"),
+      ask("u2", "two"),
+      tool("t2", "grep"),
+    ]);
+    expect(first.body).toEqual([[expect.objectContaining({ id: "t1" })]]);
+    expect(second.body).toEqual([[expect.objectContaining({ id: "t2" })]]);
+  });
+
+  it("puts what precedes the first question in a turn with no question", () => {
+    // The note a session opens with when its model has no native tool calling.
+    // A thread hanging off nothing would say it belonged to something nobody
+    // asked, so this turn draws no rail — see `.turn.unprompted`.
+    const [preamble, asked] = turns([
+      { kind: "notice", id: "n1", tone: "info", text: "prompted tools" },
+      ask("u1", "go"),
+      say("a1", "ok"),
+    ]);
+    expect(preamble.prompt).toBeNull();
+    expect(preamble.body).toEqual([expect.objectContaining({ id: "n1" })]);
+    expect(asked.prompt?.id).toBe("u1");
+  });
+
+  it("has nothing to draw for an empty conversation", () => {
+    expect(turns([])).toEqual([]);
   });
 });

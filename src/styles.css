@@ -76,6 +76,19 @@
      mark where a surface ends. */
   --border: var(--lk-line);
   --rule: var(--lk-line);
+  /*
+   * The transcript's thread — the rail down a turn and the segments tying its
+   * steps to it. A step up from --rule, and the one place that needs to be:
+   * --rule marks where a surface ends and is read *with* the edge it sits on,
+   * while this is a line across open background with nothing beside it to give
+   * it away. At the hairline weight it has to carry itself, and at --rule it
+   * disappeared on the light theme entirely.
+   *
+   * Mixed toward transparent rather than named per palette, so it composites
+   * against whichever background is behind it and stays the same relative
+   * weight under both.
+   */
+  --thread: color-mix(in srgb, var(--text-faint) 50%, transparent);
 
   --text: var(--lk-text);
   --text-dim: var(--lk-text-dim);
@@ -813,7 +826,9 @@ body.resizing * {
   padding: 24px 32px 8px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  /* Wider than the gap between the steps inside a turn, which is what makes
+     one exchange read as one object rather than as a run of siblings. */
+  gap: 34px;
 }
 /*
  * Entries keep their size; the column scrolls.
@@ -896,16 +911,94 @@ body.resizing * {
   color: var(--text-faint);
 }
 
-.entry.user {
+/* ------------------------------------------------------------------ a turn */
+
+/*
+ * One question and everything it caused, threaded.
+ *
+ * The question used to sit against the right margin and its answer against the
+ * left, which meant the two halves of an exchange shared no edge, nothing said
+ * where one turn ended and the next began, and a nine-step turn was ten
+ * siblings with equal claim on the page. Here a single rail runs from the
+ * question down past everything it produced, and each step is tied to it by a
+ * segment — so the shape of a turn is legible without reading it, and the
+ * answer is visibly the answer to *that* question.
+ *
+ * The geometry is two numbers, declared once: how wide the marker column is,
+ * and where the rail sits inside it. Every marker below is positioned off those
+ * two, so the rail and the segments that meet it cannot drift apart.
+ */
+.turn {
+  --gutter: 30px;
+  --rail: 10px;
+
+  position: relative;
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  gap: 18px;
+  padding-left: var(--gutter);
+  /* The measure is the content's, not the column's, so the reading width is
+     the same as it was before the gutter existed. */
+  max-width: calc(80ch + var(--gutter));
 }
-.entry.user .bubble {
-  background: var(--bg-active);
-  border-radius: var(--r-xl) var(--r-xl) 4px var(--r-xl);
-  padding: 10px 14px;
-  max-width: 70%;
-  font-size: 14.5px;
+/*
+ * The rail.
+ *
+ * Starts on the question's own marker rather than at the top of the box, so the
+ * thread visibly begins at the thing that began it. It runs to the foot of the
+ * last step: a turn ending in a tall card gets a bracket down its side, which
+ * is the right reading — the card is part of that answer.
+ */
+.turn::before {
+  content: "";
+  position: absolute;
+  left: var(--rail);
+  top: 0.75em;
+  bottom: 0;
+  width: 1px;
+  background: var(--thread);
+}
+/* Nothing began it, so there is no thread to draw. */
+.turn.unprompted {
+  padding-left: 0;
+}
+.turn.unprompted::before {
+  content: none;
+}
+
+.turn-step {
+  position: relative;
+}
+/* The segment tying one step to the rail. */
+.turn-step::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--rail) - var(--gutter));
+  top: 0.75em;
+  width: calc(var(--gutter) - var(--rail) - 10px);
+  height: 1px;
+  background: var(--thread);
+}
+
+/*
+ * The question, which is where the turn starts and what it is scanned for. A
+ * node rather than a segment, in the one colour nothing else in the transcript
+ * uses, so a long conversation can be skimmed for the places somebody asked
+ * something.
+ */
+.turn-step.prompt::before {
+  left: calc(var(--rail) - var(--gutter) - 3px);
+  top: calc(0.75em - 3.5px);
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.prompt-text {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.55;
+  color: var(--text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1983,11 +2076,10 @@ body.resizing * {
   opacity: 1;
 }
 
-/* In the transcript the strip sits above the bubble and shares its alignment,
+/* In the transcript the strip sits above the question and shares its left edge,
    so the picture and the question read as one message. */
-.entry.user .attachments {
-  justify-content: flex-end;
-  margin-bottom: 6px;
+.turn-step.prompt .attachments {
+  margin-bottom: 8px;
 }
 
 /* The skill menu sits inside the composer box and above the textarea, so it
