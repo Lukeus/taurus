@@ -321,6 +321,19 @@ fn is_executable(path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
 
+    /// Joins with whatever separates PATH entries on this platform.
+    ///
+    /// `:` on unix and `;` on Windows, and the merge is written in terms of
+    /// `split_paths`/`join_paths` rather than either — so a test that hardcoded
+    /// one would be asserting against the wrong string on the other platform
+    /// while the code under it was correct.
+    fn path(entries: &[&str]) -> String {
+        std::env::join_paths(entries)
+            .expect("test entries must be joinable")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     #[test]
     fn the_answer_is_taken_from_between_the_markers() {
         // The reason the markers exist: an interactive shell prints whatever the
@@ -345,8 +358,11 @@ mod tests {
         // Someone who puts ~/.local/bin ahead of /usr/bin means the one in
         // ~/.local/bin. Appending the shell's entries to launchd's instead would
         // silently invert that.
-        let (merged, added) = merge("/home/u/.local/bin:/usr/bin", "/usr/bin:/sbin");
-        assert_eq!(merged, "/home/u/.local/bin:/usr/bin:/sbin");
+        let (merged, added) = merge(
+            &path(&["/home/u/.local/bin", "/usr/bin"]),
+            &path(&["/usr/bin", "/sbin"]),
+        );
+        assert_eq!(merged, path(&["/home/u/.local/bin", "/usr/bin", "/sbin"]));
         assert_eq!(added, vec!["/home/u/.local/bin"]);
     }
 
@@ -355,8 +371,8 @@ mod tests {
         // The merge only ever adds. A shell whose PATH is missing a directory
         // the app was started with must not take it away — that would break the
         // case this is meant to fix in the other direction.
-        let (merged, added) = merge("/opt/homebrew/bin", "/usr/bin:/bin");
-        assert_eq!(merged, "/opt/homebrew/bin:/usr/bin:/bin");
+        let (merged, added) = merge("/opt/homebrew/bin", &path(&["/usr/bin", "/bin"]));
+        assert_eq!(merged, path(&["/opt/homebrew/bin", "/usr/bin", "/bin"]));
         assert_eq!(added, vec!["/opt/homebrew/bin"]);
     }
 
@@ -366,8 +382,9 @@ mod tests {
         // has nothing to contribute. Worth asserting because "added" is what the
         // panel shows, and a list of directories that were already there would
         // read as a fix that was needed.
-        let (merged, added) = merge("/usr/bin:/bin", "/usr/bin:/bin");
-        assert_eq!(merged, "/usr/bin:/bin");
+        let both = path(&["/usr/bin", "/bin"]);
+        let (merged, added) = merge(&both, &both);
+        assert_eq!(merged, both);
         assert!(added.is_empty());
     }
 

@@ -644,6 +644,13 @@ mod tests {
     }
 
     #[tokio::test]
+    // Unix only, because on Windows a bare command goes through the `cmd /C`
+    // shim that `spawn_command` applies for batch-script launchers. `cmd` starts
+    // perfectly well and *it* reports the missing program, so the spawn does not
+    // fail with `NotFound` and there is nothing here to recognise. Windows also
+    // does not have the problem this message is for: a GUI process there
+    // inherits the full user PATH from the registry.
+    #[cfg(unix)]
     async fn a_missing_program_is_reported_against_the_path_that_was_searched() {
         // The failure this whole feature keeps tripping over. `npx` is spelled
         // correctly and works in a terminal; an app started from the Dock cannot
@@ -684,10 +691,16 @@ mod tests {
             )]),
             disabled: false,
         };
-        // Expansion happens before the spawn, so the failure that comes back is
-        // about the missing program rather than about the variable.
+        // A set variable expands and gets out of the way: what comes back is a
+        // complaint about the program, never about the variable. Asserted as the
+        // absence of the variable's name rather than the presence of any
+        // particular message, because how a missing program fails differs by
+        // platform — see the test above.
         let error = probe("t", &server).await.unwrap_err();
-        assert!(error.contains("PATH"), "{error}");
+        assert!(
+            !error.contains("TAURUS_TEST_MCP_STDIO_TOKEN"),
+            "a variable that is set must not be reported as a problem: {error}"
+        );
 
         let unset = ServerConfig::Stdio {
             command: "echo".into(),
