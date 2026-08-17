@@ -14,6 +14,7 @@ import {
 } from "./components/ResizeHandle";
 import { Settings } from "./components/Settings";
 import { AgentsDrawer } from "./components/AgentsDrawer";
+import { McpDrawer } from "./components/McpDrawer";
 import { SkillsDrawer } from "./components/SkillsDrawer";
 import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
@@ -24,6 +25,7 @@ import type {
   CommandSummary,
   ModelInfo,
   ProviderConfig,
+  ServerStatus,
   Theme,
 } from "./lib/api";
 import { basename, plural } from "./lib/format";
@@ -37,6 +39,7 @@ export default function App() {
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
   const plan = pinnedPlan(store.entries);
@@ -154,6 +157,7 @@ export default function App() {
         busy={store.busy}
         skillCount={store.status?.skill_count ?? null}
         agentCount={store.status?.agent_count ?? null}
+        mcp={mcpCounts(store.status?.mcp_servers)}
         health={health(store.status?.providers.length, providerId, models)}
         theme={theme ?? "system"}
         onPickWorkspace={pickWorkspace}
@@ -163,6 +167,7 @@ export default function App() {
         onTheme={chooseTheme}
         onSkills={() => setSkillsOpen(true)}
         onAgents={() => setAgentsOpen(true)}
+        onMcp={() => setMcpOpen(true)}
         onSettings={() => setSettingsOpen(true)}
       />
 
@@ -316,6 +321,7 @@ export default function App() {
       )}
       {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
       {agentsOpen && <AgentsDrawer onClose={() => setAgentsOpen(false)} />}
+      {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
     </div>
   );
@@ -404,6 +410,28 @@ export function health(
   if (!providerId || models === null) return { state: "unknown" };
   if (models === "failed") return { state: "unreachable", id: providerId };
   return { state: "connected", id: providerId, models: models.length };
+}
+
+/**
+ * The two numbers the rail shows for MCP: how many servers, and how many of
+ * them are answering.
+ *
+ * Both, rather than a total, because they say different things. A count alone
+ * cannot distinguish four working servers from four broken ones, and the whole
+ * complaint this feature answers is a server that is configured and not there —
+ * which is exactly the case where those two numbers differ.
+ *
+ * `null` before the first status has landed, so the rail shows no badge rather
+ * than a zero it would have to take back.
+ */
+export function mcpCounts(
+  servers: ServerStatus[] | undefined,
+): { total: number; connected: number } | null {
+  if (!servers) return null;
+  return {
+    total: servers.length,
+    connected: servers.filter((s) => s.connected).length,
+  };
 }
 
 /**

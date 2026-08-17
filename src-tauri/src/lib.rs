@@ -35,6 +35,18 @@ pub fn run() {
         .with_target(true)
         .init();
 
+    // Before the builder, and so before anything is spawned: an app started from
+    // the Dock inherits launchd's PATH, which is four system directories and
+    // nothing a user has installed. Every child this process starts afterwards
+    // inherits the repaired one — MCP servers, skill interpreters, `run_command`
+    // — and anything started before it would not. See `taurus_tools::login_path`.
+    let path = taurus_tools::login_path::adopt();
+    match &path.skipped {
+        Some(reason) => tracing::info!(reason = %reason, "login shell PATH not read"),
+        None if path.added.is_empty() => tracing::info!("PATH already complete"),
+        None => tracing::info!(added = ?path.added, "PATH extended from the login shell"),
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -100,6 +112,13 @@ pub fn run() {
             commands::clear_search_key,
             commands::reload_config,
             commands::open_mcp_config,
+            commands::list_mcp_servers,
+            commands::mcp_environment,
+            commands::save_mcp_server,
+            commands::delete_mcp_server,
+            commands::set_mcp_server_disabled,
+            commands::test_mcp_server,
+            commands::reload_mcp,
             commands::list_checkpoints,
             commands::rewind_to,
             commands::turn_changes,

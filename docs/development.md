@@ -91,7 +91,9 @@ cargo run -p taurus-skills --example synthesis -- qwen3.6:27b
 # Delegation: define a scoped agent, delegate to it, prove it stayed in scope.
 cargo run -p taurus-agents --example delegate -- qwen3.6:27b
 
-# MCP: connect, list tools, call one through the registry.
+# MCP: repair the PATH the way the app does, connect, list tools, call one
+# through the registry. Reports entries that would not parse, so a typo does not
+# pass in silence now that it no longer takes its neighbours down with it.
 cargo run -p taurus-mcp --example probe -- path/to/mcp.json
 
 # Web: one real search, then fetch the first result it returns.
@@ -142,7 +144,7 @@ The CLI doubles as a live check on the whole stack:
 taurus tools                    # what the agent can reach
 taurus skills check             # non-zero exit if a skill is broken or degraded
 taurus agents check             # non-zero exit if an agent will not load or run as written
-taurus mcp                      # non-zero exit if a server failed to connect
+taurus mcp                      # non-zero exit if a server failed to connect or would not parse
 taurus key status               # where each provider's API key comes from
 ```
 

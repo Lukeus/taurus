@@ -27,6 +27,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       busy={false}
       skillCount={12}
       agentCount={3}
+      mcp={{ total: 2, connected: 2 }}
       health={{ state: "connected", id: "ollama", models: 4 }}
       theme="dark"
       onPickWorkspace={() => {}}
@@ -36,6 +37,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       onTheme={() => {}}
       onSkills={() => {}}
       onAgents={() => {}}
+      onMcp={() => {}}
       onSettings={() => {}}
       {...props}
     />,
@@ -199,18 +201,43 @@ describe("provider health", () => {
 });
 
 describe("the foot links", () => {
-  it("carries both counts, so neither library is behind an unlabelled door", () => {
-    const html = draw({ skillCount: 12, agentCount: 3 });
+  it("carries every count, so no library is behind an unlabelled door", () => {
+    const html = draw({
+      skillCount: 12,
+      agentCount: 3,
+      mcp: { total: 4, connected: 4 },
+    });
     expect(html).toContain("Skills");
     expect(html).toContain(">12<");
     expect(html).toContain("Agents");
     expect(html).toContain(">3<");
+    expect(html).toContain("MCP");
+    expect(html).toContain(">4<");
+  });
+
+  it("marks the MCP count when a configured server is not answering", () => {
+    // The state this whole row exists for. A bare "4" cannot tell four working
+    // servers from four broken ones, and a server that is configured and not
+    // there is the failure people actually hit.
+    const html = draw({ mcp: { total: 4, connected: 3 } });
+    expect(html).toContain("count warn");
+    expect(html).toContain("3/4");
+    // The fraction carries it without colour, for a screenshot and for a reader
+    // who cannot tell amber from grey.
+    expect(html).toContain("not connected");
+  });
+
+  it("shows no MCP badge at all when nothing is configured", () => {
+    // A "0" beside MCP reads as a failure. Nothing configured is not a problem.
+    const html = draw({ mcp: { total: 0, connected: 0 } });
+    expect(html).toContain("MCP");
+    expect(html).toContain("None configured yet");
   });
 
   it("omits a count it does not have yet rather than showing a zero", () => {
     // Before the first status arrives there is no roster to report, and "0
     // agents" would be wrong: two ship with the harness.
-    const html = draw({ skillCount: null, agentCount: null });
+    const html = draw({ skillCount: null, agentCount: null, mcp: null });
     expect(html).toContain("Agents");
     expect(html).not.toContain("count");
   });

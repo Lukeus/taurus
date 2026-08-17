@@ -145,6 +145,39 @@ export function DelegateIcon({ size }: { size?: number }) {
 }
 
 /**
+ * MCP servers: an outward plug on a lead.
+ *
+ * The row it joins already carries a star and a branching tree, so this one has
+ * to say "something outside this app, connected to it" without being either. A
+ * plug is the one shape that reads that way at 13px, and it is the metaphor the
+ * protocol's own ecosystem uses — so nobody has to learn it here.
+ */
+export function PlugIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path
+        d="M6 1.6v3.2M10 1.6v3.2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M3.7 4.8h8.6v2.1a4.3 4.3 0 01-4.3 4.3 4.3 4.3 0 01-4.3-4.3V4.8z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8 11.2v3.2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </Icon>
+  );
+}
+
+/**
  * Settings, as sliders rather than the design's gear.
  *
  * The gear it replaces was a small circle with eight radial spokes, which at

@@ -40,6 +40,10 @@ const SHOTS = [
   { name: "app-light", shot: "chart", theme: "light" },
   { name: "questions", shot: "questions", theme: "dark" },
   { name: "permission-diff", shot: "permission", theme: "dark" },
+  // Shown with two servers working, one that cannot find its program, and one
+  // switched off — because the panel exists for the ones that are not working,
+  // and a frame of four green rows would say nothing about what it is for.
+  { name: "mcp", shot: "mcp", theme: "dark" },
 ];
 
 const CHROME = [

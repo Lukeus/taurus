@@ -121,6 +121,10 @@ web search.
 - Local Ollama, anything OpenAI-compatible, Anthropic, or Google Gemini.
 - Keys live in the OS keychain or an env var, never in a config file.
 - Everything the Settings drawer writes is a plain file the CLI reads too.
+- [**MCP servers**](docs/configuration.md#mcp-servers) — add and test them in
+  the app, in the same `mcpServers` format Claude Desktop uses.
+
+![The MCP panel](docs/screenshots/mcp.png)
 
 **[Development](docs/development.md)** — tests, the live checks, the app icon,
 regenerating these screenshots, and cutting a release.

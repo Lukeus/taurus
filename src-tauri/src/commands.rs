@@ -24,9 +24,9 @@ use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
 use taurus_host::{
-    sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, Problem,
-    ProviderConfig, Repo, RepoStatus, Restored, SessionLog, SessionMeta, Settings, Theme,
-    TurnChange, TurnRef,
+    sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
+    McpServerRef, McpServerView, Problem, ProviderConfig, Repo, RepoStatus, Restored, SessionLog,
+    SessionMeta, Settings, Theme, TurnChange, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -639,10 +639,12 @@ pub async fn clear_search_key(
 /// Opens a layer's `mcp.json` in whatever the OS uses for it, creating it first
 /// if it is not there yet.
 ///
-/// MCP servers are configured by editing that file — the format is the one
-/// Claude Desktop uses, and people move entries between the two — so this is a
-/// route to the file rather than a form that would have to be kept in step with
-/// a schema Taurus does not own.
+/// Still here now the panel exists, and deliberately. The format is the one
+/// Claude Desktop uses and entries get pasted between the two, so the file has
+/// to stay the authority: anything the panel cannot express — a key from a
+/// newer version of the format, a comment, a server mid-edit — is edited here.
+/// Every write the panel makes preserves what it does not understand, so the two
+/// routes can be used interchangeably.
 #[tauri::command]
 pub async fn open_mcp_config(
     app: tauri::AppHandle,
@@ -657,6 +659,151 @@ pub async fn open_mcp_config(
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| format!("could not open {}: {e}", path.display()))?;
     Ok(path.display().to_string())
+}
+
+/// Every configured server, merged across layers, with how it is doing.
+#[tauri::command]
+pub async fn list_mcp_servers(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<McpServerView>> {
+    // The same wait `get_status` takes, for the same reason: opening the panel
+    // during the first load would otherwise render an empty list over a
+    // `mcp.json` full of servers.
+    state.loaded().await;
+    Ok(state.host.mcp_servers().await)
+}
+
+/// Where the app looks for a stdio server's program, and what it took to get
+/// there.
+///
+/// Shown in the panel rather than only logged. "Command not found" for a command
+/// that plainly exists is the single most confusing thing this feature does, and
+/// it is entirely explained by a PATH the user cannot otherwise see.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct McpEnvironment {
+    /// The search directories, in order.
+    pub path: Vec<String>,
+    /// What the login shell contributed that the launcher did not. Empty when
+    /// Taurus was started from a terminal, which is when it has nothing to add.
+    pub added: Vec<String>,
+    /// Why the shell was not asked, when it was not.
+    #[ts(optional)]
+    pub skipped: Option<String>,
+}
+
+#[tauri::command]
+pub async fn mcp_environment() -> CmdResult<McpEnvironment> {
+    // `adopt` ran at startup; this returns that same answer rather than probing
+    // again, so the panel shows the PATH the servers were actually started with.
+    let outcome = taurus_tools::login_path::adopt();
+    Ok(McpEnvironment {
+        path: taurus_tools::login_path::entries()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
+        added: outcome.added.clone(),
+        skipped: outcome.skipped.clone(),
+    })
+}
+
+/// Writes one server into its layer's `mcp.json` and reconnects.
+///
+/// Reconnecting is part of the save rather than a second button. A panel that
+/// saved and left the old connection running would be the bug this feature
+/// started with — a server configured and not there — reproduced in the UI meant
+/// to fix it.
+///
+/// `previous` is the entry being replaced, which the panel sends whenever it is
+/// editing rather than adding. It is what a rename or a move between layers is
+/// resolved against: the stored secrets are read from there, and it is removed
+/// afterwards if the draft no longer lives at that name and scope.
+#[tauri::command]
+pub async fn save_mcp_server(
+    state: State<'_, Arc<AppState>>,
+    draft: McpServerDraft,
+    previous: Option<McpServerRef>,
+) -> CmdResult<Vec<McpServerView>> {
+    let workspace = state.host.workspace().await;
+    let source = previous.clone().unwrap_or_else(|| draft.origin());
+    let server = draft.to_config(stored(&workspace, &source).as_ref());
+
+    taurus_host::config::save_mcp_server(draft.scope, Some(&workspace), &draft.name, &server)?;
+
+    // Only when it actually moved. Deleting unconditionally would make every
+    // save a delete of the entry it had just written.
+    if source.scope != draft.scope || source.name.trim() != draft.name.trim() {
+        taurus_host::config::delete_mcp_server(source.scope, Some(&workspace), source.name.trim())?;
+    }
+
+    state.host.reload_mcp().await;
+    Ok(state.host.mcp_servers().await)
+}
+
+/// One layer's stored entry for a server, for the secrets the panel was never
+/// given.
+///
+/// Read from the layer that entry actually lives in rather than from the merged
+/// view: a workspace server must not silently inherit the global server's token
+/// because the two share a name.
+fn stored(workspace: &std::path::Path, entry: &McpServerRef) -> Option<taurus_mcp::ServerConfig> {
+    taurus_host::config::scope_dir(entry.scope, Some(workspace))
+        .and_then(|dir| taurus_mcp::load(&dir).ok())
+        .and_then(|layer| layer.servers.get(entry.name.trim()).cloned())
+}
+
+#[tauri::command]
+pub async fn delete_mcp_server(
+    state: State<'_, Arc<AppState>>,
+    scope: Scope,
+    name: String,
+) -> CmdResult<Vec<McpServerView>> {
+    let workspace = state.host.workspace().await;
+    taurus_host::config::delete_mcp_server(scope, Some(&workspace), &name)?;
+    state.host.reload_mcp().await;
+    Ok(state.host.mcp_servers().await)
+}
+
+#[tauri::command]
+pub async fn set_mcp_server_disabled(
+    state: State<'_, Arc<AppState>>,
+    scope: Scope,
+    name: String,
+    disabled: bool,
+) -> CmdResult<Vec<McpServerView>> {
+    let workspace = state.host.workspace().await;
+    taurus_host::config::set_mcp_server_disabled(scope, Some(&workspace), &name, disabled)?;
+    state.host.reload_mcp().await;
+    Ok(state.host.mcp_servers().await)
+}
+
+/// Connects to one entry, reports what it offers, and disconnects.
+///
+/// Takes the draft rather than a saved name, so an edit can be checked before it
+/// is written. Nothing is registered and no live connection is touched.
+#[tauri::command]
+pub async fn test_mcp_server(
+    state: State<'_, Arc<AppState>>,
+    draft: McpServerDraft,
+    previous: Option<McpServerRef>,
+) -> CmdResult<Vec<String>> {
+    let workspace = state.host.workspace().await;
+    // A secret the form never had still has to reach the server being tested, or
+    // testing an entry whose credential was not retyped would fail on the one
+    // thing the panel deliberately never showed it. Resolved through `previous`
+    // for the same reason a save is: a rename in the form must not lose the
+    // token belonging to the entry it came from.
+    let source = previous.unwrap_or_else(|| draft.origin());
+    let server = draft.to_config(stored(&workspace, &source).as_ref());
+
+    state.host.test_mcp_server(&draft.name, &server).await
+}
+
+/// Reconnects every MCP server without rescanning anything else.
+///
+/// Narrower than [`reload_config`] on purpose — see `Host::reload_mcp`.
+#[tauri::command]
+pub async fn reload_mcp(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<McpServerView>> {
+    state.host.reload_mcp().await;
+    Ok(state.host.mcp_servers().await)
 }
 
 #[tauri::command]

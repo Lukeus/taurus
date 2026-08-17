@@ -52,9 +52,129 @@ export const STATUS = {
   },
   skill_count: 12,
   agent_count: 4,
-  problems: [],
+  problems: [
+    {
+      source: "mcp",
+      message:
+        "mcp server 'notion' has no `command` or `url`, and does not recognise `commnd` (did you mean `command`?)",
+    },
+  ],
   tool_names: [],
-  mcp_servers: [],
+  // Only the counts the rail draws. The panel asks `list_mcp_servers` for the
+  // rest, which is what `MCP_SERVERS` below answers.
+  mcp_servers: [
+    { name: "filesystem", connected: true },
+    { name: "github", connected: true },
+    { name: "linear", connected: false },
+    { name: "postgres", connected: false },
+  ],
+};
+
+/**
+ * The panel's own listing: one of each state worth photographing.
+ *
+ * Deliberately not four healthy servers. The panel exists for the ones that are
+ * not working, and a picture of it that shows only green says nothing about
+ * what it is for.
+ */
+export const MCP_SERVERS = [
+  {
+    name: "filesystem",
+    scope: "global",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/code"],
+    env: [],
+    url: "",
+    headers: [],
+    disabled: false,
+    program: "/Users/you/.nvm/versions/node/v22.17.1/bin/npx",
+    status: {
+      name: "filesystem",
+      description: "npx -y @modelcontextprotocol/server-filesystem",
+      connected: true,
+      tool_count: 14,
+      error: null,
+      disabled: false,
+      tools: ["read_file", "write_file", "edit_file", "list_directory"],
+    },
+  },
+  {
+    name: "github",
+    scope: "workspace",
+    transport: "http",
+    command: "",
+    args: [],
+    env: [],
+    url: "https://api.githubcopilot.com/mcp/",
+    headers: [{ key: "Authorization", value: "", secret: true }],
+    disabled: false,
+    status: {
+      name: "github",
+      description: "https://api.githubcopilot.com/mcp/",
+      connected: true,
+      tool_count: 26,
+      error: null,
+      disabled: false,
+      tools: ["create_issue", "search_code", "get_pull_request"],
+    },
+  },
+  {
+    // The failure this whole feature was rebuilt for.
+    name: "linear",
+    scope: "global",
+    transport: "stdio",
+    command: "uvx",
+    args: ["linear-mcp-server"],
+    env: [],
+    url: "",
+    headers: [],
+    disabled: false,
+    program: null,
+    status: {
+      name: "linear",
+      description: "uvx linear-mcp-server",
+      connected: false,
+      tool_count: 0,
+      error:
+        "`uvx` is not on this application's PATH. It searched: /usr/bin:/bin:/usr/sbin:/sbin.",
+      disabled: false,
+      tools: [],
+    },
+  },
+  {
+    name: "postgres",
+    scope: "workspace",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-postgres"],
+    env: [{ key: "DATABASE_URL", value: "${DATABASE_URL}", secret: false }],
+    url: "",
+    headers: [],
+    disabled: true,
+    program: "/Users/you/.nvm/versions/node/v22.17.1/bin/npx",
+    status: {
+      name: "postgres",
+      description: "npx -y @modelcontextprotocol/server-postgres",
+      connected: false,
+      tool_count: 0,
+      error: null,
+      disabled: true,
+      tools: [],
+    },
+  },
+];
+
+/** What the panel says about where it looks for a stdio server's program. */
+export const MCP_ENVIRONMENT = {
+  path: [
+    "/Users/you/.nvm/versions/node/v22.17.1/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+  ],
+  added: ["/Users/you/.nvm/versions/node/v22.17.1/bin", "/opt/homebrew/bin"],
 };
 
 export const SESSIONS = [

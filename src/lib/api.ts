@@ -26,6 +26,12 @@ import type { CreatedSession } from "../bindings/CreatedSession";
 import type { IndexProgress } from "../bindings/IndexProgress";
 import type { Instructions } from "../bindings/Instructions";
 import type { KeyStatus } from "../bindings/KeyStatus";
+import type { McpEnvironment } from "../bindings/McpEnvironment";
+import type { McpServerDraft } from "../bindings/McpServerDraft";
+import type { McpServerRef } from "../bindings/McpServerRef";
+import type { McpServerView } from "../bindings/McpServerView";
+import type { McpTransport } from "../bindings/McpTransport";
+import type { McpValue } from "../bindings/McpValue";
 import type { Message } from "../bindings/Message";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
@@ -43,6 +49,7 @@ import type { SaveTarget } from "../bindings/SaveTarget";
 import type { Scope } from "../bindings/Scope";
 import type { SearchBackend } from "../bindings/SearchBackend";
 import type { SearchSettings } from "../bindings/SearchSettings";
+import type { ServerStatus } from "../bindings/ServerStatus";
 import type { ModelEntry } from "../bindings/ModelEntry";
 import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
@@ -77,6 +84,12 @@ export type {
   IndexProgress,
   Instructions,
   KeyStatus,
+  McpEnvironment,
+  McpServerDraft,
+  McpServerRef,
+  McpServerView,
+  McpTransport,
+  McpValue,
   Message,
   ModelEntry,
   ModelInfo,
@@ -93,6 +106,7 @@ export type {
   Scope,
   SearchBackend,
   SearchSettings,
+  ServerStatus,
   SessionMeta,
   SkillProposal,
   SkillSummary,
@@ -232,12 +246,71 @@ export const createAgent = (scope: Scope, name: string) =>
 /**
  * Opens a layer's `mcp.json`, creating it if absent, and returns its path.
  *
- * Servers are configured by editing that file: the format is the one Claude
- * Desktop uses and entries get moved between the two, so the app points at the
- * file rather than reimplementing a schema it does not own.
+ * The file stays the authority even with the panel there: the format is the one
+ * Claude Desktop uses and entries get moved between the two, so anything the
+ * panel cannot express is edited here. Every write the panel makes preserves
+ * what it does not understand, so the two routes mix freely.
  */
 export const openMcpConfig = (scope: Scope) =>
   invoke<string>("open_mcp_config", { scope });
+
+/** Every configured server, merged across layers, with how it is doing. */
+export const listMcpServers = () => invoke<McpServerView[]>("list_mcp_servers");
+
+/**
+ * Where the app looks for a stdio server's program.
+ *
+ * The panel shows this because "command not found" for a command that plainly
+ * exists is otherwise unexplainable from inside the app — a window started from
+ * the Dock has the launcher's PATH, not the shell's.
+ */
+export const mcpEnvironment = () => invoke<McpEnvironment>("mcp_environment");
+
+/**
+ * Writes one server to its layer's `mcp.json` and reconnects.
+ *
+ * `previous` is the entry being edited, and is sent whenever this is an edit
+ * rather than an add. It is what a rename or a move between layers resolves
+ * against: the stored secrets come from there, and it is removed afterwards if
+ * the draft no longer lives at that name and scope.
+ *
+ * All of these return the fresh listing, so a caller never has to follow a
+ * write with a read that could disagree with it.
+ */
+export const saveMcpServer = (
+  draft: McpServerDraft,
+  previous?: McpServerRef,
+) => invoke<McpServerView[]>("save_mcp_server", { draft, previous });
+
+export const deleteMcpServer = (scope: Scope, name: string) =>
+  invoke<McpServerView[]>("delete_mcp_server", { scope, name });
+
+export const setMcpServerDisabled = (
+  scope: Scope,
+  name: string,
+  disabled: boolean,
+) =>
+  invoke<McpServerView[]>("set_mcp_server_disabled", { scope, name, disabled });
+
+/**
+ * Connects to one entry, reports the tools it offers, and disconnects.
+ *
+ * Takes the draft rather than a saved name, so an edit can be checked before it
+ * is written — and nothing is registered, so testing cannot disturb a server
+ * that is currently working.
+ */
+export const testMcpServer = (
+  draft: McpServerDraft,
+  previous?: McpServerRef,
+) => invoke<string[]>("test_mcp_server", { draft, previous });
+
+/**
+ * Reconnects every MCP server without rescanning skills, agents, or providers.
+ *
+ * Narrower than {@link reloadConfig} on purpose: a change to `mcp.json` cannot
+ * affect any of those, and restarting them costs a visible pause.
+ */
+export const reloadMcp = () => invoke<McpServerView[]>("reload_mcp");
 
 /**
  * Re-reads every config layer, rescans skills and agents, and reconnects MCP

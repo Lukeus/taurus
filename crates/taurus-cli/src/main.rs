@@ -325,13 +325,25 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Mcp { session } => {
             let host = build_host(&session, Policy::default()).await?.host;
             let statuses = host.mcp_statuses().await;
-            if statuses.is_empty() {
+            // An entry that will not parse has no server to hang a status off,
+            // so it is only reachable here. It is a failure — the user asked for
+            // a server and does not have one — and this command exists to fail
+            // a build over exactly that.
+            let unreadable = host.problems_from(&[taurus_host::ProblemSource::Mcp]).await;
+
+            if statuses.is_empty() && unreadable.is_empty() {
                 println!("No MCP servers configured in ~/.taurus/mcp.json.");
                 return Ok(ExitCode::SUCCESS);
             }
+
             let mut failed = false;
             for status in statuses {
-                if status.connected {
+                if status.disabled {
+                    // Not a failure: someone switched it off on purpose. Listed
+                    // rather than hidden, because a server missing from this
+                    // output is the thing that sends people to read the file.
+                    println!("{:<20} off        {}", status.name, status.description);
+                } else if status.connected {
                     println!(
                         "{:<20} {} tools  {}",
                         status.name, status.tool_count, status.description
@@ -345,6 +357,11 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                     );
                 }
             }
+            for problem in &unreadable {
+                failed = true;
+                println!("{:<20} {}", "UNREADABLE", problem.message);
+            }
+
             Ok(if failed {
                 ExitCode::FAILURE
             } else {

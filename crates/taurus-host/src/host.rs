@@ -7,6 +7,7 @@
 //! so it is built once here and the frontends supply only what genuinely
 //! differs: how to ask the user for permission, and where skill proposals go.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -40,6 +41,7 @@ use taurus_tools::{
 use crate::command;
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
 use crate::instructions::{self, Instructions};
+use crate::mcp_view::{LayerOf, McpServerView};
 use crate::problem::{self, Problem, ProblemSource};
 use crate::prompt;
 use crate::secrets;
@@ -1291,6 +1293,135 @@ impl Host {
         self.mcp.statuses().await
     }
 
+    /// Every configured server, merged across layers, with how it is doing.
+    ///
+    /// One call rather than a listing plus a status lookup, because the two have
+    /// to agree: a panel that renders a server from one snapshot and its state
+    /// from another shows a connected server that is no longer configured for as
+    /// long as it takes the second call to land.
+    pub async fn mcp_servers(&self) -> Vec<McpServerView> {
+        let workspace = self.workspace.read().await.clone();
+        let (config, defined_in) = self.mcp_layers(&workspace);
+        let statuses: BTreeMap<String, ServerStatus> = self
+            .mcp
+            .statuses()
+            .await
+            .into_iter()
+            .map(|s| (s.name.clone(), s))
+            .collect();
+
+        config
+            .servers
+            .into_iter()
+            .map(|(name, server)| {
+                let status = statuses.get(&name).cloned();
+                McpServerView::new(name, server, &defined_in, status)
+            })
+            .collect()
+    }
+
+    /// Both `mcp.json` layers, merged, plus which layer defined each server.
+    ///
+    /// The scope matters to the panel in a way it does not to the connector:
+    /// editing a server has to write to the file it came from, and a workspace
+    /// entry saved into the global file would silently change every other
+    /// project.
+    fn mcp_layers(&self, workspace: &Path) -> (taurus_mcp::McpConfig, LayerOf) {
+        let mut layers = Vec::new();
+        let mut defined_in: LayerOf = BTreeMap::new();
+        for scope in [Scope::Global, Scope::Workspace] {
+            let Some(dir) = config::scope_dir(scope, Some(workspace)) else {
+                continue;
+            };
+            let Ok(layer) = taurus_mcp::load(&dir) else {
+                continue;
+            };
+            for (name, server) in &layer.servers {
+                // A toggle changes a server rather than defining one, so it must
+                // not claim ownership: editing would then write a command line
+                // into the file that only meant to switch one off.
+                if !matches!(server, taurus_mcp::ServerConfig::Toggle(_)) {
+                    defined_in.insert(name.clone(), scope);
+                }
+            }
+            layers.push(layer);
+        }
+        let (merged, _) = config::merge_mcp(layers);
+        (merged, defined_in)
+    }
+
+    /// Reconnects the MCP servers without rebuilding anything else.
+    ///
+    /// What the MCP panel calls after a save. [`Host::reload`] would also do it,
+    /// and also rescan every skill directory, re-read both provider layers, and
+    /// rebuild the agent roster — none of which a change to `mcp.json` can
+    /// affect. The narrower call is the same argument `rescan_agents` makes in
+    /// the other direction: editing one thing should not restart the rest.
+    ///
+    /// The swap is by name. Every MCP tool carries the `mcp__` prefix, so the
+    /// old set can be lifted out of the live registry and a new one put back
+    /// without touching the built-ins, the skill tools, or the web tools beside
+    /// them.
+    pub async fn reload_mcp(&self) {
+        let workspace = self.workspace.read().await.clone();
+
+        let mut problems = Vec::new();
+        let mut layers = Vec::new();
+        for dir in config::config_dirs(Some(&workspace)) {
+            match taurus_mcp::load(&dir) {
+                Ok(layer) => layers.push(layer),
+                Err(e) => problems.push(Problem::new(ProblemSource::Mcp, e)),
+            }
+        }
+        let (config, merge_problems) = config::merge_mcp(layers);
+        problems.extend(Problem::tag(ProblemSource::Mcp, merge_problems));
+
+        self.mcp.shutdown().await;
+        let tools = self.mcp.connect_all(&config).await;
+
+        // Applied to the new tools only. `reload` applies it to everything, but
+        // there is nothing else here to apply it to, and a tool the user turned
+        // off must not come back because its server reconnected.
+        let disabled = self.settings.read().await.disabled_tools.clone();
+        let mut registry = self.registry.write().await;
+        let stale: Vec<String> = registry
+            .names()
+            .filter(|name| taurus_mcp::is_mcp_tool(name))
+            .map(str::to_string)
+            .collect();
+        for name in stale {
+            registry.remove(&name);
+        }
+        for tool in tools {
+            if disabled.iter().any(|off| off == tool.name()) {
+                continue;
+            }
+            registry.register(tool);
+        }
+        drop(registry);
+
+        // Only this source. A malformed `providers.json` reported at the last
+        // full reload is still malformed, and clearing it here would make it
+        // vanish from Settings until something unrelated reloaded.
+        let mut held = self.problems.write().await;
+        held.retain(|p| p.source != ProblemSource::Mcp);
+        held.extend(problems);
+    }
+
+    /// Connects to one server, reports what it offers, and disconnects.
+    ///
+    /// Nothing is registered and no live connection is disturbed — see
+    /// [`taurus_mcp::probe`]. This is what makes "Test" safe to press against an
+    /// edit of a server that is currently working.
+    pub async fn test_mcp_server(
+        &self,
+        name: &str,
+        server: &taurus_mcp::ServerConfig,
+    ) -> Result<Vec<String>, String> {
+        server.validate()?;
+        taurus_mcp::probe(name, server).await
+    }
+
     pub async fn permissions(&self) -> Arc<PermissionEngine> {
         self.permissions.read().await.clone()
     }
@@ -1948,6 +2079,89 @@ mod tests {
             .await
             .iter()
             .any(|t| t == taurus_skills::PROPOSE_TOOL));
+    }
+
+    #[tokio::test]
+    async fn reloading_mcp_leaves_every_other_tool_where_it_was() {
+        // The reason this is narrower than `reload`: a change to `mcp.json`
+        // cannot affect a skill, an agent, or a provider, and restarting them to
+        // pick one up costs a visible pause on every save in the panel. The
+        // invariant is that the registry comes back with everything that was not
+        // an MCP tool still in it.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        host.reload().await;
+
+        let before = host.tool_names().await;
+        std::fs::write(
+            taurus_mcp::config::config_file(home.path()),
+            r#"{"mcpServers": {"broken": {"command": "definitely-not-a-real-program-xyz"}}}"#,
+        )
+        .unwrap();
+
+        host.reload_mcp().await;
+
+        assert_eq!(
+            host.tool_names().await,
+            before,
+            "a server that fails to start must leave the rest of the registry alone"
+        );
+        // A server that will not start is a status, not a problem: it is
+        // reported on its own row in the panel, where the thing that can fix it
+        // is. Problems are for entries with no row to report on.
+        assert!(host.problems_from(&[ProblemSource::Mcp]).await.is_empty());
+        let servers = host.mcp_servers().await;
+        assert_eq!(servers.len(), 1);
+        assert!(servers[0].status.as_ref().unwrap().error.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_mcp_problem_is_reported_once_and_clears_when_the_entry_does() {
+        // `reload_mcp` replaces this source rather than appending to it. Getting
+        // that wrong stacks a duplicate on every save, and leaves a fixed entry
+        // being complained about until something unrelated reloaded.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        let file = taurus_mcp::config::config_file(home.path());
+
+        std::fs::write(&file, r#"{"mcpServers": {"typo": {"commnd": "npx"}}}"#).unwrap();
+        host.reload_mcp().await;
+        host.reload_mcp().await;
+        assert_eq!(host.problems_from(&[ProblemSource::Mcp]).await.len(), 1);
+
+        std::fs::write(&file, r#"{"mcpServers": {}}"#).unwrap();
+        host.reload_mcp().await;
+        assert!(host.problems_from(&[ProblemSource::Mcp]).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reloading_mcp_reports_an_unreadable_entry_without_losing_its_neighbours() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        std::fs::write(
+            taurus_mcp::config::config_file(home.path()),
+            r#"{"mcpServers": {
+                 "typo": {"commnd": "npx"},
+                 "off":  {"command": "npx", "disabled": true}
+               }}"#,
+        )
+        .unwrap();
+
+        host.reload().await;
+
+        // The unreadable one is named; the one beside it still made it into the
+        // listing, which is the whole point of parsing per entry.
+        let problems = host.problems_from(&[ProblemSource::Mcp]).await;
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].message.contains("typo"), "{problems:?}");
+
+        let servers = host.mcp_servers().await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "off");
+        assert!(servers[0].disabled);
     }
 
     #[tokio::test]
