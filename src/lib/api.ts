@@ -152,6 +152,17 @@ export function sendMessage(
 export const cancelSession = (sessionId: string) =>
   invoke<void>("cancel_session", { sessionId });
 
+/**
+ * Drops a live session from the backend, cancelling anything still running in
+ * it.
+ *
+ * The conversation itself is untouched — it is on disk and reopens from the
+ * rail. This releases only the in-memory copy, which the backend otherwise
+ * holds, transcript and attached images included, for the life of the process.
+ */
+export const closeSession = (sessionId: string) =>
+  invoke<void>("close_session", { sessionId });
+
 /** Saved conversations, newest first. `all` crosses workspaces. */
 export const listSessions = (all = false) =>
   invoke<SessionMeta[]>("list_sessions", { all });

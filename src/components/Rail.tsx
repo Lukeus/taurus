@@ -182,8 +182,15 @@ export function Rail({
       <div className="rail-pad">
         <button
           className="rail-workspace"
+          // Switching folders closes the conversation and reconnects every MCP
+          // server, neither of which a running turn survives.
+          disabled={busy}
           onClick={onPickWorkspace}
-          title={workspace ?? "Choose a workspace"}
+          title={
+            busy
+              ? "Stop the running turn before switching workspace"
+              : (workspace ?? "Choose a workspace")
+          }
         >
           <span className="mark">t</span>
           <span className="rail-workspace-name">

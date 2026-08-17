@@ -661,8 +661,15 @@ function Composer({
         <div className="composer-foot">
           <button
             className="pill"
+            // The same rule the rail's workspace row follows: a switch closes
+            // the conversation and reconnects every MCP server.
+            disabled={busy}
             onClick={onPickWorkspace}
-            title={workspace ?? "Choose a workspace"}
+            title={
+              busy
+                ? "Stop the running turn before switching workspace"
+                : (workspace ?? "Choose a workspace")
+            }
           >
             ▤ {workspace ? basename(workspace) : "no workspace"}
           </button>
