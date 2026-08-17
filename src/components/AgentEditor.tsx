@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
 import type { AgentProposal } from "../lib/api";
+import {
+  DEFAULT_AGENT_ITERATIONS,
+  DESCRIPTION_LIMIT,
+  MAX_ITERATIONS_LIMIT,
+} from "../lib/limits";
 import { useStore } from "../state/store";
-
-/** Matches `DESCRIPTION_LIMIT` in taurus-agents. */
-const DESCRIPTION_LIMIT = 200;
 
 /**
  * Writing an agent without already knowing the frontmatter.
@@ -14,7 +16,8 @@ const DESCRIPTION_LIMIT = 200;
  * validation and the same writer an approved proposal takes, so an agent
  * written here and one written in a text editor are the same thing. What this
  * adds is that the format is discoverable: every constraint the loader enforces
- * (kebab-case, the description limit, 1–50 iterations, tools that exist here)
+ * (kebab-case, the description limit, the iteration ceiling, tools that exist
+ * here)
  * is visible in the form rather than found by having a save rejected.
  *
  * Generate is a starting point, not a result. It fills the same boxes the user
@@ -36,7 +39,7 @@ export function AgentEditor({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [maxIterations, setMaxIterations] = useState(20);
+  const [maxIterations, setMaxIterations] = useState(DEFAULT_AGENT_ITERATIONS);
   /** `null` is inherit-the-caller's-tools, which is not the same as none. */
   const [tools, setTools] = useState<string[] | null>(null);
   const [target, setTarget] = useState<"project" | "user">("project");
@@ -154,11 +157,11 @@ export function AgentEditor({
                 className="mono"
                 type="number"
                 min={1}
-                max={50}
+                max={MAX_ITERATIONS_LIMIT}
                 value={maxIterations}
                 onChange={(e) => setMaxIterations(Number(e.target.value))}
               />
-              <span className="hint mono">1–50</span>
+              <span className="hint mono">1–{MAX_ITERATIONS_LIMIT}</span>
             </label>
           </div>
 

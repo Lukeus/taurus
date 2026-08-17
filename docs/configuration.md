@@ -21,7 +21,7 @@ file every other project reads.
 | `providers.json` | Backends, including the header a key is sent in. Never the key itself — that lives in the OS keychain or an env var. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Header values and URLs may name env vars. Skills › **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `search.json` | Web search backends and which one is active. Never the key itself — that lives in the OS keychain or an env var, as with providers. | A different backend for this project, or field overrides on an inherited one. |
-| `settings.json` | Last workspace, the two synthesis toggles, theme, fallback model. | The provider and model this project was last worked in. |
+| `settings.json` | Last workspace, the two synthesis toggles, theme, fallback model, `max_iterations`. | The provider and model this project was last worked in, and a step limit for turns here. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
@@ -315,16 +315,21 @@ Two other fields matter more here than elsewhere:
   ```jsonc
   "models": [
     "gpt-4o",
-    { "id": "llama-3.1-8b", "context_length": 8192, "native_tools": false }
+    {
+      "id": "llama-3.1-8b",
+      "context_length": 8192,
+      "native_tools": false,
+      "vision": false
+    }
   ]
   ```
 
   The overrides matter because an OpenAI-compatible endpoint reports no
   capabilities at all, and one gateway commonly fronts models that share
-  neither a context window nor tool support — told the provider-wide 128000
-  above, an 8k model compacts tens of thousands of tokens too late. Anything
-  left unset inherits the provider's own value, so a bare id means exactly what
-  it did before these existed.
+  neither a context window, tool support, nor the ability to read an image —
+  told the provider-wide 128000 above, an 8k model compacts tens of thousands
+  of tokens too late. Anything left unset inherits the provider's own value, so
+  a bare id means exactly what it did before these existed.
 
   A workspace layer *replaces* this list rather than adding to it. Appending
   could not express dropping a model, and a workspace that names models is
@@ -334,6 +339,14 @@ Two other fields matter more here than elsewhere:
   the first model is used otherwise. It also still works alone, without
   `models`, which is all a single-model gateway ever needed. With neither, and
   no listing, the error says so instead of reporting an unreachable backend.
+
+- **`vision`.** Whether attached images are sent. Defaults to true, because
+  every model the hosted OpenAI API has served since gpt-4o reads them and
+  nothing on the wire says so. Set it to `false` on a provider or a single
+  model that fronts text-only weights: Taurus then refuses an attachment before
+  the turn starts, naming the picture, rather than a round trip later with a
+  wire error naming a field. Ignored by the other kinds — Ollama reports vision
+  per model, and every model Anthropic and Gemini serve reads images.
 
 ## Intel hardware, and other backends
 

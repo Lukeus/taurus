@@ -15,7 +15,7 @@ use taurus_agents::proposal::{
     save as save_agent_file, validate_proposal as validate_agent, AgentProposal,
     SaveTarget as AgentSaveTarget,
 };
-use taurus_agents::AgentSummary;
+use taurus_agents::{AgentSummary, DESCRIPTION_LIMIT, MAX_ITERATIONS_LIMIT};
 use taurus_core::{Session, UiEvent};
 use taurus_mcp::ServerStatus;
 use taurus_provider::{ChatRequest, Message, ModelInfo, StreamAccumulator};
@@ -70,6 +70,10 @@ pub struct AppStatus {
 
 #[tauri::command]
 pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus> {
+    // The frontend asks for this once, on mount, and keeps what it gets. That
+    // races the startup reload, and losing the race meant a permanent `0`
+    // beside a drawer full of skills — see [`AppState::loaded`].
+    state.loaded().await;
     Ok(AppStatus {
         workspace: state.host.workspace().await.display().to_string(),
         providers: state.host.providers().await,
@@ -768,20 +772,32 @@ pub async fn save_agent(
 /// and a model asked for YAML frontmatter returns YAML that is *nearly* right
 /// often enough to matter. JSON it can be checked against, and every field
 /// lands in a box the user can correct.
-const DRAFT_SYSTEM: &str = "\
+///
+/// Built rather than declared, so the range it quotes is the range the loader
+/// actually enforces. Stated as a literal it once drifted from the ceiling the
+/// moment that ceiling moved, and a model told the wrong range returns drafts
+/// that are silently clamped on the way in.
+fn draft_system() -> String {
+    format!(
+        "\
 You draft a sub-agent definition for a coding agent, and reply with JSON only — \
 no prose, no markdown fence.
 
 Fields:
 - name: kebab-case, specific, e.g. \"migration-checker\"
-- description: one sentence under 200 characters saying when to delegate here. \
-This is the only text the caller sees when choosing, so describe the job.
+- description: one sentence under {DESCRIPTION_LIMIT} characters saying when to \
+delegate here. This is the only text the caller sees when choosing, so describe \
+the job.
 - tools: an array chosen ONLY from the allowed list you are given, or null to \
 inherit the caller's tools. Pick the narrowest set that can do the work.
-- max_iterations: 1 to 50. Around 20 for work that only reads, 25 if it writes.
+- max_iterations: 1 to {MAX_ITERATIONS_LIMIT}. Around 20 for work that only \
+reads, 25 if it writes. Reach past 50 only for work that genuinely cannot \
+finish in fewer rounds.
 - prompt: the agent's system prompt. It shares none of the caller's context and \
 cannot ask questions, so say what to do, what not to do, and what to report \
-back. Several sentences.";
+back. Several sentences."
+    )
+}
 
 /// Drafts an agent from a description, for the editor to fill in.
 ///
@@ -822,7 +838,7 @@ pub async fn generate_agent(
             available.join(", ")
         ))],
     );
-    request.system = Some(DRAFT_SYSTEM.into());
+    request.system = Some(draft_system());
 
     let (tx, mut rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
@@ -852,7 +868,10 @@ pub async fn generate_agent(
         drafted.description.trim(),
         drafted.prompt.trim(),
     );
-    proposal.max_iterations = drafted.max_iterations.unwrap_or(20).clamp(1, 50);
+    proposal.max_iterations = drafted
+        .max_iterations
+        .unwrap_or(20)
+        .clamp(1, MAX_ITERATIONS_LIMIT);
     // Silently dropped rather than refused: a model naming a tool that does not
     // exist here has still drafted a usable agent, and the picker below shows
     // exactly what survived.
@@ -1009,6 +1028,23 @@ pub async fn respond_skill_proposal(
     // Reload so the skill is usable in the session that just proposed it.
     state.host.reload().await;
     Ok(Some(dir.display().to_string()))
+}
+
+/// Retunes one agent's iteration limit. Returns the file that now holds it,
+/// which for a built-in is an override that did not exist a moment ago.
+#[tauri::command]
+pub async fn set_agent_iterations(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    limit: u32,
+) -> CmdResult<String> {
+    state.host.set_agent_iterations(&name, limit).await
+}
+
+#[tauri::command]
+pub async fn set_max_iterations(state: State<'_, Arc<AppState>>, limit: u32) -> CmdResult<()> {
+    state.host.set_max_iterations(limit).await;
+    Ok(())
 }
 
 #[tauri::command]

@@ -45,12 +45,14 @@ pub struct OpenAiCapabilities {
 
 impl Default for OpenAiCapabilities {
     fn default() -> Self {
-        // Hosted OpenAI-compatible endpoints support tools; a self-hosted
-        // server serving a base model may not, which is what the config
-        // override is for.
+        // Hosted OpenAI-compatible endpoints support tools and take images; a
+        // self-hosted server serving a base model may do neither, which is what
+        // the config overrides are for. Vision defaults on because every model
+        // the hosted API has shipped since gpt-4o reads images, and defaulting
+        // it off refused screenshots on the provider most people point at.
         Self {
             native_tools: true,
-            vision: false,
+            vision: true,
             context_length: 128_000,
         }
     }
@@ -59,14 +61,15 @@ impl Default for OpenAiCapabilities {
 /// A model the config named, rather than one the server offered.
 ///
 /// The overrides are per model because a single gateway routinely fronts
-/// models that do not share a context window or tool support, and
-/// `/v1/models` reports neither. Unset means "whatever the provider says".
+/// models that do not share a context window, tool support, or vision, and
+/// `/v1/models` reports none of them. Unset means "whatever the provider says".
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModelSpec {
     pub id: String,
     pub display_name: Option<String>,
     pub context_length: Option<u32>,
     pub native_tools: Option<bool>,
+    pub vision: Option<bool>,
 }
 
 impl ModelSpec {
@@ -284,7 +287,9 @@ impl Provider for OpenAiProvider {
             native_tools: declared
                 .and_then(|m| m.native_tools)
                 .unwrap_or(self.capabilities.native_tools),
-            vision: self.capabilities.vision,
+            vision: declared
+                .and_then(|m| m.vision)
+                .unwrap_or(self.capabilities.vision),
             // No OpenAI-compatible endpoint exposes reasoning as a separate
             // stream field, so thinking is always folded into text here.
             thinking: false,
@@ -564,7 +569,7 @@ mod tests {
             None,
             OpenAiCapabilities {
                 native_tools: true,
-                vision: false,
+                vision: true,
                 context_length: 128_000,
             },
         )
@@ -574,6 +579,7 @@ mod tests {
                 id: "llama-3.1-8b".into(),
                 context_length: Some(8192),
                 native_tools: Some(false),
+                vision: Some(false),
                 ..ModelSpec::default()
             },
         ]);
@@ -581,10 +587,27 @@ mod tests {
         let inherited = provider.capabilities("gpt-4o").await.unwrap();
         assert_eq!(inherited.context_length, 128_000);
         assert!(inherited.native_tools);
+        assert!(inherited.vision);
 
         let overridden = provider.capabilities("llama-3.1-8b").await.unwrap();
         assert_eq!(overridden.context_length, 8192);
         assert!(!overridden.native_tools);
+        assert!(!overridden.vision);
+    }
+
+    #[tokio::test]
+    async fn an_openai_model_reads_images_unless_told_otherwise() {
+        // The hosted API has not served a text-only chat model since gpt-4o.
+        // Defaulting this off refused every screenshot sent to the provider
+        // most people configure first, and no config could turn it back on.
+        let provider = OpenAiProvider::new(
+            "openai",
+            "http://127.0.0.1:1",
+            None,
+            OpenAiCapabilities::default(),
+        );
+
+        assert!(provider.capabilities("gpt-5.6-sol").await.unwrap().vision);
     }
 
     #[tokio::test]

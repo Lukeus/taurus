@@ -31,6 +31,7 @@ const provider = (patch: Partial<ProviderConfig> = {}): ProviderConfig => ({
   api_key_header: null,
   native_tools: null,
   context_length: null,
+  vision: null,
   api_prefix: null,
   thinking: null,
   ...patch,
@@ -286,6 +287,16 @@ describe("which settings each provider kind shows", () => {
     expect(FIELDS.anthropic.contextFallback).toBe(true);
     expect(FIELDS.gemini.contextFallback).toBe(true);
     expect(FIELDS.open_ai_compatible.declareContext).toBe(true);
+  });
+
+  it("asks about images only where the answer is in doubt", () => {
+    // Ollama reports vision per model, and every model Anthropic and Gemini
+    // serve reads images. Only an OpenAI-compatible endpoint might be fronting
+    // text-only weights with no way to say so.
+    expect(FIELDS.open_ai_compatible.declareVision).toBe(true);
+    expect(FIELDS.ollama.declareVision).toBe(false);
+    expect(FIELDS.anthropic.declareVision).toBe(false);
+    expect(FIELDS.gemini.declareVision).toBe(false);
   });
 
   it("shows the thinking setting only where one exists", () => {

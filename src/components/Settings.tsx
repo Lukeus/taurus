@@ -13,6 +13,11 @@ import type {
   SearchSettings,
   Theme,
 } from "../lib/api";
+import {
+  clampIterations,
+  DEFAULT_MAX_ITERATIONS,
+  MAX_ITERATIONS_LIMIT,
+} from "../lib/limits";
 import { applyTheme } from "../lib/theme";
 import { useStore } from "../state/store";
 
@@ -280,6 +285,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
               </span>
             </label>
 
+            <IterationLimit
+              limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
+            />
+
             <ThemePicker theme={status?.settings.theme ?? "system"} />
           </>
         )}
@@ -295,6 +304,50 @@ export function Settings({ onClose }: { onClose: () => void }) {
         </section>
       </aside>
     </div>
+  );
+}
+
+/**
+ * How many model turns one message may take.
+ *
+ * Committed on blur or Enter rather than per keystroke: typing `50` passes
+ * through `5`, and writing that would drop the limit to five for as long as it
+ * took to type the second digit. Out-of-range input is pulled back into range
+ * on commit rather than rejected, so the field always shows what will actually
+ * be used.
+ */
+export function IterationLimit({ limit }: { limit: number }) {
+  const refresh = useStore((s) => s.refresh);
+  const [draft, setDraft] = useState(String(limit));
+
+  // The store is the authority: a refresh from anywhere else — another pane,
+  // a hand-edited settings file — has to win over a stale draft.
+  useEffect(() => setDraft(String(limit)), [limit]);
+
+  const commit = async () => {
+    const next = clampIterations(draft, limit);
+    setDraft(String(next));
+    if (next === limit) return;
+    await api.setMaxIterations(next);
+    await refresh();
+  };
+
+  return (
+    <Field
+      label="Steps per message"
+      hint={`How many times the model may act before Taurus stops the turn. Raise it for long refactors; lower it to catch a model going in circles sooner. 1–${MAX_ITERATIONS_LIMIT}, ${DEFAULT_MAX_ITERATIONS} by default.`}
+    >
+      <input
+        inputMode="numeric"
+        aria-label="Steps per message"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+      />
+    </Field>
   );
 }
 
@@ -638,6 +691,13 @@ export const FIELDS: Record<
     routing: boolean;
     /** Tool support has to be declared because it cannot be probed. */
     declareTools: boolean;
+    /**
+     * Whether the models read images, for the one kind where it is in doubt.
+     * Ollama probes it, and Anthropic and Gemini take images on everything
+     * they serve — only an OpenAI-compatible endpoint might be fronting
+     * text-only weights and have no way to say so.
+     */
+    declareVision: boolean;
     /** A context length the backend cannot report. */
     declareContext: boolean;
     /** A context length used only when the backend will not answer. */
@@ -651,6 +711,7 @@ export const FIELDS: Record<
     models: false,
     routing: false,
     declareTools: false,
+    declareVision: false,
     declareContext: false,
     contextFallback: false,
     thinking: false,
@@ -661,6 +722,7 @@ export const FIELDS: Record<
     models: true,
     routing: true,
     declareTools: true,
+    declareVision: true,
     declareContext: true,
     contextFallback: false,
     thinking: false,
@@ -672,6 +734,7 @@ export const FIELDS: Record<
     models: true,
     routing: false,
     declareTools: false,
+    declareVision: false,
     declareContext: false,
     contextFallback: true,
     thinking: true,
@@ -681,6 +744,7 @@ export const FIELDS: Record<
     models: true,
     routing: false,
     declareTools: false,
+    declareVision: false,
     declareContext: false,
     contextFallback: true,
     thinking: false,
@@ -950,6 +1014,22 @@ function ProviderForm({
             </Field>
           )}
 
+          {fields.declareVision && (
+            <Field
+              label="Images"
+              hint="Turn this off for an endpoint serving text-only weights, so an attached screenshot is refused here with a reason rather than a round trip away."
+            >
+              <select
+                value={triState(provider.vision)}
+                onChange={(e) => onChange({ vision: fromTriState(e.target.value) })}
+              >
+                <option value="auto">Assume readable</option>
+                <option value="yes">Model reads images</option>
+                <option value="no">Text only — refuse attachments</option>
+              </select>
+            </Field>
+          )}
+
           {fields.thinking && (
             <Field
               label="Thinking"
@@ -1077,6 +1157,15 @@ export function ModelList({
                 <option value="yes">Tools: native</option>
                 <option value="no">Tools: prompted</option>
               </select>
+              <select
+                aria-label={`Images for ${model.id || `model ${i + 1}`}`}
+                value={triState(model.vision ?? null)}
+                onChange={(e) => patch(i, { vision: fromTriState(e.target.value) })}
+              >
+                <option value="auto">Images: as below</option>
+                <option value="yes">Images: readable</option>
+                <option value="no">Images: text only</option>
+              </select>
             </div>
           </li>
         ))}
@@ -1159,6 +1248,7 @@ export function overrideOf(
     "api_key_header",
     "native_tools",
     "context_length",
+    "vision",
     "api_prefix",
   ];
   return fields.filter((field) => !same(global[field], match[field]));
@@ -1215,6 +1305,7 @@ export function blankProvider(existing: ProviderConfig[]): ProviderConfig {
     api_key_header: null,
     native_tools: null,
     context_length: null,
+    vision: null,
     api_prefix: null,
     thinking: null,
   };

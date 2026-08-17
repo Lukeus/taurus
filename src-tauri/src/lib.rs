@@ -43,9 +43,12 @@ pub fn run() {
             app.manage(state.clone());
 
             // Skill discovery touches the filesystem; do it off the setup path
-            // so the window paints immediately.
+            // so the window paints immediately. `mark_loaded` is what lets
+            // `get_status` answer — until then the catalog is empty, and a
+            // status read from it is a zero the rail keeps.
             tauri::async_runtime::spawn(async move {
                 state.host.reload().await;
+                state.mark_loaded();
             });
             Ok(())
         })
@@ -79,6 +82,8 @@ pub fn run() {
             commands::save_agent,
             commands::generate_agent,
             commands::set_skill_synthesis,
+            commands::set_max_iterations,
+            commands::set_agent_iterations,
             commands::set_theme,
             commands::set_embedding_model,
             commands::build_index,

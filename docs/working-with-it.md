@@ -254,9 +254,25 @@ A turn runs until the model stops asking for tools. Three things end one early,
 and each records its reason in the transcript so a resumed session finds an
 explanation rather than a conversation that simply stops:
 
-- **The iteration ceiling** — twenty-five model/tool round trips. A ceiling
-  rather than a budget the model is shown, because one it could see is one it
-  could argue with.
+- **The iteration ceiling** — twenty-five model/tool round trips by default. A
+  ceiling rather than a budget the model is shown, because one it could see is
+  one it could argue with.
+
+  Adjustable in **Settings → Behavior**, or as `max_iterations` in
+  `settings.json`, between 1 and 100. Raise it for long refactors that
+  legitimately need more rounds; lower it to catch a model going in circles
+  sooner. It is read per turn, so a change applies to the next message rather
+  than the next launch, and it layers like everything else in that file — a
+  project that needs long turns can raise it without loosening the ceiling
+  everywhere. A hundred is the hard ceiling, the same one a sub-agent's
+  `max_iterations` is validated against; a larger number in the file is clamped
+  rather than refused, because a settings file that will not load is a worse
+  answer to a typo than a number brought back into range.
+
+  This is the *conversation's* limit, and a sub-agent's is its own — a delegate
+  with thirty rounds spends one of the parent's, not thirty. Each agent's is on
+  its card in the Agents drawer, which also names this number so the two are
+  not read a screen apart.
 - **A stall** — the same tool call, with the same arguments, failing three
   times with nothing succeeding in between. The system prompt already tells the
   model not to retry a failed call unchanged; this is what makes that true
