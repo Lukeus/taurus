@@ -2082,6 +2082,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reloading_mcp_leaves_every_other_tool_where_it_was() {
+        // The reason this is narrower than `reload`: a change to `mcp.json`
+        // cannot affect a skill, an agent, or a provider, and restarting them to
+        // pick one up costs a visible pause on every save in the panel. The
+        // invariant is that the registry comes back with everything that was not
+        // an MCP tool still in it.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        host.reload().await;
+
+        let before = host.tool_names().await;
+        std::fs::write(
+            taurus_mcp::config::config_file(home.path()),
+            r#"{"mcpServers": {"broken": {"command": "definitely-not-a-real-program-xyz"}}}"#,
+        )
+        .unwrap();
+
+        host.reload_mcp().await;
+
+        assert_eq!(
+            host.tool_names().await,
+            before,
+            "a server that fails to start must leave the rest of the registry alone"
+        );
+        // A server that will not start is a status, not a problem: it is
+        // reported on its own row in the panel, where the thing that can fix it
+        // is. Problems are for entries with no row to report on.
+        assert!(host.problems_from(&[ProblemSource::Mcp]).await.is_empty());
+        let servers = host.mcp_servers().await;
+        assert_eq!(servers.len(), 1);
+        assert!(servers[0].status.as_ref().unwrap().error.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_mcp_problem_is_reported_once_and_clears_when_the_entry_does() {
+        // `reload_mcp` replaces this source rather than appending to it. Getting
+        // that wrong stacks a duplicate on every save, and leaves a fixed entry
+        // being complained about until something unrelated reloaded.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        let file = taurus_mcp::config::config_file(home.path());
+
+        std::fs::write(&file, r#"{"mcpServers": {"typo": {"commnd": "npx"}}}"#).unwrap();
+        host.reload_mcp().await;
+        host.reload_mcp().await;
+        assert_eq!(host.problems_from(&[ProblemSource::Mcp]).await.len(), 1);
+
+        std::fs::write(&file, r#"{"mcpServers": {}}"#).unwrap();
+        host.reload_mcp().await;
+        assert!(host.problems_from(&[ProblemSource::Mcp]).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reloading_mcp_reports_an_unreadable_entry_without_losing_its_neighbours() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        std::fs::write(
+            taurus_mcp::config::config_file(home.path()),
+            r#"{"mcpServers": {
+                 "typo": {"commnd": "npx"},
+                 "off":  {"command": "npx", "disabled": true}
+               }}"#,
+        )
+        .unwrap();
+
+        host.reload().await;
+
+        // The unreadable one is named; the one beside it still made it into the
+        // listing, which is the whole point of parsing per entry.
+        let problems = host.problems_from(&[ProblemSource::Mcp]).await;
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].message.contains("typo"), "{problems:?}");
+
+        let servers = host.mcp_servers().await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "off");
+        assert!(servers[0].disabled);
+    }
+
+    #[tokio::test]
     async fn a_workspace_can_turn_off_a_tool_it_does_not_want_advertised() {
         let dir = TempDir::new().unwrap();
         let workspace = dir.path().canonicalize().unwrap();
