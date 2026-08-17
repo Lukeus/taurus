@@ -73,8 +73,12 @@ async fn open_session(
         return Ok((session, log));
     };
 
-    let (session, _) = sessions::load(&id)?;
-    let log = SessionLog::resume(&session, &workspace);
+    let loaded = sessions::load(&id)?;
+    // Built from the transcript it was read from, not from the folder this
+    // command happens to have open: a session is found by id across every
+    // workspace, and appending anywhere else would fork it.
+    let log = SessionLog::resume(&loaded);
+    let session = loaded.session;
     eprintln!(
         "  resuming {} — {} messages, model {}",
         session.id,

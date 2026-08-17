@@ -21,6 +21,25 @@ The desktop app reopens its last conversation for the workspace on launch, and
 its left rail lists the rest — today's, then everything earlier — so switching
 between them is one click rather than a drawer.
 
+A conversation belongs to the folder it was started in, and changing folders is
+a move rather than a setting. Its transcript is filed under that workspace, its
+checkpoints are keyed by it, and every path it has ever mentioned describes that
+tree — so picking a new workspace closes the conversation on screen and opens
+what the new folder has, exactly as launching into that folder would: its most
+recent conversation, or a fresh one on the provider and model it was last worked
+in. The conversation you left is not gone; it is in the rail of the folder it
+belongs to, and reopening it there picks up where it stopped. A turn sent to a
+conversation from somewhere else is refused rather than run, which is a rule the
+backend keeps rather than one the window is trusted with.
+
+Switching is refused while a turn is running. The move reconnects every MCP
+server, so the tools the turn is holding would start failing mid-call — stop it
+first.
+
+A conversation appears in the rail once it has something in it. Starting one and
+changing your mind, or trying three models before asking anything, leaves
+nothing behind.
+
 Transcripts live in `~/.taurus/sessions/<workspace>/<id>.jsonl`, in the global
 config home rather than in the project. They hold file contents, command
 output, and MCP responses; kept inside the workspace they would be committed by

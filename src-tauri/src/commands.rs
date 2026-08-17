@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use dashmap::mapref::entry::Entry;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::State;
@@ -37,6 +38,51 @@ pub type CmdResult<T> = Result<T, String>;
 
 async fn session_model(entry: &Arc<SessionEntry>) -> String {
     entry.session.lock().await.model.clone()
+}
+
+/// Refuses a turn in a conversation that belongs to another folder.
+///
+/// A conversation is bound to a workspace three ways at once: its transcript is
+/// filed under that folder, its checkpoints are keyed by it, and every path it
+/// has ever named describes that tree. A turn sent from somewhere else runs
+/// against the open workspace — its files, its permission rules, its
+/// checkpoints — and appends to a transcript filed under the other one, leaving
+/// a single conversation split across two projects with neither half complete.
+///
+/// The window closes a conversation when it changes folders, so this should
+/// never be reached. It is here to make that a rule rather than a habit: the
+/// frontend is one of several things that can call a command, and the one
+/// consequence of getting it wrong is silent and on disk.
+///
+/// The message names the folder rather than saying "wrong workspace", because
+/// the way out is to go back to it — and with two checkouts of the same project
+/// open, the name alone would not say which.
+fn check_workspace(session: &std::path::Path, open: &std::path::Path) -> CmdResult<()> {
+    if session == open {
+        return Ok(());
+    }
+    Err(format!(
+        "This conversation belongs to {}. Open that folder to continue it, or \
+         start a new conversation here.",
+        session.display()
+    ))
+}
+
+/// The workspace a conversation belongs to, which is not always the one open.
+///
+/// Live conversations answer from memory; a saved one from its transcript's
+/// header, which is cheap — [`sessions::workspace_of`] reads the top of the
+/// file, not the file. A conversation that is neither is one there is nothing
+/// to read for, and the open workspace is as good an answer as any for the
+/// "no such session" that follows.
+async fn session_workspace(state: &AppState, session_id: &str) -> PathBuf {
+    if let Ok(entry) = state.session(session_id) {
+        return entry.workspace.clone();
+    }
+    match sessions::workspace_of(session_id) {
+        Some(workspace) => workspace,
+        None => state.host.workspace().await,
+    }
 }
 
 #[derive(Serialize, TS)]
@@ -133,15 +179,18 @@ pub async fn create_session(
 
     let session = Session::new(&model);
     // Stamped at creation rather than looked up later: which branch the work
-    // was done on is only knowable while it is happening.
+    // was done on is only knowable while it is happening. The same is true of
+    // the workspace, which is why the entry carries it from here on.
+    let workspace = state.host.workspace().await;
     let branch = state.host.branch().await;
-    let log = SessionLog::create(&session, &state.host.workspace().await, branch);
+    let log = SessionLog::create(&session, &workspace, branch);
     let id = session.id.clone();
     state.sessions.insert(
         id.clone(),
         Arc::new(SessionEntry {
             session: Arc::new(Mutex::new(session)),
             provider_id: provider_id.clone(),
+            workspace,
             cancel: Arc::new(Mutex::new(CancellationToken::new())),
             log: Arc::new(Mutex::new(log)),
         }),
@@ -196,23 +245,25 @@ pub async fn resume_session(
     session_id: String,
     provider_id: Option<String>,
 ) -> CmdResult<ResumedSession> {
-    let (session, provider_id) = match state.sessions.get(&session_id) {
+    // `loaded` is carried alongside so the log below can be opened on the
+    // transcript this was actually read from — see `SessionLog::resume`.
+    let (session, provider_id, loaded) = match state.sessions.get(&session_id) {
         Some(open) => {
             let entry = open.clone();
             let provider_id = entry.provider_id.clone();
             let session = entry.session.lock().await.clone();
-            (session, provider_id)
+            (session, provider_id, None)
         }
         None => {
-            let (session, _) = sessions::load(&session_id)?;
+            let loaded = sessions::load(&session_id)?;
             // Whichever provider the caller is on, else whatever the host
             // resolves: a transcript records the model, not the backend that
             // served it, and that backend may not even be configured now.
             let (resolved, _) = state
                 .host
-                .resolve_model(provider_id.as_deref(), Some(&session.model))
+                .resolve_model(provider_id.as_deref(), Some(&loaded.session.model))
                 .await?;
-            (session, resolved)
+            (loaded.session.clone(), resolved, Some(loaded))
         }
     };
 
@@ -232,18 +283,25 @@ pub async fn resume_session(
         messages: session.messages.clone(),
     };
 
-    if !state.sessions.contains_key(&session_id) {
-        let log = SessionLog::resume(&session, &state.host.workspace().await);
-        state.sessions.insert(
-            session_id.clone(),
-            Arc::new(SessionEntry {
+    // Only if it is still absent. The awaits above are where a second resume of
+    // the same conversation would arrive, and the entry it had already made is
+    // the newer of the two — an insert here would drop the log it is appending
+    // through and its in-flight turn's cancellation token with it.
+    if let Some(loaded) = loaded {
+        let log = SessionLog::resume(&loaded);
+        if let Entry::Vacant(slot) = state.sessions.entry(session_id.clone()) {
+            slot.insert(Arc::new(SessionEntry {
                 session: Arc::new(Mutex::new(session)),
                 provider_id,
+                // The conversation's own folder, out of its header — not the
+                // one open now. They are the same in the ordinary case and
+                // must not be assumed to be.
+                workspace: loaded.workspace,
                 cancel: Arc::new(Mutex::new(CancellationToken::new())),
                 log: Arc::new(Mutex::new(log)),
-            }),
-        );
-        info!(session = %session_id, "session resumed");
+            }));
+            info!(session = %session_id, "session resumed");
+        }
     }
 
     Ok(resumed)
@@ -262,6 +320,9 @@ pub async fn send_message(
     on_event: Channel<UiEvent>,
 ) -> CmdResult<()> {
     let entry = state.session(&session_id)?;
+
+    check_workspace(&entry.workspace, &state.host.workspace().await)?;
+
     let provider = state.host.provider(&entry.provider_id).await?;
 
     // `/name args` becomes the skill's procedure — or the instruction to
@@ -1379,7 +1440,8 @@ pub async fn list_checkpoints(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> CmdResult<Vec<Checkpoint>> {
-    state.host.checkpoints().await.turns(&session_id)
+    let workspace = session_workspace(&state, &session_id).await;
+    state.host.checkpoints_for(&workspace).turns(&session_id)
 }
 
 /// Restores the workspace to just before `turn`.
@@ -1402,12 +1464,16 @@ pub async fn rewind_to(
         }
     }
 
-    let workspace = state.host.workspace().await;
-    let restored = state
-        .host
-        .checkpoints()
-        .await
-        .rewind(&session_id, &workspace, turn, dry_run)?;
+    // The conversation's own folder, which is where its pre-images came from.
+    // Resolved against the open one instead, a rewind reached for a log that
+    // is not there and reported nothing to undo — and had it found one, it
+    // would have restored a different project's files.
+    let workspace = session_workspace(&state, &session_id).await;
+    let restored =
+        state
+            .host
+            .checkpoints_for(&workspace)
+            .rewind(&session_id, &workspace, turn, dry_run)?;
 
     // The checklist is working state, and rewinding is undoing the work it
     // tracked. Kept, it would be the one thing in the session that still
@@ -1431,11 +1497,10 @@ pub async fn turn_changes(
     session_id: String,
     turn: u32,
 ) -> CmdResult<Vec<TurnChange>> {
-    let workspace = state.host.workspace().await;
+    let workspace = session_workspace(&state, &session_id).await;
     state
         .host
-        .checkpoints()
-        .await
+        .checkpoints_for(&workspace)
         .changes(&session_id, &workspace, turn)
 }
 
@@ -1469,8 +1534,10 @@ pub async fn commit_turn(
         }
     }
 
-    let workspace = state.host.workspace().await;
-    let checkpoints = state.host.checkpoints().await;
+    // The conversation's own folder, which is the repository its turns changed
+    // files in — not whichever one is open now.
+    let workspace = session_workspace(&state, &session_id).await;
+    let checkpoints = state.host.checkpoints_for(&workspace);
 
     // Re-read rather than trusting a path list from the frontend, so what is
     // committed is what was recorded.
@@ -1495,4 +1562,28 @@ pub async fn commit_turn(
         "committed a turn"
     );
     Ok(commit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn a_turn_in_the_folder_the_conversation_belongs_to_is_allowed() {
+        assert!(check_workspace(Path::new("/src/a"), Path::new("/src/a")).is_ok());
+    }
+
+    #[test]
+    fn a_turn_from_another_folder_is_refused_and_told_where_to_go() {
+        // Two checkouts of one project is the case the path has to be spelled
+        // out for: "wrong workspace" would not say which of them.
+        let err = check_workspace(Path::new("/src/a/taurus"), Path::new("/work/taurus"))
+            .expect_err("a conversation must not be continued from another folder");
+        assert!(err.contains("/src/a/taurus"), "{err}");
+        assert!(
+            !err.contains("/work/taurus"),
+            "names the way back, not the dead end: {err}"
+        );
+    }
 }

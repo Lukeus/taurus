@@ -725,11 +725,24 @@ impl Host {
         .with_plan(plan)
     }
 
-    /// This workspace's checkpoint logs, for listing and rewinding.
+    /// The open workspace's checkpoint logs, for the turn about to record into
+    /// them.
     pub async fn checkpoints(&self) -> CheckpointStore {
         CheckpointStore::new(crate::sessions::checkpoints_dir(
             &self.workspace.read().await,
         ))
+    }
+
+    /// One named workspace's checkpoint logs.
+    ///
+    /// What anything *reading* a conversation's history wants, because a
+    /// checkpoint log is keyed by the workspace the conversation was held in
+    /// rather than by the one open now. Asked against the wrong workspace the
+    /// log is simply not there, and the answer is an empty history for a
+    /// conversation that rewrote half the project — which is what listing and
+    /// rewinding both used to do the moment somebody switched folders.
+    pub fn checkpoints_for(&self, workspace: &Path) -> CheckpointStore {
+        CheckpointStore::new(crate::sessions::checkpoints_dir(workspace))
     }
 
     /// Where this workspace stands with git.
@@ -2799,6 +2812,15 @@ mod tests {
         // A different workspace is a different log, even for the same id.
         host.set_workspace(&second).await.unwrap();
         assert!(host.checkpoints().await.turns("s1").unwrap().is_empty());
+
+        // But the conversation's history is not gone, only somewhere the open
+        // workspace does not look. Everything reading a conversation asks by
+        // the folder it belongs to, which is what `checkpoints_for` is for:
+        // resolved against the open one instead, the Changes drawer reported
+        // nothing to undo for a conversation that had rewritten the project.
+        let turns = host.checkpoints_for(&first).turns("s1").unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].prompt, "change a.txt");
     }
 
     #[tokio::test]
