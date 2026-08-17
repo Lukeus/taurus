@@ -17,11 +17,11 @@ pub const MAX_ITERATIONS_LIMIT: u32 = 50;
 /// Where an agent came from. Later tiers shadow earlier ones by name, so a
 /// project can override a personal agent, and either can override a built-in.
 ///
-/// Unlike [`taurus_skills::SkillTier`], there *is* a `Builtin`: `explorer` and
-/// `worker` ship with the harness and always have, so a variant for them is
-/// describing what exists rather than reserving a label for something that
-/// might. A user file named `explorer.md` replaces the built-in, which is the
-/// natural way to say "your explorer, but with the shell".
+/// Unlike [`taurus_skills::SkillTier`], there *is* a `Builtin`: `explorer`,
+/// `worker`, and `coder` ship with the harness and always have, so a variant
+/// for them is describing what exists rather than reserving a label for
+/// something that might. A user file named `explorer.md` replaces the built-in,
+/// which is the natural way to say "your explorer, but with the shell".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]

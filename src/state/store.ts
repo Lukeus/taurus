@@ -20,6 +20,7 @@ import type {
   AgentProposal,
   Attachment,
   SkillProposal,
+  Step,
   TranscriptView,
   UiEvent,
 } from "../lib/api";
@@ -564,12 +565,15 @@ export function viewFromCall(
         ? { type: "questions", id, questions: payload.questions }
         : undefined;
 
-    case "update_plan":
+    case "update_plan": {
       // Only the last one drawn — see `supersedePlans`, which the callers of
       // this apply once they have the whole conversation.
-      return Array.isArray(payload.steps)
-        ? { type: "plan", steps: payload.steps }
+      if (!Array.isArray(payload.steps)) return undefined;
+      const steps = payload.steps.map(asStep).filter(isStep);
+      return steps.length === payload.steps.length
+        ? { type: "plan", steps }
         : undefined;
+    }
 
     default:
       return undefined;
@@ -579,6 +583,92 @@ export function viewFromCall(
 /** `caption` is optional to the model and nullable across the boundary. */
 function asCaption(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+/**
+ * The field names a model reaches for when it means `text`, `state`, and
+ * `active_form`, in the same order Rust tries them.
+ *
+ * This is the half of `Step::from_json` that replay needs, and it has to exist
+ * because of *where* the two paths get their steps. A live call is drawn from
+ * the view the tool built, which is a `Step` — normalized, because Rust already
+ * read it. A reopened conversation is drawn from the raw arguments the model
+ * sent, which is whatever it typed: `{"content": "...", "status": "active"}` is
+ * a plan Rust accepts and this file, reading `.text` and `.state`, would render
+ * as three blank rows and a progress bar stuck at zero.
+ *
+ * Kept deliberately as a copy rather than generated, since the cost of the two
+ * drifting is a plan card that looks broken rather than one that fails — see
+ * `taurus_tools::view`, which is the list to keep this in step with.
+ */
+const TEXT_KEYS = [
+  "text",
+  "step",
+  "task",
+  "title",
+  "name",
+  "description",
+  "content",
+];
+const STATE_KEYS = ["state", "status"];
+const ACTIVE_FORM_KEYS = ["active_form", "activeForm", "active_text"];
+
+/** The aliases each state answers to, flattened into what it means. */
+const STATE_ALIASES: Record<string, Step["state"]> = {
+  todo: "todo",
+  pending: "todo",
+  not_started: "todo",
+  open: "todo",
+  waiting: "todo",
+  active: "active",
+  in_progress: "active",
+  "in-progress": "active",
+  doing: "active",
+  current: "active",
+  running: "active",
+  done: "done",
+  completed: "done",
+  complete: "done",
+  finished: "done",
+};
+
+/**
+ * One saved step in the shape the panel reads, or `undefined` if it is not one.
+ *
+ * A step with no usable text is the only thing rejected. An unreadable *state*
+ * is not: it can only have come from a build whose alias list differed from
+ * this one, and reading it as `todo` — the same default an absent state gets —
+ * costs one wrong word on one row, where blanking the card costs the whole
+ * plan.
+ */
+function asStep(value: unknown): Step | undefined {
+  if (typeof value === "string") {
+    return value.trim() ? { text: value, state: "todo" } : undefined;
+  }
+  if (typeof value !== "object" || value === null) return undefined;
+  const step = value as Record<string, unknown>;
+
+  const text = TEXT_KEYS.map((key) => step[key]).find(
+    (v) => typeof v === "string" && v.trim(),
+  );
+  if (typeof text !== "string") return undefined;
+
+  const state = STATE_KEYS.map((key) => step[key]).find(
+    (v) => typeof v === "string",
+  );
+  const activeForm = ACTIVE_FORM_KEYS.map((key) => step[key]).find(
+    (v) => typeof v === "string" && v.trim(),
+  );
+
+  return {
+    text,
+    state: (typeof state === "string" && STATE_ALIASES[state]) || "todo",
+    ...(typeof activeForm === "string" ? { active_form: activeForm } : {}),
+  };
+}
+
+function isStep(step: Step | undefined): step is Step {
+  return step !== undefined;
 }
 
 export type PlanView = Extract<TranscriptView, { type: "plan" }>;

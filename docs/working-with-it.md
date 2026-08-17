@@ -63,7 +63,9 @@ the record of where you are:
 
 Call update_plan again the moment a step's state changes — send the whole list
 back with the states updated. Work the step marked [>], and do not start
-another until it is [x]. When every step is [x], say what you did and stop.
+another until it is [x]. Closing the last step is a call to update_plan, not a
+sentence in your reply: when the work is done, send the whole list back with
+every step 'done' first, and then say what you did and stop.
 ```
 
 The same list is drawn in the transcript, so the user is reading what the model
@@ -79,6 +81,12 @@ Three properties do the work, and each one is a test:
 - **One step in progress.** Refused if more, naming which ones. A checklist with
   three things active says nothing about where the turn is, which is the single
   question it exists to answer.
+- **States only move forward.** A step marked done that comes back as `todo` or
+  `active` is refused, and so is a list where a finished step sits below an
+  unfinished one. Both are the model having lost its place rather than a plan it
+  meant to write — and because the list is replaced wholesale, a re-typed list
+  that simply leaves the states off would otherwise undo every step it had
+  finished, silently, since an absent state reads as `todo`.
 - **Nothing when there is no plan.** Not an empty section — nothing at all. A
   standing instruction to keep a checklist is exactly how a two-step turn grows
   a six-step plan.

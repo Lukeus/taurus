@@ -130,9 +130,25 @@ A turn can hand a self-contained job to a sub-agent: its own conversation, its
 own context window, and a narrower set of tools. The parent sees only the
 child's conclusion, so a search that reads thirty files costs it one paragraph.
 
-Two ship with the harness. `explorer` searches and reads and cannot modify
-anything; `worker` carries out one well-specified change with the tools the main
-agent has. The model reaches either through `spawn_subagent`.
+Three ship with the harness, and the split between them is a question the parent
+can answer about its own task before it delegates:
+
+| Agent | Use it when | Scoped to |
+| --- | --- | --- |
+| `explorer` | The answer is in the code and only needs reading. | `read_file`, `list_dir`, `glob`, `grep`, `load_skill` |
+| `worker` | You can dictate the edit exactly. | Whatever the main agent has |
+| `coder` | Someone has to look at the code and decide. | The file tools, `grep`/`glob`, `run_command`, `load_skill` |
+
+`coder` is the one that checks its own work: it is told to read around the
+change before writing it, and to build it or run the tests afterwards and report
+what it ran. That is also why it is scoped to a named list rather than
+inheriting — an agent that advertises "builds or tests it" and quietly also
+holds a web client and your MCP servers is advertising a different thing. The
+model reaches any of them through `spawn_subagent`.
+
+`coder` and `worker` overlap at the boundary, because real tasks do. What keeps
+them apart is who decides: hand `worker` a decision it was not given and it is
+told to stop and say what is missing rather than guess.
 
 You can add your own. An agent is a markdown file in `~/.taurus/agents` or
 `<workspace>/.taurus/agents` — the file name is the agent's name, and the body

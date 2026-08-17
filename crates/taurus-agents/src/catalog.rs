@@ -29,7 +29,7 @@ pub struct AgentCatalog {
 }
 
 /// The built-ins, and only the built-ins. A host that has not scanned yet still
-/// has a working `explorer` and `worker`.
+/// has a working `explorer`, `worker`, and `coder`.
 impl Default for AgentCatalog {
     fn default() -> Self {
         Self {
@@ -195,6 +195,14 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// How many agents a catalog starts with. Derived rather than written out,
+    /// because these tests are about discovery on top of the built-ins and not
+    /// about how many there are — spelling it `2` made adding a third break
+    /// four of them for no reason connected to what they check.
+    fn builtins() -> usize {
+        builtin::definitions().len()
+    }
+
     fn write_agent(root: &Path, stem: &str, body: &str, extra: &str) {
         std::fs::create_dir_all(root).unwrap();
         std::fs::write(
@@ -221,9 +229,10 @@ mod tests {
         let (catalog, problems) =
             AgentCatalog::discover(&sources(vec![(AgentTier::User, &missing)]));
         assert!(problems.is_empty());
-        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog.len(), builtins());
         assert!(catalog.contains("explorer"));
         assert!(catalog.contains("worker"));
+        assert!(catalog.contains("coder"));
     }
 
     #[test]
@@ -235,7 +244,11 @@ mod tests {
         let (catalog, problems) =
             AgentCatalog::discover(&sources(vec![(AgentTier::User, dir.path())]));
         assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(catalog.len(), 4, "two built-ins plus two files");
+        assert_eq!(
+            catalog.len(),
+            builtins() + 2,
+            "the built-ins plus two files"
+        );
         assert_eq!(catalog.get("beta").unwrap().system_prompt, "Be beta.");
         assert_eq!(catalog.get("beta").unwrap().tier, AgentTier::User);
     }
@@ -281,7 +294,7 @@ mod tests {
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(
             catalog.len(),
-            2,
+            builtins(),
             "it replaced the built-in, not added to it"
         );
         let agent = catalog.get("explorer").unwrap();
@@ -324,7 +337,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("subdir")).unwrap();
         let (catalog, problems) =
             AgentCatalog::discover(&sources(vec![(AgentTier::User, dir.path())]));
-        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog.len(), builtins());
         assert!(problems.is_empty());
     }
 

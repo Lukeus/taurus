@@ -540,6 +540,80 @@ describe("the plan supersedes itself", () => {
     // mid-render takes the whole transcript with it.
     expect(viewFromCall("p1", "update_plan", { steps: "nope" })).toBeUndefined();
   });
+
+  it("reads the field names the model actually used", () => {
+    // The saved call is what the *model* typed, not what Rust made of it, and
+    // Rust is forgiving about the names — `content`/`status` is a plan it
+    // accepts. Read literally, that reopens as three rows with no text and a
+    // bar stuck at zero, which is a plan card that looks broken.
+    expect(
+      viewFromCall("p1", "update_plan", {
+        steps: [
+          { content: "List the files", status: "completed" },
+          { task: "Count the extensions", status: "in_progress" },
+          { title: "Draw the chart" },
+        ],
+      }),
+    ).toEqual({
+      type: "plan",
+      steps: [
+        { text: "List the files", state: "done" },
+        { text: "Count the extensions", state: "active" },
+        // No state given is the same default the tool applies.
+        { text: "Draw the chart", state: "todo" },
+      ],
+    });
+  });
+
+  it("keeps the running phrasing whatever the model called it", () => {
+    // `activeForm` is the name Claude Code's checklist uses, and a model that
+    // has seen that one reaches for it. It is the summary line's only source.
+    expect(
+      viewFromCall("p1", "update_plan", {
+        steps: [
+          { text: "Count the extensions", state: "active", activeForm: "Counting" },
+        ],
+      }),
+    ).toEqual({
+      type: "plan",
+      steps: [
+        { text: "Count the extensions", state: "active", active_form: "Counting" },
+      ],
+    });
+  });
+
+  it("reads a bare string as a step with nothing said about its state", () => {
+    expect(
+      viewFromCall("p1", "update_plan", { steps: ["Read the parser"] }),
+    ).toEqual({
+      type: "plan",
+      steps: [{ text: "Read the parser", state: "todo" }],
+    });
+  });
+
+  it("draws nothing when a saved step has no text under any name", () => {
+    // A row with no text is not a step, and half a plan is worse than none:
+    // the count and the bar would both be measuring a list that is missing an
+    // item nobody can see.
+    expect(
+      viewFromCall("p1", "update_plan", {
+        steps: [{ text: "Read the parser" }, { state: "todo" }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("reads a state it does not recognize as the default rather than giving up", () => {
+    // It can only have come from a build whose alias list differed. One wrong
+    // word on one row beats losing the card.
+    expect(
+      viewFromCall("p1", "update_plan", {
+        steps: [{ text: "Read the parser", state: "blocked" }],
+      }),
+    ).toEqual({
+      type: "plan",
+      steps: [{ text: "Read the parser", state: "todo" }],
+    });
+  });
 });
 
 describe("the plan pinned above the composer", () => {
