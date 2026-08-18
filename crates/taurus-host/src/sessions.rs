@@ -180,38 +180,52 @@ pub struct SessionLog {
 }
 
 impl SessionLog {
-    /// Starts a transcript for a new session and writes its header.
+    /// Starts a transcript for a new session.
+    ///
+    /// Nothing is written until there is something to record. A session is
+    /// created by every model switch and every press of **New conversation**,
+    /// and writing the header here made a file for each — which listed, so the
+    /// rail filled with untitled rows for conversations that never happened,
+    /// and reopening "the most recent" reopened one of them. The header is
+    /// written by the first [`Self::record`], which had to be able to write it
+    /// anyway.
     ///
     /// `branch` is passed in rather than looked up, because asking git is an
     /// async round trip and this crate's transcript layer has no business
     /// knowing that git exists. `None` covers a workspace with no repository, a
     /// detached HEAD, and every caller that does not care.
     pub fn create(session: &Session, workspace: &Path, branch: Option<String>) -> Self {
-        let mut log = Self {
+        // `persisted` is zero because nothing is on disk yet, so every message
+        // the session already holds still has to be written. Adopting an
+        // existing transcript is `resume`'s job, not this one's.
+        Self {
             path: transcript_path(session, workspace),
             header: Some(header_for(session, workspace, branch)),
             persisted: 0,
             off: false,
             warned: false,
-        };
-        log.ensure_header();
-        // Nothing is on disk yet, so every message the session already holds
-        // still has to be written. Adopting an existing transcript is
-        // `resume`'s job, not this one's.
-        log
+        }
     }
 
     /// Reopens the transcript a session was loaded from, to append to it.
-    pub fn resume(session: &Session, workspace: &Path) -> Self {
+    ///
+    /// Takes the whole [`Loaded`] rather than a session and a workspace,
+    /// because the file to append to is the one it was read from — not one
+    /// derived from wherever the app happens to be pointing now. Derived, it
+    /// forked the conversation: [`load`] finds a transcript by id across every
+    /// workspace, so resuming one from anywhere but its own folder wrote the
+    /// rest of it into a second file under a second key, and both halves then
+    /// listed as separate conversations with the same id.
+    pub fn resume(loaded: &Loaded) -> Self {
         Self {
-            path: transcript_path(session, workspace),
+            path: loaded.path.clone(),
             // Carried but almost never written: a transcript that loaded has a
             // header by definition, so this is only reached if the file lost
             // one. `started` and `branch` are unrecoverable in that case — the
             // branch this is resuming on is not the one it began on, and
             // writing today's would be a worse record than none.
-            header: Some(header_for(session, workspace, None)),
-            persisted: session.messages.len(),
+            header: Some(header_for(&loaded.session, &loaded.workspace, None)),
+            persisted: loaded.session.messages.len(),
             off: false,
             warned: false,
         }
@@ -354,12 +368,28 @@ fn has_header(path: &Path) -> bool {
         .any(|line| matches!(serde_json::from_str::<Record>(&line), Ok(Record::Header(_))))
 }
 
+/// A conversation read back off disk, with the two facts about *where* it lives
+/// that the session alone cannot answer.
+///
+/// Both matter because [`load`] finds a transcript by id across every
+/// workspace, so what comes back is not necessarily from the folder that is
+/// open. `path` is the file to go on appending to, and `workspace` is the
+/// project the conversation is about — the tree its file paths describe, and
+/// the one its checkpoints are keyed by.
+pub struct Loaded {
+    pub session: Session,
+    /// The transcript this was read from.
+    pub path: PathBuf,
+    /// The workspace it was started in, from its own header.
+    pub workspace: PathBuf,
+}
+
 /// Rebuilds a session from its transcript.
 ///
 /// A trailing line that will not parse is dropped rather than failing the load:
 /// it is the turn that was in flight when the process died, and refusing to
 /// open the file would lose the rest of the conversation over it.
-pub fn load(id: &str) -> Result<(Session, PathBuf), String> {
+pub fn load(id: &str) -> Result<Loaded, String> {
     let path = find(id).ok_or_else(|| format!("no saved session '{id}'"))?;
     let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
 
@@ -389,15 +419,28 @@ pub fn load(id: &str) -> Result<(Session, PathBuf), String> {
         ));
     }
 
-    Ok((
-        Session {
+    Ok(Loaded {
+        workspace: PathBuf::from(header.workspace),
+        session: Session {
             id: header.id,
             model: header.model,
             messages,
             usage,
         },
         path,
-    ))
+    })
+}
+
+/// The workspace a saved conversation belongs to, read from its header alone.
+///
+/// A cheap answer to the one question [`load`] is otherwise the only way to
+/// ask. Anything reading a conversation's checkpoints has to know which project
+/// they are keyed by, and reading a whole transcript — which holds every file
+/// this conversation ever read — to learn one path would make listing the
+/// changed files of an open conversation cost more than the turn that changed
+/// them.
+pub fn workspace_of(id: &str) -> Option<PathBuf> {
+    read_meta(&find(id)?).map(|meta| PathBuf::from(meta.workspace))
 }
 
 /// Sessions for one workspace, or for every workspace, newest first.
@@ -578,7 +621,9 @@ mod tests {
         let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
 
-        let (loaded, _) = load("abc123").expect("the transcript should reload");
+        let loaded = load("abc123")
+            .expect("the transcript should reload")
+            .session;
         assert_eq!(loaded.id, "abc123");
         assert_eq!(loaded.model, "test-model");
         assert_eq!(loaded.messages.len(), 2);
@@ -634,7 +679,7 @@ mod tests {
         // should read the same as one written before the field existed rather
         // than carrying `"branch": null` on every line.
         let session = session_with("plain1", &["hello"]);
-        SessionLog::create(&session, workspace, None);
+        SessionLog::create(&session, workspace, None).record(&session);
 
         let path = sessions_dir()
             .join(workspace_key(workspace))
@@ -656,7 +701,7 @@ mod tests {
         session.push(Message::assistant("ok"));
         log.record(&session);
 
-        let (loaded, _) = load("append1").unwrap();
+        let loaded = load("append1").unwrap().session;
         assert_eq!(loaded.messages.len(), 4, "a message was duplicated or lost");
     }
 
@@ -669,13 +714,13 @@ mod tests {
         let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
 
-        let (mut loaded, _) = load("resume1").unwrap();
-        let mut resumed = SessionLog::resume(&loaded, workspace);
-        loaded.push(Message::user("three"));
-        resumed.record(&loaded);
+        let loaded = load("resume1").unwrap();
+        let mut resumed = SessionLog::resume(&loaded);
+        let mut session = loaded.session;
+        session.push(Message::user("three"));
+        resumed.record(&session);
 
-        let (again, _) = load("resume1").unwrap();
-        assert_eq!(again.messages.len(), 5);
+        assert_eq!(load("resume1").unwrap().session.messages.len(), 5);
     }
 
     #[test]
@@ -731,7 +776,9 @@ mod tests {
             .unwrap();
         drop(file);
 
-        let (loaded, _) = load("torn1").expect("a torn tail must not fail the load");
+        let loaded = load("torn1")
+            .expect("a torn tail must not fail the load")
+            .session;
         assert_eq!(loaded.messages.len(), 2);
     }
 
@@ -778,15 +825,64 @@ mod tests {
     }
 
     #[test]
-    fn a_session_with_no_turns_lists_without_a_title() {
+    fn a_session_with_no_turns_writes_nothing_and_lists_as_nothing() {
+        // Every model switch and every press of New conversation makes one of
+        // these. Written eagerly, each left a file that listed, so the rail
+        // filled with untitled rows for conversations that never happened and
+        // "reopen the most recent" reopened one of them.
         let _home = isolated_home();
         let workspace = Path::new("/tmp/empty");
         let session = session_with("empty1", &[]);
-        SessionLog::create(&session, workspace, None);
+        let log = SessionLog::create(&session, workspace, None);
+
+        assert!(
+            !log.path().exists(),
+            "an unused session is not a transcript"
+        );
+        assert!(list(Some(workspace)).is_empty());
+    }
+
+    #[test]
+    fn a_session_starts_being_recorded_the_moment_it_has_a_turn() {
+        // The other half of the rule above: deferring the header must not cost
+        // the conversation its record, only the empty file.
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/firstturn");
+        let session = session_with("first1", &["a real question"]);
+        SessionLog::create(&session, workspace, None).record(&session);
 
         let listed = list(Some(workspace));
         assert_eq!(listed.len(), 1);
-        assert!(listed[0].title.is_empty());
+        assert_eq!(listed[0].title, "a real question");
+        assert_eq!(load("first1").unwrap().session.messages.len(), 2);
+    }
+
+    #[test]
+    fn a_resumed_conversation_appends_to_its_own_transcript_from_anywhere() {
+        // `load` finds a transcript by id across every workspace, so a resume
+        // that derived the path from the open folder wrote the rest of the
+        // conversation into a second file under a second key — two halves
+        // listing as two conversations sharing one id.
+        let _home = isolated_home();
+        let home_workspace = Path::new("/tmp/its-own-folder");
+
+        let mut session = session_with("travelled1", &["started here"]);
+        SessionLog::create(&session, home_workspace, None).record(&session);
+
+        let loaded = load("travelled1").unwrap();
+        assert_eq!(loaded.workspace, home_workspace);
+
+        let mut log = SessionLog::resume(&loaded);
+        session.push(Message::user("continued from elsewhere"));
+        session.push(Message::assistant("ok"));
+        log.record(&session);
+
+        assert_eq!(
+            list(Some(home_workspace)).len(),
+            1,
+            "the conversation must not have been forked into a second file"
+        );
+        assert_eq!(load("travelled1").unwrap().session.messages.len(), 4);
     }
 
     #[test]
@@ -831,8 +927,9 @@ mod tests {
         session.push(Message::assistant("ok"));
         log.record(&session);
 
-        let (loaded, _) = load("blocked1")
-            .expect("the next turn must write the header it could not write before");
+        let loaded = load("blocked1")
+            .expect("the next turn must write the header it could not write before")
+            .session;
         assert_eq!(
             loaded.messages.len(),
             4,
@@ -889,7 +986,9 @@ mod tests {
 
         // `load` reads a header wherever it sits, so the listing must agree. A
         // listing that is stricter hides a conversation that opens fine.
-        let (loaded, _) = load("ooo1").expect("load accepts a header anywhere");
+        let loaded = load("ooo1")
+            .expect("load accepts a header anywhere")
+            .session;
         assert_eq!(loaded.model, "test-model");
 
         let listed = list(Some(workspace));

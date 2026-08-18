@@ -22,6 +22,9 @@ import type { DiffHunk } from "../bindings/DiffHunk";
 import type { DiffLine } from "../bindings/DiffLine";
 import type { DiffLineKind } from "../bindings/DiffLineKind";
 import type { FileDiff } from "../bindings/FileDiff";
+import type { FlowEdge } from "../bindings/FlowEdge";
+import type { FlowNode } from "../bindings/FlowNode";
+import type { FlowStage } from "../bindings/FlowStage";
 import type { CreatedSession } from "../bindings/CreatedSession";
 import type { IndexProgress } from "../bindings/IndexProgress";
 import type { Instructions } from "../bindings/Instructions";
@@ -33,6 +36,7 @@ import type { McpServerView } from "../bindings/McpServerView";
 import type { McpTransport } from "../bindings/McpTransport";
 import type { McpValue } from "../bindings/McpValue";
 import type { Message } from "../bindings/Message";
+import type { MessageKind } from "../bindings/MessageKind";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
@@ -49,6 +53,7 @@ import type { SaveTarget } from "../bindings/SaveTarget";
 import type { Scope } from "../bindings/Scope";
 import type { SearchBackend } from "../bindings/SearchBackend";
 import type { SearchSettings } from "../bindings/SearchSettings";
+import type { SequenceMessage } from "../bindings/SequenceMessage";
 import type { ServerStatus } from "../bindings/ServerStatus";
 import type { ModelEntry } from "../bindings/ModelEntry";
 import type { SessionMeta } from "../bindings/SessionMeta";
@@ -81,6 +86,9 @@ export type {
   DiffLine,
   DiffLineKind,
   FileDiff,
+  FlowEdge,
+  FlowNode,
+  FlowStage,
   IndexProgress,
   Instructions,
   KeyStatus,
@@ -91,6 +99,7 @@ export type {
   McpTransport,
   McpValue,
   Message,
+  MessageKind,
   ModelEntry,
   ModelInfo,
   PermissionDecision,
@@ -106,6 +115,7 @@ export type {
   Scope,
   SearchBackend,
   SearchSettings,
+  SequenceMessage,
   ServerStatus,
   SessionMeta,
   SkillProposal,
@@ -151,6 +161,17 @@ export function sendMessage(
 
 export const cancelSession = (sessionId: string) =>
   invoke<void>("cancel_session", { sessionId });
+
+/**
+ * Drops a live session from the backend, cancelling anything still running in
+ * it.
+ *
+ * The conversation itself is untouched — it is on disk and reopens from the
+ * rail. This releases only the in-memory copy, which the backend otherwise
+ * holds, transcript and attached images included, for the life of the process.
+ */
+export const closeSession = (sessionId: string) =>
+  invoke<void>("close_session", { sessionId });
 
 /** Saved conversations, newest first. `all` crosses workspaces. */
 export const listSessions = (all = false) =>

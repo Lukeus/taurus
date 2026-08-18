@@ -41,6 +41,37 @@ pub enum TranscriptView {
         labels: Vec<String>,
         series: Vec<Series>,
     },
+    /// Who talks to whom, in what order.
+    ///
+    /// The one diagram whose layout needs no algorithm: participants are lanes
+    /// in the order they are declared, and messages are rows in the order they
+    /// happened. Everything the reader needs is already in the payload, which
+    /// is why this draws identically in the app and in a terminal.
+    Sequence {
+        title: String,
+        caption: Option<String>,
+        /// The lanes, left to right.
+        participants: Vec<String>,
+        /// The arrows, top to bottom, in the order they occur.
+        messages: Vec<SequenceMessage>,
+    },
+    /// What connects to what, in stages.
+    ///
+    /// The layering is the model's, not something recovered from the edges.
+    /// Working out which node belongs at which depth, and what order to put
+    /// them in so the lines cross as little as possible, is the hard and
+    /// failure-prone half of drawing a graph — and it is a question the model
+    /// can already answer, because anything worth diagramming was understood in
+    /// stages before it was written down. Asked for the stages, the drawing is
+    /// arithmetic; left to infer them, it is a layout engine that is wrong
+    /// occasionally and unfixably.
+    Flow {
+        title: String,
+        caption: Option<String>,
+        /// Columns, left to right, in reading order.
+        stages: Vec<FlowStage>,
+        edges: Vec<FlowEdge>,
+    },
     Questions {
         /// The tool call waiting on these. An answer quotes it back, which is
         /// how the harness knows which blocked call to resume.
@@ -268,6 +299,80 @@ pub enum ColumnKind {
     /// number and tinted by direction, so a regression is visible without
     /// reading the column.
     Delta,
+}
+
+/// One arrow in a sequence diagram.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct SequenceMessage {
+    /// Who it leaves, named exactly as in `participants`.
+    pub from: String,
+    /// Who it arrives at, named exactly as in `participants`. The same as
+    /// `from` for work a participant does to itself.
+    pub to: String,
+    /// What is being sent, as a short label — `POST /orders`, `write the row`.
+    pub text: String,
+    #[serde(default)]
+    pub kind: MessageKind,
+}
+
+/// Whether an arrow is work going out or an answer coming back.
+///
+/// Two, not more. A sequence diagram earns its place by showing the order of a
+/// conversation and where it turns around; anything finer — activation bars,
+/// nesting depth, async versus sync — is detail the reader of a transcript has
+/// no way to act on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum MessageKind {
+    /// A request, a call, work handed on. Drawn as a solid arrow.
+    #[default]
+    Call,
+    /// An answer coming back to whoever asked. Drawn as a dashed arrow.
+    Return,
+}
+
+/// One column of a flow diagram: everything at the same depth.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct FlowStage {
+    /// A heading over the column — `Edge`, `Service`, `Storage`. Optional,
+    /// and worth setting when the stages are a real division rather than just
+    /// the order things happen in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The boxes in this column, top to bottom.
+    pub nodes: Vec<FlowNode>,
+}
+
+/// One box in a flow diagram.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct FlowNode {
+    /// What the box says, and how edges name it — so it has to be unique
+    /// across the whole diagram. Named by its label rather than by a separate
+    /// id for the same reason a sequence diagram's participants are: one name
+    /// per thing is one thing to keep straight.
+    pub label: String,
+    /// A second, quieter line inside the box — the technology, the file, the
+    /// rate limit. Left out when the label says it all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// One arrow between two boxes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct FlowEdge {
+    /// The label of the node it leaves.
+    pub from: String,
+    /// The label of the node it arrives at.
+    pub to: String,
+    /// What travels along it — `POST /orders`, `on failure`. Optional; leave
+    /// it off when the arrow speaks for itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// One line of a chart — a metric that can be plotted against the shared

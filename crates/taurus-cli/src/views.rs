@@ -1,4 +1,4 @@
-//! Tables and charts, drawn for a terminal.
+//! Tables, charts and diagrams, drawn for a terminal.
 //!
 //! The desktop app gets a sortable table and a chart with tabs. A terminal gets
 //! neither, and pretending otherwise — a full-screen pager, a redrawn chart on
@@ -10,7 +10,10 @@
 //! vertical bars need a height a scrollback does not have and a width every
 //! label has to fit inside.
 
-use taurus_tools::view::{ColumnKind, Series, StepState, TranscriptView};
+use taurus_tools::view::{
+    ColumnKind, FlowEdge, FlowStage, MessageKind, SequenceMessage, Series, StepState,
+    TranscriptView,
+};
 
 /// Longest a single table cell may print before it is cut.
 ///
@@ -93,6 +96,42 @@ pub fn render(view: &TranscriptView, color: bool) -> String {
             out
         }
 
+        // Lanes and arrows, the same shape the app draws. A sequence diagram is
+        // the one picture a scrollback can hold honestly: its layout is the
+        // payload's own order rather than anything measured, so nothing is lost
+        // by drawing it in characters instead of pixels.
+        TranscriptView::Sequence {
+            title,
+            caption,
+            participants,
+            messages,
+        } => {
+            let mut out = heading(title, caption.as_deref(), color);
+            out.push_str(&sequence(participants, messages, color));
+            out
+        }
+
+        // The stages, then the arrows.
+        //
+        // Not the boxes-and-lines the app draws, and deliberately. A sequence
+        // diagram's layout survives being drawn in characters because it is a
+        // grid; a graph's does not — routing arbitrary edges between arbitrary
+        // rows in a character cell needs either crossings a reader cannot
+        // follow or a canvas a scrollback has not got. So the terminal gets the
+        // two facts the picture is made of, in a form that is complete, greppable
+        // and pastes into an issue: what is at each depth, and what points at
+        // what.
+        TranscriptView::Flow {
+            title,
+            caption,
+            stages,
+            edges,
+        } => {
+            let mut out = heading(title, caption.as_deref(), color);
+            out.push_str(&flow(stages, edges, color));
+            out
+        }
+
         // A checklist needs neither columns nor scale, so this is the one view
         // the terminal draws as well as the app does. The markers are the
         // model's own — `[x]`, `[>]`, `[ ]` — so a plan read here and a plan
@@ -115,6 +154,225 @@ pub fn render(view: &TranscriptView, color: bool) -> String {
         // Drawn by the prompt that is about to ask them, not here.
         TranscriptView::Questions { .. } => String::new(),
     }
+}
+
+/// Characters one lane occupies, gap included.
+///
+/// Wide enough that the shortest arrow still reads as an arrow rather than as
+/// two brackets touching. Grown to fit the longest participant name, so the
+/// header never has to be truncated — the names are what every arrow is read
+/// against.
+const LANE_MIN: usize = 13;
+
+/// Draws the lanes and the arrows between them.
+///
+/// A character grid rather than string concatenation, because every row has to
+/// put a lifeline at each lane's centre *and* an arrow across some span of them,
+/// and those two overlap. Built as a row of spaces, stamped with the lifelines,
+/// then stamped again with the arrow — so the arrow wins wherever it lands,
+/// which is exactly the rule the picture needs.
+///
+/// The arrowheads are `<` and `>` rather than the geometric pointers they would
+/// otherwise want to be. Everything else drawn here is box-drawing (the U+2500
+/// block), which every terminal renders one cell wide. The pointers are
+/// Geometric Shapes, which are East-Asian-ambiguous: a terminal set for a CJK
+/// locale gives them two cells, and every lane to the right of an arrow shifts
+/// by one. A picture whose alignment is the whole point cannot be built on a
+/// character whose width is a setting — and this output is meant to survive
+/// being pasted somewhere else.
+fn sequence(participants: &[String], messages: &[SequenceMessage], color: bool) -> String {
+    let widest = participants
+        .iter()
+        .map(|p| p.chars().count())
+        .max()
+        .unwrap_or(0);
+    let lane = LANE_MIN.max(widest + 3);
+    let centre = |i: usize| i * lane + lane / 2;
+    // A whole lane past the last centre, so the rightmost name has room to sit
+    // centred rather than being clipped by the edge of the grid. Trailing
+    // spaces come off every row before it is printed.
+    let width = participants.len() * lane;
+
+    let index = |name: &String| participants.iter().position(|p| p == name);
+
+    let mut out = String::new();
+
+    // The header, each name centred on the lane it labels.
+    let mut header = vec![' '; width];
+    for (i, name) in participants.iter().enumerate() {
+        let chars: Vec<char> = name.chars().collect();
+        let start = centre(i).saturating_sub(chars.len() / 2);
+        for (n, ch) in chars.iter().enumerate() {
+            if let Some(slot) = header.get_mut(start + n) {
+                *slot = *ch;
+            }
+        }
+    }
+    out.push_str(&format!("  {}\n", collect(&header)));
+    out.push_str(&dim(
+        &format!(
+            "  {}\n",
+            collect(&lifelines(participants.len(), width, lane))
+        ),
+        color,
+    ));
+
+    for message in messages {
+        let (Some(from), Some(to)) = (index(&message.from), index(&message.to)) else {
+            // Unreachable through the tool, which refuses an arrow naming a
+            // participant it never declared. A transcript hand-edited past that
+            // check still must not lose the message: the label carries the
+            // meaning, and a row without its arrow is better than no row.
+            out.push_str(&format!(
+                "  {} → {}: {}\n",
+                message.from, message.to, message.text
+            ));
+            continue;
+        };
+
+        let dash = match message.kind {
+            MessageKind::Call => '─',
+            MessageKind::Return => '┄',
+        };
+
+        if from == to {
+            // Work a participant does on its own, drawn as a turn back into the
+            // same lane. Two rows, because one cannot both leave and arrive.
+            let mut top = lifelines(participants.len(), width, lane);
+            let mut bottom = lifelines(participants.len(), width, lane);
+            stamp(&mut top, centre(from), '├');
+            stamp(&mut top, centre(from) + 1, dash);
+            stamp(&mut top, centre(from) + 2, '╮');
+            stamp(&mut bottom, centre(from), '<');
+            stamp(&mut bottom, centre(from) + 1, dash);
+            stamp(&mut bottom, centre(from) + 2, '╯');
+            out.push_str(&row(&top, &message.text, color));
+            out.push_str(&row(&bottom, "", color));
+            continue;
+        }
+
+        let mut line = lifelines(participants.len(), width, lane);
+        let (left, right) = (centre(from.min(to)), centre(from.max(to)));
+        for x in left + 1..right {
+            stamp(&mut line, x, dash);
+        }
+        // The tail is a tee into the lane it leaves; the head is the arrow.
+        if from < to {
+            stamp(&mut line, left, '├');
+            stamp(&mut line, right, '>');
+        } else {
+            stamp(&mut line, right, '┤');
+            stamp(&mut line, left, '<');
+        }
+        out.push_str(&row(&line, &message.text, color));
+    }
+
+    out
+}
+
+/// A row with a lifeline at every lane's centre and nothing else.
+fn lifelines(count: usize, width: usize, lane: usize) -> Vec<char> {
+    let mut row = vec![' '; width];
+    for i in 0..count {
+        stamp(&mut row, i * lane + lane / 2, '│');
+    }
+    row
+}
+
+/// Writes one character, ignoring anything that would land off the grid.
+fn stamp(row: &mut [char], at: usize, ch: char) {
+    if let Some(slot) = row.get_mut(at) {
+        *slot = ch;
+    }
+}
+
+/// One drawn row and the label that belongs to it.
+///
+/// The label sits to the right of the whole grid rather than over the arrow it
+/// belongs to: an arrow between two adjacent lanes is eleven characters wide,
+/// and a label written into that would be cut to nothing.
+fn row(cells: &[char], label: &str, color: bool) -> String {
+    let drawn = dim(&format!("  {}", collect(cells)), color);
+    if label.is_empty() {
+        return format!("{drawn}\n");
+    }
+    format!("{drawn}  {label}\n")
+}
+
+fn collect(cells: &[char]) -> String {
+    let text: String = cells.iter().collect();
+    text.trim_end().to_string()
+}
+
+/// Draws a flow diagram as its stages and then its arrows.
+///
+/// The arrow list is aligned into a column so the `from` and `to` names line up
+/// down the page, which is what lets a reader scan for one node and find every
+/// connection it has without reading the rest.
+fn flow(stages: &[FlowStage], edges: &[FlowEdge], color: bool) -> String {
+    let mut out = String::new();
+
+    for (n, stage) in stages.iter().enumerate() {
+        // Numbered when unnamed, so a reader can still say which depth a box is
+        // at — that ordering is the thing the model was asked to decide.
+        let name = stage
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("stage {}", n + 1));
+        out.push_str(&dim(&format!("  {name}\n"), color));
+        for node in &stage.nodes {
+            let note = node
+                .note
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| format!("  ({n})"))
+                .unwrap_or_default();
+            out.push_str(&format!("    {}{}\n", node.label, dim(&note, color)));
+        }
+    }
+
+    if edges.is_empty() {
+        return out;
+    }
+    out.push('\n');
+
+    // Where each node sits, so an arrow that goes back to an earlier stage can
+    // be marked as one. A loop is the thing a reader most needs pointed out
+    // here: on the page it is visibly a loop, and in a list it is just a line.
+    let depth = |label: &String| {
+        stages
+            .iter()
+            .position(|stage| stage.nodes.iter().any(|node| &node.label == label))
+    };
+
+    let width = edges
+        .iter()
+        .map(|e| e.from.chars().count() + e.to.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 5;
+
+    for edge in edges {
+        let pair = format!("{} ──> {}", edge.from, edge.to);
+        let pad = width.saturating_sub(edge.from.chars().count() + edge.to.chars().count());
+        let label = edge.label.as_deref().filter(|l| !l.trim().is_empty());
+        let back = match (depth(&edge.from), depth(&edge.to)) {
+            (Some(from), Some(to)) if to <= from => "  (loops back)",
+            _ => "",
+        };
+        match label {
+            Some(label) => out.push_str(&format!(
+                "  {pair}{:pad$}{}{}\n",
+                "",
+                label,
+                dim(back, color),
+                pad = pad
+            )),
+            None => out.push_str(&format!("  {pair}{}\n", dim(back, color))),
+        }
+    }
+
+    out
 }
 
 fn bold(text: &str, color: bool) -> String {
@@ -417,5 +675,189 @@ mod tests {
         // Uncoloured output must carry no escapes at all — it is what a piped
         // run writes, and what ends up pasted into an issue.
         assert!(!out.contains('\x1b'), "{out:?}");
+    }
+
+    fn message(from: &str, to: &str, text: &str, kind: MessageKind) -> SequenceMessage {
+        SequenceMessage {
+            from: from.into(),
+            to: to.into(),
+            text: text.into(),
+            kind,
+        }
+    }
+
+    fn exchange() -> TranscriptView {
+        TranscriptView::Sequence {
+            title: "Placing an order".into(),
+            caption: None,
+            participants: vec!["Client".into(), "API".into(), "Store".into()],
+            messages: vec![
+                message("Client", "API", "POST /orders", MessageKind::Call),
+                message("API", "API", "validate the body", MessageKind::Call),
+                message("API", "Store", "insert row", MessageKind::Call),
+                message("Store", "API", "ok", MessageKind::Return),
+            ],
+        }
+    }
+
+    /// Where a row puts every lane, by character offset.
+    fn lanes(line: &str) -> Vec<usize> {
+        line.chars()
+            .enumerate()
+            .filter(|(_, c)| "\u{2502}\u{251c}\u{2524}<>".contains(*c))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    #[test]
+    fn a_sequence_keeps_every_lane_in_the_same_column() {
+        // The whole readability of the picture. A lane that wandered by one
+        // column would make an arrow look like it landed somewhere it did not,
+        // and every arrow is read against the header names above it.
+        let out = render(&exchange(), false);
+        let drawn: Vec<&str> = out
+            .lines()
+            .filter(|l| l.contains('\u{2502}') || l.contains('\u{251c}'))
+            .collect();
+
+        assert!(drawn.len() >= 5, "{out}");
+        let first = lanes(drawn[0]);
+        assert_eq!(first.len(), 3, "three participants, three lanes: {out}");
+        for line in &drawn {
+            for column in lanes(line) {
+                assert!(
+                    first.contains(&column) || column == first[0] + 1 || column == first[0] + 2,
+                    "a mark at column {column} is in no lane:\n{out}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_answer_coming_back_is_drawn_differently_from_the_call() {
+        // The turn-around is the one thing a sequence diagram exists to show.
+        // Drawn identically, the picture says a request went both ways.
+        let out = render(&exchange(), false);
+        let call = out.lines().find(|l| l.contains("insert row")).unwrap();
+        let reply = out.lines().find(|l| l.ends_with("ok")).unwrap();
+
+        assert!(
+            call.contains('\u{2500}') && !call.contains('\u{2504}'),
+            "{call:?}"
+        );
+        assert!(
+            reply.contains('\u{2504}') && !reply.contains('\u{2500}'),
+            "{reply:?}"
+        );
+        // And they point opposite ways.
+        assert!(call.contains('>'), "{call:?}");
+        assert!(reply.contains('<'), "{reply:?}");
+    }
+
+    #[test]
+    fn a_participant_talking_to_itself_turns_back_into_its_own_lane() {
+        let out = render(&exchange(), false);
+        let at = out
+            .lines()
+            .position(|l| l.contains("validate the body"))
+            .unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+
+        // Two rows: one leaving, one arriving. One row cannot do both.
+        assert!(lines[at].contains('\u{256e}'), "{:?}", lines[at]);
+        assert!(lines[at + 1].contains('\u{256f}'), "{:?}", lines[at + 1]);
+        assert!(lines[at + 1].contains('<'), "{:?}", lines[at + 1]);
+    }
+
+    #[test]
+    fn a_sequence_is_drawn_without_escapes_when_uncoloured() {
+        // What a piped run writes, and what gets pasted into an issue.
+        let out = render(&exchange(), false);
+        assert!(!out.contains('\u{1b}'), "{out:?}");
+        assert!(out.contains("Client") && out.contains("Store"), "{out}");
+    }
+
+    #[test]
+    fn the_arrowheads_are_the_ascii_ones() {
+        // Geometric-shape pointers are East-Asian-ambiguous, so a CJK locale
+        // renders them two cells wide and shifts every lane right of the arrow.
+        let out = render(&exchange(), false);
+        assert!(
+            !out.contains('\u{25ba}') && !out.contains('\u{25c4}'),
+            "{out:?}"
+        );
+    }
+
+    fn request_path() -> TranscriptView {
+        use taurus_tools::view::FlowNode;
+        let node = |label: &str, note: Option<&str>| FlowNode {
+            label: label.into(),
+            note: note.map(str::to_string),
+        };
+        let edge = |from: &str, to: &str, label: Option<&str>| FlowEdge {
+            from: from.into(),
+            to: to.into(),
+            label: label.map(str::to_string),
+        };
+        TranscriptView::Flow {
+            title: "How a request reaches the database".into(),
+            caption: None,
+            stages: vec![
+                FlowStage {
+                    name: Some("Edge".into()),
+                    nodes: vec![node("Client", None)],
+                },
+                FlowStage {
+                    name: Some("Service".into()),
+                    nodes: vec![node("API", Some("axum")), node("Worker", None)],
+                },
+                FlowStage {
+                    name: None,
+                    nodes: vec![node("Postgres", None)],
+                },
+            ],
+            edges: vec![
+                edge("Client", "API", Some("POST /orders")),
+                edge("API", "Postgres", Some("insert row")),
+                edge("Worker", "API", Some("retry")),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_flow_lists_its_stages_with_what_is_at_each_depth() {
+        let out = render(&request_path(), false);
+        assert!(out.contains("Edge"), "{out}");
+        assert!(out.contains("Service"), "{out}");
+        // A stage the model did not name still says which depth it is, because
+        // the ordering is the thing it was asked to decide.
+        assert!(out.contains("stage 3"), "{out}");
+        assert!(out.contains("API"), "{out}");
+        assert!(out.contains("(axum)"), "{out}");
+    }
+
+    #[test]
+    fn a_flow_lists_every_edge_with_its_label() {
+        let out = render(&request_path(), false);
+        assert!(out.contains("Client \u{2500}\u{2500}> API"), "{out}");
+        assert!(out.contains("POST /orders"), "{out}");
+        assert!(out.contains("insert row"), "{out}");
+    }
+
+    #[test]
+    fn an_edge_back_to_an_earlier_stage_is_marked_as_a_loop() {
+        // On the page it is visibly a loop. In a list it is just another line,
+        // so it has to be said.
+        let out = render(&request_path(), false);
+        let retry = out.lines().find(|l| l.contains("retry")).unwrap();
+        assert!(retry.contains("loops back"), "{retry:?}");
+        let forward = out.lines().find(|l| l.contains("insert row")).unwrap();
+        assert!(!forward.contains("loops back"), "{forward:?}");
+    }
+
+    #[test]
+    fn a_flow_is_drawn_without_escapes_when_uncoloured() {
+        let out = render(&request_path(), false);
+        assert!(!out.contains('\u{1b}'), "{out:?}");
     }
 }

@@ -36,8 +36,8 @@ pub fn run(
         let mut report = Report::default();
         let mut counted = 0;
         for meta in &listed {
-            if let Ok((session, _)) = sessions::load(&meta.id) {
-                report.absorb(&session);
+            if let Ok(loaded) = sessions::load(&meta.id) {
+                report.absorb(&loaded.session);
                 counted += 1;
             }
         }
@@ -59,7 +59,7 @@ pub fn run(
         },
     };
 
-    let (session, _) = sessions::load(&id)?;
+    let session = sessions::load(&id)?.session;
     println!("Session {}\nModel   {}\n", session.id, session.model);
     let mut report = Report::default();
     report.absorb(&session);

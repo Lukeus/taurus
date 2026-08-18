@@ -5,6 +5,7 @@
 //! sessions, and the two maps that let an async decision be answered later by
 //! a command from the webview.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -24,6 +25,17 @@ use crate::bridge::{UiAgentProposalSink, UiAsker, UiPermissionPrompt, UiProposal
 pub struct SessionEntry {
     pub session: Arc<Mutex<Session>>,
     pub provider_id: String,
+    /// The workspace this conversation belongs to, which is not always the one
+    /// open.
+    ///
+    /// A conversation is bound to a folder in three ways at once: its
+    /// transcript is written under that folder's key, its checkpoints are
+    /// stored under it, and every file path it has ever mentioned describes
+    /// that tree. None of them follow the window when someone opens another
+    /// project, so this is what everything reading or continuing the
+    /// conversation resolves against — and what a turn sent from the wrong
+    /// folder is refused by.
+    pub workspace: PathBuf,
     /// Cancels the in-flight turn. Replaced after each turn so a cancellation
     /// does not poison the next one.
     pub cancel: Arc<Mutex<CancellationToken>>,

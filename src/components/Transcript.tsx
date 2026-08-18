@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 
 
 import { ChartCard } from "./ChartCard";
+import { FlowCard } from "./FlowCard";
+import { SequenceCard } from "./SequenceCard";
 import { Markdown } from "./Markdown";
 import { Attachments } from "./Attachments";
 import { QuestionsCard } from "./QuestionsCard";
@@ -101,17 +103,118 @@ export function Transcript({
     );
   }
 
+  const conversation = turns(entries);
+
   return (
     <div className="transcript" ref={container}>
-      {group(entries).map((item) =>
+      {conversation.map((turn, i) => (
+        <TurnView
+          key={turn.prompt?.id ?? `preamble-${i}`}
+          turn={turn}
+          // Only ever the last one: the thing still being worked on is the
+          // question most recently asked, and the marker belongs on its rail
+          // rather than floating under the conversation as a whole.
+          working={busy && i === conversation.length - 1}
+          onAnswer={onAnswer}
+        />
+      ))}
+      <div ref={bottom} />
+    </div>
+  );
+}
+
+type UserEntry = Extract<Entry, { kind: "user" }>;
+
+/** One question and everything it caused, in the order it happened. */
+export type Turn = {
+  /**
+   * The message that began it.
+   *
+   * Null only for a conversation's preamble — the note a session opens with
+   * when its model has no native tool calling arrives before anybody has asked
+   * anything, and a rail hanging off nothing would say it belonged to a
+   * question that was never put.
+   */
+  prompt: UserEntry | null;
+  body: (Entry | ToolEntry[])[];
+};
+
+/**
+ * Cuts the transcript into turns.
+ *
+ * The unit the eye needs is the exchange, not the entry. Drawn as one flat
+ * column, a question and the six things that answered it are seven siblings
+ * with equal claim on the page, and the only way to find where a turn began is
+ * to read for it. Grouped, the question heads its own answer and the rail down
+ * the side says how far it reaches.
+ */
+export function turns(entries: Entry[]): Turn[] {
+  const out: { prompt: UserEntry | null; body: Entry[] }[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "user") {
+      out.push({ prompt: entry, body: [] });
+    } else {
+      if (out.length === 0) out.push({ prompt: null, body: [] });
+      out[out.length - 1].body.push(entry);
+    }
+  }
+  // Runs of tool calls are folded per turn rather than across the transcript.
+  // They could not have spanned two anyway — a user message ends whatever was
+  // running — and folding here keeps the two groupings from having to agree.
+  return out.map(({ prompt, body }) => ({ prompt, body: group(body) }));
+}
+
+/**
+ * A turn, drawn as a thread.
+ *
+ * Everything the turn produced hangs off one rail that starts at the question,
+ * so the answer is visibly the answer *to that* — and a long turn stays one
+ * object on the page however many steps it took. The alternative, and what this
+ * replaced, was the question pinned to the right margin and its answer to the
+ * left, sharing no edge and connected by nothing.
+ */
+function TurnView({
+  turn,
+  working,
+  onAnswer,
+}: {
+  turn: Turn;
+  working: boolean;
+  onAnswer: (id: string, answers: Answer[]) => void;
+}) {
+  return (
+    <section className={`turn${turn.prompt ? "" : " unprompted"}`}>
+      {turn.prompt && <Prompt entry={turn.prompt} />}
+      {turn.body.map((item) =>
         Array.isArray(item) ? (
-          <ToolRun key={item[0].id} steps={item} />
+          <div className="turn-step" key={item[0].id}>
+            <ToolRun steps={item} />
+          </div>
         ) : (
-          <EntryView key={item.id} entry={item} onAnswer={onAnswer} />
+          <div className="turn-step" key={item.id}>
+            <EntryView entry={item} onAnswer={onAnswer} />
+          </div>
         ),
       )}
-      {busy && <div className="working">working…</div>}
-      <div ref={bottom} />
+      {working && (
+        <div className="turn-step working" aria-live="polite">
+          working…
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** The question, at the head of the thread that answers it. */
+function Prompt({ entry }: { entry: UserEntry }) {
+  return (
+    <div className="turn-step prompt">
+      {/* Above the text, matching the order they were sent in and the order
+          the model reads them: the picture, then the question. */}
+      {entry.images && entry.images.length > 0 && (
+        <Attachments images={entry.images} />
+      )}
+      <div className="prompt-text">{entry.text}</div>
     </div>
   );
 }
@@ -158,6 +261,10 @@ function EntryView({
         return <TableCard view={entry.view} />;
       case "chart":
         return <ChartCard view={entry.view} />;
+      case "sequence":
+        return <SequenceCard view={entry.view} />;
+      case "flow":
+        return <FlowCard view={entry.view} />;
       case "questions":
         return (
           <QuestionsCard
@@ -176,16 +283,9 @@ function EntryView({
 
   switch (entry.kind) {
     case "user":
-      return (
-        <div className="entry user">
-          {/* Above the bubble, matching the order they were sent in and the
-              order the model reads them: the picture, then the question. */}
-          {entry.images && entry.images.length > 0 && (
-            <Attachments images={entry.images} />
-          )}
-          <div className="bubble">{entry.text}</div>
-        </div>
-      );
+      // Reached only if a caller renders an entry outside `turns`, which is
+      // what heads each thread with its own question.
+      return <Prompt entry={entry} />;
 
     case "assistant":
       return (

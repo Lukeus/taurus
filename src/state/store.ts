@@ -19,6 +19,10 @@ import type {
   SessionMeta,
   AgentProposal,
   Attachment,
+  FlowEdge,
+  FlowNode,
+  FlowStage,
+  SequenceMessage,
   SkillProposal,
   Step,
   TranscriptView,
@@ -133,7 +137,24 @@ interface Store {
     approve: boolean,
     target?: "project" | "user",
   ) => Promise<void>;
+  /**
+   * Moves the whole app to another folder.
+   *
+   * Not a setting applied to the conversation on screen: a session's transcript
+   * is written under the workspace it was started in and its checkpoints are
+   * keyed by it, so the conversation is closed and this workspace's own is
+   * opened in its place. See `adoptWorkspace`.
+   */
   setWorkspace: (path: string) => Promise<void>;
+  /**
+   * Opens whatever this workspace has — its most recent conversation, or a
+   * fresh one on the provider and model it was last worked in.
+   *
+   * Shared by startup and the workspace switch, which have to agree: a folder
+   * opened from the picker must land in the same state as one the app was
+   * launched into.
+   */
+  adoptWorkspace: () => Promise<void>;
   /** Re-reads config-derived state after something on disk changed. */
   refresh: () => Promise<void>;
   /** Re-reads the conversation list and this conversation's changed files. */
@@ -143,6 +164,29 @@ interface Store {
 
 let counter = 0;
 const nextId = () => `e${++counter}`;
+
+/**
+ * Lets go of a conversation the view has moved on from.
+ *
+ * The conversation is not deleted: it is on disk and reopens from the rail.
+ * This releases the backend's live copy, which is otherwise held — every
+ * message, and every image ever attached to one — for the life of the process,
+ * with nothing to reach it by once the UI has stopped pointing at it.
+ *
+ * `replacement` is the session taking its place, so re-opening the conversation
+ * that is already open does not close the thing it just returned.
+ *
+ * Never throws. Failing to let go of something is not worth an error banner
+ * over the conversation that succeeded.
+ */
+async function release(session: CreatedSession | null, replacement?: string) {
+  if (!session || session.id === replacement) return;
+  try {
+    await api.closeSession(session.id);
+  } catch (e) {
+    console.warn("could not close the previous conversation", e);
+  }
+}
 
 /**
  * Guards `init` against React StrictMode, which runs effects twice in dev.
@@ -178,6 +222,10 @@ export const useStore = create<Store>((set, get) => ({
       set((s) => ({ agentProposals: [...s.agentProposals, proposal] })),
     );
 
+    await get().adoptWorkspace();
+  },
+
+  adoptWorkspace: async () => {
     // Reopen this workspace's most recent conversation. Failing that — a first
     // run, a deleted transcript, a model that no longer exists — fall through
     // to a fresh session rather than leaving the app with none.
@@ -189,10 +237,15 @@ export const useStore = create<Store>((set, get) => ({
         return;
       }
     } catch (e) {
-      console.warn("could not restore the last session", e);
+      console.warn("could not open this workspace's last conversation", e);
     }
 
-    // Restore the previous provider/model when both are still available.
+    // The provider and model this workspace was last worked in, when both are
+    // still available. Read from the store rather than captured, because a
+    // workspace switch has just replaced them: settings are resolved per
+    // workspace, so the folder being opened may name a different pair.
+    const status = get().status;
+    if (!status) return;
     const { last_provider, last_model } = status.settings;
     const provider =
       status.providers.find((p) => p.id === last_provider) ?? status.providers[0];
@@ -210,7 +263,12 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   startSession: async (providerId, model) => {
+    const previous = get().session;
     const session = await api.createSession(providerId, model);
+    // Released only once the replacement is in hand, so a provider that has
+    // gone away leaves the conversation on screen rather than closing it in
+    // exchange for nothing.
+    await release(previous, session.id);
     set({
       session,
       entries: [],
@@ -236,7 +294,11 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   resume: async (sessionId) => {
+    const previous = get().session;
     const { messages, ...session } = await api.resumeSession(sessionId);
+    // As in `startSession`: a resume that fails must leave the conversation on
+    // screen exactly as it was.
+    await release(previous, session.id);
     set({
       session,
       entries: entriesFromMessages(messages),
@@ -376,9 +438,39 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   setWorkspace: async (path) => {
+    // Refused rather than queued. The switch reconnects every MCP server, so
+    // the tools a running turn is holding would start failing mid-call — and
+    // the turn would go on editing the folder being left while the app claimed
+    // to be in the new one.
+    if (get().busy) {
+      return set({
+        error:
+          "Taurus is in the middle of a turn. Stop it before switching workspace.",
+      });
+    }
+
+    // Everything on screen belongs to the folder being left, and none of it
+    // survives the move: the transcript is written under the old workspace's
+    // directory, the changed-file list is read from checkpoints keyed by it,
+    // and a permission prompt or a proposal is about work in it. Cleared
+    // before the switch rather than after, so nothing that follows can address
+    // a conversation the backend has stopped answering for.
+    const previous = get().session;
+    set({
+      session: null,
+      sessions: [],
+      entries: [],
+      changed: [],
+      permission: null,
+      proposals: [],
+      agentProposals: [],
+      error: null,
+    });
+    await release(previous);
+
     await api.setWorkspace(path);
     set({ status: await api.getStatus() });
-    await get().reload();
+    await get().adoptWorkspace();
   },
 
   refresh: async () => set({ status: await api.getStatus() }),
@@ -557,6 +649,60 @@ export function viewFromCall(
           }
         : undefined;
 
+    case "show_sequence":
+      // Arrows naming a lane that was never declared are dropped rather than
+      // failing the diagram, which is the one place this is looser than the
+      // Rust check that refuses them outright. By the time a transcript is
+      // being replayed the call has already succeeded, so a payload that fails
+      // here came from a build whose rules differed — and a diagram missing one
+      // arrow is worth more than a blank where the answer was.
+      return Array.isArray(payload.participants) &&
+        payload.participants.every((p: unknown) => typeof p === "string") &&
+        payload.participants.length > 0 &&
+        Array.isArray(payload.messages)
+        ? {
+            type: "sequence",
+            title: typeof payload.title === "string" ? payload.title : "",
+            caption: asCaption(payload.caption),
+            participants: payload.participants,
+            messages: payload.messages
+              .map(asMessage)
+              .filter(isMessage)
+              .filter(
+                (m: SequenceMessage) =>
+                  (payload.participants as string[]).includes(m.from) &&
+                  (payload.participants as string[]).includes(m.to),
+              ),
+          }
+        : undefined;
+
+    case "show_flow": {
+      if (!Array.isArray(payload.stages) || !Array.isArray(payload.edges)) {
+        return undefined;
+      }
+      const stages = payload.stages.map(asStage).filter(isStage);
+      if (stages.length !== payload.stages.length || stages.length === 0) {
+        return undefined;
+      }
+      // Same rule the sequence diagram replays under: an edge naming a node
+      // that is not there is dropped rather than failing the whole card. The
+      // Rust check refuses these on the way in, so one here came from a build
+      // whose rules differed.
+      const labels = new Set(
+        stages.flatMap((stage) => stage.nodes.map((node) => node.label)),
+      );
+      return {
+        type: "flow",
+        title: typeof payload.title === "string" ? payload.title : "",
+        caption: asCaption(payload.caption),
+        stages,
+        edges: payload.edges
+          .map(asEdge)
+          .filter(isEdge)
+          .filter((e: FlowEdge) => labels.has(e.from) && labels.has(e.to)),
+      };
+    }
+
     case "ask_user":
       // Keyed to the call, exactly as the live event was — though nothing is
       // waiting on it any more, and the card knows to draw itself read-only
@@ -583,6 +729,84 @@ export function viewFromCall(
 /** `caption` is optional to the model and nullable across the boundary. */
 function asCaption(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+/**
+ * One saved arrow in the shape the card reads, or `undefined` if it is not one.
+ *
+ * `kind` defaults the way Rust defaults it — an omitted kind is a call — so a
+ * transcript written by a model that never set the field replays as the
+ * diagram it drew rather than as one with no arrows in it.
+ */
+function asMessage(value: unknown): SequenceMessage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const message = value as Record<string, unknown>;
+  if (
+    typeof message.from !== "string" ||
+    typeof message.to !== "string" ||
+    typeof message.text !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    from: message.from,
+    to: message.to,
+    text: message.text,
+    kind: message.kind === "return" ? "return" : "call",
+  };
+}
+
+function isMessage(message: SequenceMessage | undefined): message is SequenceMessage {
+  return message !== undefined;
+}
+
+/** One saved stage of a flow diagram, or `undefined` if it is not one. */
+function asStage(value: unknown): FlowStage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const stage = value as Record<string, unknown>;
+  if (!Array.isArray(stage.nodes)) return undefined;
+  const nodes = stage.nodes.map(asNode).filter(isNode);
+  // A stage that lost a node would draw a column with a gap where a box was,
+  // and every arrow into it would be missing too — so the whole card goes back
+  // rather than a diagram that is quietly wrong about the shape.
+  if (nodes.length !== stage.nodes.length || nodes.length === 0) return undefined;
+  return {
+    name: typeof stage.name === "string" ? stage.name : null,
+    nodes,
+  };
+}
+
+function isStage(stage: FlowStage | undefined): stage is FlowStage {
+  return stage !== undefined;
+}
+
+function asNode(value: unknown): FlowNode | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const node = value as Record<string, unknown>;
+  if (typeof node.label !== "string" || !node.label.trim()) return undefined;
+  return {
+    label: node.label,
+    note: typeof node.note === "string" ? node.note : null,
+  };
+}
+
+function isNode(node: FlowNode | undefined): node is FlowNode {
+  return node !== undefined;
+}
+
+function asEdge(value: unknown): FlowEdge | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const edge = value as Record<string, unknown>;
+  if (typeof edge.from !== "string" || typeof edge.to !== "string") return undefined;
+  return {
+    from: edge.from,
+    to: edge.to,
+    label: typeof edge.label === "string" ? edge.label : null,
+  };
+}
+
+function isEdge(edge: FlowEdge | undefined): edge is FlowEdge {
+  return edge !== undefined;
 }
 
 /**

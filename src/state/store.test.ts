@@ -768,3 +768,103 @@ describe("images on a user message", () => {
     expect(entries[1].images).toBeUndefined();
   });
 });
+
+describe("redrawing a sequence diagram from a saved call", () => {
+  const call = (input: unknown) => viewFromCall("t1", "show_sequence", input);
+
+  it("rebuilds the lanes and arrows the model sent", () => {
+    const view = call({
+      title: "Placing an order",
+      participants: ["Client", "API"],
+      messages: [
+        { from: "Client", to: "API", text: "POST /orders" },
+        { from: "API", to: "Client", text: "201", kind: "return" },
+      ],
+    });
+    expect(view).toMatchObject({
+      type: "sequence",
+      title: "Placing an order",
+      participants: ["Client", "API"],
+    });
+    // An omitted kind is a call, matching the default Rust applies on the way
+    // in. Read as anything else, a replayed diagram would have no solid arrows.
+    expect(view).toMatchObject({
+      messages: [
+        { from: "Client", to: "API", text: "POST /orders", kind: "call" },
+        { from: "API", to: "Client", text: "201", kind: "return" },
+      ],
+    });
+  });
+
+  it("drops an arrow naming a lane the call never declared", () => {
+    // The tool refuses these, so a transcript holding one came from a build
+    // whose rules differed. One arrow short beats a blank where the answer was.
+    const view = call({
+      title: "Placing an order",
+      participants: ["Client", "API"],
+      messages: [
+        { from: "Client", to: "Ghost", text: "nowhere" },
+        { from: "Client", to: "API", text: "POST /orders" },
+      ],
+    });
+    expect(view).toMatchObject({ messages: [{ text: "POST /orders" }] });
+  });
+
+  it("refuses a payload with no participants rather than drawing an empty box", () => {
+    expect(call({ title: "Nothing", participants: [], messages: [] })).toBeUndefined();
+    expect(call({ title: "Nothing", messages: [] })).toBeUndefined();
+  });
+});
+
+describe("redrawing a flow diagram from a saved call", () => {
+  const call = (input: unknown) => viewFromCall("t1", "show_flow", input);
+
+  it("rebuilds the stages, nodes and edges the model sent", () => {
+    const view = call({
+      title: "Request path",
+      stages: [
+        { name: "Edge", nodes: [{ label: "Client" }] },
+        { nodes: [{ label: "API", note: "axum" }] },
+      ],
+      edges: [{ from: "Client", to: "API", label: "POST" }],
+    });
+    expect(view).toMatchObject({
+      type: "flow",
+      title: "Request path",
+      stages: [
+        { name: "Edge", nodes: [{ label: "Client", note: null }] },
+        { name: null, nodes: [{ label: "API", note: "axum" }] },
+      ],
+      edges: [{ from: "Client", to: "API", label: "POST" }],
+    });
+  });
+
+  it("drops an edge naming a node the call never declared", () => {
+    const view = call({
+      title: "Request path",
+      stages: [{ nodes: [{ label: "Client" }] }, { nodes: [{ label: "API" }] }],
+      edges: [
+        { from: "Client", to: "Ghost" },
+        { from: "Client", to: "API" },
+      ],
+    });
+    expect(view).toMatchObject({ edges: [{ from: "Client", to: "API" }] });
+  });
+
+  it("refuses the card when a stage lost a node rather than drawing a gap", () => {
+    // A missing box takes every arrow into it with it, so what would be drawn
+    // is a diagram that is quietly wrong about the shape — worse than none.
+    expect(
+      call({
+        title: "Request path",
+        stages: [{ nodes: [{ label: "Client" }, { note: "no label" }] }],
+        edges: [{ from: "Client", to: "Client" }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("refuses a payload with no stages", () => {
+    expect(call({ title: "Nothing", stages: [], edges: [] })).toBeUndefined();
+    expect(call({ title: "Nothing", edges: [] })).toBeUndefined();
+  });
+});
