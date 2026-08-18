@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useShallow } from "zustand/react/shallow";
 
 import { Attachments } from "./components/Attachments";
 import { ChangesDrawer } from "./components/ChangesDrawer";
@@ -16,10 +17,11 @@ import {
 import { Settings } from "./components/Settings";
 import { AgentsDrawer } from "./components/AgentsDrawer";
 import { McpDrawer } from "./components/McpDrawer";
+import { MemoryDrawer } from "./components/MemoryDrawer";
 import { SkillsDrawer } from "./components/SkillsDrawer";
 import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
-import { Transcript } from "./components/Transcript";
+import { Transcript, type TranscriptProps } from "./components/Transcript";
 import * as api from "./lib/api";
 import type {
   Attachment,
@@ -35,12 +37,51 @@ import { applyTheme, watchSystemTheme } from "./lib/theme";
 import { pinnedPlan, useStore } from "./state/store";
 
 export default function App() {
-  const store = useStore();
+  // Everything except the transcript, compared field by field.
+  //
+  // A bare `useStore()` subscribes to the whole store, and the store changes
+  // every time a frame of a turn arrives — so the rail, the topbar and the
+  // model picker were all redrawn a few dozen times a second to say the same
+  // thing. The entries are read where they are drawn instead (`TranscriptPane`,
+  // `PinnedPlan`), which leaves this re-rendering when something it actually
+  // shows has moved: a turn starting or ending, a session opening, a setting
+  // landing. `App.bench.tsx` measures the difference.
+  //
+  // Listing the fields is safe rather than merely tidy: `store` is typed as
+  // what this returns, so reading a field that is not named here is a compile
+  // error rather than a value that silently stops updating.
+  const store = useStore(
+    useShallow((s) => ({
+      status: s.status,
+      session: s.session,
+      sessions: s.sessions,
+      changed: s.changed,
+      busy: s.busy,
+      error: s.error,
+      permission: s.permission,
+      proposals: s.proposals,
+      agentProposals: s.agentProposals,
+      init: s.init,
+      send: s.send,
+      stop: s.stop,
+      refresh: s.refresh,
+      resume: s.resume,
+      remove: s.remove,
+      startSession: s.startSession,
+      setWorkspace: s.setWorkspace,
+      dismissError: s.dismissError,
+      answerPermission: s.answerPermission,
+      answerQuestions: s.answerQuestions,
+      resolveProposal: s.resolveProposal,
+      resolveAgentProposal: s.resolveAgentProposal,
+    })),
+  );
   const rail = useResizableWidth({ storageKey: "taurus.railWidth", ...RAIL_WIDTH });
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
   // Which delegation's own conversation is open, if any. Held here rather than
@@ -50,7 +91,6 @@ export default function App() {
     session: string;
     agent: string;
   } | null>(null);
-  const plan = pinnedPlan(store.entries);
 
   useEffect(() => {
     store.init();
@@ -165,6 +205,7 @@ export default function App() {
         busy={store.busy}
         skillCount={store.status?.skill_count ?? null}
         agentCount={store.status?.agent_count ?? null}
+        noteCount={store.status?.note_count ?? null}
         mcp={mcpCounts(store.status?.mcp_servers)}
         health={health(store.status?.providers.length, providerId, models)}
         theme={theme ?? "system"}
@@ -175,6 +216,7 @@ export default function App() {
         onTheme={chooseTheme}
         onSkills={() => setSkillsOpen(true)}
         onAgents={() => setAgentsOpen(true)}
+        onMemory={() => setMemoryOpen(true)}
         onMcp={() => setMcpOpen(true)}
         onSettings={() => setSettingsOpen(true)}
       />
@@ -248,8 +290,7 @@ export default function App() {
         </header>
 
         <main>
-          <Transcript
-            entries={store.entries}
+          <TranscriptPane
             busy={store.busy}
             onAnswer={store.answerQuestions}
             onOpenDelegate={setDelegate}
@@ -301,7 +342,7 @@ export default function App() {
             move when an error arrives and clears. The plan is the thing you
             look at while typing the next message; it belongs against the box
             you type in. */}
-        {plan && <PlanPanel view={plan} />}
+        <PinnedPlan />
 
         <Composer
           busy={store.busy}
@@ -318,6 +359,22 @@ export default function App() {
         <PermissionDialog
           request={store.permission}
           onDecide={store.answerPermission}
+        />
+      )}
+
+      {memoryOpen && (
+        <MemoryDrawer
+          onClose={() => setMemoryOpen(false)}
+          // Not offered mid-turn: switching conversations under a running one
+          // is not something the rail offers either.
+          onOpenSession={
+            store.busy
+              ? undefined
+              : (id) => {
+                  setMemoryOpen(false);
+                  void store.resume(id);
+                }
+          }
         />
       )}
 
@@ -505,6 +562,33 @@ function FirstRun({
       </div>
     </div>
   );
+}
+
+/**
+ * The transcript, reading the entries itself.
+ *
+ * This is the one thing on screen that changes as a turn streams, and it
+ * subscribes on its own behalf so that being redrawn thirty times a second does
+ * not mean redrawing the rail thirty times a second alongside it. Everything
+ * else it needs comes from `App`, which by then is re-rendering only when
+ * something it shows has moved.
+ */
+function TranscriptPane(props: Omit<TranscriptProps, "entries">) {
+  const entries = useStore((s) => s.entries);
+  return <Transcript entries={entries} {...props} />;
+}
+
+/**
+ * The pinned plan, for the same reason.
+ *
+ * `pinnedPlan` reads the transcript, so leaving it in `App` would have put the
+ * entries back into `App`'s subscription and undone the whole arrangement. It
+ * returns the view off the entry that carries it, so an unchanged plan is the
+ * same object twice and this does not re-render on every frame either.
+ */
+function PinnedPlan() {
+  const plan = useStore((s) => pinnedPlan(s.entries));
+  return plan ? <PlanPanel view={plan} /> : null;
 }
 
 function Composer({

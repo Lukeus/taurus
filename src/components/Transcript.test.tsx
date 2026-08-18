@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { breakdown, group, span, turns } from "./Transcript";
+import { breakdown, group, reuse, span, turns } from "./Transcript";
 import type { Entry } from "../state/store";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -240,5 +240,66 @@ describe("cutting the transcript into turns", () => {
 
   it("has nothing to draw for an empty conversation", () => {
     expect(turns([])).toEqual([]);
+  });
+});
+
+/**
+ * The transcript is memoized per turn, and a memo compares what it is handed.
+ * These are the tests that say the comparison can succeed: without carried
+ * identity every turn looks new on every token, the memo never skips anything,
+ * and drawing one word costs a redraw of the whole conversation.
+ */
+describe("a note kept for the next conversation", () => {
+  it("is counted as a note rather than folded in with the reads", () => {
+    // `remember` writes nothing in the workspace, so it is not an edit — but
+    // calling it a read would file the one step whose effect lands on the next
+    // conversation under the background noise of the run.
+    expect(breakdown([tool("t1", "remember"), tool("t2", "read_file")])).toContain("note");
+  });
+});
+
+describe("carrying turns forward", () => {
+  const conversation: Entry[] = [
+    ask("u1", "first question"),
+    say("a1", "first answer"),
+    tool("t1", "read_file"),
+    ask("u2", "second question"),
+  ];
+
+  it("keeps the turns a token did not touch", () => {
+    const before = turns(conversation);
+    // What a `text_delta` does: the entries already there are the same objects,
+    // and one new one joins the last turn.
+    const after = reuse(before, turns([...conversation, say("a2", "wor")]));
+
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).not.toBe(before[1]);
+  });
+
+  it("sees through the folding of a run of tool calls", () => {
+    // `group` rebuilds its arrays on every call, so a run of tool calls never
+    // matches by identity even when nothing in it moved. Comparing the steps
+    // rather than the array holding them is what keeps a turn that ran commands
+    // from being redrawn for the rest of the conversation.
+    const before = turns(conversation);
+    const after = reuse(before, turns([...conversation]));
+
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+  });
+
+  it("gives up the turn a tool call finished in", () => {
+    const finished: Entry[] = conversation.map((e) =>
+      e.id === "t1" ? { ...e, status: "error" as const } : e,
+    );
+    const before = turns(conversation);
+    const after = reuse(before, turns(finished));
+
+    expect(after[0]).not.toBe(before[0]);
+  });
+
+  it("has nothing to carry forward on the first render", () => {
+    const built = turns(conversation);
+    expect(reuse([], built)).toEqual(built);
   });
 });

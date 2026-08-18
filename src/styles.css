@@ -1193,6 +1193,13 @@ body.resizing * {
 .run-row.ok.net .glyph {
   color: var(--warn);
 }
+/* A note kept for the next conversation. Tinted with the accent rather than
+   left grey because this is the one step in a turn whose effect is somewhere
+   else — scanning back for "what did it decide to remember" is a real
+   question, and a note in the run's ordinary colour cannot be found. */
+.run-row.ok.kept .glyph {
+  color: var(--accent);
+}
 .run-row-text {
   flex: 1;
   font-family: var(--mono);

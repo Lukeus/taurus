@@ -42,6 +42,7 @@ use crate::command;
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
 use crate::instructions::{self, Instructions};
 use crate::mcp_view::{LayerOf, McpServerView};
+use crate::memory;
 use crate::problem::{self, Problem, ProblemSource};
 use crate::prompt;
 use crate::secrets;
@@ -683,6 +684,21 @@ impl Host {
         plan.start_turn();
         registry.register(Arc::new(UpdatePlan::new(plan.clone())));
 
+        // Per turn for the mechanical reason the rest of this block is: a note
+        // names the conversation that wrote it, and the shared registry a child
+        // inherits has no session id to name.
+        //
+        // So this is the parent's tool only, and that is the right place for it
+        // rather than a limitation to work around. A delegate's conclusion
+        // comes back as its answer; the parent is the one that can see it
+        // beside everything else the turn learned and judge whether it outlives
+        // the conversation. A worker writing directly into a workspace's memory
+        // would file what it found without knowing whether it mattered.
+        registry.register(Arc::new(memory::Remember::new(
+            self.workspace().await,
+            turn.session_id,
+        )));
+
         // `reload` applies this to the shared registry, which is everything
         // registered *there* — so without a second pass here, the per-turn
         // tools were the one set `disabled_tools` could not reach, and the
@@ -703,6 +719,8 @@ impl Host {
         let workspace = self.workspace.read().await.clone();
         let skill_section = self.catalog.read().await.prompt_section();
         let instructions_section = instructions::section(&self.instructions.read().await);
+        // This conversation's own notes are left out — see `memory::section`.
+        let memory_section = memory::section(&memory::load(&workspace), turn.session_id);
         let synthesis = self.settings.read().await.skill_synthesis_enabled;
         let agent_synthesis = self.settings.read().await.agent_synthesis_enabled;
 
@@ -723,6 +741,7 @@ impl Host {
                     &workspace,
                     skill_section,
                     instructions_section,
+                    memory_section,
                     synthesis,
                     agent_synthesis,
                 ),
@@ -1296,13 +1315,36 @@ impl Host {
 
     /// The system prompt a turn in this workspace would carry.
     pub async fn system_prompt(&self) -> String {
+        let workspace = self.workspace.read().await.clone();
+        // No session to exclude: this reports what a turn would carry, and the
+        // turn that will carry it has not started.
+        let memory_section = memory::section(&memory::load(&workspace), "");
         prompt::build(
-            &self.workspace.read().await.clone(),
+            &workspace,
             self.catalog.read().await.prompt_section(),
             instructions::section(&self.instructions.read().await),
+            memory_section,
             self.settings.read().await.skill_synthesis_enabled,
             self.settings.read().await.agent_synthesis_enabled,
         )
+    }
+
+    /// What earlier conversations in this workspace left for the next one.
+    ///
+    /// Newest first, which is the order they are worth reading in and the order
+    /// they reach the prompt. See [`crate::memory`].
+    pub async fn notes(&self) -> Vec<memory::Note> {
+        let mut notes = memory::load(&self.workspace.read().await.clone());
+        notes.reverse();
+        notes
+    }
+
+    /// Drops one, and returns what is left — in the same order [`Self::notes`]
+    /// gives them, so a caller can redraw from the answer.
+    pub async fn forget_note(&self, id: &str) -> Result<Vec<memory::Note>, String> {
+        let mut left = memory::forget(&self.workspace.read().await.clone(), id)?;
+        left.reverse();
+        Ok(left)
     }
 
     /// Everything that failed to load, tagged with where it came from.
@@ -2798,6 +2840,47 @@ mod tests {
             entry.base_url, "http://gpu-box:11434",
             "the workspace override leaked into the editable global layer"
         );
+    }
+
+    #[tokio::test]
+    async fn a_note_from_an_earlier_conversation_reaches_the_next_ones_prompt() {
+        // The whole point of `memory`. Everything under it is unit tested in
+        // that module; what this covers is the wiring — that a note written in
+        // one conversation is actually assembled into the system prompt of the
+        // next, which is the one step no unit test can reach.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        crate::memory::append(
+            &workspace,
+            "yesterday",
+            "the parser rewrite is behind a flag",
+        )
+        .unwrap();
+
+        let prompt = host.system_prompt().await;
+        assert!(
+            prompt.contains("the parser rewrite is behind a flag"),
+            "a note has to reach the prompt or it is a file nobody reads"
+        );
+        assert!(prompt.contains("Where this workspace was left"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn a_workspace_with_no_notes_carries_no_section_about_them() {
+        // A heading saying nothing was left is worse than no heading: it is
+        // context spent, on every request, to say that there is nothing to say.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(!host
+            .system_prompt()
+            .await
+            .contains("Where this workspace was left"));
     }
 
     #[tokio::test]

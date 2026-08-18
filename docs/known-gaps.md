@@ -29,6 +29,20 @@ Each entry says what is missing, and what covering it would cost.
   takes deliberate effort; on one with coarse timestamps, a command that
   rewrites a file to the same length within the same tick would slip through.
   Closing it means reading every file twice per command.
+
+  The commands after the first in a turn now reuse what the previous one read,
+  keyed on that same length and modification time, so a workspace is read once
+  per turn rather than once per command. That is the same comparison and so the
+  same blind spot, but it reaches one case further. Where a sweep on its own
+  would merely fail to *notice* an invisible change, a reused read can also
+  carry the wrong pre-image: if a file is rewritten to the same length and
+  timestamp between two commands, and a later command in the same turn changes
+  it visibly, what a rewind puts back is the version from before the invisible
+  edit. It is bounded on both ends — reaching it needs a deliberate
+  same-length, same-tick rewrite in the window between two commands of one
+  turn, and a file the turn already recorded is unaffected, because the first
+  pre-image of a turn is the one that is kept. Closing it is the same read
+  every file twice, in the same place.
 - **A pty command's stdout and stderr cannot be told apart.** A terminal has one
   stream, so `pty: true` gives up the `[stderr]` split the piped path reports.
   That is the format rather than the implementation, and it is why the pty is
@@ -79,6 +93,22 @@ Each entry says what is missing, and what covering it would cost.
   the commit in place, so the tree no longer matches it. `git` has the way back
   and the drawer does not say so at that moment. Wiring them together means the
   checkpoint log recording commits, which is a record shape and a format version.
+- **Nothing makes a model write a note either.** `remember` is offered and the
+  prompt says when to reach for it, and that is the end of the harness's
+  leverage — the same limit `update_plan` has, for the same reason. A model that
+  finishes a long piece of work and simply answers leaves nothing behind, and
+  the next conversation starts as blank as it would have before the feature
+  existed. Forcing one at the end of every turn would spend an iteration on the
+  many turns with nothing worth carrying, and would fill the drawer with notes
+  about turns nobody needed a note about.
+- **A note is not checked against the workspace it describes.** It says what was
+  true when it was written, and nothing revisits it — a note about a branch that
+  has since merged, or a file that has since been deleted, is carried into every
+  later conversation exactly as confidently as one still true. The prompt says
+  so in as many words, which puts the judgement on the model where it has to be,
+  and the Memory drawer is where a stale one gets removed. Expiring them
+  automatically would need a model of what each note is *about*, which is a
+  larger claim than a line of prose supports.
 - **Nothing makes a model plan.** `update_plan` is offered and the prompt says
   when to reach for it, and that is the end of the harness's leverage. On a
   five-step mechanical task neither `qwen3.6:27b` nor `qwen3.5:9b` called it

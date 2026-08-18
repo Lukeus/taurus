@@ -430,3 +430,23 @@ describe("a delegation", () => {
     expect(host.querySelector(".run-row-delegate")).toBeNull();
   });
 });
+
+describe("a conversation that has only just started", () => {
+  it("survives its first message arriving in an empty transcript", () => {
+    // The transcript draws a placeholder while there is nothing in it, and
+    // that used to be an early return sitting in front of a hook. React counts
+    // hooks per render, so the render where the first token lands called one
+    // more than the render before it and the component came down — at the one
+    // moment every new conversation passes through.
+    const { host, rerender } = mount([]);
+    expect(host.querySelector(".transcript.empty")).not.toBeNull();
+
+    rerender([
+      { kind: "user", id: "u1", text: "the first question", images: [] },
+      { kind: "assistant", id: "a1", text: "the", thinking: "", open: true },
+    ]);
+
+    expect(host.querySelector(".transcript.empty")).toBeNull();
+    expect(host.textContent).toContain("the first question");
+  });
+});

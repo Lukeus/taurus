@@ -40,9 +40,15 @@ const state = {
 // `pinnedPlan` is a pure selector over `entries`, which is empty here — the
 // real one is exercised in the store's own tests, and stubbing it would only
 // let App call something that does not exist.
+//
+// The selector is applied rather than ignored, because App and the two panes
+// under it subscribe to slices rather than to the whole store. A mock that
+// handed every caller the entire state would give `Transcript` the store object
+// where it expects a list of entries.
 vi.mock("./state/store", async (original) => ({
   ...(await original<typeof import("./state/store")>()),
-  useStore: () => state,
+  useStore: (select?: (s: typeof state) => unknown) =>
+    select ? select(state) : state,
 }));
 
 import type { ProviderConfig } from "./lib/api";

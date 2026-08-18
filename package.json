@@ -13,7 +13,8 @@
     "bindings": "node scripts/bindings.mjs",
     "version:check": "node scripts/version.mjs check",
     "version:set": "node scripts/version.mjs set",
-    "screenshots": "node scripts/screenshots/capture.mjs"
+    "screenshots": "node scripts/screenshots/capture.mjs",
+    "bench": "vitest bench"
   },
   "dependencies": {
     "@fontsource/manrope": "^5.3.0",

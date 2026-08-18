@@ -80,6 +80,8 @@ pub fn run() {
             commands::answer_questions,
             commands::list_permission_rules,
             commands::revoke_permission_rule,
+            commands::list_notes,
+            commands::forget_note,
             commands::list_skills,
             commands::list_instructions,
             commands::list_commands,

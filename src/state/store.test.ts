@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Message, UiEvent } from "../lib/api";
 import {
+  batchEvents,
   entriesFromMessages,
   pinnedPlan,
   reduce,
@@ -901,5 +902,96 @@ describe("a delegation's own transcript", () => {
     });
     expect(entries).toHaveLength(1);
     expect(entries[0]).not.toHaveProperty("transcript");
+  });
+});
+
+/**
+ * A turn arrives a token at a time and every one of them used to be a render
+ * of the whole app. Batching is only safe if it changes when the screen catches
+ * up and nothing else — so what these check is that the events come out in the
+ * order they went in, and that none of them can be left behind.
+ */
+describe("batching stream events", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("holds events for a frame and delivers them in order", () => {
+    const batches: UiEvent[][] = [];
+    const stream = batchEvents((events) => batches.push(events));
+
+    stream.push(text("Hel"));
+    stream.push(text("lo"));
+    expect(batches).toEqual([]);
+
+    vi.runAllTimers();
+    expect(batches).toHaveLength(1);
+    expect(run(...batches[0])).toEqual([
+      expect.objectContaining({ kind: "assistant", text: "Hello" }),
+    ]);
+  });
+
+  it("keeps a tool call in its place among the text around it", () => {
+    // The ordering that matters: a batch is only sound if a call that arrived
+    // between two sentences still lands between them.
+    const batches: UiEvent[][] = [];
+    const stream = batchEvents((events) => batches.push(events));
+
+    stream.push(text("before "));
+    stream.push({
+      type: "tool_call_started",
+      id: "t1",
+      name: "read_file",
+      preview: "src/main.rs",
+    });
+    stream.push(text("after"));
+    vi.runAllTimers();
+
+    const entries = run(...batches[0]);
+    expect(entries.map((e) => e.kind)).toEqual([
+      "assistant",
+      "tool",
+      "assistant",
+    ]);
+  });
+
+  it("delivers what is waiting when the turn ends", () => {
+    // The last few tokens of a turn have nothing behind them to trigger a
+    // frame, so without this they would sit in the queue until the next turn.
+    const batches: UiEvent[][] = [];
+    const stream = batchEvents((events) => batches.push(events));
+
+    stream.push(text("the last word"));
+    stream.flush();
+
+    expect(batches).toHaveLength(1);
+    expect(run(...batches[0])).toEqual([
+      expect.objectContaining({ text: "the last word" }),
+    ]);
+  });
+
+  it("does nothing when there is nothing waiting", () => {
+    // `send` flushes on the way out of both the success and the failure path,
+    // so the second one has to be free.
+    const batches: UiEvent[][] = [];
+    const stream = batchEvents((events) => batches.push(events));
+
+    stream.push(text("done"));
+    stream.flush();
+    stream.flush();
+    vi.runAllTimers();
+
+    expect(batches).toHaveLength(1);
+  });
+
+  it("starts a new frame after one has been flushed", () => {
+    const batches: UiEvent[][] = [];
+    const stream = batchEvents((events) => batches.push(events));
+
+    stream.push(text("one"));
+    stream.flush();
+    stream.push(text("two"));
+    vi.runAllTimers();
+
+    expect(batches.map((b) => b.length)).toEqual([1, 1]);
   });
 });

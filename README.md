@@ -7,6 +7,8 @@ macOS, Windows, and Linux from one codebase.
 
 It reads and edits files in a workspace, runs commands, searches the web,
 connects to MCP servers, delegates to sub-agents, reads screenshots you paste in,
+leaves itself notes so the next conversation in a workspace does not start from
+nothing,
 and finds code by what it does rather than what it is called — and writes down
 procedures it works out as reusable **skills**, which you approve before they are
 kept. It
@@ -77,6 +79,9 @@ writes down.
 - [**Skills**](docs/capabilities.md#skills) — works a procedure out once, writes
   it down, and asks before keeping it. You approve; nothing is saved behind your
   back.
+- [**Memory**](docs/capabilities.md#memory) — writes down what the next
+  conversation in this workspace would otherwise have to be told again. You can
+  read every note, and forget any of them.
 - [**Sub-agents**](docs/capabilities.md#sub-agents) — delegates to a scoped
   context with its own tools, so a search that would fill the window happens
   somewhere else.

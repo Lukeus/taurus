@@ -149,7 +149,7 @@ impl ToolRegistry {
         // the user reads to decide whether they need it.
         let sweep = match &ctx.checkpoints {
             Some(_) if tool.touches_unpredictably() => {
-                Some(crate::sweep::Sweep::before(&ctx.workspace).await)
+                Some(crate::sweep::Sweep::before(&ctx.workspace, ctx.sweeps.clone()).await)
             }
             _ => None,
         };

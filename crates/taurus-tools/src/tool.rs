@@ -133,6 +133,15 @@ pub struct ToolContext {
     /// recorder, which is how a sub-agent's writes land in the turn that
     /// spawned it.
     pub checkpoints: Option<Arc<crate::checkpoint::TurnRecorder>>,
+    /// What the last command in this turn read of the workspace, so the next
+    /// one need not read it again. See [`crate::sweep::SweepCache`].
+    ///
+    /// Opened and closed with `checkpoints` because it has no other use: a
+    /// sweep only runs when there is a turn to record it into. Shared by a
+    /// clone of this context for the same reason the recorder is — a
+    /// sub-agent's commands sweep the same workspace, and reading it a second
+    /// time on their behalf would answer the same question twice.
+    pub sweeps: Option<Arc<crate::sweep::SweepCache>>,
     /// Bound to one tool call by the agent loop, so a report lands on the right
     /// card. `None` outside a loop that draws anything — the CLI's piped mode,
     /// examples, tests.
@@ -158,6 +167,7 @@ impl ToolContext {
             permissions,
             cancel,
             checkpoints: None,
+            sweeps: None,
             progress: None,
             call_id: None,
         }
@@ -172,6 +182,10 @@ impl ToolContext {
     /// Makes changes made through this context undoable.
     pub fn with_checkpoints(mut self, recorder: Arc<crate::checkpoint::TurnRecorder>) -> Self {
         self.checkpoints = Some(recorder);
+        // Together, always. Every caller that opens a turn wants both, and one
+        // without the other is either a sweep with nowhere to record or a turn
+        // that re-reads the workspace before every command it runs.
+        self.sweeps = Some(Arc::new(crate::sweep::SweepCache::new()));
         self
     }
 

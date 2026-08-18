@@ -27,6 +27,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       busy={false}
       skillCount={12}
       agentCount={3}
+      noteCount={2}
       mcp={{ total: 2, connected: 2 }}
       health={{ state: "connected", id: "ollama", models: 4 }}
       theme="dark"
@@ -37,6 +38,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       onTheme={() => {}}
       onSkills={() => {}}
       onAgents={() => {}}
+      onMemory={() => {}}
       onMcp={() => {}}
       onSettings={() => {}}
       {...props}
@@ -205,6 +207,7 @@ describe("the foot links", () => {
     const html = draw({
       skillCount: 12,
       agentCount: 3,
+      noteCount: 2,
       mcp: { total: 4, connected: 4 },
     });
     expect(html).toContain("Skills");
@@ -237,8 +240,25 @@ describe("the foot links", () => {
   it("omits a count it does not have yet rather than showing a zero", () => {
     // Before the first status arrives there is no roster to report, and "0
     // agents" would be wrong: two ship with the harness.
-    const html = draw({ skillCount: null, agentCount: null, mcp: null });
+    const html = draw({
+      skillCount: null,
+      agentCount: null,
+      noteCount: null,
+      mcp: null,
+    });
     expect(html).toContain("Agents");
     expect(html).not.toContain("count");
+  });
+
+  it("offers memory, and says nothing about it when there is none", () => {
+    // A zero here means something different from the nulls above: the status
+    // did arrive and the answer is that nothing has been written down. That is
+    // the ordinary state of a fresh workspace and it earns no badge — a rail
+    // full of zeroes reads as a rail full of things needing attention.
+    const empty = draw({ noteCount: 0 });
+    expect(empty).toContain("Memory");
+    expect(empty).not.toContain(">0<");
+
+    expect(draw({ noteCount: 4 })).toContain(">4<");
   });
 });

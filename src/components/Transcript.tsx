@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 
 import { ChartCard } from "./ChartCard";
@@ -28,6 +28,7 @@ const TOOL_GLYPH: Record<string, string> = {
   load_skill: "◈",
   run_skill_script: "▷",
   propose_skill: "✦",
+  remember: "⚑",
 };
 
 /**
@@ -38,7 +39,10 @@ const TOOL_GLYPH: Record<string, string> = {
  * glance — it is the only category where something left the machine. Reads are
  * the background noise of the run.
  */
-const TOOL_CLASS: Record<string, "read" | "wrote" | "ran" | "net" | "skill"> = {
+const TOOL_CLASS: Record<
+  string,
+  "read" | "wrote" | "ran" | "net" | "skill" | "kept"
+> = {
   read_file: "read",
   list_dir: "read",
   glob: "read",
@@ -50,6 +54,11 @@ const TOOL_CLASS: Record<string, "read" | "wrote" | "ran" | "net" | "skill"> = {
   fetch_url: "net",
   load_skill: "skill",
   run_skill_script: "skill",
+  // Its own category rather than a read or a write. Nothing in the workspace
+  // moved, but something was kept — and a note is the one step in a turn whose
+  // effect is on the *next* conversation, which is worth being able to spot
+  // while scanning back through this one.
+  remember: "kept",
 };
 
 const CLASS_NOUN: Record<string, string> = {
@@ -60,17 +69,11 @@ const CLASS_NOUN: Record<string, string> = {
   // counting, is that each one is a round trip off this machine.
   net: "request",
   skill: "skill",
+  kept: "note",
   other: "tool",
 };
 
-export function Transcript({
-  entries,
-  busy,
-  empty,
-  onAnswer,
-  onOpenDelegate,
-  follow = true,
-}: {
+export type TranscriptProps = {
   entries: Entry[];
   busy: boolean;
   /** Shown in place of the transcript before there is anything to show. */
@@ -88,10 +91,29 @@ export function Transcript({
    * opening it at the last line is opening it at the end of the book.
    */
   follow?: boolean;
-}) {
+};
+
+export function Transcript({
+  entries,
+  busy,
+  empty,
+  onAnswer,
+  onOpenDelegate,
+  follow = true,
+}: TranscriptProps) {
   const bottom = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+
+  // Held steady before they go any further down. Everything below this is
+  // memoized, and a memo compares its props — so a caller writing
+  // `onAnswer={() => …}` inline, which is the natural way to write it, would
+  // hand every turn a new function on every token and undo the lot. Making the
+  // component robust to that is worth more than a rule callers have to know:
+  // `DelegateTranscript` already passes one, correctly, because there is
+  // nothing there to answer.
+  const answer = useStable(onAnswer);
+  const openDelegate = useStable(onOpenDelegate);
 
   // Follow the stream, but stop fighting the user the moment they scroll up.
   useEffect(() => {
@@ -108,6 +130,12 @@ export function Transcript({
     if (follow && pinned.current) bottom.current?.scrollIntoView({ block: "end" });
   }, [entries, follow]);
 
+  // Above the empty case, not below it. This is a hook, and a hook behind an
+  // early return is called on some renders and not others — so the first token
+  // of a fresh conversation, which is exactly the moment the transcript stops
+  // being empty, would take the component down with it.
+  const conversation = useStableTurns(entries);
+
   if (entries.length === 0) {
     return (
       <div className="transcript empty" ref={container}>
@@ -115,8 +143,6 @@ export function Transcript({
       </div>
     );
   }
-
-  const conversation = turns(entries);
 
   return (
     <div className="transcript" ref={container}>
@@ -128,8 +154,8 @@ export function Transcript({
           // question most recently asked, and the marker belongs on its rail
           // rather than floating under the conversation as a whole.
           working={busy && i === conversation.length - 1}
-          onAnswer={onAnswer}
-          onOpenDelegate={onOpenDelegate}
+          onAnswer={answer}
+          onOpenDelegate={openDelegate}
         />
       ))}
       <div ref={bottom} />
@@ -179,6 +205,110 @@ export function turns(entries: Entry[]): Turn[] {
 }
 
 /**
+ * One function identity for the life of the component, always calling the
+ * newest one it was given.
+ *
+ * The identity is what the memos compare; the freshness is what keeps a
+ * callback from closing over a stale render. Without the second half this would
+ * be a cache that answers questions with last week's answer.
+ */
+function useStable<A extends unknown[]>(
+  fn: (...args: A) => void,
+): (...args: A) => void;
+function useStable<A extends unknown[]>(
+  fn: ((...args: A) => void) | undefined,
+): ((...args: A) => void) | undefined;
+function useStable<A extends unknown[]>(
+  fn: ((...args: A) => void) | undefined,
+): ((...args: A) => void) | undefined {
+  const held = useRef(fn);
+  held.current = fn;
+
+  const stable = useCallback((...args: A) => held.current?.(...args), []);
+
+  // Absence is meaningful further down — a row offers to open a delegate's
+  // conversation only where there is somewhere to open one — so an absent
+  // callback has to stay absent rather than becoming a function that does
+  // nothing.
+  return fn === undefined ? undefined : stable;
+}
+
+/**
+ * `turns(entries)`, carrying forward the objects it built last time for the
+ * turns that did not change.
+ *
+ * `turns` builds fresh objects on every call, and fresh objects are what React
+ * reads as "this is different, draw it again" — so one token appended to the
+ * last turn used to redraw every turn above it, and a long conversation got
+ * slower to type into the longer it ran.
+ *
+ * Nothing about the transcript makes that necessary. The reducer preserves the
+ * identity of every entry it did not touch, so a turn whose entries are all the
+ * same objects is provably the same turn, and can keep the identity it already
+ * had. That is the whole of what lets `TurnView` be memoized: without it the
+ * memo compares two freshly-built turns, finds them different, and saves
+ * nothing.
+ *
+ * Building the list is still O(entries) per render. It is the drawing that was
+ * expensive, and this is what stops paying for it.
+ */
+function useStableTurns(entries: Entry[]): Turn[] {
+  const held = useRef<Turn[]>([]);
+  // Written during the render rather than in an effect, which is normally the
+  // wrong side of that line: a render React throws away — a StrictMode double
+  // pass, an interrupted one — leaves this holding turns from a render that
+  // never reached the screen. It is safe here because of what `reuse` asks. It
+  // carries an object forward only when the entries in it are the *same
+  // objects*, so a turn from an abandoned render is either identical to the one
+  // that replaces it or is not reused at all. There is no state to be stale.
+  held.current = reuse(held.current, turns(entries));
+  return held.current;
+}
+
+/**
+ * `next`, with every turn that matches the one `previous` held at the same
+ * position replaced by that one.
+ *
+ * Pulled out of the hook because this is the whole property the memo depends
+ * on, and a property worth a test of its own: a refactor that stops turns
+ * carrying their identity forward would cost nothing visible and quietly
+ * restore the behaviour this replaced.
+ */
+export function reuse(previous: Turn[], next: Turn[]): Turn[] {
+  return next.map((turn, i) => {
+    const held = previous[i];
+    return held && unchanged(held, turn) ? held : turn;
+  });
+}
+
+/**
+ * Whether two turns hold the same entries, by identity.
+ *
+ * Deliberately not a deep comparison. Every entry the reducer rewrites is a new
+ * object and every entry it leaves alone is the same one, so identity is the
+ * exact question — and a deep walk would cost more than the render it is trying
+ * to avoid.
+ */
+function unchanged(a: Turn, b: Turn): boolean {
+  if (a.prompt !== b.prompt || a.body.length !== b.body.length) return false;
+
+  return a.body.every((item, i) => {
+    const other = b.body[i];
+    // A folded run of tool calls is rebuilt by `group` on every call, so the
+    // arrays never match by identity even when nothing in them moved.
+    if (Array.isArray(item) || Array.isArray(other)) {
+      return (
+        Array.isArray(item) &&
+        Array.isArray(other) &&
+        item.length === other.length &&
+        item.every((step, k) => step === other[k])
+      );
+    }
+    return item === other;
+  });
+}
+
+/**
  * A turn, drawn as a thread.
  *
  * Everything the turn produced hangs off one rail that starts at the question,
@@ -187,7 +317,7 @@ export function turns(entries: Entry[]): Turn[] {
  * replaced, was the question pinned to the right margin and its answer to the
  * left, sharing no edge and connected by nothing.
  */
-function TurnView({
+const TurnView = memo(function TurnView({
   turn,
   working,
   onAnswer,
@@ -223,7 +353,7 @@ function TurnView({
       )}
     </section>
   );
-}
+});
 
 /** The question, at the head of the thread that answers it. */
 function Prompt({ entry }: { entry: UserEntry }) {
@@ -268,7 +398,13 @@ export function group(entries: Entry[]): (Entry | ToolEntry[])[] {
   return out;
 }
 
-function EntryView({
+/**
+ * Memoized on the entry itself, which is what stops the cards in a turn being
+ * redrawn while the sentence after them is still arriving. A table the model
+ * drew four tool calls ago has not changed; recomputing its layout thirty times
+ * a second to prove that is the work worth not doing.
+ */
+const EntryView = memo(function EntryView({
   entry,
   onAnswer,
   onOpenDelegate,
@@ -336,7 +472,7 @@ function EntryView({
         <div className={`notice ${entry.tone}`}>{entry.text}</div>
       );
   }
-}
+});
 
 function Thinking({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
@@ -352,7 +488,16 @@ function Thinking({ text }: { text: string }) {
   );
 }
 
-function ToolRun({
+/**
+ * A folded run of tool calls.
+ *
+ * Memoized with a comparison of its own because `group` rebuilds the array on
+ * every render: the steps inside it are the same objects, but the array holding
+ * them never is, so the default shallow compare would find a difference every
+ * time and the memo would do nothing. What it saves is the common shape of a
+ * turn — a run of calls, and then the answer streaming in underneath it.
+ */
+const ToolRun = memo(function ToolRun({
   steps,
   onOpenDelegate,
 }: {
@@ -383,7 +528,11 @@ function ToolRun({
         ))}
     </div>
   );
-}
+},
+(a, b) =>
+  a.onOpenDelegate === b.onOpenDelegate &&
+  a.steps.length === b.steps.length &&
+  a.steps.every((step, i) => step === b.steps[i]));
 
 /**
  * Tools whose progress reports are their own output rather than labels.
