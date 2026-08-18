@@ -891,6 +891,16 @@ mod tests {
             }
         }
 
+        /// Writes a file into the workspace.
+        ///
+        /// Every test here rewrites a file to a *different length*, and that is
+        /// a requirement rather than a habit. A sweep detects a change by
+        /// length or modification time, and only the first of those is reliable
+        /// everywhere — a same-length rewrite within one filesystem tick is
+        /// invisible by design, which is written down in the module note above
+        /// and in `docs/known-gaps.md`. Content of equal length turns a test of
+        /// something else into a test of the host's timestamp resolution: it
+        /// passes on a filesystem with nanosecond stamps and fails on CI.
         fn write(&self, name: &str, content: &str) {
             let path = self.root.join(name);
             if let Some(parent) = path.parent() {
@@ -1376,22 +1386,26 @@ mod tests {
             // the second command has to be the file as the first command left
             // it, not as it was before the first command ran.
             let f = Fixture::new();
-            f.write("a.txt", "one");
-            f.write("b.txt", "steady");
+            f.write("a.txt", "as it started");
+            f.write("b.txt", "left alone by the first command");
 
-            let first = f.around(|| f.write("a.txt", "two")).await;
+            let first = f
+                .around(|| f.write("a.txt", "what the first command wrote"))
+                .await;
             assert_eq!(first.files, vec!["a.txt"]);
 
             // Nothing touched `b.txt`, so the second sweep answers it from the
             // cache — and `a.txt` moved, so the second sweep reads it again.
-            let second = f.around(|| f.write("b.txt", "moved")).await;
+            let second = f
+                .around(|| f.write("b.txt", "what the second command wrote"))
+                .await;
             assert_eq!(second.files, vec!["b.txt"]);
 
             f.rewind();
-            assert_eq!(f.read("a.txt"), "one");
+            assert_eq!(f.read("a.txt"), "as it started");
             assert_eq!(
                 f.read("b.txt"),
-                "steady",
+                "left alone by the first command",
                 "the cached pre-image has to be the real one"
             );
         }
@@ -1401,15 +1415,17 @@ mod tests {
             // The cache is an optimization and has to be invisible in what it
             // records. Same two commands, no cache, same restore.
             let f = Fixture::new();
-            f.write("a.txt", "one");
-            f.write("b.txt", "steady");
+            f.write("a.txt", "as it started");
+            f.write("b.txt", "left alone by the first command");
 
-            f.around_uncached(|| f.write("a.txt", "two")).await;
-            f.around_uncached(|| f.write("b.txt", "moved")).await;
+            f.around_uncached(|| f.write("a.txt", "what the first command wrote"))
+                .await;
+            f.around_uncached(|| f.write("b.txt", "what the second command wrote"))
+                .await;
 
             f.rewind();
-            assert_eq!(f.read("a.txt"), "one");
-            assert_eq!(f.read("b.txt"), "steady");
+            assert_eq!(f.read("a.txt"), "as it started");
+            assert_eq!(f.read("b.txt"), "left alone by the first command");
         }
     }
 
