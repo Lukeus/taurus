@@ -113,6 +113,20 @@
      label and a run header line up as the same kind of thing. */
   --tracking-label: 0.1em;
 
+  /*
+   * The reading measure — how wide a *sentence* is allowed to get.
+   *
+   * Not how wide the transcript is. The column itself is the width of the pane,
+   * the same as the box you type into, so a table, a diff, a diagram or a run
+   * card gets the whole window and the conversation lines up with the input
+   * instead of stopping short of it. What does not scale with the window is
+   * prose: a line is still tracked left to right by a human eye, and one that
+   * runs 1400px is re-read or skipped. So the column is responsive and the
+   * sentence inside it is not, and every rule that caps text says so by naming
+   * this rather than repeating a number.
+   */
+  --measure: 80ch;
+
   --mono: var(--lk-mono-face), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans: var(--lk-body), -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
     sans-serif;
@@ -937,9 +951,9 @@ body.resizing * {
   flex-direction: column;
   gap: 18px;
   padding-left: var(--gutter);
-  /* The measure is the content's, not the column's, so the reading width is
-     the same as it was before the gutter existed. */
-  max-width: calc(80ch + var(--gutter));
+  /* No cap. The turn is the width of the pane, which is the width of the
+     composer below it — see --measure for why that does not make the prose wide
+     with it. */
 }
 /*
  * The rail.
@@ -1001,13 +1015,15 @@ body.resizing * {
   color: var(--text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  max-width: var(--measure);
 }
 
+/* The wrapper takes the column; what it holds decides its own width, because a
+   reply is prose and a card in the same box. */
 .entry.assistant {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 80ch;
 }
 
 /*
@@ -1096,7 +1112,6 @@ body.resizing * {
   border-radius: var(--r-lg);
   background: var(--bg-raised);
   overflow: hidden;
-  max-width: 80ch;
 }
 .run-head {
   display: flex;
@@ -1260,7 +1275,7 @@ body.resizing * {
   color: var(--text-dim);
   border-left: 2px solid var(--rule);
   padding-left: 12px;
-  max-width: 80ch;
+  max-width: var(--measure);
 }
 .notice.error {
   color: var(--danger);
@@ -1295,11 +1310,17 @@ body.resizing * {
   border-radius: var(--r-xl);
   background: var(--bg-raised);
   padding: 16px;
-  max-width: 80ch;
   display: flex;
   flex-direction: column;
   gap: 13px;
 }
+
+/* All three take the window. A table with eleven columns or a flow five stages
+   deep was the case that scrolled sideways inside 80ch with half the pane empty
+   beside it — and capping only the question card would have widened two members
+   of a family whose whole point, above, is that they are one frame. What is
+   capped is the sentence each of them opens with, not the card: see the measure
+   on `.view-caption` and on a question's prompt, below. */
 
 .view-head,
 .questions-head {
@@ -1318,6 +1339,8 @@ body.resizing * {
   margin: 3px 0 0;
   font-size: 13px;
   color: var(--text-dim);
+  /* A sentence, inside a card that is as wide as the window. */
+  max-width: var(--measure);
 }
 .view-head .micro,
 .questions-head .micro {
@@ -1906,11 +1929,14 @@ body.resizing * {
   gap: 10px;
   align-items: baseline;
 }
+/* The question itself is a sentence, so it takes the measure even though the
+   card around it takes the window. */
 .question-prompt > div {
   display: flex;
   flex-direction: column;
   gap: 2px;
   font-size: 14px;
+  max-width: var(--measure);
 }
 .question-no {
   flex: none;
@@ -2013,10 +2039,24 @@ body.resizing * {
 /* ---------------------------------------------------------------- markdown */
 
 .markdown {
-  max-width: 80ch;
   overflow-wrap: anywhere;
   font-size: 14.5px;
   line-height: 1.6;
+}
+
+/*
+ * The measure, applied to the sentence rather than to the reply.
+ *
+ * A reply is prose and blocks mixed together, and they do not want the same
+ * width: a paragraph is tracked left to right and needs a short line, a code
+ * fence or a table is scanned and needs every pixel it can get. Capping the
+ * whole `.markdown` box gave the paragraph the right width by giving the code
+ * block the wrong one — it scrolled sideways inside 80ch with half the window
+ * unused beside it. So the cap lands on the top-level children that are text,
+ * and the two that are not opt out by name.
+ */
+.markdown > :not(.md-code):not(.md-table-wrap) {
+  max-width: var(--measure);
 }
 
 /* Collapse the outer margins so a reply does not start with a blank line,
@@ -2465,7 +2505,6 @@ body.resizing * {
   border-radius: var(--r-xl);
   background: var(--bg-raised);
   padding: 18px;
-  max-width: 80ch;
 }
 .proposal-head {
   display: flex;
@@ -2484,10 +2523,12 @@ body.resizing * {
   align-items: center;
   flex-wrap: wrap;
 }
+/* The panel is as wide as the composer under it; the line explaining it is not. */
 .proposal-desc {
   margin: 3px 0 0;
   color: var(--text-dim);
   font-size: 13px;
+  max-width: var(--measure);
 }
 .proposal-meta {
   margin: 14px 0;
