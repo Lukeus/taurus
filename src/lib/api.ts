@@ -184,6 +184,16 @@ export const resumeSession = (sessionId: string, providerId?: string) =>
   });
 
 /**
+ * The conversation one delegation had, read-only.
+ *
+ * Scoped to the conversation that spawned it, which is what a delegate's id is
+ * unique within. Rejects rather than returning an empty list when there is no
+ * such transcript, so a stale reference reads as the error it is.
+ */
+export const readSubagentTranscript = (sessionId: string, subagentId: string) =>
+  invoke<Message[]>("read_subagent_transcript", { sessionId, subagentId });
+
+/**
  * Erases a saved conversation — its transcript, and the checkpoints that made
  * its turns undoable. The workspace itself is untouched.
  *

@@ -16,18 +16,32 @@
 //! transcript itself — normally in its opening lines — and an index is a second
 //! copy of the truth that can disagree with it.
 //!
+//! A conversation's delegates are written the same way, one level down:
+//!
+//! ```text
+//! <workspace-key>/<id>.jsonl                        the conversation
+//! <workspace-key>/<id>/subagents/agent-<id>.jsonl   what it delegated
+//! ```
+//!
+//! Which keeps the parent's transcript the record of one delegation — a call
+//! and the answer it returned — while the child's own reading, dead ends and
+//! reasoning stay somewhere they can still be found afterwards.
+//!
 //! Reading and listing apply the same rule about what a valid transcript is. A
 //! listing stricter than the loader would hide conversations that open fine
 //! when asked for by id, and the listing is the only way anybody reaches them.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use ts_rs::TS;
 
-use taurus_core::Session;
+use taurus_core::{Session, SubagentRecorder, TurnRecorder};
 use taurus_provider::{ContentBlock, Message, Role, TokenUsage};
 
 /// Bumped when a record shape changes incompatibly. Transcripts written by a
@@ -35,6 +49,19 @@ use taurus_provider::{ContentBlock, Message, Role, TokenUsage};
 const FORMAT_VERSION: u32 = 1;
 
 const EXTENSION: &str = "jsonl";
+
+/// Where a conversation's delegates live: a directory beside its transcript,
+/// named for it.
+///
+/// Nested rather than flat because [`list`] reads one level down and keeps only
+/// `.jsonl` files, so a directory can never turn up in a listing as a session
+/// of its own. A delegate is part of the conversation that spawned it, not a
+/// conversation somebody had.
+const SUBAGENT_DIR: &str = "subagents";
+
+/// Prefixed so a delegate's file is recognizable as one from its name alone,
+/// wherever it is opened — a listing, an editor, `ls`.
+const SUBAGENT_PREFIX: &str = "agent-";
 
 /// How far into a transcript to look for the line that titles it. A session
 /// whose first user message is somehow past this is listed by its id.
@@ -128,6 +155,17 @@ struct Header {
     /// rather than being required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     branch: Option<String>,
+    /// The conversation this one was delegated from, for a sub-agent's
+    /// transcript. `None` for a conversation somebody had themselves.
+    ///
+    /// Recorded even though the file's own directory already says it: a
+    /// transcript that is moved, copied out for a bug report, or read on its
+    /// own has to still be able to say what it was a delegate *of*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+    /// Which kind of sub-agent this was, by the name in its definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
 }
 
 /// What a listing shows, read from a transcript's own opening lines.
@@ -154,6 +192,10 @@ pub struct SessionMeta {
     /// [`Header::branch`].
     #[ts(optional)]
     pub branch: Option<String>,
+    /// The kind of sub-agent this transcript belongs to, for one listed by
+    /// [`list_subagents`]. `None` for an ordinary conversation.
+    #[ts(optional)]
+    pub agent: Option<String>,
 }
 
 /// An open transcript, appended to as turns complete.
@@ -226,6 +268,30 @@ impl SessionLog {
             // writing today's would be a worse record than none.
             header: Some(header_for(&loaded.session, &loaded.workspace, None)),
             persisted: loaded.session.messages.len(),
+            off: false,
+            warned: false,
+        }
+    }
+
+    /// Starts a delegate's transcript, in its parent's own directory.
+    ///
+    /// Takes the parent's *id* rather than its log, because a delegation
+    /// starts while the parent's turn is still running and its log is held by
+    /// whoever is driving that turn. Nothing about writing this file needs to
+    /// wait for that lock, and taking it would mean a child could stall a
+    /// parent's turn to write a line.
+    ///
+    /// No branch: a delegate runs inside its parent's turn, on whatever the
+    /// parent recorded, and a second copy of that answer is one more thing that
+    /// can disagree.
+    pub fn for_subagent(child: &Session, workspace: &Path, parent: &str, agent: &str) -> Self {
+        let mut header = header_for(child, workspace, None);
+        header.parent = Some(parent.to_string());
+        header.agent = Some(agent.to_string());
+        Self {
+            path: subagent_path(workspace, parent, &child.id),
+            header: Some(header),
+            persisted: 0,
             off: false,
             warned: false,
         }
@@ -342,6 +408,18 @@ fn transcript_path(session: &Session, workspace: &Path) -> PathBuf {
         .join(format!("{}.{EXTENSION}", session.id))
 }
 
+/// Where one conversation's delegates are written.
+fn subagents_dir_in(workspace: &Path, parent: &str) -> PathBuf {
+    sessions_dir()
+        .join(workspace_key(workspace))
+        .join(parent)
+        .join(SUBAGENT_DIR)
+}
+
+fn subagent_path(workspace: &Path, parent: &str, child: &str) -> PathBuf {
+    subagents_dir_in(workspace, parent).join(format!("{SUBAGENT_PREFIX}{child}.{EXTENSION}"))
+}
+
 fn header_for(session: &Session, workspace: &Path, branch: Option<String>) -> Header {
     Header {
         version: FORMAT_VERSION,
@@ -350,6 +428,8 @@ fn header_for(session: &Session, workspace: &Path, branch: Option<String>) -> He
         model: session.model.clone(),
         started: now(),
         branch,
+        parent: None,
+        agent: None,
     }
 }
 
@@ -390,7 +470,16 @@ pub struct Loaded {
 /// it is the turn that was in flight when the process died, and refusing to
 /// open the file would lose the rest of the conversation over it.
 pub fn load(id: &str) -> Result<Loaded, String> {
-    let path = find(id).ok_or_else(|| format!("no saved session '{id}'"))?;
+    read_transcript(find(id).ok_or_else(|| format!("no saved session '{id}'"))?)
+}
+
+/// Reads one transcript file, whoever it belongs to.
+///
+/// Shared by [`load`] and [`load_subagent`] rather than copied, so a delegate's
+/// transcript is as tolerant of a half-written tail as its parent's — which
+/// matters more for a delegate, not less: a turn interrupted mid-delegation is
+/// exactly the case its transcript exists for.
+fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
 
     let mut header: Option<Header> = None;
@@ -414,7 +503,8 @@ pub fn load(id: &str) -> Result<Loaded, String> {
     let header = header.ok_or_else(|| format!("{} has no header", path.display()))?;
     if header.version > FORMAT_VERSION {
         return Err(format!(
-            "session '{id}' was written by a newer version of Taurus (format {} > {FORMAT_VERSION})",
+            "{} was written by a newer version of Taurus (format {} > {FORMAT_VERSION})",
+            path.display(),
             header.version
         ));
     }
@@ -469,6 +559,66 @@ pub fn list(workspace: Option<&Path>) -> Vec<SessionMeta> {
     // Descending, so the newest is first and `latest` is just the head.
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
     sessions
+}
+
+/// One conversation's delegates, newest first.
+///
+/// Empty for a conversation that delegated nothing, and for one whose delegates
+/// were recorded by a build that did not keep them — both of which are the same
+/// answer to the caller: there is nothing to show.
+pub fn list_subagents(parent: &str) -> Vec<SessionMeta> {
+    let Some(dir) = subagents_dir(parent) else {
+        return Vec::new();
+    };
+    let mut listed: Vec<SessionMeta> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == EXTENSION))
+        .filter_map(|path| read_meta(&path))
+        .collect();
+    listed.sort_by_key(|s| std::cmp::Reverse(s.updated));
+    listed
+}
+
+/// Reads one delegate's conversation.
+///
+/// Scoped to its parent rather than found by id alone, because that is what a
+/// delegate's id *is*: unique inside the conversation that spawned it, and not
+/// something the rest of the tree indexes.
+pub fn load_subagent(parent: &str, child: &str) -> Result<Loaded, String> {
+    if !usable_as_filename(child) {
+        return Err(format!("'{child}' is not a sub-agent id"));
+    }
+    let dir = subagents_dir(parent)
+        .ok_or_else(|| format!("session '{parent}' has no recorded sub-agents"))?;
+    let path = dir.join(format!("{SUBAGENT_PREFIX}{child}.{EXTENSION}"));
+    if !path.is_file() {
+        return Err(format!("no sub-agent '{child}' under session '{parent}'"));
+    }
+    read_transcript(path)
+}
+
+/// Locates a conversation's delegates across every workspace.
+///
+/// Looks for the directory rather than deriving it from the parent's
+/// transcript, so delegates are still readable from a conversation whose own
+/// first turn never made it to disk — the delegation runs *during* that turn,
+/// and writes before it.
+///
+/// Public because pointing somebody at the files is a useful answer on its own:
+/// there is no viewer for one of these yet, and `taurus sessions --agents`
+/// prints this so the transcripts can be read with whatever is to hand.
+pub fn subagents_dir(parent: &str) -> Option<PathBuf> {
+    if !usable_as_filename(parent) {
+        return None;
+    }
+    std::fs::read_dir(sessions_dir())
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path().join(parent).join(SUBAGENT_DIR))
+        .find(|path| path.is_dir())
 }
 
 /// The most recently updated session for a workspace.
@@ -537,6 +687,7 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
         updated,
         title: title.unwrap_or_default(),
         branch: header.branch,
+        agent: header.agent,
     })
 }
 
@@ -575,14 +726,42 @@ fn first_text(message: &Message) -> Option<String> {
 /// rather than shown a confirmation for work that did not happen.
 pub fn delete(id: &str) -> Result<(), String> {
     let path = find(id).ok_or_else(|| format!("no saved session '{id}'"))?;
+
+    // The delegates go with it. They are part of this conversation — recorded
+    // under its id, unreachable once it is gone — and leaving them would turn
+    // every deleted session into a directory nothing lists and nothing can
+    // open. Best effort, and before the transcript rather than after: a
+    // conversation whose delegates could not be removed is still deleted, but
+    // one that reported success while its own transcript survived would not be.
+    if let Some(dir) = path.parent().map(|parent| parent.join(id)) {
+        if dir.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                tracing::warn!(
+                    path = %dir.display(),
+                    error = %e,
+                    "could not remove a session's sub-agent transcripts"
+                );
+            }
+        }
+    }
+
     std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Whether an id can be put in a path at all.
+///
+/// Checked before it reaches the filesystem: an id is used as a filename, and
+/// one carrying separators or a `..` would resolve outside the sessions tree.
+/// Applied to a delegate's id as well as a conversation's — a sub-agent id
+/// comes from the same generator, but it now also arrives from a frontend
+/// asking to read one back.
+fn usable_as_filename(id: &str) -> bool {
+    !id.is_empty() && !id.contains(['/', '\\', '.'])
 }
 
 /// Locates a transcript by id across every workspace.
 fn find(id: &str) -> Option<PathBuf> {
-    // Rejected before it reaches the filesystem: an id is used as a filename,
-    // and one carrying separators would resolve outside the sessions tree.
-    if id.is_empty() || id.contains(['/', '\\', '.']) {
+    if !usable_as_filename(id) {
         return None;
     }
     let filename = format!("{id}.{EXTENSION}");
@@ -591,6 +770,74 @@ fn find(id: &str) -> Option<PathBuf> {
         .flatten()
         .map(|entry| entry.path().join(&filename))
         .find(|path| path.is_file())
+}
+
+/// Keeps a conversation's delegates, under the conversation that spawned them.
+///
+/// Built per turn by [`crate::Host::build_agent`], so the CLI and the desktop
+/// app cannot disagree about whether delegation is recorded — the same reason
+/// the rest of a turn's wiring is built there.
+///
+/// A no-trace mode, when there is one, turns this off with [`Self::disabled`]:
+/// a session the user asked not to record must not leave its delegates behind,
+/// which is precisely the kind of thing that gets missed when two layers each
+/// decide separately what to write.
+pub struct SubagentLogs {
+    workspace: PathBuf,
+    parent: String,
+    off: bool,
+}
+
+impl SubagentLogs {
+    pub fn new(workspace: PathBuf, parent: impl Into<String>) -> Self {
+        Self {
+            workspace,
+            parent: parent.into(),
+            off: false,
+        }
+    }
+
+    /// A recorder that writes nowhere.
+    pub fn disabled() -> Self {
+        Self {
+            workspace: PathBuf::new(),
+            parent: String::new(),
+            off: true,
+        }
+    }
+}
+
+#[async_trait]
+impl SubagentRecorder for SubagentLogs {
+    async fn open(&self, agent_type: &str, child: &Session) -> Option<Arc<dyn TurnRecorder>> {
+        if self.off {
+            return None;
+        }
+        Some(Arc::new(SubagentLog {
+            log: Mutex::new(SessionLog::for_subagent(
+                child,
+                &self.workspace,
+                &self.parent,
+                agent_type,
+            )),
+        }))
+    }
+}
+
+/// One delegate's transcript.
+///
+/// A lock per child rather than one across all of them: delegates run
+/// concurrently, they write to separate files, and a shared lock would make
+/// each one wait on the others' disks for nothing.
+struct SubagentLog {
+    log: Mutex<SessionLog>,
+}
+
+#[async_trait]
+impl TurnRecorder for SubagentLog {
+    async fn record(&self, session: &Session) {
+        self.log.lock().await.record(session);
+    }
 }
 
 #[cfg(test)]
@@ -628,6 +875,118 @@ mod tests {
         assert_eq!(loaded.model, "test-model");
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.usage.total(), 14);
+    }
+
+    #[test]
+    fn a_delegate_keeps_its_own_transcript_under_its_parent() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/delegating");
+
+        let parent = session_with("parent1", &["find the bug"]);
+        SessionLog::create(&parent, workspace, None).record(&parent);
+
+        let child = session_with("child1", &["search everything"]);
+        let mut log = SessionLog::for_subagent(&child, workspace, "parent1", "explorer");
+        log.record(&child);
+
+        let loaded = load_subagent("parent1", "child1").expect("the delegate should reload");
+        assert_eq!(loaded.session.id, "child1");
+        assert_eq!(loaded.session.messages.len(), 2);
+        // Its own file, in its parent's directory, named for what it was.
+        assert!(loaded
+            .path
+            .ends_with("parent1/subagents/agent-child1.jsonl"));
+    }
+
+    #[test]
+    fn a_delegate_does_not_list_as_a_conversation() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/notaconversation");
+
+        let parent = session_with("parent2", &["do the thing"]);
+        SessionLog::create(&parent, workspace, None).record(&parent);
+
+        let child = session_with("child2", &["the delegated part"]);
+        SessionLog::for_subagent(&child, workspace, "parent2", "explorer").record(&child);
+
+        // The rail shows conversations somebody had. A delegate is part of one.
+        let listed = list(Some(workspace));
+        assert_eq!(listed.len(), 1, "{listed:#?}");
+        assert_eq!(listed[0].id, "parent2");
+
+        let delegates = list_subagents("parent2");
+        assert_eq!(delegates.len(), 1);
+        assert_eq!(delegates[0].id, "child2");
+        assert_eq!(delegates[0].agent.as_deref(), Some("explorer"));
+        assert_eq!(delegates[0].title, "the delegated part");
+    }
+
+    #[test]
+    fn deleting_a_conversation_takes_its_delegates_with_it() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/deleteme");
+
+        let parent = session_with("parent3", &["delegate this"]);
+        SessionLog::create(&parent, workspace, None).record(&parent);
+        let child = session_with("child3", &["work"]);
+        SessionLog::for_subagent(&child, workspace, "parent3", "explorer").record(&child);
+
+        delete("parent3").expect("the conversation should delete");
+
+        assert!(load("parent3").is_err());
+        assert!(load_subagent("parent3", "child3").is_err());
+        // Not merely unreadable — gone. A directory nothing lists and nothing
+        // can open is the thing this test exists to prevent.
+        assert!(subagents_dir("parent3").is_none());
+    }
+
+    #[test]
+    fn a_delegate_is_recorded_as_it_runs_not_at_the_end() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/midflight");
+
+        // What a child looks like part-way through: one round done, more to
+        // come. The process dying here must still leave the round that landed.
+        let mut child = session_with("child4", &["first round"]);
+        let mut log = SessionLog::for_subagent(&child, workspace, "parent4", "explorer");
+        log.record(&child);
+
+        let midflight = load_subagent("parent4", "child4").expect("the first round is on disk");
+        assert_eq!(midflight.session.messages.len(), 2);
+
+        child.push(Message::user("second round"));
+        child.push(Message::assistant("done"));
+        log.record(&child);
+
+        let finished = load_subagent("parent4", "child4").unwrap();
+        assert_eq!(
+            finished.session.messages.len(),
+            4,
+            "appended, not rewritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_recorder_declines_to_open_anything() {
+        let _home = isolated_home();
+        let child = session_with("child5", &["work"]);
+
+        let off = SubagentLogs::disabled();
+        assert!(off.open("explorer", &child).await.is_none());
+
+        let on = SubagentLogs::new(PathBuf::from("/tmp/recording"), "parent5");
+        assert!(on.open("explorer", &child).await.is_some());
+    }
+
+    #[test]
+    fn a_delegate_id_that_would_escape_the_sessions_tree_is_refused() {
+        let _home = isolated_home();
+
+        // Both halves are used as path segments, and one of them now arrives
+        // from a frontend asking to read a transcript back.
+        assert!(load_subagent("../../etc", "child").is_err());
+        assert!(load_subagent("parent", "../../../etc/passwd").is_err());
+        assert!(subagents_dir("..").is_none());
     }
 
     #[test]
@@ -980,6 +1339,8 @@ mod tests {
             model: "test-model".into(),
             started: 1,
             branch: None,
+            parent: None,
+            agent: None,
         }))
         .unwrap();
         std::fs::write(dir.join("ooo1.jsonl"), format!("{message}\n{header}\n")).unwrap();

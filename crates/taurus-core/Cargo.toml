@@ -23,6 +23,7 @@ ts-rs.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 taurus-provider-ollama.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros"] }

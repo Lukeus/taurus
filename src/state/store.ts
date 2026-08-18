@@ -71,6 +71,16 @@ export type Entry =
        */
       view?: TranscriptView;
       /**
+       * The delegate's own conversation, for the calls that had one.
+       *
+       * Set while the call is still running, which is the point: a delegation
+       * that hung, or was stopped, is the one somebody wants to read, and a
+       * reference that only arrived with the result could not offer either.
+       * Absent on a resumed conversation — the parent's transcript records the
+       * delegation, not where its child was written.
+       */
+      transcript?: { session: string; agent: string };
+      /**
        * Wall-clock bounds of the call, in epoch milliseconds, so a run of
        * steps can report how long it took. Absent on a resumed conversation:
        * the transcript on disk records what happened, not when, and a made-up
@@ -1023,6 +1033,13 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           startedAt: Date.now(),
         },
       ]);
+
+    case "tool_transcript":
+      return entries.map((e) =>
+        e.kind === "tool" && e.id === event.id
+          ? { ...e, transcript: { session: event.session, agent: event.agent } }
+          : e,
+      );
 
     case "tool_progress":
       return entries.map((e) =>

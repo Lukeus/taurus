@@ -98,6 +98,19 @@ pub type ToolResult = Result<String, ToolError>;
 #[async_trait]
 pub trait ToolProgress: Send + Sync {
     async fn step(&self, label: String);
+
+    /// This call has a conversation of its own, kept under `session`.
+    ///
+    /// Delegation is the only caller: a sub-agent's transcript is written
+    /// somewhere the parent's card can offer to open, and the id is how it
+    /// finds it. Announced when the child *starts*, so a delegation that is
+    /// still running or was canceled can be read too — those being the ones
+    /// somebody most wants to read.
+    ///
+    /// Defaulted to nothing, because it is nothing for every other tool.
+    async fn transcript(&self, session: String, agent: String) {
+        let _ = (session, agent);
+    }
 }
 
 /// Everything a tool needs at call time.
@@ -178,6 +191,14 @@ impl ToolContext {
     pub async fn report(&self, label: impl Into<String>) {
         if let Some(progress) = &self.progress {
             progress.step(label.into()).await;
+        }
+    }
+
+    /// Says where this call's own conversation is being kept. See
+    /// [`ToolProgress::transcript`].
+    pub async fn report_transcript(&self, session: impl Into<String>, agent: impl Into<String>) {
+        if let Some(progress) = &self.progress {
+            progress.transcript(session.into(), agent.into()).await;
         }
     }
 

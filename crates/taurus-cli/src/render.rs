@@ -166,6 +166,20 @@ impl Renderer {
                 }
             }
 
+            // Named, not opened. The child's transcript is a file, and
+            // printing a conversation inside a conversation is the thing
+            // delegation exists to avoid — but a run that is being watched
+            // closely should be able to say which delegate to go and read.
+            // `taurus sessions --agents <session>` is how it is listed.
+            UiEvent::ToolTranscript { session, agent, .. } => {
+                if self.quiet || !self.verbose {
+                    return;
+                }
+                self.break_text();
+                self.break_thinking();
+                self.dim(&format!("    · {agent} transcript: {session}"));
+            }
+
             // Indented under the call it belongs to. Delegation is the only
             // thing that reports these, and watching the child work is the
             // difference between a minute of silence and a minute of progress.

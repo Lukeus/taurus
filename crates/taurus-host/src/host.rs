@@ -45,6 +45,7 @@ use crate::mcp_view::{LayerOf, McpServerView};
 use crate::problem::{self, Problem, ProblemSource};
 use crate::prompt;
 use crate::secrets;
+use crate::sessions::SubagentLogs;
 
 /// How many sub-agents may run at once. Low on purpose: each is a full model
 /// stream, and local hardware serves them all from the same GPU.
@@ -650,7 +651,15 @@ impl Host {
             .with_roster(
                 Arc::new(self.agents.read().await.to_vec()),
                 self.agent_models.read().await.clone(),
-            ),
+            )
+            // Every child's conversation is kept, under this one's. The parent
+            // transcript still records a delegation as one call and one answer
+            // — that is what delegating is for — but the work behind that
+            // answer is no longer thrown away with the tool result.
+            .with_recorder(Arc::new(SubagentLogs::new(
+                self.workspace().await,
+                turn.session_id,
+            ))),
         ));
 
         // Registered per turn, alongside the spawn tool and for the same
@@ -1669,6 +1678,79 @@ mod tests {
     /// every test that happens to count the roster.
     fn builtins() -> usize {
         taurus_agents::builtin::definitions().len()
+    }
+
+    /// A delegation driven through the real wiring: the host builds the agent,
+    /// the agent's own registry carries the spawn tool, and the child runs
+    /// under whatever recorder `build_agent` attached.
+    ///
+    /// The unit tests either side of this one prove that a recorder records and
+    /// that the host can build one. This is the only test that would notice
+    /// nobody had connected them.
+    #[tokio::test]
+    async fn a_delegation_leaves_its_transcript_under_the_conversation_that_spawned_it() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+
+        // Parent asks for a delegation, child answers, parent wraps up. One
+        // queue serves both, in the order the two turns actually run.
+        let provider = taurus_core::testing::FakeProvider::new(vec![
+            taurus_core::testing::ScriptedTurn::tool_call(
+                "call1",
+                taurus_core::SPAWN_TOOL,
+                serde_json::json!({
+                    "agent_type": "explorer",
+                    "prompt": "Look through this project and report what is in it."
+                }),
+            ),
+            taurus_core::testing::ScriptedTurn::text("Nothing but a temp directory."),
+            taurus_core::testing::ScriptedTurn::text("It is empty."),
+        ]);
+
+        let agent = host
+            .build_agent(
+                provider,
+                "fake",
+                CancellationToken::new(),
+                TurnRef {
+                    session_id: "conversation1",
+                    prompt: "what is in this project?",
+                },
+            )
+            .await;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let mut session = taurus_core::Session::new("fake");
+        session.id = "conversation1".into();
+        agent
+            .run_turn(
+                &mut session,
+                taurus_provider::Message::user("what is in this project?"),
+                tx,
+            )
+            .await
+            .expect("the turn should finish");
+        drain.await.unwrap();
+
+        let delegates = crate::sessions::list_subagents("conversation1");
+        assert_eq!(delegates.len(), 1, "{delegates:#?}");
+        assert_eq!(delegates[0].agent.as_deref(), Some("explorer"));
+
+        let child = crate::sessions::load_subagent("conversation1", &delegates[0].id)
+            .expect("the delegate's own conversation should be readable");
+        assert!(child.session.messages[0]
+            .text()
+            .contains("Look through this project"));
+        assert!(
+            child
+                .session
+                .messages
+                .iter()
+                .any(|m| m.text().contains("Nothing but a temp directory.")),
+            "the child's answer is in its own transcript, not only in the parent's tool result"
+        );
     }
 
     fn agent_problems(problems: &[Problem]) -> Vec<String> {

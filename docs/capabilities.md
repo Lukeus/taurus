@@ -200,9 +200,31 @@ naming a cloud model without breaking for a contributor who runs Ollama only.
 A sub-agent cannot delegate further. Its registry has no `spawn_subagent` in it,
 so the depth cap is structural rather than a counter the model could talk past.
 
+Every delegate keeps a transcript of its own, written as it runs, in a directory
+named for the conversation that spawned it:
+
+```text
+~/.taurus/sessions/<workspace>/<id>.jsonl                    the conversation
+~/.taurus/sessions/<workspace>/<id>/subagents/agent-*.jsonl  what it delegated
+```
+
+The parent's transcript still records a delegation as what it is — one call, one
+paragraph back — while the reading, the dead ends and the reasoning behind that
+paragraph stay somewhere they can be found. A delegate is not a conversation
+somebody had, so it never appears in the session list, and deleting a
+conversation deletes its delegates with it.
+
+In the app the delegation's row offers to open it, in a drawer beside the
+conversation rather than inside it — while the call is still running, which is
+when a delegation that looks stuck is worth looking into, and afterwards when
+the paragraph it returned is thinner than expected. It opens read-only: a
+delegate's conversation happened inside somebody else's turn, and there is
+nothing there to continue.
+
 ```bash
-taurus agents list    # the roster, what each is scoped to, what it costs
-taurus agents check   # non-zero if an agent will not load or cannot run as written
+taurus agents list          # the roster, what each is scoped to, what it costs
+taurus agents check         # non-zero if an agent will not load or cannot run as written
+taurus sessions --agents ID # what one conversation delegated, and where it was written
 ```
 
 Authoring is a text editor, as it is for skills. The drawer's **New agent…**

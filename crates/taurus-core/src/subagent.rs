@@ -19,7 +19,7 @@ use taurus_provider::{Message, Provider};
 use taurus_tools::tool::{parse_input, schema_for};
 use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
 
-use crate::agent::{Agent, AgentConfig};
+use crate::agent::{Agent, AgentConfig, TurnRecorder};
 use crate::event::UiEvent;
 use crate::session::Session;
 
@@ -52,6 +52,24 @@ pub struct SpawnInput {
     pub prompt: String,
 }
 
+/// Where a delegate's conversation is kept.
+///
+/// The parent's transcript records one delegation — a call, and the paragraph
+/// it came back with. That is the whole point of delegating, and it is also
+/// how a child's work used to vanish: thirty files read, a plan formed, a
+/// dead end backed out of, and nothing left on disk to say so once the tool
+/// returned. So the child gets a transcript of its own, beside its parent's
+/// and out of the way of it.
+///
+/// Opened per delegation rather than written at the end, so a child that is
+/// still running, or was canceled, or crashed the process, has left as much of
+/// itself behind as it got through. Returning `None` declines to record this
+/// one, which is what a host with nowhere to write says.
+#[async_trait]
+pub trait SubagentRecorder: Send + Sync {
+    async fn open(&self, agent_type: &str, child: &Session) -> Option<Arc<dyn TurnRecorder>>;
+}
+
 pub struct SpawnSubagent {
     /// The session's provider and model, used by any agent that does not name
     /// its own.
@@ -73,6 +91,9 @@ pub struct SpawnSubagent {
     description: String,
     /// Prebuilt from `agents`: `agent_type` carries an `enum` of the live names.
     schema: serde_json::Value,
+    /// Where children's transcripts go. `None` keeps them in memory and drops
+    /// them with the turn, which is what every test and example wants.
+    recorder: Option<Arc<dyn SubagentRecorder>>,
 }
 
 impl SpawnSubagent {
@@ -94,7 +115,14 @@ impl SpawnSubagent {
             agents,
             registry,
             permits: Arc::new(Semaphore::new(max_concurrent.max(1))),
+            recorder: None,
         }
+    }
+
+    /// Keeps every child's conversation, wherever the host puts transcripts.
+    pub fn with_recorder(mut self, recorder: Arc<dyn SubagentRecorder>) -> Self {
+        self.recorder = Some(recorder);
+        self
     }
 
     /// Swaps in the host's roster and its resolved model overrides.
@@ -257,6 +285,9 @@ impl Tool for SpawnSubagent {
             None => (self.default_provider.clone(), self.default_model.clone()),
         };
 
+        // Before the agent, because opening a recorder needs the id of the
+        // conversation it is recording.
+        let mut session = Session::new(&model);
         let agent = Agent::new(
             provider,
             child_registry,
@@ -272,6 +303,21 @@ impl Tool for SpawnSubagent {
                 ..Default::default()
             },
         );
+
+        let agent = match &self.recorder {
+            Some(recorder) => match recorder.open(definition.name(), &session).await {
+                // Announced only once there is somewhere to read: a card that
+                // offered to open a transcript nobody was writing would be a
+                // worse answer than one that offers nothing.
+                Some(sink) => {
+                    ctx.report_transcript(session.id.clone(), definition.name())
+                        .await;
+                    agent.with_recorder(sink)
+                }
+                None => agent,
+            },
+            None => agent,
+        };
 
         info!(kind = definition.name(), %model, "spawning sub-agent");
 
@@ -293,7 +339,6 @@ impl Tool for SpawnSubagent {
             tools
         });
 
-        let mut session = Session::new(&model);
         let outcome = agent
             .run_turn(&mut session, Message::user(&input.prompt), tx)
             .await;
@@ -410,6 +455,168 @@ mod tests {
             shadows: None,
             degraded: None,
         }
+    }
+
+    /// A recorder that keeps what it was given, standing in for the host's
+    /// transcript files.
+    #[derive(Default)]
+    struct SpyRecorder {
+        opened: tokio::sync::Mutex<Vec<(String, String)>>,
+        kept: Arc<tokio::sync::Mutex<Vec<Message>>>,
+    }
+
+    #[async_trait]
+    impl SubagentRecorder for SpyRecorder {
+        async fn open(&self, agent_type: &str, child: &Session) -> Option<Arc<dyn TurnRecorder>> {
+            self.opened
+                .lock()
+                .await
+                .push((agent_type.to_string(), child.id.clone()));
+            Some(Arc::new(SpySink {
+                kept: self.kept.clone(),
+            }))
+        }
+    }
+
+    struct SpySink {
+        kept: Arc<tokio::sync::Mutex<Vec<Message>>>,
+    }
+
+    #[async_trait]
+    impl TurnRecorder for SpySink {
+        async fn record(&self, session: &Session) {
+            *self.kept.lock().await = session.messages.clone();
+        }
+    }
+
+    /// Catches what the tool told the card about this call.
+    #[derive(Default)]
+    struct SpyProgress {
+        transcripts: tokio::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait]
+    impl taurus_tools::ToolProgress for SpyProgress {
+        async fn step(&self, _label: String) {}
+
+        async fn transcript(&self, session: String, agent: String) {
+            self.transcripts.lock().await.push((session, agent));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kept_conversation_is_announced_to_the_card_that_could_open_it() {
+        let (tool, ctx, _dir) = fixture(vec![ScriptedTurn::text("Three files.")]);
+        let spy = Arc::new(SpyRecorder::default());
+        let progress = Arc::new(SpyProgress::default());
+        let tool = tool.with_recorder(spy.clone());
+        let ctx = ctx.with_progress(progress.clone());
+
+        tool.execute(
+            serde_json::json!({
+                "agent_type": "explorer",
+                "prompt": "Count the files in this directory and report back."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let announced = progress.transcripts.lock().await.clone();
+        assert_eq!(announced.len(), 1);
+        assert_eq!(announced[0].1, "explorer");
+        // The id the card would ask for is the one the recorder opened.
+        let opened = spy.opened.lock().await.clone();
+        assert_eq!(announced[0].0, opened[0].1);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_announced_when_nothing_is_being_recorded() {
+        // No recorder, no transcript, nothing offered. A card that invited
+        // somebody to open a conversation that was never written is worse than
+        // one that offers nothing at all.
+        let (tool, ctx, _dir) = fixture(vec![ScriptedTurn::text("Three files.")]);
+        let progress = Arc::new(SpyProgress::default());
+        let ctx = ctx.with_progress(progress.clone());
+
+        tool.execute(
+            serde_json::json!({
+                "agent_type": "explorer",
+                "prompt": "Count the files in this directory and report back."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(progress.transcripts.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_delegates_conversation_is_kept_not_dropped_with_the_tool_result() {
+        let (tool, ctx, _dir) = fixture(vec![
+            ScriptedTurn::tool_call("t1", "list_dir", serde_json::json!({"path": "."})),
+            ScriptedTurn::text("There are three files."),
+        ]);
+        let spy = Arc::new(SpyRecorder::default());
+        let tool = tool.with_recorder(spy.clone());
+
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "explorer",
+                    "prompt": "Count the files in this directory and report back."
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // What the parent gets back is still one paragraph.
+        assert!(out.contains("There are three files."));
+
+        let opened = spy.opened.lock().await.clone();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].0, "explorer", "recorded under the kind it was");
+        assert!(!opened[0].1.is_empty(), "and under its own id");
+
+        // What was kept is the part the parent never sees: the task it was
+        // given, the tool call it made, and the result that came back.
+        let kept = spy.kept.lock().await.clone();
+        assert!(kept.len() > 2, "{kept:#?}");
+        assert!(kept[0].text().contains("Count the files"));
+        assert!(kept.iter().any(|m| m.has_tool_use()));
+    }
+
+    #[tokio::test]
+    async fn a_delegate_that_never_finished_still_left_a_transcript() {
+        // The child asks for a tool that does not exist, over and over, until
+        // the loop stops it. Nothing useful comes back to the parent — which is
+        // exactly when somebody wants to read what the child was doing.
+        let (tool, ctx, _dir) = fixture(vec![
+            ScriptedTurn::tool_call("t1", "no_such_tool", serde_json::json!({})),
+            ScriptedTurn::tool_call("t2", "no_such_tool", serde_json::json!({})),
+            ScriptedTurn::tool_call("t3", "no_such_tool", serde_json::json!({})),
+            ScriptedTurn::tool_call("t4", "no_such_tool", serde_json::json!({})),
+        ]);
+        let spy = Arc::new(SpyRecorder::default());
+        let tool = tool.with_recorder(spy.clone());
+
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "explorer",
+                    "prompt": "Use the tool that does not exist, repeatedly."
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("stopped early"), "{out}");
+
+        let kept = spy.kept.lock().await.clone();
+        assert!(!kept.is_empty(), "a turn that failed is still a transcript");
+        assert!(kept.iter().any(|m| m.has_tool_use()));
     }
 
     #[tokio::test]

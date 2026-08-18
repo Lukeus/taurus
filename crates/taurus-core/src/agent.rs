@@ -136,6 +136,26 @@ struct FailedAttempt {
     produced_output: bool,
 }
 
+/// Where a turn's conversation is written down as it happens.
+///
+/// The agent drives this rather than owning it, because persistence is a
+/// question about *where a session lives* — a directory, a format, a version —
+/// and this crate is the one that must not know the answer. `taurus-host`
+/// implements it over a transcript file.
+///
+/// Called once per tool round trip and once when the turn ends, however it
+/// ends, each time with the whole session. Implementations append what is new
+/// rather than rewriting, which is what makes the repetition cheap and the
+/// crash-in-the-middle case survivable.
+///
+/// Recording must never fail a turn: an implementation that cannot write
+/// swallows the error, exactly as the host's own transcript log does for the
+/// conversation the user is having.
+#[async_trait::async_trait]
+pub trait TurnRecorder: Send + Sync {
+    async fn record(&self, session: &Session);
+}
+
 pub struct Agent {
     provider: Arc<dyn Provider>,
     registry: ToolRegistry,
@@ -148,6 +168,9 @@ pub struct Agent {
     /// examples, most tests — which costs those exactly nothing: no board, no
     /// lock, and not a word added to the prompt. See [`taurus_tools::plan`].
     plan: Option<PlanBoard>,
+    /// Where this turn is written down, when somebody is keeping it. `None` for
+    /// the top-level agent, whose transcript its frontend records itself.
+    recorder: Option<Arc<dyn TurnRecorder>>,
 }
 
 /// What a completed turn produced.
@@ -171,6 +194,7 @@ impl Agent {
             tools,
             config,
             plan: None,
+            recorder: None,
         }
     }
 
@@ -182,6 +206,16 @@ impl Agent {
     /// pass a `None` to say so.
     pub fn with_plan(mut self, board: PlanBoard) -> Self {
         self.plan = Some(board);
+        self
+    }
+
+    /// Writes this agent's turns down as they happen.
+    ///
+    /// A builder for the same reason [`Agent::with_plan`] is: the caller that
+    /// has somewhere to put a transcript is not every caller, and the ones
+    /// without should not have to pass a `None` to say so.
+    pub fn with_recorder(mut self, recorder: Arc<dyn TurnRecorder>) -> Self {
+        self.recorder = Some(recorder);
         self
     }
 
@@ -198,6 +232,28 @@ impl Agent {
     /// `session` is mutated in place, so a canceled or failed turn still leaves
     /// the history consistent and resumable.
     pub async fn run_turn(
+        &self,
+        session: &mut Session,
+        user_message: Message,
+        ui: mpsc::Sender<UiEvent>,
+    ) -> Result<TurnOutcome, AgentError> {
+        let outcome = self.turn(session, user_message, ui).await;
+        // Here rather than at each `return` inside `turn`: it ends at half a
+        // dozen of them — finished, canceled twice, out of iterations, stalled,
+        // and any provider error — and the one that would eventually be
+        // forgotten is the one that matters most. A turn that failed is a turn
+        // somebody will want to read.
+        self.persist(session).await;
+        outcome
+    }
+
+    async fn persist(&self, session: &Session) {
+        if let Some(recorder) = &self.recorder {
+            recorder.record(session).await;
+        }
+    }
+
+    async fn turn(
         &self,
         session: &mut Session,
         user_message: Message,
@@ -375,6 +431,9 @@ impl Agent {
             };
 
             session.push(Message::new(Role::User, results));
+            // Once a round, so a long delegation that dies half way through
+            // leaves the rounds it did finish rather than nothing at all.
+            self.persist(session).await;
 
             if repeats >= self.config.stall_limit {
                 let message = format!(
@@ -855,6 +914,17 @@ struct CallProgress {
 
 #[async_trait::async_trait]
 impl ToolProgress for CallProgress {
+    async fn transcript(&self, session: String, agent: String) {
+        let _ = self
+            .ui
+            .send(UiEvent::ToolTranscript {
+                id: self.id.clone(),
+                session,
+                agent,
+            })
+            .await;
+    }
+
     async fn step(&self, label: String) {
         // Dropped rather than allowed to stall the tool if the UI is gone or
         // behind: progress is by definition the part that can be missed.

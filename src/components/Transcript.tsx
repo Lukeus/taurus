@@ -68,6 +68,8 @@ export function Transcript({
   busy,
   empty,
   onAnswer,
+  onOpenDelegate,
+  follow = true,
 }: {
   entries: Entry[];
   busy: boolean;
@@ -75,6 +77,17 @@ export function Transcript({
   empty: React.ReactNode;
   /** Answers a question card, releasing the tool call parked behind it. */
   onAnswer: (id: string, answers: Answer[]) => void;
+  /** Opens a delegation's own conversation. Absent where there is nowhere to
+   * open one — inside a delegate's transcript, which cannot delegate further. */
+  onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
+  /**
+   * Whether to follow new entries to the bottom.
+   *
+   * True for the live conversation, which is being written as it is read. False
+   * for a record of one that already finished: it is read from the top, and
+   * opening it at the last line is opening it at the end of the book.
+   */
+  follow?: boolean;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -92,8 +105,8 @@ export function Transcript({
   }, []);
 
   useEffect(() => {
-    if (pinned.current) bottom.current?.scrollIntoView({ block: "end" });
-  }, [entries]);
+    if (follow && pinned.current) bottom.current?.scrollIntoView({ block: "end" });
+  }, [entries, follow]);
 
   if (entries.length === 0) {
     return (
@@ -116,6 +129,7 @@ export function Transcript({
           // rather than floating under the conversation as a whole.
           working={busy && i === conversation.length - 1}
           onAnswer={onAnswer}
+          onOpenDelegate={onOpenDelegate}
         />
       ))}
       <div ref={bottom} />
@@ -177,10 +191,12 @@ function TurnView({
   turn,
   working,
   onAnswer,
+  onOpenDelegate,
 }: {
   turn: Turn;
   working: boolean;
   onAnswer: (id: string, answers: Answer[]) => void;
+  onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
 }) {
   return (
     <section className={`turn${turn.prompt ? "" : " unprompted"}`}>
@@ -188,11 +204,15 @@ function TurnView({
       {turn.body.map((item) =>
         Array.isArray(item) ? (
           <div className="turn-step" key={item[0].id}>
-            <ToolRun steps={item} />
+            <ToolRun steps={item} onOpenDelegate={onOpenDelegate} />
           </div>
         ) : (
           <div className="turn-step" key={item.id}>
-            <EntryView entry={item} onAnswer={onAnswer} />
+            <EntryView
+              entry={item}
+              onAnswer={onAnswer}
+              onOpenDelegate={onOpenDelegate}
+            />
           </div>
         ),
       )}
@@ -251,9 +271,11 @@ export function group(entries: Entry[]): (Entry | ToolEntry[])[] {
 function EntryView({
   entry,
   onAnswer,
+  onOpenDelegate,
 }: {
   entry: Entry;
   onAnswer: (id: string, answers: Answer[]) => void;
+  onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
 }) {
   if (entry.kind === "tool" && entry.view) {
     switch (entry.view.type) {
@@ -301,7 +323,7 @@ function EntryView({
 
     case "tool":
       // Reached only if a caller renders an entry outside `group`.
-      return <ToolRun steps={[entry]} />;
+      return <ToolRun steps={[entry]} onOpenDelegate={onOpenDelegate} />;
 
     case "notice":
       return entry.rule ? (
@@ -330,7 +352,13 @@ function Thinking({ text }: { text: string }) {
   );
 }
 
-function ToolRun({ steps }: { steps: ToolEntry[] }) {
+function ToolRun({
+  steps,
+  onOpenDelegate,
+}: {
+  steps: ToolEntry[];
+  onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
+}) {
   const [open, setOpen] = useState(true);
 
   const failed = steps.some((s) => s.status === "error");
@@ -349,7 +377,10 @@ function ToolRun({ steps }: { steps: ToolEntry[] }) {
         <span className="run-breakdown">{breakdown(steps)}</span>
         <span className="run-chevron">{open ? "⌄" : "›"}</span>
       </button>
-      {open && steps.map((step) => <ToolRow key={step.id} step={step} />)}
+      {open &&
+        steps.map((step) => (
+          <ToolRow key={step.id} step={step} onOpenDelegate={onOpenDelegate} />
+        ))}
     </div>
   );
 }
@@ -364,7 +395,13 @@ function ToolRun({ steps }: { steps: ToolEntry[] }) {
  */
 const STREAMS_OUTPUT = new Set(["run_command", "run_skill_script"]);
 
-function ToolRow({ step }: { step: ToolEntry }) {
+function ToolRow({
+  step,
+  onOpenDelegate,
+}: {
+  step: ToolEntry;
+  onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
+}) {
   const [open, setOpen] = useState(false);
   const kind = TOOL_CLASS[step.name] ?? "other";
   const terminal = STREAMS_OUTPUT.has(step.name);
@@ -406,6 +443,19 @@ function ToolRow({ step }: { step: ToolEntry }) {
           ))}
         </ul>
       )}
+      {/* A delegation's own conversation, one click away rather than in the
+          way. Outside the head button rather than in it — a button inside a
+          button is not a thing — and present while the call is still running
+          too: a delegation that looks stuck is the one worth looking into. */}
+      {step.transcript && onOpenDelegate && (
+        <button
+          className="run-row-delegate"
+          onClick={() => step.transcript && onOpenDelegate(step.transcript)}
+        >
+          Read what this {step.transcript.agent} did →
+        </button>
+      )}
+
       {!terminal && open && step.output && (
         <pre className="tool-output">{step.output}</pre>
       )}

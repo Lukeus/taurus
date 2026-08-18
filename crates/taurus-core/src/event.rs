@@ -48,6 +48,21 @@ pub enum UiEvent {
         id: String,
         label: String,
     },
+    /// A still-running tool call has a conversation of its own, and here is
+    /// where it is kept.
+    ///
+    /// Only delegation emits this. Carried separately from the call's result
+    /// because it is known when the child *starts*: a delegation that is still
+    /// going, or that was canceled half way, has a transcript worth opening,
+    /// and one that only arrived with the result could not offer either.
+    ToolTranscript {
+        /// The call this belongs under, matching its `ToolCallStarted`.
+        id: String,
+        /// The child's own session id, under this conversation.
+        session: String,
+        /// Which kind of sub-agent it was.
+        agent: String,
+    },
     ToolCallFinished {
         id: String,
         ok: bool,

@@ -28,7 +28,7 @@ pub use instructions::{Instructions, InstructionsOrigin, InstructionsSource, Ins
 pub use mcp_view::{McpServerDraft, McpServerRef, McpServerView, McpTransport, McpValue};
 pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;
-pub use sessions::{SessionLog, SessionMeta};
+pub use sessions::{SessionLog, SessionMeta, SubagentLogs};
 pub use taurus_tools::{Checkpoint, Restored, TurnChange};
 // Re-exported so a frontend can edit search config without depending on the
 // crate that runs the searches — the same reason `Checkpoint` comes through

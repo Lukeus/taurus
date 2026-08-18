@@ -56,6 +56,11 @@ enum Command {
         /// Every workspace, not just this one.
         #[arg(long)]
         all: bool,
+
+        /// The sub-agents one session delegated to, with the transcript each
+        /// one left behind.
+        #[arg(long, value_name = "ID")]
+        agents: Option<String>,
     },
     /// List file changes a session made, and undo them.
     Rewind {
@@ -273,9 +278,30 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             session::repl(&runtime, &args.session, args.resume.resume.as_ref()).await
         }
 
-        Command::Sessions { session, all } => {
+        Command::Sessions {
+            session,
+            all,
+            agents,
+        } => {
             let host = build_host(&session, Policy::default()).await?.host;
             let workspace = host.workspace().await;
+
+            if let Some(parent) = agents {
+                let listed = taurus_host::sessions::list_subagents(&parent);
+                if listed.is_empty() {
+                    println!("Session {parent} delegated to no sub-agents.");
+                    return Ok(ExitCode::SUCCESS);
+                }
+                if let Some(dir) = taurus_host::sessions::subagents_dir(&parent) {
+                    println!("{}\n", dir.display());
+                }
+                for meta in listed {
+                    let kind = meta.agent.as_deref().unwrap_or("sub-agent");
+                    println!("{:<38} {:<20} {}", meta.id, kind, meta.title);
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+
             let listed = taurus_host::sessions::list(if all { None } else { Some(&workspace) });
 
             if listed.is_empty() {

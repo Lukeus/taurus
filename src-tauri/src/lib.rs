@@ -71,6 +71,7 @@ pub fn run() {
             commands::create_session,
             commands::list_sessions,
             commands::resume_session,
+            commands::read_subagent_transcript,
             commands::send_message,
             commands::cancel_session,
             commands::close_session,
