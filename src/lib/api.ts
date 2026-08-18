@@ -22,6 +22,9 @@ import type { DiffHunk } from "../bindings/DiffHunk";
 import type { DiffLine } from "../bindings/DiffLine";
 import type { DiffLineKind } from "../bindings/DiffLineKind";
 import type { FileDiff } from "../bindings/FileDiff";
+import type { FlowEdge } from "../bindings/FlowEdge";
+import type { FlowNode } from "../bindings/FlowNode";
+import type { FlowStage } from "../bindings/FlowStage";
 import type { CreatedSession } from "../bindings/CreatedSession";
 import type { IndexProgress } from "../bindings/IndexProgress";
 import type { Instructions } from "../bindings/Instructions";
@@ -83,6 +86,9 @@ export type {
   DiffLine,
   DiffLineKind,
   FileDiff,
+  FlowEdge,
+  FlowNode,
+  FlowStage,
   IndexProgress,
   Instructions,
   KeyStatus,

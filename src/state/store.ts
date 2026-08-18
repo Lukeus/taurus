@@ -19,6 +19,9 @@ import type {
   SessionMeta,
   AgentProposal,
   Attachment,
+  FlowEdge,
+  FlowNode,
+  FlowStage,
   SequenceMessage,
   SkillProposal,
   Step,
@@ -673,6 +676,33 @@ export function viewFromCall(
           }
         : undefined;
 
+    case "show_flow": {
+      if (!Array.isArray(payload.stages) || !Array.isArray(payload.edges)) {
+        return undefined;
+      }
+      const stages = payload.stages.map(asStage).filter(isStage);
+      if (stages.length !== payload.stages.length || stages.length === 0) {
+        return undefined;
+      }
+      // Same rule the sequence diagram replays under: an edge naming a node
+      // that is not there is dropped rather than failing the whole card. The
+      // Rust check refuses these on the way in, so one here came from a build
+      // whose rules differed.
+      const labels = new Set(
+        stages.flatMap((stage) => stage.nodes.map((node) => node.label)),
+      );
+      return {
+        type: "flow",
+        title: typeof payload.title === "string" ? payload.title : "",
+        caption: asCaption(payload.caption),
+        stages,
+        edges: payload.edges
+          .map(asEdge)
+          .filter(isEdge)
+          .filter((e: FlowEdge) => labels.has(e.from) && labels.has(e.to)),
+      };
+    }
+
     case "ask_user":
       // Keyed to the call, exactly as the live event was — though nothing is
       // waiting on it any more, and the card knows to draw itself read-only
@@ -728,6 +758,55 @@ function asMessage(value: unknown): SequenceMessage | undefined {
 
 function isMessage(message: SequenceMessage | undefined): message is SequenceMessage {
   return message !== undefined;
+}
+
+/** One saved stage of a flow diagram, or `undefined` if it is not one. */
+function asStage(value: unknown): FlowStage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const stage = value as Record<string, unknown>;
+  if (!Array.isArray(stage.nodes)) return undefined;
+  const nodes = stage.nodes.map(asNode).filter(isNode);
+  // A stage that lost a node would draw a column with a gap where a box was,
+  // and every arrow into it would be missing too — so the whole card goes back
+  // rather than a diagram that is quietly wrong about the shape.
+  if (nodes.length !== stage.nodes.length || nodes.length === 0) return undefined;
+  return {
+    name: typeof stage.name === "string" ? stage.name : null,
+    nodes,
+  };
+}
+
+function isStage(stage: FlowStage | undefined): stage is FlowStage {
+  return stage !== undefined;
+}
+
+function asNode(value: unknown): FlowNode | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const node = value as Record<string, unknown>;
+  if (typeof node.label !== "string" || !node.label.trim()) return undefined;
+  return {
+    label: node.label,
+    note: typeof node.note === "string" ? node.note : null,
+  };
+}
+
+function isNode(node: FlowNode | undefined): node is FlowNode {
+  return node !== undefined;
+}
+
+function asEdge(value: unknown): FlowEdge | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const edge = value as Record<string, unknown>;
+  if (typeof edge.from !== "string" || typeof edge.to !== "string") return undefined;
+  return {
+    from: edge.from,
+    to: edge.to,
+    label: typeof edge.label === "string" ? edge.label : null,
+  };
+}
+
+function isEdge(edge: FlowEdge | undefined): edge is FlowEdge {
+  return edge !== undefined;
 }
 
 /**

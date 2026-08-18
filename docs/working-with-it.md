@@ -473,7 +473,7 @@ as soon as a line wraps.
 
 ## Tables, charts, diagrams, and questions
 
-Four tools address the person watching rather than the machine. They change
+Five tools address the person watching rather than the machine. They change
 nothing, need no permission, and their result to the model is only a
 confirmation — what matters is what they put on screen.
 
@@ -482,16 +482,29 @@ confirmation — what matters is what they put on screen.
 | `show_table` | A sortable table, copyable as CSV | Several rows of comparable facts, and the comparison is the point |
 | `show_chart` | A bar chart, with a tab per series | The shape of a series is the answer — where the spike is, whether a number is climbing |
 | `show_sequence` | A sequence diagram, copyable as Mermaid | The answer is an order of events between several things — how a request travels, where a retry loops back |
+| `show_flow` | A staged flow diagram, copyable as Mermaid | The answer is how a system is put together — which component talks to which, what a request passes through |
 | `ask_user` | A question card, and waits for it | A decision that is genuinely yours and would change what gets built |
 
-The diagram is drawn rather than depended on. There is no diagramming library
-in the app: the payload is participants and messages, and the layout is
-arithmetic over an order the model already declared. That keeps three
-properties a library would have cost — it is refused before it is drawn if an
-arrow names a lane that was never declared, it is painted in the app's own
-palette rather than a second one, and it prints in a terminal. **Copy as
-Mermaid** is there because a diagram gets pasted into a README or an issue; the
-app speaks Mermaid on the way out without depending on it to draw anything.
+Both diagrams are drawn rather than depended on. There is no diagramming
+library in the app: the payloads are participants and messages, or stages and
+edges, and the layout is arithmetic over an order the model already declared.
+That keeps three properties a library would have cost — a diagram is refused
+before it is drawn if an arrow names something that was never declared, it is
+painted in the app's own palette rather than a second one, and it prints in a
+terminal. **Copy as Mermaid** is on both cards because a diagram gets pasted
+into a README or an issue; the app speaks Mermaid on the way out without
+depending on it to draw anything.
+
+`show_flow` asks the model to group the nodes into stages itself rather than
+working the layering out from the edges. That is the load-bearing decision.
+Assigning depths and then ordering each layer so the lines cross as little as
+possible is the hard half of drawing a graph and the half that fails visibly —
+and it is a question the model can already answer, because anything worth
+diagramming was understood in stages before it was written down. Asked for the
+stages, the drawing is arithmetic. An edge pointing back to an earlier stage is
+fine and is drawn as a loop below the boxes; one inside a single stage loops
+around the side, because "down, across, up" has no across when both boxes share
+a column.
 
 Each is drawn from the call's own input, unchanged. That identity is what lets
 a reopened conversation redraw the table rather than show a row saying one was
@@ -508,8 +521,9 @@ exception to the system prompt's instruction to keep going without stopping,
 and the prompt says so beside the rule it breaks, because a small local model
 given both and no reconciliation will pick the wrong one. It is not available
 to sub-agents: a delegate has no user watching it, so `ask_user`, `show_table`,
-`show_chart` and `show_sequence` are all registered per turn alongside
-`spawn_subagent` rather than in the shared registry the children inherit.
+`show_chart`, `show_sequence` and `show_flow` are all registered per turn
+alongside `spawn_subagent` rather than in the shared registry the children
+inherit.
 
 On the CLI, a table, a chart and a diagram print in full to stdout in place of
 the usual one-line "called a tool" annotation, so `taurus run > out.txt` keeps
@@ -530,7 +544,34 @@ tabs. A sequence diagram prints as lanes and arrows:
 The arrowheads are `<` and `>` rather than the geometric pointers they look
 like they should be: everything else there is box-drawing, which is one cell
 wide everywhere, while the pointers are East-Asian-ambiguous and would shift
-every lane right of an arrow by a column under a CJK locale. A
+every lane right of an arrow by a column under a CJK locale.
+
+A flow diagram prints as its stages and then its arrows, rather than as boxes
+and lines:
+
+```
+  Edge
+    Client
+  Service
+    API  (axum)
+    Worker
+  Storage
+    Postgres
+
+  Client ──> API        POST /orders
+  API ──> Postgres      insert row
+  Worker ──> API        retry          (loops back)
+```
+
+That is the one place the terminal deliberately shows something other than
+what the window does. A sequence diagram survives being drawn in characters
+because it is a grid; a graph does not — routing arbitrary edges between
+arbitrary rows in a character cell needs either crossings a reader cannot
+follow or a canvas a scrollback has not got. So the terminal gets the two facts
+the picture is made of, in a form that is complete, greppable, and pastes into
+an issue: what sits at each depth, and what points at what. A loop is marked as
+one, because on the page it is visibly a loop and in a list it is just another
+line. A
 question numbers its options and reads a line, with Enter alone to skip. Where
 there is no terminal at all — a pipe, a git hook, CI — nothing hangs: the tool
 comes back saying nobody was available, and the model is told to decide and say

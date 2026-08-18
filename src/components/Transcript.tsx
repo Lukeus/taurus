@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 
 import { ChartCard } from "./ChartCard";
+import { FlowCard } from "./FlowCard";
 import { SequenceCard } from "./SequenceCard";
 import { Markdown } from "./Markdown";
 import { Attachments } from "./Attachments";
@@ -262,6 +263,8 @@ function EntryView({
         return <ChartCard view={entry.view} />;
       case "sequence":
         return <SequenceCard view={entry.view} />;
+      case "flow":
+        return <FlowCard view={entry.view} />;
       case "questions":
         return (
           <QuestionsCard

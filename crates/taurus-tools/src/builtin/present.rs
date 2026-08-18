@@ -1,8 +1,7 @@
 //! The tools that address the person watching rather than the machine.
 //!
 //! Everything else here changes files, runs programs, or reads something back.
-//! These produce nothing but a view: a table, a chart, a sequence diagram, a
-//! question. That makes them the only tools whose *output* is not the point —
+//! These produce nothing but a view: a table, a chart, a diagram, a question. That makes them the only tools whose *output* is not the point —
 //! what matters is what [`crate::view::TranscriptView`] the call carries, and
 //! the string handed back to the model is only there so it knows the drawing
 //! happened.
@@ -16,7 +15,9 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
-use crate::view::{Answer, Asker, Column, Question, SequenceMessage, Series, TranscriptView};
+use crate::view::{
+    Answer, Asker, Column, FlowEdge, FlowStage, Question, SequenceMessage, Series, TranscriptView,
+};
 
 /// Rows one call may draw.
 ///
@@ -54,6 +55,7 @@ const MAX_QUESTIONS: usize = 4;
 pub const SHOW_TABLE_TOOL: &str = "show_table";
 pub const SHOW_CHART_TOOL: &str = "show_chart";
 pub const SHOW_SEQUENCE_TOOL: &str = "show_sequence";
+pub const SHOW_FLOW_TOOL: &str = "show_flow";
 pub const ASK_USER_TOOL: &str = "ask_user";
 
 // ---------------------------------------------------------------- show_table
@@ -432,6 +434,204 @@ fn duplicate(names: &[String]) -> Option<&String> {
         .map(|(_, name)| name)
 }
 
+// ------------------------------------------------------------------ show_flow
+
+/// Columns one flow diagram may have. Past this the boxes are too narrow to
+/// carry a label, and a six-deep chain is one that wants summarizing.
+const MAX_STAGES: usize = 6;
+
+/// Boxes one flow diagram may hold, across every stage. A reading limit: past
+/// twenty, a picture is a map, and a map wants a page rather than a
+/// conversation.
+const MAX_NODES: usize = 20;
+
+/// Arrows one flow diagram may hold. Comfortably more than the nodes, because
+/// a fan-out is the normal shape and the point.
+const MAX_EDGES: usize = 40;
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ShowFlowInput {
+    /// What the diagram is of — `How a request reaches the database`.
+    pub title: String,
+    /// Where this came from, in one line — the modules you read it out of, or
+    /// that it is the intended design rather than the current code.
+    #[serde(default)]
+    pub caption: Option<String>,
+    /// The columns, left to right, in the order the work moves through them.
+    /// Put what starts things in the first stage. Everything at the same depth
+    /// belongs in the same stage, which is what makes the picture readable —
+    /// so decide the stages first and fill them in, rather than listing nodes
+    /// and hoping.
+    pub stages: Vec<FlowStage>,
+    /// The arrows. `from` and `to` are node labels, spelled exactly as in the
+    /// stages. An arrow pointing back to an earlier stage is fine and is drawn
+    /// as a loop — that is what a retry or a callback looks like.
+    pub edges: Vec<FlowEdge>,
+}
+
+/// Draws a flow diagram in the transcript.
+pub struct ShowFlow;
+
+#[async_trait]
+impl Tool for ShowFlow {
+    fn name(&self) -> &str {
+        SHOW_FLOW_TOOL
+    }
+
+    fn description(&self) -> &str {
+        "Draw a flow diagram in the conversation — boxes in stages, arrows between them. Use it \
+         when the answer is how a system is put together or how work moves through it: which \
+         component talks to which, what a request passes through on its way to the database, the \
+         branches and loops of a pipeline. You must group the nodes into stages yourself, left to \
+         right, putting everything at the same depth in the same stage — that grouping is what \
+         makes the picture readable, and you understand the system well enough to decide it. Use \
+         show_sequence instead when the order of events over time is the point rather than the \
+         shape of the connections, and use a sentence when there are two boxes and one arrow. Say \
+         what the diagram shows in your own words as well."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        schema_for::<ShowFlowInput>()
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
+    fn preview(&self, input: &serde_json::Value) -> String {
+        format!(
+            "Flow: {}",
+            input.get("title").and_then(|t| t.as_str()).unwrap_or("?")
+        )
+    }
+
+    fn view(&self, _id: &str, input: &serde_json::Value) -> Option<TranscriptView> {
+        let input: ShowFlowInput = serde_json::from_value(input.clone()).ok()?;
+        check_flow(&input).ok()?;
+        Some(TranscriptView::Flow {
+            title: input.title,
+            caption: input.caption,
+            stages: input.stages,
+            edges: input.edges,
+        })
+    }
+
+    async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+        let input: ShowFlowInput = parse_input(input)?;
+        check_flow(&input)?;
+        let nodes: usize = input.stages.iter().map(|s| s.nodes.len()).sum();
+        Ok(format!(
+            "Drew '{}' — {nodes} nodes across {} stages, {} edges. The user can see it; do not \
+             repeat the connections.",
+            input.title,
+            input.stages.len(),
+            input.edges.len()
+        ))
+    }
+}
+
+/// Everything about a flow that has to hold before it is worth drawing.
+///
+/// Two of these matter. A duplicate label is refused because labels *are* the
+/// identity here — two boxes sharing one would send every arrow to whichever
+/// came first, silently. And an edge naming a node that does not exist is
+/// refused rather than dropped, for the reason the sequence diagram gives:
+/// it is usually one thing spelled two ways, and quietly leaving the arrow out
+/// draws a system with a connection missing.
+fn check_flow(input: &ShowFlowInput) -> Result<(), ToolError> {
+    if input.stages.is_empty() {
+        return Err(ToolError::InvalidInput(
+            "a flow diagram needs stages: group the nodes by depth, left to right".into(),
+        ));
+    }
+    if input.stages.len() > MAX_STAGES {
+        return Err(ToolError::InvalidInput(format!(
+            "{} stages is deeper than one diagram can show ({MAX_STAGES} at most); draw the part \
+             that answers the question, or collapse a run of stages into one box",
+            input.stages.len()
+        )));
+    }
+    if let Some((n, _)) = input
+        .stages
+        .iter()
+        .enumerate()
+        .find(|(_, stage)| stage.nodes.is_empty())
+    {
+        return Err(ToolError::InvalidInput(format!(
+            "stage {} has no nodes; every stage is a column and an empty one draws a gap",
+            n + 1
+        )));
+    }
+
+    let labels: Vec<&String> = input
+        .stages
+        .iter()
+        .flat_map(|stage| stage.nodes.iter().map(|node| &node.label))
+        .collect();
+
+    if labels.len() < 2 {
+        return Err(ToolError::InvalidInput(
+            "a flow diagram needs at least two nodes; one box is a noun, not a diagram".into(),
+        ));
+    }
+    if labels.len() > MAX_NODES {
+        return Err(ToolError::InvalidInput(format!(
+            "{} nodes is more than one diagram can hold ({MAX_NODES} at most); draw the part that \
+             answers the question",
+            labels.len()
+        )));
+    }
+    if let Some((i, label)) = labels
+        .iter()
+        .enumerate()
+        .find(|(i, label)| labels[..*i].contains(label))
+    {
+        let _ = i;
+        return Err(ToolError::InvalidInput(format!(
+            "'{label}' is the label of two different nodes; edges find their box by label, so \
+             every one has to be unique — add what tells them apart, like 'Cache (read)' and \
+             'Cache (write)'"
+        )));
+    }
+
+    if input.edges.is_empty() {
+        return Err(ToolError::InvalidInput(
+            "a flow diagram needs edges; boxes with nothing between them are a list".into(),
+        ));
+    }
+    if input.edges.len() > MAX_EDGES {
+        return Err(ToolError::InvalidInput(format!(
+            "{} edges is more than a diagram this size can show ({MAX_EDGES} at most)",
+            input.edges.len()
+        )));
+    }
+    for (n, edge) in input.edges.iter().enumerate() {
+        for end in [&edge.from, &edge.to] {
+            if !labels.contains(&end) {
+                return Err(ToolError::InvalidInput(format!(
+                    "edge {} names '{end}', which is not one of the nodes ({}). Every arrow runs \
+                     between two declared nodes, spelled the same way.",
+                    n + 1,
+                    labels
+                        .iter()
+                        .map(|l| l.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+        if edge.from == edge.to {
+            return Err(ToolError::InvalidInput(format!(
+                "edge {} runs from '{}' to itself. A box that calls itself is a detail of that \
+                 box rather than a connection in the system; put it in the node's note.",
+                n + 1,
+                edge.from
+            )));
+        }
+    }
+    Ok(())
+}
+
 // ------------------------------------------------------------------ ask_user
 
 #[derive(Deserialize, JsonSchema)]
@@ -739,6 +939,136 @@ mod tests {
 
         assert!(ShowSequence.execute(input.clone(), &ctx).await.is_ok());
         assert!(ShowSequence.view("call-1", &input).is_some());
+    }
+
+    fn flow(edges: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "title": "How a request reaches the database",
+            "stages": [
+                { "name": "Edge", "nodes": [{ "label": "Client" }] },
+                { "name": "Service", "nodes": [{ "label": "API", "note": "axum" }, { "label": "Worker" }] },
+                { "name": "Storage", "nodes": [{ "label": "Postgres" }] },
+            ],
+            "edges": edges,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_flow_call_carries_the_stages_the_model_declared() {
+        // The layering is the payload, not something recovered from the edges.
+        let (ctx, _dir) = test_ctx();
+        let input = flow(serde_json::json!([
+            { "from": "Client", "to": "API", "label": "POST /orders" },
+            { "from": "API", "to": "Postgres" },
+        ]));
+
+        let view = ShowFlow.view("call-1", &input).unwrap();
+        let result = ShowFlow.execute(input, &ctx).await.unwrap();
+
+        assert!(matches!(
+            view,
+            TranscriptView::Flow { ref stages, ref edges, .. }
+                if stages.len() == 3
+                    && stages[1].nodes.len() == 2
+                    && stages[1].name.as_deref() == Some("Service")
+                    && stages[1].nodes[0].note.as_deref() == Some("axum")
+                    && edges[1].label.is_none()
+        ));
+        assert!(result.contains("4 nodes across 3 stages"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn an_edge_naming_a_node_that_does_not_exist_is_refused() {
+        let (ctx, _dir) = test_ctx();
+        let stray = flow(serde_json::json!([
+            { "from": "Client", "to": "Postgress" },
+        ]));
+
+        let error = ShowFlow.execute(stray.clone(), &ctx).await.unwrap_err();
+
+        assert!(error.to_string().contains("Postgress"), "{error}");
+        // The real names are listed, so the misspelling sits beside what it
+        // should have been.
+        assert!(
+            error.to_string().contains("Client, API, Worker, Postgres"),
+            "{error}"
+        );
+        assert!(ShowFlow.view("call-1", &stray).is_none());
+    }
+
+    #[tokio::test]
+    async fn two_nodes_with_the_same_label_are_refused() {
+        // Labels are the identity here, so a duplicate would send every arrow
+        // to whichever box happened to come first — silently.
+        let (ctx, _dir) = test_ctx();
+        let error = ShowFlow
+            .execute(
+                serde_json::json!({
+                    "title": "Caches",
+                    "stages": [
+                        { "nodes": [{ "label": "API" }] },
+                        { "nodes": [{ "label": "Cache" }, { "label": "Cache" }] },
+                    ],
+                    "edges": [{ "from": "API", "to": "Cache" }],
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("'Cache'"), "{error}");
+        assert!(error.to_string().contains("Cache (read)"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_edge_from_a_node_to_itself_is_refused() {
+        let (ctx, _dir) = test_ctx();
+        let error = ShowFlow
+            .execute(
+                flow(serde_json::json!([{ "from": "API", "to": "API" }])),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("to itself"), "{error}");
+        assert!(error.to_string().contains("note"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_edge_pointing_back_to_an_earlier_stage_is_allowed() {
+        // A retry, a callback, a failure path. Refusing it would rule out half
+        // the workflows worth drawing.
+        let (ctx, _dir) = test_ctx();
+        let input = flow(serde_json::json!([
+            { "from": "Client", "to": "API" },
+            { "from": "Worker", "to": "API", "label": "retry" },
+        ]));
+
+        assert!(ShowFlow.execute(input.clone(), &ctx).await.is_ok());
+        assert!(ShowFlow.view("call-1", &input).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_empty_stage_is_refused_as_a_gap_in_the_picture() {
+        let (ctx, _dir) = test_ctx();
+        let error = ShowFlow
+            .execute(
+                serde_json::json!({
+                    "title": "Gappy",
+                    "stages": [
+                        { "nodes": [{ "label": "Client" }] },
+                        { "nodes": [] },
+                        { "nodes": [{ "label": "API" }] },
+                    ],
+                    "edges": [{ "from": "Client", "to": "API" }],
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("stage 2"), "{error}");
     }
 
     fn questions() -> serde_json::Value {

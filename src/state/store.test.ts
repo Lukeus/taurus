@@ -815,3 +815,56 @@ describe("redrawing a sequence diagram from a saved call", () => {
     expect(call({ title: "Nothing", messages: [] })).toBeUndefined();
   });
 });
+
+describe("redrawing a flow diagram from a saved call", () => {
+  const call = (input: unknown) => viewFromCall("t1", "show_flow", input);
+
+  it("rebuilds the stages, nodes and edges the model sent", () => {
+    const view = call({
+      title: "Request path",
+      stages: [
+        { name: "Edge", nodes: [{ label: "Client" }] },
+        { nodes: [{ label: "API", note: "axum" }] },
+      ],
+      edges: [{ from: "Client", to: "API", label: "POST" }],
+    });
+    expect(view).toMatchObject({
+      type: "flow",
+      title: "Request path",
+      stages: [
+        { name: "Edge", nodes: [{ label: "Client", note: null }] },
+        { name: null, nodes: [{ label: "API", note: "axum" }] },
+      ],
+      edges: [{ from: "Client", to: "API", label: "POST" }],
+    });
+  });
+
+  it("drops an edge naming a node the call never declared", () => {
+    const view = call({
+      title: "Request path",
+      stages: [{ nodes: [{ label: "Client" }] }, { nodes: [{ label: "API" }] }],
+      edges: [
+        { from: "Client", to: "Ghost" },
+        { from: "Client", to: "API" },
+      ],
+    });
+    expect(view).toMatchObject({ edges: [{ from: "Client", to: "API" }] });
+  });
+
+  it("refuses the card when a stage lost a node rather than drawing a gap", () => {
+    // A missing box takes every arrow into it with it, so what would be drawn
+    // is a diagram that is quietly wrong about the shape — worse than none.
+    expect(
+      call({
+        title: "Request path",
+        stages: [{ nodes: [{ label: "Client" }, { note: "no label" }] }],
+        edges: [{ from: "Client", to: "Client" }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("refuses a payload with no stages", () => {
+    expect(call({ title: "Nothing", stages: [], edges: [] })).toBeUndefined();
+    expect(call({ title: "Nothing", edges: [] })).toBeUndefined();
+  });
+});

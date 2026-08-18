@@ -1,4 +1,4 @@
-//! Tables, charts and sequence diagrams, drawn for a terminal.
+//! Tables, charts and diagrams, drawn for a terminal.
 //!
 //! The desktop app gets a sortable table and a chart with tabs. A terminal gets
 //! neither, and pretending otherwise — a full-screen pager, a redrawn chart on
@@ -11,7 +11,8 @@
 //! label has to fit inside.
 
 use taurus_tools::view::{
-    ColumnKind, MessageKind, SequenceMessage, Series, StepState, TranscriptView,
+    ColumnKind, FlowEdge, FlowStage, MessageKind, SequenceMessage, Series, StepState,
+    TranscriptView,
 };
 
 /// Longest a single table cell may print before it is cut.
@@ -107,6 +108,27 @@ pub fn render(view: &TranscriptView, color: bool) -> String {
         } => {
             let mut out = heading(title, caption.as_deref(), color);
             out.push_str(&sequence(participants, messages, color));
+            out
+        }
+
+        // The stages, then the arrows.
+        //
+        // Not the boxes-and-lines the app draws, and deliberately. A sequence
+        // diagram's layout survives being drawn in characters because it is a
+        // grid; a graph's does not — routing arbitrary edges between arbitrary
+        // rows in a character cell needs either crossings a reader cannot
+        // follow or a canvas a scrollback has not got. So the terminal gets the
+        // two facts the picture is made of, in a form that is complete, greppable
+        // and pastes into an issue: what is at each depth, and what points at
+        // what.
+        TranscriptView::Flow {
+            title,
+            caption,
+            stages,
+            edges,
+        } => {
+            let mut out = heading(title, caption.as_deref(), color);
+            out.push_str(&flow(stages, edges, color));
             out
         }
 
@@ -280,6 +302,77 @@ fn row(cells: &[char], label: &str, color: bool) -> String {
 fn collect(cells: &[char]) -> String {
     let text: String = cells.iter().collect();
     text.trim_end().to_string()
+}
+
+/// Draws a flow diagram as its stages and then its arrows.
+///
+/// The arrow list is aligned into a column so the `from` and `to` names line up
+/// down the page, which is what lets a reader scan for one node and find every
+/// connection it has without reading the rest.
+fn flow(stages: &[FlowStage], edges: &[FlowEdge], color: bool) -> String {
+    let mut out = String::new();
+
+    for (n, stage) in stages.iter().enumerate() {
+        // Numbered when unnamed, so a reader can still say which depth a box is
+        // at — that ordering is the thing the model was asked to decide.
+        let name = stage
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("stage {}", n + 1));
+        out.push_str(&dim(&format!("  {name}\n"), color));
+        for node in &stage.nodes {
+            let note = node
+                .note
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| format!("  ({n})"))
+                .unwrap_or_default();
+            out.push_str(&format!("    {}{}\n", node.label, dim(&note, color)));
+        }
+    }
+
+    if edges.is_empty() {
+        return out;
+    }
+    out.push('\n');
+
+    // Where each node sits, so an arrow that goes back to an earlier stage can
+    // be marked as one. A loop is the thing a reader most needs pointed out
+    // here: on the page it is visibly a loop, and in a list it is just a line.
+    let depth = |label: &String| {
+        stages
+            .iter()
+            .position(|stage| stage.nodes.iter().any(|node| &node.label == label))
+    };
+
+    let width = edges
+        .iter()
+        .map(|e| e.from.chars().count() + e.to.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 5;
+
+    for edge in edges {
+        let pair = format!("{} ──> {}", edge.from, edge.to);
+        let pad = width.saturating_sub(edge.from.chars().count() + edge.to.chars().count());
+        let label = edge.label.as_deref().filter(|l| !l.trim().is_empty());
+        let back = match (depth(&edge.from), depth(&edge.to)) {
+            (Some(from), Some(to)) if to <= from => "  (loops back)",
+            _ => "",
+        };
+        match label {
+            Some(label) => out.push_str(&format!(
+                "  {pair}{:pad$}{}{}\n",
+                "",
+                label,
+                dim(back, color),
+                pad = pad
+            )),
+            None => out.push_str(&format!("  {pair}{}\n", dim(back, color))),
+        }
+    }
+
+    out
 }
 
 fn bold(text: &str, color: bool) -> String {
@@ -693,5 +786,78 @@ mod tests {
             !out.contains('\u{25ba}') && !out.contains('\u{25c4}'),
             "{out:?}"
         );
+    }
+
+    fn request_path() -> TranscriptView {
+        use taurus_tools::view::FlowNode;
+        let node = |label: &str, note: Option<&str>| FlowNode {
+            label: label.into(),
+            note: note.map(str::to_string),
+        };
+        let edge = |from: &str, to: &str, label: Option<&str>| FlowEdge {
+            from: from.into(),
+            to: to.into(),
+            label: label.map(str::to_string),
+        };
+        TranscriptView::Flow {
+            title: "How a request reaches the database".into(),
+            caption: None,
+            stages: vec![
+                FlowStage {
+                    name: Some("Edge".into()),
+                    nodes: vec![node("Client", None)],
+                },
+                FlowStage {
+                    name: Some("Service".into()),
+                    nodes: vec![node("API", Some("axum")), node("Worker", None)],
+                },
+                FlowStage {
+                    name: None,
+                    nodes: vec![node("Postgres", None)],
+                },
+            ],
+            edges: vec![
+                edge("Client", "API", Some("POST /orders")),
+                edge("API", "Postgres", Some("insert row")),
+                edge("Worker", "API", Some("retry")),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_flow_lists_its_stages_with_what_is_at_each_depth() {
+        let out = render(&request_path(), false);
+        assert!(out.contains("Edge"), "{out}");
+        assert!(out.contains("Service"), "{out}");
+        // A stage the model did not name still says which depth it is, because
+        // the ordering is the thing it was asked to decide.
+        assert!(out.contains("stage 3"), "{out}");
+        assert!(out.contains("API"), "{out}");
+        assert!(out.contains("(axum)"), "{out}");
+    }
+
+    #[test]
+    fn a_flow_lists_every_edge_with_its_label() {
+        let out = render(&request_path(), false);
+        assert!(out.contains("Client \u{2500}\u{2500}> API"), "{out}");
+        assert!(out.contains("POST /orders"), "{out}");
+        assert!(out.contains("insert row"), "{out}");
+    }
+
+    #[test]
+    fn an_edge_back_to_an_earlier_stage_is_marked_as_a_loop() {
+        // On the page it is visibly a loop. In a list it is just another line,
+        // so it has to be said.
+        let out = render(&request_path(), false);
+        let retry = out.lines().find(|l| l.contains("retry")).unwrap();
+        assert!(retry.contains("loops back"), "{retry:?}");
+        let forward = out.lines().find(|l| l.contains("insert row")).unwrap();
+        assert!(!forward.contains("loops back"), "{forward:?}");
+    }
+
+    #[test]
+    fn a_flow_is_drawn_without_escapes_when_uncoloured() {
+        let out = render(&request_path(), false);
+        assert!(!out.contains('\u{1b}'), "{out:?}");
     }
 }

@@ -1651,6 +1651,98 @@ body.resizing * {
   fill: var(--text-faint);
 }
 
+/* -------------------------------------------------------- the flow diagram */
+
+/* Scrolls rather than scales, for the reason `.sequence-box` gives. */
+.flow-box {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  padding: 10px 4px;
+  overflow-x: auto;
+}
+.flow {
+  display: block;
+  margin: 0 auto;
+}
+
+/* The heading over a column, when the model named its stages. Set as a label
+   rather than as a title: it names a group of boxes, and reading heavier than
+   the boxes would invert what the picture is about. */
+.flow-stage {
+  fill: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+/* One step up from the sunken ground it sits on, which is the same ladder the
+   rest of the app uses to put a thing on top of a surface. */
+.flow-rect {
+  fill: var(--bg-raised);
+  stroke: var(--rule);
+  stroke-width: 1;
+}
+.flow-name {
+  fill: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  dominant-baseline: middle;
+}
+.flow-note {
+  fill: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  dominant-baseline: middle;
+}
+
+.flow-line {
+  stroke: var(--text-dim);
+  stroke-width: 1.5;
+  fill: none;
+}
+.flow-head {
+  fill: var(--text-dim);
+}
+/*
+ * Drawn over the boxes, with a halo in the ground colour.
+ *
+ * A label is centred on its own arrow, and one longer than the gap it sits in
+ * runs under the box the arrow points at — which is exactly the label a reader
+ * most wanted. `paint-order` puts the stroke behind the fill, so the halo
+ * clears a hole in whatever it crosses instead of outlining the glyphs.
+ */
+.flow-label {
+  fill: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  paint-order: stroke fill;
+  stroke: var(--bg-sunken);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.flow-label.back {
+  fill: var(--text-faint);
+}
+
+/*
+ * An arrow pointing back to its own stage or an earlier one — a retry, a
+ * failure path, a callback.
+ *
+ * Routed below the boxes by the layout, and drawn dashed here. Both, not
+ * either: the route is what stops it lying along the forward edge it is the
+ * return path for, and the dash is what says it is a loop rather than a line
+ * that happens to go the long way round.
+ */
+.flow-arrow.back .flow-line {
+  stroke: var(--text-faint);
+  stroke-dasharray: 4 3;
+}
+.flow-arrow.back .flow-head {
+  fill: var(--text-faint);
+}
+
 /* --------------------------------------------------------------- the table */
 
 /* Sunken, the same step down code and command output take: a panel inside a
