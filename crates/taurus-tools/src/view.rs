@@ -41,6 +41,20 @@ pub enum TranscriptView {
         labels: Vec<String>,
         series: Vec<Series>,
     },
+    /// Who talks to whom, in what order.
+    ///
+    /// The one diagram whose layout needs no algorithm: participants are lanes
+    /// in the order they are declared, and messages are rows in the order they
+    /// happened. Everything the reader needs is already in the payload, which
+    /// is why this draws identically in the app and in a terminal.
+    Sequence {
+        title: String,
+        caption: Option<String>,
+        /// The lanes, left to right.
+        participants: Vec<String>,
+        /// The arrows, top to bottom, in the order they occur.
+        messages: Vec<SequenceMessage>,
+    },
     Questions {
         /// The tool call waiting on these. An answer quotes it back, which is
         /// how the harness knows which blocked call to resume.
@@ -268,6 +282,38 @@ pub enum ColumnKind {
     /// number and tinted by direction, so a regression is visible without
     /// reading the column.
     Delta,
+}
+
+/// One arrow in a sequence diagram.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct SequenceMessage {
+    /// Who it leaves, named exactly as in `participants`.
+    pub from: String,
+    /// Who it arrives at, named exactly as in `participants`. The same as
+    /// `from` for work a participant does to itself.
+    pub to: String,
+    /// What is being sent, as a short label — `POST /orders`, `write the row`.
+    pub text: String,
+    #[serde(default)]
+    pub kind: MessageKind,
+}
+
+/// Whether an arrow is work going out or an answer coming back.
+///
+/// Two, not more. A sequence diagram earns its place by showing the order of a
+/// conversation and where it turns around; anything finer — activation bars,
+/// nesting depth, async versus sync — is detail the reader of a transcript has
+/// no way to act on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum MessageKind {
+    /// A request, a call, work handed on. Drawn as a solid arrow.
+    #[default]
+    Call,
+    /// An answer coming back to whoever asked. Drawn as a dashed arrow.
+    Return,
 }
 
 /// One line of a chart — a metric that can be plotted against the shared

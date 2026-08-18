@@ -33,6 +33,7 @@ import type { McpServerView } from "../bindings/McpServerView";
 import type { McpTransport } from "../bindings/McpTransport";
 import type { McpValue } from "../bindings/McpValue";
 import type { Message } from "../bindings/Message";
+import type { MessageKind } from "../bindings/MessageKind";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
@@ -49,6 +50,7 @@ import type { SaveTarget } from "../bindings/SaveTarget";
 import type { Scope } from "../bindings/Scope";
 import type { SearchBackend } from "../bindings/SearchBackend";
 import type { SearchSettings } from "../bindings/SearchSettings";
+import type { SequenceMessage } from "../bindings/SequenceMessage";
 import type { ServerStatus } from "../bindings/ServerStatus";
 import type { ModelEntry } from "../bindings/ModelEntry";
 import type { SessionMeta } from "../bindings/SessionMeta";
@@ -91,6 +93,7 @@ export type {
   McpTransport,
   McpValue,
   Message,
+  MessageKind,
   ModelEntry,
   ModelInfo,
   PermissionDecision,
@@ -106,6 +109,7 @@ export type {
   Scope,
   SearchBackend,
   SearchSettings,
+  SequenceMessage,
   ServerStatus,
   SessionMeta,
   SkillProposal,

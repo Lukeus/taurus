@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 
 import { ChartCard } from "./ChartCard";
+import { SequenceCard } from "./SequenceCard";
 import { Markdown } from "./Markdown";
 import { Attachments } from "./Attachments";
 import { QuestionsCard } from "./QuestionsCard";
@@ -259,6 +260,8 @@ function EntryView({
         return <TableCard view={entry.view} />;
       case "chart":
         return <ChartCard view={entry.view} />;
+      case "sequence":
+        return <SequenceCard view={entry.view} />;
       case "questions":
         return (
           <QuestionsCard

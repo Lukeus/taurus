@@ -19,6 +19,7 @@ import type {
   SessionMeta,
   AgentProposal,
   Attachment,
+  SequenceMessage,
   SkillProposal,
   Step,
   TranscriptView,
@@ -645,6 +646,33 @@ export function viewFromCall(
           }
         : undefined;
 
+    case "show_sequence":
+      // Arrows naming a lane that was never declared are dropped rather than
+      // failing the diagram, which is the one place this is looser than the
+      // Rust check that refuses them outright. By the time a transcript is
+      // being replayed the call has already succeeded, so a payload that fails
+      // here came from a build whose rules differed — and a diagram missing one
+      // arrow is worth more than a blank where the answer was.
+      return Array.isArray(payload.participants) &&
+        payload.participants.every((p: unknown) => typeof p === "string") &&
+        payload.participants.length > 0 &&
+        Array.isArray(payload.messages)
+        ? {
+            type: "sequence",
+            title: typeof payload.title === "string" ? payload.title : "",
+            caption: asCaption(payload.caption),
+            participants: payload.participants,
+            messages: payload.messages
+              .map(asMessage)
+              .filter(isMessage)
+              .filter(
+                (m: SequenceMessage) =>
+                  (payload.participants as string[]).includes(m.from) &&
+                  (payload.participants as string[]).includes(m.to),
+              ),
+          }
+        : undefined;
+
     case "ask_user":
       // Keyed to the call, exactly as the live event was — though nothing is
       // waiting on it any more, and the card knows to draw itself read-only
@@ -671,6 +699,35 @@ export function viewFromCall(
 /** `caption` is optional to the model and nullable across the boundary. */
 function asCaption(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+/**
+ * One saved arrow in the shape the card reads, or `undefined` if it is not one.
+ *
+ * `kind` defaults the way Rust defaults it — an omitted kind is a call — so a
+ * transcript written by a model that never set the field replays as the
+ * diagram it drew rather than as one with no arrows in it.
+ */
+function asMessage(value: unknown): SequenceMessage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const message = value as Record<string, unknown>;
+  if (
+    typeof message.from !== "string" ||
+    typeof message.to !== "string" ||
+    typeof message.text !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    from: message.from,
+    to: message.to,
+    text: message.text,
+    kind: message.kind === "return" ? "return" : "call",
+  };
+}
+
+function isMessage(message: SequenceMessage | undefined): message is SequenceMessage {
+  return message !== undefined;
 }
 
 /**

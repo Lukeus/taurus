@@ -1574,6 +1574,83 @@ body.resizing * {
   padding-top: 11px;
 }
 
+/* ---------------------------------------------------- the sequence diagram */
+
+/*
+ * Scrolls rather than scales.
+ *
+ * An SVG with `width: 100%` would shrink a wide diagram to fit, and shrink its
+ * labels with it — and the labels are the half that carries the meaning. A
+ * table with too many columns does the same thing for the same reason.
+ */
+.sequence-box {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  padding: 10px 4px;
+  overflow-x: auto;
+}
+/*
+ * Drawn at its natural size, and centred while there is room for it.
+ *
+ * Not stretched to the box: an SVG given a width and a viewBox scales to fit,
+ * which for a narrow window means shrinking the labels — and `overflow-x` never
+ * fires, because nothing ever overflows. Left at its own width it scrolls the
+ * way a wide table does, and `margin: auto` keeps a two-lane diagram from
+ * sitting in the left third of the card.
+ */
+.sequence {
+  display: block;
+  margin: 0 auto;
+}
+
+/* The lane a participant occupies for the whole diagram. Dashed, because it is
+   a period of time rather than a thing — the arrows are the events. */
+.sequence-life {
+  stroke: var(--rule);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.sequence-name {
+  fill: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.sequence-line {
+  stroke: var(--text-dim);
+  stroke-width: 1.5;
+  fill: none;
+}
+.sequence-head {
+  fill: var(--text-dim);
+}
+.sequence-label {
+  fill: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+/*
+ * An answer coming back, drawn dashed and a shade quieter.
+ *
+ * The turn-around is the one thing a sequence diagram exists to show, so it is
+ * said twice: by the dash, and by the weight. Colour alone would carry it for
+ * most readers and for none of the rest.
+ */
+.sequence-arrow.return .sequence-line {
+  stroke: var(--text-faint);
+  stroke-dasharray: 4 3;
+}
+.sequence-arrow.return .sequence-head {
+  fill: var(--text-faint);
+}
+.sequence-arrow.return .sequence-label {
+  fill: var(--text-faint);
+}
+
 /* --------------------------------------------------------------- the table */
 
 /* Sunken, the same step down code and command output take: a panel inside a

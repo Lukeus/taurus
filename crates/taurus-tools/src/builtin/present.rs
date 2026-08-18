@@ -1,10 +1,11 @@
-//! The three tools that address the person watching rather than the machine.
+//! The tools that address the person watching rather than the machine.
 //!
 //! Everything else here changes files, runs programs, or reads something back.
-//! These produce nothing but a view: a table, a chart, a question. That makes
-//! them the only tools whose *output* is not the point — what matters is what
-//! [`crate::view::TranscriptView`] the call carries, and the string handed back
-//! to the model is only there so it knows the drawing happened.
+//! These produce nothing but a view: a table, a chart, a sequence diagram, a
+//! question. That makes them the only tools whose *output* is not the point —
+//! what matters is what [`crate::view::TranscriptView`] the call carries, and
+//! the string handed back to the model is only there so it knows the drawing
+//! happened.
 //!
 //! Their input schemas are their view payloads, unchanged. See
 //! [`crate::view`] for why that identity is worth preserving.
@@ -15,7 +16,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
-use crate::view::{Answer, Asker, Column, Question, Series, TranscriptView};
+use crate::view::{Answer, Asker, Column, Question, SequenceMessage, Series, TranscriptView};
 
 /// Rows one call may draw.
 ///
@@ -29,17 +30,30 @@ const MAX_ROWS: usize = 60;
 /// shape being asked about is a table's job rather than a chart's.
 const MAX_BARS: usize = 40;
 
+/// Lanes one sequence diagram may have.
+///
+/// A reading limit rather than a drawing one. Past this the lanes are too
+/// narrow for their labels in the app and too wide for a terminal, and a
+/// conversation between nine things is one that wants breaking into two
+/// diagrams anyway.
+const MAX_PARTICIPANTS: usize = 8;
+
+/// Arrows one sequence diagram may carry. Beyond this it is a log, and a log
+/// reads better as a table.
+const MAX_MESSAGES: usize = 40;
+
 /// Questions one `ask_user` call may put.
 ///
 /// Deliberately small. A card with eight questions on it is a form, and a form
 /// is what the user opened an agent to avoid filling in.
 const MAX_QUESTIONS: usize = 4;
 
-/// Named as constants because these three are registered per turn rather than
+/// Named as constants because these are registered per turn rather than
 /// into the shared registry, so `taurus-host` has to be able to name them
 /// without a literal in two files that can drift apart.
 pub const SHOW_TABLE_TOOL: &str = "show_table";
 pub const SHOW_CHART_TOOL: &str = "show_chart";
+pub const SHOW_SEQUENCE_TOOL: &str = "show_sequence";
 pub const ASK_USER_TOOL: &str = "ask_user";
 
 // ---------------------------------------------------------------- show_table
@@ -270,6 +284,154 @@ fn check_chart(input: &ShowChartInput) -> Result<(), ToolError> {
     Ok(())
 }
 
+// ------------------------------------------------------------- show_sequence
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ShowSequenceInput {
+    /// What the exchange is, as a short noun phrase — `Placing an order`.
+    pub title: String,
+    /// Where this came from, in one line — the module you read it out of, or
+    /// that it is the design rather than the code.
+    #[serde(default)]
+    pub caption: Option<String>,
+    /// The participants, in the order they should appear left to right. Put
+    /// whoever starts the exchange first. Keep the names short: they head a
+    /// lane a few characters wide.
+    pub participants: Vec<String>,
+    /// The messages in the order they happen, top to bottom. Every `from` and
+    /// `to` must be one of the participants above, spelled the same way.
+    pub messages: Vec<SequenceMessage>,
+}
+
+/// Draws a sequence diagram in the transcript.
+pub struct ShowSequence;
+
+#[async_trait]
+impl Tool for ShowSequence {
+    fn name(&self) -> &str {
+        SHOW_SEQUENCE_TOOL
+    }
+
+    fn description(&self) -> &str {
+        "Draw a sequence diagram in the conversation. Use it when the answer is an order of \
+         events between several things — how a request travels through the system, what a \
+         handshake exchanges, where a retry loops back, which component calls which and in what \
+         order. It is the right shape when the question is 'what happens when…' and the answer \
+         would otherwise be a numbered list that the reader has to reassemble into a picture. Do \
+         not use it for two participants and one message, for a plain list of steps one thing \
+         does on its own — that is a numbered list, or update_plan — or to restate a sequence you \
+         have already written out in prose. Say what the diagram shows in your own words as well: \
+         the diagram is the shape, not the explanation."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        schema_for::<ShowSequenceInput>()
+    }
+
+    /// Nothing on the machine changes; the user is being shown something.
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
+    fn preview(&self, input: &serde_json::Value) -> String {
+        format!(
+            "Sequence: {}",
+            input.get("title").and_then(|t| t.as_str()).unwrap_or("?")
+        )
+    }
+
+    fn view(&self, _id: &str, input: &serde_json::Value) -> Option<TranscriptView> {
+        let input: ShowSequenceInput = serde_json::from_value(input.clone()).ok()?;
+        // Checked here as well as in `execute`, for the reason `show_table`
+        // gives: the view goes out before the call runs, so a diagram naming a
+        // participant that does not exist would be drawn with a dangling arrow
+        // and only then reported as failed.
+        check_sequence(&input).ok()?;
+        Some(TranscriptView::Sequence {
+            title: input.title,
+            caption: input.caption,
+            participants: input.participants,
+            messages: input.messages,
+        })
+    }
+
+    async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+        let input: ShowSequenceInput = parse_input(input)?;
+        check_sequence(&input)?;
+        Ok(format!(
+            "Drew '{}' — {} messages between {} participants. The user can see it; do not repeat \
+             the steps.",
+            input.title,
+            input.messages.len(),
+            input.participants.len()
+        ))
+    }
+}
+
+/// Everything about a sequence that has to hold before it is worth drawing.
+///
+/// The one that matters is the last: an arrow to a participant that was never
+/// declared has nowhere to land. Refused rather than repaired by adding the
+/// lane, because a name that is not in the list is usually a model that spelled
+/// one of its own participants two ways, and inventing a ninth lane called
+/// `Databse` would draw that mistake as though it were the design.
+fn check_sequence(input: &ShowSequenceInput) -> Result<(), ToolError> {
+    if input.participants.len() < 2 {
+        return Err(ToolError::InvalidInput(
+            "a sequence diagram needs at least two participants; one thing doing several things \
+             in order is a numbered list"
+                .into(),
+        ));
+    }
+    if input.participants.len() > MAX_PARTICIPANTS {
+        return Err(ToolError::InvalidInput(format!(
+            "{} participants is more than one diagram can hold ({MAX_PARTICIPANTS} at most); show \
+             the part of the exchange that answers the question, or split it in two",
+            input.participants.len()
+        )));
+    }
+    if let Some(name) = duplicate(&input.participants) {
+        return Err(ToolError::InvalidInput(format!(
+            "'{name}' is listed as a participant twice; every lane needs its own name, because \
+             the messages find their lane by it"
+        )));
+    }
+    if input.messages.is_empty() {
+        return Err(ToolError::InvalidInput(
+            "a sequence diagram needs messages; say it in a sentence instead".into(),
+        ));
+    }
+    if input.messages.len() > MAX_MESSAGES {
+        return Err(ToolError::InvalidInput(format!(
+            "{} messages is more than a diagram this size can show ({MAX_MESSAGES} at most); show \
+             the part that answers the question, or summarize the repeated stretch as one arrow",
+            input.messages.len()
+        )));
+    }
+    for (n, message) in input.messages.iter().enumerate() {
+        for end in [&message.from, &message.to] {
+            if !input.participants.contains(end) {
+                return Err(ToolError::InvalidInput(format!(
+                    "message {} names '{end}', which is not one of the participants ({}). Every \
+                     arrow starts and ends at a declared participant, spelled the same way.",
+                    n + 1,
+                    input.participants.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The first name that appears twice, if any.
+fn duplicate(names: &[String]) -> Option<&String> {
+    names
+        .iter()
+        .enumerate()
+        .find(|(i, name)| names[..*i].contains(name))
+        .map(|(_, name)| name)
+}
+
 // ------------------------------------------------------------------ ask_user
 
 #[derive(Deserialize, JsonSchema)]
@@ -414,7 +576,7 @@ fn render_answers(questions: &[Question], answers: &[Answer]) -> String {
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
-    use crate::view::{ColumnKind, QuestionKind, QuestionOption, Unattended};
+    use crate::view::{ColumnKind, MessageKind, QuestionKind, QuestionOption, Unattended};
 
     fn table(rows: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
@@ -472,6 +634,111 @@ mod tests {
 
         assert!(error.to_string().contains("tool calls"), "{error}");
         assert!(error.to_string().contains("3 labels"), "{error}");
+    }
+
+    fn sequence(messages: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "title": "Placing an order",
+            "participants": ["Client", "API", "Store"],
+            "messages": messages,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_sequence_call_carries_the_diagram_it_drew() {
+        let (ctx, _dir) = test_ctx();
+        let input = sequence(serde_json::json!([
+            { "from": "Client", "to": "API", "text": "POST /orders" },
+            { "from": "API", "to": "Store", "text": "insert row" },
+            { "from": "Store", "to": "API", "text": "ok", "kind": "return" },
+        ]));
+
+        let view = ShowSequence.view("call-1", &input).unwrap();
+        let result = ShowSequence.execute(input, &ctx).await.unwrap();
+
+        assert!(matches!(
+            view,
+            TranscriptView::Sequence { ref participants, ref messages, .. }
+                if participants.len() == 3
+                    && messages[2].kind == MessageKind::Return
+                    // An omitted kind is a call, which is the common case and
+                    // the one the model should not have to spell out.
+                    && messages[0].kind == MessageKind::Call
+        ));
+        assert!(result.contains("do not repeat the steps"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn an_arrow_to_an_undeclared_participant_is_refused() {
+        // Usually a model that spelled one of its own participants two ways.
+        // Adding the lane would draw that mistake as though it were the design.
+        let (ctx, _dir) = test_ctx();
+        let stray = sequence(serde_json::json!([
+            { "from": "Client", "to": "Databse", "text": "insert row" },
+        ]));
+
+        let error = ShowSequence.execute(stray.clone(), &ctx).await.unwrap_err();
+
+        assert!(error.to_string().contains("Databse"), "{error}");
+        // The declared names are listed, so the misspelling is visible next to
+        // what it should have been.
+        assert!(error.to_string().contains("Store"), "{error}");
+        // And nothing is drawn on the way there: the view goes out before the
+        // call runs, so an arrow with nowhere to land must not appear at all.
+        assert!(ShowSequence.view("call-1", &stray).is_none());
+    }
+
+    #[tokio::test]
+    async fn one_participant_is_refused_as_a_list_rather_than_a_diagram() {
+        let (ctx, _dir) = test_ctx();
+        let error = ShowSequence
+            .execute(
+                serde_json::json!({
+                    "title": "Startup",
+                    "participants": ["Host"],
+                    "messages": [{ "from": "Host", "to": "Host", "text": "load config" }],
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("numbered list"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_lane_named_twice_is_refused() {
+        // Messages find their lane by name, so two lanes sharing one would send
+        // every arrow to whichever was found first.
+        let (ctx, _dir) = test_ctx();
+        let error = ShowSequence
+            .execute(
+                serde_json::json!({
+                    "title": "Retry",
+                    "participants": ["API", "Store", "API"],
+                    "messages": [{ "from": "API", "to": "Store", "text": "read" }],
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("'API'"), "{error}");
+        assert!(error.to_string().contains("twice"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_participant_talking_to_itself_is_allowed() {
+        // Work a participant does on its own is part of the order of events —
+        // it is the self-arrow, not a mistake.
+        let (ctx, _dir) = test_ctx();
+        let input = sequence(serde_json::json!([
+            { "from": "API", "to": "API", "text": "validate the body" },
+            { "from": "API", "to": "Store", "text": "insert row" },
+        ]));
+
+        assert!(ShowSequence.execute(input.clone(), &ctx).await.is_ok());
+        assert!(ShowSequence.view("call-1", &input).is_some());
     }
 
     fn questions() -> serde_json::Value {

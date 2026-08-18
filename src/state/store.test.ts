@@ -768,3 +768,50 @@ describe("images on a user message", () => {
     expect(entries[1].images).toBeUndefined();
   });
 });
+
+describe("redrawing a sequence diagram from a saved call", () => {
+  const call = (input: unknown) => viewFromCall("t1", "show_sequence", input);
+
+  it("rebuilds the lanes and arrows the model sent", () => {
+    const view = call({
+      title: "Placing an order",
+      participants: ["Client", "API"],
+      messages: [
+        { from: "Client", to: "API", text: "POST /orders" },
+        { from: "API", to: "Client", text: "201", kind: "return" },
+      ],
+    });
+    expect(view).toMatchObject({
+      type: "sequence",
+      title: "Placing an order",
+      participants: ["Client", "API"],
+    });
+    // An omitted kind is a call, matching the default Rust applies on the way
+    // in. Read as anything else, a replayed diagram would have no solid arrows.
+    expect(view).toMatchObject({
+      messages: [
+        { from: "Client", to: "API", text: "POST /orders", kind: "call" },
+        { from: "API", to: "Client", text: "201", kind: "return" },
+      ],
+    });
+  });
+
+  it("drops an arrow naming a lane the call never declared", () => {
+    // The tool refuses these, so a transcript holding one came from a build
+    // whose rules differed. One arrow short beats a blank where the answer was.
+    const view = call({
+      title: "Placing an order",
+      participants: ["Client", "API"],
+      messages: [
+        { from: "Client", to: "Ghost", text: "nowhere" },
+        { from: "Client", to: "API", text: "POST /orders" },
+      ],
+    });
+    expect(view).toMatchObject({ messages: [{ text: "POST /orders" }] });
+  });
+
+  it("refuses a payload with no participants rather than drawing an empty box", () => {
+    expect(call({ title: "Nothing", participants: [], messages: [] })).toBeUndefined();
+    expect(call({ title: "Nothing", messages: [] })).toBeUndefined();
+  });
+});

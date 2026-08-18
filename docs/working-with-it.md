@@ -471,9 +471,9 @@ a time, since a line has to be complete before it can be styled. The
 alternative — redrawing the current line with cursor escapes — corrupts output
 as soon as a line wraps.
 
-## Tables, charts, and questions
+## Tables, charts, diagrams, and questions
 
-Three tools address the person watching rather than the machine. They change
+Four tools address the person watching rather than the machine. They change
 nothing, need no permission, and their result to the model is only a
 confirmation — what matters is what they put on screen.
 
@@ -481,7 +481,17 @@ confirmation — what matters is what they put on screen.
 | --- | --- | --- |
 | `show_table` | A sortable table, copyable as CSV | Several rows of comparable facts, and the comparison is the point |
 | `show_chart` | A bar chart, with a tab per series | The shape of a series is the answer — where the spike is, whether a number is climbing |
+| `show_sequence` | A sequence diagram, copyable as Mermaid | The answer is an order of events between several things — how a request travels, where a retry loops back |
 | `ask_user` | A question card, and waits for it | A decision that is genuinely yours and would change what gets built |
+
+The diagram is drawn rather than depended on. There is no diagramming library
+in the app: the payload is participants and messages, and the layout is
+arithmetic over an order the model already declared. That keeps three
+properties a library would have cost — it is refused before it is drawn if an
+arrow names a lane that was never declared, it is painted in the app's own
+palette rather than a second one, and it prints in a terminal. **Copy as
+Mermaid** is there because a diagram gets pasted into a README or an issue; the
+app speaks Mermaid on the way out without depending on it to draw anything.
 
 Each is drawn from the call's own input, unchanged. That identity is what lets
 a reopened conversation redraw the table rather than show a row saying one was
@@ -498,13 +508,29 @@ exception to the system prompt's instruction to keep going without stopping,
 and the prompt says so beside the rule it breaks, because a small local model
 given both and no reconciliation will pick the wrong one. It is not available
 to sub-agents: a delegate has no user watching it, so `ask_user`, `show_table`,
-and `show_chart` are all registered per turn alongside `spawn_subagent` rather
-than in the shared registry the children inherit.
+`show_chart` and `show_sequence` are all registered per turn alongside
+`spawn_subagent` rather than in the shared registry the children inherit.
 
-On the CLI, a table and a chart print in full to stdout in place of the usual
-one-line "called a tool" annotation, so `taurus run > out.txt` keeps them.
-Charts are drawn horizontally there — vertical bars need a height a scrollback
-does not have — and every series prints, since a terminal has no tabs. A
+On the CLI, a table, a chart and a diagram print in full to stdout in place of
+the usual one-line "called a tool" annotation, so `taurus run > out.txt` keeps
+them. Charts are drawn horizontally there — vertical bars need a height a
+scrollback does not have — and every series prints, since a terminal has no
+tabs. A sequence diagram prints as lanes and arrows:
+
+```
+    Client         API         Store
+       │            │            │
+       ├────────────>            │  POST /orders
+       │            ├─╮          │  validate the body
+       │            <─╯          │
+       │            ├────────────>  insert row
+       │            <┄┄┄┄┄┄┄┄┄┄┄┄┤  ok
+```
+
+The arrowheads are `<` and `>` rather than the geometric pointers they look
+like they should be: everything else there is box-drawing, which is one cell
+wide everywhere, while the pointers are East-Asian-ambiguous and would shift
+every lane right of an arrow by a column under a CJK locale. A
 question numbers its options and reads a line, with Enter alone to skip. Where
 there is no terminal at all — a pipe, a git hook, CI — nothing hangs: the tool
 comes back saying nobody was available, and the model is told to decide and say

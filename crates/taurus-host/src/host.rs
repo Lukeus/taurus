@@ -32,7 +32,7 @@ use taurus_skills::proposal::ProposalSink;
 use taurus_skills::skill::SkillSummary;
 use taurus_skills::SharedCatalog;
 use taurus_tools::builtin::plan::UpdatePlan;
-use taurus_tools::builtin::present::{AskUser, ShowChart, ShowTable};
+use taurus_tools::builtin::present::{AskUser, ShowChart, ShowSequence, ShowTable};
 use taurus_tools::PlanBoard;
 use taurus_tools::{
     Asker, CheckpointStore, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
@@ -76,6 +76,7 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_core::SPAWN_TOOL,
     taurus_tools::builtin::present::SHOW_TABLE_TOOL,
     taurus_tools::builtin::present::SHOW_CHART_TOOL,
+    taurus_tools::builtin::present::SHOW_SEQUENCE_TOOL,
     taurus_tools::builtin::present::ASK_USER_TOOL,
     taurus_tools::builtin::plan::UPDATE_PLAN_TOOL,
 ];
@@ -659,6 +660,7 @@ impl Host {
         // it is not part of.
         registry.register(Arc::new(ShowTable));
         registry.register(Arc::new(ShowChart));
+        registry.register(Arc::new(ShowSequence));
         registry.register(Arc::new(AskUser::new(self.asker.clone())));
 
         // The *tool* is per turn, like the three above: a delegate writing into
