@@ -123,6 +123,7 @@ pub fn build(
     workspace: &Path,
     skill_section: Option<String>,
     instructions_section: Option<String>,
+    memory_section: Option<String>,
     synthesis_enabled: bool,
     agent_synthesis_enabled: bool,
 ) -> String {
@@ -155,6 +156,16 @@ pub fn build(
     // The catalog and the authoring sections that follow are reference material
     // rather than rival rules, so nothing is lost by putting them after.
     if let Some(section) = instructions_section {
+        prompt.push('\n');
+        prompt.push_str(&section);
+    }
+
+    // After the standing instructions and before the skill catalog. These are
+    // facts about this workspace rather than rules, so they have nothing to
+    // contradict and no reason to win a contradiction — but they are read
+    // rather than referred to, which puts them with the brief and not with the
+    // reference material after it. See `crate::memory`.
+    if let Some(section) = memory_section {
         prompt.push('\n');
         prompt.push_str(&section);
     }
@@ -195,7 +206,7 @@ mod tests {
 
     #[test]
     fn includes_the_workspace_path() {
-        let prompt = build(Path::new("/tmp/project"), None, None, false, false);
+        let prompt = build(Path::new("/tmp/project"), None, None, None, false, false);
         assert!(prompt.contains("/tmp/project"));
     }
 
@@ -204,14 +215,14 @@ mod tests {
         // The fix for a model that goes hunting for the project it is already
         // standing in: given only an absolute path, it built absolute commands
         // out of it, `cd`ed into the parent, and spent an entire turn there.
-        let prompt = build(Path::new("/tmp/project"), None, None, false, false);
+        let prompt = build(Path::new("/tmp/project"), None, None, None, false, false);
         assert!(prompt.contains("already start"), "{prompt}");
         assert!(prompt.contains("relative"), "{prompt}");
     }
 
     #[test]
     fn tells_the_model_to_finish_and_check_its_work() {
-        let prompt = build(Path::new("/tmp/project"), None, None, false, false);
+        let prompt = build(Path::new("/tmp/project"), None, None, None, false, false);
         assert!(
             prompt.contains("until the task is actually done"),
             "{prompt}"
@@ -224,7 +235,7 @@ mod tests {
         // "Do not stop to ask whether to carry on" and "ask_user" are a
         // contradiction to a 7B model unless the prompt draws the line itself.
         // Both sections are unconditional, so this holds for every session.
-        let prompt = build(Path::new("/tmp"), None, None, false, false);
+        let prompt = build(Path::new("/tmp"), None, None, None, false, false);
         assert!(prompt.contains("Do not stop after one step"), "{prompt}");
         assert!(prompt.contains("one exception"), "{prompt}");
         assert!(prompt.contains("Do not ask to confirm a plan"), "{prompt}");
@@ -234,7 +245,7 @@ mod tests {
     fn the_drawing_tools_are_told_not_to_be_repeated_in_prose() {
         // The failure this prevents: a table drawn, then every row of it
         // written out again underneath, which is worse than either alone.
-        let prompt = build(Path::new("/tmp"), None, None, false, false);
+        let prompt = build(Path::new("/tmp"), None, None, None, false, false);
         assert!(prompt.contains("never repeat its contents"), "{prompt}");
     }
 
@@ -246,7 +257,7 @@ mod tests {
         // because either alone produces a plan that is written once and then
         // goes stale — which is worse than none, since it is read back as
         // current on every iteration.
-        let prompt = build(Path::new("/tmp"), None, None, false, false);
+        let prompt = build(Path::new("/tmp"), None, None, None, false, false);
         assert!(prompt.contains("more than two or three steps"), "{prompt}");
         assert!(prompt.contains("every time a step starts"), "{prompt}");
         assert!(prompt.contains("one step is `active`"), "{prompt}");
@@ -257,7 +268,7 @@ mod tests {
         // It sits beside "do not stop to ask whether to carry on", and a model
         // handed a planning tool reads it as an invitation to check in. The
         // prompt says both things in the same breath for that reason.
-        let prompt = build(Path::new("/tmp"), None, None, false, false);
+        let prompt = build(Path::new("/tmp"), None, None, None, false, false);
         assert!(prompt.contains("do not ask them to approve it"), "{prompt}");
         // Said twice on purpose, from both sides: the planning section, and the
         // rule about what `ask_user` is not for.
@@ -266,7 +277,7 @@ mod tests {
 
     #[test]
     fn names_the_platform() {
-        let prompt = build(Path::new("/tmp"), None, None, false, false);
+        let prompt = build(Path::new("/tmp"), None, None, None, false, false);
         let named = ["Windows", "macOS", "Linux"]
             .iter()
             .any(|p| prompt.contains(p));
@@ -275,8 +286,8 @@ mod tests {
 
     #[test]
     fn skill_authoring_guidance_follows_the_setting() {
-        assert!(build(Path::new("/tmp"), None, None, true, false).contains("propose_skill"));
-        assert!(!build(Path::new("/tmp"), None, None, false, false).contains("propose_skill"));
+        assert!(build(Path::new("/tmp"), None, None, None, true, false).contains("propose_skill"));
+        assert!(!build(Path::new("/tmp"), None, None, None, false, false).contains("propose_skill"));
     }
 
     #[test]
@@ -284,6 +295,7 @@ mod tests {
         let prompt = build(
             Path::new("/tmp"),
             Some("# Skills\n\n- alpha: when alpha\n".into()),
+            None,
             None,
             false,
             false,
@@ -301,6 +313,7 @@ mod tests {
             Path::new("/tmp"),
             Some("# Skills\n\n- alpha: when alpha\n".into()),
             Some("# Instructions\n\nAsk before touching the database.\n".into()),
+            None,
             false,
             false,
         );
@@ -316,7 +329,7 @@ mod tests {
 
     #[test]
     fn no_instructions_file_adds_no_section() {
-        let prompt = build(Path::new("/tmp"), None, None, false, false);
+        let prompt = build(Path::new("/tmp"), None, None, None, false, false);
         assert!(!prompt.contains("# Instructions"));
     }
 
@@ -325,8 +338,8 @@ mod tests {
         // Two settings, two sections. Turning skills off must not silently take
         // the agent guidance with it, or the model is offered `propose_agent`
         // with nothing telling it when to reach for one.
-        assert!(build(Path::new("/tmp"), None, None, false, true).contains("propose_agent"));
-        assert!(!build(Path::new("/tmp"), None, None, true, false).contains("propose_agent"));
+        assert!(build(Path::new("/tmp"), None, None, None, false, true).contains("propose_agent"));
+        assert!(!build(Path::new("/tmp"), None, None, None, true, false).contains("propose_agent"));
     }
 
     #[test]
@@ -334,7 +347,7 @@ mod tests {
         // The distinction a model gets wrong. An agent that should have been a
         // skill costs a roster line on every request for work it could have
         // done inline.
-        let prompt = build(Path::new("/tmp"), None, None, true, true);
+        let prompt = build(Path::new("/tmp"), None, None, None, true, true);
         assert!(prompt.contains("Propose a skill instead"), "{prompt}");
     }
 }

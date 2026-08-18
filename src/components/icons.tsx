@@ -152,6 +152,28 @@ export function DelegateIcon({ size }: { size?: number }) {
  * plug is the one shape that reads that way at 13px, and it is the metaphor the
  * protocol's own ecosystem uses — so nobody has to learn it here.
  */
+/**
+ * Memory: a bookmark, which is the thing in the room that means "this is where
+ * I stopped".
+ *
+ * Not a brain and not a lightbulb. Both are pictures of thinking, and what
+ * these notes are is a place kept in a book somebody else will open — the
+ * distinction the row has to carry at 13px, beside a star and a branch.
+ */
+export function BookmarkIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path
+        d="M4 2h8v12l-4-3-4 3V2z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </Icon>
+  );
+}
+
 export function PlugIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>

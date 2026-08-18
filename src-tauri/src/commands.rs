@@ -26,8 +26,8 @@ use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
-    McpServerRef, McpServerView, Problem, ProviderConfig, Repo, RepoStatus, Restored, SessionLog,
-    SessionMeta, Settings, Theme, TurnChange, TurnRef,
+    McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus, Restored,
+    SessionLog, SessionMeta, Settings, Theme, TurnChange, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -92,6 +92,9 @@ pub struct AppStatus {
     pub providers: Vec<ProviderConfig>,
     pub settings: Settings,
     pub skill_count: usize,
+    /// How many notes earlier conversations in this workspace left behind, for
+    /// the badge on the rail. Zero draws nothing rather than a `0`.
+    pub note_count: usize,
     /// The roster size, so the rail can carry it beside the skill count. Never
     /// zero: two agents ship with the harness.
     pub agent_count: usize,
@@ -125,6 +128,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus>
         providers: state.host.providers().await,
         settings: state.host.settings().await,
         skill_count: state.host.skill_count().await,
+        note_count: state.host.notes().await.len(),
         agent_count: state.host.agents().await.len(),
         problems: state.host.problems().await,
         tool_names: state.host.tool_names().await,
@@ -943,6 +947,24 @@ pub async fn list_commands(
 pub async fn list_agents(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<AgentSummary>> {
     state.host.rescan_agents().await;
     Ok(state.host.agents().await)
+}
+
+/// What earlier conversations in this workspace wrote down for the next one.
+///
+/// Shown for the same reason the standing brief is: this is part of what is in
+/// the model's context before a conversation starts, and context the user
+/// cannot see is behaviour they cannot explain. Unlike the brief, they can also
+/// take a line out of it.
+#[tauri::command]
+pub async fn list_notes(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Note>> {
+    Ok(state.host.notes().await)
+}
+
+/// Drops one note and answers with what is left, so the drawer redraws from the
+/// file rather than from its own guess about what the file now says.
+#[tauri::command]
+pub async fn forget_note(state: State<'_, Arc<AppState>>, id: String) -> CmdResult<Vec<Note>> {
+    state.host.forget_note(&id).await
 }
 
 /// Every tool this session has, for the editor's tool picker.

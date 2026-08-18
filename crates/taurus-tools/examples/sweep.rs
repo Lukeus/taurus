@@ -8,13 +8,19 @@
 //! cargo run -p taurus-tools --example sweep -- [path]
 //! ```
 //!
+//! It reports two commands rather than one, because a turn is rarely one
+//! command and the second is the one that shows what the cache is for: the
+//! first read the workspace, and the second should open almost none of it. If
+//! the two are the same number, the cache is not working.
+//!
 //! It writes nothing to the workspace. The checkpoint log it records into is a
 //! temporary directory that goes away when the process does.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
-use taurus_tools::{sweep::Sweep, CheckpointStore};
+use taurus_tools::{sweep::Sweep, CheckpointStore, SweepCache};
 
 #[tokio::main]
 async fn main() {
@@ -33,17 +39,38 @@ async fn main() {
 
     println!("workspace: {}", root.display());
 
-    let started = Instant::now();
-    let sweep = Sweep::before(&root).await;
-    let indexed = started.elapsed();
-    println!("  index:   {indexed:>8.1?}");
+    // Once, unreported, so the three below are comparable. Without it the
+    // first one carries the cost of pulling a cold workspace into the operating
+    // system's own page cache, and reads as several times slower than a sweep
+    // with no cache at all — which is the opposite of what is true.
+    Sweep::before(&root, None).await;
 
-    // Nothing runs in between, so a correct sweep finds nothing. Anything it
-    // reports here is either a background process writing into the workspace or
-    // a bug in the comparison.
-    let started = Instant::now();
-    let change = sweep.after(&root, &recorder).await;
-    println!("  compare: {:>8.1?}", started.elapsed());
+    // As a turn holds one: shared by every command in it.
+    let cache = Arc::new(SweepCache::new());
+
+    let mut change = None;
+    for (label, cache) in [
+        ("first command ", Some(Arc::clone(&cache))),
+        ("second command", Some(Arc::clone(&cache))),
+        ("with no cache ", None),
+    ] {
+        let started = Instant::now();
+        let sweep = Sweep::before(&root, cache).await;
+        let indexed = started.elapsed();
+
+        // Nothing runs in between, so a correct sweep finds nothing. Anything
+        // reported here is either a background process writing into the
+        // workspace or a bug in the comparison.
+        let started = Instant::now();
+        let found = sweep.after(&root, &recorder).await;
+        println!(
+            "  {label}   index {indexed:>8.1?}   compare {:>8.1?}",
+            started.elapsed()
+        );
+        change = Some(found);
+    }
+
+    let change = change.expect("three sweeps ran");
 
     match change.summary() {
         None => println!("\nnothing changed, which is the right answer"),

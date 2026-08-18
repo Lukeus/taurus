@@ -4963,6 +4963,7 @@ dependencies = [
  "base64 0.23.1",
  "directories",
  "keyring",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "taurus-agents",
@@ -4983,6 +4984,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]

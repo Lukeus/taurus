@@ -3,10 +3,13 @@
 <sub>[← Taurus AI Shell](../README.md)</sub>
 
 ```bash
-cargo test --workspace     # 791 tests
+cargo test --workspace     # 1078 tests
 pnpm test                  # transcript reducer, replay, settings, rewind, diffs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
+
+# What a token costs to draw. See "Drawing a token", below.
+pnpm bench
 
 # The README's screenshots. Needs Chrome or Chromium; nothing else does.
 pnpm screenshots
@@ -16,6 +19,66 @@ pnpm screenshots
 # needs — without it `pnpm build` cannot find a single frontend type.
 pnpm bindings
 ```
+
+## Drawing a token
+
+```bash
+pnpm bench     # src/components/Transcript.bench.tsx
+```
+
+The number to read is not any one row; it is whether the rows climb.
+
+A transcript grows all day. A renderer that redraws the whole conversation for
+every token gets slower the longer the conversation runs, which is the shape of
+slowness people report as "it was fine this morning" — and it is what this used
+to do. The four cases differ only in how much conversation sits *above* the turn
+being streamed into, so a healthy result is four numbers that stay flat:
+
+```
+· under  1 turn  of history    0.111 ms
+· under  5 turns of history    0.093 ms
+· under 20 turns of history    0.121 ms
+· under 50 turns of history    0.159 ms
+```
+
+Before the transcript was memoized per turn the same four read 0.173, 0.395,
+1.449, and 3.406 — a twenty-fold climb, and 22x the cost at fifty turns.
+
+Two things hold that flat, and both are load-bearing:
+
+- **Turns carry their identity forward.** `reuse` in `Transcript.tsx` hands back
+  the object it built last time for any turn whose entries are the same objects,
+  which is what gives the per-turn memo something it can compare. The reducer
+  never rewrites an entry it did not touch, so this is exact rather than a
+  heuristic. `Transcript.test.tsx` covers it, because a refactor that dropped it
+  would cost nothing visible and quietly restore the old behaviour.
+- **The transcript holds its callbacks steady itself.** A caller writing
+  `onAnswer={() => …}` inline — the natural way to write it, and what
+  `DelegateTranscript` does — would otherwise hand every turn a new function on
+  every token and undo all of the above. That is a property worth owning rather
+  than a rule callers have to know.
+
+Underneath both, the store batches a frame of stream events at a time rather
+than writing once per token (`batchEvents`), so a fast local model produces
+thirty-odd renders a second instead of hundreds.
+
+jsdom lays nothing out and paints nothing, so the absolute numbers here are a
+fraction of what a webview pays. The ratio between them is the part that
+carries over, and the ratio is the thing being tested.
+
+`App.bench.tsx` asks the same question of the whole app rather than the
+transcript alone: when a token lands, does anything *else* redraw? The rail with
+its list of conversations, the topbar and the model picker have nothing new to
+say, and `App` reading only the fields it draws — rather than subscribing to the
+whole store, which is the default — is what keeps them still:
+
+```
+whole store   1.70 ms mean, 1.12 ms min
+by field      0.84 ms mean, 0.15 ms min
+```
+
+The floor is the interesting half. It is the transcript's own cost, which is
+what a frame should cost when nothing else has moved.
 
 ## The app icon
 
@@ -101,8 +164,23 @@ cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async boo
 
 # What a sweep costs on a real workspace, and that it stays quiet when nothing
 # changed. Needs no provider. Run it on something large before touching the
-# caps in `sweep.rs` — every command pays this twice.
+# caps in `sweep.rs` — every command pays this twice. It reports a turn's first
+# command, its second, and a turn keeping no cache between them: the second
+# should open almost nothing, and two numbers that match mean the cache is not
+# working. `READ_THREADS` is a measured ceiling and not a core count — past a
+# handful of readers a sweep gets slower, and by eight it is slower than one
+# thread.
 cargo run -p taurus-tools --example sweep -- .
+
+# Memory, across two conversations: one turn leaves a note, and a second one —
+# a new session, told not to read anything — answers from it. The second half is
+# the check that matters. A note that is written and never carried is a file
+# nobody reads, and nothing in the first turn's output would say so.
+taurus run --model qwen3.6:27b "Read api.py. The bug on line 2 is real but do not fix it now. \
+  Leave a note so the next conversation knows about it, then stop."
+taurus notes list
+taurus run --model qwen3.6:27b "Without reading any files: is there anything I should know \
+  about this project before I start?"
 
 # A turn recorded, read back as a diff, and committed — against the git binary
 # on this machine, in a repository it builds and throws away. Needs no

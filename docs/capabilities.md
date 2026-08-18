@@ -55,6 +55,53 @@ catalog. That ordering is the design: a brief saying "ask before touching the
 database" argues with "keep going until the task is done", and a small model
 settles a contradiction by recency — so the brief comes second, where it wins.
 
+## Memory
+
+Instructions are what you tell it. Memory is what it tells the next
+conversation.
+
+A session ends where it ends. The transcript is on disk and can be reopened, but
+the conversation after it starts with none of that — so the first thing you do
+the next morning is explain, again, what was being done and how far it got.
+Nothing tells it that the auth refactor is half applied, or that the flaky test
+was tracked to a clock and not to the code.
+
+So the model can write a note, with `remember`, when it works out something that
+outlives the conversation: work left half-done and where it stopped, a decision
+and the reason for it, a dead end worth not repeating. Notes are kept per
+workspace and read into the system prompt of every later conversation there,
+newest first, under a heading saying what they are and that they were true when
+written rather than necessarily now.
+
+```
+~/.taurus/memory/<workspace>/notes.jsonl
+```
+
+Beside the transcripts and checkpoints, keyed the same way, for the same reason:
+a note is prose about the contents of your project, and a file in the project is
+a file that gets committed. It is one JSON object per line and is meant to be
+readable — a line you write yourself, without the `id` the model's own notes
+carry, loads like any other.
+
+**Nothing is written behind your back, and nothing is written *for* you.** A
+note is not a proposal you approve, the way a skill is — a dialog on something
+written this often is one you learn to dismiss. Instead it happens where you can
+see it: the call appears in the transcript as it is made, marked as a note
+rather than folded in with the reads, and every note is listed in the **Memory**
+drawer with the conversation it came from and a button to forget it. The same
+list is `taurus notes list`, and the same button is `taurus notes forget <id>`.
+
+A note is capped at 2 KB and refused rather than truncated past it, because a
+note cut off mid-sentence still reads as a fact. The prompt carries the newest
+twelve under a 4 KB ceiling, and the file keeps the newest 200 — the same
+bargain the standing brief makes, for the same reason: these bytes are paid on
+every request of every turn.
+
+A conversation is never handed its own notes. They are already in its
+transcript, and repeating them back under a heading that says they came from an
+earlier conversation would be the harness telling the model something untrue
+about where they came from.
+
 ## Skills
 
 A skill is a `SKILL.md` with YAML frontmatter plus optional bundled scripts, in

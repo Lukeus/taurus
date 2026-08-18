@@ -9,6 +9,7 @@ import {
   MoonIcon,
   PlugIcon,
   SlidersIcon,
+  BookmarkIcon,
   SparkIcon,
   SunIcon,
   SwapIcon,
@@ -41,6 +42,7 @@ export function Rail({
   busy,
   skillCount,
   agentCount,
+  noteCount,
   mcp,
   health,
   theme,
@@ -51,6 +53,7 @@ export function Rail({
   onTheme,
   onSkills,
   onAgents,
+  onMemory,
   onMcp,
   onSettings,
 }: {
@@ -70,6 +73,9 @@ export function Rail({
   busy: boolean;
   skillCount: number | null;
   agentCount: number | null;
+  /** How many notes earlier conversations left here. Null before the first
+   *  status has landed, which is when a count would be a guess. */
+  noteCount: number | null;
   /**
    * How many MCP servers there are and how many answered, or null before the
    * first status lands.
@@ -89,6 +95,7 @@ export function Rail({
   onTheme: (theme: Theme) => void;
   onSkills: () => void;
   onAgents: () => void;
+  onMemory: () => void;
   onMcp: () => void;
   onSettings: () => void;
 }) {
@@ -244,6 +251,19 @@ export function Rail({
           </span>
           <b>Agents</b>
           {agentCount !== null && <span className="count">{agentCount}</span>}
+        </button>
+        <button
+          className="rail-link"
+          onClick={onMemory}
+          title="What earlier conversations here left for this one"
+        >
+          <span className="glyph">
+            <BookmarkIcon />
+          </span>
+          <b>Memory</b>
+          {noteCount !== null && noteCount > 0 && (
+            <span className="count">{noteCount}</span>
+          )}
         </button>
         <button className="rail-link" onClick={onMcp} title={mcpHint(mcp)}>
           <span className="glyph">

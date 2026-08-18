@@ -38,6 +38,7 @@ import type { McpValue } from "../bindings/McpValue";
 import type { Message } from "../bindings/Message";
 import type { MessageKind } from "../bindings/MessageKind";
 import type { ModelInfo } from "../bindings/ModelInfo";
+import type { Note } from "../bindings/Note";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
 import type { Problem } from "../bindings/Problem";
@@ -102,6 +103,7 @@ export type {
   MessageKind,
   ModelEntry,
   ModelInfo,
+  Note,
   PermissionDecision,
   PermissionRequest,
   Problem,
@@ -221,6 +223,18 @@ export const listPermissionRules = () =>
 /** Removes a rule from one layer; the same rule may be granted in both. */
 export const revokePermissionRule = (rule: string, scope: Scope) =>
   invoke<void>("revoke_permission_rule", { rule, scope });
+
+/**
+ * What earlier conversations in this workspace wrote down for the next one.
+ *
+ * Newest first, which is the order they are worth reading in and the order they
+ * reach the model's prompt.
+ */
+export const listNotes = () => invoke<Note[]>("list_notes");
+
+/** Drops one note and answers with what is left, so the drawer redraws from
+ *  the file rather than from its own guess about what the file now says. */
+export const forgetNote = (id: string) => invoke<Note[]>("forget_note", { id });
 
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 

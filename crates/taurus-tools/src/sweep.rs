@@ -44,6 +44,22 @@
 //! is still *detected* — detection only needs length and modification time —
 //! it just has no pre-image, so a rewind reports it instead of restoring it.
 //!
+//! The reading is spread over a few threads, because it is nearly all of the
+//! cost and a command pays it before it starts. Measured with the `sweep`
+//! example: this repository 21ms to 9ms, 500 files holding 63 MB 25ms to 10ms,
+//! 10,000 files holding 78 MB 210ms to 157ms. The gap between those last two is
+//! the shape of the work — a sweep spends its time opening files rather than
+//! reading them, which is also why only a handful of threads help. See
+//! [`READ_THREADS`], which is a ceiling arrived at by measurement rather than a
+//! core count.
+//!
+//! A turn is also rarely one command, and the commands after the first no
+//! longer re-read what has not changed: [`SweepCache`] carries the pre-images
+//! forward, validated against the same length and modification time the sweep
+//! detects changes with. On the 10,000-file workspace above that takes a
+//! command's indexing from 100ms to 36ms, and what is left is the walk rather
+//! than the reading.
+//!
 //! Because `.env` is now held, the checkpoint log holds it too. That is why
 //! [`crate::checkpoint`] keeps its logs readable by their owner and nobody
 //! else: a file kept out of version control on purpose should not become
@@ -69,6 +85,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::checkpoint::{read_state, State, TurnRecorder};
@@ -94,7 +111,11 @@ struct Indexed {
     /// `None` on a filesystem that will not report one, which degrades this
     /// file to a length comparison rather than failing the sweep.
     modified: Option<SystemTime>,
-    before: State,
+    /// Shared rather than owned so that [`SweepCache`] can hand the same
+    /// pre-image to the next command without copying the file again. Only the
+    /// handful of files that actually changed are ever cloned out of it, in
+    /// [`Sweep::after`].
+    before: Arc<State>,
 }
 
 impl Indexed {
@@ -185,9 +206,12 @@ impl Change {
 
 impl Sweep {
     /// Indexes the workspace as it stands, before the command runs.
-    pub async fn before(root: &Path) -> Self {
+    ///
+    /// `cache` is what the previous command in this turn read, or `None` to
+    /// read everything afresh. See [`SweepCache`].
+    pub async fn before(root: &Path, cache: Option<Arc<SweepCache>>) -> Self {
         let root = root.to_path_buf();
-        tokio::task::spawn_blocking(move || index(&root))
+        tokio::task::spawn_blocking(move || index(&root, cache.as_deref()))
             .await
             .unwrap_or_else(|e| {
                 Sweep::abandoned(format!(
@@ -246,7 +270,7 @@ impl Sweep {
             .keys()
             .any(|path| is_ignore_file(path) && !self.ignores.contains_key(path));
 
-        let mut changed: Vec<(PathBuf, State)> = Vec::new();
+        let mut changed: Vec<(PathBuf, Arc<State>)> = Vec::new();
 
         // Modified and deleted, both identified against the first pass's index.
         for (path, pre) in &self.files {
@@ -273,7 +297,7 @@ impl Sweep {
         if rules_held {
             for path in now.keys() {
                 if !self.files.contains_key(path) {
-                    changed.push((path.clone(), State::Absent));
+                    changed.push((path.clone(), Arc::new(State::Absent)));
                 }
             }
         }
@@ -285,7 +309,7 @@ impl Sweep {
 
         let unrestorable = changed
             .iter()
-            .filter(|(_, state)| matches!(state, State::Opaque { .. }))
+            .filter(|(_, state)| matches!(**state, State::Opaque { .. }))
             .count();
 
         let files: Vec<String> = changed
@@ -294,6 +318,10 @@ impl Sweep {
             .collect();
 
         for (path, before) in changed {
+            // Copied here and only here. The pre-image is shared with the cache
+            // and with whatever the last command held, so the copy is paid for
+            // the files that changed rather than for the whole workspace.
+            let before = Arc::try_unwrap(before).unwrap_or_else(|held| (*held).clone());
             // Dropped silently when an earlier tool in this turn already
             // recorded the path, which is the behavior that wants keeping: the
             // earlier pre-image is the older one.
@@ -401,54 +429,102 @@ fn sweepable(root: &Path) -> Option<Vec<PathBuf>> {
 }
 
 /// The first pass: everything, with contents where they fit.
-fn index(root: &Path) -> Sweep {
-    let Some(paths) = sweepable(root) else {
+///
+/// The reading is spread across threads because it is the whole cost of a
+/// sweep and every command pays it: on a 10,000-file workspace the walk is
+/// about 30ms and reading what it found was about 170ms, done one file after
+/// another on a machine with cores sitting idle. Nothing here needs to be
+/// sequential — the files are independent, and the one decision that is not
+/// (which of them fit under the byte cap) is made before any read starts.
+fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
+    let Some(mut paths) = sweepable(root) else {
         return Sweep::abandoned(format!(
             "This workspace holds more than {MAX_FILES} files, too many to record a command's \
              changes against, so this one cannot be undone."
         ));
     };
 
-    let mut files = HashMap::new();
-    let mut ignores = HashMap::new();
+    // The byte cap decides which files are held and which are only noted, so
+    // the order it walks them in decides what a rewind can put back. A
+    // directory walk does not promise an order; sorting means the same
+    // workspace makes the same choice twice, and that a caveat about a file is
+    // reproducible rather than a coin toss.
+    paths.sort();
+
+    // Stat first. It is cheap next to reading, and the cap cannot say which
+    // files fit until it knows how big they all are.
+    let stamped: Vec<(PathBuf, u64, Option<SystemTime>)> = paths
+        .into_iter()
+        .filter_map(|path| {
+            let meta = path.metadata().ok()?;
+            let modified = meta.modified().ok();
+            Some((path, meta.len(), modified))
+        })
+        .collect();
+
+    // What each file gets, decided in order and in one thread: everything
+    // below either reads a file or does not, and none of it can change what
+    // another file was allowed.
     let mut held: u64 = 0;
-
-    for path in paths {
-        let Ok(meta) = path.metadata() else { continue };
-        let len = meta.len();
-        let modified = meta.modified().ok();
-
-        if is_ignore_file(&path) {
-            ignores.insert(path.clone(), (len, modified));
-        }
-
-        let before = if len > MAX_FILE_BYTES {
-            State::Opaque {
+    let mut states: Vec<Option<Arc<State>>> = Vec::with_capacity(stamped.len());
+    for (_, len, _) in &stamped {
+        states.push(if *len > MAX_FILE_BYTES {
+            Some(Arc::new(State::Opaque {
                 reason: format!(
                     "was {} when it was recorded, above the {} a checkpoint holds",
-                    bytes(len),
+                    bytes(*len),
                     bytes(MAX_FILE_BYTES)
                 ),
-            }
+            }))
         } else if held + len > MAX_TOTAL_BYTES {
-            State::Opaque {
+            Some(Arc::new(State::Opaque {
                 reason: format!(
                     "was not held: this workspace has more than {} of files to record before a \
                      command runs",
                     bytes(MAX_TOTAL_BYTES)
                 ),
-            }
+            }))
         } else {
             held += len;
-            read_state(&path)
-        };
+            // Filled in by the read below. `None` is "this one is wanted",
+            // which is what the pass reads to know what to do.
+            None
+        });
+    }
 
+    // Whatever the last command in this turn already read and can vouch for,
+    // before anything is opened. What is left `None` after this is the part of
+    // the workspace that genuinely has to be read.
+    if let Some(cache) = cache {
+        cache.fill(&stamped, &mut states);
+    }
+
+    read_held(&stamped, &mut states);
+
+    if let Some(cache) = cache {
+        cache.keep(&stamped, &states);
+    }
+
+    let mut files = HashMap::with_capacity(stamped.len());
+    let mut ignores = HashMap::new();
+
+    for ((path, len, modified), before) in stamped.into_iter().zip(states) {
+        if is_ignore_file(&path) {
+            ignores.insert(path.clone(), (len, modified));
+        }
         files.insert(
             path,
             Indexed {
                 len,
                 modified,
-                before,
+                // Every `None` was filled by `read_held`. Treating a leftover
+                // as unreadable rather than unwrapping keeps a bug here to a
+                // file a rewind reports instead of a panic mid-turn.
+                before: before.unwrap_or_else(|| {
+                    Arc::new(State::Opaque {
+                        reason: "was not read when it was recorded".into(),
+                    })
+                }),
             },
         );
     }
@@ -459,6 +535,190 @@ fn index(root: &Path) -> Sweep {
         git: git_state(root),
         abandoned: None,
     }
+}
+
+/// What the last command in this turn read, so the next one need not read it
+/// again.
+///
+/// A turn is rarely one command. A model builds, reads the failure, edits,
+/// builds again, runs the tests — and every one of those used to re-read the
+/// whole workspace before it started, because a sweep has to hold a pre-image
+/// of a file *before* something writes to it. Fifteen commands, fifteen reads
+/// of the same unchanged tree.
+///
+/// The second pass of every sweep already computes the thing that makes this
+/// unnecessary: it stats the whole workspace after the command to find what
+/// moved. So a file whose length and modification time are what they were when
+/// it was last read has not changed, and the copy already in hand is still its
+/// pre-image. The next command stats, matches, and opens nothing.
+///
+/// # What it is validated on
+///
+/// Length and modification time — the same comparison the sweep itself uses to
+/// decide what a command changed, and the same one `make` and `rsync` have
+/// always used. That is deliberate: a cache trusted on a *weaker* signal than
+/// the detection around it would be a new way to be wrong, and this one can
+/// only be stale where the sweep was already blind.
+///
+/// It does widen that blind spot, and the widening is worth stating plainly.
+/// A change that moves neither length nor timestamp is invisible to a sweep
+/// either way — but without this cache the *next* command would still read the
+/// file and hold its true contents, so a later, visible change to it would be
+/// recorded against a correct pre-image. With the cache that pre-image is the
+/// older one. It takes a same-length, same-timestamp rewrite between two
+/// commands of the same turn to reach, which needs deliberate effort on a
+/// filesystem with fine-grained timestamps. See `docs/known-gaps.md`.
+///
+/// # What it costs
+///
+/// The pre-images it holds, which one sweep already bounds to
+/// [`MAX_TOTAL_BYTES`]. They are shared rather than copied — this holds the
+/// same [`Arc`]s the live sweep does — so the cache is a map of pointers, and
+/// the memory is the one copy of the workspace a sweep was going to make
+/// anyway. What changes is that it stays held until the turn ends rather than
+/// being dropped and rebuilt between commands.
+#[derive(Default)]
+pub struct SweepCache {
+    held: Mutex<HashMap<PathBuf, Cached>>,
+}
+
+/// One file's pre-image, and what has to still be true for it to be usable.
+struct Cached {
+    len: u64,
+    modified: Option<SystemTime>,
+    state: Arc<State>,
+}
+
+impl SweepCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fills in every wanted slot the cache can still vouch for.
+    ///
+    /// A slot is wanted when it is `None` — the plan decided this file should
+    /// be held and has not read it yet. Slots already carrying a reason the
+    /// file was *not* held are left alone: they were decided under this
+    /// sweep's byte cap, and a cached copy would smuggle a file past it.
+    fn fill(
+        &self,
+        stamped: &[(PathBuf, u64, Option<SystemTime>)],
+        states: &mut [Option<Arc<State>>],
+    ) {
+        // A poisoned lock means a previous holder panicked mid-update. The
+        // entries are independent and each is validated before use, so reading
+        // through it is safe; refusing would cost the turn its cache for the
+        // life of the process over a fault that touched one entry.
+        let held = match self.held.lock() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        for ((path, len, modified), state) in stamped.iter().zip(states) {
+            if state.is_some() {
+                continue;
+            }
+            if let Some(cached) = held.get(path) {
+                if cached.len == *len && cached.modified == *modified {
+                    *state = Some(Arc::clone(&cached.state));
+                }
+            }
+        }
+    }
+
+    /// Holds on to what this sweep read, for the next command.
+    ///
+    /// Replaces the whole map rather than merging into it, so a file that has
+    /// been deleted or has fallen outside the walk stops being held the moment
+    /// it stops being swept. A cache that only ever grew would keep a
+    /// workspace's worth of deleted files alive for the length of a turn.
+    fn keep(&self, stamped: &[(PathBuf, u64, Option<SystemTime>)], states: &[Option<Arc<State>>]) {
+        let mut next = HashMap::with_capacity(stamped.len());
+        for ((path, len, modified), state) in stamped.iter().zip(states) {
+            let Some(state) = state else { continue };
+            // Only real contents are worth carrying. The rest are a sentence
+            // saying why a file was not held, which the next sweep composes for
+            // itself and which would otherwise pin a stale reason to a file
+            // that has since shrunk under the cap.
+            if matches!(**state, State::Text { .. }) {
+                next.insert(
+                    path.clone(),
+                    Cached {
+                        len: *len,
+                        modified: *modified,
+                        state: Arc::clone(state),
+                    },
+                );
+            }
+        }
+
+        match self.held.lock() {
+            Ok(mut held) => *held = next,
+            Err(poisoned) => *poisoned.into_inner() = next,
+        }
+    }
+}
+
+/// How many threads read a workspace at once.
+///
+/// A small number, and deliberately not `available_parallelism`. What a sweep
+/// spends its time on is opening files rather than reading them — 63 MB in 500
+/// files reads in 10ms, and 78 MB in 10,000 files takes 143ms — so the limit is
+/// the filesystem, and past a handful of readers contending for it costs more
+/// than it buys. Measured on a 14-core machine, one sweep of a 10,000-file
+/// workspace:
+///
+/// ```text
+/// threads   1     2     3     4     6     8
+///         210ms 144ms 143ms 155ms 217ms 335ms
+/// ```
+///
+/// It does not plateau past four — it gets worse, and by eight it is slower
+/// than doing the whole thing on one thread. So this is a ceiling rather than a
+/// starting point, and raising it wants the numbers above regenerated on the
+/// machine doing the raising: `cargo run -p taurus-tools --example sweep`.
+///
+/// Four rather than three because the shape of the workspace moves the
+/// optimum — few large files peak at four, many small ones at two or three —
+/// and four is within a tenth of the best on both. The cliff is well clear of
+/// it either way.
+const READ_THREADS: usize = 4;
+
+/// Below this a sweep reads on the calling thread. Spawning costs more than it
+/// saves on the small workspaces most sessions run in.
+const PARALLEL_FROM: usize = 128;
+
+/// Reads every file whose slot is still `None`, leaving the rest alone.
+///
+/// The slots are decided before this runs and only ever written by the thread
+/// holding that piece of the slice, so the work divides with no coordination:
+/// no locking, no channel, and the result is the same whichever thread finishes
+/// first.
+fn read_held(stamped: &[(PathBuf, u64, Option<SystemTime>)], states: &mut [Option<Arc<State>>]) {
+    let fill = |input: &[(PathBuf, u64, Option<SystemTime>)], out: &mut [Option<Arc<State>>]| {
+        for ((path, _, _), state) in input.iter().zip(out) {
+            if state.is_none() {
+                *state = Some(Arc::new(read_state(path)));
+            }
+        }
+    };
+
+    if stamped.len() < PARALLEL_FROM {
+        fill(stamped, states);
+        return;
+    }
+
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, READ_THREADS);
+    let chunk = stamped.len().div_ceil(threads).max(1);
+
+    std::thread::scope(|scope| {
+        for (input, out) in stamped.chunks(chunk).zip(states.chunks_mut(chunk)) {
+            scope.spawn(move || fill(input, out));
+        }
+    });
 }
 
 /// The second pass: lengths and timestamps, no contents.
@@ -602,6 +862,11 @@ mod tests {
         store: CheckpointStore,
         recorder: Arc<TurnRecorder>,
         root: PathBuf,
+        /// Shared by every sweep this fixture runs, as one turn's commands
+        /// share one. So every test in this module runs the cached path, and a
+        /// cache that ever handed back a wrong pre-image would break them
+        /// rather than only the few written for it below.
+        cache: Arc<SweepCache>,
         _logs: TempDir,
         _workspace: TempDir,
     }
@@ -620,6 +885,7 @@ mod tests {
                 store,
                 recorder,
                 root,
+                cache: Arc::new(SweepCache::new()),
                 _logs: logs,
                 _workspace: workspace,
             }
@@ -643,7 +909,14 @@ mod tests {
 
         /// Indexes, runs `act`, then records what it did.
         async fn around(&self, act: impl FnOnce()) -> Change {
-            let sweep = Sweep::before(&self.root).await;
+            let sweep = Sweep::before(&self.root, Some(Arc::clone(&self.cache))).await;
+            act();
+            sweep.after(&self.root, &self.recorder).await
+        }
+
+        /// The same, for a caller that keeps no cache between commands.
+        async fn around_uncached(&self, act: impl FnOnce()) -> Change {
+            let sweep = Sweep::before(&self.root, None).await;
             act();
             sweep.after(&self.root, &self.recorder).await
         }
@@ -942,6 +1215,202 @@ mod tests {
             "truncated",
             "there was nothing to put back, and pretending otherwise would be worse"
         );
+    }
+
+    #[tokio::test]
+    async fn a_workspace_large_enough_to_be_read_in_parallel_is_read_correctly() {
+        // Every other test here runs in a workspace of a handful of files,
+        // which is below `PARALLEL_FROM` — so without this one the threaded
+        // read has no coverage at all, and a chunking mistake that gave a file
+        // its neighbour's contents would restore the wrong text with every
+        // existing test still green.
+        let f = Fixture::new();
+        let count = PARALLEL_FROM * 2;
+        for i in 0..count {
+            f.write(&format!("src/f{i}.txt"), &format!("original {i}"));
+        }
+
+        let change = f
+            .around(|| {
+                for i in 0..count {
+                    f.write(&format!("src/f{i}.txt"), &format!("rewritten {i}"));
+                }
+            })
+            .await;
+
+        assert_eq!(change.files.len(), count);
+        assert_eq!(change.unrestorable, 0);
+
+        f.rewind();
+        for i in 0..count {
+            // The contents, not just the count: a chunk boundary off by one
+            // puts a real file back with the wrong text, and a test that only
+            // counted would pass.
+            assert_eq!(
+                f.read(&format!("src/f{i}.txt")),
+                format!("original {i}"),
+                "f{i} came back as something else"
+            );
+        }
+    }
+
+    /// The cache exists so a turn's second command need not re-read what its
+    /// first one already read. What these check is the other half of that
+    /// bargain: that it never hands back a pre-image which is no longer true.
+    mod carrying_a_read_between_commands {
+        use super::*;
+
+        fn stamp(path: &str, len: u64, tick: u64) -> (PathBuf, u64, Option<SystemTime>) {
+            (
+                PathBuf::from(path),
+                len,
+                Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(tick)),
+            )
+        }
+
+        fn text(content: &str) -> Option<Arc<State>> {
+            Some(Arc::new(State::Text {
+                content: content.into(),
+            }))
+        }
+
+        #[test]
+        fn a_file_that_did_not_move_is_answered_without_opening_it() {
+            let cache = SweepCache::new();
+            let held = vec![stamp("a.txt", 3, 100)];
+            cache.keep(&held, &[text("one")]);
+
+            let mut wanted = vec![None];
+            cache.fill(&held, &mut wanted);
+
+            assert!(
+                matches!(wanted[0].as_deref(), Some(State::Text { content }) if content == "one"),
+                "an unchanged file is what the cache is for"
+            );
+        }
+
+        #[test]
+        fn a_file_whose_length_moved_is_read_again() {
+            let cache = SweepCache::new();
+            cache.keep(&[stamp("a.txt", 3, 100)], &[text("one")]);
+
+            let mut wanted = vec![None];
+            cache.fill(&[stamp("a.txt", 5, 100)], &mut wanted);
+
+            assert!(
+                wanted[0].is_none(),
+                "a file a command wrote to must be read again, or its pre-image is the one \
+                 from before the command that already changed it"
+            );
+        }
+
+        #[test]
+        fn a_file_whose_timestamp_moved_is_read_again() {
+            // The half a rewrite of the same length turns on. Without it, `sed`
+            // swapping one word for another of equal length would be answered
+            // from the cache.
+            let cache = SweepCache::new();
+            cache.keep(&[stamp("a.txt", 3, 100)], &[text("one")]);
+
+            let mut wanted = vec![None];
+            cache.fill(&[stamp("a.txt", 3, 101)], &mut wanted);
+
+            assert!(wanted[0].is_none());
+        }
+
+        #[test]
+        fn a_slot_the_caps_already_decided_is_left_alone() {
+            // A file over the size cap is recorded as a reason rather than as
+            // contents. If the cache filled that slot it would smuggle a file
+            // past a limit the sweep had already applied to it.
+            let cache = SweepCache::new();
+            cache.keep(&[stamp("big.bin", 3, 100)], &[text("small once")]);
+
+            let mut decided = vec![Some(Arc::new(State::Opaque {
+                reason: "was too large".into(),
+            }))];
+            cache.fill(&[stamp("big.bin", 3, 100)], &mut decided);
+
+            assert!(matches!(decided[0].as_deref(), Some(State::Opaque { .. })));
+        }
+
+        #[test]
+        fn a_reason_a_file_was_not_held_is_not_carried_forward() {
+            // Only contents are worth keeping. A held reason would outlive the
+            // condition that produced it — a file that has since shrunk under
+            // the cap would keep reading as one that was too large.
+            let cache = SweepCache::new();
+            cache.keep(
+                &[stamp("big.bin", 3, 100)],
+                &[Some(Arc::new(State::Opaque {
+                    reason: "was too large".into(),
+                }))],
+            );
+
+            let mut wanted = vec![None];
+            cache.fill(&[stamp("big.bin", 3, 100)], &mut wanted);
+
+            assert!(
+                wanted[0].is_none(),
+                "the next sweep decides this for itself"
+            );
+        }
+
+        #[test]
+        fn a_file_that_left_the_workspace_stops_being_held() {
+            // `keep` replaces rather than merges, so a deleted file is not kept
+            // alive in memory for the rest of the turn.
+            let cache = SweepCache::new();
+            cache.keep(&[stamp("gone.txt", 3, 100)], &[text("one")]);
+            cache.keep(&[stamp("here.txt", 3, 100)], &[text("two")]);
+
+            let mut wanted = vec![None];
+            cache.fill(&[stamp("gone.txt", 3, 100)], &mut wanted);
+
+            assert!(wanted[0].is_none());
+        }
+
+        #[tokio::test]
+        async fn a_second_command_records_against_what_the_first_one_left() {
+            // End to end, through the real sweep: the pre-image the cache hands
+            // the second command has to be the file as the first command left
+            // it, not as it was before the first command ran.
+            let f = Fixture::new();
+            f.write("a.txt", "one");
+            f.write("b.txt", "steady");
+
+            let first = f.around(|| f.write("a.txt", "two")).await;
+            assert_eq!(first.files, vec!["a.txt"]);
+
+            // Nothing touched `b.txt`, so the second sweep answers it from the
+            // cache — and `a.txt` moved, so the second sweep reads it again.
+            let second = f.around(|| f.write("b.txt", "moved")).await;
+            assert_eq!(second.files, vec!["b.txt"]);
+
+            f.rewind();
+            assert_eq!(f.read("a.txt"), "one");
+            assert_eq!(
+                f.read("b.txt"),
+                "steady",
+                "the cached pre-image has to be the real one"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_turn_that_keeps_no_cache_reads_the_same_answer() {
+            // The cache is an optimization and has to be invisible in what it
+            // records. Same two commands, no cache, same restore.
+            let f = Fixture::new();
+            f.write("a.txt", "one");
+            f.write("b.txt", "steady");
+
+            f.around_uncached(|| f.write("a.txt", "two")).await;
+            f.around_uncached(|| f.write("b.txt", "moved")).await;
+
+            f.rewind();
+            assert_eq!(f.read("a.txt"), "one");
+            assert_eq!(f.read("b.txt"), "steady");
+        }
     }
 
     #[tokio::test]

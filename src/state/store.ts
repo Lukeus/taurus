@@ -365,14 +365,18 @@ export const useStore = create<Store>((set, get) => ({
       entries: [...s.entries, { kind: "user", id: nextId(), text, images }],
     }));
 
+    // A frame's worth of events at a time rather than one render per token.
+    // See `batchEvents`.
+    const stream = batchEvents((events) =>
+      set((s) => ({ entries: events.reduce(reduce, s.entries) })),
+    );
+
     try {
-      await api.sendMessage(
-        session.id,
-        text,
-        (event) => set((s) => ({ entries: reduce(s.entries, event) })),
-        images,
-      );
+      await api.sendMessage(session.id, text, stream.push, images);
     } catch (e) {
+      // Before the notice, so it reads after whatever the turn had already
+      // streamed rather than in front of it.
+      stream.flush();
       set((s) => ({
         entries: [
           ...s.entries,
@@ -380,6 +384,7 @@ export const useStore = create<Store>((set, get) => ({
         ],
       }));
     } finally {
+      stream.flush();
       set((s) => ({
         busy: false,
         // Close the open assistant entry so the next turn starts a new bubble.
@@ -999,6 +1004,56 @@ const MAX_SCROLLBACK = 200;
 /** Keeps the tail, which for a running command is the part being watched. */
 export function trimScrollback(steps: string[]): string[] {
   return steps.length > MAX_SCROLLBACK ? steps.slice(-MAX_SCROLLBACK) : steps;
+}
+
+/**
+ * How long stream events are held before they reach the store.
+ *
+ * A local model sends a token every few milliseconds, and every one of them
+ * used to be its own store write — which is a render of the whole app, the
+ * transcript above it included, for one word appended to the last line. Held
+ * for a frame they arrive thirty-odd times a second instead of hundreds, and
+ * nothing on screen can tell the difference: `Markdown` already coalesces its
+ * own parses at 60ms for exactly this reason, so half of those renders were
+ * being thrown away before they reached a parser anyway.
+ */
+const STREAM_FRAME_MS = 30;
+
+/**
+ * Collects stream events and applies them a frame at a time.
+ *
+ * Order is preserved exactly — one queue, drained in order through the same
+ * reducer — so a batch is indistinguishable from the events arriving one by
+ * one, apart from when the screen catches up. What that buys is one render per
+ * frame instead of one per token.
+ *
+ * `flush` is what the end of a turn calls, so the last few tokens do not sit
+ * out a frame with nothing behind them to trigger it, and so anything appended
+ * after the stream — an error, the closing of the open bubble — lands after
+ * what the stream had already sent rather than in front of it.
+ */
+export function batchEvents(apply: (events: UiEvent[]) => void) {
+  let queued: UiEvent[] = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const drain = () => {
+    timer = null;
+    if (queued.length === 0) return;
+    const events = queued;
+    queued = [];
+    apply(events);
+  };
+
+  return {
+    push(event: UiEvent) {
+      queued.push(event);
+      if (timer === null) timer = setTimeout(drain, STREAM_FRAME_MS);
+    },
+    flush() {
+      if (timer !== null) clearTimeout(timer);
+      drain();
+    },
+  };
 }
 
 /** Folds one event into the transcript. */
