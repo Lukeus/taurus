@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use taurus_core::testing::{FakeProvider, ScriptedTurn};
-use taurus_core::{Agent, AgentConfig, AgentError, Session, UiEvent};
+use taurus_core::{Agent, AgentConfig, AgentError, Session, TurnRecorder, UiEvent};
 use taurus_provider::{ContentBlock, Message, Role, StopReason};
 use taurus_tools::{
     AllowAll, DenyAll, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
@@ -52,6 +52,28 @@ fn harness_with(
         cancel,
         _dir: dir,
         workspace,
+    }
+}
+
+fn recording(h: Harness, recorder: Arc<dyn TurnRecorder>) -> Harness {
+    Harness {
+        agent: h.agent.with_recorder(recorder),
+        ..h
+    }
+}
+
+/// A recorder that remembers how much of the conversation it was handed, and
+/// when. How far a transcript got is the whole question here — a recorder
+/// called only at the end would pass any assertion about content.
+#[derive(Default)]
+struct Spy {
+    snapshots: tokio::sync::Mutex<Vec<usize>>,
+}
+
+#[async_trait::async_trait]
+impl TurnRecorder for Spy {
+    async fn record(&self, session: &Session) {
+        self.snapshots.lock().await.push(session.messages.len());
     }
 }
 
@@ -1412,4 +1434,44 @@ async fn a_refused_plan_leaves_the_previous_one_standing() {
             })
     });
     assert!(told, "the model was not told why: {:#?}", last.messages);
+}
+
+#[tokio::test]
+async fn a_recorded_turn_is_written_down_as_it_runs() {
+    let spy = Arc::new(Spy::default());
+    let h = recording(
+        harness(vec![
+            ScriptedTurn::tool_call("t1", "list_dir", serde_json::json!({"path": "."})),
+            ScriptedTurn::text("Nothing much in there."),
+        ]),
+        spy.clone(),
+    );
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "look around").await;
+    assert_eq!(outcome.unwrap().iterations, 2);
+
+    let snapshots = spy.snapshots.lock().await.clone();
+    // Once when the first round's results landed, and once at the end. The
+    // first is the point: a turn that died here would still have left the round
+    // it finished.
+    assert_eq!(snapshots.len(), 2, "{snapshots:?}");
+    assert!(snapshots[0] < snapshots[1], "{snapshots:?}");
+    assert_eq!(snapshots[1], session.messages.len());
+}
+
+#[tokio::test]
+async fn a_turn_that_failed_is_recorded_too() {
+    let spy = Arc::new(Spy::default());
+    let h = recording(
+        harness(vec![ScriptedTurn::permanent_failure()]),
+        spy.clone(),
+    );
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "ask something").await;
+    assert!(outcome.is_err(), "the script fails in a way no retry fixes");
+
+    // The transcript of a turn that broke is worth more than the transcript of
+    // one that went fine, not less.
+    let snapshots = spy.snapshots.lock().await.clone();
+    assert_eq!(snapshots, vec![session.messages.len()]);
 }

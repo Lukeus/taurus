@@ -868,3 +868,38 @@ describe("redrawing a flow diagram from a saved call", () => {
     expect(call({ title: "Nothing", edges: [] })).toBeUndefined();
   });
 });
+
+describe("a delegation's own transcript", () => {
+  const started: UiEvent = {
+    type: "tool_call_started",
+    id: "d1",
+    name: "spawn_subagent",
+    preview: "Delegate to explorer: find the parser",
+  };
+
+  it("is attached to the call it belongs to", () => {
+    const entries = run(started, {
+      type: "tool_transcript",
+      id: "d1",
+      session: "child1",
+      agent: "explorer",
+    });
+    expect(entries[0]).toMatchObject({
+      kind: "tool",
+      transcript: { session: "child1", agent: "explorer" },
+    });
+  });
+
+  it("ignores a reference to a call that is not there", () => {
+    // Events can outlive the entry they name — a cleared transcript, a resumed
+    // conversation — and an unknown id must be nothing rather than a new row.
+    const entries = run(started, {
+      type: "tool_transcript",
+      id: "gone",
+      session: "child1",
+      agent: "explorer",
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).not.toHaveProperty("transcript");
+  });
+});

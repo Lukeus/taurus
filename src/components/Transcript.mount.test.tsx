@@ -31,6 +31,7 @@ function mount(entries: Entry[]) {
   document.body.appendChild(host);
   const root = createRoot(host);
   const answered: { id: string; answers: Answer[] }[] = [];
+  const opened: { session: string; agent: string }[] = [];
   const render = (next: Entry[]) =>
     root.render(
       <Transcript
@@ -38,6 +39,7 @@ function mount(entries: Entry[]) {
         busy={false}
         empty={null}
         onAnswer={(id, answers) => answered.push({ id, answers })}
+        onOpenDelegate={(transcript) => opened.push(transcript)}
       />,
     );
 
@@ -49,6 +51,7 @@ function mount(entries: Entry[]) {
   return {
     host,
     answered,
+    opened,
     click: (element: Element | null) =>
       act(() => {
         (element as HTMLElement).click();
@@ -388,5 +391,42 @@ describe("every other tool", () => {
     expect(host.querySelector(".tool-stream")).toBeNull();
     expect(host.textContent).toContain("Read src/main.rs");
     expect(host.textContent).not.toContain("fn main()");
+  });
+});
+
+describe("a delegation", () => {
+  const delegation = (
+    patch: Partial<Extract<Entry, { kind: "tool" }>> = {},
+  ): Entry => ({
+    kind: "tool",
+    id: "d1",
+    name: "spawn_subagent",
+    preview: "Delegate to explorer: find the parser",
+    status: "running",
+    steps: [],
+    ...patch,
+  });
+
+  it("offers its own conversation while it is still running", () => {
+    // While it runs is the case that matters: a delegation that looks stuck is
+    // the one somebody wants to look into, and an offer that only appeared
+    // with the result would arrive after the question.
+    const { host, opened, click } = mount([
+      delegation({ transcript: { session: "child1", agent: "explorer" } }),
+    ]);
+
+    const open = host.querySelector(".run-row-delegate");
+    expect(open).not.toBeNull();
+    expect(open!.textContent).toContain("explorer");
+
+    click(open);
+    expect(opened).toEqual([{ session: "child1", agent: "explorer" }]);
+  });
+
+  it("offers nothing when nothing was recorded", () => {
+    // No recorder, no transcript, no offer to open one. An affordance that
+    // opened an error is worse than no affordance.
+    const { host } = mount([delegation({ status: "ok", output: "Found it." })]);
+    expect(host.querySelector(".run-row-delegate")).toBeNull();
   });
 });

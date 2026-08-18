@@ -1270,6 +1270,37 @@ body.resizing * {
   content: "· ";
 }
 
+/* Aligned under the row's text rather than its glyph, so it reads as something
+   about that call and not as another step in the run. */
+.run-row-delegate {
+  margin: 0 0 6px 34px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  align-self: flex-start;
+}
+.run-row-delegate:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* The drawer holds a whole transcript, which brings its own scrolling. The
+   drawer must therefore not also scroll, or the two nest and the inner one
+   never reaches its end. */
+.delegate-drawer {
+  overflow: hidden;
+}
+.delegate-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.delegate-body .transcript {
+  padding: 0;
+}
+
 .notice {
   font-size: 12.5px;
   color: var(--text-dim);

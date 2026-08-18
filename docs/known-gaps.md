@@ -112,11 +112,21 @@ Each entry says what is missing, and what covering it would cost.
   file references still point where they pointed. Refusing or warning at the
   moment of a rewind would be the useful version; it needs the branch carried
   into the checkpoint log rather than only the transcript header.
-- **A sub-agent's answer is summarized, not streamed.** Its tool calls now
-  appear under the delegation card as it makes them, so a long delegation looks
-  alive rather than hung, but its reasoning and prose stay inside the child.
-  That part is deliberate: the parent asked for a conclusion, and a second
-  conversation inlined into the transcript is what delegation exists to avoid.
+- **A sub-agent's answer is summarized, not streamed.** Its tool calls appear
+  under the delegation card as it makes them, so a long delegation looks alive
+  rather than hung, but its reasoning and prose stay inside the child. That part
+  is deliberate: the parent asked for a conclusion, and a second conversation
+  inlined into the transcript is what delegation exists to avoid. What is *not*
+  deliberate is having nowhere to read it afterwards, and that is now fixed —
+  every delegate keeps its own transcript beside its parent's, written as it
+  runs, and the delegation card opens it in a drawer while the call is still
+  running or long after it finished. `taurus sessions --agents <ID>` lists them
+  for the CLI, which prints where they are rather than rendering one: a
+  conversation inside a conversation is the thing the terminal has no second
+  pane for. What a *resumed* conversation loses is the link, not the
+  transcripts: the parent's own record says a delegation happened, not where
+  its child was written, so a reopened conversation's cards no longer offer to
+  open one. The files are still there, and `--agents` still lists them.
 - **A custom agent's roster is frozen for the turn.** The set of sub-agents is
   snapshotted when a turn starts, so an agent file saved mid-turn is not visible
   until the next one. The drawer rescans on open, which covers editing; a file

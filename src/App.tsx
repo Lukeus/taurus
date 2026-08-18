@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import { Attachments } from "./components/Attachments";
 import { ChangesDrawer } from "./components/ChangesDrawer";
+import { DelegateTranscript } from "./components/DelegateTranscript";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { PlanPanel } from "./components/PlanPanel";
@@ -42,6 +43,13 @@ export default function App() {
   const [mcpOpen, setMcpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
+  // Which delegation's own conversation is open, if any. Held here rather than
+  // in the row that offers it: it is a drawer over the whole app, like the
+  // others, and a row that unmounted mid-read would take it down with it.
+  const [delegate, setDelegate] = useState<{
+    session: string;
+    agent: string;
+  } | null>(null);
   const plan = pinnedPlan(store.entries);
 
   useEffect(() => {
@@ -244,6 +252,7 @@ export default function App() {
             entries={store.entries}
             busy={store.busy}
             onAnswer={store.answerQuestions}
+            onOpenDelegate={setDelegate}
             empty={
               <FirstRun
                 workspace={workspace}
@@ -317,6 +326,14 @@ export default function App() {
           sessionId={store.session.id}
           busy={store.busy}
           onClose={() => setChangesOpen(false)}
+        />
+      )}
+      {delegate && store.session && (
+        <DelegateTranscript
+          sessionId={store.session.id}
+          subagentId={delegate.session}
+          agent={delegate.agent}
+          onClose={() => setDelegate(null)}
         />
       )}
       {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}

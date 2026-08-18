@@ -234,6 +234,25 @@ pub struct ResumedSession {
     pub messages: Vec<Message>,
 }
 
+/// The conversation one delegate had, for reading.
+///
+/// Deliberately not a resume. A delegate's transcript is a record of work that
+/// happened inside a turn, not a conversation to be carried on: it has no
+/// provider bound to it, no workspace of its own, and continuing it would mean
+/// a second live session nobody asked for. The frontend gets the messages and
+/// draws them read-only.
+///
+/// Scoped to the parent, because that is what a delegate's id is unique
+/// *within*. Both ids are validated against the sessions tree before either
+/// touches the filesystem — see `taurus_host::sessions`.
+#[tauri::command]
+pub async fn read_subagent_transcript(
+    session_id: String,
+    subagent_id: String,
+) -> CmdResult<Vec<Message>> {
+    sessions::load_subagent(&session_id, &subagent_id).map(|loaded| loaded.session.messages)
+}
+
 /// Reopens a saved conversation as a live session.
 ///
 /// Already-open sessions are returned as they stand rather than reloaded: the

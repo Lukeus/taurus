@@ -107,6 +107,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         usage.input_tokens, usage.output_tokens
                     );
                 }
+                UiEvent::ToolTranscript { session, agent, .. } => {
+                    println!("      · {agent} transcript: {session}")
+                }
                 UiEvent::IterationStarted { .. } | UiEvent::ThinkingDelta { .. } => {}
             }
         }
