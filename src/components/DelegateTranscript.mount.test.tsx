@@ -90,5 +90,12 @@ describe("a delegate's transcript", () => {
 
     expect(host.textContent).toContain("no sub-agent");
     expect(host.querySelector(".transcript")).toBeNull();
+    /*
+     * And says it as a failure. This used to render through `.drawer-empty`,
+     * the same class an empty result uses — so a transcript that could not be
+     * found was indistinguishable from one that was found and held nothing.
+     */
+    expect(host.querySelector(".drawer-error")).not.toBeNull();
+    expect(host.querySelector(".drawer-empty")).toBeNull();
   });
 });

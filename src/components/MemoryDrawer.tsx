@@ -65,7 +65,7 @@ export function MemoryDrawer({
         {failed && <div className="settings-problem">{failed}</div>}
 
         {notes === null ? (
-          <p className="drawer-empty">Reading…</p>
+          <p className="drawer-loading">Reading…</p>
         ) : notes.length === 0 ? (
           <p className="drawer-empty">
             Nothing has been written down for this workspace yet. There is

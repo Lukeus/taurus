@@ -49,4 +49,83 @@ describe("the stylesheet", () => {
     const taken = [...counts].filter(([, n]) => n > 1).map(([s]) => s);
     expect(taken).toEqual([]);
   });
+
+  /** The body of the first top-level rule whose selector group contains `sel`. */
+  function block(sel: string): string | undefined {
+    for (const [, group, body] of css.matchAll(/^([^\s@}][^{]*)\{([^}]*)\}/gm)) {
+      if (group.includes(sel)) return body;
+    }
+  }
+
+  /** The `outline-offset` a rule declares, in px. */
+  function offset(body: string | undefined): number | undefined {
+    const px = body?.match(/outline-offset:\s*(-?[\d.]+)px/)?.[1];
+    return px === undefined ? undefined : Number(px);
+  }
+
+  it("offsets the focus ring far enough off a control to read as a ring", () => {
+    /*
+     * At the 1px this shipped with, a ring in --accent sitting off a button
+     * *filled* with --accent reads as a slightly thicker border rather than as
+     * a state. The gap is what makes it a ring.
+     */
+    expect(offset(block(":focus-visible"))).toBeGreaterThanOrEqual(2);
+  });
+
+  it("turns the ring inward on the controls whose parent clips", () => {
+    /*
+     * The bug this exists for: an outline is painted outside the border box, so
+     * a control filling a parent that carries `overflow: hidden` has its ring
+     * clipped away completely rather than merely trimmed. `.run-head` — the
+     * fold control on every tool-call card — was keyboard-focusable with
+     * nothing on screen to say so, and rendered pixel-identical to an unfocused
+     * card. Nothing caught it: the ring was declared, it just never reached a
+     * pixel. A positive offset on any of these is that bug coming back.
+     */
+    for (const control of [".run-head", ".run-row-head", ".table-sort"]) {
+      const body = block(`${control}:focus-visible`);
+      expect(body, `${control} has no :focus-visible rule`).toBeDefined();
+      expect(offset(body), `${control} would have its ring clipped away`).toBeLessThan(0);
+    }
+  });
+
+  it("gives the one destructive control in the rail a pointer-sized target", () => {
+    /*
+     * Measured at 23×23 in the running app — the smallest thing in it, and the
+     * only irreversible one, four pixels from the row that merely selects.
+     */
+    const body = block(".rail-delete");
+    expect(body).toBeDefined();
+    for (const axis of ["min-width", "min-height"]) {
+      const px = Number(body!.match(new RegExp(`${axis}:\\s*([\\d.]+)px`))?.[1]);
+      expect(px, `.rail-delete declares no ${axis}`).toBeGreaterThanOrEqual(28);
+    }
+  });
+
+  it("does not fade a filled button into an unreadable one", () => {
+    /*
+     * `opacity` composites fill and label together, so a disabled primary took
+     * its own label down with it: 1.65:1 on dark, 1.29:1 on light, both
+     * measured. The filled variant has to drop its fill instead.
+     */
+    const body = block("button.primary:disabled");
+    expect(body, "no disabled rule for the filled variant").toBeDefined();
+    expect(body).toMatch(/opacity:\s*1\b/);
+    expect(body).toMatch(/color:/);
+  });
+
+  it("keeps empty, loading and failed as three different states", () => {
+    /*
+     * All three used to share `.drawer-empty`, so a drawer whose read failed
+     * looked exactly like one that succeeded and found nothing.
+     */
+    const colour = (sel: string) => block(sel)?.match(/color:\s*([^;]+);/)?.[1].trim();
+    const states = [".drawer-empty", ".drawer-loading", ".drawer-error"].map((s) => {
+      const c = colour(s);
+      expect(c, `${s} declares no colour`).toBeDefined();
+      return c;
+    });
+    expect(new Set(states).size, "two of the states paint the same colour").toBe(3);
+    expect(colour(".drawer-error")).toContain("--danger");
+  });
 });
