@@ -8,6 +8,7 @@
 pub mod attach;
 pub mod command;
 pub mod config;
+pub mod freshness;
 pub mod git;
 pub mod host;
 pub mod instructions;
@@ -31,7 +32,7 @@ pub use memory::Note;
 pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;
 pub use sessions::{SessionLog, SessionMeta, SubagentLogs};
-pub use taurus_tools::{Checkpoint, Restored, TurnChange};
+pub use taurus_tools::{Checkpoint, Restored, Rewind, TurnChange};
 // Re-exported so a frontend can edit search config without depending on the
 // crate that runs the searches — the same reason `Checkpoint` comes through
 // here rather than from `taurus-tools`. `IndexProgress` is here for the same

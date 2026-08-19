@@ -12,13 +12,18 @@ A skill is a procedure the model loads when it needs one. Instructions are the
 opposite: a short standing brief that applies to every turn — this project's
 conventions, how you want work done, what not to touch. Taurus reads the files
 you already have rather than asking for a seventh copy, on the same rule the
-skill library follows. Six locations, lowest precedence first:
+skill library follows. Seven locations, lowest precedence first:
 
 ```
 ~/.agents/AGENTS.md         <workspace>/AGENTS.md
 ~/.claude/CLAUDE.md         <workspace>/CLAUDE.md
 ~/.taurus/TAURUS.md         <workspace>/.taurus/TAURUS.md
+                            <workspace>/.github/copilot-instructions.md
 ```
+
+GitHub Copilot's repository brief is exactly this: one file, whole workspace,
+every turn. It has no personal counterpart to read — Copilot keeps a person's
+standing rules in the scoped files below rather than in a single file.
 
 The project files sit at the repository root rather than inside a dotdir,
 because that is where they actually live — a repo's brief is `AGENTS.md` beside
@@ -37,6 +42,33 @@ Two files with identical bytes are read once. `CLAUDE.md` symlinked to
 `AGENTS.md` is the common shape, and a rule the model is told twice is a rule it
 weights twice.
 
+**Copilot's scoped instructions are read, with their scope stated.** A
+`*.instructions.md` file under `.github/instructions` or `~/.copilot/instructions`
+declares an `applyTo` glob, and Copilot attaches it when it is about to touch a
+matching file. Taurus has no such moment — a brief is assembled once per turn,
+before anyone knows which files the turn will read — so the glob is carried into
+the prompt as a sentence and the model applies it when it applies:
+
+```
+## rust.instructions.md (project, applies to files matching `**/*.rs`)
+
+Never use unwrap in library code.
+```
+
+That is weaker than Copilot's rule and stronger than dropping the file, which
+are the only other two options. Both folders are searched recursively, and the
+frontmatter is stripped rather than read aloud.
+
+A file with **no `applyTo` is not carried**, and says so in the Skills drawer.
+Copilot does not apply those automatically either — they are for pulling into a
+request by hand — so carrying one into every turn would be Taurus asserting
+something about the file that the tool it was written for does not. Giving it
+`applyTo: "**"` makes it a standing brief.
+
+Because a directory of these can grow without anyone noticing, the total is
+budgeted: past 24 KB across all briefs, the drawer says so. Every byte is paid
+on every request of every turn.
+
 **`@path` imports are resolved**, one level deep. Claude Code's format lets a
 file be a list of pointers, and real ones are: a global `CLAUDE.md` whose entire
 content is `@RTK.md` is a file Taurus would otherwise read as a single
@@ -49,6 +81,21 @@ A file longer than 12 KB is cut on a line boundary and says so, in the prompt
 and in the Skills drawer. These bytes are paid on every request of every turn,
 so a checked-in handbook would otherwise spend an 8k model's whole context
 before it read a line of code.
+
+**An edit lands on your next message.** Taurus re-reads the brief at the start
+of each turn — including any file it imports, which is where the whole of a
+brief often lives — so editing `AGENTS.md` beside an open conversation works the
+way it looks like it should. It does not *watch* the files: a watcher fires
+whenever an editor happens to save, which is routinely the middle of a running
+turn, and the brief a turn was given has to be the one it started with. A turn
+boundary is the same change one turn later, without anything being swapped
+underneath work in progress.
+
+Checking costs a `stat` per file and re-reading only happens when one moved, so
+the common case — nothing changed — is a few microseconds per message. The
+comparison is length and modification time, the same one the sweep makes about
+the workspace and blind in the same place: a rewrite to the same length within
+one filesystem tick waits for the next change to be noticed.
 
 The brief lands directly after the harness's own rules and before the skill
 catalog. That ordering is the design: a brief saying "ask before touching the
@@ -107,14 +154,22 @@ about where they came from.
 A skill is a `SKILL.md` with YAML frontmatter plus optional bundled scripts, in
 the format defined by the [Agent Skills specification](https://agentskills.io/specification).
 Taurus reads the shared locations as well as its own, so a skill installed by
-another client works here without being copied. Six directories, lowest
+another client works here without being copied. Eight directories, lowest
 precedence first:
 
 ```
 ~/.agents/skills            <workspace>/.agents/skills
 ~/.claude/skills            <workspace>/.claude/skills
+~/.copilot/skills           <workspace>/.github/skills
 ~/.taurus/skills            <workspace>/.taurus/skills
 ```
+
+GitHub Copilot reads the same specification, so its skills are already skills
+Taurus understands and the whole cost is that row. It is the one origin whose
+two directories are not named the same — a repository's Copilot customizations
+live in the folder GitHub already reads rather than a dotdir of Copilot's own —
+so the drawer's tag says `.github` on a project skill and `.copilot` on a
+personal one.
 
 A project skill shadows a personal one of the same name, and within either
 tier a `.taurus` skill shadows a borrowed one — so you can override a skill you
@@ -216,9 +271,54 @@ defects you can point at a specific line for. You cannot ask questions.
 Be brief; the agent that called you sees only your reply.
 ```
 
+Agents are read from four directories, the same shape the skill library uses —
+the borrowed locations first, Taurus's own last:
+
+```
+~/.claude/agents/<name>.md           <workspace>/.claude/agents/<name>.md
+~/.copilot/agents/<name>.agent.md    <workspace>/.github/agents/<name>.agent.md
+~/.taurus/agents/<name>.md           <workspace>/.taurus/agents/<name>.md
+```
+
+The first two rows are Claude's and GitHub Copilot's, read for the reason
+`.claude/skills` is: an agent written for another tool is frontmatter and a
+markdown body that is its system prompt, which is what one written for Taurus
+is, so reading them costs directories rather than a second parser. Copilot's
+doubled extension is understood — `reviewer.agent.md` is the agent `reviewer`,
+not one called `reviewer.agent`. Frontmatter keys Taurus does not have are
+ignored rather than honoured.
+
 A project agent shadows a personal one of the same name, and either shadows a
 built-in — so a `explorer.md` of your own replaces the shipped explorer rather
-than sitting beside it. The drawer says on the row when that has happened.
+than sitting beside it. Within a tier, yours wins over a borrowed one, which is
+how you override an agent you did not write without editing it. The drawer says
+on the row when that has happened.
+
+**A borrowed file is read and never written.** Retuning `max_iterations` on a
+Copilot agent saves a Taurus-owned copy beside it and shadows the original,
+exactly as editing a built-in does — and the field says so before you touch it.
+That is not tidiness: the file is usually committed, Copilot is still reading it,
+and its frontmatter carries keys Taurus has never heard of. Taurus rewrites a
+file from the fields it knows, so editing one in place would silently delete
+every `handoffs:` and `hooks:` in it. The copy lands in the same tier as the
+file it overrides, because a user-tier copy of a project-tier agent would sit
+underneath the thing it was meant to replace.
+
+**A new or edited agent is available on your next message.** The directories are
+checked at the start of each turn and rescanned only when something in them
+moved, so writing `reviewer.md` in an editor and delegating to it in the next
+message works without a reload or a trip to the drawer. The roster is still
+frozen *within* a turn — a file saved while one is running is not visible to it
+— which is deliberate: a turn has to delegate against the set of agents it
+started with, and that is exactly what a file watcher could not promise. The
+drawer's **Rescan** is still there for the moment you want it now rather than on
+the next message.
+
+One place lags by design: the `/` command menu lists what the last scan found,
+because it is redrawn on every keystroke and taking config locks there is how a
+reload comes to deadlock against typing. Typing the agent's name in full works
+straight away — the name is resolved against a fresh roster — and the menu
+catches up after the next message.
 
 `max_iterations:` is how many model/tool round trips this agent gets before it
 is stopped, between 1 and 100. It is editable on the agent's card in the Agents

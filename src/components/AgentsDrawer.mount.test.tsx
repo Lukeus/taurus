@@ -76,20 +76,30 @@ afterEach(() => {
   roster = [];
 });
 
-/** One agent, as `list_agents` reports it. */
-const agent = (over: Record<string, unknown> = {}) => ({
-  name: "worker",
-  description: "does the work",
-  tier: "builtin",
-  tools: null,
-  max_iterations: 20,
-  model: null,
-  provider: null,
-  shadows: null,
-  degraded: null,
-  path: null,
-  ...over,
-});
+/**
+ * One agent, as `list_agents` reports it.
+ *
+ * `forks_on_edit` is derived rather than defaulted, because the backend derives
+ * it too: an agent with no file of its own has nowhere to be edited in place. A
+ * fixture that let the two disagree would let the warning be tested against a
+ * state the backend never produces.
+ */
+const agent = (over: Record<string, unknown> = {}) => {
+  const base = {
+    name: "worker",
+    description: "does the work",
+    tier: "builtin",
+    tools: null,
+    max_iterations: 20,
+    model: null,
+    provider: null,
+    shadows: null,
+    degraded: null,
+    path: null,
+    ...over,
+  };
+  return { forks_on_edit: base.path === null, ...base };
+};
 
 /**
  * Mounts and waits for the roster to arrive.
@@ -177,6 +187,24 @@ describe("retuning an agent from the roster", () => {
     roster = [agent()];
     const host = await mountLoaded();
     expect(host.textContent).toMatch(/saves a copy you own/i);
+  });
+
+  it("says a borrowed file will be copied rather than changed", async () => {
+    // A Copilot agent has a file, so "has a file" is not the test — it is
+    // whose file it is. Rewriting it would drop the frontmatter keys Copilot
+    // has and Taurus does not, out of a file that is usually committed.
+    roster = [
+      agent({
+        name: "reviewer",
+        tier: "project",
+        path: "/x/.github/agents/reviewer.agent.md",
+        forks_on_edit: true,
+      }),
+    ];
+    const host = await mountLoaded();
+    expect(host.textContent).toMatch(/saves a copy you own/i);
+    expect(host.textContent).toMatch(/shadows the original/i);
+    expect(host.textContent).not.toMatch(/shadows the built-in/i);
   });
 
   it("does not warn about copies for an agent that has a file", async () => {

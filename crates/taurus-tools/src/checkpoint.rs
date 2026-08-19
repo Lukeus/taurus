@@ -11,10 +11,19 @@
 //! object per line, nothing rewritten, a torn final line dropped on load rather
 //! than poisoning the file.
 //!
-//! **A turn owns the records that follow it.** There is no turn number in the
-//! file — order is the association, and numbers are assigned when the log is
-//! read. That is what lets a sub-agent's writes land in the turn that spawned
-//! it without anyone passing an identifier down.
+//! **A turn owns the records that follow it.** Numbers are assigned when the
+//! log is read, and order is what associates a pre-image with the turn that
+//! took it. That is what lets a sub-agent's writes land in the turn that
+//! spawned it without anyone passing an identifier down. The single exception
+//! is [`Record::Committed`], which is written long after its turn closed and
+//! so has to name it; see there for why a number is safe to write down.
+//!
+//! **A rewind says what it cannot put back.** Restoring files is the whole of
+//! what this can do, and three things routinely make that not enough: the turn
+//! moved `HEAD`, the turn was kept as a commit, or the workspace has since
+//! moved to another branch. None are recoverable here and all are knowable, so
+//! the log records them and [`CheckpointStore::rewind`] reports them beside the
+//! plan — before the button, not after it.
 //!
 //! Pre-images arrive two ways. A tool that can name what it will change
 //! declares it through [`crate::Tool::touches`], and [`TurnRecorder::capture`]
@@ -45,7 +54,15 @@ use crate::diff::FileDiff;
 /// Bumped when a record shape changes incompatibly. A log written by a newer
 /// Taurus is refused rather than half-understood — a partial rewind is the one
 /// outcome worse than no rewind.
-const FORMAT_VERSION: u32 = 1;
+///
+/// Format 2 added the three facts a rewind needs in order to warn: the branch a
+/// turn ran on, whether it moved git's own state, and whether it was later
+/// committed. An older build skips records it does not know, which here would
+/// mean rewinding past a committed turn without a word — precisely the
+/// half-understanding this guard exists for. So a log that gains a format-2
+/// record gains a format-2 header with it, and older builds refuse it rather
+/// than under-report it. See [`ensure_header`].
+const FORMAT_VERSION: u32 = 2;
 
 const EXTENSION: &str = "jsonl";
 
@@ -68,10 +85,35 @@ enum Record {
     Turn {
         prompt: String,
         at: u64,
+        /// The branch checked out when the turn began, so a rewind can say
+        /// that these pre-images came out of a tree that is no longer checked
+        /// out. `None` outside a repository, on a detached `HEAD`, and in
+        /// every format-1 log — all three of which mean the same thing here,
+        /// which is that there is nothing to compare and so nothing to say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
     },
     Before {
         path: String,
         state: State,
+    },
+    /// The turn this follows also moved `HEAD` or the ref it names.
+    ///
+    /// Written once per turn by [`crate::sweep`], which is the only thing that
+    /// looks. Position is the association, the same as `Before`: the sweep
+    /// notices while the turn is open, so there is nothing to name.
+    MovedGit,
+    /// A turn was kept as a commit.
+    ///
+    /// The one record carrying a turn number rather than relying on position.
+    /// A commit is made from the drawer long after the turn closed, so it
+    /// lands at the end of the log instead of inside the turn it describes.
+    /// The number is safe to write down because the log is append-only and
+    /// turns only ever arrive at the end: turn 3 is turn 3 for the life of the
+    /// conversation, and a rewind does not renumber what it undoes.
+    Committed {
+        turn: u32,
+        sha: String,
     },
 }
 
@@ -134,6 +176,16 @@ pub struct Checkpoint {
     pub at: u64,
     /// Workspace-relative paths this turn was the first to touch.
     pub files: Vec<String>,
+    /// The branch it ran on. `None` outside a repository, on a detached
+    /// `HEAD`, and for any turn recorded before format 2.
+    pub branch: Option<String>,
+    /// It moved `HEAD` or a branch ref as well as files, so undoing it puts
+    /// back less than it appears to.
+    pub moved_git: bool,
+    /// The commit it was kept as, if it was kept. What makes the drawer able
+    /// to say which turns are already in `HEAD` — and so which ones a commit
+    /// made now would sit on top of.
+    pub commit: Option<String>,
 }
 
 /// What one turn did to one file.
@@ -192,6 +244,26 @@ impl Restored {
     }
 }
 
+/// What a rewind did, and what it could not do.
+///
+/// The warnings are the reason this is a struct rather than the list of files
+/// it used to be. Every one of them names something a rewind is structurally
+/// unable to put back — git's own state, a commit already made, a branch that
+/// has since changed underneath the pre-images — and each was previously either
+/// said at the wrong moment or not said at all. They are produced identically
+/// for a dry run and a real one, because the moment they are worth reading is
+/// the moment before the button.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Rewind {
+    /// One entry per file the rewind touched or declined to touch.
+    pub restored: Vec<Restored>,
+    /// Complete sentences, in the order the turns they describe ran. Empty is
+    /// the ordinary case: a rewind of turns that only changed files has
+    /// nothing to add.
+    pub warnings: Vec<String>,
+}
+
 /// The checkpoint logs for one workspace.
 ///
 /// Holds a directory and nothing else: which session is being written is
@@ -229,6 +301,11 @@ impl CheckpointStore {
         Arc::new(TurnRecorder {
             path: self.log_path(session_id),
             session: session_id.to_string(),
+            // Read now rather than when the first file lands, because a turn
+            // that checks out another branch and then edits a file would
+            // otherwise record the branch it moved to as the one it started on
+            // — and that is the exact case the warning exists for.
+            branch: crate::sweep::branch(workspace),
             workspace: workspace.to_path_buf(),
             prompt: shorten(prompt),
             state: Mutex::new(TurnState::default()),
@@ -240,14 +317,24 @@ impl CheckpointStore {
         let Some(path) = self.log_path(session_id) else {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
-        Ok(read_log(&path)?
+        let mut log = read_log(&path)?;
+        // Taken out so the turns can be consumed while the commits they are
+        // matched against stay borrowable.
+        let turns = std::mem::take(&mut log.turns);
+        Ok(turns
             .into_iter()
             .enumerate()
-            .map(|(index, turn)| Checkpoint {
-                turn: index as u32 + 1,
-                prompt: turn.prompt,
-                at: turn.at,
-                files: turn.changes.into_iter().map(|(path, _)| path).collect(),
+            .map(|(index, turn)| {
+                let number = index as u32 + 1;
+                Checkpoint {
+                    turn: number,
+                    prompt: turn.prompt,
+                    at: turn.at,
+                    files: turn.changes.into_iter().map(|(path, _)| path).collect(),
+                    branch: turn.branch,
+                    moved_git: turn.moved_git,
+                    commit: log.commit_for(number),
+                }
             })
             .collect())
     }
@@ -266,7 +353,7 @@ impl CheckpointStore {
         let Some(path) = self.log_path(session_id) else {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
-        let turns = read_log(&path)?;
+        let turns = read_log(&path)?.turns;
         let index = check_turn(session_id, turn, turns.len())?;
 
         // Split rather than indexed twice, so the "what came after" search
@@ -321,23 +408,29 @@ impl CheckpointStore {
     ///
     /// Where two turns touched the same file, the earliest pre-image wins —
     /// that is the one that predates all of them.
+    ///
+    /// A dry run produces the same warnings as a real one, which is the point
+    /// of having them: the drawer and the CLI both show the plan first, and a
+    /// warning that only arrived afterwards would be a report rather than a
+    /// chance to stop.
     pub fn rewind(
         &self,
         session_id: &str,
         workspace: &Path,
         turn: u32,
         dry_run: bool,
-    ) -> Result<Vec<Restored>, String> {
+    ) -> Result<Rewind, String> {
         let Some(path) = self.log_path(session_id) else {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
-        let turns = read_log(&path)?;
-        let index = check_turn(session_id, turn, turns.len())?;
+        let log = read_log(&path)?;
+        let index = check_turn(session_id, turn, log.turns.len())?;
+        let undoing = &log.turns[index..];
 
         // First writer wins, so iterating forward from the target turn leaves
         // each path holding the oldest pre-image at or after it.
         let mut earliest: Vec<(String, State)> = Vec::new();
-        for entry in &turns[index..] {
+        for entry in undoing {
             for (file, state) in &entry.changes {
                 if !earliest.iter().any(|(seen, _)| seen == file) {
                     earliest.push((file.clone(), state.clone()));
@@ -346,10 +439,114 @@ impl CheckpointStore {
         }
         earliest.sort_by(|a, b| a.0.cmp(&b.0));
 
-        Ok(earliest
-            .into_iter()
-            .map(|(file, state)| restore(workspace, &file, &state, dry_run))
-            .collect())
+        Ok(Rewind {
+            restored: earliest
+                .into_iter()
+                .map(|(file, state)| restore(workspace, &file, &state, dry_run))
+                .collect(),
+            warnings: warnings(&log, workspace, turn, undoing),
+        })
+    }
+
+    /// Records that `turn` was kept as `sha`.
+    ///
+    /// Written after the commit rather than before it: a commit that failed
+    /// halfway is not one a rewind should warn about, and the sha does not
+    /// exist to write down until git has made it.
+    ///
+    /// Best-effort, like every other write here. Losing it costs the warning
+    /// and the drawer's knowledge that this turn is already in `HEAD`; it
+    /// cannot cost the commit, which is already made, or the undo, which does
+    /// not depend on it.
+    pub fn record_commit(&self, session_id: &str, workspace: &Path, turn: u32, sha: &str) {
+        let Some(log) = self.log_path(session_id) else {
+            return;
+        };
+        // A log being committed from has always been written to, so the header
+        // is there. Asked for anyway, because what this appends is a format-2
+        // record and a log still carrying a format-1 header would let an older
+        // build skip it silently.
+        if !ensure_header(&log, session_id, workspace) {
+            return;
+        }
+        let _ = append(
+            &log,
+            &Record::Committed {
+                turn,
+                sha: sha.to_string(),
+            },
+        );
+    }
+}
+
+/// What this rewind cannot put back, as complete sentences.
+///
+/// Ordered the way the turns ran, because that is how the two per-turn
+/// warnings read as a sequence of events. The branch warning is one line for
+/// the whole rewind rather than one per turn: it is a fact about where the
+/// files are being written, not about any turn, and repeating it per turn
+/// would bury the two that are.
+fn warnings(log: &ReadLog, workspace: &Path, first: u32, undoing: &[ReadTurn]) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    for (offset, entry) in undoing.iter().enumerate() {
+        let number = first + offset as u32;
+        if entry.moved_git {
+            warnings.push(format!(
+                "Turn {number} moved git's own state. Its files come back; HEAD and the \
+                 index stay where the command left them, so the result will match neither \
+                 commit. `git reflog` is the way back to where HEAD was."
+            ));
+        }
+        if let Some(sha) = log.commit_for(number) {
+            warnings.push(format!(
+                "Turn {number} was committed as {sha}. Undoing it leaves that commit in \
+                 place, so the tree will no longer match it — `git revert {sha}` undoes it \
+                 as a new commit, `git reset` moves the branch off it."
+            ));
+        }
+    }
+
+    // Distinct, and only the ones that disagree with the workspace: a
+    // conversation that never left its branch has nothing to warn about, and
+    // one that moved back and forth should say each name once.
+    let now = crate::sweep::branch(workspace);
+    let mut elsewhere: Vec<&str> = Vec::new();
+    for entry in undoing {
+        if let Some(branch) = entry.branch.as_deref() {
+            if Some(branch) != now.as_deref() && !elsewhere.contains(&branch) {
+                elsewhere.push(branch);
+            }
+        }
+    }
+    if !elsewhere.is_empty() {
+        let ran_on = joined(&elsewhere);
+        warnings.push(match now.as_deref() {
+            Some(now) => format!(
+                "These turns ran on {ran_on}, and the workspace is on {now}. Their \
+                 pre-images came out of a tree that is no longer checked out, so a rewind \
+                 writes them over {now} as it stands."
+            ),
+            // Detached, or the repository is gone. Naming what it is not is
+            // more useful than naming what it is, which is a bare sha at best.
+            None => format!(
+                "These turns ran on {ran_on}, and that branch is not checked out now. \
+                 Their pre-images came out of a different tree than the one a rewind \
+                 would write them into."
+            ),
+        });
+    }
+
+    warnings
+}
+
+/// `a`, `a and b`, `a, b, and c` — for a warning that is read as a sentence.
+fn joined(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [first, last] => format!("{first} and {last}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
     }
 }
 
@@ -489,6 +686,33 @@ struct ReadTurn {
     prompt: String,
     at: u64,
     changes: Vec<(String, State)>,
+    branch: Option<String>,
+    moved_git: bool,
+}
+
+/// A whole log as read back off disk.
+///
+/// Commits sit beside the turns rather than inside them because that is how
+/// they are written: a commit record lands at the end of the log naming a turn
+/// that closed long before it. Resolving it into the turn happens here, once,
+/// so nothing downstream has to know that.
+struct ReadLog {
+    turns: Vec<ReadTurn>,
+    commits: Vec<(u32, String)>,
+}
+
+impl ReadLog {
+    /// The commit a turn was kept as.
+    ///
+    /// Last writer wins: a turn committed, rewound, and committed again has two
+    /// records, and the live one is the one written most recently.
+    fn commit_for(&self, turn: u32) -> Option<String> {
+        self.commits
+            .iter()
+            .rev()
+            .find(|(number, _)| *number == turn)
+            .map(|(_, sha)| sha.clone())
+    }
 }
 
 /// Rebuilds a log's turns, assigning numbers from their order.
@@ -496,15 +720,21 @@ struct ReadTurn {
 /// A trailing line that will not parse is dropped rather than failing the
 /// read: it is the turn that was in flight when the process died, and refusing
 /// the file would lose every earlier checkpoint over it.
-fn read_log(path: &Path) -> Result<Vec<ReadTurn>, String> {
+fn read_log(path: &Path) -> Result<ReadLog, String> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         // No log is not an error: it is a session that never changed a file.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ReadLog {
+                turns: Vec::new(),
+                commits: Vec::new(),
+            })
+        }
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
 
     let mut turns: Vec<ReadTurn> = Vec::new();
+    let mut commits: Vec<(u32, String)> = Vec::new();
     let mut header_seen = false;
 
     for line in BufReader::new(file).lines().map_while(Result::ok) {
@@ -523,10 +753,12 @@ fn read_log(path: &Path) -> Result<Vec<ReadTurn>, String> {
                 }
                 header_seen = true;
             }
-            Ok(Record::Turn { prompt, at }) => turns.push(ReadTurn {
+            Ok(Record::Turn { prompt, at, branch }) => turns.push(ReadTurn {
                 prompt,
                 at,
                 changes: Vec::new(),
+                branch,
+                moved_git: false,
             }),
             Ok(Record::Before { path, state }) => {
                 // A `before` with no open turn is a torn log; there is nothing
@@ -536,6 +768,16 @@ fn read_log(path: &Path) -> Result<Vec<ReadTurn>, String> {
                     turn.changes.push((path, state));
                 }
             }
+            // Same rule, same reason: it belongs to the turn it follows, and a
+            // torn log with no turn to follow has nothing to say it about.
+            Ok(Record::MovedGit) => {
+                if let Some(turn) = turns.last_mut() {
+                    turn.moved_git = true;
+                }
+            }
+            // Position-independent, so it is collected wherever it lands and
+            // matched to its turn by number afterwards.
+            Ok(Record::Committed { turn, sha }) => commits.push((turn, sha)),
             Err(e) => {
                 tracing::debug!(error = %e, "skipping an unreadable checkpoint line");
             }
@@ -553,7 +795,7 @@ fn read_log(path: &Path) -> Result<Vec<ReadTurn>, String> {
             "checkpoint log has no header; reading it as the current format"
         );
     }
-    Ok(turns)
+    Ok(ReadLog { turns, commits })
 }
 
 #[derive(Default)]
@@ -564,6 +806,10 @@ struct TurnState {
     opened: bool,
     /// Set after a write fails, so one broken log does not narrate every call.
     disabled: bool,
+    /// Whether this turn has already said it moved git. Several commands in
+    /// one turn can each move it, and the warning reads the same once as
+    /// three times.
+    moved_git: bool,
 }
 
 /// The open turn that tools record into.
@@ -576,6 +822,8 @@ pub struct TurnRecorder {
     session: String,
     workspace: PathBuf,
     prompt: String,
+    /// The branch the turn began on, written into its `Turn` record.
+    branch: Option<String>,
     state: Mutex<TurnState>,
 }
 
@@ -588,6 +836,28 @@ impl TurnRecorder {
     /// where it was.
     pub async fn changed_count(&self) -> usize {
         self.state.lock().await.seen.len()
+    }
+
+    /// Records that this turn moved `HEAD` or the ref it names.
+    ///
+    /// Only ever called by [`crate::sweep`], and only when the same pass also
+    /// recorded a file — a `git commit` that left the working tree alone gives
+    /// a rewind nothing to be wrong about. That ordering is what lets this skip
+    /// a turn that is not open: with no pre-image recorded there is nothing to
+    /// undo, and a record written here would attach itself to whichever turn
+    /// last opened the log.
+    pub async fn moved_git(&self) {
+        let Some(log) = self.path.clone() else {
+            return;
+        };
+        let mut state = self.state.lock().await;
+        if state.disabled || !state.opened || state.moved_git {
+            return;
+        }
+        state.moved_git = true;
+        if !append(&log, &Record::MovedGit) {
+            state.disabled = true;
+        }
     }
 
     /// Records what `path` holds right now, the first time this turn asks.
@@ -632,28 +902,26 @@ impl TurnRecorder {
         // The turn's header goes down with its first file, so a log holds only
         // turns that changed something.
         if !state.opened {
-            // Asks the file whether it has a header rather than whether it
-            // exists. `append` creates the file before it writes, so a write
-            // that fails leaves an empty one behind — and "it exists" would
-            // then be true forever, so every later turn skipped the header and
-            // left a log that `read_log` could not accept. Checking for the
-            // record itself also repairs a log already in that state, on its
-            // next turn.
-            let header = (!has_header(&log)).then(|| {
-                Record::Header(Header {
-                    version: FORMAT_VERSION,
-                    session: self.session.clone(),
-                    workspace: self.workspace.display().to_string(),
-                })
-            });
-            for record in header.into_iter().chain([Record::Turn {
-                prompt: self.prompt.clone(),
-                at: now(),
-            }]) {
-                if !append(&log, &record) {
-                    state.disabled = true;
-                    return;
-                }
+            // Asks the file what header it has rather than whether it exists.
+            // `append` creates the file before it writes, so a write that fails
+            // leaves an empty one behind — and "it exists" would then be true
+            // forever, so every later turn skipped the header and left a log
+            // that `read_log` could not accept. Checking for the record itself
+            // also repairs a log already in that state, on its next turn.
+            if !ensure_header(&log, &self.session, &self.workspace) {
+                state.disabled = true;
+                return;
+            }
+            if !append(
+                &log,
+                &Record::Turn {
+                    prompt: self.prompt.clone(),
+                    at: now(),
+                    branch: self.branch.clone(),
+                },
+            ) {
+                state.disabled = true;
+                return;
             }
             state.opened = true;
         }
@@ -670,20 +938,46 @@ impl TurnRecorder {
     }
 }
 
-/// Whether the log already carries a header record.
+/// The newest format a log's headers claim, or `None` for a log with none.
 ///
-/// Scans for one anywhere rather than checking the first line, because a log
+/// Scans the whole file rather than checking the first line, because a log
 /// repaired after a failed first write carries its header after the turns it
-/// was missing from. A log is one short line per changed file, and the normal
-/// case stops on line one.
-fn has_header(path: &Path) -> bool {
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
+/// was missing from — and because a log upgraded in place carries two. A log
+/// is one short line per changed file, and the common case stops on line one.
+fn header_version(path: &Path) -> Option<u32> {
+    let file = std::fs::File::open(path).ok()?;
     BufReader::new(file)
         .lines()
         .map_while(Result::ok)
-        .any(|line| matches!(serde_json::from_str::<Record>(&line), Ok(Record::Header(_))))
+        .filter_map(|line| match serde_json::from_str::<Record>(&line) {
+            Ok(Record::Header(header)) => Some(header.version),
+            _ => None,
+        })
+        .max()
+}
+
+/// Gives a log a header at the current format if it does not have one.
+///
+/// Covers two cases with one check. A log that has never been written needs its
+/// first header; a log written by an older Taurus needs a second one, because
+/// it is about to gain a record that older build would skip rather than
+/// understand, and [`read_log`]'s version guard is the only thing that can stop
+/// it. Appending rather than rewriting keeps the file append-only, and
+/// [`header_version`] takes the newest of what it finds.
+///
+/// Returns whether the log is safe to append to.
+fn ensure_header(path: &Path, session: &str, workspace: &Path) -> bool {
+    if header_version(path) == Some(FORMAT_VERSION) {
+        return true;
+    }
+    append(
+        path,
+        &Record::Header(Header {
+            version: FORMAT_VERSION,
+            session: session.to_string(),
+            workspace: workspace.display().to_string(),
+        }),
+    )
 }
 
 /// Appends one record. Returns whether it landed.
@@ -801,6 +1095,234 @@ mod tests {
         fn log(&self, session: &str) -> PathBuf {
             self.logs.path().join(format!("{session}.jsonl"))
         }
+    }
+
+    impl Fixture {
+        /// A repository, as far as anything here reads one: `HEAD` naming a
+        /// branch. The same shape the sweep's fixture builds, and for the same
+        /// reason — nothing in this crate shells out to git, so a branch is a
+        /// line in a file.
+        fn on_branch(&self, name: &str) {
+            let head = self.root.join(".git/HEAD");
+            std::fs::create_dir_all(head.parent().unwrap()).unwrap();
+            std::fs::write(head, format!("ref: refs/heads/{name}\n")).unwrap();
+        }
+
+        /// A turn that changes one file, which is enough to be rewindable.
+        async fn turn(&self, prompt: &str, content: &str) -> Arc<TurnRecorder> {
+            let file = self.path("a.txt");
+            let recorder = self.store.begin_turn("s1", &self.root, prompt);
+            recorder.capture(&file).await;
+            std::fs::write(&file, content).unwrap();
+            recorder
+        }
+
+        fn rewind_plan(&self, turn: u32) -> Rewind {
+            self.store.rewind("s1", &self.root, turn, true).unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_only_changed_files_warns_about_nothing() {
+        // The common case, and the one that decides whether the warnings are
+        // worth having: a list that fires on every rewind is one nobody reads.
+        let f = Fixture::new();
+        f.turn("edit it", "after\n").await;
+
+        assert!(f.rewind_plan(1).warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_moved_git_says_so_at_the_moment_of_the_rewind() {
+        // The sweep already says this when the command runs. The person who
+        // needs it is reading a rewind plan, which can be days later.
+        let f = Fixture::new();
+        let recorder = f.turn("check out another branch", "after\n").await;
+        recorder.moved_git().await;
+
+        let warnings = f.rewind_plan(1).warnings;
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("Turn 1"), "{warnings:?}");
+        assert!(warnings[0].contains("git reflog"), "{warnings:?}");
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_moved_git_twice_says_it_once() {
+        // Several commands in one turn can each move it. The warning reads the
+        // same once as three times, and three copies would bury the others.
+        let f = Fixture::new();
+        let recorder = f.turn("move it about", "after\n").await;
+        recorder.moved_git().await;
+        recorder.moved_git().await;
+
+        assert_eq!(f.rewind_plan(1).warnings.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_recorded_nothing_cannot_claim_to_have_moved_git() {
+        // A `git commit` that left the working tree alone gives a rewind
+        // nothing to be wrong about. Written down anyway, the record would
+        // attach itself to whichever turn last opened the log — turn 1's
+        // warning appearing on turn 2's plan.
+        let f = Fixture::new();
+        f.turn("edit it", "after\n").await;
+
+        let empty = f.store.begin_turn("s1", &f.root, "git commit");
+        empty.moved_git().await;
+
+        assert!(f.rewind_plan(1).warnings.is_empty());
+        assert_eq!(f.store.turns("s1").unwrap().len(), 1, "no turn was opened");
+    }
+
+    #[tokio::test]
+    async fn a_committed_turn_says_the_commit_will_be_left_behind() {
+        // The two features did not know about each other: rewinding past a
+        // committed turn restored the files and left the commit pointing at a
+        // tree that no longer exists.
+        let f = Fixture::new();
+        f.turn("get it right", "after\n").await;
+        f.store.record_commit("s1", &f.root, 1, "abc1234");
+
+        let warnings = f.rewind_plan(1).warnings;
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("abc1234"), "{warnings:?}");
+        assert!(warnings[0].contains("git revert"), "{warnings:?}");
+    }
+
+    #[tokio::test]
+    async fn only_the_turns_being_undone_are_warned_about() {
+        // Rewinding to turn 2 undoes 2 and 3. Turn 1's commit stays exactly
+        // where it is, so naming it would be describing something that is not
+        // happening.
+        let f = Fixture::new();
+        f.turn("one", "one\n").await;
+        f.turn("two", "two\n").await;
+        f.turn("three", "three\n").await;
+        f.store.record_commit("s1", &f.root, 1, "aaaaaaa");
+        f.store.record_commit("s1", &f.root, 3, "ccccccc");
+
+        let warnings = f.rewind_plan(2).warnings;
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("ccccccc"), "{warnings:?}");
+    }
+
+    #[tokio::test]
+    async fn a_turn_carries_the_commit_it_was_kept_as_into_the_listing() {
+        // What lets the drawer say which turns are already in HEAD, and so
+        // which ones a commit made now would sit on top of.
+        let f = Fixture::new();
+        f.turn("one", "one\n").await;
+        f.turn("two", "two\n").await;
+        f.store.record_commit("s1", &f.root, 1, "aaaaaaa");
+
+        let turns = f.store.turns("s1").unwrap();
+        assert_eq!(turns[0].commit.as_deref(), Some("aaaaaaa"));
+        assert_eq!(turns[1].commit, None, "turn 2 is not in HEAD");
+    }
+
+    #[tokio::test]
+    async fn a_turn_committed_twice_reports_the_commit_it_is_actually_in() {
+        // Committed, rewound, committed again. The log keeps both records
+        // because it is append-only; the live one is the newer.
+        let f = Fixture::new();
+        f.turn("one", "one\n").await;
+        f.store.record_commit("s1", &f.root, 1, "aaaaaaa");
+        f.store.record_commit("s1", &f.root, 1, "bbbbbbb");
+
+        assert_eq!(
+            f.store.turns("s1").unwrap()[0].commit.as_deref(),
+            Some("bbbbbbb")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rewind_onto_a_branch_the_turn_did_not_run_on_says_so() {
+        // The gap this closes: the branch was recorded in the transcript header
+        // and nothing acted on it, so a conversation started on feat/x and
+        // resumed on main restored feat/x's files over main without a word.
+        let f = Fixture::new();
+        f.on_branch("feat-x");
+        f.turn("work on the feature", "after\n").await;
+        f.on_branch("main");
+
+        let warnings = f.rewind_plan(1).warnings;
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("feat-x"), "{warnings:?}");
+        assert!(warnings[0].contains("main"), "{warnings:?}");
+    }
+
+    #[tokio::test]
+    async fn a_conversation_that_stayed_on_its_branch_says_nothing_about_it() {
+        let f = Fixture::new();
+        f.on_branch("main");
+        f.turn("work", "after\n").await;
+
+        assert!(f.rewind_plan(1).warnings.is_empty());
+        assert_eq!(
+            f.store.turns("s1").unwrap()[0].branch.as_deref(),
+            Some("main")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_records_the_branch_it_began_on_not_the_one_it_moved_to() {
+        // A turn that checks out another branch and then edits a file is
+        // exactly the case the warning exists for, and recording the branch
+        // lazily — when the first file lands — would record the destination.
+        let f = Fixture::new();
+        f.on_branch("main");
+        let file = f.path("a.txt");
+        let recorder = f.store.begin_turn("s1", &f.root, "switch and edit");
+        f.on_branch("elsewhere");
+        recorder.capture(&file).await;
+        std::fs::write(&file, "after\n").unwrap();
+
+        assert_eq!(
+            f.store.turns("s1").unwrap()[0].branch.as_deref(),
+            Some("main")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_detached_head_is_no_branch_rather_than_a_branch_called_head() {
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.path(".git")).unwrap();
+        std::fs::write(f.path(".git/HEAD"), "aaaaaaabbbbbbbccccccc\n").unwrap();
+        f.turn("work", "after\n").await;
+
+        assert_eq!(f.store.turns("s1").unwrap()[0].branch, None);
+        assert!(f.rewind_plan(1).warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_format_1_log_gains_a_current_header_before_it_gains_a_format_2_record() {
+        // An older build skips records it does not know, which here would mean
+        // rewinding past a committed turn without a word. The version guard is
+        // the only thing that can stop it, and it only fires on a header.
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.logs.path()).unwrap();
+        std::fs::write(
+            f.log("s1"),
+            "{\"type\":\"header\",\"version\":1,\"session\":\"s1\",\"workspace\":\"/w\"}\n\
+             {\"type\":\"turn\",\"prompt\":\"an older turn\",\"at\":1}\n\
+             {\"type\":\"before\",\"path\":\"old.txt\",\"state\":\"absent\"}\n",
+        )
+        .unwrap();
+
+        f.turn("a newer turn", "after\n").await;
+
+        assert_eq!(header_version(&f.log("s1")), Some(FORMAT_VERSION));
+        let turns = f.store.turns("s1").unwrap();
+        assert_eq!(turns.len(), 2, "the format-1 turn is still readable");
+        assert_eq!(turns[0].prompt, "an older turn");
+        assert_eq!(turns[0].branch, None, "format 1 recorded no branch");
+    }
+
+    #[test]
+    fn a_list_of_branches_reads_as_a_sentence() {
+        assert_eq!(joined(&["a"]), "a");
+        assert_eq!(joined(&["a", "b"]), "a and b");
+        assert_eq!(joined(&["a", "b", "c"]), "a, b, and c");
     }
 
     /// The diff for one file of one turn, or a panic naming what came back
@@ -1025,7 +1547,7 @@ mod tests {
         recorder.capture(&file).await;
         std::fs::write(&file, "the model's version").unwrap();
 
-        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap();
+        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap().restored;
         assert!(matches!(restored[0], Restored::Reverted { .. }));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
     }
@@ -1039,7 +1561,7 @@ mod tests {
         recorder.capture(&file).await;
         std::fs::write(&file, "brand new").unwrap();
 
-        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap();
+        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap().restored;
         assert!(matches!(restored[0], Restored::Deleted { .. }));
         assert!(!file.exists(), "a created file must not survive the rewind");
     }
@@ -1109,7 +1631,7 @@ mod tests {
         recorder.capture(&file).await;
         std::fs::write(&file, "changed").unwrap();
 
-        let planned = f.store.rewind("s1", &f.root, 1, true).unwrap();
+        let planned = f.store.rewind("s1", &f.root, 1, true).unwrap().restored;
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].path(), "a.txt");
         assert_eq!(
@@ -1166,7 +1688,7 @@ mod tests {
         recorder.capture(&file).await;
         std::fs::write(&file, "clobbered").unwrap();
 
-        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap();
+        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap().restored;
         assert!(matches!(restored[0], Restored::Skipped { .. }));
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
@@ -1244,6 +1766,7 @@ mod tests {
         std::fs::create_dir_all(f.log("s1").parent().unwrap()).unwrap();
         let headerless = [
             Record::Turn {
+                branch: None,
                 prompt: "earlier turn".into(),
                 at: 1,
             },
@@ -1263,7 +1786,11 @@ mod tests {
         let recorder = f.store.begin_turn("s1", &f.root, "a later turn");
         recorder.capture(&file).await;
 
-        assert!(has_header(&f.log("s1")), "the next turn must repair it");
+        assert_eq!(
+            header_version(&f.log("s1")),
+            Some(FORMAT_VERSION),
+            "the next turn must repair it"
+        );
         // And repairing it once is enough — a second turn must not stack
         // another header on top.
         let before = std::fs::read_to_string(f.log("s1")).unwrap();
@@ -1286,6 +1813,7 @@ mod tests {
         std::fs::create_dir_all(f.log("s1").parent().unwrap()).unwrap();
         let records = [
             Record::Turn {
+                branch: None,
                 prompt: "a turn".into(),
                 at: 1,
             },
@@ -1344,6 +1872,7 @@ mod tests {
                 workspace: f.root.display().to_string(),
             }),
             Record::Turn {
+                branch: None,
                 prompt: "hostile".into(),
                 at: 1,
             },
@@ -1358,7 +1887,7 @@ mod tests {
             assert!(append(&f.log("s1"), record));
         }
 
-        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap();
+        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap().restored;
         assert!(matches!(restored[0], Restored::Skipped { .. }));
         assert!(!&f.root.parent().unwrap().join("escaped.txt").exists());
     }

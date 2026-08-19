@@ -21,6 +21,9 @@ use crate::builtin;
 pub struct AgentSource {
     pub tier: AgentTier,
     pub dir: PathBuf,
+    /// This directory belongs to another client, so Taurus reads it and does
+    /// not write to it. See [`AgentDefinition::borrowed`].
+    pub borrowed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -83,7 +86,7 @@ impl AgentCatalog {
             paths.sort();
 
             for path in paths {
-                match load_agent(&path, source.tier) {
+                match load_agent(&path, source.tier, source.borrowed) {
                     Ok(mut agent) => {
                         debug!(name = agent.name(), ?source.tier, "loaded agent");
                         agent.shadows = catalog.agents.get(agent.name()).map(|prior| prior.tier);
@@ -155,7 +158,26 @@ impl AgentCatalog {
     }
 }
 
-fn load_agent(path: &Path, tier: AgentTier) -> Result<AgentDefinition, AgentError> {
+/// The name a file claims, with a doubled extension collapsed.
+///
+/// `reviewer.md` and `reviewer.agent.md` both name `reviewer`. The second is
+/// GitHub Copilot's spelling, and taking the plain file stem there would look
+/// for an agent called `reviewer.agent` and refuse the file for disagreeing with
+/// its own frontmatter.
+fn agent_stem(path: &Path) -> Option<&str> {
+    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    Some(stem.strip_suffix(".agent").unwrap_or(stem))
+}
+
+/// What to call the file back in an error, so the fix named is the real one.
+fn extension_of(path: &Path) -> &str {
+    match path.file_stem().and_then(|s| s.to_str()) {
+        Some(stem) if stem.ends_with(".agent") => ".agent.md",
+        _ => ".md",
+    }
+}
+
+fn load_agent(path: &Path, tier: AgentTier, borrowed: bool) -> Result<AgentDefinition, AgentError> {
     let display = path.display().to_string();
     let text = std::fs::read_to_string(path).map_err(|e| AgentError::Invalid {
         path: display.clone(),
@@ -167,13 +189,14 @@ fn load_agent(path: &Path, tier: AgentTier) -> Result<AgentDefinition, AgentErro
     // The stem is authoritative: `spawn_subagent` is called by name, and a file
     // whose name and frontmatter disagree means one of them is what the author
     // will type and the other is what works.
-    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+    if let Some(stem) = agent_stem(path) {
         if stem != frontmatter.name {
             return Err(AgentError::Invalid {
                 path: display,
                 message: format!(
-                    "the file is named '{stem}.md' but the agent is named '{}'; rename one to \
+                    "the file is named '{stem}{}' but the agent is named '{}'; rename one to \
                      match the other",
+                    extension_of(path),
                     frontmatter.name
                 ),
             });
@@ -185,6 +208,7 @@ fn load_agent(path: &Path, tier: AgentTier) -> Result<AgentDefinition, AgentErro
         system_prompt,
         tier,
         path: Some(path.to_path_buf()),
+        borrowed,
         shadows: None,
         degraded: None,
     })
@@ -215,6 +239,7 @@ mod tests {
     fn sources(dirs: Vec<(AgentTier, &Path)>) -> Vec<AgentSource> {
         dirs.into_iter()
             .map(|(tier, dir)| AgentSource {
+                borrowed: false,
                 tier,
                 dir: dir.to_path_buf(),
             })

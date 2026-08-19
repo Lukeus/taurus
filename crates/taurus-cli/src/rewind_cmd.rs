@@ -59,19 +59,25 @@ pub async fn run(
         },
         workspace.display()
     );
-    for outcome in &plan {
+    for outcome in &plan.restored {
         println!("  {}", describe(outcome));
+    }
+    // Last, so they are what is still on screen when the prompt below asks.
+    // These are the reasons a rewind is not the whole way back, and burying
+    // them above a list of forty files would be the same as not printing them.
+    for warning in &plan.warnings {
+        println!("\n  ! {}", wrapped(warning));
     }
 
     if dry_run {
         return Ok(ExitCode::SUCCESS);
     }
-    if !confirm(assume_yes, plan.len())? {
+    if !confirm(assume_yes, plan.restored.len())? {
         println!("\nLeft alone.");
         return Ok(ExitCode::SUCCESS);
     }
 
-    let done = store.rewind(&session_id, &workspace, turn, false)?;
+    let done = store.rewind(&session_id, &workspace, turn, false)?.restored;
     let count = |matches: fn(&Restored) -> bool| done.iter().filter(|r| matches(r)).count();
     let reverted = count(|r| matches!(r, Restored::Reverted { .. }));
     let deleted = count(|r| matches!(r, Restored::Deleted { .. }));
@@ -108,6 +114,23 @@ fn list(turns: &[Checkpoint], session_id: &str) {
         };
         println!("  turn {:<4} {label}", turn.turn);
         println!("  {:9} {}", "", turn.files.join(", "));
+        // Only when there is something to say. A conversation that stayed on
+        // one branch and committed nothing is the common case, and a line of
+        // empty fields under every turn would make the list harder to read
+        // rather than more complete.
+        let mut notes = Vec::new();
+        if let Some(sha) = &turn.commit {
+            notes.push(format!("committed as {sha}"));
+        }
+        if turn.moved_git {
+            notes.push("moved git's own state".to_string());
+        }
+        if let Some(branch) = &turn.branch {
+            notes.push(format!("on {branch}"));
+        }
+        if !notes.is_empty() {
+            println!("  {:9} {}", "", notes.join(" · "));
+        }
     }
     println!(
         "\nUndo the last one with:  taurus rewind --to last\n\
@@ -125,6 +148,38 @@ fn resolve_turn(raw: &str, turns: &[Checkpoint]) -> Result<u32, String> {
     raw.parse::<u32>().map_err(|_| {
         format!("'{raw}' is not a turn number. Use one from `taurus rewind`, or `last`.")
     })
+}
+
+/// Folds a warning to a readable column, hanging under its marker.
+///
+/// The only thing this command wraps, and the only thing worth wrapping: every
+/// other line it prints is a path or a short label the terminal can fold
+/// wherever it likes. These are three sentences of prose hanging off a `!`, and
+/// left to the terminal they arrive as a paragraph-shaped smear starting back
+/// at column zero — which is how a warning gets skipped.
+///
+/// A fixed width rather than the terminal's. Asking would mean a dependency for
+/// a number that is wrong the moment the output is piped, and 72 leaves room
+/// for the marker inside the 80 columns that is still the narrow case.
+fn wrapped(warning: &str) -> String {
+    const WIDTH: usize = 72;
+    const HANGING: &str = "\n    ";
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in warning.split_whitespace() {
+        // Counted in characters rather than bytes: a warning quoting a branch
+        // name is prose, and prose is not always ASCII.
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > WIDTH {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    lines.push(line);
+    lines.join(HANGING)
 }
 
 fn describe(outcome: &Restored) -> String {
@@ -179,6 +234,9 @@ mod tests {
                 prompt: format!("turn {turn}"),
                 at: 0,
                 files: vec!["a.txt".into()],
+                branch: None,
+                moved_git: false,
+                commit: None,
             })
             .collect()
     }
@@ -208,6 +266,46 @@ mod tests {
         let err = confirm(false, 3).unwrap_err();
         assert!(err.contains("--yes"), "{err}");
         assert!(err.contains("--dry-run"), "{err}");
+    }
+
+    #[test]
+    fn a_warning_is_folded_under_its_own_marker() {
+        let folded = wrapped(
+            "Turn 4 moved git's own state. Its files come back; HEAD and the index \
+             stay where the command left them, so the result will match neither \
+             commit. `git reflog` is the way back to where HEAD was.",
+        );
+        let lines: Vec<&str> = folded.lines().collect();
+        assert!(lines.len() > 1, "a long warning has to fold: {folded}");
+        assert!(lines[0].chars().count() <= 72, "{:?}", lines[0]);
+        assert!(
+            lines[1..].iter().all(|l| l.starts_with("    ")),
+            "continuations hang under the marker: {folded}"
+        );
+        // Folding is not editing: every word survives, in order.
+        assert_eq!(
+            folded.split_whitespace().collect::<Vec<_>>().join(" "),
+            "Turn 4 moved git's own state. Its files come back; HEAD and the index \
+             stay where the command left them, so the result will match neither \
+             commit. `git reflog` is the way back to where HEAD was."
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+
+    #[test]
+    fn a_short_warning_is_left_on_one_line() {
+        let folded = wrapped("Turn 2 was committed as a1b2c3d.");
+        assert_eq!(folded, "Turn 2 was committed as a1b2c3d.");
+    }
+
+    #[test]
+    fn a_single_word_longer_than_the_column_is_not_broken() {
+        // A branch name or a path can be longer than the column on its own.
+        // Splitting it would produce something that is not the name.
+        let long = "a".repeat(90);
+        assert_eq!(wrapped(&long), long);
     }
 
     #[test]

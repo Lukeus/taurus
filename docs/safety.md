@@ -211,6 +211,12 @@ nothing to undo, so nothing looks undoable and there is nothing to correct.
 `.git/index` is watched by neither: `git status` rewrites it to refresh its stat
 cache, and a note on every turn that ran one would drown the turns that matter.
 
+That message reaches the model while the command is running, which is not when
+it is needed — the person who needs it is reading a rewind plan, possibly days
+later and certainly in another frame of mind. So it is written into the
+checkpoint log as well as said, and comes back out at the moment of the undo.
+See below.
+
 When a command *cannot* be covered — a workspace past 50,000 files, or one
 whose ignore rules the command itself rewrote — the tool result says so in
 plain words rather than letting the turn look undoable:
@@ -219,6 +225,68 @@ plain words rather than letting the turn look undoable:
 [taurus] This workspace holds more than 50000 files, too many to record a
 command's changes against, so this one cannot be undone.
 ```
+
+### What a rewind cannot put back
+
+Restoring files is the whole of what a rewind can do, and three things
+routinely make that less than the whole way back. None of them are recoverable
+here; all three are knowable, so they are recorded as they happen and reported
+beside the plan — before the button, not after it:
+
+```
+Rewinding to before turn 4 undoes 2 turns in ~/src/parser:
+
+  reverted  src/parse.rs
+  reverted  src/lex.rs
+
+  ! Turn 4 moved git's own state. Its files come back; HEAD and the index
+    stay where the command left them, so the result will match neither
+    commit. `git reflog` is the way back to where HEAD was.
+
+  ! Turn 5 was committed as a1b2c3d. Undoing it leaves that commit in place,
+    so the tree will no longer match it — `git revert a1b2c3d` undoes it as
+    a new commit, `git reset` moves the branch off it.
+
+  ! These turns ran on feat/parser, and the workspace is on main. Their
+    pre-images came out of a tree that is no longer checked out, so a rewind
+    writes them over main as it stands.
+
+Overwrite 2 file(s) with what was there before? [y/N]:
+```
+
+The **Changes** drawer shows the same three, between the file list and the
+button, and again afterwards — a commit left pointing at a tree that no longer
+exists does not stop being a problem because the rewind finished. `taurus
+rewind`'s own listing carries the shorter version, under the turns it is true
+of:
+
+```
+  turn 2    tidy the caller
+            src/main.rs
+            committed as a1b2c3d · on feat/parser
+  turn 1    teach the parser about tabs
+            src/parse.rs
+            moved git's own state · on feat/parser
+```
+
+Only when there is something to say. A conversation that stayed on one branch
+and committed nothing is the common case, and a row of empty fields under every
+turn would make the list harder to read rather than more complete.
+
+A dry run produces them identically to a real one, which is the point of having
+them. They are ordered by the turns they describe, and a rewind of turns that
+only changed files carries none: a warning that fires every time is one nobody
+reads.
+
+The branch line compares what each turn recorded against what is checked out
+now, so a conversation that never left its branch says nothing about it. A
+detached `HEAD` and a workspace outside a repository both count as no branch
+rather than as a branch named something — neither gives a name that would still
+mean anything quoted back weeks later.
+
+None of this refuses the rewind. It is your tree and there are good reasons to
+want the files back regardless; what there is no good reason for is finding out
+afterwards.
 
 ## Keeping a turn
 
@@ -295,6 +363,35 @@ that filter the commit is refused rather than made empty, and the refusal
 carries every reason it collected — "nothing to commit" on its own would send
 you looking for a bug that is not there.
 
+Each commit is offered on its own, and a conversation is not a single commit.
+Committing turn 3 and then turn 5 leaves turn 4's work in the tree — uncommitted,
+and now sitting under a commit it is not in. So the drawer records which turns
+are already in `HEAD` and says so before the button:
+
+```
+[ out of order ]  Turn 4 changed files and is not committed. Committing this
+                  one puts it into history ahead of work it came after.
+```
+
+When the turns share a file it says something sharper, because the problem is
+worse than ordering. `git commit -- <paths>` commits what those paths hold
+*now*, so an earlier uncommitted turn's edits to a shared file go into this
+commit wearing this turn's message:
+
+```
+[ out of order ]  Turn 4 also changed src/parse.rs and is not committed. This
+                  commit takes what those files hold now, so that work goes in
+                  with it.
+```
+
+A turn that has already been committed is labelled with its commit in the list,
+which survives closing the drawer and reopening the conversation — the sha is in
+the checkpoint log, not in the window. Committing it again is still allowed and
+still says what it would do.
+
+Neither warning refuses anything, and neither offers to squash a run of turns
+into one commit. Both stop the silent version.
+
 Committing is refused while a turn is running, for the reason a rewind is: the
 tool calls are still writing.
 
@@ -328,3 +425,10 @@ rare case visible, which is the wrong trade in a list that dense. Sessions
 written before this existed, and those started outside a repository, carry no
 branch and are not labelled — neither is "elsewhere", and guessing would put a
 warning on every old conversation.
+
+The label is where it stops in the rail, but not where it stops. Each turn
+records the branch it *began* on into the checkpoint log — began, because a turn
+that checks out another branch and then edits a file is exactly the case worth
+warning about, and recording it when the first file lands would record the
+destination. A rewind compares those against what is checked out now and says so
+when they disagree; see [What a rewind cannot put back](#what-a-rewind-cannot-put-back).

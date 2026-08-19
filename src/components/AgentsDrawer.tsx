@@ -243,7 +243,6 @@ function IterationField({
 }) {
   const [draft, setDraft] = useState(String(agent.max_iterations));
   const [error, setError] = useState<string | null>(null);
-  const builtin = agent.path === null;
 
   // A rescan is the authority — it is what a save is followed by, and what
   // another pane's edit arrives through.
@@ -281,9 +280,15 @@ function IterationField({
           }}
         />
       </label>
+      {/* Two reasons a file cannot be edited in place — it does not exist, or
+          it belongs to another client — and the backend decides which applies.
+          Saying so before the field is used is the point: a control that
+          quietly creates a file is one that surprises whoever finds it. */}
       <span className="hint">
-        {builtin
-          ? `1–${MAX_ITERATIONS_LIMIT} · changing this saves a copy you own that shadows the built-in`
+        {agent.forks_on_edit
+          ? `1–${MAX_ITERATIONS_LIMIT} · changing this saves a copy you own that shadows ${
+              agent.path === null ? "the built-in" : "the original"
+            }`
           : `1–${MAX_ITERATIONS_LIMIT}`}
       </span>
       {error && <span className="card-files warn">{error}</span>}

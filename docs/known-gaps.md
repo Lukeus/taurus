@@ -5,6 +5,15 @@
 What Taurus does not do, stated where it can be read before it is discovered.
 Each entry says what is missing, and what covering it would cost.
 
+This list grows, and that is not the same as debt accumulating. An entry arrives
+when a feature ships and someone writes down where it stops, so a longer list
+is mostly a sign of more features honestly described. Most of what is here is
+permanent by construction and says so in its own words — a terminal has one
+output stream, `fetch_url` runs no JavaScript, nothing can make a model write a
+note. Read those as documentation. The ones worth watching are the entries that
+end by naming a specific thing that has not been built; those are the backlog,
+and they are the minority.
+
 - **A rewind does not cover ignored directories.** A file an ignore rule
   excludes by name is covered; everything under a directory an ignore rule
   excludes is not, so a command that rewrites something in `target/` or
@@ -15,12 +24,12 @@ Each entry says what is missing, and what covering it would cost.
 - **A rewind reports git state, it does not put it back.** `.git` is left out
   of the walk, so undoing a turn that ran `git checkout` or `git reset --hard`
   restores the file contents while leaving `HEAD` and the index where the
-  command moved them — a tree that matches neither commit. The turn now says so
-  when it happens, and points at `git reflog`, but covering it properly means
-  snapshotting the object store, which is its own feature. The warning also
-  reaches you at the moment the command runs rather than at the moment you
-  reach for undo; carrying it into the checkpoint log means a record shape and
-  a format version, and has not been done. Staging is unreported as well — see
+  command moved them — a tree that matches neither commit. Covering it properly
+  means snapshotting the object store, which is its own feature and not one this
+  opens. What has been closed is *when you hear about it*: the sweep writes the
+  fact into the checkpoint log, and the rewind plan repeats it beside the file
+  list, so the warning now arrives at the moment you reach for undo rather than
+  only at the moment the command ran. Staging is still unreported — see
   [Rewinding a turn](safety.md#rewinding-a-turn) for why the index is deliberately not
   watched.
 - **A change that moves neither length nor timestamp is invisible.** The same
@@ -62,11 +71,18 @@ Each entry says what is missing, and what covering it would cost.
   Where that matters the API says so explicitly rather than failing quietly, but
   it is a turn that has to be retried. Carrying the encrypted form would mean a
   second shape in the normalized types for one provider's edge case.
-- **An instructions file is read, not watched.** `AGENTS.md` is re-read on every
-  reload and on every workspace switch, so an edit lands on the next reload
-  rather than the next turn. The Skills drawer's Rescan is the manual way; a
-  file watcher is the same surface — config reloads racing a running turn — that
-  the agent roster deliberately leaves closed.
+- **An instructions file is read at turn boundaries, not watched.** `AGENTS.md`
+  and everything it imports are re-read at the start of each turn, so an edit
+  lands on the next message rather than the next reload. It is still not
+  *watched*, and that stays: a watcher fires whenever an editor happens to save,
+  which is routinely the middle of a running turn, and the brief a turn was
+  given has to be the one it started with. What is left is the one-turn delay
+  and one narrow blind spot — the freshness check compares length and
+  modification time, so a rewrite to the same length within one filesystem tick
+  waits for the next change. That is the same comparison the sweep makes, and it
+  is closed the same way: by reading every file on every message, which is what
+  the check exists to avoid. See
+  [Instructions](capabilities.md#instructions).
 - **A diff is shown for `write_file` and `edit_file` and nothing else.** A
   command line has no before-and-after to compute, which is exactly why
   `run_command` is swept afterwards rather than predicted. So the most
@@ -82,17 +98,23 @@ Each entry says what is missing, and what covering it would cost.
   diff. Closing it means post-images, which is a second copy of every file
   written per turn to attribute a case the rewind already warns about in the
   same words. See [Keeping a turn](safety.md#keeping-a-turn).
-- **Committing a turn does not know about the turns around it.** Each commit is
-  offered on its own, so committing turn 3 and then turn 5 leaves turn 4's work
-  in the tree, uncommitted and now sitting on top of a commit that does not
-  include it. Nothing warns about that ordering, and nothing offers to squash a
-  run of turns into one commit. Both want a model of which turns are already in
-  `HEAD`, which is a record the checkpoint log does not keep.
-- **A committed turn can still be rewound.** The two features do not know about
-  each other: rewinding past a turn you committed restores the files and leaves
-  the commit in place, so the tree no longer matches it. `git` has the way back
-  and the drawer does not say so at that moment. Wiring them together means the
-  checkpoint log recording commits, which is a record shape and a format version.
+- **Committing a turn still does not offer to squash.** The checkpoint log now
+  records which turns are in `HEAD`, so committing turn 5 while turn 4 is
+  uncommitted says so first — and says something sharper when the two share a
+  file, because `git commit -- <paths>` takes what those paths hold now and
+  would carry turn 4's edits in wearing turn 5's message. What is still missing
+  is the other half: nothing offers to commit a run of turns as one. That is not
+  a record shape any more, it is a second commit path with its own message
+  editor and its own failure modes, and it has not been built. See
+  [Committing a turn](safety.md#committing-a-turn).
+- **A committed turn can still be rewound, deliberately.** Rewinding past a turn
+  you committed restores the files and leaves the commit in place, so the tree
+  no longer matches it. That is still true and is not going to change — it is
+  your tree, and there are good reasons to want the files back regardless. What
+  has changed is that the rewind plan now names the commit and what to do about
+  it (`git revert`, `git reset`) before you press anything, rather than letting
+  you find out afterwards. The one thing it will not do is refuse: a rewind that
+  second-guessed you would be a worse tool than one that tells you.
 - **Nothing makes a model write a note either.** `remember` is offered and the
   prompt says when to reach for it, and that is the end of the harness's
   leverage — the same limit `update_plan` has, for the same reason. A model that
@@ -136,12 +158,14 @@ Each entry says what is missing, and what covering it would cost.
   message. It cannot tell whether a follow-up continues the task or changes the
   subject, so a model that ignores the label works the old checklist against the
   new request.
-- **A branch is recorded, not enforced.** A conversation started on `feat/x` and
-  resumed on `main` is labelled in the rail and nothing more — its rewind will
-  still restore pre-images from a tree that is no longer checked out, and its
-  file references still point where they pointed. Refusing or warning at the
-  moment of a rewind would be the useful version; it needs the branch carried
-  into the checkpoint log rather than only the transcript header.
+- **A branch is warned about, not enforced.** A conversation started on `feat/x`
+  and resumed on `main` is labelled in the rail, each of its turns records the
+  branch it began on, and a rewind that would write those pre-images over a
+  different tree says so beside the plan. It still does not refuse, and its file
+  references still point where they pointed. Refusing is the version that has
+  not been built and probably should not be: a rewind onto another branch is
+  occasionally exactly what someone means, and the warning is what separates
+  that from the accident.
 - **A sub-agent's answer is summarized, not streamed.** Its tool calls appear
   under the delegation card as it makes them, so a long delegation looks alive
   rather than hung, but its reasoning and prose stay inside the child. That part
@@ -157,11 +181,20 @@ Each entry says what is missing, and what covering it would cost.
   transcripts: the parent's own record says a delegation happened, not where
   its child was written, so a reopened conversation's cards no longer offer to
   open one. The files are still there, and `--agents` still lists them.
-- **A custom agent's roster is frozen for the turn.** The set of sub-agents is
-  snapshotted when a turn starts, so an agent file saved mid-turn is not visible
-  until the next one. The drawer rescans on open, which covers editing; a file
-  watcher would close the rest, and is a surface — config reloads racing a
-  running turn — worth opening deliberately rather than as a side effect.
+- **A custom agent's roster is frozen for the turn, on purpose.** The set of
+  sub-agents is snapshotted when a turn starts, so an agent file saved mid-turn
+  is not visible until the next one. That is now the whole of it: the
+  directories are checked at every turn boundary and rescanned when anything in
+  them moved, so a new agent is available on the next message rather than after
+  a reload or a trip to the drawer. The remaining freeze is the feature — a turn
+  must delegate against the roster it started with — and it is why there is no
+  file watcher here rather than an admission that one is missing. The
+  same-length-same-tick blind spot above applies to the check here too. One
+  surface still lags on purpose: the `/` command *menu* lists the last scan,
+  because it redraws on every keystroke and taking config locks there is how a
+  reload deadlocks against typing — typing the name in full works immediately,
+  and the menu catches up after the next message. See
+  [Sub-agents](capabilities.md#sub-agents).
 - **A proposed agent's system prompt is reviewed by eye, and nothing else.**
   `propose_agent` checks the shape — the name, the description, the tool scope,
   whether it duplicates an existing agent — but the prompt itself is prose, and
@@ -170,6 +203,22 @@ Each entry says what is missing, and what covering it would cost.
   shows it in full, unelided and editable, and nothing is written until you
   approve it. There is no check that reads what it says. See
   [Sub-agents](capabilities.md#sub-agents).
+- **Reading another client's directories is not the same as being that client.**
+  Taurus reads Claude's and GitHub Copilot's skills, sub-agents, and standing
+  instructions, because all three are formats it already understands. What it
+  does not do is behave like those clients. Copilot's scoped
+  `*.instructions.md` files declare an `applyTo` glob and are attached when
+  Copilot is about to touch a matching file; Taurus assembles a brief once per
+  turn, before it knows what the turn will touch, so it carries the glob into
+  the prompt as a sentence and leaves the model to apply it. That is a weaker
+  guarantee than Copilot's, and the file says so in as many words rather than
+  quietly behaving as though it were the same. Frontmatter keys these tools have
+  and Taurus does not — `handoffs`, `hooks`, `user-invocable` — are ignored
+  rather than honoured, which is why a borrowed file is never rewritten in
+  place. `.claude/rules`, which is Claude's spelling of the same scoped
+  instructions, is the one directory in this family still unread. See
+  [Instructions](capabilities.md#instructions).
+
 - **The agent will not install an MCP server for you.** `draft_mcp_server` hands
   back an entry; adding it is yours to do, in the MCP panel or in the file. The
   command line is the whole of what a review could show, and it does not say

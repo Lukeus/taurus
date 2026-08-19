@@ -117,8 +117,10 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
                   {/* Only for skills Taurus did not install. Where a borrowed
                       skill came from is the first thing you want to know about
                       it; where Taurus's own skills live is not news. */}
-                  {originLabel(skill.origin) && (
-                    <span className="tag">{originLabel(skill.origin)}</span>
+                  {originLabel(skill.origin, skill.tier) && (
+                    <span className="tag">
+                      {originLabel(skill.origin, skill.tier)}
+                    </span>
                   )}
                   {skill.degraded && <span className="tag warn">degraded</span>}
                 </div>
@@ -214,13 +216,24 @@ const TIER_LABEL: Record<SkillSummary["tier"], string> = {
  * The directory name rather than a friendlier word, because that is what you
  * will type to go find it. `taurus` returns null on purpose: it is the default
  * location, and a badge saying so on every row is one nobody reads.
+ *
+ * Copilot is the one origin that needs the tier as well, because it is the one
+ * whose two directories are not named the same: a repository's skills sit in
+ * `.github` beside everything else GitHub reads, and a person's in a dotdir of
+ * Copilot's own. Returning one name for both would send half the readers to a
+ * folder that is not there.
  */
-export function originLabel(origin: SkillSummary["origin"]): string | null {
+export function originLabel(
+  origin: SkillSummary["origin"],
+  tier: SkillSummary["tier"],
+): string | null {
   switch (origin) {
     case "agents":
       return ".agents";
     case "claude":
       return ".claude";
+    case "copilot":
+      return tier === "project" ? ".github" : ".copilot";
     case "taurus":
       return null;
   }
@@ -256,6 +269,10 @@ export function InstructionsSection({
           <span className="name">{entry.source.path}</span>
           <span className="value">
             {entry.source.tier === "project" ? "project" : "personal"}
+            {/* A rule about some files rather than all of them. Shown because
+                a brief listed without its scope reads as one that always
+                applies, which is the opposite of what it says. */}
+            {entry.applies_to && ` \u00b7 ${entry.applies_to}`}
             {entry.truncated && " \u00b7 truncated"}
           </span>
         </div>

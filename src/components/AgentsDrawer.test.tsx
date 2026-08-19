@@ -18,6 +18,7 @@ const agent = (patch: Partial<AgentSummary> = {}): AgentSummary => ({
   max_iterations: 20,
   model: null,
   provider: null,
+  forks_on_edit: false,
   shadows: null,
   degraded: null,
   path: "/home/me/.taurus/agents/reviewer.md",

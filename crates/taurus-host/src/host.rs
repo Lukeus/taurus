@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use taurus_agents::catalog::{AgentCatalog, AgentSource, SharedAgentCatalog};
+use taurus_agents::catalog::{AgentCatalog, SharedAgentCatalog};
 use taurus_agents::proposal::AgentProposalSink;
 use taurus_agents::{AgentDefinition, AgentSummary, AgentTier};
 use taurus_core::{Agent, AgentConfig, AgentModel, ModelOverrides, ProposeAgent, SpawnSubagent};
@@ -40,6 +40,7 @@ use taurus_tools::{
 
 use crate::command;
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
+use crate::freshness::Freshness;
 use crate::instructions::{self, Instructions};
 use crate::mcp_view::{LayerOf, McpServerView};
 use crate::memory;
@@ -108,11 +109,15 @@ pub struct Host {
     providers: RwLock<Vec<ProviderConfig>>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
-    /// The standing brief for this machine and this workspace, re-read on every
-    /// reload. Held rather than read per turn for the reason the skill catalog
-    /// is: this is six `stat`s and a handful of file reads, and a turn is not
-    /// the place to pay for them again.
+    /// The standing brief for this machine and this workspace. Held rather
+    /// than read per turn, because reading it is six `stat`s and a handful of
+    /// file reads and a turn is not the place to pay for them again — but
+    /// checked per turn, which is one `stat` each and is. See
+    /// [`Self::refresh_for_turn`].
     instructions: RwLock<Vec<Instructions>>,
+    /// What the held instructions were read from, so a turn can tell in a few
+    /// `stat`s whether reading them again would produce anything different.
+    instructions_seen: RwLock<Freshness>,
     /// The sub-agent roster. Seeded with the built-ins so `explorer` and
     /// `worker` work before anything has been scanned.
     ///
@@ -120,9 +125,16 @@ pub struct Host {
     /// against the roster as it stands now. A turn delegates against a frozen
     /// snapshot; a duplicate check has to see the live set.
     agents: SharedAgentCatalog,
-    /// Each agent's `(provider, model)`, resolved once per reload. Resolving it
-    /// here rather than per turn keeps a keychain read off the hot path.
+    /// Each agent's `(provider, model)`, resolved when the roster is scanned.
+    /// Resolving it there rather than per turn keeps a keychain read off the
+    /// hot path — which is also why a turn checks the roster's fingerprint
+    /// before rescanning it. See [`Self::refresh_for_turn`].
     agent_models: RwLock<ModelOverrides>,
+    /// What the held roster was scanned from. Compared per turn; the scan it
+    /// guards parses every agent file, cross-checks each one's tools, and can
+    /// reach the OS keychain, so learning that nothing moved has to be cheaper
+    /// than that by a wide margin.
+    agents_seen: RwLock<Freshness>,
     /// Shared rather than owned so sub-agents can be handed the same registry:
     /// it has no spawn tool, which is what caps delegation depth.
     registry: Arc<RwLock<ToolRegistry>>,
@@ -172,8 +184,10 @@ impl Host {
             workspace: RwLock::new(workspace),
             catalog: Arc::new(RwLock::new(SkillCatalog::default())),
             instructions: RwLock::new(Vec::new()),
+            instructions_seen: RwLock::new(Freshness::default()),
             agents: Arc::new(RwLock::new(AgentCatalog::default())),
             agent_models: RwLock::new(ModelOverrides::new()),
+            agents_seen: RwLock::new(Freshness::default()),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             permissions: RwLock::new(permissions),
             mcp: McpManager::new(),
@@ -230,14 +244,9 @@ impl Host {
 
         // Re-read on every reload for the reason providers are: these files
         // belong to the workspace, and a switch changes which of them exist.
-        let (loaded, instruction_problems) =
-            instructions::load(instructions::sources(Some(&workspace)));
-        info!(files = loaded.len(), "instructions loaded");
-        problems.extend(Problem::tag(
-            ProblemSource::Instructions,
-            instruction_problems,
-        ));
-        *self.instructions.write().await = loaded;
+        // Through the same call a turn makes, so the two cannot come to
+        // disagree about what an instruction file is.
+        problems.extend(self.load_instructions(&workspace).await);
 
         let mut registry = ToolRegistry::with_builtins();
         registry.register(Arc::new(taurus_skills::LoadSkill::new(
@@ -387,6 +396,91 @@ impl Host {
         *self.problems.write().await = problems;
     }
 
+    /// Reads the standing brief and installs it, returning what to report.
+    ///
+    /// One path for the reload and the per-turn check, so the fingerprint that
+    /// decides whether to read again is always taken from the files the read
+    /// actually depended on — sources *and* the imports they pulled in, which
+    /// are only knowable by having read them.
+    ///
+    /// Stamped after the read rather than before, which is the opposite of what
+    /// [`Self::load_agents`] does, and for a reason the roster does not have: a
+    /// newly added import is not in any earlier list, so a fingerprint taken
+    /// beforehand could not name it and would never settle. The cost is a
+    /// window of one read — a file edited in the microseconds between being
+    /// read and being stamped waits for its next change to be noticed. That is
+    /// the same class of blind spot [`crate::freshness`] already documents, and
+    /// this window is at a turn boundary rather than across a whole turn.
+    async fn load_instructions(&self, workspace: &Path) -> Vec<Problem> {
+        let loaded = instructions::load(instructions::sources(Some(workspace)));
+        info!(files = loaded.instructions.len(), "instructions loaded");
+        // Files plus directories. The named briefs and whatever they import are
+        // watched by name; Copilot's scoped instructions live in a folder, so
+        // that is watched by rule — otherwise the first file written into an
+        // empty `.github/instructions` would be one nothing was looking for.
+        *self.instructions_seen.write().await =
+            Freshness::of_files(loaded.read.iter().map(PathBuf::as_path)).and(Freshness::of_dirs(
+                instructions::scoped_dirs(Some(workspace))
+                    .iter()
+                    .map(PathBuf::as_path),
+                instructions::SCOPED_SUFFIX,
+                true,
+            ));
+        *self.instructions.write().await = loaded.instructions;
+        Problem::tag(ProblemSource::Instructions, loaded.problems)
+    }
+
+    /// Re-reads the config this turn is about to be built from.
+    ///
+    /// Called from the two places a turn begins — [`Self::expand_command`],
+    /// which resolves a leading `/name` before anything else happens, and
+    /// [`Self::build_agent`], which assembles everything else. Both, because a
+    /// `/reviewer` typed at an agent written a moment ago is resolved before
+    /// the agent is ever built, so refreshing only in the second would leave
+    /// the new agent unreachable by the name it was given. Calling it twice
+    /// costs a second `stat` of each file: the first call moves the
+    /// fingerprint, and the second finds nothing to do.
+    ///
+    /// A turn boundary is the only moment any of this is safe to swap. Taurus does not
+    /// watch these files: a watcher fires whenever an editor happens to save,
+    /// which is routinely the middle of a running turn — and the roster a turn
+    /// delegates against, and the brief it was given, have to be the ones it
+    /// started with. Here nothing is in flight, and the turn about to start is
+    /// the earliest one that could have used the change anyway. See
+    /// [`crate::freshness`].
+    ///
+    /// Both halves are gated on a fingerprint rather than read outright,
+    /// because both cost more than a `stat`: instructions are a handful of file
+    /// reads and an import resolution, and a roster scan parses every agent
+    /// file, cross-checks its tools, and can reach the OS keychain.
+    async fn refresh_for_turn(&self) {
+        let workspace = self.workspace.read().await.clone();
+
+        // Against the files the last read depended on, restated — not against
+        // the source list. The two are different sets whenever a brief imports
+        // anything, and comparing across them would never be equal, which is a
+        // gate that is always open rather than a gate.
+        let seen = self.instructions_seen.read().await.clone();
+        if seen != seen.refreshed() {
+            let found = self.load_instructions(&workspace).await;
+            self.replace_problems(ProblemSource::Instructions, found)
+                .await;
+        }
+
+        if *self.agents_seen.read().await
+            != agent_freshness(&config::agent_sources(Some(&workspace)))
+        {
+            self.rescan_agents().await;
+        }
+    }
+
+    /// Swaps out every problem from one source, leaving the others alone.
+    async fn replace_problems(&self, source: ProblemSource, found: Vec<Problem>) {
+        let mut problems = self.problems.write().await;
+        problems.retain(|p| p.source != source);
+        problems.extend(found);
+    }
+
     /// Rescans the agent directories without touching anything else.
     ///
     /// The whole authoring surface for an agent is a text editor, so a drawer
@@ -404,25 +498,19 @@ impl Host {
             .map(str::to_string)
             .collect();
         let found = self.load_agents(&workspace, &available).await;
-
-        let mut problems = self.problems.write().await;
-        problems.retain(|p| p.source != ProblemSource::Agents);
-        problems.extend(found);
+        self.replace_problems(ProblemSource::Agents, found).await;
     }
 
     /// Discovers the roster, checks it against `available`, resolves its
     /// models, and installs it. Returns what to report.
     async fn load_agents(&self, workspace: &Path, available: &[String]) -> Vec<Problem> {
-        let (mut agents, errors) = AgentCatalog::discover(&[
-            AgentSource {
-                tier: AgentTier::User,
-                dir: config::user_agents_dir(),
-            },
-            AgentSource {
-                tier: AgentTier::Project,
-                dir: config::workspace_agents_dir(workspace),
-            },
-        ]);
+        let sources = config::agent_sources(Some(workspace));
+        // Taken before the scan, for the reason `load_instructions` takes its
+        // own before reading: a file saved while this runs has to leave the
+        // fingerprint stale rather than be recorded as already seen.
+        *self.agents_seen.write().await = agent_freshness(&sources);
+
+        let (mut agents, errors) = AgentCatalog::discover(&sources);
         info!(
             agents = agents.len(),
             problems = errors.len(),
@@ -625,6 +713,9 @@ impl Host {
 
     /// Builds the agent for one turn.
     ///
+    /// Re-reads config first — see [`Self::refresh_for_turn`] for why a turn
+    /// boundary is where that belongs.
+    ///
     /// The single place system prompt, tool set, sub-agent wiring, and the
     /// turn's checkpoint come together, so the CLI and the desktop app cannot
     /// disagree about how an agent is configured — or about whether a turn is
@@ -636,6 +727,10 @@ impl Host {
         cancel: CancellationToken,
         turn: TurnRef<'_>,
     ) -> Agent {
+        // Before anything is read out of the host, so the snapshot below and
+        // the prompt built further down both see the same, current config.
+        self.refresh_for_turn().await;
+
         // Bound to this session's provider and model, so it is added per turn
         // rather than living in the shared registry. Children get the shared
         // registry, which has no spawn tool — that is the depth cap.
@@ -954,21 +1049,39 @@ impl Host {
     /// surprises whoever finds the file later.
     pub async fn set_agent_iterations(&self, name: &str, limit: u32) -> Result<String, String> {
         let limit = limit.clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT);
+        let workspace = self.workspace.read().await.clone();
 
-        let (mut definition, path) = {
+        let (mut definition, path, forks) = {
             let catalog = self.agents.read().await;
             let definition = catalog
                 .get(name)
                 .ok_or_else(|| format!("no agent named '{name}'"))?
                 .clone();
-            // A built-in is the only case with nothing to write back to.
-            let path = definition.path.clone().unwrap_or_else(|| {
-                config::user_agents_dir().join(format!("{}.md", definition.name()))
-            });
-            (definition, path)
+            // A built-in has nothing to write back to; a borrowed file is not
+            // ours to rewrite, because `write_to` serializes the frontmatter
+            // Taurus knows and would drop whatever the other client put there.
+            // Both fork into a Taurus-owned file that shadows the original.
+            //
+            // Into the *same tier*, which is the part that is easy to get
+            // wrong. A built-in is below both tiers, so a user-tier copy
+            // shadows it — but a borrowed project agent is not, and a user-tier
+            // copy of one would sit underneath the file it was meant to
+            // override and change nothing. Within a tier the Taurus directory
+            // is read last, so a copy beside a borrowed file wins.
+            let forks = definition.path.is_none() || definition.borrowed;
+            let path = match (forks, definition.tier) {
+                (false, _) => definition
+                    .path
+                    .clone()
+                    .expect("not forking means there is a file"),
+                (true, AgentTier::Project) => config::workspace_agents_dir(&workspace)
+                    .join(format!("{}.md", definition.name())),
+                (true, _) => config::user_agents_dir().join(format!("{}.md", definition.name())),
+            };
+            (definition, path, forks)
         };
 
-        if definition.frontmatter.max_iterations == limit && definition.path.is_some() {
+        if definition.frontmatter.max_iterations == limit && !forks {
             return Ok(path.display().to_string());
         }
         definition.frontmatter.max_iterations = limit;
@@ -1242,11 +1355,23 @@ impl Host {
         &self,
         text: &str,
     ) -> Option<Result<command::Invocation, command::CommandError>> {
+        // This is the first thing a turn does, and the roster it resolves
+        // against has to include the agent written since the last one — see
+        // `refresh_for_turn`. Deliberately not in `commands()` beside it: that
+        // one answers a keystroke, and taking config write locks on the
+        // completion path is how a reload comes to deadlock against typing.
+        self.refresh_for_turn().await;
         self.rosters(|rosters| rosters.expand(text)).await
     }
 
     /// Skills and sub-agents a person can run as `/name`, for completion as
     /// they type.
+    ///
+    /// Lists what the last scan found rather than rescanning: this is a
+    /// keystroke path. An agent written a moment ago is missing from the menu
+    /// until something rescans — the next turn does, and so does opening the
+    /// Agents drawer — but typing its name in full works immediately, because
+    /// [`Self::expand_command`] refreshes before it resolves.
     pub async fn commands(&self) -> Vec<command::CommandSummary> {
         self.rosters(|rosters| rosters.summaries()).await
     }
@@ -1574,6 +1699,15 @@ fn disable(registry: &mut ToolRegistry, disabled: &[String]) -> Vec<String> {
         }
     }
     unmatched
+}
+
+/// The fingerprint of everywhere an agent could be defined.
+///
+/// `.md` and not `.agent.md`, because both spellings are read: Copilot's
+/// doubled extension still ends in `.md`, and narrowing the suffix would leave
+/// a Taurus-native file in the same folder unwatched.
+fn agent_freshness(sources: &[taurus_agents::AgentSource]) -> Freshness {
+    Freshness::of_dirs(sources.iter().map(|s| s.dir.as_path()), ".md", false)
 }
 
 /// Intersects every agent's `tools:` list with the finished registry, returning
@@ -2369,6 +2503,475 @@ mod tests {
             )
             .await;
         agent.registry().names().map(str::to_string).collect()
+    }
+
+    /// Builds a turn's agent and throws it away.
+    ///
+    /// The turn boundary is where config is re-read, and `build_agent` is the
+    /// boundary — so this is what "the user sent another message" looks like
+    /// from the outside.
+    async fn a_turn(host: &Host) {
+        host.build_agent(
+            taurus_core::testing::FakeProvider::new(Vec::new()),
+            "test-model",
+            CancellationToken::new(),
+            TurnRef {
+                session_id: "s1",
+                prompt: "hello",
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_file_saved_between_turns_is_there_for_the_next_one() {
+        // Editing an agent and having to reload the app, or remember to open a
+        // drawer, is the feature not working. A turn boundary is the first
+        // moment the new file could have been used and the last moment it is
+        // safe to swap the roster.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert_eq!(host.agents().await.len(), builtins());
+
+        write_agent(&workspace, "late-arrival", "");
+        a_turn(&host).await;
+
+        assert!(host.agents().await.iter().any(|a| a.name == "late-arrival"));
+    }
+
+    /// A GitHub Copilot agent, in Copilot's directory and spelling.
+    fn write_copilot_agent(workspace: &Path, name: &str, extra: &str) {
+        let dir = workspace.join(".github/agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{name}.agent.md")),
+            format!("---\nname: {name}\ndescription: does {name}\n{extra}---\n\nBe {name}.\n"),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_agent_written_for_copilot_is_read_where_copilot_keeps_it() {
+        // The same rule the skill library follows: a definition written for
+        // another client works here without being moved. Copilot's agents are
+        // frontmatter plus a system prompt, which is what Taurus's are.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_copilot_agent(&workspace, "reviewer", "");
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let reviewer = host
+            .agents()
+            .await
+            .into_iter()
+            .find(|a| a.name == "reviewer")
+            .expect("a .github/agents file is an agent");
+        assert_eq!(reviewer.tier, AgentTier::Project);
+        assert!(
+            reviewer
+                .path
+                .as_ref()
+                .unwrap()
+                .ends_with("reviewer.agent.md"),
+            "the doubled extension is Copilot's spelling, not a typo: {reviewer:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_copilot_agent_is_named_without_its_doubled_extension() {
+        // `reviewer.agent.md` names `reviewer`. Taking the plain file stem
+        // would look for an agent called `reviewer.agent`, find that the
+        // frontmatter disagrees, and refuse a perfectly good file.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_copilot_agent(&workspace, "reviewer", "");
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(
+            agent_problems(&host.problems().await).is_empty(),
+            "{:?}",
+            host.problems().await
+        );
+        let invocation = host
+            .expand_command("/reviewer look at this")
+            .await
+            .expect("a leading slash is a command")
+            .expect("and the agent is named `reviewer`");
+        assert_eq!(invocation.name, "reviewer");
+    }
+
+    #[tokio::test]
+    async fn an_agent_of_your_own_wins_over_a_borrowed_one_of_the_same_name() {
+        // The skill library's rule, and for the same reason: you can override
+        // something you did not write without editing it.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_copilot_agent(&workspace, "reviewer", "");
+        write_agent(&workspace, "reviewer", "");
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let reviewer = host
+            .agents()
+            .await
+            .into_iter()
+            .find(|a| a.name == "reviewer")
+            .unwrap();
+        assert!(
+            reviewer
+                .path
+                .as_ref()
+                .unwrap()
+                .ends_with(".taurus/agents/reviewer.md"),
+            "yours is the one that runs: {reviewer:?}"
+        );
+        assert!(!reviewer.forks_on_edit, "and it is yours to edit in place");
+    }
+
+    #[tokio::test]
+    async fn retuning_a_borrowed_agent_writes_a_copy_and_leaves_the_original_alone() {
+        // The hazard this exists for. `write_to` serializes the frontmatter
+        // Taurus knows and nothing else, so rewriting a Copilot file in place
+        // would silently delete every key Copilot has that Taurus does not —
+        // `handoffs`, `hooks`, `user-invocable` — out of a file that is usually
+        // committed and that another tool is still reading.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_copilot_agent(&workspace, "reviewer", "handoffs: [tester]\n");
+        let original = workspace.join(".github/agents/reviewer.agent.md");
+        let before = std::fs::read_to_string(&original).unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert!(
+            host.agents()
+                .await
+                .iter()
+                .find(|a| a.name == "reviewer")
+                .unwrap()
+                .forks_on_edit,
+            "the drawer has to be able to say so before the field is used"
+        );
+
+        let written = host.set_agent_iterations("reviewer", 42).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&original).unwrap(),
+            before,
+            "Copilot's file is not ours to rewrite"
+        );
+        assert!(
+            before.contains("handoffs"),
+            "the fixture is testing something"
+        );
+        assert_eq!(
+            PathBuf::from(&written),
+            config::workspace_agents_dir(&workspace).join("reviewer.md"),
+            "beside the file it overrides, not in a tier underneath it"
+        );
+        assert_eq!(
+            host.agents()
+                .await
+                .iter()
+                .find(|a| a.name == "reviewer")
+                .unwrap()
+                .max_iterations,
+            42,
+            "and it shadows the original"
+        );
+    }
+
+    #[tokio::test]
+    async fn retuning_a_built_in_still_writes_its_copy_into_the_user_tier() {
+        // The case the tier rule must not break. A built-in sits below both
+        // tiers, so a user-tier copy shadows it everywhere — including in
+        // workspaces that have no `.taurus/agents` at all.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let written = host.set_agent_iterations("worker", 42).await.unwrap();
+
+        assert_eq!(
+            PathBuf::from(&written),
+            config::user_agents_dir().join("worker.md")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_written_for_claude_is_read_where_claude_keeps_it() {
+        // `.claude/skills` has always been read. Agents are the same kind of
+        // file in the same dotdir, and not reading them was an inconsistency
+        // rather than a decision.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let agents = workspace.join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("reviewer.md"),
+            "---\nname: reviewer\ndescription: reviews a diff\n---\n\nBe terse.\n",
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let reviewer = host
+            .agents()
+            .await
+            .into_iter()
+            .find(|a| a.name == "reviewer")
+            .expect("a .claude/agents file is an agent");
+        assert!(
+            reviewer.forks_on_edit,
+            "and it is not ours to rewrite either"
+        );
+    }
+
+    #[tokio::test]
+    async fn copilots_repository_brief_is_read_as_a_standing_brief() {
+        // `.github/copilot-instructions.md` is exactly what Taurus means by a
+        // brief: one file, whole workspace, every turn.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".github")).unwrap();
+        std::fs::write(
+            workspace.join(".github/copilot-instructions.md"),
+            "Prefer small commits.\n",
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(host.system_prompt().await.contains("Prefer small commits"));
+    }
+
+    #[tokio::test]
+    async fn a_scoped_copilot_instruction_reaches_the_prompt_with_its_glob() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let scoped = workspace.join(".github/instructions");
+        std::fs::create_dir_all(&scoped).unwrap();
+        std::fs::write(
+            scoped.join("rust.instructions.md"),
+            "---\napplyTo: \"**/*.rs\"\n---\n\nNo unwrap in library code.\n",
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let prompt = host.system_prompt().await;
+        assert!(prompt.contains("No unwrap in library code"), "{prompt}");
+        assert!(
+            prompt.contains("applies to files matching `**/*.rs`"),
+            "a rule about some files has to say which: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scoped_instruction_with_no_apply_to_is_left_out_and_the_user_is_told() {
+        // Silently dropping it would leave someone with a file they wrote,
+        // sitting in the right folder, doing nothing, with no way to find out
+        // why. The drawer reads instruction problems alongside skill ones.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let scoped = workspace.join(".github/instructions");
+        std::fs::create_dir_all(&scoped).unwrap();
+        std::fs::write(
+            scoped.join("manual.instructions.md"),
+            "---\ndescription: only when asked\n---\n\nDo not carry this.\n",
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(!host.system_prompt().await.contains("Do not carry this"));
+        let reported = host
+            .problems_from(&[ProblemSource::Instructions])
+            .await
+            .into_iter()
+            .map(|p| p.message)
+            .collect::<Vec<_>>();
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert!(reported[0].contains("applyTo"), "{reported:?}");
+    }
+
+    #[tokio::test]
+    async fn a_scoped_instruction_written_between_turns_is_found_in_an_empty_folder() {
+        // The case a fingerprint of known files could not catch. Nothing was
+        // watching `rust.instructions.md` before it existed, so the folder has
+        // to be what is watched.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".github/instructions")).unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert!(host.instructions().await.is_empty());
+
+        std::fs::write(
+            workspace.join(".github/instructions/rust.instructions.md"),
+            "---\napplyTo: \"**\"\n---\n\nNo unwrap in library code.\n",
+        )
+        .unwrap();
+        a_turn(&host).await;
+
+        assert_eq!(host.instructions().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_skill_written_for_copilot_is_read_where_copilot_keeps_it() {
+        // Copilot reads the same SKILL.md specification, so this costs a
+        // directory in the source list and no second parser.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let skill = workspace.join(".github/skills/release-notes");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: release-notes\n\
+             description: Writes the release notes for a milestone.\n---\n\
+             Read the merged PRs and write the notes.",
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        let skills = host.skills().await;
+        let found = skills
+            .iter()
+            .find(|s| s.name == "release-notes")
+            .expect("a .github/skills entry is a skill");
+        assert_eq!(found.origin, taurus_skills::SkillOrigin::Copilot);
+        assert_eq!(found.tier, taurus_skills::SkillTier::Project);
+    }
+
+    #[tokio::test]
+    async fn an_agent_written_since_the_last_turn_answers_to_its_own_name() {
+        // The `/name` path resolves before the turn's agent is built, so a
+        // refresh that only happened during the build left a just-written agent
+        // unreachable by the name it was given — "there is no agent named
+        // 'oracle'", about a file sitting right there.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert!(host.expand_command("/oracle speak").await.unwrap().is_err());
+
+        write_agent(&workspace, "oracle", "");
+
+        let invocation = host
+            .expand_command("/oracle speak")
+            .await
+            .expect("a leading slash is a command")
+            .expect("and the agent it names was written before this turn began");
+        assert_eq!(invocation.name, "oracle");
+    }
+
+    #[tokio::test]
+    async fn an_agent_file_deleted_between_turns_is_gone_by_the_next_one() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_agent(&workspace, "doomed", "");
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert!(host.agents().await.iter().any(|a| a.name == "doomed"));
+
+        std::fs::remove_file(workspace.join(".taurus/agents/doomed.md")).unwrap();
+        a_turn(&host).await;
+
+        assert!(!host.agents().await.iter().any(|a| a.name == "doomed"));
+    }
+
+    #[tokio::test]
+    async fn a_broken_agent_file_fixed_between_turns_stops_being_a_problem() {
+        // The problem list is what tells the user their agent is not loading.
+        // Leaving a fixed one on it is the same failure in the other direction.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus/agents")).unwrap();
+        let broken = workspace.join(".taurus/agents/broken.md");
+        std::fs::write(&broken, "not an agent file").unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert_eq!(agent_problems(&host.problems().await).len(), 1);
+
+        std::fs::remove_file(&broken).unwrap();
+        a_turn(&host).await;
+
+        assert!(agent_problems(&host.problems().await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_edited_brief_reaches_the_next_turn() {
+        // `AGENTS.md` is the file people actually edit while a conversation is
+        // open — that is what a standing brief is for. Landing on the next app
+        // launch instead of the next message made it feel unwired.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::write(workspace.join("AGENTS.md"), "Use tabs.\n").unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert!(host.instructions().await[0].body.contains("Use tabs"));
+
+        std::fs::write(workspace.join("AGENTS.md"), "Use spaces, always.\n").unwrap();
+        a_turn(&host).await;
+
+        assert!(host.instructions().await[0].body.contains("Use spaces"));
+    }
+
+    #[tokio::test]
+    async fn a_brief_created_between_turns_is_read_by_the_next_one() {
+        // Absence has to be watched as well as content: a workspace that had no
+        // AGENTS.md and now has one is the first time the feature does anything
+        // at all for that project.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert!(host.instructions().await.is_empty());
+
+        std::fs::write(workspace.join("AGENTS.md"), "Ship it.\n").unwrap();
+        a_turn(&host).await;
+
+        assert_eq!(host.instructions().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn editing_a_file_the_brief_imports_reaches_the_next_turn() {
+        // The case a fingerprint of the source paths alone would miss. A
+        // `CLAUDE.md` whose whole content is `@RTK.md` never changes; the file
+        // holding every word of the brief is the one being edited.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::write(workspace.join("CLAUDE.md"), "@RULES.md\n").unwrap();
+        std::fs::write(workspace.join("RULES.md"), "Use tabs.\n").unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert!(host.instructions().await[0].body.contains("Use tabs"));
+
+        std::fs::write(workspace.join("RULES.md"), "Use spaces, always.\n").unwrap();
+        a_turn(&host).await;
+
+        assert!(
+            host.instructions().await[0].body.contains("Use spaces"),
+            "an imported file is part of the brief, so it is part of what is watched"
+        );
     }
 
     #[tokio::test]

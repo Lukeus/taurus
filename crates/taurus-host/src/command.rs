@@ -287,6 +287,7 @@ mod tests {
 
     fn agents(dir: &Path) -> AgentCatalog {
         AgentCatalog::discover(&[AgentSource {
+            borrowed: false,
             tier: AgentTier::User,
             dir: dir.to_path_buf(),
         }])

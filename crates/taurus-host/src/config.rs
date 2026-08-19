@@ -17,6 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use taurus_agents::{AgentSource, AgentTier};
 use taurus_skills::{SkillOrigin, SkillSource, SkillTier};
 use ts_rs::TS;
 
@@ -32,6 +33,13 @@ pub const AGENTS_DIR_NAME: &str = ".agents";
 /// already installed here, and copying them into `.taurus` to use them would
 /// leave the user maintaining two of everything.
 pub const CLAUDE_DIR_NAME: &str = ".claude";
+
+/// Where GitHub Copilot keeps a person's own customizations.
+pub const COPILOT_DIR_NAME: &str = ".copilot";
+
+/// Where GitHub Copilot keeps a repository's, which is not a dotdir of its own
+/// but the folder the repository already has for everything GitHub reads.
+pub const GITHUB_DIR_NAME: &str = ".github";
 
 /// Overrides the config location. Set by tests so they cannot write to the
 /// real `~/.taurus`, and usable to run an isolated instance.
@@ -83,6 +91,60 @@ pub fn config_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
         .into_iter()
         .filter_map(|scope| scope_dir(scope, workspace))
         .collect()
+}
+
+/// Every directory a sub-agent can be defined in, lowest precedence first.
+///
+/// Claude's and Copilot's as well as Taurus's own, because all three keep the
+/// same thing there: frontmatter naming the agent and a markdown body that is
+/// its system prompt.
+///
+/// The skill list's shape, and for the same reasons — read the locations other
+/// clients already write to, so an agent written for one of them works here
+/// without being moved, and read Taurus's own last so a name you wrote wins
+/// over a borrowed one you did not.
+///
+/// Copilot's are marked borrowed: Taurus reads them and never writes back. See
+/// [`taurus_agents::AgentDefinition::borrowed`].
+pub fn agent_sources(workspace: Option<&Path>) -> Vec<AgentSource> {
+    let borrowed = |tier, dir| AgentSource {
+        tier,
+        dir,
+        borrowed: true,
+    };
+    let mut sources = vec![
+        borrowed(
+            AgentTier::User,
+            home_root().join(CLAUDE_DIR_NAME).join("agents"),
+        ),
+        borrowed(
+            AgentTier::User,
+            home_root().join(COPILOT_DIR_NAME).join("agents"),
+        ),
+        AgentSource {
+            tier: AgentTier::User,
+            dir: user_agents_dir(),
+            borrowed: false,
+        },
+    ];
+    if let Some(workspace) = workspace {
+        sources.push(borrowed(
+            AgentTier::Project,
+            workspace.join(CLAUDE_DIR_NAME).join("agents"),
+        ));
+        sources.push(borrowed(
+            AgentTier::Project,
+            // `.github/agents`, matching where Copilot reads a repository's —
+            // the same tier split `skill_sources` has for the same origin.
+            workspace.join(GITHUB_DIR_NAME).join("agents"),
+        ));
+        sources.push(AgentSource {
+            tier: AgentTier::Project,
+            dir: workspace_agents_dir(workspace),
+            borrowed: false,
+        });
+    }
+    sources
 }
 
 pub fn user_skills_dir() -> PathBuf {
@@ -139,6 +201,11 @@ pub fn skill_sources(workspace: Option<&Path>) -> Vec<SkillSource> {
         SkillOrigin::Claude,
         home.join(CLAUDE_DIR_NAME).join("skills"),
     );
+    push(
+        SkillTier::User,
+        SkillOrigin::Copilot,
+        home.join(COPILOT_DIR_NAME).join("skills"),
+    );
     push(SkillTier::User, SkillOrigin::Taurus, user_skills_dir());
 
     if let Some(workspace) = workspace {
@@ -151,6 +218,14 @@ pub fn skill_sources(workspace: Option<&Path>) -> Vec<SkillSource> {
             SkillTier::Project,
             SkillOrigin::Claude,
             workspace.join(CLAUDE_DIR_NAME).join("skills"),
+        );
+        // `.github/skills`, not `.copilot/skills`: a repository's Copilot
+        // customizations live in the folder GitHub already reads, and a person's
+        // live in a dotdir. The one origin whose two tiers do not share a name.
+        push(
+            SkillTier::Project,
+            SkillOrigin::Copilot,
+            workspace.join(GITHUB_DIR_NAME).join("skills"),
         );
         push(
             SkillTier::Project,

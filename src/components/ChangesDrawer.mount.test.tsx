@@ -26,6 +26,14 @@ const TURN = {
   files: ["src/widget.rs"],
 };
 
+/** A second turn, uncommitted, so a commit of the first has something to strand. */
+const LATER_TURN = {
+  turn: 2,
+  prompt: "tidy the caller",
+  at: Math.floor(Date.now() / 1000),
+  files: ["src/main.rs"],
+};
+
 const DIFF = {
   kind: "diff",
   diff: {
@@ -275,6 +283,96 @@ describe("committing a turn", () => {
     const ui = await open();
 
     expect(ui.html()).toContain("detached at 9f8e7d6");
+    ui.unmount();
+  });
+});
+
+describe("what a rewind cannot put back", () => {
+  it("shows the warnings between the file list and the button", async () => {
+    // The whole point of moving these into the log: the sweep said it when
+    // the command ran, which can be days before anyone reaches for undo.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      rewind_to: {
+        restored: [{ action: "reverted", path: "src/widget.rs" }],
+        warnings: [
+          "Turn 1 moved git's own state. `git reflog` is the way back to where HEAD was.",
+        ],
+      },
+    });
+    const ui = await open();
+
+    await ui.click("Rewind to before this");
+    expect(ui.html()).toContain("git reflog");
+    expect(ui.html()).toContain("not undone");
+    ui.unmount();
+  });
+
+  it("keeps saying them after the rewind has run", async () => {
+    // A commit left pointing at a tree that no longer exists does not stop
+    // being a problem because the rewind finished.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      rewind_to: {
+        restored: [{ action: "reverted", path: "src/widget.rs" }],
+        warnings: ["Turn 1 was committed as abc1234."],
+      },
+    });
+    const ui = await open();
+
+    await ui.click("Rewind to before this");
+    await ui.click("Rewind to before turn 1");
+    expect(ui.html()).toContain("abc1234");
+    expect(ui.html()).toContain("still to sort out");
+    ui.unmount();
+  });
+
+  it("says nothing extra when there is nothing extra to say", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      rewind_to: {
+        restored: [{ action: "reverted", path: "src/widget.rs" }],
+        warnings: [],
+      },
+    });
+    const ui = await open();
+
+    await ui.click("Rewind to before this");
+    expect(ui.html()).not.toContain("not undone");
+    ui.unmount();
+  });
+});
+
+describe("a turn that is already kept", () => {
+  it("labels it with the commit it is in", async () => {
+    // Read from the log rather than from a click, so it survives closing the
+    // drawer and reopening the conversation.
+    backend({
+      list_checkpoints: [{ ...TURN, commit: "abc1234" }],
+      repo_status: { repository: false },
+    });
+    const ui = await open();
+
+    expect(ui.html()).toContain("committed abc1234");
+    ui.unmount();
+  });
+
+  it("warns before committing one turn over an earlier uncommitted one", async () => {
+    backend({
+      list_checkpoints: [TURN, LATER_TURN],
+      repo_status: { repository: true, branch: "main" },
+      turn_changes: [DIFF],
+    });
+    const ui = await open();
+
+    // Turn 2 is drawn first — the list is newest-first — so expanding it is
+    // the case that has turn 1 sitting uncommitted underneath.
+    await ui.click("View changes");
+    expect(ui.html()).toContain("Turn 1 changed files");
+    expect(ui.html()).toContain("out of order");
     ui.unmount();
   });
 });
