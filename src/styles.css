@@ -300,6 +300,25 @@ button:disabled {
   opacity: 0.4;
   cursor: default;
 }
+/*
+ * A filled button cannot be faded.
+ *
+ * `opacity` composites the whole element — fill, border and label together — so
+ * on a button whose label is only readable *because* it sits on the accent, the
+ * label goes down with the fill. Measured, disabled Send came out at 1.65:1 on
+ * the dark theme and 1.29:1 on the light one: not dimmed, gone. A disabled
+ * control still has to say what it is; it just must not look pressable.
+ *
+ * So the filled variant drops its fill instead of its opacity, and lands on the
+ * elevated surface with dim text — no accent anywhere, which is what carries
+ * "not right now" once the colour is gone.
+ */
+button.primary:disabled {
+  opacity: 1;
+  background: var(--bg-elevated);
+  border-color: var(--border);
+  color: var(--text-dim);
+}
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -340,9 +359,35 @@ textarea {
 textarea {
   resize: none;
 }
+/*
+ * The focus ring, and the one thing it has to survive: being drawn outside the
+ * control it belongs to.
+ *
+ * An outline is painted beyond the border box, so a control that fills a parent
+ * with `overflow: hidden` has its ring clipped away entirely — not thinned,
+ * removed. At the 1px offset this file shipped with, the fold control on every
+ * tool-call card was keyboard-focusable with nothing on screen to say so, and
+ * so were the column headers inside a table box. Those are turned inward below.
+ *
+ * Two pixels rather than one for everything else, because a ring in --accent
+ * sitting 1px off a button *filled* with --accent reads as a slightly thicker
+ * border rather than as a state. The gap is what makes it a ring. Two is also
+ * what the tightest run of controls in the app can afford: --r-sm gaps of 6px
+ * in a pill row leave 4px of ring on each side and 2px still between them.
+ */
 :focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
+}
+
+/*
+ * The controls that fill a clipping parent, turned inward. Inside the control
+ * is the only place their ring can be drawn and still be seen.
+ */
+.run-head:focus-visible,
+.run-row-head:focus-visible,
+.table-sort:focus-visible {
+  outline-offset: -2px;
 }
 
 code {
@@ -687,15 +732,25 @@ body.resizing * {
   color: var(--danger);
 }
 
+/*
+ * The one control in the rail that cannot be taken back, and it measured 23×23
+ * — the smallest target in the app, sitting against a row whose remaining
+ * 200-odd pixels select. Missing it is safe; missing the row is not, and the
+ * two were four pixels apart. The glyph stays 14px: what grows is the area
+ * around it, which is the part a pointer is aiming at.
+ */
 .rail-delete {
   flex: none;
   border: none;
   border-radius: var(--r-sm);
   background: transparent;
   padding: 5px;
+  min-width: 28px;
+  min-height: 28px;
   color: var(--text-faint);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
 }
 .rail-delete:hover:not(:disabled) {
   color: var(--danger);
@@ -2323,6 +2378,12 @@ body.resizing * {
   opacity: 1;
 }
 
+/* Three pixels from the corner of a parent that clips, so the ring gets the one
+   pixel of offset that fits rather than the two that would lose a side. */
+.attachment-remove:focus-visible {
+  outline-offset: 1px;
+}
+
 /* In the transcript the strip sits above the question and shares its left edge,
    so the picture and the question read as one message. */
 .turn-step.prompt .attachments {
@@ -2666,10 +2727,34 @@ body.resizing * {
   font-size: 12.5px;
   color: var(--text-dim);
 }
+/*
+ * A drawer with nothing in it. Eight places say this, and they say it well —
+ * most explain what would put something there. It means one thing: the read
+ * finished and the answer was empty.
+ */
 .drawer-empty {
   margin: 0;
   font-size: 13px;
   color: var(--text-dim);
+}
+/*
+ * The two states that used to borrow `.drawer-empty` and should not have.
+ *
+ * A panel still reading and a panel whose read *failed* are not empty results,
+ * but all three rendered as the same grey sentence — so a delegate transcript
+ * that could not be found read exactly like one that was found and held
+ * nothing. Failure takes the colour the rest of the app already gives failure;
+ * waiting says it is waiting.
+ */
+.drawer-loading {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+.drawer-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--danger);
 }
 .drawer-foot {
   margin-top: auto;

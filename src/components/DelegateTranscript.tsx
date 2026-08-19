@@ -72,10 +72,10 @@ export function DelegateTranscript({
             and nothing of it in the transcript that spawned it.
           </p>
 
-          {error && <p className="drawer-empty">{error}</p>}
+          {error && <p className="drawer-error">{error}</p>}
 
           {!error && entries === null && (
-            <p className="drawer-empty">Reading the transcript…</p>
+            <p className="drawer-loading">Reading the transcript…</p>
           )}
 
           {entries && (
