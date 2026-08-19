@@ -26,7 +26,7 @@ use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
-    McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus, Restored,
+    McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus, Rewind,
     SessionLog, SessionMeta, Settings, Theme, TurnChange, TurnRef,
 };
 
@@ -1495,7 +1495,7 @@ pub async fn rewind_to(
     session_id: String,
     turn: u32,
     dry_run: bool,
-) -> CmdResult<Vec<Restored>> {
+) -> CmdResult<Rewind> {
     // A turn holds this lock for its whole run. Rewinding underneath one would
     // race the tool calls still writing, and the disabled button in the UI is
     // not something the backend should have to trust.
@@ -1510,7 +1510,7 @@ pub async fn rewind_to(
     // is not there and reported nothing to undo — and had it found one, it
     // would have restored a different project's files.
     let workspace = session_workspace(&state, &session_id).await;
-    let restored =
+    let rewind =
         state
             .host
             .checkpoints_for(&workspace)
@@ -1524,7 +1524,7 @@ pub async fn rewind_to(
     if !dry_run {
         state.host.forget_plan(&session_id).await;
     }
-    Ok(restored)
+    Ok(rewind)
 }
 
 /// What one turn changed, file by file, as a diff.
@@ -1594,6 +1594,13 @@ pub async fn commit_turn(
         .ok_or("This workspace is not a git repository, so there is nothing to commit to.")?;
 
     let commit = repo.commit(&files, &message).await?;
+
+    // After the commit, because until git has made one there is no sha to write
+    // down. This is what lets the drawer say which turns are already in `HEAD`
+    // — so a commit of turn 5 can warn that turn 4 is not in one, and a rewind
+    // past turn 3 can say the commit it is about to orphan.
+    checkpoints.record_commit(&session_id, &workspace, turn, &commit.sha);
+
     info!(
         session = %session_id,
         turn,

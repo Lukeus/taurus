@@ -86,15 +86,24 @@ describe("skill filters", () => {
 
 describe("skill origin", () => {
   it("names the directory a borrowed skill came from", () => {
-    expect(originLabel("agents")).toBe(".agents");
-    expect(originLabel("claude")).toBe(".claude");
+    expect(originLabel("agents", "user")).toBe(".agents");
+    expect(originLabel("claude", "user")).toBe(".claude");
   });
 
   it("says nothing about a skill in Taurus's own location", () => {
     // A badge on every row is a badge nobody reads. The question the label
     // answers is "where did this come from", and `.taurus` is the answer that
     // needed no asking.
-    expect(originLabel("taurus")).toBeNull();
+    expect(originLabel("taurus", "user")).toBeNull();
+  });
+
+  it("sends a Copilot skill to whichever of its two folders it is actually in", () => {
+    // The one origin whose directories are not named the same. A repository's
+    // sit in `.github` beside everything else GitHub reads; a person's in a
+    // dotdir of Copilot's own. One label for both would send half of everyone
+    // to a folder that does not exist.
+    expect(originLabel("copilot", "project")).toBe(".github");
+    expect(originLabel("copilot", "user")).toBe(".copilot");
   });
 });
 
@@ -103,6 +112,7 @@ describe("the instructions section", () => {
     source: { tier: "project", origin: "agents", path: "/repo/AGENTS.md" },
     body: "Run the tests before saying you are done.",
     truncated: false,
+    applies_to: null,
     ...patch,
   });
 
@@ -114,6 +124,27 @@ describe("the instructions section", () => {
     );
     expect(html).toContain("/repo/AGENTS.md");
     expect(html).toContain("project");
+  });
+
+  it("shows the paths a scoped brief is actually about", () => {
+    // Copilot's `*.instructions.md` files apply to a glob, not the workspace.
+    // Listed beside the ones that always apply with nothing to tell them
+    // apart, every row reads as unconditional.
+    const html = renderToStaticMarkup(
+      <InstructionsSection
+        instructions={[
+          brief({
+            source: {
+              tier: "project",
+              origin: "copilot",
+              path: "/repo/.github/instructions/rust.instructions.md",
+            },
+            applies_to: "**/*.rs",
+          }),
+        ]}
+      />,
+    );
+    expect(html).toContain("**/*.rs");
   });
 
   it("separates a personal brief from a project one", () => {

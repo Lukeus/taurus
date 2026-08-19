@@ -22,7 +22,19 @@ pub async fn run(host: &Host, command: AgentsCommand) -> Result<ExitCode, String
                     Some(tier) => format!("  (shadows the {} one)", tier.label()),
                     None => String::new(),
                 };
-                println!("{:<24} {:<10}{shadowed}", agent.name, agent.tier.label());
+                // The tier says which of two files won; this says whose file
+                // it is. An agent read out of another client's directory is
+                // the one a reader is most likely to be surprised by, and the
+                // one they cannot edit here without a copy being made.
+                let borrowed = match agent.forks_on_edit && agent.path.is_some() {
+                    true => "  (borrowed — editing it here writes a copy)",
+                    false => "",
+                };
+                println!(
+                    "{:<24} {:<10}{shadowed}{borrowed}",
+                    agent.name,
+                    agent.tier.label()
+                );
                 println!("    {}", agent.description);
                 println!(
                     "    tools: {}",
@@ -36,6 +48,9 @@ pub async fn run(host: &Host, command: AgentsCommand) -> Result<ExitCode, String
                         Some(provider) => println!("    model: {model} on {provider}"),
                         None => println!("    model: {model}"),
                     }
+                }
+                if let Some(path) = &agent.path {
+                    println!("    file: {path}");
                 }
                 if let Some(reason) = &agent.degraded {
                     println!("    degraded: {reason}");

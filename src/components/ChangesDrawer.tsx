@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
-import type { Checkpoint, Commit, RepoStatus, Restored, TurnChange } from "../lib/api";
+import type {
+  Checkpoint,
+  Commit,
+  RepoStatus,
+  Restored,
+  Rewind,
+  TurnChange,
+} from "../lib/api";
 import { plural, when } from "../lib/format";
 import { DiffView } from "./DiffView";
 import { CHANGES_WIDTH, ResizeHandle, useResizableWidth } from "./ResizeHandle";
@@ -41,8 +48,8 @@ export function ChangesDrawer({
   });
   const [turns, setTurns] = useState<Checkpoint[] | null>(null);
   const [repo, setRepo] = useState<RepoStatus | null>(null);
-  const [plan, setPlan] = useState<{ turn: number; outcomes: Restored[] } | null>(null);
-  const [done, setDone] = useState<Restored[] | null>(null);
+  const [plan, setPlan] = useState<{ turn: number; rewind: Rewind } | null>(null);
+  const [done, setDone] = useState<Rewind | null>(null);
   const [error, setError] = useState<string | null>(null);
   // One turn open at a time. Expanding every diff in a long conversation is
   // both a wall of text and a request per turn to build it.
@@ -71,7 +78,7 @@ export function ChangesDrawer({
     setError(null);
     setDone(null);
     try {
-      setPlan({ turn, outcomes: await api.rewindTo(sessionId, turn, true) });
+      setPlan({ turn, rewind: await api.rewindTo(sessionId, turn, true) });
     } catch (e) {
       setError(String(e));
     }
@@ -81,8 +88,7 @@ export function ChangesDrawer({
     if (!plan) return;
     setError(null);
     try {
-      const outcomes = await api.rewindTo(sessionId, plan.turn, false);
-      setDone(outcomes);
+      setDone(await api.rewindTo(sessionId, plan.turn, false));
       setPlan(null);
       // The undone turns are gone from the workspace but still in the log, so
       // the list is re-read rather than assumed.
@@ -126,9 +132,18 @@ export function ChangesDrawer({
           {done && (
             <section className="section">
               <span className="micro">Restored</span>
-              {done.map((outcome) => (
+              {done.restored.map((outcome) => (
                 <p key={outcome.path} className="card-files">
                   <Outcome outcome={outcome} />
+                </p>
+              ))}
+              {/* Repeated after the fact as well as before it. These name
+                  things that are still true of the workspace now — a commit
+                  left pointing at a tree that no longer exists does not stop
+                  being a problem because the rewind finished. */}
+              {done.warnings.map((warning) => (
+                <p key={warning} className="rewind-warning">
+                  <span className="tag warn">still to sort out</span> {warning}
                 </p>
               ))}
             </section>
@@ -160,6 +175,25 @@ export function ChangesDrawer({
                       {turn.prompt || "(no prompt recorded)"}
                     </span>
                     <span className="card-files">{turn.files.join(" · ")}</span>
+                    {/* What a turn's own record now says about itself. Only
+                        drawn when there is something to say: a conversation
+                        that stayed on one branch and committed nothing is the
+                        common case, and a row of empty tags under every turn
+                        would make the list harder to read, not fuller. */}
+                    {(turn.commit || turn.moved_git) && (
+                      <div className="card-row">
+                        {turn.commit && (
+                          <span className="tag" title="Already in this branch's history">
+                            committed {turn.commit}
+                          </span>
+                        )}
+                        {turn.moved_git && (
+                          <span className="tag warn" title="A rewind puts the files back and not HEAD">
+                            moved git
+                          </span>
+                        )}
+                      </div>
+                    )}
                     {plan?.turn !== turn.turn && (
                       <div className="card-row rewind-open">
                         <button
@@ -194,6 +228,10 @@ export function ChangesDrawer({
                     <TurnDetail
                       sessionId={sessionId}
                       turn={turn}
+                      // A commit is offered on one turn and lands in a history
+                      // shared by all of them, so the offer has to be able to
+                      // see the others. See `commitCaveats`.
+                      turns={turns ?? []}
                       repo={repo}
                       busy={busy}
                       onCommitted={refresh}
@@ -203,13 +241,23 @@ export function ChangesDrawer({
                   {plan?.turn === turn.turn && (
                     <div className="rewind-plan">
                       <p>
-                        Rewinding here restores {plural(plan.outcomes.length, "file")}{" "}
-                        to what they held before turn {turn.turn} — including
-                        anything you changed by hand since. This cannot be undone.
+                        Rewinding here restores{" "}
+                        {plural(plan.rewind.restored.length, "file")} to what they
+                        held before turn {turn.turn} — including anything you
+                        changed by hand since. This cannot be undone.
                       </p>
-                      {plan.outcomes.map((outcome) => (
+                      {plan.rewind.restored.map((outcome) => (
                         <p key={outcome.path} className="card-files">
                           <Outcome outcome={outcome} />
+                        </p>
+                      ))}
+                      {/* Between the file list and the button, which is where
+                          it is read. These are the parts of the way back a
+                          rewind cannot walk: git's own state, a commit already
+                          made, a branch that has changed underneath. */}
+                      {plan.rewind.warnings.map((warning) => (
+                        <p key={warning} className="rewind-warning">
+                          <span className="tag warn">not undone</span> {warning}
                         </p>
                       ))}
                       <div className="actions">
@@ -243,12 +291,14 @@ export function ChangesDrawer({
 export function TurnDetail({
   sessionId,
   turn,
+  turns,
   repo,
   busy,
   onCommitted,
 }: {
   sessionId: string;
   turn: Checkpoint;
+  turns: Checkpoint[];
   repo: RepoStatus | null;
   busy: boolean;
   onCommitted: () => void;
@@ -328,6 +378,15 @@ export function TurnDetail({
         </section>
       )}
 
+      {/* From the log rather than from this component's state, so it
+          survives closing the drawer and reopening the conversation. */}
+      {turn.commit && !committed && (
+        <p className="card-files">
+          <span className="tag">{turn.commit}</span> Already committed. Committing
+          it again would take whatever these files hold now.
+        </p>
+      )}
+
       {repo?.repository && !committed && (
         <div className="commit-turn">
           <label className="micro" htmlFor={`commit-${turn.turn}`}>
@@ -339,6 +398,12 @@ export function TurnDetail({
             onChange={(e) => setMessage(e.target.value)}
             placeholder="What this turn changed"
           />
+          {/* Before the button, because after it the commit is made. */}
+          {commitCaveats(turns, turn).map((caveat) => (
+            <p key={caveat} className="rewind-warning">
+              <span className="tag warn">out of order</span> {caveat}
+            </p>
+          ))}
           <div className="actions">
             <button
               // Committing under a running turn would capture a tree that is
@@ -371,6 +436,53 @@ export function TurnDetail({
       )}
     </div>
   );
+}
+
+/**
+ * What committing `turn` now would carry in with it, or leave stranded.
+ *
+ * Each commit is offered on its own, which is what makes committing turn 5
+ * while turn 4 is still only in the working tree possible — and, until this,
+ * silent. Two different things go wrong depending on whether the turns share a
+ * file, and they need two different sentences:
+ *
+ * - **They share one.** `git commit -- <paths>` commits what those paths hold
+ *   *now*, so the earlier turn's edits to a shared file go into this commit
+ *   wearing this turn's message. That is the sharper of the two, because the
+ *   commit is wrong about its own contents rather than merely out of order.
+ * - **They do not.** The earlier work stays in the tree, uncommitted, now
+ *   sitting underneath a commit it is not in. Nothing is lost; the history just
+ *   no longer reads in the order it happened.
+ *
+ * Computed here rather than in the backend because the drawer already holds
+ * every turn and which commit each is in — the listing carries it. Exported for
+ * its own test.
+ */
+export function commitCaveats(turns: Checkpoint[], turn: Checkpoint): string[] {
+  const earlier = turns.filter(
+    (other) => other.turn < turn.turn && !other.commit && other.files.length > 0,
+  );
+  if (earlier.length === 0) return [];
+
+  // Not `plural`, which leads with the count: this needs the noun agreeing
+  // with a list of turn numbers, not "2 Turns 4, 5".
+  const numbers = `${earlier.length === 1 ? "Turn" : "Turns"} ${earlier
+    .map((other) => other.turn)
+    .join(", ")}`;
+  const shared = earlier.flatMap((other) =>
+    other.files.filter((file) => turn.files.includes(file)),
+  );
+  if (shared.length > 0) {
+    return [
+      `${numbers} also changed ${[...new Set(shared)].join(", ")} and ` +
+        `${earlier.length === 1 ? "is" : "are"} not committed. This commit takes ` +
+        `what those files hold now, so that work goes in with it.`,
+    ];
+  }
+  return [
+    `${numbers} changed files and ${earlier.length === 1 ? "is" : "are"} not ` +
+      `committed. Committing this one puts it into history ahead of work it came after.`,
+  ];
 }
 
 export function Outcome({ outcome }: { outcome: Restored }) {

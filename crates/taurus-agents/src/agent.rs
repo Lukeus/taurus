@@ -135,6 +135,17 @@ pub struct AgentDefinition {
     pub tier: AgentTier,
     /// `None` for built-ins, which have no file.
     pub path: Option<PathBuf>,
+    /// Read out of another client's directory — GitHub Copilot's, today.
+    ///
+    /// Taurus reads those so an agent written for another tool works here
+    /// without being moved, and it does not write back to them. The file is not
+    /// ours: it is usually committed, another tool reads it, and its frontmatter
+    /// carries keys this crate has never heard of — `handoffs`, `hooks`,
+    /// `user-invocable`. Rewriting it through [`Self::write_to`], which
+    /// serializes the fields Taurus knows and nothing else, would quietly
+    /// delete every one of them. So an edit forks instead, exactly as it does
+    /// for a built-in, and the copy shadows the original.
+    pub borrowed: bool,
     /// The tier this definition displaced, when it shadowed one.
     pub shadows: Option<AgentTier>,
     /// Set when the agent cannot fully run as written — an unresolvable model,
@@ -197,6 +208,11 @@ pub struct AgentSummary {
     pub degraded: Option<String>,
     /// The file it was read from. `None` for built-ins.
     pub path: Option<String>,
+    /// Editing this agent will write a Taurus-owned copy rather than change the
+    /// file it came from — because it is a built-in with no file, or because
+    /// the file belongs to another client. What the drawer says before it lets
+    /// anyone change anything.
+    pub forks_on_edit: bool,
 }
 
 impl From<&AgentDefinition> for AgentSummary {
@@ -209,6 +225,10 @@ impl From<&AgentDefinition> for AgentSummary {
             max_iterations: agent.frontmatter.max_iterations,
             model: agent.frontmatter.model.clone(),
             provider: agent.frontmatter.provider.clone(),
+            // A built-in has no file to write back to; a borrowed one has a
+            // file that is not ours to rewrite. Both fork, and the drawer says
+            // so in the same words for both.
+            forks_on_edit: agent.path.is_none() || agent.borrowed,
             shadows: agent.shadows,
             degraded: agent.degraded.clone(),
             path: agent.path.as_ref().map(|p| p.display().to_string()),

@@ -452,6 +452,7 @@ mod tests {
             system_prompt: prompt.into(),
             tier: taurus_agents::AgentTier::User,
             path: Some(std::path::PathBuf::from(format!("/agents/{name}.md"))),
+            borrowed: false,
             shadows: None,
             degraded: None,
         }

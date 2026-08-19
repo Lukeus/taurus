@@ -351,6 +351,11 @@ impl Sweep {
                  neither commit; `git reflog` is the way back to where HEAD was."
                     .to_string(),
             );
+            // The same fact, written down. The caveat above reaches the model
+            // at the moment the command runs, which is the wrong moment for it
+            // — the person who needs it is reading a rewind plan, possibly
+            // days later. See `CheckpointStore::rewind`.
+            recorder.moved_git().await;
         }
 
         Change {
@@ -787,6 +792,26 @@ fn git_state(root: &Path) -> Option<GitState> {
 ///
 /// In a worktree `.git` is a regular file naming the real directory, and
 /// reading `HEAD` from the file would find nothing at all.
+/// Which branch `root` has checked out, by the name a person would recognise.
+///
+/// `None` outside a repository and on a detached `HEAD`, which are different
+/// situations with the same answer here: neither gives a name that would still
+/// mean something when a rewind quotes it back weeks later.
+///
+/// Reads `.git/HEAD` for the same reason [`git_state`] does — the question is
+/// one line of one file, and this runs at the top of every turn. `refs/heads/`
+/// comes off because the warning is prose: a sentence that said
+/// `refs/heads/main` would be quoting plumbing at someone who typed `main`.
+pub(crate) fn branch(root: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir(root)?.join("HEAD")).ok()?;
+    let name = head
+        .strip_prefix("ref:")?
+        .trim()
+        .strip_prefix("refs/heads/")?
+        .to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 fn git_dir(root: &Path) -> Option<PathBuf> {
     let dot_git = root.join(".git");
     if std::fs::metadata(&dot_git).ok()?.is_dir() {
@@ -932,7 +957,10 @@ mod tests {
         }
 
         fn rewind(&self) -> Vec<Restored> {
-            self.store.rewind("s1", &self.root, 1, false).unwrap()
+            self.store
+                .rewind("s1", &self.root, 1, false)
+                .unwrap()
+                .restored
         }
 
         fn log_path(&self) -> PathBuf {
@@ -1479,6 +1507,15 @@ mod tests {
         assert_eq!(change.files, vec!["a.txt"], "the file is still recorded");
         let caveat = change.caveat.expect("moving HEAD has to be said");
         assert!(caveat.contains("git reflog"), "{caveat}");
+
+        // And written down, not only said. The caveat above reaches the model
+        // while the command is running; the person who needs it is reading a
+        // rewind plan, which can be days later and in another process.
+        let warnings = f.store.rewind("s1", &f.root, 1, true).unwrap().warnings;
+        assert!(
+            warnings.iter().any(|w| w.contains("git reflog")),
+            "{warnings:?}"
+        );
     }
 
     #[tokio::test]

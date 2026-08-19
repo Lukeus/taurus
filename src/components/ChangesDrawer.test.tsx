@@ -8,7 +8,8 @@ vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {},
 }));
 
-import { ChangesDrawer, Outcome } from "./ChangesDrawer";
+import { ChangesDrawer, Outcome, commitCaveats } from "./ChangesDrawer";
+import type { Checkpoint } from "../lib/api";
 
 describe("restore outcomes", () => {
   it("names the file it put back", () => {
@@ -72,5 +73,62 @@ describe("rendering", () => {
       <ChangesDrawer sessionId="s1" busy={false} onClose={() => {}} />,
     );
     expect(html).not.toContain("has not changed any files");
+  });
+});
+
+describe("committing one turn out of several", () => {
+  /** A turn as the listing hands it over. */
+  const turn = (n: number, files: string[], commit?: string): Checkpoint => ({
+    turn: n,
+    prompt: `turn ${n}`,
+    at: 0,
+    files,
+    branch: "main",
+    moved_git: false,
+    commit: commit ?? null,
+  });
+
+  it("says nothing when there is nothing earlier to strand", () => {
+    // The ordinary case. A caveat on every commit is one nobody reads.
+    const turns = [turn(1, ["a.txt"])];
+    expect(commitCaveats(turns, turns[0])).toEqual([]);
+  });
+
+  it("says nothing when everything earlier is already committed", () => {
+    const turns = [turn(1, ["a.txt"], "aaaaaaa"), turn(2, ["b.txt"])];
+    expect(commitCaveats(turns, turns[1])).toEqual([]);
+  });
+
+  it("names the uncommitted turn this one would jump ahead of", () => {
+    // Committing turn 3 and then turn 5 leaves turn 4 in the tree,
+    // uncommitted, now sitting under a commit it is not in.
+    const turns = [turn(1, ["a.txt"], "aaaaaaa"), turn(2, ["b.txt"]), turn(3, ["c.txt"])];
+    const [caveat] = commitCaveats(turns, turns[2]);
+    expect(caveat).toContain("Turn 2");
+    expect(caveat).not.toContain("Turn 1");
+    expect(caveat).toContain("ahead of work it came after");
+  });
+
+  it("warns harder when the earlier turn touched the same file", () => {
+    // `git commit -- <paths>` commits what those paths hold now, so turn 2's
+    // edits to a shared file go in wearing turn 3's message. The commit is
+    // wrong about its own contents, not merely out of order.
+    const turns = [turn(1, ["a.txt"]), turn(2, ["a.txt", "b.txt"])];
+    const [caveat] = commitCaveats(turns, turns[1]);
+    expect(caveat).toContain("a.txt");
+    expect(caveat).toContain("what those files hold now");
+  });
+
+  it("agrees in number with however many turns it names", () => {
+    const turns = [turn(1, ["a.txt"]), turn(2, ["b.txt"]), turn(3, ["c.txt"])];
+    expect(commitCaveats(turns, turns[2])[0]).toContain("Turns 1, 2");
+    expect(commitCaveats(turns, turns[1])[0]).toContain("Turn 1 changed");
+  });
+
+  it("ignores later turns entirely", () => {
+    // They are not underneath this commit; they are after it, which is where
+    // uncommitted work is supposed to be.
+    const turns = [turn(1, ["a.txt"]), turn(2, ["b.txt"])];
+    expect(commitCaveats(turns, turns[0])).toEqual([]);
   });
 });

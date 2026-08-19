@@ -274,6 +274,7 @@ mod tests {
             .unwrap();
         }
         let (catalog, problems) = AgentCatalog::discover(&[AgentSource {
+            borrowed: false,
             tier: AgentTier::User,
             dir: dir.path().to_path_buf(),
         }]);
@@ -366,6 +367,7 @@ mod tests {
         assert_eq!(path.file_name().unwrap(), "diff-reviewer.md");
 
         let (catalog, problems) = AgentCatalog::discover(&[AgentSource {
+            borrowed: false,
             tier: AgentTier::User,
             dir: dir.path().to_path_buf(),
         }]);

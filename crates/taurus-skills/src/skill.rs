@@ -55,6 +55,16 @@ pub enum SkillOrigin {
     /// `.claude/skills` — read for compatibility, because that is where a large
     /// number of existing skills are already installed.
     Claude,
+    /// GitHub Copilot's locations: `.github/skills` in a repository and
+    /// `~/.copilot/skills` for a person. The only origin whose directory name
+    /// differs between the two tiers, because Copilot puts a project's skills
+    /// beside its workflows rather than in a dotdir of its own — which is why
+    /// anything labelling this has to know the tier as well.
+    ///
+    /// Read for the same reason `.claude/skills` is, and cheaply: Copilot reads
+    /// the same `SKILL.md` specification, so a skill written for it is already
+    /// a skill Taurus understands. Nothing here parses a second format.
+    Copilot,
 }
 
 /// The longest trigger line that may reach the system prompt.

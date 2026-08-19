@@ -2857,6 +2857,31 @@ body.resizing * {
 }
 
 /*
+ * What a rewind or a commit cannot do, sitting among the things it can.
+ *
+ * Deliberately not `.settings-problem`: nothing here has failed, and painting
+ * these as errors would train the reader to dismiss the one that matters. They
+ * read as a line of prose with a tag on the front — the same weight as the
+ * file list they sit under, and the same weight in the confirmation and in the
+ * report afterwards, because the fact does not change once the button is
+ * pressed.
+ */
+.rewind-warning {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  /* Hangs the sentence off the tag rather than wrapping under it, so a long
+     warning stays one readable block. */
+  padding-left: 2px;
+  border-left: 2px solid var(--warn);
+  padding-inline-start: 8px;
+}
+.rewind-warning .tag {
+  margin-right: 4px;
+}
+
+/*
  * A turn opened up to show what it changed. Same elevated surface as the
  * rewind confirmation, because both hang off the turn they are about — but
  * this one is a reading surface rather than a question, so it carries the

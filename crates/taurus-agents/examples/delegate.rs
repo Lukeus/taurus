@@ -52,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let (catalog, problems) = AgentCatalog::discover(&[AgentSource {
+        borrowed: false,
         tier: AgentTier::Project,
         dir: agents_dir,
     }]);

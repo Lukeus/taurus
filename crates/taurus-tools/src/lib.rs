@@ -16,7 +16,7 @@ pub mod sweep;
 pub mod tool;
 pub mod view;
 
-pub use checkpoint::{Checkpoint, CheckpointStore, Restored, TurnChange, TurnRecorder};
+pub use checkpoint::{Checkpoint, CheckpointStore, Restored, Rewind, TurnChange, TurnRecorder};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::expand_env;
 pub use login_path::Outcome as LoginPath;

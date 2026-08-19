@@ -49,6 +49,7 @@ import type { AgentSaveTarget } from "../bindings/AgentSaveTarget";
 import type { ProviderKind } from "../bindings/ProviderKind";
 import type { RepoStatus } from "../bindings/RepoStatus";
 import type { Restored } from "../bindings/Restored";
+import type { Rewind } from "../bindings/Rewind";
 import type { ResumedSession } from "../bindings/ResumedSession";
 import type { SaveTarget } from "../bindings/SaveTarget";
 import type { Scope } from "../bindings/Scope";
@@ -112,6 +113,7 @@ export type {
   ProviderKind,
   RepoStatus,
   Restored,
+  Rewind,
   ResumedSession,
   SaveTarget,
   Scope,
@@ -487,10 +489,12 @@ export const listCheckpoints = (sessionId: string) =>
  * after it.
  *
  * `dryRun` reports what that would do and writes nothing, which is how the UI
- * shows the plan before asking.
+ * shows the plan before asking. It returns the same warnings a real rewind
+ * does, because the moment they are worth reading is the moment before the
+ * button.
  */
 export const rewindTo = (sessionId: string, turn: number, dryRun: boolean) =>
-  invoke<Restored[]>("rewind_to", { sessionId, turn, dryRun });
+  invoke<Rewind>("rewind_to", { sessionId, turn, dryRun });
 
 /**
  * What one turn changed, file by file, as a diff.
