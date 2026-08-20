@@ -7,7 +7,11 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const invoke = vi.fn(() => Promise.resolve([]));
+// Declared taking its arguments, so a test can answer one command differently
+// from the rest — the provider tab reads three of them on mount.
+const invoke = vi.fn((..._args: unknown[]): Promise<unknown> =>
+  Promise.resolve([]),
+);
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...(args as [])),
   Channel: class {},
@@ -114,6 +118,160 @@ beforeEach(() => {
 afterEach(() => {
   document.body.innerHTML = "";
   vi.restoreAllMocks();
+});
+
+/** Two saved providers, both complete, as `list_global_providers` reports. */
+const SAVED = [
+  {
+    id: "ollama",
+    kind: "ollama",
+    base_url: "http://localhost:11434",
+    models: [],
+    default_model: null,
+    api_key_env: null,
+    api_key_header: null,
+    native_tools: null,
+    context_length: null,
+    vision: null,
+    api_prefix: null,
+    thinking: null,
+  },
+  {
+    id: "anthropic",
+    kind: "anthropic",
+    base_url: "https://api.anthropic.com",
+    models: [],
+    default_model: null,
+    api_key_env: null,
+    api_key_header: null,
+    native_tools: null,
+    context_length: null,
+    vision: null,
+    api_prefix: null,
+    thinking: null,
+  },
+];
+
+/** Answers the provider tab's reads, and everything else with a list. */
+const withProviders = (providers: unknown[] = SAVED) => {
+  invoke.mockImplementation((...args: unknown[]) => {
+    switch (args[0]) {
+      case "list_global_providers":
+        return Promise.resolve(providers);
+      case "keychain_available":
+        return Promise.resolve(true);
+      default:
+        return Promise.resolve([]);
+    }
+  });
+};
+
+const cards = (host: HTMLElement) => [
+  ...host.querySelectorAll(".settings-provider"),
+];
+
+const folder = (card: Element) =>
+  card.querySelector(".settings-provider-fold") as HTMLButtonElement;
+
+const toggle = (card: Element) =>
+  act(() =>
+    folder(card).dispatchEvent(new MouseEvent("click", { bubbles: true })),
+  );
+
+/** Whether the card is showing its body, asked the way a reader is told. */
+const isOpen = (card: Element) =>
+  folder(card).getAttribute("aria-expanded") === "true";
+
+const baseUrl = (card: Element) => {
+  const field = [...card.querySelectorAll("label.settings-field, .settings-field")]
+    .find((f) => f.textContent?.includes("Base URL"));
+  return field?.querySelector("input") as HTMLInputElement | undefined;
+};
+
+const typeInto = (input: HTMLInputElement, text: string) =>
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    setter.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+describe("folding a provider card", () => {
+  it("opens a saved provider folded, so the tab is a list", async () => {
+    // A configured provider is a dozen fields, and a machine with four of them
+    // turned this tab into a page of forms to scroll past.
+    withProviders();
+    const host = await mount();
+    expect(cards(host)).toHaveLength(2);
+    expect(cards(host).every((c) => !isOpen(c))).toBe(true);
+    expect(baseUrl(cards(host)[0])).toBeUndefined();
+  });
+
+  it("keeps the id and the kind on the folded row", async () => {
+    // What the row is scanned for. A summary that could not be edited where it
+    // is read would mean opening a card to rename it.
+    withProviders();
+    const host = await mount();
+    const [first] = cards(host);
+    expect(
+      (first.querySelector(".settings-id") as HTMLInputElement).value,
+    ).toBe("ollama");
+    expect(first.querySelector("select")).toBeTruthy();
+  });
+
+  it("shows the rest when the disclosure is pressed, and hides it again", async () => {
+    withProviders();
+    const host = await mount();
+    const card = () => cards(host)[0];
+
+    await toggle(card());
+    expect(isOpen(card())).toBe(true);
+    expect(baseUrl(card())?.value).toBe("http://localhost:11434");
+
+    await toggle(card());
+    expect(isOpen(card())).toBe(false);
+    expect(baseUrl(card())).toBeUndefined();
+  });
+
+  it("folds each card on its own", async () => {
+    withProviders();
+    const host = await mount();
+    await toggle(cards(host)[0]);
+    expect(isOpen(cards(host)[0])).toBe(true);
+    expect(isOpen(cards(host)[1])).toBe(false);
+  });
+
+  it("opens a provider that is not finished", async () => {
+    // Which is every provider just added: it has no base URL yet, and folding
+    // it away would hide the one field that has to be filled in.
+    withProviders([{ ...SAVED[0], base_url: "" }]);
+    const host = await mount();
+    expect(isOpen(cards(host)[0])).toBe(true);
+  });
+
+  it("marks a folded card that is stopping the save", async () => {
+    // The hazard folding introduces: a save refused over something out of
+    // sight. The mark says which card would fix it.
+    withProviders();
+    const host = await mount();
+    const card = () => cards(host)[0];
+
+    await toggle(card());
+    await typeInto(baseUrl(card())!, "");
+    await toggle(card());
+
+    const mark = card().querySelector(".dot.error");
+    expect(mark).toBeTruthy();
+    expect(mark?.getAttribute("aria-label")).toContain("needs a base URL");
+  });
+
+  it("leaves a folded card unmarked while it is fine", async () => {
+    withProviders();
+    const host = await mount();
+    expect(cards(host)[0].querySelector(".dot.error")).toBeNull();
+  });
 });
 
 describe("the synthesis toggles", () => {

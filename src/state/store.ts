@@ -25,6 +25,7 @@ import type {
   SequenceMessage,
   SkillProposal,
   Step,
+  Switch,
   TranscriptView,
   TrustStatus,
   UiEvent,
@@ -143,6 +144,15 @@ interface Store {
    * derived from its first question.
    */
   rename: (sessionId: string, title: string) => Promise<void>;
+  /**
+   * Moves this conversation to another model or backend, keeping it.
+   *
+   * Not a new conversation, which is what changing either picker used to mean.
+   * A second opinion on the question you just asked is worth more than a blank
+   * transcript, and none of the history is provider-shaped — see `switchModel`
+   * in the API layer.
+   */
+  switchModel: (providerId: string, model: string) => Promise<void>;
   send: (text: string, images?: Attachment[]) => Promise<void>;
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
@@ -358,13 +368,13 @@ export const useStore = create<Store>((set, get) => ({
 
   resume: async (sessionId) => {
     const previous = get().session;
-    const { messages, ...session } = await api.resumeSession(sessionId);
+    const { messages, switches, ...session } = await api.resumeSession(sessionId);
     // As in `startSession`: a resume that fails must leave the conversation on
     // screen exactly as it was.
     await release(previous, session.id);
     set({
       session,
-      entries: entriesFromMessages(messages),
+      entries: entriesFromMessages(messages, switches),
       changed: [],
       error: null,
       proposals: [],
@@ -416,6 +426,28 @@ export const useStore = create<Store>((set, get) => ({
     } catch (e) {
       set({ error: String(e) });
     }
+  },
+
+  switchModel: async (providerId, model) => {
+    const current = get().session;
+    if (!current) return;
+    if (current.provider_id === providerId && current.model === model) return;
+
+    let session: CreatedSession;
+    try {
+      session = await api.switchModel(current.id, providerId, model);
+    } catch (e) {
+      // The backend refuses this mid-turn, and refuses a model the provider
+      // will not serve. Both leave the conversation exactly where it was, so
+      // this belongs in the banner rather than thrown at a `<select>`.
+      return set({ error: String(e) });
+    }
+
+    set((s) => ({
+      session,
+      error: null,
+      entries: [...s.entries, switchNotice(session)],
+    }));
   },
 
   send: async (text, images = []) => {
@@ -611,11 +643,27 @@ export const useStore = create<Store>((set, get) => ({
  * their result turns up, which is the same shape the live event reducer
  * produces — a resumed conversation has to be indistinguishable from one that
  * was streamed.
+ *
+ * `switches` are the points where the conversation changed model, each carrying
+ * how many messages came before it. They are drawn where they happened rather
+ * than listed at the end, because the reason to want one is to explain the
+ * answers *after* it — a conversation whose replies change character halfway
+ * down. Defaulted, so a delegate's transcript, which never moves, can be
+ * rebuilt without passing an empty list to say so.
  */
-export function entriesFromMessages(messages: Message[]): Entry[] {
+export function entriesFromMessages(
+  messages: Message[],
+  switches: Switch[] = [],
+): Entry[] {
   const entries: Entry[] = [];
 
-  for (const message of messages) {
+  for (const [index, message] of messages.entries()) {
+    // Before the message it precedes. More than one can land in the same place:
+    // two switches with no turn between them are two clicks of the picker.
+    for (const moved of switches.filter((s) => s.after === index)) {
+      entries.push(switchNotice(moved));
+    }
+
     if (message.role === "user") {
       // Images precede the text they belong to, so they are collected first and
       // attached to the bubble that follows. A resumed conversation therefore
@@ -700,9 +748,44 @@ export function entriesFromMessages(messages: Message[]): Entry[] {
     }
   }
 
+  // A conversation moved and then closed without being asked anything since.
+  for (const moved of switches.filter((s) => s.after >= messages.length)) {
+    entries.push(switchNotice(moved));
+  }
+
   // Applied once at the end rather than per call: the rule is about the whole
   // conversation, and a resumed transcript has every update in it at once.
   return supersedePlans(entries);
+}
+
+/**
+ * The hairline drawn where a conversation changed model.
+ *
+ * One function for both routes — the live switch and the reopened transcript —
+ * because a resumed conversation has to be indistinguishable from one that was
+ * streamed, and two of these that had drifted apart would be the one place it
+ * visibly was not.
+ *
+ * Says what the conversation moved *to* rather than what it moved from. What it
+ * moved from is on screen directly above the line, and recording it as well
+ * would be a second copy of that, written to disk, able to disagree with it.
+ */
+function switchNotice(moved: {
+  provider?: string;
+  provider_id?: string;
+  model: string;
+}): Entry {
+  const provider = moved.provider ?? moved.provider_id;
+  return {
+    kind: "notice",
+    id: nextId(),
+    tone: "info",
+    text: `This conversation moved to ${moved.model}. Everything said before it was kept, and goes to it as context.`,
+    rule: {
+      label: "Model changed",
+      note: provider ? `${provider} · ${moved.model}` : moved.model,
+    },
+  };
 }
 
 /**

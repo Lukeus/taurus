@@ -32,7 +32,7 @@ pub use mcp_view::{McpServerDraft, McpServerRef, McpServerView, McpTransport, Mc
 pub use memory::Note;
 pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;
-pub use sessions::{SessionLog, SessionMeta, SubagentLogs};
+pub use sessions::{SessionLog, SessionMeta, SubagentLogs, Switch};
 pub use taurus_tools::{Checkpoint, Restored, Rewind, TurnChange};
 pub use trust::PendingConfig;
 // Re-exported so a frontend can edit search config without depending on the

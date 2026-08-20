@@ -21,6 +21,27 @@ The desktop app reopens its last conversation for the workspace on launch, and
 its left rail lists the rest — today's, then everything earlier — so switching
 between them is one click rather than a drawer.
 
+Changing the model, or the backend, keeps the conversation. Pick another from
+the topbar and the transcript comes with it — which is the point, since the
+usual reason to reach for that picker is a second opinion on the question you
+just asked. A line is drawn across the transcript where it happened, and the
+change is written down, so reopening the conversation later continues it on the
+model it was last worked in rather than the one it was opened with.
+
+None of this needs translating. A transcript holds blocks, not any provider's
+wire format: each backend renders them into its own on the way out, drops the
+reasoning it has no way to replay, and rewrites tool calls as plain text for a
+model with no native tool support. What does change is what the model can do.
+A smaller context window compacts on the next turn, because the budget is
+recomputed per turn from whatever model the conversation is on. A model that
+cannot read images is sent the conversation with each picture replaced by a line
+saying one was there — the images stay in the session and in the transcript, so
+moving to a model that can see brings them back.
+
+Switching is refused mid-turn. A turn reads the model out of the session on
+every attempt, so moving it underneath one would send half an answer to one
+backend and half to another.
+
 A conversation belongs to the folder it was started in, and changing folders is
 a move rather than a setting. Its transcript is filed under that workspace, its
 checkpoints are keyed by it, and every path it has ever mentioned describes that
@@ -74,8 +95,8 @@ header is copied through byte for byte — a record from a newer version survive
 being renamed by an older one, and a torn final line stays exactly as torn as it
 was.
 
-The header records the workspace, the model, and the branch that was checked
-out — see [Conversations know their branch](safety.md#conversations-know-their-branch).
+The header records the workspace, the model the conversation *started* on, and
+the branch that was checked out — see [Conversations know their branch](safety.md#conversations-know-their-branch).
 A transcript written before that field existed simply has no branch, which is
 why it defaults rather than being required: an upgrade must not make every
 existing conversation unlistable.

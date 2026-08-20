@@ -30,6 +30,20 @@ fn harness_with(
     config: AgentConfig,
     context_length: u32,
 ) -> Harness {
+    harness_on(
+        FakeProvider::with_context_length(turns, context_length),
+        prompt,
+        config,
+    )
+}
+
+/// A harness on a provider the caller built, for the tests that care what the
+/// backend can *do* — read images, say — rather than what it answers.
+fn harness_on(
+    provider: Arc<FakeProvider>,
+    prompt: Box<dyn PermissionPrompt>,
+    config: AgentConfig,
+) -> Harness {
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();
     let cancel = CancellationToken::new();
@@ -39,7 +53,6 @@ fn harness_with(
         prompt,
     ));
     let tools = ToolContext::new(workspace.clone(), permissions, cancel.clone());
-    let provider = FakeProvider::with_context_length(turns, context_length);
     let agent = Agent::new(
         provider.clone(),
         ToolRegistry::with_builtins(),
@@ -970,6 +983,85 @@ async fn collect(agent: &Agent, session: &mut Session, text: &str) -> Vec<UiEven
     });
     let _ = agent.run_turn(session, Message::user(text), tx).await;
     sink.await.unwrap()
+}
+
+/// Every block of every message the provider was actually sent.
+fn sent_blocks(request: &taurus_provider::ChatRequest) -> Vec<&ContentBlock> {
+    request.messages.iter().flat_map(|m| &m.content).collect()
+}
+
+#[tokio::test]
+async fn a_model_that_cannot_see_is_told_an_image_was_there() {
+    // What makes moving a conversation to a text-only model survivable. The
+    // picture stays in the session and in the transcript; only the request is
+    // rewritten, so moving back to a model that can see brings it back.
+    let provider = FakeProvider::new(vec![ScriptedTurn::text("I cannot see it.")]);
+    let h = harness_on(provider.clone(), Box::new(AllowAll), AgentConfig::default());
+
+    let mut session = Session::new("fake");
+    session.push(Message::new(
+        Role::User,
+        vec![
+            ContentBlock::Image {
+                mime_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            },
+            ContentBlock::text("what is wrong with this?"),
+        ],
+    ));
+    let (outcome, _) = run(&h, &mut session, "and now?").await;
+    assert!(outcome.is_ok());
+
+    let sent = provider.last_request().await.unwrap();
+    let blocks = sent_blocks(&sent);
+    assert!(
+        !blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })),
+        "an image reached a model that cannot read one: {blocks:#?}"
+    );
+    // Replaced, not dropped: the question beside it says "this", and a question
+    // about nothing is worse than one that says what is missing.
+    assert!(
+        blocks.iter().any(|b| matches!(
+            b,
+            ContentBlock::Text { text } if text.contains("cannot read images")
+        )),
+        "{blocks:#?}"
+    );
+    // And the session itself is untouched.
+    assert!(session.messages[0]
+        .content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. })));
+}
+
+#[tokio::test]
+async fn a_model_that_can_see_is_sent_the_picture() {
+    let provider = FakeProvider::seeing(vec![ScriptedTurn::text("It is upside down.")]);
+    let h = harness_on(provider.clone(), Box::new(AllowAll), AgentConfig::default());
+
+    let mut session = Session::new("fake");
+    session.push(Message::new(
+        Role::User,
+        vec![
+            ContentBlock::Image {
+                mime_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            },
+            ContentBlock::text("what is wrong with this?"),
+        ],
+    ));
+    let (outcome, _) = run(&h, &mut session, "and now?").await;
+    assert!(outcome.is_ok());
+
+    let sent = provider.last_request().await.unwrap();
+    assert!(
+        sent_blocks(&sent)
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })),
+        "the picture was withheld from a model that reads them"
+    );
 }
 
 #[tokio::test]

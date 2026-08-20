@@ -72,6 +72,7 @@ export default function App() {
       rename: s.rename,
       refresh: s.refresh,
       startSession: s.startSession,
+      switchModel: s.switchModel,
       setWorkspace: s.setWorkspace,
       dismissError: s.dismissError,
       answerPermission: s.answerPermission,
@@ -164,11 +165,23 @@ export default function App() {
   }, [providerId]);
 
   /**
-   * Switches provider, which means starting a conversation on it.
+   * Takes the conversation on screen to another model, or opens one there when
+   * there is nothing to take.
    *
-   * The same thing choosing a model does: a session is bound to one provider
-   * and model, so changing either is a new conversation rather than a setting
-   * applied to this one.
+   * Both pickers go through here. Neither starts a new conversation any more:
+   * the usual reason to reach for one of them is a second opinion on the
+   * question just asked, and answering that with a blank transcript meant
+   * retyping it. Nothing in the history is provider-shaped, so carrying it
+   * across is a matter of saying so — see `switch_model`.
+   */
+  const moveTo = (provider: string, model: string) =>
+    store.session
+      ? store.switchModel(provider, model)
+      : store.startSession(provider, model);
+
+  /**
+   * Switches provider, which means moving the conversation to that backend's
+   * default model — a provider on its own does not answer anything.
    */
   const chooseProvider = async (id: string) => {
     if (id === providerId) return;
@@ -181,14 +194,14 @@ export default function App() {
       // The named default ahead of whatever the backend happened to list
       // first, which is the order `resolve_model` uses for the CLI.
       const first = config?.default_model ?? list[0]?.id;
-      if (first) await store.startSession(id, first);
+      if (first) await moveTo(id, first);
     } catch {
       setModels("failed");
       // A backend with no model listing is still usable when the config names
       // what to talk to — an Azure APIM route often exposes the chat endpoint
       // and nothing else.
       const named = config?.default_model ?? offered("failed", config)[0]?.id;
-      if (named) await store.startSession(id, named);
+      if (named) await moveTo(id, named);
     }
   };
 
@@ -316,7 +329,7 @@ export default function App() {
             aria-label="Model"
             value={store.session?.model ?? ""}
             disabled={store.busy || !providerId}
-            onChange={(e) => providerId && store.startSession(providerId, e.target.value)}
+            onChange={(e) => providerId && moveTo(providerId, e.target.value)}
           >
             {available.length === 0 && <option value="">no models</option>}
             {/* `available` already carries the running session's model even

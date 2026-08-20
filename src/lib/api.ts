@@ -64,6 +64,7 @@ import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
 import type { Skipped } from "../bindings/Skipped";
 import type { Step } from "../bindings/Step";
+import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
 import type { Theme } from "../bindings/Theme";
 import type { TranscriptView } from "../bindings/TranscriptView";
@@ -131,6 +132,7 @@ export type {
   Skipped,
   Step,
   StepState,
+  Switch,
   Theme,
   PendingConfig,
   TranscriptView,
@@ -214,6 +216,24 @@ export function sendMessage(
   channel.onmessage = onEvent;
   return invoke("send_message", { sessionId, text, images, onEvent: channel });
 }
+
+/**
+ * Moves this conversation to another model, or another backend, keeping
+ * everything said in it.
+ *
+ * Answers with the live conversation's new shape, capabilities included: the
+ * model being moved to may read images where the last one did not, or have a
+ * different context window, and both change what the composer offers.
+ *
+ * Refused mid-turn. A turn reads the model out of the session on every attempt,
+ * so moving it underneath one would send half an answer to one backend and half
+ * to another.
+ */
+export const switchModel = (
+  sessionId: string,
+  providerId: string,
+  model: string,
+) => invoke<CreatedSession>("switch_model", { sessionId, providerId, model });
 
 export const cancelSession = (sessionId: string) =>
   invoke<void>("cancel_session", { sessionId });

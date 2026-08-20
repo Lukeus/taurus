@@ -137,6 +137,48 @@ pub enum AgentError {
     Refused(String),
 }
 
+/// The history with every image replaced by a line saying one was there.
+///
+/// For a conversation that has moved to a model which cannot see. The images
+/// stay in the session and in the transcript — this is only what is sent — so
+/// moving back to a vision model brings them back. Nothing else about the
+/// conversation is lost, which is the whole reason a switch is allowed to
+/// happen in a conversation that has pictures in it.
+///
+/// Replaced rather than dropped, because the text around an image usually
+/// refers to it. A message reading "what is wrong with this?" with the picture
+/// silently removed is a question about nothing; one that says an image was
+/// omitted is a question the model can answer honestly. It also keeps every
+/// message's content non-empty, which some providers require.
+fn without_images(messages: &[Message]) -> Vec<Message> {
+    // The common case by far: nothing to do, and no history copied twice.
+    if !messages.iter().any(|m| {
+        m.content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. }))
+    }) {
+        return messages.to_vec();
+    }
+
+    messages
+        .iter()
+        .map(|message| Message {
+            role: message.role,
+            content: message
+                .content
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Image { .. } => ContentBlock::text(IMAGE_OMITTED),
+                    other => other.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// What stands in for a picture the current model cannot read.
+const IMAGE_OMITTED: &str = "[an image was attached here; this model cannot read images]";
+
 /// A request that failed, and whether any of it had already reached the user.
 struct FailedAttempt {
     error: taurus_provider::ProviderError,
@@ -601,7 +643,21 @@ impl Agent {
         session: &Session,
         ui: &mpsc::Sender<UiEvent>,
     ) -> Result<(Message, TokenUsage, StopReason), FailedAttempt> {
-        let request = self.build_request(session);
+        // Asked per attempt rather than held, because the model this session is
+        // on can change between turns — see `Session::model`. Cached by every
+        // adapter, so after the first turn this is a map lookup.
+        //
+        // `true` when the answer cannot be had: stripping images from a
+        // conversation on the strength of a failed capability lookup would
+        // quietly degrade a session that was working.
+        let vision = self
+            .provider
+            .capabilities(&session.model)
+            .await
+            .map(|caps| caps.vision)
+            .unwrap_or(true);
+
+        let request = self.build_request(session, vision);
         let (tx, mut rx) = mpsc::channel(128);
         let provider = self.provider.clone();
         let cancel = self.tools.cancel.clone();
@@ -651,7 +707,7 @@ impl Agent {
     /// which is the entire point of it: a model on iteration nine gets the plan
     /// as it stands on iteration nine, including the step it marked done on
     /// iteration eight.
-    fn build_request(&self, session: &Session) -> ChatRequest {
+    fn build_request(&self, session: &Session, vision: bool) -> ChatRequest {
         let tools = if self.config.allowed_tools.is_empty() {
             self.registry.definitions()
         } else {
@@ -661,7 +717,11 @@ impl Agent {
         ChatRequest {
             model: session.model.clone(),
             system: self.system_prompt(),
-            messages: session.messages.clone(),
+            messages: if vision {
+                session.messages.clone()
+            } else {
+                without_images(&session.messages)
+            },
             tools,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,

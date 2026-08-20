@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Message, UiEvent } from "../lib/api";
-import type { AppStatus, SessionMeta } from "../lib/api";
+import type {
+  AppStatus,
+  Message,
+  SessionMeta,
+  Switch,
+  UiEvent,
+} from "../lib/api";
 import {
   batchEvents,
   entriesFromMessages,
@@ -1081,5 +1086,79 @@ describe("pushed conversation entries", () => {
   it("accepts anything before a workspace is known", () => {
     // Startup, where there is nothing yet to disagree with.
     expect(mergeSession([], meta(), null)).toHaveLength(1);
+  });
+});
+
+describe("a conversation that changed model", () => {
+  const said = (role: "user" | "assistant", text: string): Message => ({
+    role,
+    content: [{ type: "text", text }],
+  });
+  const moved = (after: number, model: string): Switch => ({
+    after,
+    provider: "anthropic",
+    model,
+    at: 1_700_000_000,
+  });
+
+  const rules = (entries: Entry[]) =>
+    entries
+      .filter((e) => e.kind === "notice")
+      .map((e) => (e as Extract<Entry, { kind: "notice" }>).rule?.note);
+
+  it("draws the change where it happened, not at the end", () => {
+    // The reason to want the line is to explain the answers after it. At the
+    // bottom it would explain nothing.
+    const entries = entriesFromMessages(
+      [
+        said("user", "first question"),
+        said("assistant", "first answer"),
+        said("user", "second question"),
+        said("assistant", "second answer"),
+      ],
+      [moved(2, "claude-opus-5")],
+    );
+    expect(entries.map((e) => e.kind)).toEqual([
+      "user",
+      "assistant",
+      "notice",
+      "user",
+      "assistant",
+    ]);
+  });
+
+  it("names what it moved to, with the backend serving it", () => {
+    const entries = entriesFromMessages([said("user", "hi")], [moved(1, "claude-opus-5")]);
+    expect(rules(entries)).toEqual(["anthropic · claude-opus-5"]);
+  });
+
+  it("draws both when it moved twice with nothing asked in between", () => {
+    // Two clicks of the picker. Neither is a lie about what happened, and
+    // collapsing them would hide a backend the conversation passed through.
+    const entries = entriesFromMessages(
+      [said("user", "hi"), said("assistant", "hello")],
+      [moved(0, "claude-opus-5"), moved(0, "qwen3.6:27b")],
+    );
+    expect(rules(entries)).toEqual([
+      "anthropic · claude-opus-5",
+      "anthropic · qwen3.6:27b",
+    ]);
+    expect(entries[0].kind).toBe("notice");
+    expect(entries[1].kind).toBe("notice");
+  });
+
+  it("still draws a change made after the last turn", () => {
+    // Moved and then closed without asking anything since. Dropped, the line
+    // would reappear from nowhere the next time a question was asked.
+    const entries = entriesFromMessages(
+      [said("user", "hi"), said("assistant", "hello")],
+      [moved(2, "claude-opus-5")],
+    );
+    expect(entries[entries.length - 1].kind).toBe("notice");
+  });
+
+  it("draws nothing for a conversation that never moved", () => {
+    const entries = entriesFromMessages([said("user", "hi")]);
+    expect(entries.every((e) => e.kind !== "notice")).toBe(true);
   });
 });

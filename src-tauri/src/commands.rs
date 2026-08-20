@@ -28,7 +28,7 @@ use taurus_host::trust::TrustStatus;
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
     McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus, Rewind,
-    SessionLog, SessionMeta, Settings, Theme, TurnChange, TurnRef,
+    SessionLog, SessionMeta, Settings, Switch, Theme, TurnChange, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -302,10 +302,13 @@ pub async fn create_session(
         id.clone(),
         Arc::new(SessionEntry {
             session: Arc::new(Mutex::new(session)),
-            provider_id: provider_id.clone(),
+            provider_id: Mutex::new(provider_id.clone()),
             workspace,
             cancel: Arc::new(Mutex::new(CancellationToken::new())),
             log: Arc::new(Mutex::new(log)),
+            // A conversation starts where it starts; a switch is what puts
+            // anything in here.
+            switches: Mutex::new(Vec::new()),
         }),
     );
 
@@ -345,6 +348,10 @@ pub struct ResumedSession {
     pub context_length: u32,
     /// The whole transcript, for the frontend to rebuild the view from.
     pub messages: Vec<Message>,
+    /// Where this conversation changed model, each positioned by how much of
+    /// the transcript came before it — so a reopened conversation shows the
+    /// change where it happened rather than only what it ended on.
+    pub switches: Vec<Switch>,
 }
 
 /// The conversation one delegate had, for reading.
@@ -379,23 +386,30 @@ pub async fn resume_session(
 ) -> CmdResult<ResumedSession> {
     // `loaded` is carried alongside so the log below can be opened on the
     // transcript this was actually read from — see `SessionLog::resume`.
-    let (session, provider_id, loaded) = match state.sessions.get(&session_id) {
+    let (session, provider_id, switches, loaded) = match state.sessions.get(&session_id) {
         Some(open) => {
             let entry = open.clone();
-            let provider_id = entry.provider_id.clone();
+            let provider_id = entry.provider_id.lock().await.clone();
+            let switches = entry.switches.lock().await.clone();
             let session = entry.session.lock().await.clone();
-            (session, provider_id, None)
+            (session, provider_id, switches, None)
         }
         None => {
             let loaded = sessions::load(&session_id)?;
-            // Whichever provider the caller is on, else whatever the host
-            // resolves: a transcript records the model, not the backend that
+            // Whichever provider the caller is on; failing that the one this
+            // conversation was last worked on, which is known only for one that
+            // has moved at least once; failing that whatever the host resolves.
+            // A header records the model but deliberately not the backend that
             // served it, and that backend may not even be configured now.
             let (resolved, _) = state
                 .host
-                .resolve_model(provider_id.as_deref(), Some(&loaded.session.model))
+                .resolve_model(
+                    provider_id.as_deref().or(loaded.provider.as_deref()),
+                    Some(&loaded.session.model),
+                )
                 .await?;
-            (loaded.session.clone(), resolved, Some(loaded))
+            let switches = loaded.switches.clone();
+            (loaded.session.clone(), resolved, switches, Some(loaded))
         }
     };
 
@@ -413,6 +427,7 @@ pub async fn resume_session(
         vision: capabilities.vision,
         context_length: capabilities.context_length,
         messages: session.messages.clone(),
+        switches: switches.clone(),
     };
 
     // Only if it is still absent. The awaits above are where a second resume of
@@ -424,13 +439,14 @@ pub async fn resume_session(
         if let Entry::Vacant(slot) = state.sessions.entry(session_id.clone()) {
             slot.insert(Arc::new(SessionEntry {
                 session: Arc::new(Mutex::new(session)),
-                provider_id,
+                provider_id: Mutex::new(provider_id),
                 // The conversation's own folder, out of its header — not the
                 // one open now. They are the same in the ordinary case and
                 // must not be assumed to be.
                 workspace: loaded.workspace,
                 cancel: Arc::new(Mutex::new(CancellationToken::new())),
                 log: Arc::new(Mutex::new(log)),
+                switches: Mutex::new(switches),
             }));
             info!(session = %session_id, "session resumed");
         }
@@ -455,7 +471,10 @@ pub async fn send_message(
 
     check_workspace(&entry.workspace, &state.host.workspace().await)?;
 
-    let provider = state.host.provider(&entry.provider_id).await?;
+    // Read once, here, so a turn is sent to the backend this conversation was
+    // on when it began even if somebody moves it while the answer streams.
+    let provider_id = entry.provider_id.lock().await.clone();
+    let provider = state.host.provider(&provider_id).await?;
 
     // `/name args` becomes the skill's procedure — or the instruction to
     // delegate to that sub-agent — before the model sees it. The user's own
@@ -623,6 +642,91 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
     state.host.forget_plan(&session_id).await;
     info!(session = %session_id, "session deleted");
     Ok(())
+}
+
+/// Moves a conversation to another model, or another backend, keeping
+/// everything said in it.
+///
+/// The alternative — which is what both pickers used to do — is a new
+/// conversation, and that is a poor trade for a question you wanted a second
+/// opinion on. Nothing about the history is provider-shaped: it is stored as
+/// blocks, and each adapter renders those into its own wire format on the way
+/// out, drops the reasoning it cannot replay, and rewrites tool calls as text
+/// for a model with no native tool support. So carrying a conversation across
+/// is a matter of saying so, not of translating it.
+///
+/// What does change is the model's capabilities, which is why this answers with
+/// them. A smaller context window compacts on the next turn, because the budget
+/// is recomputed per turn from whatever model the session is on. A model that
+/// cannot read images is sent the conversation with its pictures replaced by a
+/// line saying one was there — see `taurus_core`'s `without_images`; the images
+/// stay in the session and come back if the conversation moves to a model that
+/// can see.
+///
+/// Reuses [`CreatedSession`] rather than declaring a near-copy: it is not the
+/// creating that the shape describes, it is what the frontend has to know about
+/// the live conversation, and after this call all of that has moved.
+#[tauri::command]
+pub async fn switch_model(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    provider_id: String,
+    model: String,
+) -> CmdResult<CreatedSession> {
+    let entry = state.session(&session_id)?;
+
+    // Asked before the lock is taken, and it is what makes this fail cleanly: a
+    // model the backend will not serve leaves the conversation where it was
+    // rather than moved to something that cannot answer it.
+    let provider = state.host.provider(&provider_id).await?;
+    let capabilities = provider
+        .capabilities(&model)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    {
+        // The same rule a rewind and a delete follow, and for a sharper reason
+        // than either: a turn reads the model out of the session on every
+        // attempt, so moving it underneath one would send half an answer to one
+        // backend and half to another.
+        let Ok(mut session) = entry.session.try_lock() else {
+            return Err(
+                "this conversation is mid-turn; stop it before changing model".into(),
+            );
+        };
+        session.model = model.clone();
+    }
+    *entry.provider_id.lock().await = provider_id.clone();
+
+    // Written down, so reopening the conversation continues it here rather than
+    // on the model in its header. Nothing is appended for a conversation with
+    // no transcript yet — the first turn writes a header naming this model
+    // instead. See `SessionLog::record_model`.
+    if entry.log.lock().await.record_model(&provider_id, &model) {
+        let session = entry.session.lock().await;
+        entry.switches.lock().await.push(Switch {
+            after: session.messages.len(),
+            provider: provider_id.clone(),
+            model: model.clone(),
+            at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default(),
+        });
+    }
+
+    state.host.remember_session(&provider_id, &model).await;
+    info!(session = %session_id, %provider_id, %model, "conversation moved to another model");
+    emit_status(&state).await;
+
+    Ok(CreatedSession {
+        id: session_id,
+        model,
+        provider_id,
+        native_tools: capabilities.native_tools,
+        vision: capabilities.vision,
+        context_length: capabilities.context_length,
+    })
 }
 
 /// Gives a conversation a title of its own, or takes one away.

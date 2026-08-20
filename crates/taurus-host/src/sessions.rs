@@ -133,6 +133,28 @@ enum Record {
     /// A running total rather than a per-turn delta: the last one wins, so a
     /// dropped tail line costs accuracy in the token counter and nothing else.
     Usage(TokenUsage),
+    /// The conversation moved to another model, or another backend, from here
+    /// on.
+    ///
+    /// Appended where it happened rather than written into the header, which
+    /// goes on meaning what the conversation *started* on. Both facts are worth
+    /// having and they are different facts: the header says where the work
+    /// began, and these say where it went. The last one wins on load, so
+    /// reopening a conversation continues it on the model it was last worked
+    /// in rather than the one it was opened with weeks ago.
+    ///
+    /// A build that predates this record skips the line — [`read_transcript`]
+    /// drops what it cannot parse and [`read_meta`] ignores it — so a
+    /// conversation written here still opens there, on the model in its header.
+    /// That is a downgrade losing a fact, not a transcript it cannot read,
+    /// which is why this does not need a format bump.
+    Model {
+        provider: String,
+        model: String,
+        /// Unix seconds. Not used for anything yet; recorded because the one
+        /// question anybody asks of a switch afterwards is when it happened.
+        at: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -394,6 +416,31 @@ impl SessionLog {
         created
     }
 
+    /// Records that this conversation has moved to another model or backend.
+    ///
+    /// Answers whether a line was written. `false` covers a log that writes
+    /// nowhere and, more usefully, a conversation with no transcript yet: a
+    /// session is created by every press of **New conversation**, and writing a
+    /// header here would put a row in the rail for a conversation nobody has
+    /// asked anything in. The held header is retuned instead, so the first turn
+    /// writes one naming the model the conversation is actually on.
+    pub fn record_model(&mut self, provider: &str, model: &str) -> bool {
+        if self.off {
+            return false;
+        }
+        if !has_header(&self.path) {
+            if let Some(header) = &mut self.header {
+                header.model = model.to_string();
+            }
+            return false;
+        }
+        self.write(&Record::Model {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            at: now(),
+        })
+    }
+
     /// Appends one record. Returns whether it landed.
     fn write(&mut self, record: &Record) -> bool {
         if self.off {
@@ -485,8 +532,28 @@ fn has_header(path: &Path) -> bool {
 /// open. `path` is the file to go on appending to, and `workspace` is the
 /// project the conversation is about — the tree its file paths describe, and
 /// the one its checkpoints are keyed by.
+/// One point where a conversation changed model or backend.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Switch {
+    /// How many messages preceded it, so a redrawn transcript can put it back
+    /// where it happened rather than at the end.
+    #[ts(type = "number")]
+    pub after: usize,
+    pub provider: String,
+    pub model: String,
+    /// Unix seconds.
+    #[ts(type = "number")]
+    pub at: u64,
+}
+
 pub struct Loaded {
     pub session: Session,
+    /// The backend this conversation was last worked on, when it has moved at
+    /// least once. `None` leaves the choice to whoever is resuming it.
+    pub provider: Option<String>,
+    /// Where it changed model, oldest first. Empty for one that never did.
+    pub switches: Vec<Switch>,
     /// The transcript this was read from.
     pub path: PathBuf,
     /// The workspace it was started in, from its own header.
@@ -514,6 +581,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     let mut header: Option<Header> = None;
     let mut messages = Vec::new();
     let mut usage = TokenUsage::default();
+    let mut switches: Vec<Switch> = Vec::new();
 
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         if line.trim().is_empty() {
@@ -523,6 +591,19 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
             Ok(Record::Header(h)) => header = Some(h),
             Ok(Record::Message(m)) => messages.push(m),
             Ok(Record::Usage(u)) => usage = u,
+            // Positioned by how much of the conversation came before it, so a
+            // reopened conversation can show where it changed model rather than
+            // only what it ended on.
+            Ok(Record::Model {
+                provider,
+                model,
+                at,
+            }) => switches.push(Switch {
+                after: messages.len(),
+                provider,
+                model,
+                at,
+            }),
             Err(e) => {
                 tracing::debug!(error = %e, "skipping an unreadable transcript line");
             }
@@ -540,12 +621,22 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
 
     Ok(Loaded {
         workspace: PathBuf::from(header.workspace),
+        // The backend the conversation was last worked on. `None` for one that
+        // never moved, where the header records the model but deliberately not
+        // the backend that served it — see `resume_session`.
+        provider: switches.last().map(|s| s.provider.clone()),
         session: Session {
             id: header.id,
-            model: header.model,
+            // The last switch wins. Reopening a conversation continues it on
+            // the model it was last worked in, not the one it was opened with.
+            model: switches
+                .last()
+                .map(|s| s.model.clone())
+                .unwrap_or(header.model),
             messages,
             usage,
         },
+        switches,
         path,
     })
 }
@@ -1436,6 +1527,104 @@ mod tests {
         assert!(rename("nope", Some("anything")).is_err());
         // An id that could escape the sessions tree never reaches the disk.
         assert!(rename("../../etc/passwd", Some("x")).is_err());
+    }
+
+    #[test]
+    fn a_conversation_reopens_on_the_model_it_was_last_worked_in() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/moved");
+        let session = session_with("m1", &["start here"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+
+        assert!(log.record_model("anthropic", "claude-opus-5"));
+        let loaded = load("m1").unwrap();
+        assert_eq!(loaded.session.model, "claude-opus-5");
+        assert_eq!(loaded.provider.as_deref(), Some("anthropic"));
+
+        // The last one wins, not the first.
+        assert!(log.record_model("ollama", "qwen3.6:27b"));
+        let loaded = load("m1").unwrap();
+        assert_eq!(loaded.session.model, "qwen3.6:27b");
+        assert_eq!(loaded.provider.as_deref(), Some("ollama"));
+
+        // And the header still says where the work began, which is a different
+        // fact and the one a listing shows.
+        assert_eq!(list(Some(workspace))[0].model, "test-model");
+    }
+
+    #[test]
+    fn a_switch_records_how_much_came_before_it() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/positioned");
+        let mut session = session_with("p2", &["first"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+        log.record_model("anthropic", "claude-opus-5");
+
+        session.push(Message::user("second"));
+        session.push(Message::assistant("ok"));
+        log.record(&session);
+        log.record_model("ollama", "qwen3.6:27b");
+
+        let switches = load("p2").unwrap().switches;
+        assert_eq!(switches.len(), 2);
+        // Two messages for the first turn, four by the time of the second
+        // switch — so a redrawn transcript puts each line where it happened
+        // rather than both at the end.
+        assert_eq!(switches[0].after, 2);
+        assert_eq!(switches[0].model, "claude-opus-5");
+        assert_eq!(switches[1].after, 4);
+        assert_eq!(switches[1].model, "qwen3.6:27b");
+    }
+
+    #[test]
+    fn switching_before_the_first_turn_writes_no_transcript() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/untouched");
+        let session = session_with("u1", &[]);
+        let mut log = SessionLog::create(&session, workspace, None);
+
+        // Nothing has been asked yet. A line here would put a row in the rail
+        // for a conversation that never happened — the same reason the header
+        // is not written at creation.
+        assert!(!log.record_model("anthropic", "claude-opus-5"));
+        assert!(list(Some(workspace)).is_empty());
+
+        // Instead the header the first turn writes names the model the
+        // conversation is actually on.
+        let session = session_with("u1", &["now ask something"]);
+        log.record(&session);
+        assert_eq!(list(Some(workspace))[0].model, "claude-opus-5");
+    }
+
+    #[test]
+    fn a_transcript_that_changed_model_still_opens_on_a_build_that_cannot_read_the_record() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/forward");
+        let session = session_with("f1", &["a question"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+        log.record_model("anthropic", "claude-opus-5");
+
+        // What an older build sees: a record it has no variant for. It skips
+        // the line rather than failing the load, so the conversation opens on
+        // the model in its header — a downgrade losing a fact, not a transcript
+        // it cannot read. That is why this needs no format bump.
+        let path = find("f1").unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let without: String = raw
+            .lines()
+            .filter(|line| !line.contains("\"type\":\"model\""))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_ne!(without, raw, "the switch was written as its own record");
+        std::fs::write(&path, without).unwrap();
+
+        let loaded = load("f1").unwrap();
+        assert_eq!(loaded.session.model, "test-model");
+        assert_eq!(loaded.session.messages.len(), 2);
+        assert!(loaded.switches.is_empty());
     }
 
     #[test]

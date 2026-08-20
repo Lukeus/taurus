@@ -421,8 +421,9 @@ selection alone is not the same as a working one.
 ## Anthropic and Google Gemini
 
 Both are their own `kind` rather than a `base_url` pointed at a different host,
-because neither is OpenAI-shaped. Anthropic reads the key from `x-api-key`, puts
-the system prompt in a top-level field, and sends tool input as an object;
+because neither is OpenAI-shaped. Anthropic reads the key from `x-api-key` by
+default, puts the system prompt in a top-level field, and sends tool input as an
+object;
 Gemini calls the assistant `model`, gives tool calls no ids at all, and takes an
 OpenAPI subset where the others take JSON Schema.
 
@@ -434,7 +435,9 @@ OpenAPI subset where the others take JSON Schema.
 ```
 
 That is the whole configuration. Keys go in the OS keychain as usual — `taurus
-key set anthropic` — or in a variable named by `api_key_env`.
+key set anthropic` — or in a variable named by `api_key_env`. Serving either
+through a gateway needs two more fields; see
+[Anthropic behind a gateway](#anthropic-behind-a-gateway).
 
 **Neither needs a `context_length`,** and neither should be given one except as
 a fallback. Anthropic reports a window and a capability tree per model, so
@@ -476,6 +479,59 @@ are stripped at every level of every tool schema. Its tool calls carry no ids,
 so Taurus synthesizes them and resolves them back to names on the way out;
 without that, two calls to the same tool in one turn would be indistinguishable
 and so would their results.
+
+## Anthropic behind a gateway
+
+`kind: "anthropic"` speaks the Messages API, wherever that API is being served
+from. On `api.anthropic.com` the route is fixed — the key rides `x-api-key` and
+the endpoints sit under `/v1` — and neither field below needs a value.
+
+A gateway in front of it changes both, and used to be unusable for that reason:
+the header was a constant and the `/v1` was hardcoded into the URL, so a
+correctly configured Azure APIM route answered 401 or 404 depending on which it
+tripped over first. Both are settings now.
+
+```jsonc
+{
+  "id": "apim-claude",
+  "kind": "anthropic",
+  "base_url": "https://my-gateway.azure-api.net/claude",
+  "api_prefix": "",
+  "api_key_env": "APIM_SUBSCRIPTION_KEY",
+  "api_key_header": "Ocp-Apim-Subscription-Key",
+  "models": ["claude-opus-4-5", "claude-sonnet-4-5"],
+  "default_model": "claude-opus-4-5"
+}
+```
+
+- **`api_key_header`.** The key Taurus holds is the *gateway's*, not
+  Anthropic's — an APIM route's own policy supplies the upstream key, which is
+  most of the point of putting one there. Naming a header sends the key in it
+  and nowhere else: sending both would hand a subscription key to Anthropic and
+  an Anthropic key to the gateway, and one of the two would reject it. Left
+  unset, the key rides `x-api-key` as it does at the API itself.
+- **`api_prefix`.** An APIM API is published under a base path of its own, and
+  its operations usually map straight onto `/messages` — so the prefix wants to
+  be empty, and the base URL carries the whole path. Set it to `/v1` or leave it
+  out for a gateway that mirrors Anthropic's own routes.
+- **`models`.** Name them. A gateway need not proxy `/v1/models` at all, and
+  Taurus never asks once this is set. Capability probing (`/v1/models/{id}`)
+  degrades on its own — a route that will not answer falls back to a 200k window
+  and vision on — so the listing is the only part that needs saying.
+
+`anthropic-version` goes on every request whatever the key header is. A gateway
+that injects its own is unharmed by receiving the same value, and one that
+passes the request through needs it.
+
+Two things a gateway cannot paper over. Reasoning blocks must come back with the
+signature the provider issued them under, so a route that strips unknown fields
+from responses will cause a rejected request one turn later, not at the moment
+it strips them. And `kind: "anthropic"` is about the *wire format*, not the
+vendor: a gateway exposing Claude through an OpenAI-shaped surface is
+`kind: "open_ai_compatible"`, below.
+
+Gemini has no equivalent yet: its key rides `x-goog-api-key` and its route is
+fixed. If you need it behind a gateway, say so.
 
 ## Azure OpenAI, and gateways in front of it
 

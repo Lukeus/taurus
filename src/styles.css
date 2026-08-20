@@ -3080,6 +3080,33 @@ button.link:hover {
   flex-direction: column;
   gap: 11px;
 }
+/* Folded, the card is its header row and nothing else, so the column gap has
+   nothing to space and the padding is all that is left. */
+.settings-provider:not(.open) {
+  padding-block: 9px;
+}
+/* The disclosure. Sized to the row rather than to the glyph, so the whole left
+   edge of the header is the target — a 6px chevron is a thing you aim at. */
+.settings-provider-fold {
+  flex: none;
+  width: 22px;
+  align-self: stretch;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.settings-provider-fold:hover {
+  color: var(--text);
+}
+.settings-provider-fold:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--r-sm);
+}
 .settings-id {
   font-family: var(--mono);
   min-width: 0;

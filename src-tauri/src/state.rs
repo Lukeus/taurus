@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use taurus_agents::proposal::AgentProposal;
 use taurus_core::Session;
-use taurus_host::{Host, PermissionPromptFactory, SessionLog};
+use taurus_host::{Host, PermissionPromptFactory, SessionLog, Switch};
 use taurus_skills::proposal::SkillProposal;
 use taurus_tools::{Answer, PermissionDecision, PermissionPrompt};
 
@@ -24,7 +24,13 @@ use crate::bridge::{UiAgentProposalSink, UiAsker, UiPermissionPrompt, UiProposal
 /// One live conversation.
 pub struct SessionEntry {
     pub session: Arc<Mutex<Session>>,
-    pub provider_id: String,
+    /// The backend serving this conversation *now*.
+    ///
+    /// Behind a lock rather than fixed at creation, because a conversation can
+    /// move to another model or another backend without being a new
+    /// conversation — see `switch_model`. Read at the start of every turn, so
+    /// what a turn is sent to is whatever this said when it began.
+    pub provider_id: Mutex<String>,
     /// The workspace this conversation belongs to, which is not always the one
     /// open.
     ///
@@ -42,6 +48,13 @@ pub struct SessionEntry {
     /// The transcript this conversation appends to. Its own lock rather than
     /// the session's, so a listing or a close does not wait behind a turn.
     pub log: Arc<Mutex<SessionLog>>,
+    /// Where this conversation has changed model, oldest first.
+    ///
+    /// Held as well as written down, so that reopening a conversation that is
+    /// still live redraws the same transcript a reopened-from-disk one would.
+    /// Without it the two paths disagree: the file has the switches and the
+    /// session in memory does not.
+    pub switches: Mutex<Vec<Switch>>,
 }
 
 /// Makes UI-backed permission prompts as the host rebuilds its engine.
