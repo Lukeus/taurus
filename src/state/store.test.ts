@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Message, UiEvent } from "../lib/api";
+import type {
+  AppStatus,
+  Message,
+  SessionMeta,
+  Switch,
+  UiEvent,
+} from "../lib/api";
 import {
   batchEvents,
   entriesFromMessages,
+  mergeChanged,
+  mergeSession,
   pinnedPlan,
   reduce,
   viewFromCall,
@@ -993,5 +1001,164 @@ describe("batching stream events", () => {
     vi.runAllTimers();
 
     expect(batches.map((b) => b.length)).toEqual([1, 1]);
+  });
+});
+
+describe("live file changes", () => {
+  const changed = (...paths: string[]): UiEvent => ({
+    type: "files_changed",
+    paths,
+  });
+
+  it("unions what a turn reports into what the conversation already changed", () => {
+    // The report covers the running turn; the set on screen covers the whole
+    // conversation, including turns restored from checkpoints on reopening.
+    const before = ["docs/old.md"];
+    const after = [changed("a.rs"), changed("a.rs", "b.rs")].reduce(
+      mergeChanged,
+      before,
+    );
+    expect(after).toEqual(["a.rs", "b.rs", "docs/old.md"]);
+  });
+
+  it("hands back the same array when a report adds nothing", () => {
+    // Identity, not just equality: the header reads this on every frame of a
+    // turn, and a fresh array would redraw it to say the same number.
+    const before = ["a.rs"];
+    expect(mergeChanged(before, changed("a.rs"))).toBe(before);
+    expect(mergeChanged(before, { type: "iteration_started", iteration: 2 })).toBe(
+      before,
+    );
+  });
+
+  it("leaves the transcript alone", () => {
+    // The changed set is the state of the workspace, not something that
+    // happened in the conversation.
+    expect(run(changed("a.rs"))).toEqual([]);
+  });
+});
+
+describe("pushed conversation entries", () => {
+  const meta = (over: Partial<SessionMeta> = {}): SessionMeta => ({
+    id: "s1",
+    workspace: "/w",
+    model: "test-model",
+    started: 1,
+    updated: 100,
+    title: "a question",
+    ...over,
+  });
+  const status = (workspace = "/w") => ({ workspace }) as AppStatus;
+
+  it("puts a conversation it has not seen at the front", () => {
+    const list = mergeSession([], meta(), status());
+    expect(list.map((s) => s.id)).toEqual(["s1"]);
+  });
+
+  it("replaces the entry it already had rather than doubling it", () => {
+    const list = mergeSession(
+      [meta({ title: "a question", updated: 100 })],
+      meta({ title: "Renamed", updated: 100 }),
+      status(),
+    );
+    expect(list).toHaveLength(1);
+    expect(list[0].title).toBe("Renamed");
+  });
+
+  it("keeps the list newest first however the entry arrives", () => {
+    const list = mergeSession(
+      [meta({ id: "s2", updated: 300 }), meta({ id: "s3", updated: 50 })],
+      meta({ id: "s1", updated: 200 }),
+      status(),
+    );
+    expect(list.map((s) => s.id)).toEqual(["s2", "s1", "s3"]);
+  });
+
+  it("ignores a conversation belonging to another workspace", () => {
+    // A turn still finishing when the window moved folders must not put its
+    // conversation into the new folder's rail.
+    const existing = [meta({ id: "s2" })];
+    expect(
+      mergeSession(existing, meta({ id: "s1", workspace: "/elsewhere" }), status()),
+    ).toBe(existing);
+  });
+
+  it("accepts anything before a workspace is known", () => {
+    // Startup, where there is nothing yet to disagree with.
+    expect(mergeSession([], meta(), null)).toHaveLength(1);
+  });
+});
+
+describe("a conversation that changed model", () => {
+  const said = (role: "user" | "assistant", text: string): Message => ({
+    role,
+    content: [{ type: "text", text }],
+  });
+  const moved = (after: number, model: string): Switch => ({
+    after,
+    provider: "anthropic",
+    model,
+    at: 1_700_000_000,
+  });
+
+  const rules = (entries: Entry[]) =>
+    entries
+      .filter((e) => e.kind === "notice")
+      .map((e) => (e as Extract<Entry, { kind: "notice" }>).rule?.note);
+
+  it("draws the change where it happened, not at the end", () => {
+    // The reason to want the line is to explain the answers after it. At the
+    // bottom it would explain nothing.
+    const entries = entriesFromMessages(
+      [
+        said("user", "first question"),
+        said("assistant", "first answer"),
+        said("user", "second question"),
+        said("assistant", "second answer"),
+      ],
+      [moved(2, "claude-opus-5")],
+    );
+    expect(entries.map((e) => e.kind)).toEqual([
+      "user",
+      "assistant",
+      "notice",
+      "user",
+      "assistant",
+    ]);
+  });
+
+  it("names what it moved to, with the backend serving it", () => {
+    const entries = entriesFromMessages([said("user", "hi")], [moved(1, "claude-opus-5")]);
+    expect(rules(entries)).toEqual(["anthropic · claude-opus-5"]);
+  });
+
+  it("draws both when it moved twice with nothing asked in between", () => {
+    // Two clicks of the picker. Neither is a lie about what happened, and
+    // collapsing them would hide a backend the conversation passed through.
+    const entries = entriesFromMessages(
+      [said("user", "hi"), said("assistant", "hello")],
+      [moved(0, "claude-opus-5"), moved(0, "qwen3.6:27b")],
+    );
+    expect(rules(entries)).toEqual([
+      "anthropic · claude-opus-5",
+      "anthropic · qwen3.6:27b",
+    ]);
+    expect(entries[0].kind).toBe("notice");
+    expect(entries[1].kind).toBe("notice");
+  });
+
+  it("still draws a change made after the last turn", () => {
+    // Moved and then closed without asking anything since. Dropped, the line
+    // would reappear from nowhere the next time a question was asked.
+    const entries = entriesFromMessages(
+      [said("user", "hi"), said("assistant", "hello")],
+      [moved(2, "claude-opus-5")],
+    );
+    expect(entries[entries.length - 1].kind).toBe("notice");
+  });
+
+  it("draws nothing for a conversation that never moved", () => {
+    const entries = entriesFromMessages([said("user", "hi")]);
+    expect(entries.every((e) => e.kind !== "notice")).toBe(true);
   });
 });

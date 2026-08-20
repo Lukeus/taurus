@@ -838,6 +838,26 @@ impl TurnRecorder {
         self.state.lock().await.seen.len()
     }
 
+    /// The same set, as the workspace-relative strings a listing shows.
+    ///
+    /// Sorted rather than in capture order: this is read repeatedly during a
+    /// turn to redraw a list, and ordering it by when each file happened to be
+    /// touched would reshuffle the rows under whoever is reading them.
+    ///
+    /// Rendered through [`crate::path_guard::display`], the same call
+    /// [`Self::record`] writes the log with, so a path reported here and the
+    /// one a rewind later names are the same string.
+    pub async fn changed_paths(&self) -> Vec<String> {
+        let state = self.state.lock().await;
+        let mut paths: Vec<String> = state
+            .seen
+            .iter()
+            .map(|path| crate::path_guard::display(&self.workspace, path))
+            .collect();
+        paths.sort();
+        paths
+    }
+
     /// Records that this turn moved `HEAD` or the ref it names.
     ///
     /// Only ever called by [`crate::sweep`], and only when the same pass also

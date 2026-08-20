@@ -6,6 +6,7 @@ import { Attachments } from "./components/Attachments";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { DelegateTranscript } from "./components/DelegateTranscript";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
+import { ConversationTitle } from "./components/ConversationTitle";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { TrustBanner } from "./components/TrustBanner";
 import { PlanPanel } from "./components/PlanPanel";
@@ -66,10 +67,12 @@ export default function App() {
       init: s.init,
       send: s.send,
       stop: s.stop,
-      refresh: s.refresh,
       resume: s.resume,
       remove: s.remove,
+      rename: s.rename,
+      refresh: s.refresh,
       startSession: s.startSession,
+      switchModel: s.switchModel,
       setWorkspace: s.setWorkspace,
       dismissError: s.dismissError,
       answerPermission: s.answerPermission,
@@ -108,6 +111,26 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /*
+   * Re-asks the questions nothing can push, when the user comes back.
+   *
+   * Trust is the one that matters: the answer changes when a file appears in a
+   * directory nothing is watching — a `git pull` that adds `.taurus/mcp.json`
+   * is the case the gate exists for, and it arrives with no event attached to
+   * it. Returning to the window is the closest thing to an event there is, and
+   * it is precisely when somebody has most likely just been in a terminal.
+   *
+   * Everything else on screen is pushed, so this is a narrow catch-up rather
+   * than a poll: no timer, and nothing happens while the window is not looked
+   * at.
+   */
+  const refresh = store.refresh;
+  useEffect(() => {
+    const ask = () => void refresh();
+    window.addEventListener("focus", ask);
+    return () => window.removeEventListener("focus", ask);
+  }, [refresh]);
+
   // Settings are the authority; main.tsx only guessed from the last run. Also
   // where following the OS is honoured — while the preference is `system`, a
   // machine that switches at dusk switches the app with it, and the listener is
@@ -142,11 +165,23 @@ export default function App() {
   }, [providerId]);
 
   /**
-   * Switches provider, which means starting a conversation on it.
+   * Takes the conversation on screen to another model, or opens one there when
+   * there is nothing to take.
    *
-   * The same thing choosing a model does: a session is bound to one provider
-   * and model, so changing either is a new conversation rather than a setting
-   * applied to this one.
+   * Both pickers go through here. Neither starts a new conversation any more:
+   * the usual reason to reach for one of them is a second opinion on the
+   * question just asked, and answering that with a blank transcript meant
+   * retyping it. Nothing in the history is provider-shaped, so carrying it
+   * across is a matter of saying so — see `switch_model`.
+   */
+  const moveTo = (provider: string, model: string) =>
+    store.session
+      ? store.switchModel(provider, model)
+      : store.startSession(provider, model);
+
+  /**
+   * Switches provider, which means moving the conversation to that backend's
+   * default model — a provider on its own does not answer anything.
    */
   const chooseProvider = async (id: string) => {
     if (id === providerId) return;
@@ -159,14 +194,14 @@ export default function App() {
       // The named default ahead of whatever the backend happened to list
       // first, which is the order `resolve_model` uses for the CLI.
       const first = config?.default_model ?? list[0]?.id;
-      if (first) await store.startSession(id, first);
+      if (first) await moveTo(id, first);
     } catch {
       setModels("failed");
       // A backend with no model listing is still usable when the config names
       // what to talk to — an Azure APIM route often exposes the chat endpoint
       // and nothing else.
       const named = config?.default_model ?? offered("failed", config)[0]?.id;
-      if (named) await store.startSession(id, named);
+      if (named) await moveTo(id, named);
     }
   };
 
@@ -187,20 +222,23 @@ export default function App() {
     setSettingsOpen(true);
   };
 
-  const title =
-    store.sessions.find((s) => s.id === store.session?.id)?.title ||
-    "New conversation";
+  // The listing entry rather than the session: a title is a fact about the
+  // transcript, and a conversation with no entry has none of either yet.
+  const listed = store.sessions.find((s) => s.id === store.session?.id);
+  const title = listed?.title || "New conversation";
 
   /**
    * The same two steps `ThemePicker` takes, because the rail row and the
-   * Settings pills set one preference between them: paint immediately so the
-   * click is answered by the screen it changed, then write, then re-read — the
-   * settings file stays the authority, and the effect above repaints from it.
+   * Settings pills set one preference between them: paint immediately, so the
+   * click is answered by the screen it changed, then write.
+   *
+   * There is no third step any more. The settings file is still the authority
+   * on which theme is in force, and what it now says arrives on `EVENT_STATUS`
+   * — which is what the effect above repaints from.
    */
   const chooseTheme = async (next: Theme) => {
     applyTheme(next);
     await api.setTheme(next);
-    await store.refresh();
   };
 
   return (
@@ -235,7 +273,13 @@ export default function App() {
 
       <div className="pane">
         <header className="topbar">
-          <span className="topbar-title">{title}</span>
+          <ConversationTitle
+            title={title}
+            // Only once there is a transcript to write a name into, which there
+            // is from the moment the first question is asked.
+            renamable={listed !== undefined}
+            onRename={(next) => listed && store.rename(listed.id, next)}
+          />
 
           {store.session && !store.session.native_tools && (
             <span
@@ -285,7 +329,7 @@ export default function App() {
             aria-label="Model"
             value={store.session?.model ?? ""}
             disabled={store.busy || !providerId}
-            onChange={(e) => providerId && store.startSession(providerId, e.target.value)}
+            onChange={(e) => providerId && moveTo(providerId, e.target.value)}
           >
             {available.length === 0 && <option value="">no models</option>}
             {/* `available` already carries the running session's model even

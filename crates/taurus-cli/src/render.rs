@@ -224,6 +224,13 @@ impl Renderer {
                 self.warn(&format!("  retrying ({attempt}/{of}): {reason}"));
             }
 
+            // For a UI that draws a running count somewhere the transcript is
+            // not. A terminal already has the `edit_file` and `run_command`
+            // lines that caused every one of these, in order, on the screen —
+            // restating the total after each round would be the same news a
+            // second time.
+            UiEvent::FilesChanged { .. } => {}
+
             UiEvent::ContextTrimmed {
                 results,
                 tokens_saved,

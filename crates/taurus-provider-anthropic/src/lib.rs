@@ -48,6 +48,17 @@ const API_VERSION: &str = "2023-06-01";
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
+/// Where the Messages API lives on `api.anthropic.com`, and on anything
+/// mirroring its route shape.
+pub const DEFAULT_API_PREFIX: &str = "/v1";
+
+/// The header this API reads the key from.
+///
+/// Not `Authorization: Bearer`, which is the mistake that produces a 401
+/// indistinguishable from a wrong key. A gateway in front of it may want a
+/// different one — see [`AnthropicProvider::with_api_key_header`].
+pub const DEFAULT_API_KEY_HEADER: &str = "x-api-key";
+
 /// What the models endpoint could not tell us.
 ///
 /// Only reached when `/v1/models` is unavailable — a gateway that does not
@@ -113,7 +124,11 @@ impl Thinking {
 pub struct AnthropicProvider {
     id: String,
     base_url: String,
+    /// Already normalized: leading slash, no trailing one, possibly empty.
+    api_prefix: String,
     api_key: Option<String>,
+    /// Header the key goes in. Defaults to `x-api-key`.
+    api_key_header: String,
     client: reqwest::Client,
     capabilities: AnthropicCapabilities,
     thinking: Thinking,
@@ -139,7 +154,9 @@ impl AnthropicProvider {
         Self {
             id: id.into(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            api_prefix: DEFAULT_API_PREFIX.to_string(),
             api_key,
+            api_key_header: DEFAULT_API_KEY_HEADER.to_string(),
             client: reqwest::Client::new(),
             capabilities: AnthropicCapabilities::default(),
             thinking: Thinking::default(),
@@ -158,6 +175,50 @@ impl AnthropicProvider {
         self
     }
 
+    /// Sends the key in a different header than `x-api-key`.
+    ///
+    /// For this API served through a gateway, which is a case the direct
+    /// endpoint made easy to forget: an Azure APIM route reads
+    /// `Ocp-Apim-Subscription-Key`, and the key the client holds is the
+    /// gateway's rather than Anthropic's — the upstream one is supplied by the
+    /// route's own policy and never leaves it.
+    ///
+    /// Exclusive, like the OpenAI adapter's: naming a header sends the key
+    /// there and nowhere else. Sending both would hand a subscription key to
+    /// Anthropic and an Anthropic key to the gateway, and one of the two would
+    /// reject it.
+    ///
+    /// `None` keeps `x-api-key`, so a config that says nothing changes nothing.
+    pub fn with_api_key_header(mut self, header: Option<impl Into<String>>) -> Self {
+        if let Some(header) = header
+            .map(Into::into)
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+        {
+            self.api_key_header = header;
+        }
+        self
+    }
+
+    /// Moves the Messages API to a different path prefix.
+    ///
+    /// `/v1` is right for `api.anthropic.com` and for a gateway that mirrors
+    /// its paths. It is not right for one that does not: an APIM API is
+    /// published under a base path of its own, with operations usually mapped
+    /// straight onto `/messages`, so the `/v1` this used to force produced a
+    /// 404 on a route that was configured perfectly well.
+    ///
+    /// An empty string is a legitimate answer — it means the routes sit
+    /// directly under the base URL.
+    ///
+    /// `None` keeps the default.
+    pub fn with_api_prefix(mut self, prefix: Option<impl AsRef<str>>) -> Self {
+        if let Some(prefix) = prefix {
+            self.api_prefix = normalize_prefix(prefix.as_ref());
+        }
+        self
+    }
+
     /// Fallback values for when the models endpoint cannot be reached.
     pub fn with_fallback_capabilities(mut self, capabilities: AnthropicCapabilities) -> Self {
         self.capabilities = capabilities;
@@ -165,14 +226,20 @@ impl AnthropicProvider {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}/v1{path}", self.base_url)
+        format!("{}{}{}", self.base_url, self.api_prefix, path)
     }
 
     /// Adds the two headers every request needs.
     ///
-    /// `x-api-key`, not `Authorization: Bearer` — this API is the reason the
-    /// OpenAI adapter grew a configurable header, and getting it wrong here is
-    /// a 401 that reads exactly like a bad key.
+    /// `x-api-key` by default, not `Authorization: Bearer` — this API is the
+    /// reason the OpenAI adapter grew a configurable header, and getting it
+    /// wrong is a 401 that reads exactly like a bad key. A gateway in front of
+    /// it can want another name again, which is why this is now a setting here
+    /// too rather than a constant.
+    ///
+    /// `anthropic-version` goes on regardless of where the key rides. A gateway
+    /// that injects its own is unharmed by receiving the same value, and one
+    /// that passes the request straight through needs it.
     fn authorize(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let builder = builder.header("anthropic-version", API_VERSION);
         let Some(key) = &self.api_key else {
@@ -192,7 +259,7 @@ impl AnthropicProvider {
             }
         };
         value.set_sensitive(true);
-        builder.header("x-api-key", value)
+        builder.header(self.api_key_header.as_str(), value)
     }
 
     fn unreachable(&self, source: reqwest::Error) -> ProviderError {
@@ -472,6 +539,17 @@ fn status_for(kind: &str) -> u16 {
     }
 }
 
+/// A path prefix as `url` needs it: one leading slash, no trailing one, and
+/// empty for a gateway that mounts the routes at its own root.
+fn normalize_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
 async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> {
     tx.send(event).await.map_err(|_| ProviderError::Canceled)
 }
@@ -722,6 +800,81 @@ mod tests {
         assert_eq!(headers["x-api-key"], "sk-test");
         assert_eq!(headers["anthropic-version"], API_VERSION);
         assert!(!headers.contains_key("authorization"));
+    }
+
+    /// The headers `authorize` actually puts on a request.
+    fn auth_headers(header: Option<&str>) -> reqwest::header::HeaderMap {
+        let provider =
+            AnthropicProvider::new("anthropic", DEFAULT_BASE_URL, Some("sk-test".into()))
+                .with_api_key_header(header);
+        provider
+            .authorize(provider.client.get("http://x"))
+            .build()
+            .expect("a buildable request")
+            .headers()
+            .clone()
+    }
+
+    #[test]
+    fn a_gateway_can_take_the_key_in_a_header_of_its_own() {
+        // An Azure APIM route in front of this API reads its own subscription
+        // key; the Anthropic key belongs to the route's policy and never
+        // reaches the client. Before this, the header was a constant and there
+        // was nowhere for that key to ride.
+        let headers = auth_headers(Some("Ocp-Apim-Subscription-Key"));
+        assert_eq!(headers["ocp-apim-subscription-key"], "sk-test");
+        // Exclusive: sending both would hand a subscription key to Anthropic
+        // and an Anthropic key to the gateway, and one of the two would reject
+        // it.
+        assert!(!headers.contains_key("x-api-key"));
+        // The version header goes on regardless of where the key rides.
+        assert_eq!(headers["anthropic-version"], API_VERSION);
+    }
+
+    #[test]
+    fn a_header_that_says_nothing_leaves_the_default_alone() {
+        for named in [None, Some(""), Some("   ")] {
+            let headers = auth_headers(named);
+            assert_eq!(headers["x-api-key"], "sk-test", "for {named:?}");
+        }
+    }
+
+    #[test]
+    fn a_gateway_can_publish_the_routes_under_its_own_path() {
+        // The `/v1` this used to force produced a 404 on an APIM route that was
+        // configured perfectly well: an API published there has a base path of
+        // its own, and its operations usually map straight onto `/messages`.
+        let gateway = AnthropicProvider::new("apim", "https://gw.azure-api.net/claude", None)
+            .with_api_prefix(Some(""));
+        assert_eq!(
+            gateway.url("/messages"),
+            "https://gw.azure-api.net/claude/messages"
+        );
+
+        let prefixed = AnthropicProvider::new("apim", "https://gw.azure-api.net", None)
+            .with_api_prefix(Some("anthropic/v1"));
+        assert_eq!(
+            prefixed.url("/messages"),
+            "https://gw.azure-api.net/anthropic/v1/messages"
+        );
+        // Written with or without slashes, it lands the same way.
+        let slashed = AnthropicProvider::new("apim", "https://gw.azure-api.net", None)
+            .with_api_prefix(Some("/anthropic/v1/"));
+        assert_eq!(slashed.url("/messages"), prefixed.url("/messages"));
+    }
+
+    #[test]
+    fn a_prefix_that_says_nothing_leaves_the_default_alone() {
+        assert_eq!(
+            provider().url("/messages"),
+            format!("{DEFAULT_BASE_URL}/v1/messages")
+        );
+        assert_eq!(
+            AnthropicProvider::new("anthropic", DEFAULT_BASE_URL, None)
+                .with_api_prefix(None::<&str>)
+                .url("/messages"),
+            format!("{DEFAULT_BASE_URL}/v1/messages")
+        );
     }
 
     #[test]

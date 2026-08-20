@@ -10,6 +10,13 @@
 //! call being announced, which is what puts it in the transcript in the order
 //! it was asked. So there is nothing to emit here — only somewhere for the call
 //! to wait while the card is on screen.
+//!
+//! Alongside those decision points, this is also where the backend tells the
+//! frontend that something it is showing has moved: [`EVENT_STATUS`] and
+//! [`EVENT_SESSION`]. Those carry no question and block nothing. They exist
+//! because the frontend used to find out by asking — after a turn, after a
+//! click — which meant everything on screen was as old as the last thing the
+//! user happened to do.
 
 use std::sync::Arc;
 
@@ -20,6 +27,8 @@ use tokio::sync::oneshot;
 use tracing::warn;
 
 use taurus_agents::proposal::{AgentProposal, AgentProposalSink};
+use taurus_core::{Session, TurnRecorder};
+use taurus_host::{sessions, SessionLog};
 use taurus_skills::proposal::{ProposalSink, SkillProposal};
 use taurus_tools::{
     Answer, Asker, PermissionDecision, PermissionPrompt, PermissionRequest, Question,
@@ -28,6 +37,27 @@ use taurus_tools::{
 pub const EVENT_PERMISSION_REQUEST: &str = "taurus://permission-request";
 pub const EVENT_SKILL_PROPOSAL: &str = "taurus://skill-proposal";
 pub const EVENT_AGENT_PROPOSAL: &str = "taurus://agent-proposal";
+
+/// The whole of [`crate::commands::AppStatus`], whenever any of it moves.
+///
+/// The state carried rather than a nudge to go and fetch it: a "something
+/// changed" ping costs a round trip to learn what, and the sender already has
+/// the answer in hand.
+pub const EVENT_STATUS: &str = "taurus://status";
+
+/// One conversation's listing entry, when it appears or changes.
+///
+/// Singular on purpose. The frontend merges it into the list it already has,
+/// so a turn ending costs one file read rather than a scan of every transcript
+/// in the workspace.
+pub const EVENT_SESSION: &str = "taurus://session";
+
+/// The whole set of files one conversation has changed, when it is cut back.
+///
+/// A turn reports what it changes on the turn's own event stream, as it changes
+/// them, so this exists for the one thing that moves the set the other way: a
+/// rewind, which puts files back and drops the turns that touched them.
+pub const EVENT_CHANGED: &str = "taurus://changed";
 
 /// Permission prompt backed by the UI.
 ///
@@ -152,6 +182,53 @@ impl AgentProposalSink for UiAgentProposalSink {
         self.pending.insert(proposal.id.clone(), proposal.clone());
         if let Err(e) = self.app.emit(EVENT_AGENT_PROPOSAL, &proposal) {
             warn!(error = %e, "could not deliver agent proposal");
+        }
+    }
+}
+
+/// Writes the conversation on screen down as it happens, and says when it first
+/// lands.
+///
+/// The agent loop records a turn once per tool round trip and once when it
+/// ends, so wiring this in is most of what makes the app's state live: the
+/// transcript exists from the moment the question is asked rather than from the
+/// moment it is answered.
+///
+/// The announcement is made exactly once per transcript — when the header is
+/// written — because that is the only round that changes what a listing would
+/// show. Every later round appends messages nobody is reading off disk; the
+/// view of them is the event stream the turn is already sending.
+pub struct UiSessionLog {
+    app: AppHandle,
+    /// Shared with the command that owns the session, which still records the
+    /// finished turn under it. One lock, so the two cannot interleave halfway
+    /// through a write.
+    log: Arc<tokio::sync::Mutex<SessionLog>>,
+    id: String,
+}
+
+impl UiSessionLog {
+    pub fn new(app: AppHandle, log: Arc<tokio::sync::Mutex<SessionLog>>, id: String) -> Self {
+        Self { app, log, id }
+    }
+}
+
+#[async_trait]
+impl TurnRecorder for UiSessionLog {
+    async fn record(&self, session: &Session) {
+        if !self.log.lock().await.record(session) {
+            return;
+        }
+        // Read back rather than assembled here, so what the rail shows is what
+        // a later listing will show — including how the title was derived and
+        // shortened, which is the transcript layer's rule and not this one's.
+        let Some(meta) = sessions::meta(&self.id) else {
+            return;
+        };
+        if let Err(e) = self.app.emit(EVENT_SESSION, &meta) {
+            // The conversation is on disk regardless; the rail catches up on
+            // the next thing that lists it.
+            warn!(error = %e, "could not announce a new conversation");
         }
     }
 }

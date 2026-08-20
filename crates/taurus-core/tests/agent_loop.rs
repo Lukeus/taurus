@@ -30,6 +30,20 @@ fn harness_with(
     config: AgentConfig,
     context_length: u32,
 ) -> Harness {
+    harness_on(
+        FakeProvider::with_context_length(turns, context_length),
+        prompt,
+        config,
+    )
+}
+
+/// A harness on a provider the caller built, for the tests that care what the
+/// backend can *do* — read images, say — rather than what it answers.
+fn harness_on(
+    provider: Arc<FakeProvider>,
+    prompt: Box<dyn PermissionPrompt>,
+    config: AgentConfig,
+) -> Harness {
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();
     let cancel = CancellationToken::new();
@@ -39,7 +53,6 @@ fn harness_with(
         prompt,
     ));
     let tools = ToolContext::new(workspace.clone(), permissions, cancel.clone());
-    let provider = FakeProvider::with_context_length(turns, context_length);
     let agent = Agent::new(
         provider.clone(),
         ToolRegistry::with_builtins(),
@@ -958,6 +971,161 @@ fn nudges(request: &taurus_provider::ChatRequest) -> usize {
         .count()
 }
 
+/// Everything a turn sent, kept in order.
+async fn collect(agent: &Agent, session: &mut Session, text: &str) -> Vec<UiEvent> {
+    let (tx, mut rx) = mpsc::channel(256);
+    let sink = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while let Some(event) = rx.recv().await {
+            seen.push(event);
+        }
+        seen
+    });
+    let _ = agent.run_turn(session, Message::user(text), tx).await;
+    sink.await.unwrap()
+}
+
+/// Every block of every message the provider was actually sent.
+fn sent_blocks(request: &taurus_provider::ChatRequest) -> Vec<&ContentBlock> {
+    request.messages.iter().flat_map(|m| &m.content).collect()
+}
+
+#[tokio::test]
+async fn a_model_that_cannot_see_is_told_an_image_was_there() {
+    // What makes moving a conversation to a text-only model survivable. The
+    // picture stays in the session and in the transcript; only the request is
+    // rewritten, so moving back to a model that can see brings it back.
+    let provider = FakeProvider::new(vec![ScriptedTurn::text("I cannot see it.")]);
+    let h = harness_on(provider.clone(), Box::new(AllowAll), AgentConfig::default());
+
+    let mut session = Session::new("fake");
+    session.push(Message::new(
+        Role::User,
+        vec![
+            ContentBlock::Image {
+                mime_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            },
+            ContentBlock::text("what is wrong with this?"),
+        ],
+    ));
+    let (outcome, _) = run(&h, &mut session, "and now?").await;
+    assert!(outcome.is_ok());
+
+    let sent = provider.last_request().await.unwrap();
+    let blocks = sent_blocks(&sent);
+    assert!(
+        !blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })),
+        "an image reached a model that cannot read one: {blocks:#?}"
+    );
+    // Replaced, not dropped: the question beside it says "this", and a question
+    // about nothing is worse than one that says what is missing.
+    assert!(
+        blocks.iter().any(|b| matches!(
+            b,
+            ContentBlock::Text { text } if text.contains("cannot read images")
+        )),
+        "{blocks:#?}"
+    );
+    // And the session itself is untouched.
+    assert!(session.messages[0]
+        .content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. })));
+}
+
+#[tokio::test]
+async fn a_model_that_can_see_is_sent_the_picture() {
+    let provider = FakeProvider::seeing(vec![ScriptedTurn::text("It is upside down.")]);
+    let h = harness_on(provider.clone(), Box::new(AllowAll), AgentConfig::default());
+
+    let mut session = Session::new("fake");
+    session.push(Message::new(
+        Role::User,
+        vec![
+            ContentBlock::Image {
+                mime_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            },
+            ContentBlock::text("what is wrong with this?"),
+        ],
+    ));
+    let (outcome, _) = run(&h, &mut session, "and now?").await;
+    assert!(outcome.is_ok());
+
+    let sent = provider.last_request().await.unwrap();
+    assert!(
+        sent_blocks(&sent)
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })),
+        "the picture was withheld from a model that reads them"
+    );
+}
+
+#[tokio::test]
+async fn a_turn_reports_the_files_it_changes_while_it_changes_them() {
+    // The count in the header used to be read off the checkpoint log after the
+    // turn was over, so a turn spent rewriting the project said "no file
+    // changes" for all of it and told the truth once there was nothing left to
+    // watch.
+    let (agent, _provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_call(
+                "t1",
+                "write_file",
+                serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+            ),
+            ScriptedTurn::tool_call(
+                "t2",
+                "write_file",
+                serde_json::json!({"path": "b.rs", "content": "fn other() {}"}),
+            ),
+            ScriptedTurn::text("Both written."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    let events = collect(&agent, &mut session, "write two files").await;
+
+    let reports: Vec<&Vec<String>> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::FilesChanged { paths } => Some(paths),
+            _ => None,
+        })
+        .collect();
+
+    // One per round that changed something, never one for the round that only
+    // spoke — and each carries the whole set, so a listener that missed one is
+    // not short a file for the rest of the turn.
+    assert_eq!(reports.len(), 2, "{events:#?}");
+    assert_eq!(reports[0], &vec!["a.rs".to_string()]);
+    assert_eq!(reports[1], &vec!["a.rs".to_string(), "b.rs".to_string()]);
+}
+
+#[tokio::test]
+async fn a_turn_that_changes_nothing_reports_nothing() {
+    let (agent, _provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_call("t1", "run_command", serde_json::json!({"command": "true"})),
+            ScriptedTurn::text("Nothing to change."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    let events = collect(&agent, &mut session, "have a look").await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, UiEvent::FilesChanged { .. })),
+        "{events:#?}"
+    );
+}
+
 #[tokio::test]
 async fn a_turn_that_changed_files_without_checking_is_asked_to_check() {
     // The system prompt already says to run the tests. A small model edits a
@@ -1451,12 +1619,19 @@ async fn a_recorded_turn_is_written_down_as_it_runs() {
     assert_eq!(outcome.unwrap().iterations, 2);
 
     let snapshots = spy.snapshots.lock().await.clone();
-    // Once when the first round's results landed, and once at the end. The
-    // first is the point: a turn that died here would still have left the round
-    // it finished.
-    assert_eq!(snapshots.len(), 2, "{snapshots:?}");
+    // Three times: the question before the model is asked it, the first round's
+    // results as they land, and the finished turn. Each one is a point a crash
+    // could happen at and still leave something worth having — and the first is
+    // what makes a conversation listable, with its title, while it is being
+    // answered rather than only once it has been.
+    assert_eq!(snapshots.len(), 3, "{snapshots:?}");
+    assert_eq!(
+        snapshots[0], 1,
+        "the question is written down before the request that answers it"
+    );
     assert!(snapshots[0] < snapshots[1], "{snapshots:?}");
-    assert_eq!(snapshots[1], session.messages.len());
+    assert!(snapshots[1] < snapshots[2], "{snapshots:?}");
+    assert_eq!(snapshots[2], session.messages.len());
 }
 
 #[tokio::test]
@@ -1471,7 +1646,9 @@ async fn a_turn_that_failed_is_recorded_too() {
     assert!(outcome.is_err(), "the script fails in a way no retry fixes");
 
     // The transcript of a turn that broke is worth more than the transcript of
-    // one that went fine, not less.
+    // one that went fine, not less. Twice, both holding only the question: once
+    // before the request that failed, once after it did. A turn that produced
+    // nothing still leaves what was asked.
     let snapshots = spy.snapshots.lock().await.clone();
-    assert_eq!(snapshots, vec![session.messages.len()]);
+    assert_eq!(snapshots, vec![1, session.messages.len()]);
 }

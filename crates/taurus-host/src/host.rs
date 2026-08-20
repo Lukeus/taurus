@@ -748,6 +748,14 @@ impl Host {
                     config.base_url.clone(),
                     config.api_key(),
                 )
+                // Both of these were read from config and handed only to the
+                // OpenAI adapter, which made this API unusable through a
+                // gateway: the subscription key had nowhere to ride but
+                // `x-api-key`, and the path was forced to `/v1` whatever the
+                // route was published under. The fields always parsed, so
+                // setting them was silently ignored rather than refused.
+                .with_api_prefix(config.api_prefix.clone())
+                .with_api_key_header(config.api_key_header.clone())
                 .with_thinking(
                     config
                         .thinking

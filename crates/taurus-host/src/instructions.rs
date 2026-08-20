@@ -475,7 +475,7 @@ fn truncate(body: String) -> (String, bool) {
     while end > 0 && !body.is_char_boundary(end) {
         end -= 1;
     }
-    let cut = body[..end].rfind('\n').map_or(end, |i| i);
+    let cut = body[..end].rfind('\n').unwrap_or(end);
     (body[..cut].to_string(), true)
 }
 

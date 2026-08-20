@@ -272,11 +272,36 @@ describe("which settings each provider kind shows", () => {
   });
 
   it("does not offer a key header or prefix where the route is fixed", () => {
-    // Anthropic always reads `x-api-key` and Gemini `x-goog-api-key`. A field
-    // to change that is a setting someone will change and then wonder about.
-    expect(FIELDS.anthropic.routing).toBe(false);
-    expect(FIELDS.gemini.routing).toBe(false);
-    expect(FIELDS.open_ai_compatible.routing).toBe(true);
+    // Ollama is local and unauthenticated; Gemini reads `x-goog-api-key` and
+    // has no gateway support here yet. A field to change either is a setting
+    // someone will change and then wonder about.
+    expect(FIELDS.ollama.routing).toBeNull();
+    expect(FIELDS.gemini.routing).toBeNull();
+  });
+
+  it("offers them wherever a gateway can sit in front", () => {
+    // Anthropic used to be in the list above, on the grounds that the key
+    // always rides `x-api-key`. True of api.anthropic.com and false of an
+    // Azure APIM route, which reads its own subscription key and publishes the
+    // API under a path of its own — so the adapter forced a header the gateway
+    // rejects and a `/v1` that 404s.
+    expect(FIELDS.anthropic.routing).not.toBeNull();
+    expect(FIELDS.open_ai_compatible.routing).not.toBeNull();
+  });
+
+  it("names each kind's own defaults rather than one adapter's", () => {
+    // The hint is what tells someone what leaving the field blank does, and
+    // the answer is different per backend. Shown over the wrong field it is
+    // worse than no hint.
+    expect(FIELDS.anthropic.routing?.header).toBe("x-api-key");
+    expect(FIELDS.open_ai_compatible.routing?.header).toBe(
+      "Authorization: Bearer",
+    );
+    for (const kind of ["anthropic", "open_ai_compatible"] as const) {
+      const routing = FIELDS[kind].routing!;
+      expect(routing.headerHint).toContain(routing.header);
+      expect(routing.prefixHint).toContain(routing.prefix);
+    }
   });
 
   it("does not ask a probing backend to declare what it reports", () => {

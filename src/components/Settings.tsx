@@ -149,6 +149,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
                 <ProviderForm
                   key={index}
                   provider={provider}
+                  problems={problemsWith(provider, draft)}
                   overriddenBy={overrideOf(provider, status?.providers ?? [])}
                   keyStatus={keys.get(provider.id)}
                   keychainAvailable={keychain}
@@ -687,8 +688,20 @@ export const FIELDS: Record<
   {
     key: boolean;
     models: boolean;
-    /** Route shape: a prefix and a header to put the key in. */
-    routing: boolean;
+    /**
+     * Route shape: where the key rides, and what path the API sits under.
+     *
+     * Null where the route is genuinely fixed and there is nothing to choose.
+     * Otherwise the two defaults and what to say about them — per kind, because
+     * they differ, and a hint written for one adapter shown over another's
+     * field is worse than no hint at all.
+     */
+    routing: {
+      header: string;
+      headerHint: string;
+      prefix: string;
+      prefixHint: string;
+    } | null;
     /** Tool support has to be declared because it cannot be probed. */
     declareTools: boolean;
     /**
@@ -709,7 +722,7 @@ export const FIELDS: Record<
   ollama: {
     key: false,
     models: false,
-    routing: false,
+    routing: null,
     declareTools: false,
     declareVision: false,
     declareContext: false,
@@ -720,19 +733,34 @@ export const FIELDS: Record<
   open_ai_compatible: {
     key: true,
     models: true,
-    routing: true,
+    routing: {
+      header: "Authorization: Bearer",
+      headerHint:
+        "Leave blank for Authorization: Bearer, which OpenAI and everything imitating it read. Azure OpenAI reads api-key; an Azure APIM gateway reads Ocp-Apim-Subscription-Key. Both bare, with no scheme in front.",
+      prefix: "/v1",
+      prefixHint:
+        "Defaults to /v1. Azure OpenAI behind APIM usually needs /openai/v1; OpenVINO Model Server before 2026.3 needs /v3.",
+    },
     declareTools: true,
     declareVision: true,
     declareContext: true,
     contextFallback: false,
     thinking: false,
   },
-  // Reports its own window and capabilities per model; the key always rides
-  // `x-api-key`, so there is no header or prefix to choose.
+  // Reports its own window and capabilities per model. The route is fixed at
+  // the API itself — `x-api-key`, under `/v1` — but not through a gateway in
+  // front of it, which is why these two are offered rather than assumed.
   anthropic: {
     key: true,
     models: true,
-    routing: false,
+    routing: {
+      header: "x-api-key",
+      headerHint:
+        "Leave blank for x-api-key, which this API reads directly — never Authorization: Bearer. Behind a gateway the key is the gateway's: an Azure APIM route reads Ocp-Apim-Subscription-Key, and supplies the Anthropic key itself.",
+      prefix: "/v1",
+      prefixHint:
+        "Defaults to /v1, which is right for api.anthropic.com. A gateway publishes the API under a path of its own — an APIM route mapping straight onto /messages wants this left empty.",
+    },
     declareTools: false,
     declareVision: false,
     declareContext: false,
@@ -742,7 +770,7 @@ export const FIELDS: Record<
   gemini: {
     key: true,
     models: true,
-    routing: false,
+    routing: null,
     declareTools: false,
     declareVision: false,
     declareContext: false,
@@ -867,8 +895,21 @@ export function keyHint(status: KeyStatus): string {
   }
 }
 
+/**
+ * One provider, folded to a single row until it is being worked on.
+ *
+ * A configured provider is a dozen fields, and a machine with four of them —
+ * a local Ollama, a gateway, and two hosted APIs — turned this tab into a page
+ * of forms to scroll past to reach the one being changed. Folded, the tab is a
+ * list of what is configured, which is what it is read for most of the time.
+ *
+ * The id and the kind stay on the header row rather than moving into the body:
+ * they are what the row is scanned for, and a summary that could not be edited
+ * where it is read would mean opening a card to rename it.
+ */
 function ProviderForm({
   provider,
+  problems,
   overriddenBy,
   keyStatus,
   keychainAvailable,
@@ -877,6 +918,8 @@ function ProviderForm({
   onRemove,
 }: {
   provider: ProviderConfig;
+  /** What is wrong with this one, for the mark on a folded card. */
+  problems: string[];
   overriddenBy: string[];
   keyStatus: KeyStatus | undefined;
   keychainAvailable: boolean;
@@ -890,9 +933,34 @@ function ProviderForm({
   const fields = FIELDS[provider.kind] ?? FIELDS.open_ai_compatible;
   const compatible = fields.models;
 
+  /*
+   * Open when there is something wrong with it, which covers both cases worth
+   * opening for: a provider just added, which has no base URL yet, and one that
+   * is stopping the tab from saving.
+   *
+   * Read once rather than followed, so typing the missing URL does not fold the
+   * card shut under the cursor. After that it is the user's to decide, and a
+   * card they folded stays folded — with a mark on it, so a save refused over
+   * something out of sight still says where to look.
+   */
+  const [open, setOpen] = useState(() => problems.length > 0);
+
   return (
-    <div className="card settings-provider">
+    <div className={`card settings-provider${open ? " open" : ""}`}>
       <div className="card-row">
+        <button
+          type="button"
+          className="settings-provider-fold"
+          aria-expanded={open}
+          aria-label={`${open ? "Collapse" : "Expand"} ${provider.id || "this provider"}`}
+          onClick={() => setOpen((was) => !was)}
+        >
+          {/* The same two glyphs the plan panel and the run header disclose
+              with, so one gesture is learned once. Decorative beside
+              `aria-expanded`, which is the same fact where a screen reader
+              looks for it. */}
+          <span aria-hidden="true">{open ? "⌄" : "›"}</span>
+        </button>
         <input
           className="settings-id"
           value={provider.id}
@@ -911,11 +979,21 @@ function ProviderForm({
             </option>
           ))}
         </select>
+        {!open && problems.length > 0 && (
+          <span
+            className="dot error"
+            role="img"
+            aria-label={problems.join(" ")}
+            title={problems.join(" ")}
+          />
+        )}
         <button className="danger" onClick={onRemove}>
           Remove
         </button>
       </div>
 
+      {open && (
+        <>
       <Field label="Base URL">
         <input
           value={provider.base_url}
@@ -970,26 +1048,20 @@ function ProviderForm({
 
           {fields.routing && (
             <>
-              <Field
-                label="API key header"
-                hint="Leave blank for Authorization: Bearer. Azure OpenAI reads api-key; an Azure APIM gateway reads Ocp-Apim-Subscription-Key."
-              >
+              <Field label="API key header" hint={fields.routing.headerHint}>
                 <input
                   value={provider.api_key_header ?? ""}
-                  placeholder="Authorization: Bearer"
+                  placeholder={fields.routing.header}
                   onChange={(e) =>
                     onChange({ api_key_header: blank(e.target.value) })
                   }
                 />
               </Field>
 
-              <Field
-                label="API prefix"
-                hint="Defaults to /v1. Azure OpenAI behind APIM usually needs /openai/v1; OpenVINO Model Server before 2026.3 needs /v3."
-              >
+              <Field label="API prefix" hint={fields.routing.prefixHint}>
                 <input
                   value={provider.api_prefix ?? ""}
-                  placeholder="/v1"
+                  placeholder={fields.routing.prefix}
                   onChange={(e) => onChange({ api_prefix: blank(e.target.value) })}
                 />
               </Field>
@@ -1074,6 +1146,8 @@ function ProviderForm({
           <code>.taurus/providers.json</code>. Changes here apply everywhere
           else; the override still wins in this project.
         </p>
+      )}
+        </>
       )}
     </div>
   );
@@ -1269,25 +1343,42 @@ function same(a: unknown, b: unknown): boolean {
 }
 
 /** Duplicate ids and missing required fields, as sentences. */
-export function validate(providers: ProviderConfig[]): string[] {
+/**
+ * What is wrong with one provider, in the words the list at the bottom uses.
+ *
+ * Per provider rather than only in aggregate, because a card can be collapsed:
+ * a save refused over something folded out of sight needs a mark on the card
+ * that would fix it. Built from the same rules as {@link validate} rather than
+ * beside them, so the mark and the message cannot come to disagree.
+ *
+ * A shared id implicates both cards, not only the second one. Which of two
+ * identical ids is "the duplicate" is not a question this can answer, and
+ * marking one of them would send someone to the wrong card half the time.
+ */
+export function problemsWith(
+  provider: ProviderConfig,
+  all: ProviderConfig[],
+): string[] {
   const problems: string[] = [];
-  const seen = new Set<string>();
+  const id = provider.id.trim();
 
-  for (const provider of providers) {
-    const id = provider.id.trim();
-    if (id === "") {
-      problems.push("Every provider needs an id.");
-    } else if (seen.has(id)) {
-      problems.push(`Two providers share the id "${id}".`);
-    } else {
-      seen.add(id);
-    }
-    if (provider.base_url.trim() === "") {
-      problems.push(`"${id || "A provider"}" needs a base URL.`);
-    }
+  if (id === "") {
+    problems.push("Every provider needs an id.");
+  } else if (all.filter((p) => p.id.trim() === id).length > 1) {
+    problems.push(`Two providers share the id "${id}".`);
   }
-  // Same problem stated twice reads as two problems.
-  return [...new Set(problems)];
+  if (provider.base_url.trim() === "") {
+    problems.push(`"${id || "A provider"}" needs a base URL.`);
+  }
+  return problems;
+}
+
+export function validate(providers: ProviderConfig[]): string[] {
+  // Same problem stated twice reads as two problems — and a shared id is now
+  // reported by both of the cards that share it.
+  return [
+    ...new Set(providers.flatMap((p) => problemsWith(p, providers))),
+  ];
 }
 
 /** A new entry that will not collide with an existing id. */

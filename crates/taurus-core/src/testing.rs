@@ -132,6 +132,13 @@ pub struct FakeProvider {
     /// in microseconds, so a timer race would decide the result rather than
     /// the loop's behavior.
     cancel_after_requests: Option<usize>,
+    /// Whether this backend reads images.
+    ///
+    /// False by default, because that is the interesting side: it is what makes
+    /// the loop strip pictures out of the history, and a fake that could always
+    /// see would let that path go untested in every test but the one written
+    /// for it.
+    vision: bool,
 }
 
 impl FakeProvider {
@@ -142,7 +149,15 @@ impl FakeProvider {
             context_length: 128_000,
             fallback_text: "(script exhausted)".into(),
             cancel_after_requests: None,
+            vision: false,
         })
+    }
+
+    /// The same, on a backend that reads images.
+    pub fn seeing(turns: Vec<ScriptedTurn>) -> Arc<Self> {
+        let mut provider = Arc::into_inner(Self::new(turns)).expect("just built");
+        provider.vision = true;
+        Arc::new(provider)
     }
 
     /// A provider that cancels the turn once it has served `n` requests.
@@ -153,6 +168,7 @@ impl FakeProvider {
             context_length: 128_000,
             fallback_text: "(script exhausted)".into(),
             cancel_after_requests: Some(n),
+            vision: false,
         })
     }
 
@@ -164,6 +180,7 @@ impl FakeProvider {
             context_length,
             fallback_text: "(script exhausted)".into(),
             cancel_after_requests: None,
+            vision: false,
         })
     }
 
@@ -193,7 +210,7 @@ impl Provider for FakeProvider {
     async fn capabilities(&self, _model: &str) -> Result<Capabilities> {
         Ok(Capabilities {
             native_tools: true,
-            vision: false,
+            vision: self.vision,
             thinking: false,
             context_length: self.context_length,
         })
