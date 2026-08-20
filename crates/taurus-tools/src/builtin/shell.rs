@@ -22,6 +22,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use crate::tool::{
     parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult,
@@ -123,9 +124,17 @@ impl Tool for RunCommand {
 
         let (program, args) = shell_invocation(&input.command);
 
+        // Set when a terminal was asked for and could not be had, so the result
+        // can say so. Running the command anyway is right — the caller wanted
+        // the command, and the terminal was how they hoped to get it — but
+        // doing that silently would be worse than failing: the model would read
+        // `git`'s piped output as what `git` does under a terminal and conclude
+        // the wrong thing about the machine it is on.
+        let mut no_terminal: Option<String> = None;
+
         if input.pty {
-            let output = crate::builtin::pty::run(
-                program,
+            match crate::builtin::pty::run(
+                program.clone(),
                 &args,
                 &cwd,
                 input.stdin.clone(),
@@ -133,15 +142,29 @@ impl Tool for RunCommand {
                 ctx.cancel.clone(),
                 ctx.progress.clone(),
             )
-            .await?;
-            return Ok(report_for(
-                output.exit_code,
-                &truncate(&output.text),
-                // A terminal has one stream, so there is no stderr to label.
-                // Saying so keeps the model from reading its absence as the
-                // command having written nothing to it.
-                None,
-            ));
+            .await
+            {
+                Ok(output) => {
+                    return Ok(report_for(
+                        output.exit_code,
+                        &truncate(&output.text),
+                        // A terminal has one stream, so there is no stderr to
+                        // label. Saying so keeps the model from reading its
+                        // absence as the command having written nothing to it.
+                        None,
+                    ));
+                }
+                // The command itself went wrong, or was canceled, or timed out.
+                // Re-running it with pipes would run it twice.
+                Err(crate::builtin::pty::PtyError::Failed(error)) => return Err(error),
+                // No terminal to be had on this machine. Fall through and run
+                // the command the ordinary way rather than failing a call that
+                // has nothing wrong with it.
+                Err(crate::builtin::pty::PtyError::Unavailable(reason)) => {
+                    warn!(%reason, "no pseudo-terminal available; running with pipes");
+                    no_terminal = Some(reason);
+                }
+            }
         }
 
         let mut command = Command::new(program);
@@ -211,8 +234,31 @@ impl Tool for RunCommand {
         let code = status.code();
         let stdout = truncate(&drain_stdout.await);
         let stderr = truncate(&drain_stderr.await);
-        Ok(report_for(code, &stdout, Some(&stderr)))
+        let mut report = report_for(code, &stdout, Some(&stderr));
+
+        // Said in the result rather than only in a log, because the model is
+        // the one that has to account for it.
+        if let Some(reason) = no_terminal {
+            report = with_no_terminal_note(&reason, &report);
+        }
+        Ok(report)
     }
+}
+
+/// Prefixes a command's output with the fact that it did not get the terminal
+/// it asked for.
+///
+/// Above the output rather than below it. A program told it is not on a
+/// terminal pages nothing, colours nothing, and declines some prompts outright
+/// — all of which read as facts about the project unless the reader already
+/// knows the terminal never arrived, and a caveat underneath is read after the
+/// conclusion has been drawn.
+fn with_no_terminal_note(reason: &str, report: &str) -> String {
+    format!(
+        "Note: a terminal was requested but none could be opened here ({reason}), so this ran \
+         with ordinary pipes. The command may behave as it does when piped rather than when run \
+         in a terminal.\n\n{report}"
+    )
 }
 
 /// Assembles what the model reads from a finished command.
@@ -439,6 +485,25 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("got:yes"), "{out}");
+    }
+
+    #[test]
+    fn a_missing_terminal_is_declared_above_the_output_it_changes() {
+        // The branch that sets this needs a machine with no working pty, which
+        // is the one thing a test here cannot arrange — so the note is tested
+        // as text and the decision that reaches it is a two-arm match.
+        //
+        // What matters is that it comes first. A model reading `git`'s piped
+        // output without knowing the terminal never arrived concludes something
+        // false about the project, and a caveat underneath the output is read
+        // after the conclusion has been drawn.
+        let report = with_no_terminal_note(
+            "cannot open a pseudo-terminal: no console host",
+            "on branch main",
+        );
+        assert!(report.starts_with("Note:"), "{report}");
+        assert!(report.contains("no console host"), "{report}");
+        assert!(report.contains("on branch main"), "{report}");
     }
 
     #[tokio::test]

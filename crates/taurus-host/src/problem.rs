@@ -34,6 +34,9 @@ pub enum ProblemSource {
     Tools,
     /// An `AGENTS.md`, `CLAUDE.md`, or `TAURUS.md` that could not be read whole.
     Instructions,
+    /// `hooks.json` — an entry that will not load, or a toggle with nothing to
+    /// toggle.
+    Hooks,
 }
 
 impl ProblemSource {
@@ -49,7 +52,7 @@ impl ProblemSource {
             // what a disabled tool changes.
             // The drawer that lists what the agent knows and can reach, which
             // is where a brief that is not arriving belongs.
-            Self::Mcp | Self::Skills | Self::Tools | Self::Instructions => "Skills",
+            Self::Mcp | Self::Skills | Self::Tools | Self::Instructions | Self::Hooks => "Skills",
         }
     }
 
@@ -63,6 +66,7 @@ impl ProblemSource {
             Self::Agents => "agents",
             Self::Tools => "tools",
             Self::Instructions => "instructions",
+            Self::Hooks => "hooks",
         }
     }
 }

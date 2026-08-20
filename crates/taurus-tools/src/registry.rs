@@ -131,6 +131,24 @@ impl ToolRegistry {
 
         ctx.permissions.check(tool.as_ref(), &input).await?;
 
+        // After the permission engine, never before it. A hook here can refuse
+        // a call the user allowed and cannot allow one the user refused, so
+        // adding hooks to a machine only ever shrinks what it will do. That
+        // ordering is the whole security argument for honoring a hook file at
+        // all — see `taurus_hooks`.
+        let pre = hook_payload(&tool, &input, ctx, taurus_hooks::HookEvent::PreToolUse);
+        if let (Some(runner), Some(payload)) = (&ctx.hooks, &pre) {
+            let outcome = runner.run(payload).await;
+            if let Some(reason) = outcome.denied {
+                return Err(ToolError::Failed(reason));
+            }
+            // A passing hook's output is not dropped: a formatter that says
+            // what it changed is telling the model something it needs.
+            if !outcome.notes.is_empty() {
+                debug!(tool = name, notes = outcome.notes.len(), "hook notes");
+            }
+        }
+
         // After the permission check, so a denied call leaves no trace, and
         // before execution, so what is recorded is what was there first.
         if let Some(recorder) = &ctx.checkpoints {
@@ -154,6 +172,11 @@ impl ToolRegistry {
             _ => None,
         };
 
+        // Built before the call, because `input` is moved into it — and built
+        // independently of the pre-call payload, since a config with only a
+        // `post_tool_use` hook in it is an ordinary thing to write.
+        let post = hook_payload(&tool, &input, ctx, taurus_hooks::HookEvent::PostToolUse);
+
         debug!(tool = name, "executing");
         let mut result = tool.execute(input, ctx).await;
 
@@ -176,8 +199,61 @@ impl ToolRegistry {
             }
         }
 
+        // Nothing left to decide — the call has happened — so a hook here
+        // observes and its output becomes a note on the result. A formatter
+        // that reports what it reformatted is telling the model something it
+        // would otherwise have to discover by reading the file again.
+        if let (Some(runner), Some(payload)) = (&ctx.hooks, post) {
+            let payload = payload.with_outcome(result.is_ok());
+            for note in runner.run(&payload).await.notes {
+                annotate(&mut result, &note);
+            }
+        }
+
         result
     }
+}
+
+/// The payload for a tool-call hook, or `None` when no hook wants one.
+///
+/// Returns early when nothing is configured for this event, because building
+/// one is not free: `touches` asks the tool to work out every path the call
+/// names, and that would otherwise be paid on every call in the ordinary case
+/// of no hooks at all.
+fn hook_payload(
+    tool: &Arc<dyn Tool>,
+    input: &serde_json::Value,
+    ctx: &ToolContext,
+    event: taurus_hooks::HookEvent,
+) -> Option<taurus_hooks::HookPayload> {
+    let runner = ctx.hooks.as_ref()?;
+    if !runner.has(event) {
+        return None;
+    }
+
+    // Workspace-relative, so a glob in `hooks.json` is written the way a person
+    // would say the path out loud rather than against somebody's home
+    // directory. A path that will not resolve is left out rather than passed on
+    // raw: the tool is about to reject it with a better message than a hook
+    // would.
+    let paths = tool
+        .touches(input)
+        .iter()
+        .filter_map(|candidate| {
+            let resolved = ctx.resolve(candidate).ok()?;
+            taurus_hooks::runner::relative(&ctx.workspace, &resolved).map(str::to_string)
+        })
+        .collect();
+
+    let mut payload = taurus_hooks::HookPayload::new(event, &ctx.workspace).with_call(
+        tool.name(),
+        input.clone(),
+        paths,
+    );
+    if let Some(session) = &ctx.session_id {
+        payload = payload.with_session(session.clone());
+    }
+    Some(payload)
 }
 
 /// Adds a note about the call to whatever the call produced.
@@ -203,6 +279,8 @@ mod tests {
     use super::*;
     use crate::test_support::test_ctx;
     use crate::tool::Effect;
+    #[cfg(unix)]
+    use tempfile::TempDir;
 
     #[test]
     fn builtins_are_registered_under_stable_names() {
@@ -235,6 +313,116 @@ mod tests {
                 def.name
             );
         }
+    }
+
+    /// A hook that is a shell one-liner, written where it can be run from.
+    #[cfg(unix)]
+    fn hook_script(dir: &std::path::Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.display().to_string()
+    }
+
+    #[cfg(unix)]
+    fn hook(command: String, on: taurus_hooks::HookEvent) -> taurus_hooks::Hook {
+        taurus_hooks::Hook {
+            on,
+            command,
+            args: vec![],
+            matches: None,
+            timeout_seconds: 5,
+            disabled: false,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pre_call_hook_can_refuse_a_call_the_user_permitted() {
+        let (ctx, dir) = test_ctx();
+        // Written outside the workspace so the write below is the only thing
+        // the sweep could see, and the hook is not itself a changed file.
+        let scripts = TempDir::new().unwrap();
+        let guard = hook_script(
+            scripts.path(),
+            "guard",
+            "echo 'no writes today' >&2; exit 2",
+        );
+        let ctx = ctx.with_hooks(Arc::new(taurus_hooks::HookRunner::new(vec![(
+            "guard".into(),
+            hook(guard, taurus_hooks::HookEvent::PreToolUse),
+        )])));
+
+        // `test_ctx` allows everything, so the permission engine has already
+        // said yes. This is the hook overruling it, which is the only direction
+        // that works.
+        let error = ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "hi"}),
+                &ctx,
+            )
+            .await
+            .expect_err("the hook must refuse this");
+
+        assert!(error.to_string().contains("no writes today"), "{error}");
+        assert!(
+            !dir.path().join("a.txt").exists(),
+            "a refused call must not have written anything"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_post_call_hook_puts_what_it_says_on_the_result() {
+        let (ctx, _dir) = test_ctx();
+        let scripts = TempDir::new().unwrap();
+        let fmt = hook_script(scripts.path(), "fmt", "echo 'reformatted 1 file'");
+        let ctx = ctx.with_hooks(Arc::new(taurus_hooks::HookRunner::new(vec![(
+            "fmt".into(),
+            hook(fmt, taurus_hooks::HookEvent::PostToolUse),
+        )])));
+
+        let output = ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "hi"}),
+                &ctx,
+            )
+            .await
+            .expect("a post hook must not fail the call");
+
+        // The model has to be told, or it reads the file back to find out.
+        assert!(output.contains("reformatted 1 file"), "{output}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hook_that_does_not_match_leaves_the_call_alone() {
+        let (ctx, _dir) = test_ctx();
+        let scripts = TempDir::new().unwrap();
+        let guard = hook_script(scripts.path(), "guard", "exit 2");
+        let mut only_rust = hook(guard, taurus_hooks::HookEvent::PreToolUse);
+        only_rust.matches = Some(taurus_hooks::Match {
+            paths: vec!["**/*.rs".into()],
+            ..Default::default()
+        });
+        let ctx = ctx.with_hooks(Arc::new(taurus_hooks::HookRunner::new(vec![(
+            "guard".into(),
+            only_rust,
+        )])));
+
+        // The glob is matched against the paths the tool itself declares it
+        // touches, so this needs no per-tool knowledge in the hook config.
+        ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "notes.md", "content": "hi"}),
+                &ctx,
+            )
+            .await
+            .expect("a hook scoped to .rs must not touch a .md write");
     }
 
     #[test]

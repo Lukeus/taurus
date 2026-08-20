@@ -4943,6 +4943,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taurus-agents",
+ "taurus-hooks",
  "taurus-provider",
  "taurus-provider-ollama",
  "taurus-tools",
@@ -4953,6 +4954,20 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "taurus-hooks"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "globset",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ts-rs",
 ]
 
 [[package]]
@@ -4968,6 +4983,7 @@ dependencies = [
  "serde_json",
  "taurus-agents",
  "taurus-core",
+ "taurus-hooks",
  "taurus-index",
  "taurus-mcp",
  "taurus-provider",
@@ -5139,6 +5155,7 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "taurus-hooks",
  "taurus-provider",
  "tempfile",
  "thiserror 2.0.20",

@@ -14,3 +14,9 @@ bindings/
 # an anchored pattern silently misses `src-tauri/.taurus`.
 **/.taurus/*
 !**/.taurus/skills/
+
+# Microsoft's redistributable ConPTY, fetched by `scripts/conpty.mjs` during a
+# Windows build and bundled beside the executable. Not committed: 2.2 MB of
+# binaries we neither build nor own, pinned by hash in the script instead. See
+# the script's header for why they are shipped at all.
+src-tauri/conpty/

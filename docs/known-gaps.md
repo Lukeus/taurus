@@ -14,6 +14,71 @@ note. Read those as documentation. The ones worth watching are the entries that
 end by naming a specific thing that has not been built; those are the backlog,
 and they are the minority.
 
+- **A pty on Windows depends on a runtime fetched at build time.** The Windows
+  bundle ships Microsoft's redistributable ConPTY beside the executable —
+  `conpty.dll` and a headless `OpenConsole.exe` — because the system's own
+  console host shows a window when the process asking for it has none, which a
+  release build does not. `portable-pty` prefers a sideloaded `conpty.dll`, so
+  those two files are the whole fix. What it costs: 2.2 MB in the installer, a
+  network fetch during a Windows build, and a version pinned by hash that
+  somebody has to bump. A machine that ends up without them still runs every
+  command — the pty falls back to pipes and the result says so — but the
+  fallback loses the terminal behaviour the call asked for. The app logs at
+  startup whether it found the runtime, which is the only signal available:
+  packaged wrongly, everything works except for a window that only a user on
+  Windows in an installed build can see. See
+  [Running commands](safety.md#running-commands).
+- **A hook can refuse a tool call and cannot approve one.** There is no
+  `allow` verdict, so a hook cannot skip a permission prompt the way one in some
+  other harnesses can. That rules out the "approve every `git status` for me"
+  use, and the trade is deliberate: a hook that could approve makes `hooks.json`
+  a second permission surface, one that has to be trusted exactly as much as
+  `permissions.json` and kept in step with it. As it stands, adding hooks to a
+  machine can only ever shrink what it will do, which is what lets a project's
+  hook file be honoured at all. The narrowing use — "never let it force-push" —
+  is the one this covers. See [Hooks](configuration.md#hooks).
+- **A hook that cannot run blocks the call.** A missing program, a crash, or a
+  timeout denies on the two events where there is still something to deny. So a
+  typo in `hooks.json` stops every call it matches until it is fixed. That is
+  the intended direction rather than an oversight — a guard that treats its own
+  breakage as approval has stopped guarding at the one moment it mattered — but
+  it does mean a hook is a thing that can break a working setup, which a purely
+  observational one could not. `taurus hooks check` names the entry and the
+  field.
+- **Hooks are not told about a delegate's turn boundaries.** A sub-agent's tool
+  calls go through the same `pre_tool_use` and `post_tool_use` hooks the
+  parent's do — the context is shared, which is what stops a delegate routing
+  around a guard. `user_prompt_submit` and `stop` fire for the conversation, not
+  once per child: a delegation is one tool call from the outside, and firing
+  "the turn ended" four times for one turn would make a `stop` hook that counts
+  anything wrong. Covering it properly means an event pair of its own, and
+  nothing yet needs one.
+- **Trust is per folder, and it is answered once.** A workspace you have
+  vouched for stays vouched for, so a `git pull` that adds a server to
+  `.taurus/mcp.json` is read on the next turn without asking again. Fixing that
+  means fingerprinting the config and re-asking whenever it moves, which sounds
+  strictly better and is not: the file changes on ordinary branch switches, and
+  a prompt that appears on most `git checkout`s is a prompt that gets clicked
+  through — including the one time it mattered. The decision on offer is
+  therefore "this project may configure Taurus", the same unit an editor's
+  workspace trust uses, and the honest reading is that it is trust in the
+  project's maintainers rather than in a particular revision. `taurus trust
+  --revoke` and the Settings row are what withdraw it. See
+  [Trusting a workspace](safety.md#trusting-a-workspace).
+- **Trusting a workspace is about its config, not about its code.** The gate
+  decides whether a folder's `.taurus` may configure the harness. It says
+  nothing about what running that project's build script does, and it cannot:
+  once you ask an agent to work in a repository, the repository's own code is
+  the thing you asked it to run. Commands still go through the permission
+  prompt, which is where that decision is actually made. An untrusted workspace
+  is not a sandbox and is not described as one.
+- **Nothing re-reads trust between turns on its own.** The desktop app asks the
+  backend for it when it refreshes, and the CLI once per command. A workspace
+  that gains its first `.taurus/mcp.json` while the window is open raises its
+  banner at the next refresh rather than the moment the file lands — the same
+  turn-boundary rule the rest of the config follows, and for the same reason
+  there is no watcher here. See
+  [Trusting a workspace](configuration.md#trusting-a-workspace).
 - **A rewind does not cover ignored directories.** A file an ignore rule
   excludes by name is covered; everything under a directory an ignore rule
   excludes is not, so a command that rewrites something in `target/` or

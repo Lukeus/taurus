@@ -32,6 +32,7 @@ const request = (patch: Partial<PermissionRequest> = {}): PermissionRequest => (
   diff: diff(),
   always_scope: "Allows write_file in this workspace",
   always_global_scope: "Allows write_file everywhere",
+  offer_always: true,
   input: {},
   ...patch,
 });

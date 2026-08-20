@@ -16,6 +16,22 @@
 //! What it costs is that stdout and stderr become one stream. A terminal has
 //! only one, so the split the model reads elsewhere is not recoverable here.
 //! That is a property of the thing, not of this implementation.
+//!
+//! # On Windows this opens a console window
+//!
+//! A pty here is a ConPTY, and a ConPTY is a real `conhost.exe`. `portable-pty`
+//! builds its own `CreateProcessW` call rather than taking a
+//! `tokio::process::Command`, so [`crate::spawn::no_console`] — the flag every
+//! other child this program starts is given — has nothing to attach to. In a
+//! release build the app has no console of its own
+//! (`windows_subsystem = "windows"`), so one is created, and it is visible for
+//! as long as the command runs.
+//!
+//! It does not reproduce in a development build, which has a console already,
+//! and it does not reproduce in `taurus` on the terminal for the same reason.
+//! That is the whole shape of the bug: it appears only in the built desktop
+//! app, on the one platform, on the subset of commands the model asks for a
+//! terminal for. See the known-gaps entry.
 
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -34,6 +50,25 @@ use crate::tool::{ToolError, ToolProgress};
 /// than at the 80 columns it would assume from silence.
 const ROWS: u16 = 40;
 const COLS: u16 = 120;
+
+/// Why a pty command could not be attempted at all.
+///
+/// Separated from every other failure because the caller does something
+/// different with it: a command that *ran* and failed is a result, and a
+/// terminal that could not be opened is not the command's fault at all. The
+/// second one is recoverable by running the command the ordinary way, and
+/// before this existed it was reported as the command failing — so a machine
+/// missing its console host turned every `pty: true` call into an error the
+/// model could do nothing with.
+#[derive(Debug, thiserror::Error)]
+pub enum PtyError {
+    /// No pseudo-terminal could be opened here. Fall back to pipes.
+    #[error("{0}")]
+    Unavailable(String),
+    /// The command was attempted and something else went wrong.
+    #[error(transparent)]
+    Failed(#[from] ToolError),
+}
 
 /// What a finished pty command produced.
 #[derive(Debug)]
@@ -57,7 +92,7 @@ pub async fn run(
     timeout: Duration,
     cancel: tokio_util::sync::CancellationToken,
     progress: Option<Arc<dyn ToolProgress>>,
-) -> Result<PtyOutput, ToolError> {
+) -> Result<PtyOutput, PtyError> {
     let mut builder = CommandBuilder::new(program.as_ref());
     for arg in args {
         builder.arg(arg.as_ref());
@@ -94,7 +129,7 @@ pub async fn run(
             if let Some(forward) = forward {
                 forward.abort();
             }
-            return Err(ToolError::Canceled);
+            return Err(ToolError::Canceled.into());
         }
         result = tokio::time::timeout(timeout, worker) => result,
     };
@@ -105,7 +140,7 @@ pub async fn run(
 
     match outcome {
         Ok(Ok(result)) => result,
-        Ok(Err(e)) => Err(ToolError::Failed(format!("pty task failed: {e}"))),
+        Ok(Err(e)) => Err(ToolError::Failed(format!("pty task failed: {e}")).into()),
         Err(_) => {
             stop(killer_rx).await;
             Err(ToolError::Failed(format!(
@@ -113,7 +148,59 @@ pub async fn run(
                  waiting for input, pass what it should read as `stdin`; if it simply needs \
                  longer, raise timeout_secs.",
                 timeout.as_secs()
-            )))
+            ))
+            .into())
+        }
+    }
+}
+
+/// Whether the sideloaded ConPTY runtime is beside the executable, and what is
+/// missing if it is not.
+///
+/// Exists because the failure it detects is otherwise silent. If the bundle
+/// ships without these files, `portable-pty` quietly falls back to the system's
+/// `conhost.exe` and everything works — except that a console window appears on
+/// every pty command, which is a thing only a user on Windows can see and only
+/// in an installed build. Nothing else in the program would ever notice.
+///
+/// So the app asks at startup and logs the answer, and that log line is the
+/// only evidence available that the packaging is right. `Ok(())` off Windows,
+/// where there is nothing to sideload.
+pub fn sideload_status() -> Result<(), String> {
+    #[cfg(not(windows))]
+    return Ok(());
+
+    #[cfg(windows)]
+    {
+        let Ok(exe) = std::env::current_exe() else {
+            return Err("could not locate the executable".into());
+        };
+        let Some(dir) = exe.parent() else {
+            return Err("the executable has no directory".into());
+        };
+
+        // `conpty.dll` beside the binary, and a console host in a directory
+        // named for the architecture — Microsoft's layout, not a choice made
+        // here. See `scripts/conpty.mjs`.
+        let mut missing = Vec::new();
+        if !dir.join("conpty.dll").is_file() {
+            missing.push("conpty.dll".to_string());
+        }
+        // Only the host for the architecture actually running matters; the
+        // other is carried for the machine this build is not on.
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        };
+        if !dir.join(arch).join("OpenConsole.exe").is_file() {
+            missing.push(format!("{arch}\\OpenConsole.exe"));
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(missing.join(", "))
         }
     }
 }
@@ -137,7 +224,11 @@ fn pump(
     stdin: Option<String>,
     tx: mpsc::Sender<String>,
     killer_tx: tokio::sync::oneshot::Sender<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
-) -> Result<PtyOutput, ToolError> {
+) -> Result<PtyOutput, PtyError> {
+    // The one failure that means "this machine cannot do ptys" rather than
+    // "this command went wrong". On Windows it is what a missing or unusable
+    // console host looks like, which is a bundling mistake rather than anything
+    // the user typed — so it must not read as their command failing.
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: ROWS,
@@ -145,7 +236,7 @@ fn pump(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| ToolError::Failed(format!("cannot open a pseudo-terminal: {e}")))?;
+        .map_err(|e| PtyError::Unavailable(format!("cannot open a pseudo-terminal: {e}")))?;
 
     let mut child = pair
         .slave
@@ -210,52 +301,86 @@ fn pump(
 /// reading a transcript and all of which it pays tokens for. A `cargo build`
 /// under a pty is more escape bytes than text.
 ///
-/// Handles the two forms that carry the payload — CSI (`ESC [ … final`) and OSC
-/// (`ESC ] … BEL` or `ST`) — plus the two-byte escapes, and drops carriage
-/// returns used to overwrite a line. Anything else passes through, because the
-/// job is to remove noise, not to be a terminal emulator.
+/// Every escape form is modelled by *how long it is*, because that is the only
+/// thing this needs to know. An escape whose length is guessed wrong does not
+/// merely survive — it spills its own tail into the output as text, which is
+/// how a stray `B` appears in the middle of a sentence and why the shapes below
+/// are enumerated rather than approximated:
+///
+/// | Form | Written | Ends at |
+/// | --- | --- | --- |
+/// | CSI | `ESC [ … final` | a byte in `@`–`~` |
+/// | OSC | `ESC ] … ` | `BEL`, or `ESC \` |
+/// | String | `ESC P`/`X`/`^`/`_` … | `BEL`, or `ESC \` |
+/// | Designation | `ESC ( ) * + - . / #` + one byte | the byte after |
+/// | Everything else | `ESC` + one byte | the byte after |
+///
+/// The designation row is the one that bit: `ESC ( B` — "G0 is US-ASCII" — is
+/// three bytes, and reading it as two leaves the `B` behind. Windows emits it
+/// constantly, which is why this was a Windows-looking bug in something with no
+/// Windows in it.
 pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
 
     while let Some(c) = chars.next() {
-        if c == '\r' {
-            // A bare carriage return is a progress bar rewriting its own line.
-            // Keeping it makes a transcript that overwrites itself; dropping it
-            // where it precedes a newline keeps CRLF intact.
-            if chars.peek() == Some(&'\n') {
-                continue;
+        match c {
+            '\r' => {
+                // A bare carriage return is a progress bar rewriting its own
+                // line. Keeping it makes a transcript that overwrites itself;
+                // dropping it where it precedes a newline keeps CRLF intact.
+                if chars.peek() == Some(&'\n') {
+                    continue;
+                }
+                out.push('\n');
             }
-            out.push('\n');
-            continue;
-        }
-        if c != '\u{1b}' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            // CSI: parameters and intermediates, then one final byte.
-            Some('[') => {
-                for c in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&c) {
-                        break;
-                    }
+            // A terminal moves the cursor back and the next write covers what
+            // was there. Applied rather than dropped, because dropping it
+            // leaves the text the program meant to erase — the half-written
+            // word in front of a progress counter.
+            '\u{8}' => {
+                if !out.ends_with('\n') {
+                    out.pop();
                 }
             }
-            // OSC: a string terminated by BEL or ESC \.
-            Some(']') => {
-                while let Some(c) = chars.next() {
-                    if c == '\u{7}' {
-                        break;
-                    }
-                    if c == '\u{1b}' && chars.peek() == Some(&'\\') {
-                        chars.next();
-                        break;
+            // Rings a bell nobody can hear. Dropped rather than passed on,
+            // because in a transcript it is an unprintable character sitting in
+            // the middle of a line.
+            '\u{7}' => {}
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters and intermediates, then one final byte.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c) {
+                            break;
+                        }
                     }
                 }
-            }
-            // Two-byte escape; the second byte is the whole of it.
-            Some(_) | None => {}
+                // OSC and the other string-carrying escapes — DCS, SOS, PM,
+                // APC — all run until a string terminator. They are grouped
+                // because the only thing that differs is the introducer, and
+                // treating any of them as two bytes spills a whole payload into
+                // the output rather than a single character.
+                Some(']' | 'P' | 'X' | '^' | '_') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Three bytes: an introducer, then the character set or the
+                // test pattern being selected.
+                Some('(' | ')' | '*' | '+' | '-' | '.' | '/' | '#' | ' ') => {
+                    chars.next();
+                }
+                // Two-byte escape; the second byte is the whole of it.
+                Some(_) | None => {}
+            },
+            _ => out.push(c),
         }
     }
     out
@@ -291,6 +416,54 @@ mod tests {
         // does would leave the title text in the output.
         assert_eq!(strip_ansi("\u{1b}]0;my title\u{7}done"), "done");
         assert_eq!(strip_ansi("\u{1b}]0;my title\u{1b}\\done"), "done");
+    }
+
+    #[test]
+    fn a_character_set_designation_does_not_leave_its_last_byte_behind() {
+        // `ESC ( B` is "G0 is US-ASCII" and is three bytes. Read as two, the
+        // `B` lands in the output as text — which is what a stray capital
+        // letter in the middle of a Windows command's output turned out to be.
+        assert_eq!(strip_ansi("\u{1b}(Bhello"), "hello");
+        assert_eq!(strip_ansi("\u{1b})0hello"), "hello");
+        assert_eq!(strip_ansi("\u{1b}#8hello"), "hello");
+        // The whole family, since getting one right and the rest wrong is how
+        // this survived the first time.
+        assert_eq!(strip_ansi("\u{1b}*Ax"), "x");
+        assert_eq!(strip_ansi("\u{1b}+Ax"), "x");
+    }
+
+    #[test]
+    fn a_string_carrying_escape_does_not_spill_its_payload() {
+        // DCS, PM and APC end at a string terminator like OSC does. Treated as
+        // two-byte escapes they leak the entire payload as text, which is a
+        // worse version of the same bug.
+        assert_eq!(strip_ansi("\u{1b}Psome payload\u{1b}\\hello"), "hello");
+        assert_eq!(strip_ansi("\u{1b}_payload\u{1b}\\hello"), "hello");
+        assert_eq!(strip_ansi("\u{1b}^payload\u{1b}\\hello"), "hello");
+    }
+
+    #[test]
+    fn a_two_byte_escape_is_still_only_two_bytes() {
+        // The fix must not overshoot: these have no third byte, and eating one
+        // would delete a character of real output.
+        assert_eq!(strip_ansi("\u{1b}7keep"), "keep");
+        assert_eq!(strip_ansi("\u{1b}=keep"), "keep");
+        assert_eq!(strip_ansi("\u{1b}ckeep"), "keep");
+    }
+
+    #[test]
+    fn a_backspace_erases_rather_than_surviving_as_a_control_character() {
+        // What a terminal shows. Dropping the backspace instead would leave
+        // "abc" where the program had rewritten it to "ax".
+        assert_eq!(strip_ansi("abc\u{8}\u{8}x"), "ax");
+        // Never past the start of a line: a backspace at column zero moves
+        // nothing, and joining two lines would be a change to the text.
+        assert_eq!(strip_ansi("one\n\u{8}two"), "one\ntwo");
+    }
+
+    #[test]
+    fn a_bell_does_not_reach_the_transcript() {
+        assert_eq!(strip_ansi("ding\u{7}done"), "dingdone");
     }
 
     #[test]

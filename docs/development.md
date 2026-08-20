@@ -229,6 +229,40 @@ taurus key status               # where each provider's API key comes from
 `skills check`, `agents check`, and `mcp` are meant for CI on a repository that
 ships its own `.taurus` directory.
 
+## The Windows ConPTY runtime
+
+A Windows build sideloads Microsoft's redistributable ConPTY next to the
+executable, because the system's console host shows a window when the process
+asking for it has none — which is every release build. `scripts/conpty.mjs`
+fetches it, and `tauri.conf.json` calls that script from `beforeBuildCommand`,
+so a Windows build needs nothing done by hand.
+
+```bash
+node scripts/conpty.mjs                   # no-op off Windows
+TAURUS_CONPTY_FORCE=1 node scripts/conpty.mjs   # run it anywhere, to test it
+```
+
+The force flag exists because the one platform that needs this is the one
+platform it cannot be tested on before a release: with it, the download, both
+hash checks and the extraction can be exercised on a Mac or a Linux box. The
+zip is read by the script itself rather than by a tool or a dependency, so
+there is nothing platform-specific left in that path.
+
+The package version and the SHA-256 of the archive and of all three files are
+pinned in the script. Bumping it means changing four hashes — download the new
+package, check the bytes, and paste them in. A mismatch fails the build and
+writes nothing, which is the point: this is the one script whose whole job is
+being sure about bytes nobody in this project compiled.
+
+The files are gitignored. They are 2.2 MB that we neither build nor own, and
+committing them would put a fresh copy in history on every bump.
+
+**How to tell it worked.** The app logs at startup whether it found the runtime
+beside the executable. That log line is the only signal there is — packaged
+wrongly, everything still works, except that a console window appears on every
+`pty: true` command, which nothing but a person on Windows running an installed
+build will ever see.
+
 ## Cutting a release
 
 ```bash

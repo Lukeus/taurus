@@ -2507,6 +2507,64 @@ body.resizing * {
   color: var(--danger);
 }
 
+/*
+ * The workspace-trust banner.
+ *
+ * `--warn` rather than `--danger`: nothing has gone wrong and nothing is at
+ * risk — the config in question is being held back, which is the safe state.
+ * Red here would say the opposite of what is true and would compete with the
+ * error banner directly below it.
+ *
+ * Aligned to the top rather than centred, because this one is a list and a
+ * centred multi-line banner puts its buttons somewhere different depending on
+ * how many things the project happened to declare.
+ */
+.banner.trust {
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg));
+  color: var(--text);
+  align-items: flex-start;
+  border-top: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+}
+.banner.trust strong {
+  color: var(--warn);
+}
+.trust-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.trust-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.trust-commands {
+  margin: 2px 0 0;
+  padding-left: 14px;
+  list-style: none;
+}
+.trust-commands code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  /* A long `npx` line must not push the buttons off the edge — this is the one
+     part of the banner whose length the project decides. */
+  overflow-wrap: anywhere;
+}
+.trust-note {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.trust-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 /* --------------------------------------------------------------- dialogs */
 
 .scrim {

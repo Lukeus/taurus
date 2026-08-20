@@ -43,15 +43,29 @@ export function PermissionDialog({
             already the whole of what is being approved for those. */}
         {request.diff && <DiffView diff={request.diff} />}
 
-        <p className="dialog-footnote">{request.always_scope}.</p>
+        {/* The scope sentence describes the standing grant, so it goes away
+            with it: in an untrusted workspace there is nowhere to keep one, and
+            a footnote about a button that is not there reads as a bug. */}
+        {request.offer_always && (
+          <p className="dialog-footnote">{request.always_scope}.</p>
+        )}
 
         <div className="dialog-actions">
           <button className="primary" onClick={() => onDecide("allow_once")} autoFocus>
             Allow once
           </button>
-          <button onClick={() => onDecide("allow_always")} title={request.always_scope}>
-            {request.always_global_scope ? "Always here" : "Allow always"}
-          </button>
+          {/* Absent in a workspace whose own config is not being read: there
+              is no workspace layer to write a standing decision into, so the
+              engine would honor this once and quietly forget it. Offering a
+              permanence that will not happen is worse than not offering it. */}
+          {request.offer_always && (
+            <button
+              onClick={() => onDecide("allow_always")}
+              title={request.always_scope}
+            >
+              {request.always_global_scope ? "Always here" : "Allow always"}
+            </button>
+          )}
           {/* Absent where the wider grant is not on offer — running commands,
               where "every project you ever open" is the wrong unit. */}
           {request.always_global_scope && (

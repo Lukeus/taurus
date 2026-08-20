@@ -24,6 +24,7 @@ use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
+use taurus_host::trust::TrustStatus;
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
     McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus, Rewind,
@@ -142,6 +143,33 @@ pub async fn set_workspace(state: State<'_, Arc<AppState>>, path: String) -> Cmd
     let resolved = state.host.set_workspace(&PathBuf::from(path)).await?;
     info!(workspace = %resolved.display(), "workspace changed");
     Ok(resolved.display().to_string())
+}
+
+/// Whether this workspace's own config is being read, and what it holds.
+///
+/// Polled by the app rather than pushed, because the answer changes when a file
+/// appears in a directory nobody is watching — a `git pull` that adds
+/// `.taurus/mcp.json` is exactly the case the gate exists for, and it arrives
+/// with no event attached to it. See [`taurus_host::trust`].
+#[tauri::command]
+pub async fn workspace_trust(state: State<'_, Arc<AppState>>) -> CmdResult<TrustStatus> {
+    Ok(state.host.trust_status().await)
+}
+
+#[tauri::command]
+pub async fn trust_workspace(state: State<'_, Arc<AppState>>) -> CmdResult<TrustStatus> {
+    state.host.trust_workspace().await?;
+    let status = state.host.trust_status().await;
+    info!(workspace = %status.workspace, "workspace trusted");
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn revoke_workspace_trust(state: State<'_, Arc<AppState>>) -> CmdResult<TrustStatus> {
+    state.host.revoke_trust().await?;
+    let status = state.host.trust_status().await;
+    info!(workspace = %status.workspace, "workspace trust revoked");
+    Ok(status)
 }
 
 #[tauri::command]
