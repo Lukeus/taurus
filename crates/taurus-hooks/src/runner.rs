@@ -452,7 +452,9 @@ pub fn environment(payload: &HookPayload) -> BTreeMap<&'static str, String> {
 fn no_console(command: &mut tokio::process::Command) {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
+        // No `CommandExt` import: `tokio::process::Command` has its own
+        // inherent `creation_flags` on Windows, and bringing the trait in
+        // shadows nothing and warns. `taurus_tools::spawn` does the same.
         command.creation_flags(0x0800_0000);
     }
     #[cfg(not(windows))]
