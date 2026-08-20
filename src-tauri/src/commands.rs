@@ -6,7 +6,7 @@ use std::sync::Arc;
 use dashmap::mapref::entry::Entry;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{Emitter, State};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -118,13 +118,9 @@ pub struct AppStatus {
     pub branch: Option<String>,
 }
 
-#[tauri::command]
-pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus> {
-    // The frontend asks for this once, on mount, and keeps what it gets. That
-    // races the startup reload, and losing the race meant a permanent `0`
-    // beside a drawer full of skills — see [`AppState::loaded`].
-    state.loaded().await;
-    Ok(AppStatus {
+/// Everything the shell shows about the app as a whole, read now.
+pub async fn status_of(state: &AppState) -> AppStatus {
+    AppStatus {
         workspace: state.host.workspace().await.display().to_string(),
         providers: state.host.providers().await,
         settings: state.host.settings().await,
@@ -135,13 +131,94 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus>
         tool_names: state.host.tool_names().await,
         mcp_servers: state.host.mcp_statuses().await,
         branch: state.host.branch().await,
-    })
+    }
+}
+
+/// Pushes the current status to the window.
+///
+/// Called at the end of anything that can move a number the shell is showing —
+/// a reload, a workspace switch, a settings write, a turn that left a note
+/// behind. The frontend does not ask for status again after startup, so a
+/// change that forgets to come through here is one the user sees the old value
+/// of until something unrelated happens.
+///
+/// Never fails a command. A window that has gone away is not a reason to refuse
+/// the work that was done for it.
+pub async fn emit_status(state: &AppState) {
+    let status = status_of(state).await;
+    if let Err(e) = state.app.emit(crate::bridge::EVENT_STATUS, &status) {
+        tracing::warn!(error = %e, "could not push the status to the window");
+    }
+}
+
+/// Every file one conversation has changed, after something cut the set back.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct ChangedFiles {
+    pub session: String,
+    /// Workspace-relative, deduplicated across every turn still in the log.
+    pub files: Vec<String>,
+}
+
+/// Pushes that set to the window, read from the checkpoint log.
+///
+/// Only for the paths that *shrink* it. A turn reports what it changes on its
+/// own event stream as it changes them, which is both cheaper and in order with
+/// everything else the turn is saying.
+pub async fn emit_changed(state: &AppState, session_id: &str) {
+    let workspace = session_workspace(state, session_id).await;
+    let Ok(turns) = state.host.checkpoints_for(&workspace).turns(session_id) else {
+        return;
+    };
+
+    let mut files: Vec<String> = turns
+        .into_iter()
+        .flat_map(|turn| turn.files)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    files.dedup();
+
+    let payload = ChangedFiles {
+        session: session_id.to_string(),
+        files,
+    };
+    if let Err(e) = state.app.emit(crate::bridge::EVENT_CHANGED, &payload) {
+        tracing::warn!(error = %e, "could not push the changed files to the window");
+    }
+}
+
+/// Pushes one conversation's listing entry to the window.
+///
+/// The frontend merges by id, so this is what a turn ending, a rename, or a
+/// transcript first reaching disk costs: one file read instead of a scan of
+/// every transcript in the workspace.
+pub async fn emit_session(state: &AppState, session_id: &str) {
+    let Some(meta) = sessions::meta(session_id) else {
+        return;
+    };
+    if let Err(e) = state.app.emit(crate::bridge::EVENT_SESSION, &meta) {
+        tracing::warn!(error = %e, "could not push a conversation to the window");
+    }
+}
+
+#[tauri::command]
+pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus> {
+    // The frontend asks for this once, on mount, and keeps what it gets. That
+    // races the startup reload, and losing the race meant a permanent `0`
+    // beside a drawer full of skills — see [`AppState::loaded`]. Every later
+    // change arrives on `EVENT_STATUS` rather than by being asked for again.
+    state.loaded().await;
+    Ok(status_of(&state).await)
 }
 
 #[tauri::command]
 pub async fn set_workspace(state: State<'_, Arc<AppState>>, path: String) -> CmdResult<String> {
     let resolved = state.host.set_workspace(&PathBuf::from(path)).await?;
     info!(workspace = %resolved.display(), "workspace changed");
+    // Everything the shell shows about the app belongs to the folder, so all of
+    // it has just changed at once.
+    emit_status(&state).await;
     Ok(resolved.display().to_string())
 }
 
@@ -161,6 +238,9 @@ pub async fn trust_workspace(state: State<'_, Arc<AppState>>) -> CmdResult<Trust
     state.host.trust_workspace().await?;
     let status = state.host.trust_status().await;
     info!(workspace = %status.workspace, "workspace trusted");
+    // Saying yes is what loads this project's skills, agents and servers; the
+    // counts on the rail move with it.
+    emit_status(&state).await;
     Ok(status)
 }
 
@@ -169,6 +249,7 @@ pub async fn revoke_workspace_trust(state: State<'_, Arc<AppState>>) -> CmdResul
     state.host.revoke_trust().await?;
     let status = state.host.trust_status().await;
     info!(workspace = %status.workspace, "workspace trust revoked");
+    emit_status(&state).await;
     Ok(status)
 }
 
@@ -430,7 +511,20 @@ pub async fn send_message(
                 prompt: &text,
             },
         )
-        .await;
+        .await
+        // Persistence moves into the loop, which records once per tool round
+        // trip and once when the turn ends however it ends. Two things follow.
+        // The question reaches disk before the model is asked it, so a turn
+        // killed half way leaves what was asked rather than nothing. And the
+        // conversation becomes listable while it is being answered — with its
+        // title — where before it appeared in the rail only once the turn was
+        // over, which for a long turn is minutes of the app disagreeing with
+        // itself about which conversations exist.
+        .with_recorder(Arc::new(crate::bridge::UiSessionLog::new(
+            state.app.clone(),
+            entry.log.clone(),
+            session_id.clone(),
+        )));
 
     // Bridge the loop's mpsc channel to the IPC channel.
     let (tx, mut rx) = mpsc::channel::<UiEvent>(256);
@@ -454,13 +548,19 @@ pub async fn send_message(
     };
 
     let mut session = entry.session.lock().await;
+    // The transcript is written from inside this call, by the recorder attached
+    // above — once per round and once at the end, whatever the outcome. An
+    // interrupted turn still produced the messages that led there, and they are
+    // already on disk in the order they happened.
     let outcome = agent.run_turn(&mut session, message, tx).await;
-    // Recorded whatever the outcome, and before the session lock is released:
-    // an interrupted turn still produced the messages that led there, and they
-    // must reach disk in the order they happened.
-    entry.log.lock().await.record(&session);
     drop(session);
     let _ = forwarder.await;
+
+    // The conversation's listing entry has moved: its timestamp, and its title
+    // if this was its first turn. The status has too — a turn can leave a note
+    // behind, and can be the thing that moved the branch.
+    emit_session(&state, &session_id).await;
+    emit_status(&state).await;
 
     match outcome {
         Ok(outcome) => {
@@ -523,6 +623,38 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
     state.host.forget_plan(&session_id).await;
     info!(session = %session_id, "session deleted");
     Ok(())
+}
+
+/// Gives a conversation a title of its own, or takes one away.
+///
+/// An empty title is a clear rather than an error: the box the user typed in
+/// starts out holding the derived title, and emptying it is how you say "go
+/// back to that" — see [`sessions::rename`].
+///
+/// Allowed mid-turn, unlike deleting. A rename touches the transcript's header
+/// and nothing a running turn is appending to, and stopping the turn to retitle
+/// the conversation it is running in would be a strange thing to have to do.
+#[tauri::command]
+pub async fn rename_session(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    title: String,
+) -> CmdResult<SessionMeta> {
+    // The write is serialized against the log for this conversation when there
+    // is one, so a rewrite cannot land between a turn's append and the next.
+    // A conversation that is only on disk has nothing to serialize against.
+    let held = state.session(&session_id).ok().map(|entry| entry.log.clone());
+    let meta = match &held {
+        Some(log) => {
+            let _guard = log.lock().await;
+            sessions::rename(&session_id, Some(&title))
+        }
+        None => sessions::rename(&session_id, Some(&title)),
+    }?;
+
+    info!(session = %session_id, title = %meta.title, "conversation renamed");
+    emit_session(&state, &session_id).await;
+    Ok(meta)
 }
 
 #[derive(Deserialize, TS)]
@@ -847,6 +979,9 @@ pub async fn save_mcp_server(
     }
 
     state.host.reload_mcp().await;
+    // The panel is handed the listing directly; this is for the rail's badge,
+    // which is showing the same servers from somewhere else on screen.
+    emit_status(&state).await;
     Ok(state.host.mcp_servers().await)
 }
 
@@ -871,6 +1006,7 @@ pub async fn delete_mcp_server(
     let workspace = state.host.workspace().await;
     taurus_host::config::delete_mcp_server(scope, Some(&workspace), &name)?;
     state.host.reload_mcp().await;
+    emit_status(&state).await;
     Ok(state.host.mcp_servers().await)
 }
 
@@ -884,6 +1020,7 @@ pub async fn set_mcp_server_disabled(
     let workspace = state.host.workspace().await;
     taurus_host::config::set_mcp_server_disabled(scope, Some(&workspace), &name, disabled)?;
     state.host.reload_mcp().await;
+    emit_status(&state).await;
     Ok(state.host.mcp_servers().await)
 }
 
@@ -915,6 +1052,7 @@ pub async fn test_mcp_server(
 #[tauri::command]
 pub async fn reload_mcp(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<McpServerView>> {
     state.host.reload_mcp().await;
+    emit_status(&state).await;
     Ok(state.host.mcp_servers().await)
 }
 
@@ -992,7 +1130,11 @@ pub async fn list_notes(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Note>>
 /// file rather than from its own guess about what the file now says.
 #[tauri::command]
 pub async fn forget_note(state: State<'_, Arc<AppState>>, id: String) -> CmdResult<Vec<Note>> {
-    state.host.forget_note(&id).await
+    let left = state.host.forget_note(&id).await?;
+    // The drawer is handed the remaining notes directly; this is for the count
+    // on the rail behind it.
+    emit_status(&state).await;
+    Ok(left)
 }
 
 /// Every tool this session has, for the editor's tool picker.
@@ -1040,6 +1182,7 @@ pub async fn save_agent(
     info!(agent = %draft.name, path = %path.display(), "agent saved from the editor");
 
     state.host.rescan_agents().await;
+    emit_status(&state).await;
     Ok(path.display().to_string())
 }
 
@@ -1247,6 +1390,7 @@ pub async fn create_agent(
     let workspace = state.host.workspace().await;
     let path = taurus_host::config::create_agent_file(scope, Some(&workspace), &name)?;
     state.host.rescan_agents().await;
+    emit_status(&state).await;
 
     use tauri_plugin_opener::OpenerExt;
     app.opener()
@@ -1304,6 +1448,9 @@ pub async fn respond_skill_proposal(
 
     // Reload so the skill is usable in the session that just proposed it.
     state.host.reload().await;
+    // And so the count on the rail moves with it, rather than on whatever the
+    // user does next.
+    emit_status(&state).await;
     Ok(Some(dir.display().to_string()))
 }
 
@@ -1321,12 +1468,14 @@ pub async fn set_agent_iterations(
 #[tauri::command]
 pub async fn set_max_iterations(state: State<'_, Arc<AppState>>, limit: u32) -> CmdResult<()> {
     state.host.set_max_iterations(limit).await;
+    emit_status(&state).await;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn set_skill_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
     state.host.set_skill_synthesis(enabled).await;
+    emit_status(&state).await;
     Ok(())
 }
 
@@ -1401,18 +1550,23 @@ pub async fn respond_agent_proposal(
     // Narrower than `reload`, which would restart every MCP server to pick up
     // one markdown file.
     state.host.rescan_agents().await;
+    emit_status(&state).await;
     Ok(Some(path.display().to_string()))
 }
 
 #[tauri::command]
 pub async fn set_agent_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
     state.host.set_agent_synthesis(enabled).await;
+    emit_status(&state).await;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn set_theme(state: State<'_, Arc<AppState>>, theme: Theme) -> CmdResult<()> {
     state.host.set_theme(theme).await;
+    // The settings file stays the authority on which theme is in force, and
+    // this is how the window is told what it now says.
+    emit_status(&state).await;
     Ok(())
 }
 
@@ -1423,6 +1577,7 @@ pub async fn set_embedding_model(state: State<'_, Arc<AppState>>, model: String)
     // does not become a `search_code` until the next workspace change — which
     // reads as the setting not having taken.
     state.host.reload().await;
+    emit_status(&state).await;
     Ok(())
 }
 
@@ -1488,6 +1643,7 @@ pub async fn save_providers(
         return Err("at least one provider must be configured".into());
     }
     state.host.set_providers(providers).await;
+    emit_status(&state).await;
     Ok(())
 }
 
@@ -1501,6 +1657,9 @@ pub async fn save_providers(
 #[tauri::command]
 pub async fn reload_config(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
     state.host.reload().await;
+    // The broadest of these: every count, every server and every problem the
+    // shell shows is re-read by that call.
+    emit_status(&state).await;
     Ok(())
 }
 
@@ -1551,6 +1710,10 @@ pub async fn rewind_to(
     // nothing.
     if !dry_run {
         state.host.forget_plan(&session_id).await;
+        // The header counts files this conversation changed, and a rewind is
+        // the only thing that makes that number go down. The drawer re-reads
+        // its own list; this is for the count behind it.
+        emit_changed(&state, &session_id).await;
     }
     Ok(rewind)
 }

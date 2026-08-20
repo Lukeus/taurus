@@ -327,6 +327,14 @@ impl Agent {
         ui: mpsc::Sender<UiEvent>,
     ) -> Result<TurnOutcome, AgentError> {
         session.push(user_message);
+        // Before the first request, not after the last one. Two things follow
+        // from writing the question down at the moment it is asked rather than
+        // when its answer is complete: a turn interrupted by a crash or a
+        // kill leaves the question on disk instead of nothing, and the
+        // conversation becomes listable — with a title — while it is being
+        // answered rather than once it has been. A turn that takes two minutes
+        // was previously absent from every listing for those two minutes.
+        self.persist(session).await;
 
         let mut total = TokenUsage::default();
         let mut iteration = 0;
@@ -472,6 +480,14 @@ impl Agent {
                 captured = now;
                 if wrote {
                     unverified = true;
+                    // Only when the count moved. The set is read off a lock the
+                    // tools are also using, and a round that changed nothing
+                    // has nothing to tell anybody.
+                    let _ = ui
+                        .send(UiEvent::FilesChanged {
+                            paths: recorder.changed_paths().await,
+                        })
+                        .await;
                 } else if self.ran_a_check(&assistant) {
                     unverified = false;
                 }

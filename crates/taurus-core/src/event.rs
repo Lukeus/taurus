@@ -84,6 +84,22 @@ pub enum UiEvent {
         /// Why the previous attempt failed, in the provider's own words.
         reason: String,
     },
+    /// Files this turn has changed, workspace-relative, as it changes them.
+    ///
+    /// Sent whenever a round captured a pre-image for a path it had not seen
+    /// before, which is the moment the change becomes undoable. The whole set
+    /// each time rather than the delta: a listener that missed one event would
+    /// otherwise be short a file for the rest of the turn, and the set is
+    /// bounded by what one turn touched.
+    ///
+    /// This exists because the alternative was asking. The count in the header
+    /// was read from the checkpoint log after the turn finished, so a turn that
+    /// spent two minutes rewriting the project said "No file changes" for all
+    /// of it, and the truth arrived with a round trip once there was nothing
+    /// left to watch.
+    FilesChanged {
+        paths: Vec<String>,
+    },
     /// Older tool output was shortened to stay inside the context window.
     /// Cheaper than [`UiEvent::Compacted`] and tried first: nothing was sent to
     /// the model to produce it, and no message was removed.

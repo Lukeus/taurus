@@ -155,6 +155,20 @@ struct Header {
     /// rather than being required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     branch: Option<String>,
+    /// A title somebody gave this conversation, in place of the one derived
+    /// from its first question.
+    ///
+    /// In the header rather than appended as a record of its own, because
+    /// [`read_meta`] reads the top of a transcript and stops — a rename written
+    /// at the end of a long file would be invisible to every listing. Setting
+    /// it is the one operation that rewrites a transcript, and it does so
+    /// atomically; see [`rename`].
+    ///
+    /// `None` is not the same as an empty string: it means nobody has named
+    /// this conversation, so the first question still titles it. Clearing a
+    /// title restores that rather than leaving a blank row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
     /// The conversation this one was delegated from, for a sub-agent's
     /// transcript. `None` for a conversation somebody had themselves.
     ///
@@ -315,19 +329,26 @@ impl SessionLog {
     /// failed leaves an empty transcript behind, and "the file is there" would
     /// be true from then on. Asking for the record also repairs a transcript
     /// that is already missing one.
-    fn ensure_header(&mut self) {
+    ///
+    /// Answers whether *this call* is what created the transcript, which is the
+    /// moment the conversation becomes something a listing can show. A caller
+    /// with a UI to keep in step uses it to say so once rather than asking
+    /// after every turn.
+    fn ensure_header(&mut self) -> bool {
         if self.off || self.header.is_none() {
-            return;
+            return false;
         }
         if has_header(&self.path) {
             self.header = None;
-            return;
+            return false;
         }
         if let Some(header) = self.header.clone() {
             if self.write(&Record::Header(header)) {
                 self.header = None;
+                return true;
             }
         }
+        false
     }
 
     pub fn path(&self) -> &Path {
@@ -335,20 +356,26 @@ impl SessionLog {
     }
 
     /// Appends whatever the session gained since the last call.
-    pub fn record(&mut self, session: &Session) {
+    ///
+    /// Returns whether this call created the transcript — see
+    /// [`Self::ensure_header`]. Every other outcome is `false`, including the
+    /// ordinary one where messages were appended to a file that already
+    /// existed: the question being answered is "is this conversation new to
+    /// disk", not "did anything get written".
+    pub fn record(&mut self, session: &Session) -> bool {
         if self.off {
-            return;
+            return false;
         }
 
         // Retried every turn rather than attempted once at creation: a
         // transient failure must cost the turn that hit it, not the record of
         // the whole conversation.
-        self.ensure_header();
+        let created = self.ensure_header();
         if self.header.is_some() {
             // Still no header on disk. Messages appended under one would make a
             // transcript `load` cannot identify, so leave them for the turn
             // that manages to write it.
-            return;
+            return false;
         }
 
         // Guards a resumed or replaced session whose history is shorter than
@@ -359,11 +386,12 @@ impl SessionLog {
             if !self.write(&Record::Message(message.clone())) {
                 // Left pointing at the message that did not land, so the next
                 // turn writes it rather than skipping past it.
-                return;
+                return created;
             }
             self.persisted += 1;
         }
         self.write(&Record::Usage(session.usage));
+        created
     }
 
     /// Appends one record. Returns whether it landed.
@@ -428,6 +456,7 @@ fn header_for(session: &Session, workspace: &Path, branch: Option<String>) -> He
         model: session.model.clone(),
         started: now(),
         branch,
+        title: None,
         parent: None,
         agent: None,
     }
@@ -530,7 +559,16 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
 /// changed files of an open conversation cost more than the turn that changed
 /// them.
 pub fn workspace_of(id: &str) -> Option<PathBuf> {
-    read_meta(&find(id)?).map(|meta| PathBuf::from(meta.workspace))
+    meta(id).map(|meta| PathBuf::from(meta.workspace))
+}
+
+/// One conversation's listing entry, without listing the rest.
+///
+/// For telling a UI that this conversation has changed. The alternative is
+/// re-listing the workspace, which reads the top of every transcript in it to
+/// learn something about one of them.
+pub fn meta(id: &str) -> Option<SessionMeta> {
+    read_meta(&find(id)?)
 }
 
 /// Sessions for one workspace, or for every workspace, newest first.
@@ -669,7 +707,12 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
             }
             _ => {}
         }
-        if header.is_some() && (title.is_some() || index + 1 >= TITLE_SCAN_LINES) {
+        // A conversation somebody named needs nothing past its header, so a
+        // renamed one lists off line one however long its transcript is.
+        let named = header.as_ref().is_some_and(|found| {
+            found.title.as_ref().is_some_and(|t| !t.trim().is_empty())
+        });
+        if header.is_some() && (named || title.is_some() || index + 1 >= TITLE_SCAN_LINES) {
             break;
         }
     }
@@ -685,7 +728,15 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
         model: header.model,
         started: header.started,
         updated,
-        title: title.unwrap_or_default(),
+        // A given title wins over the derived one, which is the whole point of
+        // giving one. A blank one is treated as absent rather than honoured:
+        // it would leave a row with nothing on it, and the first question is a
+        // better answer than no answer.
+        title: header
+            .title
+            .filter(|given| !given.trim().is_empty())
+            .or(title)
+            .unwrap_or_default(),
         branch: header.branch,
         agent: header.agent,
     })
@@ -711,6 +762,122 @@ fn first_text(message: &Message) -> Option<String> {
     } else {
         Some(line.to_string())
     }
+}
+
+/// Gives a conversation a title of its own, or takes one away.
+///
+/// `title` is what to call it; `None`, or anything blank, clears the override
+/// so the first question titles it again. The result is the listing entry as it
+/// now reads, so a caller never has to guess how the text was normalized.
+///
+/// # Why this rewrites a file nothing else rewrites
+///
+/// A transcript is append-only, and everything else here respects that. A title
+/// cannot be: [`read_meta`] reads the top of the file and stops, so a rename
+/// appended to the end of a long conversation would be invisible to every
+/// listing that could show it. Putting it in the header is what makes a renamed
+/// conversation cost a listing one line to read.
+///
+/// The append-only guarantee — that a crash costs the turn in progress rather
+/// than the conversation — is kept by writing a complete new file beside the
+/// old one and renaming it over. Until that rename the original is untouched,
+/// and the rename itself either happens or does not. What a crash can leave
+/// behind is a stray temporary file, which nothing reads.
+///
+/// Every line but the header is copied through byte for byte, terminators and
+/// all. A record this version does not recognize survives being renamed by it,
+/// and a torn final line — the turn that was in flight when the process died —
+/// stays exactly as torn as it was, so [`load`] goes on dropping it rather than
+/// finding it repaired into something it will now accept.
+pub fn rename(id: &str, title: Option<&str>) -> Result<SessionMeta, String> {
+    let path = find(id).ok_or_else(|| format!("no saved session '{id}'"))?;
+    let title = title.and_then(normalize_title);
+
+    let contents =
+        std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+
+    // `split_inclusive` keeps each line's terminator attached, so what is
+    // written back differs from what was read only where it has to.
+    let mut out = String::with_capacity(contents.len() + 128);
+    let mut renamed = false;
+    for line in contents.split_inclusive('\n') {
+        let text = line.strip_suffix('\n').unwrap_or(line);
+        match serde_json::from_str::<Record>(text) {
+            // The first header only. A transcript has one; a file that somehow
+            // has two would otherwise get a title on each and disagree with
+            // itself depending on which a reader stopped at.
+            Ok(Record::Header(mut header)) if !renamed => {
+                header.title = title.clone();
+                let encoded = serde_json::to_string(&Record::Header(header))
+                    .map_err(|e| format!("could not write the title: {e}"))?;
+                out.push_str(&encoded);
+                out.push_str(line.strip_prefix(text).unwrap_or("\n"));
+                renamed = true;
+            }
+            _ => out.push_str(line),
+        }
+    }
+
+    if !renamed {
+        return Err(format!(
+            "the transcript for '{id}' has no header, so there is nothing to title"
+        ));
+    }
+
+    // Beside the file it replaces, so the rename stays within one filesystem —
+    // across filesystems it would become a copy, which is not atomic and is the
+    // whole reason for doing it this way. Hidden and suffixed so a stray one is
+    // recognizable, and so `list` skips it: it scans for `.jsonl`.
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no directory", path.display()))?;
+    let temp = parent.join(format!(".{id}.rename.tmp"));
+
+    write_then_replace(&temp, &path, &out).map_err(|e| {
+        // Best effort: the original is intact either way, and a leftover
+        // temporary is worth less than the error that explains the failure.
+        let _ = std::fs::remove_file(&temp);
+        format!("{}: {e}", path.display())
+    })?;
+
+    read_meta(&path).ok_or_else(|| format!("{} could not be read back", path.display()))
+}
+
+/// Writes `contents` to `temp`, flushes it to the disk, and moves it over
+/// `path`.
+///
+/// The flush is what makes the rename mean anything: without it the directory
+/// entry can reach the disk before the bytes do, and a power loss in that
+/// window leaves the transcript replaced by a file that is empty rather than
+/// one that is old.
+fn write_then_replace(temp: &Path, path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(temp)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(temp, path)
+}
+
+/// What a given title is stored as, or `None` for one that says nothing.
+///
+/// Held to the same shape a derived title has — one line, [`TITLE_MAX_CHARS`]
+/// of it — because the two appear in the same column and a listing that let one
+/// of them run three lines long would be laid out by whichever conversation had
+/// the longest name.
+fn normalize_title(title: &str) -> Option<String> {
+    let line = title.lines().find(|l| !l.trim().is_empty())?.trim();
+    if line.is_empty() {
+        return None;
+    }
+    if line.chars().count() > TITLE_MAX_CHARS {
+        // Truncated rather than refused. The field is a text box, and a name a
+        // character over the limit is not a mistake worth an error message.
+        return Some(format!(
+            "{}…",
+            line.chars().take(TITLE_MAX_CHARS - 1).collect::<String>()
+        ));
+    }
+    Some(line.to_string())
 }
 
 /// Erases a saved conversation.
@@ -836,7 +1003,9 @@ struct SubagentLog {
 #[async_trait]
 impl TurnRecorder for SubagentLog {
     async fn record(&self, session: &Session) {
-        self.log.lock().await.record(session);
+        // Nothing watches a delegate's transcript while it is being written, so
+        // there is nobody to tell that it now exists.
+        let _ = self.log.lock().await.record(session);
     }
 }
 
@@ -1166,6 +1335,124 @@ mod tests {
     }
 
     #[test]
+    fn a_given_title_replaces_the_one_derived_from_the_first_question() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/named");
+        let session = session_with("n1", &["fix the flaky test"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+
+        assert_eq!(list(Some(workspace))[0].title, "fix the flaky test");
+
+        let renamed = rename("n1", Some("Flaky CI investigation")).unwrap();
+        assert_eq!(renamed.title, "Flaky CI investigation");
+        assert_eq!(list(Some(workspace))[0].title, "Flaky CI investigation");
+
+        // And the conversation still opens, with everything that was said in
+        // it — the rewrite touched one line.
+        let loaded = load("n1").expect("a renamed transcript still loads");
+        assert_eq!(loaded.session.messages.len(), session.messages.len());
+        assert_eq!(loaded.session.messages[0].text(), "fix the flaky test");
+    }
+
+    #[test]
+    fn clearing_a_title_goes_back_to_the_first_question() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/cleared");
+        let session = session_with("c1", &["what does the parser do"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+
+        rename("c1", Some("Parser tour")).unwrap();
+        assert_eq!(list(Some(workspace))[0].title, "Parser tour");
+
+        // Blank is a clear, not a blank row: the question is a better answer
+        // than no answer.
+        for blank in ["", "   ", "\n"] {
+            let back = rename("c1", Some(blank)).unwrap();
+            assert_eq!(back.title, "what does the parser do", "for {blank:?}");
+        }
+    }
+
+    #[test]
+    fn a_rename_keeps_every_line_it_does_not_own() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/preserved");
+        let session = session_with("p1", &["one", "two"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+
+        let path = find("p1").unwrap();
+        // A record from a version that does not exist yet, and a torn final
+        // line — the turn that was in flight when the process died.
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("{\"type\":\"from_the_future\",\"whatever\":1}\n");
+        raw.push_str("{\"type\":\"message\",\"role\":\"assi");
+        std::fs::write(&path, &raw).unwrap();
+
+        rename("p1", Some("Renamed")).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+
+        assert!(
+            after.contains("from_the_future"),
+            "a record this version cannot read must survive being renamed by it"
+        );
+        assert!(
+            after.ends_with("{\"type\":\"message\",\"role\":\"assi"),
+            "a torn line must stay as torn as it was, and unterminated: {after:?}"
+        );
+        assert_eq!(
+            after.lines().count(),
+            raw.lines().count(),
+            "no line was added or lost"
+        );
+        // `load` goes on dropping the torn tail rather than finding it repaired.
+        let loaded = load("p1").expect("still loads");
+        assert_eq!(loaded.session.messages.len(), 4);
+    }
+
+    #[test]
+    fn a_long_title_is_shortened_rather_than_refused() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/long");
+        let session = session_with("l1", &["hi"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+
+        let long = "x".repeat(TITLE_MAX_CHARS * 2);
+        let meta = rename("l1", Some(&long)).unwrap();
+        assert_eq!(meta.title.chars().count(), TITLE_MAX_CHARS);
+        assert!(meta.title.ends_with('…'));
+
+        // A multi-line paste keeps its first line, the same rule a derived
+        // title follows.
+        let meta = rename("l1", Some("\n  the first line  \nthe second")).unwrap();
+        assert_eq!(meta.title, "the first line");
+    }
+
+    #[test]
+    fn renaming_something_that_is_not_there_says_so() {
+        let _home = isolated_home();
+        assert!(rename("nope", Some("anything")).is_err());
+        // An id that could escape the sessions tree never reaches the disk.
+        assert!(rename("../../etc/passwd", Some("x")).is_err());
+    }
+
+    #[test]
+    fn recording_says_when_a_conversation_first_reaches_disk() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/announced");
+        let session = session_with("a1", &["first"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+
+        assert!(log.record(&session), "this call created the transcript");
+        assert!(
+            !log.record(&session),
+            "a second call appended to one that already existed"
+        );
+    }
+
+    #[test]
     fn two_checkouts_of_the_same_project_do_not_share_a_directory() {
         let a = workspace_key(Path::new("/home/me/src/taurus"));
         let b = workspace_key(Path::new("/home/me/work/taurus"));
@@ -1339,6 +1626,7 @@ mod tests {
             model: "test-model".into(),
             started: 1,
             branch: None,
+            title: None,
             parent: None,
             agent: None,
         }))

@@ -6,6 +6,7 @@ import { Attachments } from "./components/Attachments";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { DelegateTranscript } from "./components/DelegateTranscript";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
+import { ConversationTitle } from "./components/ConversationTitle";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { TrustBanner } from "./components/TrustBanner";
 import { PlanPanel } from "./components/PlanPanel";
@@ -66,9 +67,10 @@ export default function App() {
       init: s.init,
       send: s.send,
       stop: s.stop,
-      refresh: s.refresh,
       resume: s.resume,
       remove: s.remove,
+      rename: s.rename,
+      refresh: s.refresh,
       startSession: s.startSession,
       setWorkspace: s.setWorkspace,
       dismissError: s.dismissError,
@@ -107,6 +109,26 @@ export default function App() {
     // Intentionally once: init wires the event listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /*
+   * Re-asks the questions nothing can push, when the user comes back.
+   *
+   * Trust is the one that matters: the answer changes when a file appears in a
+   * directory nothing is watching — a `git pull` that adds `.taurus/mcp.json`
+   * is the case the gate exists for, and it arrives with no event attached to
+   * it. Returning to the window is the closest thing to an event there is, and
+   * it is precisely when somebody has most likely just been in a terminal.
+   *
+   * Everything else on screen is pushed, so this is a narrow catch-up rather
+   * than a poll: no timer, and nothing happens while the window is not looked
+   * at.
+   */
+  const refresh = store.refresh;
+  useEffect(() => {
+    const ask = () => void refresh();
+    window.addEventListener("focus", ask);
+    return () => window.removeEventListener("focus", ask);
+  }, [refresh]);
 
   // Settings are the authority; main.tsx only guessed from the last run. Also
   // where following the OS is honoured — while the preference is `system`, a
@@ -187,20 +209,23 @@ export default function App() {
     setSettingsOpen(true);
   };
 
-  const title =
-    store.sessions.find((s) => s.id === store.session?.id)?.title ||
-    "New conversation";
+  // The listing entry rather than the session: a title is a fact about the
+  // transcript, and a conversation with no entry has none of either yet.
+  const listed = store.sessions.find((s) => s.id === store.session?.id);
+  const title = listed?.title || "New conversation";
 
   /**
    * The same two steps `ThemePicker` takes, because the rail row and the
-   * Settings pills set one preference between them: paint immediately so the
-   * click is answered by the screen it changed, then write, then re-read — the
-   * settings file stays the authority, and the effect above repaints from it.
+   * Settings pills set one preference between them: paint immediately, so the
+   * click is answered by the screen it changed, then write.
+   *
+   * There is no third step any more. The settings file is still the authority
+   * on which theme is in force, and what it now says arrives on `EVENT_STATUS`
+   * — which is what the effect above repaints from.
    */
   const chooseTheme = async (next: Theme) => {
     applyTheme(next);
     await api.setTheme(next);
-    await store.refresh();
   };
 
   return (
@@ -235,7 +260,13 @@ export default function App() {
 
       <div className="pane">
         <header className="topbar">
-          <span className="topbar-title">{title}</span>
+          <ConversationTitle
+            title={title}
+            // Only once there is a transcript to write a name into, which there
+            // is from the moment the first question is asked.
+            renamable={listed !== undefined}
+            onRename={(next) => listed && store.rename(listed.id, next)}
+          />
 
           {store.session && !store.session.native_tools && (
             <span

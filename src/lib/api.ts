@@ -13,6 +13,7 @@ import type { AllowedRule } from "../bindings/AllowedRule";
 import type { Answer } from "../bindings/Answer";
 import type { AppStatus } from "../bindings/AppStatus";
 import type { Attachment } from "../bindings/Attachment";
+import type { ChangedFiles } from "../bindings/ChangedFiles";
 import type { Checkpoint } from "../bindings/Checkpoint";
 import type { CommandKind } from "../bindings/CommandKind";
 import type { CommandSummary } from "../bindings/CommandSummary";
@@ -80,6 +81,7 @@ export type {
   Answer,
   AppStatus,
   Attachment,
+  ChangedFiles,
   Checkpoint,
   CommandKind,
   CommandSummary,
@@ -141,6 +143,34 @@ export const EVENT_PERMISSION_REQUEST = "taurus://permission-request";
 export const EVENT_SKILL_PROPOSAL = "taurus://skill-proposal";
 export const EVENT_AGENT_PROPOSAL = "taurus://agent-proposal";
 
+/**
+ * The whole of {@link AppStatus}, pushed whenever any of it moves.
+ *
+ * The frontend asks for status once, on mount. Everything after that arrives
+ * here — a reload, a workspace switch, a settings write, a turn that left a
+ * note behind. Before this, the shell found out by asking after whatever the
+ * user had last clicked, so every count on the rail was as old as their last
+ * unrelated action.
+ */
+export const EVENT_STATUS = "taurus://status";
+
+/**
+ * One conversation's listing entry, when it appears or changes.
+ *
+ * Singular, and merged into the list already held: a turn ending costs one
+ * file read on the backend rather than a scan of every transcript in the
+ * workspace.
+ */
+export const EVENT_SESSION = "taurus://session";
+
+/**
+ * Every file one conversation has changed, when something cut the set back.
+ *
+ * A turn reports what it changes on its own event stream as it changes them,
+ * so this is for the one thing that moves the count the other way: a rewind.
+ */
+export const EVENT_CHANGED = "taurus://changed";
+
 export const getStatus = () => invoke<AppStatus>("get_status");
 
 export const setWorkspace = (path: string) =>
@@ -149,10 +179,11 @@ export const setWorkspace = (path: string) =>
 /**
  * Whether this workspace's own config is being read, and what it holds.
  *
- * Asked for on every status refresh rather than pushed: the answer changes when
- * a file appears in a directory nothing is watching — a `git pull` that adds
- * `.taurus/mcp.json` is the case this exists for, and it arrives with no event
- * attached to it.
+ * Asked for rather than pushed, unlike everything else the shell shows: the
+ * answer changes when a file appears in a directory nothing is watching — a
+ * `git pull` that adds `.taurus/mcp.json` is the case this exists for, and it
+ * arrives with no event attached to it. So it is re-asked at the two moments
+ * that stand in for one: opening a folder, and coming back to the window.
  */
 export const workspaceTrust = () => invoke<TrustStatus>("workspace_trust");
 
@@ -201,6 +232,20 @@ export const closeSession = (sessionId: string) =>
 /** Saved conversations, newest first. `all` crosses workspaces. */
 export const listSessions = (all = false) =>
   invoke<SessionMeta[]>("list_sessions", { all });
+
+/**
+ * Gives a conversation a title of its own, and answers with how it now reads.
+ *
+ * An empty title is a clear rather than an error: the field starts out holding
+ * the title derived from the first question, and emptying it is how you ask for
+ * that back. The answer is the authority on how the text was shortened, so a
+ * caller never has to reproduce that rule to know what it will show.
+ *
+ * Allowed mid-turn, unlike deleting: it touches the transcript's header and not
+ * anything a running turn is appending to.
+ */
+export const renameSession = (sessionId: string, title: string) =>
+  invoke<SessionMeta>("rename_session", { sessionId, title });
 
 export const resumeSession = (sessionId: string, providerId?: string) =>
   invoke<ResumedSession>("resume_session", {
@@ -553,3 +598,14 @@ export const onAgentProposal = (
   handler: (proposal: AgentProposal) => void,
 ): Promise<UnlistenFn> =>
   listen<AgentProposal>(EVENT_AGENT_PROPOSAL, (e) => handler(e.payload));
+
+export const onStatus = (handler: (status: AppStatus) => void): Promise<UnlistenFn> =>
+  listen<AppStatus>(EVENT_STATUS, (e) => handler(e.payload));
+
+export const onSession = (handler: (session: SessionMeta) => void): Promise<UnlistenFn> =>
+  listen<SessionMeta>(EVENT_SESSION, (e) => handler(e.payload));
+
+export const onChanged = (
+  handler: (changed: ChangedFiles) => void,
+): Promise<UnlistenFn> =>
+  listen<ChangedFiles>(EVENT_CHANGED, (e) => handler(e.payload));

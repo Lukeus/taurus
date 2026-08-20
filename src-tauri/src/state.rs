@@ -60,6 +60,14 @@ impl PermissionPromptFactory for UiPrompts {
 }
 
 pub struct AppState {
+    /// Kept so any command can push state to the window without taking a handle
+    /// as an argument.
+    ///
+    /// The alternative — an `AppHandle` parameter on every mutating command —
+    /// makes announcing a change something each command opts into by changing
+    /// its signature, which is exactly the kind of thing that gets left out of
+    /// the next one somebody adds.
+    pub app: AppHandle,
     pub host: Host,
     pub sessions: DashMap<String, Arc<SessionEntry>>,
     pub pending_permissions: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>>,
@@ -114,12 +122,13 @@ impl AppState {
             Arc::new(UiAsker::new(pending_questions.clone())),
             Arc::new(UiProposalSink::new(app.clone(), pending_proposals.clone())),
             Arc::new(UiAgentProposalSink::new(
-                app,
+                app.clone(),
                 pending_agent_proposals.clone(),
             )),
         );
 
         Self {
+            app,
             host,
             sessions: DashMap::new(),
             pending_permissions,

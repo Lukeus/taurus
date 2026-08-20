@@ -129,6 +129,33 @@ describe("switching workspace", () => {
     expect(calls("resume_session")).toHaveLength(0);
   });
 
+  it("opens the new folder on the new folder's remembered model", async () => {
+    // Settings are resolved per workspace, so the status has to be in hand
+    // before a conversation is started rather than left to arrive on the event
+    // the backend also pushes: that lands on a later tick, and the folder would
+    // open on the model the *previous* one was last worked in.
+    backend({
+      list_sessions: [],
+      get_status: {
+        ...STATUS,
+        settings: { last_provider: "ollama", last_model: "llama4:70b" },
+      },
+      list_models: [
+        { id: "qwen3.6:27b", display_name: "Qwen" },
+        { id: "llama4:70b", display_name: "Llama" },
+      ],
+    });
+    await useStore.getState().setWorkspace("/src/project-b");
+
+    const order = invoke.mock.calls.map(([name]) => name);
+    expect(order.indexOf("get_status")).toBeGreaterThan(
+      order.indexOf("set_workspace"),
+    );
+    expect(calls("create_session")[0][1]).toMatchObject({
+      model: "llama4:70b",
+    });
+  });
+
   it("switches after the old conversation is closed, never before", async () => {
     // The other order leaves a window in which the backend is in the new
     // folder while a session from the old one is still live and sendable.

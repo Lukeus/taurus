@@ -138,6 +138,11 @@ interface Store {
    * the same provider and model, so the app is never left without a session.
    */
   remove: (sessionId: string) => Promise<void>;
+  /**
+   * Gives a conversation a title of its own. An empty one restores the title
+   * derived from its first question.
+   */
+  rename: (sessionId: string, title: string) => Promise<void>;
   send: (text: string, images?: Attachment[]) => Promise<void>;
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
@@ -174,15 +179,21 @@ interface Store {
    * launched into.
    */
   adoptWorkspace: () => Promise<void>;
-  /** Re-reads config-derived state after something on disk changed. */
+  /**
+   * Re-reads the status and the trust question together.
+   *
+   * Not the ordinary route any more: status is pushed, and everything that
+   * changes it says so. This is for the caller that has just done something
+   * on disk and wants both answers in hand before it goes on — which, since
+   * trust is asked for rather than pushed, is the only way to get the pair.
+   */
   refresh: () => Promise<void>;
   /**
    * Answers the trust question for this workspace.
    *
-   * Reloads the whole config-derived surface afterwards, because saying yes is
-   * what loads this project's skills, agents, and servers — a banner that
-   * vanished while the drawers still showed the old set would be reporting a
-   * decision the app had not actually acted on.
+   * The reload that follows on the backend — saying yes is what loads this
+   * project's skills, agents, and servers — arrives on `EVENT_STATUS`, so a
+   * banner cannot vanish while the drawers still show the old set.
    */
   decideTrust: (trusted: boolean) => Promise<void>;
   /** Re-reads the conversation list and this conversation's changed files. */
@@ -252,6 +263,26 @@ export const useStore = create<Store>((set, get) => ({
     );
     api.onAgentProposal((proposal) =>
       set((s) => ({ agentProposals: [...s.agentProposals, proposal] })),
+    );
+
+    // The status above is the only one that is asked for. Every later change to
+    // it is pushed — a reload, a workspace switch, a settings write, a turn
+    // that left a note behind — so the rail's counts stop being as old as
+    // whatever the user last happened to click.
+    api.onStatus((status) => set({ status }));
+
+    // One conversation at a time, merged into the list already held. This is
+    // what puts a new conversation in the rail the moment its first question
+    // reaches disk, rather than when the turn answering it is over.
+    api.onSession((session) =>
+      set((s) => ({ sessions: mergeSession(s.sessions, session, s.status) })),
+    );
+
+    // The turn's own stream reports files as it changes them; this is the one
+    // thing that takes them back off the list. Scoped to the conversation on
+    // screen, because a rewind can be run against one that is not.
+    api.onChanged(({ session, files }) =>
+      set((s) => (s.session?.id === session ? { changed: files } : {})),
     );
 
     await get().adoptWorkspace();
@@ -375,6 +406,18 @@ export const useStore = create<Store>((set, get) => ({
     await get().reload();
   },
 
+  rename: async (sessionId, title) => {
+    try {
+      // The result is ignored: the backend announces the rename on the same
+      // event every other change to a listing entry arrives on, so taking it
+      // from the return value as well would be the same news by two routes,
+      // with two chances to disagree about the order they landed in.
+      await api.renameSession(sessionId, title);
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
   send: async (text, images = []) => {
     const { session } = get();
     // Text is still required with an image attached. "What is wrong with this?"
@@ -388,9 +431,14 @@ export const useStore = create<Store>((set, get) => ({
     }));
 
     // A frame's worth of events at a time rather than one render per token.
-    // See `batchEvents`.
+    // See `batchEvents`. The changed-file set is folded in the same pass: it
+    // arrives on the same ordered stream, and updating it separately would put
+    // a second render behind every one of these.
     const stream = batchEvents((events) =>
-      set((s) => ({ entries: events.reduce(reduce, s.entries) })),
+      set((s) => ({
+        entries: events.reduce(reduce, s.entries),
+        changed: events.reduce(mergeChanged, s.changed),
+      })),
     );
 
     try {
@@ -414,9 +462,12 @@ export const useStore = create<Store>((set, get) => ({
           e.kind === "assistant" ? { ...e, open: false } : e,
         ),
       }));
-      // The turn may have retitled the conversation and almost certainly
-      // changed the file list, both of which are on screen.
-      void get().reload();
+      // Nothing is re-read here. The conversation's listing entry arrives on
+      // `EVENT_SESSION` — pushed when its transcript first lands and again when
+      // the turn ends — and the files it changed arrived on the turn's own
+      // stream as it changed them. Asking again would be the same two answers,
+      // a round trip and a directory scan later, at the one moment there is
+      // nothing left to watch.
     }
   },
 
@@ -454,7 +505,8 @@ export const useStore = create<Store>((set, get) => ({
         },
       ],
     }));
-    if (approve) await get().refresh();
+    // Nothing is re-read. Saving a skill reloads the catalog on the backend,
+    // which pushes the new count with everything else on `EVENT_STATUS`.
   },
 
   resolveAgentProposal: async (id, approve, target = "project") => {
@@ -471,7 +523,8 @@ export const useStore = create<Store>((set, get) => ({
         },
       ],
     }));
-    if (approve) await get().refresh();
+    // As above: the rescan the backend does on saving pushes the new roster
+    // size, so there is nothing to ask for here.
   },
 
   setWorkspace: async (path) => {
@@ -506,6 +559,13 @@ export const useStore = create<Store>((set, get) => ({
     await release(previous);
 
     await api.setWorkspace(path);
+    // Both asked for rather than waited for, even though `set_workspace` also
+    // pushes the status. `adoptWorkspace` below reads `status.settings` to
+    // decide which provider and model this folder was last worked in, and a
+    // pushed status is delivered on a later tick — so left to arrive on its
+    // own it would still hold the *previous* folder's settings at the moment
+    // that decision is made, and the new folder would open on the old one's
+    // model. A push is for state nothing is waiting on; this is sequenced.
     set({ status: await api.getStatus(), trust: await api.workspaceTrust() });
     await get().adoptWorkspace();
   },
@@ -514,13 +574,11 @@ export const useStore = create<Store>((set, get) => ({
     set({ status: await api.getStatus(), trust: await api.workspaceTrust() }),
 
   decideTrust: async (trusted) => {
-    const trust = trusted
-      ? await api.trustWorkspace()
-      : await api.revokeWorkspaceTrust();
-    // The backend has already reloaded; this is the frontend catching up with
-    // what that reload changed.
-    set({ trust, status: await api.getStatus() });
-    await get().reload();
+    set({
+      trust: trusted
+        ? await api.trustWorkspace()
+        : await api.revokeWorkspaceTrust(),
+    });
   },
 
   reload: async () => {
@@ -1089,6 +1147,46 @@ export function batchEvents(apply: (events: UiEvent[]) => void) {
   };
 }
 
+/**
+ * Puts one pushed listing entry into the list, newest first.
+ *
+ * Scoped to the open workspace. The event is an application-wide one, and a
+ * turn that was still finishing when the window moved to another folder would
+ * otherwise put a conversation belonging to the old one into the new one's
+ * rail. `status` being null is startup, before any workspace is known, where
+ * there is nothing yet to disagree with.
+ *
+ * Sorted here rather than trusted to arrive in order: `updated` is the
+ * transcript's own mtime, and this list is drawn grouped by it.
+ */
+export function mergeSession(
+  sessions: SessionMeta[],
+  session: SessionMeta,
+  status: AppStatus | null,
+): SessionMeta[] {
+  if (status && session.workspace !== status.workspace) return sessions;
+  return [session, ...sessions.filter((s) => s.id !== session.id)].sort(
+    (a, b) => b.updated - a.updated,
+  );
+}
+
+/**
+ * Folds a file-change report into the set this conversation has touched.
+ *
+ * A union, because the report covers the running turn and the set on screen
+ * covers the conversation — every turn of it, including the ones restored from
+ * checkpoints when it was reopened.
+ *
+ * Returns the array it was given when nothing is new. The header reads this on
+ * every frame of a turn, and a fresh array each time would redraw it a few
+ * dozen times a second to say the same number.
+ */
+export function mergeChanged(changed: string[], event: UiEvent): string[] {
+  if (event.type !== "files_changed") return changed;
+  const merged = new Set([...changed, ...event.paths]);
+  return merged.size === changed.length ? changed : [...merged].sort();
+}
+
 /** Folds one event into the transcript. */
 export function reduce(entries: Entry[], event: UiEvent): Entry[] {
   switch (event.type) {
@@ -1207,9 +1305,12 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
       ];
 
     // Iteration boundaries and the final usage report are not shown per-entry;
-    // the header's token counter covers the latter.
+    // the header's token counter covers the latter. File changes are not a
+    // thing that happened *in* the conversation either — they are the state of
+    // the workspace, drawn in the header by `mergeChanged`.
     case "iteration_started":
     case "turn_finished":
+    case "files_changed":
       return entries;
   }
 }

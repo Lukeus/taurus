@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Message, UiEvent } from "../lib/api";
+import type { AppStatus, SessionMeta } from "../lib/api";
 import {
   batchEvents,
   entriesFromMessages,
+  mergeChanged,
+  mergeSession,
   pinnedPlan,
   reduce,
   viewFromCall,
@@ -993,5 +996,90 @@ describe("batching stream events", () => {
     vi.runAllTimers();
 
     expect(batches.map((b) => b.length)).toEqual([1, 1]);
+  });
+});
+
+describe("live file changes", () => {
+  const changed = (...paths: string[]): UiEvent => ({
+    type: "files_changed",
+    paths,
+  });
+
+  it("unions what a turn reports into what the conversation already changed", () => {
+    // The report covers the running turn; the set on screen covers the whole
+    // conversation, including turns restored from checkpoints on reopening.
+    const before = ["docs/old.md"];
+    const after = [changed("a.rs"), changed("a.rs", "b.rs")].reduce(
+      mergeChanged,
+      before,
+    );
+    expect(after).toEqual(["a.rs", "b.rs", "docs/old.md"]);
+  });
+
+  it("hands back the same array when a report adds nothing", () => {
+    // Identity, not just equality: the header reads this on every frame of a
+    // turn, and a fresh array would redraw it to say the same number.
+    const before = ["a.rs"];
+    expect(mergeChanged(before, changed("a.rs"))).toBe(before);
+    expect(mergeChanged(before, { type: "iteration_started", iteration: 2 })).toBe(
+      before,
+    );
+  });
+
+  it("leaves the transcript alone", () => {
+    // The changed set is the state of the workspace, not something that
+    // happened in the conversation.
+    expect(run(changed("a.rs"))).toEqual([]);
+  });
+});
+
+describe("pushed conversation entries", () => {
+  const meta = (over: Partial<SessionMeta> = {}): SessionMeta => ({
+    id: "s1",
+    workspace: "/w",
+    model: "test-model",
+    started: 1,
+    updated: 100,
+    title: "a question",
+    ...over,
+  });
+  const status = (workspace = "/w") => ({ workspace }) as AppStatus;
+
+  it("puts a conversation it has not seen at the front", () => {
+    const list = mergeSession([], meta(), status());
+    expect(list.map((s) => s.id)).toEqual(["s1"]);
+  });
+
+  it("replaces the entry it already had rather than doubling it", () => {
+    const list = mergeSession(
+      [meta({ title: "a question", updated: 100 })],
+      meta({ title: "Renamed", updated: 100 }),
+      status(),
+    );
+    expect(list).toHaveLength(1);
+    expect(list[0].title).toBe("Renamed");
+  });
+
+  it("keeps the list newest first however the entry arrives", () => {
+    const list = mergeSession(
+      [meta({ id: "s2", updated: 300 }), meta({ id: "s3", updated: 50 })],
+      meta({ id: "s1", updated: 200 }),
+      status(),
+    );
+    expect(list.map((s) => s.id)).toEqual(["s2", "s1", "s3"]);
+  });
+
+  it("ignores a conversation belonging to another workspace", () => {
+    // A turn still finishing when the window moved folders must not put its
+    // conversation into the new folder's rail.
+    const existing = [meta({ id: "s2" })];
+    expect(
+      mergeSession(existing, meta({ id: "s1", workspace: "/elsewhere" }), status()),
+    ).toBe(existing);
+  });
+
+  it("accepts anything before a workspace is known", () => {
+    // Startup, where there is nothing yet to disagree with.
+    expect(mergeSession([], meta(), null)).toHaveLength(1);
   });
 });

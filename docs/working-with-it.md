@@ -36,9 +36,19 @@ Switching is refused while a turn is running. The move reconnects every MCP
 server, so the tools the turn is holding would start failing mid-call — stop it
 first.
 
-A conversation appears in the rail once it has something in it. Starting one and
-changing your mind, or trying three models before asking anything, leaves
-nothing behind.
+A conversation appears in the rail once it has something in it — the moment the
+first question is asked, not when the answer arrives. A turn that runs for two
+minutes is in the list, with its name, for all of them, and a turn interrupted
+by a crash leaves what was asked rather than nothing. Starting a conversation
+and changing your mind, or trying three models before asking anything, still
+leaves nothing behind.
+
+A conversation is named after the first thing asked in it, which is a good name
+for about as long as it is still about that. Click the name in the topbar to
+change it: Enter or clicking away saves, Escape discards, and emptying the field
+puts the derived name back. The name is stored in the transcript's own header,
+so it travels with the conversation and survives being copied out — and renaming
+is allowed while a turn is running, since it touches nothing the turn is writing.
 
 Transcripts live in `~/.taurus/sessions/<workspace>/<id>.jsonl`, in the global
 config home rather than in the project. They hold file contents, command
@@ -53,6 +63,16 @@ rather than the conversation, and a half-written final line is dropped on load
 instead of poisoning the file. There is no index — everything a listing shows is
 in each transcript's own opening lines, and an index is a second copy of the
 truth that can disagree with it.
+
+Renaming is the one exception, and it keeps that promise rather than breaking
+it. A name has to live in the header, because a listing reads the top of the
+file and stops; appended to the end of a long conversation it would be invisible
+to every screen that could show it. So a rename writes a complete new file
+beside the old one and moves it into place. Until that move the original is
+untouched, and the move itself either happens or does not. Every line but the
+header is copied through byte for byte — a record from a newer version survives
+being renamed by an older one, and a torn final line stays exactly as torn as it
+was.
 
 The header records the workspace, the model, and the branch that was checked
 out — see [Conversations know their branch](safety.md#conversations-know-their-branch).

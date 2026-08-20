@@ -77,6 +77,12 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 state.host.reload().await;
                 state.mark_loaded();
+                // For a window that painted before any of this existed. The
+                // frontend's own first `get_status` waits for the same load, so
+                // this is the one that matters when the wait times out, and
+                // the one that keeps startup a thing the shell is told about
+                // rather than a thing it has to sit blocked on.
+                commands::emit_status(&state).await;
             });
             Ok(())
         })
@@ -95,6 +101,7 @@ pub fn run() {
             commands::cancel_session,
             commands::close_session,
             commands::delete_session,
+            commands::rename_session,
             commands::respond_permission,
             commands::answer_questions,
             commands::list_permission_rules,
