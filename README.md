@@ -94,6 +94,11 @@ to put things back after.
 - [**Permissions**](docs/safety.md#permissions) — every write is shown as a diff
   before you approve it, and a decision can be remembered for this project or
   everywhere.
+- [**Hooks**](docs/configuration.md#hooks) — your own programs run at fixed
+  points in a turn, able to refuse a call and never to approve one.
+- [**Trusting a workspace**](docs/safety.md#trusting-a-workspace) — a cloned
+  repository's own config does not configure your agent until you say so, and
+  you are only asked when the folder actually holds something.
 - [**Running commands**](docs/safety.md#running-commands) — a real PTY per
   platform, so a program that checks `isatty` behaves the way it does in a
   terminal.

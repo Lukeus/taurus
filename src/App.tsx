@@ -7,6 +7,7 @@ import { ChangesDrawer } from "./components/ChangesDrawer";
 import { DelegateTranscript } from "./components/DelegateTranscript";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { PermissionDialog } from "./components/PermissionDialog";
+import { TrustBanner } from "./components/TrustBanner";
 import { PlanPanel } from "./components/PlanPanel";
 import { Rail, type ProviderHealth } from "./components/Rail";
 import {
@@ -53,6 +54,7 @@ export default function App() {
   const store = useStore(
     useShallow((s) => ({
       status: s.status,
+      trust: s.trust,
       session: s.session,
       sessions: s.sessions,
       changed: s.changed,
@@ -74,6 +76,7 @@ export default function App() {
       answerQuestions: s.answerQuestions,
       resolveProposal: s.resolveProposal,
       resolveAgentProposal: s.resolveAgentProposal,
+      decideTrust: s.decideTrust,
     })),
   );
   const rail = useResizableWidth({ storageKey: "taurus.railWidth", ...RAIL_WIDTH });
@@ -84,6 +87,13 @@ export default function App() {
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
+  /**
+   * Workspaces whose trust banner has been waved off in this window.
+   *
+   * Keyed by path rather than a single boolean so switching to another folder
+   * asks about that folder. Nothing is written to disk — see `TrustBanner`.
+   */
+  const [trustDismissed, setTrustDismissed] = useState<string[]>([]);
   // Which delegation's own conversation is open, if any. Held here rather than
   // in the row that offers it: it is a drawer over the whole app, like the
   // others, and a row that unmounted mid-read would take it down with it.
@@ -329,6 +339,20 @@ export default function App() {
             </div>
           )}
         </main>
+
+        {/* Above the error banner, because it is about the state the whole
+            session is running in rather than about something that just went
+            wrong. Dismissed per workspace, so switching folders asks again
+            about the new one rather than inheriting an answer about the old. */}
+        {store.trust && !trustDismissed.includes(store.trust.workspace) && (
+          <TrustBanner
+            trust={store.trust}
+            onTrust={() => void store.decideTrust(true)}
+            onDismiss={() =>
+              setTrustDismissed((seen) => [...seen, store.trust!.workspace])
+            }
+          />
+        )}
 
         {store.error && (
           <div className="banner error">

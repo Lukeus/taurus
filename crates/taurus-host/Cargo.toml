@@ -8,6 +8,7 @@ description = "Frontend-agnostic assembly of the Taurus harness: config, prompts
 
 [dependencies]
 taurus-core.workspace = true
+taurus-hooks.workspace = true
 taurus-index.workspace = true
 taurus-mcp.workspace = true
 taurus-provider.workspace = true

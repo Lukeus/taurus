@@ -146,6 +146,16 @@ pub struct ToolContext {
     /// card. `None` outside a loop that draws anything — the CLI's piped mode,
     /// examples, tests.
     pub progress: Option<Arc<dyn ToolProgress>>,
+    /// The user's configured hooks, if any.
+    ///
+    /// `None` outside a harness that loaded config — an example, a test, a
+    /// caller running one tool directly. Shared by a clone of this context, so
+    /// a sub-agent's calls go through the same hooks the parent's do: a guard
+    /// that a delegate could route around is not a guard.
+    pub hooks: Option<Arc<taurus_hooks::HookRunner>>,
+    /// The conversation these calls belong to, passed to hooks so one can tell
+    /// two sessions apart. `None` wherever there is no session.
+    pub session_id: Option<String>,
     /// The id of the call this context was built for.
     ///
     /// Only [`crate::builtin::present::AskUser`] reads it, and only because it
@@ -169,8 +179,24 @@ impl ToolContext {
             checkpoints: None,
             sweeps: None,
             progress: None,
+            hooks: None,
+            session_id: None,
             call_id: None,
         }
+    }
+
+    /// Attaches the configured hooks.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Arc<taurus_hooks::HookRunner>) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
+    /// Names the conversation, for hooks that care which one they are in.
+    #[must_use]
+    pub fn with_session(mut self, id: impl Into<String>) -> Self {
+        self.session_id = Some(id.into());
+        self
     }
 
     /// Widens what read-only tools may open, without widening what may change.

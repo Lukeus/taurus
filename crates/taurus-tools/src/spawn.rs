@@ -16,9 +16,19 @@
 //! window". It is not the same as detaching: the child still gets its standard
 //! handles, which is what keeps the pipes Taurus reads from working.
 //!
-//! Every place that starts a child goes through here. A spawn site that forgets
-//! is invisible on the platforms most of this is developed on, and shows up
-//! only as a flicker on somebody else's machine.
+//! Every place that starts a child *through `tokio::process`* goes through
+//! here. A spawn site that forgets is invisible on the platforms most of this
+//! is developed on, and shows up only as a flicker on somebody else's machine.
+//!
+//! **One child does not, and cannot: the pseudo-terminal.** `run_command` with
+//! `pty: true` goes through `portable-pty`, which builds its own
+//! `CreateProcessW` call and takes no `tokio::process::Command` to configure —
+//! so this flag never reaches it, and on Windows a console window appears for
+//! as long as the command runs. It is the same mechanism described above,
+//! arriving through the one door this module cannot cover, and the qualifier in
+//! the first line of this doc is load-bearing: the sentence used to claim every
+//! spawn site, which is how the gap survived being written down. See
+//! [`crate::builtin::pty`] and the known-gaps entry it points at.
 
 /// `CREATE_NO_WINDOW` from the Win32 process creation flags.
 ///

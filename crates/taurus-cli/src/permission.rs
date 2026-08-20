@@ -98,16 +98,23 @@ impl TerminalPrompt {
         if let Some(diff) = &request.diff {
             let _ = write!(err, "{}", render_diff(diff));
         }
-        // The everywhere option appears only where the engine offers it, so
+        // Both standing options appear only where the engine offers them, so
         // the prompt never advertises a key that would be quietly narrowed.
-        let _ = if request.always_global_scope.is_some() {
-            write!(
-                err,
-                "  [y] once  [a] always here  [g] always everywhere  [n] deny: "
-            )
-        } else {
-            write!(err, "  [y] once  [a] always  [n] deny: ")
-        };
+        // "always here" goes away in a workspace whose config is not being
+        // read — there is nowhere to keep the decision. See `taurus_host::trust`.
+        let mut keys = String::from("  [y] once");
+        if request.offer_always {
+            keys.push_str(if request.always_global_scope.is_some() {
+                "  [a] always here"
+            } else {
+                "  [a] always"
+            });
+        }
+        if request.always_global_scope.is_some() {
+            keys.push_str("  [g] always everywhere");
+        }
+        keys.push_str("  [n] deny: ");
+        let _ = write!(err, "{keys}");
         let _ = err.flush();
 
         let mut answer = String::new();
@@ -118,7 +125,7 @@ impl TerminalPrompt {
 
         match answer.trim().to_ascii_lowercase().as_str() {
             "y" | "yes" | "" => PermissionDecision::AllowOnce,
-            "a" | "always" => PermissionDecision::AllowAlways,
+            "a" | "always" if request.offer_always => PermissionDecision::AllowAlways,
             "g" | "global" if request.always_global_scope.is_some() => {
                 PermissionDecision::AllowAlwaysGlobal
             }
@@ -234,6 +241,7 @@ mod tests {
             diff: None,
             always_scope: "scope".into(),
             always_global_scope: None,
+            offer_always: true,
             input,
         }
     }

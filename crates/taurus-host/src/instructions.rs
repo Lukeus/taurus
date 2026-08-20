@@ -120,6 +120,12 @@ pub struct Instructions {
 /// beside the README, not `.agents/AGENTS.md` — and reading anywhere else would
 /// find nothing in the projects this feature exists for.
 pub fn sources(workspace: Option<&Path>) -> Vec<InstructionsSource> {
+    all_sources(crate::trust::for_reading(workspace))
+}
+
+/// The same, without the trust gate. For [`crate::trust::pending`], which has
+/// to count what trusting a workspace would add to the brief.
+pub(crate) fn all_sources(workspace: Option<&Path>) -> Vec<InstructionsSource> {
     let home = config::home_root();
     let mut sources = Vec::new();
 
@@ -184,6 +190,11 @@ pub fn sources(workspace: Option<&Path>) -> Vec<InstructionsSource> {
 /// into an empty one is noticed rather than being invisible until something
 /// else moved. See [`crate::freshness`].
 pub fn scoped_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
+    all_scoped_dirs(crate::trust::for_reading(workspace))
+}
+
+/// The same, without the trust gate. See [`all_sources`].
+pub(crate) fn all_scoped_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = vec![config::home_root()
         .join(config::COPILOT_DIR_NAME)
         .join("instructions")];
@@ -548,7 +559,9 @@ mod tests {
         // Not `.agents/AGENTS.md`: a repository's brief sits beside its README,
         // and looking anywhere else finds nothing in the projects this exists
         // for.
-        let sources = sources(Some(Path::new("/tmp/project")));
+        // The ungated list: this test is about where project files are looked
+        // for, not about whether a given project is allowed to be read.
+        let sources = all_sources(Some(Path::new("/tmp/project")));
         let project: Vec<_> = sources
             .iter()
             .filter(|s| s.tier == InstructionsTier::Project)

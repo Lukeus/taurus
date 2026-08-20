@@ -61,6 +61,14 @@ pub struct PermissionRequest {
     /// The same, for granting it in every workspace. `None` when that is not
     /// on offer for this call, which is how a frontend knows not to show it.
     pub always_global_scope: Option<String>,
+    /// Whether the workspace-wide grant is on offer at all.
+    ///
+    /// False in an untrusted workspace, which has no layer to keep a standing
+    /// decision in. A frontend that shows the button anyway does no harm — the
+    /// engine narrows the decision to this call — but it would be offering a
+    /// permanence it cannot deliver, so it is told not to.
+    #[serde(default = "offered_by_default")]
+    pub offer_always: bool,
     #[ts(type = "unknown")]
     pub input: serde_json::Value,
 }
@@ -100,6 +108,12 @@ pub struct AllowedRule {
 /// is deliberate — editing that file is an explicit, informed act, and
 /// silently ignoring configuration someone wrote is its own kind of surprise.
 /// The gap only exists in the direction of "you had to mean it".
+/// Older payloads, and every hand-built request in a test, mean the workspace
+/// grant to be on offer. Only the untrusted case turns it off.
+fn offered_by_default() -> bool {
+    true
+}
+
 fn global_offerable(effect: Effect) -> bool {
     effect != Effect::Execute
 }
@@ -167,6 +181,18 @@ pub struct PermissionEngine {
     global: PathBuf,
     prompt: Box<dyn PermissionPrompt>,
     allowlists: Mutex<Allowlists>,
+    /// Whether this workspace's own `permissions.json` counts.
+    ///
+    /// False for a workspace the user has not trusted. A committed allowlist is
+    /// the one file in a repository that hands over capability with no prompt
+    /// at all — `{"allowed": ["run_command:git"]}` in a clone is a standing
+    /// grant nobody made — so it is read only once the workspace is trusted.
+    /// See `taurus_host::trust`.
+    ///
+    /// It governs writing too. With no workspace layer to write into, "always
+    /// allow in this workspace" would persist a decision nothing would ever
+    /// read back, so the offer is withdrawn and the grant narrows to this call.
+    workspace_rules: bool,
 }
 
 impl PermissionEngine {
@@ -186,7 +212,24 @@ impl PermissionEngine {
             global,
             prompt,
             allowlists: Mutex::new(allowlists),
+            workspace_rules: true,
         }
+    }
+
+    /// Whether this workspace's layer is honored, defaulting to yes.
+    ///
+    /// Applied after construction rather than as a fourth argument because the
+    /// caller that knows the answer is the host, and the answer it gives is
+    /// about trust rather than about permissions — see `taurus_host::trust`.
+    /// Turning it off discards the layer that was just read, so no rule from an
+    /// untrusted workspace is ever consulted, not even the one already in hand.
+    #[must_use]
+    pub fn with_workspace_rules(mut self, allowed: bool) -> Self {
+        self.workspace_rules = allowed;
+        if !allowed {
+            self.allowlists.get_mut().workspace = Allowlist::default();
+        }
+        self
     }
 
     /// Decides whether `tool` may run with `input`, prompting if needed.
@@ -201,6 +244,7 @@ impl PermissionEngine {
         }
 
         let offer_global = global_offerable(tool.effect());
+        let offer_workspace = self.workspace_rules;
         let request = PermissionRequest {
             id: Uuid::new_v4().to_string(),
             tool: tool.name().to_string(),
@@ -208,6 +252,7 @@ impl PermissionEngine {
             preview: tool.preview(input),
             diff: tool.diff(input, &self.workspace).await,
             always_scope: describe_rule(&rule, tool.effect(), Scope::Workspace),
+            offer_always: offer_workspace,
             always_global_scope: offer_global
                 .then(|| describe_rule(&rule, tool.effect(), Scope::Global)),
             input: input.clone(),
@@ -216,11 +261,17 @@ impl PermissionEngine {
         let scope = match self.prompt.request(request).await {
             PermissionDecision::AllowOnce => return Ok(()),
             PermissionDecision::Deny => return Err(ToolError::Denied),
+            // A workspace grant with no workspace layer to keep it in is
+            // honored for this call and not written down. Narrowing rather than
+            // refusing: the user said yes to the call in front of them, and
+            // only the standing part of it has nowhere to go.
+            PermissionDecision::AllowAlways if !offer_workspace => return Ok(()),
             PermissionDecision::AllowAlways => Scope::Workspace,
             PermissionDecision::AllowAlwaysGlobal if offer_global => Scope::Global,
             // A frontend that offered a global grant where one was not on
             // offer gets the narrower decision honored, never the wider one.
-            PermissionDecision::AllowAlwaysGlobal => Scope::Workspace,
+            PermissionDecision::AllowAlwaysGlobal if offer_workspace => Scope::Workspace,
+            PermissionDecision::AllowAlwaysGlobal => return Ok(()),
         };
 
         let mut lists = self.allowlists.lock().await;
@@ -251,6 +302,9 @@ impl PermissionEngine {
     /// revoking the workspace copy must not silently drop a global grant the
     /// user made for every project.
     pub async fn revoke(&self, rule: &str, scope: Scope) {
+        if scope == Scope::Workspace && !self.workspace_rules {
+            return;
+        }
         let mut lists = self.allowlists.lock().await;
         lists.layer(scope).allowed.remove(rule);
         self.save(scope, lists.layer(scope));

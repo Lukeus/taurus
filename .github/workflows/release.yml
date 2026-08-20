@@ -166,6 +166,28 @@ jobs:
       - name: Generate TypeScript bindings
         run: pnpm bindings
 
+      # The Windows bundle sideloads Microsoft's redistributable ConPTY beside
+      # the executable, which is what stops `run_command` with `pty: true` from
+      # opening a console window. `tauri build` fetches it anyway through
+      # `beforeBuildCommand`; doing it here first means a network failure or a
+      # hash mismatch names itself, instead of surfacing further down as a
+      # bundler error about a resource path that does not exist.
+      #
+      # The three paths are asserted rather than trusted. A bundle that quietly
+      # shipped without them would work perfectly in CI and on every reviewer's
+      # machine, and would show a console window on the one platform none of
+      # that covers. See `scripts/conpty.mjs`.
+      - name: Fetch the ConPTY runtime
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          node scripts/conpty.mjs
+          foreach ($f in 'conpty.dll', 'x64/OpenConsole.exe', 'arm64/OpenConsole.exe') {
+            if (-not (Test-Path "src-tauri/conpty/$f")) {
+              throw "ConPTY runtime incomplete: src-tauri/conpty/$f is missing"
+            }
+          }
+
       # Builds the bundles named by `tauri.conf.json` (`bundle.targets: all`),
       # then uploads them to the draft `prepare` opened. On a dry run
       # `releaseId` and `tagName` are both empty, which is how this action is

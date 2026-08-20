@@ -7,6 +7,7 @@ license.workspace = true
 description = "Session state and the agent loop for the Taurus agent harness"
 
 [dependencies]
+taurus-hooks.workspace = true
 taurus-agents.workspace = true
 taurus-provider.workspace = true
 taurus-tools.workspace = true

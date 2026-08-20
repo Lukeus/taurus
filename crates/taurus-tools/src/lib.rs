@@ -16,6 +16,7 @@ pub mod sweep;
 pub mod tool;
 pub mod view;
 
+pub use builtin::pty::sideload_status;
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, Rewind, TurnChange, TurnRecorder};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::expand_env;

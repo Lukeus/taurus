@@ -20,6 +20,7 @@ pub mod secrets;
 pub mod sessions;
 #[cfg(test)]
 mod testing;
+pub mod trust;
 
 pub use attach::Attachment;
 pub use command::{CommandError, CommandKind, CommandSummary, Invocation};
@@ -33,6 +34,7 @@ pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;
 pub use sessions::{SessionLog, SessionMeta, SubagentLogs};
 pub use taurus_tools::{Checkpoint, Restored, Rewind, TurnChange};
+pub use trust::PendingConfig;
 // Re-exported so a frontend can edit search config without depending on the
 // crate that runs the searches — the same reason `Checkpoint` comes through
 // here rather than from `taurus-tools`. `IndexProgress` is here for the same

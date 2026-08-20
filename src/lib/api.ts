@@ -66,6 +66,8 @@ import type { Step } from "../bindings/Step";
 import type { StepState } from "../bindings/StepState";
 import type { Theme } from "../bindings/Theme";
 import type { TranscriptView } from "../bindings/TranscriptView";
+import type { PendingConfig } from "../bindings/PendingConfig";
+import type { TrustStatus } from "../bindings/TrustStatus";
 import type { TurnChange } from "../bindings/TurnChange";
 import type { UiEvent } from "../bindings/UiEvent";
 
@@ -128,7 +130,9 @@ export type {
   Step,
   StepState,
   Theme,
+  PendingConfig,
   TranscriptView,
+  TrustStatus,
   TurnChange,
   UiEvent,
 };
@@ -141,6 +145,23 @@ export const getStatus = () => invoke<AppStatus>("get_status");
 
 export const setWorkspace = (path: string) =>
   invoke<string>("set_workspace", { path });
+
+/**
+ * Whether this workspace's own config is being read, and what it holds.
+ *
+ * Asked for on every status refresh rather than pushed: the answer changes when
+ * a file appears in a directory nothing is watching — a `git pull` that adds
+ * `.taurus/mcp.json` is the case this exists for, and it arrives with no event
+ * attached to it.
+ */
+export const workspaceTrust = () => invoke<TrustStatus>("workspace_trust");
+
+/** Lets this workspace's config take effect, and answers with the new state. */
+export const trustWorkspace = () => invoke<TrustStatus>("trust_workspace");
+
+/** Stops reading it, and answers with the new state. */
+export const revokeWorkspaceTrust = () =>
+  invoke<TrustStatus>("revoke_workspace_trust");
 
 export const listModels = (providerId: string) =>
   invoke<ModelInfo[]>("list_models", { providerId });

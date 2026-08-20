@@ -47,6 +47,22 @@ pub fn run() {
         None => tracing::info!(added = ?path.added, "PATH extended from the login shell"),
     }
 
+    // The only evidence that the Windows bundle actually shipped its ConPTY
+    // runtime. Without those files everything still works, except that a
+    // console window appears on every pty command — a symptom visible to a user
+    // on Windows in an installed build and to nothing else, which is exactly
+    // the kind of packaging mistake that ships. So it is asked and answered
+    // here rather than discovered. Silent off Windows, where there is nothing
+    // to sideload. See `scripts/conpty.mjs`.
+    match taurus_tools::sideload_status() {
+        Ok(()) if cfg!(windows) => tracing::info!("ConPTY runtime found beside the executable"),
+        Ok(()) => {}
+        Err(missing) => tracing::warn!(
+            %missing,
+            "ConPTY runtime is not beside the executable; pty commands will open a console window"
+        ),
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -67,6 +83,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::set_workspace,
+            commands::workspace_trust,
+            commands::trust_workspace,
+            commands::revoke_workspace_trust,
             commands::list_models,
             commands::create_session,
             commands::list_sessions,

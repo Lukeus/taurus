@@ -44,6 +44,11 @@ consulted:
 | **Always here** | `<workspace>/.taurus/permissions.json` | Yes |
 | **Always everywhere** | `~/.taurus/permissions.json` | No |
 
+**Always here is not offered in an untrusted workspace.** That file is not being
+read there, so a standing decision would have nowhere to live — see
+[Trusting a workspace](#trusting-a-workspace). The call itself is still
+allowed; only the standing part of the answer is dropped.
+
 **Everywhere is not offered for running commands.** A workspace grant for `git`
 is scoped to a project you have already decided to trust; the same grant
 globally applies in every repository you ever open, including one you just
@@ -76,6 +81,58 @@ throwaway or already-sandboxed environments.
 Skills are never saved unattended. If the agent proposes one during a piped
 run, the CLI reports it and discards it rather than writing something nobody
 reviewed.
+
+## Trusting a workspace
+
+Everything above is about a decision you are asked to make. This one is about
+the decisions a folder would make for you.
+
+A workspace's own `.taurus` is not passive data. `mcp.json` starts child
+processes. `providers.json` names the endpoint every message of every
+conversation is sent to. `search.json` decides whether `fetch_url` may reach
+private hosts. A skill can carry a script. And `permissions.json` is a standing
+grant — the one file in a repository that hands over capability with no prompt
+at all, since `{"allowed": ["run_command:rm"]}` in a clone is an "always allow"
+nobody ever clicked.
+
+All of that arrives with `git clone`. So it does not take effect until you say
+so:
+
+**An untrusted workspace contributes no config at all.** Not a per-file
+carve-out — one rule, in one direction. Your own `~/.taurus` applies in full, so
+Taurus works normally in a folder you have not vouched for; what it will not do
+is take instructions from it.
+
+The rule being that blunt is what makes it checkable. Every project-tier read in
+the harness resolves the workspace through a single function, and a read that
+forgot to would be reading `None` — the state that already exists at startup,
+before a workspace has been chosen, and that every loader already handles.
+
+**You are only asked when there is something to answer.** A folder with no
+config of its own never raises the question, which is most of them. When it does
+appear it names what is waiting, and names the MCP command lines rather than
+counting them:
+
+```
+This project has configuration Taurus is not reading.
+  1 skill
+  1 MCP server
+      probe: npx -y some-package
+  2 standing permission grants — tools this project would allow without asking
+```
+
+A count of servers is not something anyone can judge. `npx -y some-package` is.
+
+The desktop app puts this in a banner above the composer rather than a modal on
+open — nothing from the folder is loaded, so nothing is waiting on the answer,
+and a modal to clear before starting work is how a security prompt turns into a
+reflex. The terminal prints one line per command and answers with
+`taurus trust --allow`. See
+[Trusting a workspace](configuration.md#trusting-a-workspace) for the commands.
+
+Declining records nothing. A workspace you waved off and one you have never
+opened are the same state on disk, which is what lets a `git pull` that adds a
+server ask again.
 
 ## Running commands
 
@@ -112,6 +169,25 @@ rather than hitting end-of-file, so a ceiling that did not fire would hang a
 session for good. It kills the child rather than abandoning it — a blocking read
 cannot be cancelled, and a worker parked on a child that will never exit would
 otherwise outlive the session that started it.
+
+**A machine with no usable pty still runs the command.** Asking for a terminal
+and not getting one is not the command's fault, so it runs with ordinary pipes
+instead of failing — and the result says so, above the output rather than below
+it. That order matters: a program told it is not on a terminal pages nothing and
+colours nothing, which reads as a fact about the project unless you already know
+the terminal never arrived.
+
+**On Windows the pty is a ConPTY, and a ConPTY is a real console host.** Taken
+from the system, that host shows a window when the process asking for it has
+none — and a release build of the desktop app has none, so every `pty: true`
+command used to open a console window for as long as it ran. The bundle now
+ships Microsoft's redistributable ConPTY beside the executable, whose host is
+headless, and `portable-pty` prefers it over the system's. It costs 2.2 MB in
+the Windows installer: the console host for x64 and a second one for ARM64,
+because an x64 build runs on ARM64 Windows under emulation and the host there
+has to be native. Neither the CLI nor a development build was ever affected —
+both already have a console — which is why this was only ever visible in the
+installed app. See [`scripts/conpty.mjs`](../scripts/conpty.mjs).
 
 ## Rewinding a turn
 

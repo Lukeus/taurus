@@ -9,7 +9,9 @@ interchangeable.
 
 Every config file exists in two layers: the global `~/.taurus` and the
 workspace's own `.taurus`. The workspace layer is read second and wins, the
-same precedence skills use.
+same precedence skills use — **once you have said that workspace's config may
+be read.** Until then only the global layer applies. See
+[Trusting a workspace](#trusting-a-workspace).
 
 Settings edits the **global** layer, and says so when the current workspace
 overrides one of the values on screen. That direction is deliberate: an editor
@@ -26,6 +28,162 @@ file every other project reads.
 | `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
 | `checkpoints/` | Pre-images of changed files, keyed by workspace like sessions and for the same reason. | — |
+| `hooks.json` | Programs run at fixed points in a turn. | Extra hooks, or `{"disabled": true}` to switch an inherited one off. |
+| `trust.json` | Which workspaces' own config may be read. Global only — a repository that declared itself trusted would have declared nothing. | — |
+
+## Trusting a workspace
+
+The workspace layer is not passive data. `mcp.json` starts child processes,
+`providers.json` names the endpoint your conversation is sent to, `search.json`
+decides whether `fetch_url` may reach private hosts, `permissions.json` is a
+standing grant, and a skill can carry a script. All of that travels in a
+repository, and a repository is something you may have cloned a minute ago.
+
+So there is one rule, and it goes in one direction: **an untrusted workspace
+contributes no config at all.** Your own `~/.taurus` still applies in full, so
+Taurus works normally in a fresh clone. What it does not do is take instructions
+from the clone.
+
+**Nothing is asked about a workspace that has no config of its own**, which is
+most of them. The question only appears when the folder actually holds
+something, and it says what:
+
+```
+This project has configuration Taurus is not reading.
+  1 skill
+  1 MCP server
+      probe: npx -y some-package
+  2 standing permission grants — tools this project would allow without asking
+```
+
+The MCP command lines are named rather than counted, because a command line is
+the only part of that list you can actually judge, and it is also the part that
+starts a process on your machine.
+
+In the desktop app this is a banner above the composer, not a modal on open. The
+decision is not urgent — nothing from the folder is loaded, so nothing is
+waiting on an answer — and a modal you have to clear before starting work is how
+a security prompt becomes a reflex. **Not now** dismisses it for that window and
+records nothing.
+
+In the terminal every command prints one line when a workspace has config going
+unread, and `taurus trust` is where you answer:
+
+```
+taurus trust             # what this workspace holds, and whether it is read
+taurus trust --allow     # read it, from now on
+taurus trust --revoke    # stop reading it
+taurus trust --list      # every workspace trusted so far
+```
+
+Answering takes effect immediately rather than on the next launch: trusting a
+workspace loads its skills and agents and connects its servers there and then,
+and revoking unloads them and shuts the servers down.
+
+One consequence worth knowing: in an untrusted workspace the permission prompt
+offers **Allow once** and **Deny** but not **Always here**. There is no
+workspace layer to keep a standing decision in, and a button that promised
+permanence it could not deliver would be worse than one that is absent.
+
+## Hooks
+
+A hook is a program Taurus runs at a fixed point in a turn. There is no API to
+build against and nothing to compile — a command line in `hooks.json`, told
+what is about to happen on stdin, answering with an exit code.
+
+```json
+{
+  "hooks": {
+    "no-force-push": {
+      "on": "pre_tool_use",
+      "command": "./scripts/no-force-push.sh",
+      "matches": { "tools": ["run_command"], "commands": ["git"] }
+    },
+    "format-rust": {
+      "on": "post_tool_use",
+      "command": "cargo",
+      "args": ["fmt"],
+      "matches": { "paths": ["**/*.rs"] }
+    }
+  }
+}
+```
+
+**A hook can refuse and cannot permit.** `pre_tool_use` runs *after* the
+permission engine has already allowed a call, so a hook can stop something you
+permitted and can never permit something you refused. Adding hooks to a machine
+only ever shrinks what it will do. That is deliberate: the alternative is a
+second permission system sitting beside the first and disagreeing with it, and
+it is also what makes a project's hook file safe to honour at all once the
+project is trusted.
+
+| Event | When | Can it stop anything? |
+| --- | --- | --- |
+| `pre_tool_use` | Before a tool call, after permission | Yes |
+| `post_tool_use` | After a tool call, pass or fail | No — the call has happened |
+| `user_prompt_submit` | When you send a message | Yes |
+| `stop` | When a turn ends | No |
+
+`matches` narrows which calls a hook is about, and every field is optional —
+leave it out entirely and the hook applies to everything on its event.
+`commands` is keyed by the leading word of a command line, the same unit an
+"always allow" decision uses, so `git` never matches `rm`. `paths` globs against
+the workspace-relative paths a call names, read from each tool's own declaration
+of what it touches, so one glob covers every tool that writes.
+
+Hooks are run with **no shell**. `command` is a program and `args` are its
+arguments; if you want a pipeline, put it in a script and name the script.
+
+**What a hook is told** — one JSON object on stdin. Reading it is optional:
+
+```json
+{
+  "event": "pre_tool_use",
+  "workspace": "/Users/me/project",
+  "session_id": "s-1a2b",
+  "tool": "run_command",
+  "input": {"command": "git push --force"},
+  "paths": ["src/widget.rs"]
+}
+```
+
+`TAURUS_HOOK_EVENT`, `TAURUS_WORKSPACE`, and `TAURUS_TOOL` are in the
+environment too, for a hook that would rather not parse JSON. The working
+directory is the workspace.
+
+**What a hook says back** — its exit code, and nothing else. Not a JSON protocol
+on stdout: a hook is usually three lines of shell, and a format it has to emit
+*correctly* to be obeyed is one that will sometimes be emitted incorrectly and
+silently ignored.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Fine. Anything on stdout reaches the model as a note. |
+| `2` | Refused. stderr — or stdout — becomes the reason the model is given. |
+| anything else | The hook did not work. |
+
+**A hook that cannot run refuses.** A missing program, a crash, a timeout: on
+`pre_tool_use` and `user_prompt_submit`, all of these deny. This is the
+uncomfortable half and it is on purpose — a hook exists to make a decision, and
+one that could not make a decision has not approved anything. A typo in
+`hooks.json` blocking every call is loud, names the hook and the exit code, and
+is fixed in seconds; a guard that silently stops guarding is not fixed at all,
+because nobody knows. On `post_tool_use` and `stop` there is nothing left to
+stop, so a failure there is reported and the turn continues.
+
+`timeout_seconds` defaults to 30. A hook runs inside a turn, so a hook that
+hangs is a turn that hangs.
+
+Seeing what will run, and why something is not:
+
+```
+taurus hooks list      # every hook that will run, and what narrows it
+taurus hooks check     # entries that would not load, with the field named
+```
+
+Hooks follow the trust gate like every other layered file: a workspace's own
+`hooks.json` does nothing until that workspace is trusted. See
+[Trusting a workspace](#trusting-a-workspace).
 
 ## API keys
 

@@ -86,7 +86,16 @@ pub fn scope_dir(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Both config directories in precedence order, lowest first.
+///
+/// Trust-gated, like every other read here: an untrusted workspace yields the
+/// global directory alone. See [`crate::trust`].
 pub fn config_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
+    all_config_dirs(crate::trust::for_reading(workspace))
+}
+
+/// The same, without the gate. For [`crate::trust::pending`], which has to
+/// describe what trusting a workspace *would* read.
+pub(crate) fn all_config_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
     [Scope::Global, Scope::Workspace]
         .into_iter()
         .filter_map(|scope| scope_dir(scope, workspace))
@@ -107,6 +116,11 @@ pub fn config_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
 /// Copilot's are marked borrowed: Taurus reads them and never writes back. See
 /// [`taurus_agents::AgentDefinition::borrowed`].
 pub fn agent_sources(workspace: Option<&Path>) -> Vec<AgentSource> {
+    all_agent_sources(crate::trust::for_reading(workspace))
+}
+
+/// The same, without the trust gate. See [`all_config_dirs`].
+pub(crate) fn all_agent_sources(workspace: Option<&Path>) -> Vec<AgentSource> {
     let borrowed = |tier, dir| AgentSource {
         tier,
         dir,
@@ -182,10 +196,15 @@ pub(crate) fn home_root() -> PathBuf {
 /// name — you can override a skill you did not write without editing it.
 ///
 /// Reading the shared locations is what lets a skill installed by another
-/// client work here untouched. It also means a skill in a repository can now
-/// arrive from a directory Taurus does not own, so this is the list to revisit
-/// if project skills ever need a trust gate.
+/// client work here untouched. It also means a skill in a repository arrives
+/// from a directory Taurus does not own — and a skill can carry a script, so
+/// the project tier of this list is behind [`crate::trust`].
 pub fn skill_sources(workspace: Option<&Path>) -> Vec<SkillSource> {
+    all_skill_sources(crate::trust::for_reading(workspace))
+}
+
+/// The same, without the trust gate. See [`all_config_dirs`].
+pub(crate) fn all_skill_sources(workspace: Option<&Path>) -> Vec<SkillSource> {
     let home = home_root();
     let mut sources = Vec::new();
 
@@ -255,6 +274,35 @@ pub fn settings_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> 
 
 pub fn search_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
     scope_dir(scope, workspace).map(|d| taurus_web::config::config_file(&d))
+}
+
+/// One layer's `hooks.json`. Ungated, like every other path resolver here —
+/// the gate is on reading, not on naming. See [`load_hooks`].
+pub fn hooks_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
+    scope_dir(scope, workspace).map(|d| taurus_hooks::config_file(&d))
+}
+
+/// Both layers of `hooks.json`, merged, with anything unusable reported.
+///
+/// Trust-gated through [`config_dirs`], so a cloned repository's hooks do not
+/// run until its config is being read at all. That gate is what makes honoring
+/// a project's hook file reasonable in the first place — and the direction of
+/// what a hook can do is the other half: it refuses calls, it never permits
+/// them. See [`taurus_hooks`].
+pub fn load_hooks(workspace: Option<&Path>) -> (taurus_hooks::HookRunner, Vec<String>) {
+    let mut problems = Vec::new();
+    let mut layers = Vec::new();
+    for dir in config_dirs(workspace) {
+        match taurus_hooks::load(&dir) {
+            Ok(layer) => layers.push(layer),
+            // One unparseable layer must not cost the other, the same rule
+            // every other layered file follows.
+            Err(e) => problems.push(e),
+        }
+    }
+    let (hooks, merge_problems) = taurus_hooks::merge(layers);
+    problems.extend(merge_problems);
+    (taurus_hooks::HookRunner::new(hooks), problems)
 }
 
 pub fn mcp_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
@@ -787,6 +835,9 @@ fn read_provider_layer(path: &Path) -> Result<Option<Vec<ProviderEntry>>, String
 /// problem rather than an error: one bad file must not cost the user the other
 /// layer, and they need to see *why* in the UI.
 pub fn load_providers(workspace: Option<&Path>) -> (Vec<ProviderConfig>, Vec<String>) {
+    // Gated first, and for the sharpest reason in this file: a provider entry
+    // names the base URL a whole conversation is sent to.
+    let workspace = crate::trust::for_reading(workspace);
     let mut problems = Vec::new();
 
     let global_path =
@@ -1068,6 +1119,7 @@ pub fn read_settings(scope: Scope, workspace: Option<&Path>) -> StoredSettings {
 
 /// Reads both layers and resolves them field by field.
 pub fn load_settings(workspace: Option<&Path>) -> Settings {
+    let workspace = crate::trust::for_reading(workspace);
     let mut merged = read_settings(Scope::Global, workspace);
     merged.overlay(read_settings(Scope::Workspace, workspace));
     merged.resolve()
@@ -1293,6 +1345,17 @@ mod tests {
         std::fs::write(path, body).unwrap();
     }
 
+    /// A temp workspace whose own config layer is allowed to take effect.
+    ///
+    /// The layering tests below are about layering, so they are written against
+    /// a workspace that is being read. That the gate stops an untrusted one
+    /// being read at all is [`crate::trust`]'s to prove, and it does.
+    fn trusted_workspace() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        crate::trust::trust(dir.path()).expect("trust the test workspace");
+        dir
+    }
+
     #[test]
     fn the_starter_agent_file_is_a_working_agent() {
         // A template that a reader has to fix before it loads would teach the
@@ -1508,7 +1571,7 @@ mod tests {
     #[test]
     fn a_workspace_entry_overrides_one_field_and_inherits_the_rest() {
         with_home(|home| {
-            let ws = TempDir::new().unwrap();
+            let ws = trusted_workspace();
             write(
                 home.join("providers.json"),
                 r#"[{"id": "vllm", "kind": "open_ai_compatible", "base_url": "http://a",
@@ -1534,7 +1597,7 @@ mod tests {
         // What an OpenVINO Model Server before 2026.3 needs, set for one
         // project without disturbing the global entry.
         with_home(|home| {
-            let ws = TempDir::new().unwrap();
+            let ws = trusted_workspace();
             write(
                 home.join("providers.json"),
                 r#"[{"id": "ov", "kind": "open_ai_compatible",
@@ -1565,7 +1628,7 @@ mod tests {
     #[test]
     fn a_workspace_can_add_a_provider_the_global_layer_never_saw() {
         with_home(|_| {
-            let ws = TempDir::new().unwrap();
+            let ws = trusted_workspace();
             write(
                 workspace_dir(ws.path()).join("providers.json"),
                 r#"[{"id": "local", "kind": "ollama", "base_url": "http://127.0.0.1:11434"}]"#,
@@ -1582,7 +1645,7 @@ mod tests {
     #[test]
     fn a_new_workspace_provider_missing_its_kind_is_reported_not_silently_dropped() {
         with_home(|_| {
-            let ws = TempDir::new().unwrap();
+            let ws = trusted_workspace();
             write(
                 workspace_dir(ws.path()).join("providers.json"),
                 r#"[{"id": "mystery", "base_url": "http://x"}]"#,
@@ -1598,7 +1661,7 @@ mod tests {
     #[test]
     fn a_malformed_workspace_layer_keeps_the_global_one() {
         with_home(|home| {
-            let ws = TempDir::new().unwrap();
+            let ws = trusted_workspace();
             write(
                 home.join("providers.json"),
                 r#"[{"id": "ollama", "kind": "ollama", "base_url": "http://a"}]"#,
@@ -1628,7 +1691,7 @@ mod tests {
     #[test]
     fn settings_resolve_field_by_field_rather_than_file_by_file() {
         with_home(|home| {
-            let ws = TempDir::new().unwrap();
+            let ws = trusted_workspace();
             write(
                 home.join("settings.json"),
                 r#"{"last_model": "global-model", "skill_synthesis_enabled": false}"#,
@@ -1687,7 +1750,7 @@ mod tests {
         // A repository whose refactors legitimately need more rounds should not
         // have to loosen the limit for every other project.
         with_home(|home| {
-            let ws = TempDir::new().unwrap();
+            let ws = trusted_workspace();
             write(home.join("settings.json"), r#"{"max_iterations": 10}"#);
             write(
                 workspace_dir(ws.path()).join("settings.json"),
@@ -1724,7 +1787,7 @@ mod tests {
     #[test]
     fn editing_one_layer_leaves_the_other_alone() {
         with_home(|home| {
-            let ws = TempDir::new().unwrap();
+            let ws = trusted_workspace();
             write(
                 home.join("settings.json"),
                 r#"{"last_model": "global-model"}"#,
@@ -1764,7 +1827,7 @@ mod tests {
     #[test]
     fn saving_providers_writes_the_global_layer_only() {
         with_home(|home| {
-            let ws = TempDir::new().unwrap();
+            let ws = trusted_workspace();
             save_providers(&default_providers());
             assert!(home.join("providers.json").is_file());
             assert!(!workspace_dir(ws.path()).join("providers.json").exists());

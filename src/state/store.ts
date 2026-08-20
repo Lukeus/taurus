@@ -26,6 +26,7 @@ import type {
   SkillProposal,
   Step,
   TranscriptView,
+  TrustStatus,
   UiEvent,
 } from "../lib/api";
 
@@ -104,6 +105,14 @@ export type Entry =
 
 interface Store {
   status: AppStatus | null;
+  /**
+   * Whether this workspace's own config is being read, and what it holds.
+   *
+   * Held beside `status` and refreshed with it. `null` only before the first
+   * read — every later refresh replaces it, including one that finds nothing
+   * waiting, so a banner never outlives the file that raised it.
+   */
+  trust: TrustStatus | null;
   session: CreatedSession | null;
   /** This workspace's saved conversations, newest first. Drives the rail. */
   sessions: SessionMeta[];
@@ -167,6 +176,15 @@ interface Store {
   adoptWorkspace: () => Promise<void>;
   /** Re-reads config-derived state after something on disk changed. */
   refresh: () => Promise<void>;
+  /**
+   * Answers the trust question for this workspace.
+   *
+   * Reloads the whole config-derived surface afterwards, because saying yes is
+   * what loads this project's skills, agents, and servers — a banner that
+   * vanished while the drawers still showed the old set would be reporting a
+   * decision the app had not actually acted on.
+   */
+  decideTrust: (trusted: boolean) => Promise<void>;
   /** Re-reads the conversation list and this conversation's changed files. */
   reload: () => Promise<void>;
   dismissError: () => void;
@@ -207,6 +225,7 @@ let initialized = false;
 
 export const useStore = create<Store>((set, get) => ({
   status: null,
+  trust: null,
   session: null,
   sessions: [],
   entries: [],
@@ -222,7 +241,10 @@ export const useStore = create<Store>((set, get) => ({
     initialized = true;
 
     const status = await api.getStatus();
-    set({ status });
+    // Read at startup, not on first refresh: the banner is about the state the
+    // session is already running in, and one that appeared a minute later would
+    // be reporting config that had been unread the whole time.
+    set({ status, trust: await api.workspaceTrust() });
 
     api.onPermissionRequest((permission) => set({ permission }));
     api.onSkillProposal((proposal) =>
@@ -484,11 +506,22 @@ export const useStore = create<Store>((set, get) => ({
     await release(previous);
 
     await api.setWorkspace(path);
-    set({ status: await api.getStatus() });
+    set({ status: await api.getStatus(), trust: await api.workspaceTrust() });
     await get().adoptWorkspace();
   },
 
-  refresh: async () => set({ status: await api.getStatus() }),
+  refresh: async () =>
+    set({ status: await api.getStatus(), trust: await api.workspaceTrust() }),
+
+  decideTrust: async (trusted) => {
+    const trust = trusted
+      ? await api.trustWorkspace()
+      : await api.revokeWorkspaceTrust();
+    // The backend has already reloaded; this is the frontend catching up with
+    // what that reload changed.
+    set({ trust, status: await api.getStatus() });
+    await get().reload();
+  },
 
   reload: async () => {
     const { session } = get();

@@ -6,6 +6,7 @@
 
 mod agents_cmd;
 mod ask;
+mod hooks_cmd;
 mod key_cmd;
 mod markdown;
 mod notes_cmd;
@@ -14,6 +15,7 @@ mod render;
 mod rewind_cmd;
 mod session;
 mod skills_cmd;
+mod trust_cmd;
 mod usage_cmd;
 mod views;
 
@@ -84,6 +86,20 @@ enum Command {
         /// Skip the confirmation. Required to rewind without a terminal.
         #[arg(long)]
         yes: bool,
+    },
+    /// Show or change whether this workspace's own config is read.
+    Trust {
+        #[command(flatten)]
+        args: trust_cmd::TrustArgs,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
+    /// Inspect the configured hooks.
+    Hooks {
+        #[command(subcommand)]
+        command: hooks_cmd::HooksCommand,
+        #[command(flatten)]
+        session: SessionArgs,
     },
     /// Inspect the skill library.
     Skills {
@@ -341,6 +357,16 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             rewind_cmd::run(&host, id.as_deref(), to.as_deref(), dry_run, yes).await
         }
 
+        Command::Trust { args, session } => {
+            let host = build_host_quietly(&session, Policy::default()).await?.host;
+            trust_cmd::run(&host, args).await
+        }
+
+        Command::Hooks { command, session } => {
+            let host = build_host(&session, Policy::default()).await?.host;
+            hooks_cmd::run(&host, command).await
+        }
+
         Command::Skills { command, session } => {
             let runtime = build_host(&session, Policy::default()).await?;
             skills_cmd::run(&runtime.host, command).await
@@ -464,7 +490,18 @@ pub struct Runtime {
 
 /// Builds the harness, resolving the workspace first so skills and the
 /// permission allowlist come from the right place.
+/// A host, plus the one-line notice when this workspace has config going
+/// unread. Every command builds its host through here.
 async fn build_host(args: &SessionArgs, policy: Policy) -> Result<Runtime, String> {
+    let runtime = build_host_quietly(args, policy).await?;
+    // After the reload, so it reports the state the session actually starts in.
+    trust_cmd::notice(&runtime.host.workspace().await);
+    Ok(runtime)
+}
+
+/// The same, without the notice — for `taurus trust`, which is about to say
+/// all of it at greater length and would otherwise say it twice.
+async fn build_host_quietly(args: &SessionArgs, policy: Policy) -> Result<Runtime, String> {
     let workspace = match &args.workspace {
         Some(path) => path.canonicalize().map_err(|_| {
             format!(

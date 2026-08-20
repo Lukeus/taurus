@@ -128,6 +128,13 @@ pub enum AgentError {
     IterationLimit(u32),
     #[error("the same failing tool call was repeated {0} times with no progress in between")]
     Stalled(u32),
+    /// A `user_prompt_submit` hook refused the message.
+    ///
+    /// Its own variant rather than a provider error because nothing went wrong:
+    /// the user configured a check and the check said no, and the message the
+    /// hook wrote is the whole of what there is to report.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// A request that failed, and whether any of it had already reached the user.
@@ -237,6 +244,18 @@ impl Agent {
         user_message: Message,
         ui: mpsc::Sender<UiEvent>,
     ) -> Result<TurnOutcome, AgentError> {
+        // Before the message is pushed, so a hook that refuses one leaves the
+        // conversation exactly as it was rather than with a message in it that
+        // was never answered.
+        if let Some(refusal) = self.before_prompt(&user_message).await {
+            let _ = ui
+                .send(UiEvent::Error {
+                    message: refusal.clone(),
+                })
+                .await;
+            return Err(AgentError::Refused(refusal));
+        }
+
         let outcome = self.turn(session, user_message, ui).await;
         // Here rather than at each `return` inside `turn`: it ends at half a
         // dozen of them — finished, canceled twice, out of iterations, stalled,
@@ -244,7 +263,55 @@ impl Agent {
         // forgotten is the one that matters most. A turn that failed is a turn
         // somebody will want to read.
         self.persist(session).await;
+        // After the transcript is written, not before. A `stop` hook that reads
+        // the session — which is most of the reason to write one — must see the
+        // turn that just ended rather than the one before it.
+        self.after_turn().await;
         outcome
+    }
+
+    /// Runs the `user_prompt_submit` hooks, and reports a refusal.
+    ///
+    /// A hook that refuses stops the turn before it starts. A hook that passes
+    /// and prints something has that carried into the message the model reads,
+    /// which is what makes "attach the current branch to every prompt" a
+    /// three-line script rather than a feature.
+    async fn before_prompt(&self, message: &Message) -> Option<String> {
+        let runner = self.tools.hooks.as_ref()?;
+        if !runner.has(taurus_hooks::HookEvent::UserPromptSubmit) {
+            return None;
+        }
+
+        let mut payload = taurus_hooks::HookPayload::new(
+            taurus_hooks::HookEvent::UserPromptSubmit,
+            &self.tools.workspace,
+        )
+        .with_prompt(message.text());
+        if let Some(session) = &self.tools.session_id {
+            payload = payload.with_session(session.clone());
+        }
+        runner.run(&payload).await.denied
+    }
+
+    /// Runs the `stop` hooks. Nothing can be refused here — the turn is over —
+    /// so anything they say goes to the log rather than into a conversation
+    /// that has already been answered.
+    async fn after_turn(&self) {
+        let Some(runner) = self.tools.hooks.as_ref() else {
+            return;
+        };
+        if !runner.has(taurus_hooks::HookEvent::Stop) {
+            return;
+        }
+
+        let mut payload =
+            taurus_hooks::HookPayload::new(taurus_hooks::HookEvent::Stop, &self.tools.workspace);
+        if let Some(session) = &self.tools.session_id {
+            payload = payload.with_session(session.clone());
+        }
+        for note in runner.run(&payload).await.notes {
+            info!(%note, "stop hook");
+        }
     }
 
     async fn persist(&self, session: &Session) {
