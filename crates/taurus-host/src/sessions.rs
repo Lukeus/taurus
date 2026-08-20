@@ -800,9 +800,9 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
         }
         // A conversation somebody named needs nothing past its header, so a
         // renamed one lists off line one however long its transcript is.
-        let named = header.as_ref().is_some_and(|found| {
-            found.title.as_ref().is_some_and(|t| !t.trim().is_empty())
-        });
+        let named = header
+            .as_ref()
+            .is_some_and(|found| found.title.as_ref().is_some_and(|t| !t.trim().is_empty()));
         if header.is_some() && (named || title.is_some() || index + 1 >= TITLE_SCAN_LINES) {
             break;
         }

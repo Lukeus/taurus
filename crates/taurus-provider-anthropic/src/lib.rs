@@ -804,8 +804,9 @@ mod tests {
 
     /// The headers `authorize` actually puts on a request.
     fn auth_headers(header: Option<&str>) -> reqwest::header::HeaderMap {
-        let provider = AnthropicProvider::new("anthropic", DEFAULT_BASE_URL, Some("sk-test".into()))
-            .with_api_key_header(header);
+        let provider =
+            AnthropicProvider::new("anthropic", DEFAULT_BASE_URL, Some("sk-test".into()))
+                .with_api_key_header(header);
         provider
             .authorize(provider.client.get("http://x"))
             .build()
@@ -843,9 +844,8 @@ mod tests {
         // The `/v1` this used to force produced a 404 on an APIM route that was
         // configured perfectly well: an API published there has a base path of
         // its own, and its operations usually map straight onto `/messages`.
-        let gateway =
-            AnthropicProvider::new("apim", "https://gw.azure-api.net/claude", None)
-                .with_api_prefix(Some(""));
+        let gateway = AnthropicProvider::new("apim", "https://gw.azure-api.net/claude", None)
+            .with_api_prefix(Some(""));
         assert_eq!(
             gateway.url("/messages"),
             "https://gw.azure-api.net/claude/messages"

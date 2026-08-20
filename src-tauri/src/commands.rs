@@ -690,9 +690,7 @@ pub async fn switch_model(
         // attempt, so moving it underneath one would send half an answer to one
         // backend and half to another.
         let Ok(mut session) = entry.session.try_lock() else {
-            return Err(
-                "this conversation is mid-turn; stop it before changing model".into(),
-            );
+            return Err("this conversation is mid-turn; stop it before changing model".into());
         };
         session.model = model.clone();
     }
@@ -747,7 +745,10 @@ pub async fn rename_session(
     // The write is serialized against the log for this conversation when there
     // is one, so a rewrite cannot land between a turn's append and the next.
     // A conversation that is only on disk has nothing to serialize against.
-    let held = state.session(&session_id).ok().map(|entry| entry.log.clone());
+    let held = state
+        .session(&session_id)
+        .ok()
+        .map(|entry| entry.log.clone());
     let meta = match &held {
         Some(log) => {
             let _guard = log.lock().await;
