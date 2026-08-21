@@ -1748,6 +1748,21 @@ pub async fn set_embedding_model(state: State<'_, Arc<AppState>>, model: String)
     Ok(())
 }
 
+#[tauri::command]
+pub async fn set_rerank(
+    state: State<'_, Arc<AppState>>,
+    model: String,
+    provider: String,
+) -> CmdResult<()> {
+    state.host.set_rerank(&model, &provider).await;
+    // Same reason `set_embedding_model` reloads: the reranker is attached to
+    // `search_code` when the tool is registered, so without this it does not
+    // take hold until the next workspace change.
+    state.host.reload().await;
+    emit_status(&state).await;
+    Ok(())
+}
+
 /// How far through a build is, as the UI draws it.
 #[derive(Clone, Serialize, TS)]
 #[ts(export)]

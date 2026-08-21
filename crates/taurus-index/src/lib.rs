@@ -32,7 +32,7 @@ pub mod tool;
 
 pub use build::{refresh, IndexProgress, Refreshed};
 pub use chunk::Chunk;
-pub use store::{search, Entry, Hit, Index};
+pub use store::{rerank, search, Entry, Hit, Index, Ranking};
 pub use tool::{SearchCode, SEARCH_CODE_TOOL};
 
 use std::path::Path;

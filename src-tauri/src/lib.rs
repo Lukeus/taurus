@@ -197,6 +197,7 @@ pub fn run() {
             commands::set_agent_iterations,
             commands::set_theme,
             commands::set_embedding_model,
+            commands::set_rerank,
             commands::build_index,
             commands::stop_index_build,
             commands::save_providers,

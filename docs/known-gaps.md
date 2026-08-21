@@ -330,12 +330,28 @@ and they are the minority.
   modification time, the same comparison the sweep uses and blind in the same
   place: a rewrite to the same length within one filesystem tick is invisible,
   and the stale chunk stays until something else about the file moves.
-- **Semantic search is only as good as the embedding model.** `search_code`
-  ranks by cosine similarity and nothing else — no reranking, no keyword
-  fallback, no blend with grep. A query that lands badly returns three confident
-  near-misses, and the tool says they are leads rather than answers, which is
-  the whole of what it can do about it. Where the literal text is known, grep is
-  exact and this is only close.
+- **Semantic search is only as good as what ranks it.** `search_code` ranks by
+  cosine similarity, and optionally by a reranking model over the top thirty of
+  those — but there is still no keyword fallback and no blend with grep. A query
+  that lands badly returns three confident near-misses, and the tool says they
+  are leads rather than answers, which is the whole of what it can do about it.
+  Where the literal text is known, grep is exact and this is only close.
+- **Reranking needs a second server, and most backends cannot be it.** The
+  `/rerank` route is Cohere's shape rather than OpenAI's, and OpenAI never
+  shipped one to imitate — so it is served by llama.cpp started with
+  `--reranking`, by text-embeddings-inference, and by the hosted rerankers, and
+  by almost nothing else. Ollama, which is where most local setups embed, has no
+  such route at all, which is why `rerank_provider` exists as a setting separate
+  from the embedding provider. Closing this properly means running a reranking
+  model in-process rather than asking for an endpoint, which is the same
+  unbuilt thing that would let the index work with no local server at all.
+- **A reranked score cannot be compared to anything but its own result set.**
+  Voyage and Cohere normalize to 0–1; llama.cpp returns the cross-encoder's raw
+  logit, where negative values are ordinary. Taurus orders by it and never
+  filters on it, and labels the column `relevance` rather than `similarity` so
+  the number is not read as a cosine — but there is no way to make one backend's
+  0.82 mean the same thing as another's, and there is no threshold below which a
+  result is known to be worthless.
 - **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
   that renders its content client-side comes back near-empty. Closing this
   means shipping a browser engine, so it is a limit rather than a to-do.

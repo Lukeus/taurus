@@ -101,3 +101,40 @@ pub struct Usage {
     #[serde(default)]
     pub completion_tokens: Option<u32>,
 }
+
+/// A reranking request.
+///
+/// The Cohere-shaped body, which is what every server serving this route
+/// speaks — llama.cpp, text-embeddings-inference, Jina, Voyage, Cohere itself.
+/// There is no OpenAI original to be compatible with here: OpenAI has never
+/// shipped a reranking endpoint, and the imitators standardized on Cohere's
+/// instead.
+#[derive(Debug, Serialize)]
+pub struct RerankBody<'a> {
+    pub model: &'a str,
+    pub query: &'a str,
+    pub documents: &'a [String],
+    /// Asked for explicitly rather than left to the server's default, which is
+    /// not the same number everywhere and on some servers is "all of them".
+    pub top_n: usize,
+    /// The documents come back only if asked for, and they are not wanted: the
+    /// caller sent them and still holds them in order. Sent as `false` rather
+    /// than omitted because at least one server defaults it on.
+    pub return_documents: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RerankResponse {
+    #[serde(default)]
+    pub results: Vec<RerankResult>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RerankResult {
+    pub index: usize,
+    /// Cohere, Jina, Voyage and llama.cpp all spell it this way. TEI answers
+    /// with `score` instead, which is why the alias is here rather than a
+    /// second response type.
+    #[serde(alias = "score")]
+    pub relevance_score: f32,
+}

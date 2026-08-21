@@ -999,6 +999,33 @@ pub struct Settings {
     /// mean different things.
     #[serde(default)]
     pub embedding_model: String,
+    /// Reranking model that reorders `search_code`'s shortlist before the model
+    /// reads it. Empty means the similarity order is the answer.
+    ///
+    /// A second retrieval stage, and optional in a way the embedding model is
+    /// not: without an embedding model there is no index and no tool, whereas
+    /// without this there is a search that already works and is merely less
+    /// accurate. That is why every failure here falls back rather than
+    /// surfacing — see `taurus_index::SearchCode::with_rerank`.
+    ///
+    /// Named separately from [`Settings::embedding_model`] because the two are
+    /// different namespaces on every backend that serves both, and because the
+    /// index is keyed on the embedding model alone: changing this one reorders
+    /// results but does not invalidate a single vector, so it must not discard
+    /// the index the way changing that one does.
+    #[serde(default)]
+    pub rerank_model: String,
+    /// Which provider serves [`Settings::rerank_model`]. Empty means the same
+    /// one the index embeds on.
+    ///
+    /// Needed as its own setting, unlike embedding, because the common local
+    /// setup cannot serve both. Ollama has no reranking route at all, so a
+    /// machine embedding on Ollama has to name an OpenAI-compatible provider
+    /// here — llama.cpp started with `--reranking` is the usual second entry.
+    /// Anyone already running everything on one such server leaves this empty
+    /// and it resolves to that server.
+    #[serde(default)]
+    pub rerank_provider: String,
     /// Model turns one message may take before the turn is stopped.
     ///
     /// A ceiling on a loop that has no other one: a model that keeps calling
@@ -1035,6 +1062,8 @@ impl Default for Settings {
             disabled_tools: Vec::new(),
             theme: Theme::System,
             embedding_model: String::new(),
+            rerank_model: String::new(),
+            rerank_provider: String::new(),
             max_iterations: default_max_iterations(),
         }
     }
@@ -1065,6 +1094,14 @@ pub struct StoredSettings {
     /// without touching the global setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
+    /// See [`Settings::rerank_model`]. Per-layer so a project whose codebase
+    /// actually benefits from reranking can turn it on without paying the
+    /// extra round trip on every other workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_model: Option<String>,
+    /// See [`Settings::rerank_provider`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_provider: Option<String>,
     /// See [`Settings::max_iterations`]. Per-layer so one project that needs
     /// long turns can raise it without loosening the ceiling everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1088,6 +1125,8 @@ impl StoredSettings {
         self.disabled_tools = other.disabled_tools.or(self.disabled_tools.take());
         self.theme = other.theme.or(self.theme);
         self.embedding_model = other.embedding_model.or(self.embedding_model.take());
+        self.rerank_model = other.rerank_model.or(self.rerank_model.take());
+        self.rerank_provider = other.rerank_provider.or(self.rerank_provider.take());
         self.max_iterations = other.max_iterations.or(self.max_iterations);
     }
 
@@ -1106,6 +1145,8 @@ impl StoredSettings {
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
             theme: self.theme.unwrap_or(defaults.theme),
             embedding_model: self.embedding_model.unwrap_or(defaults.embedding_model),
+            rerank_model: self.rerank_model.unwrap_or(defaults.rerank_model),
+            rerank_provider: self.rerank_provider.unwrap_or(defaults.rerank_provider),
             // Clamped rather than rejected: this file is hand-edited, and a
             // settings file that will not load is a worse answer to a typo'd
             // number than a number brought back into range. Zero would be a

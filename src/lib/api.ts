@@ -497,6 +497,18 @@ export const setEmbeddingModel = (model: string) =>
   invoke<void>("set_embedding_model", { model });
 
 /**
+ * The optional second stage that reorders search results before the model
+ * reads them. An empty model turns it off; an empty provider means the one the
+ * index already embeds on.
+ *
+ * Both at once because they are one decision — a model saved without a
+ * provider would rerank on whichever backend the conversation is using, which
+ * for a local Ollama is one that cannot rerank at all.
+ */
+export const setRerank = (model: string, provider: string) =>
+  invoke<void>("set_rerank", { model, provider });
+
+/**
  * Builds this workspace's code index now, resolving to its one-line summary.
  *
  * The alternative is paying for it inside the first turn that reaches for

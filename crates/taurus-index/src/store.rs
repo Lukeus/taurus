@@ -124,10 +124,46 @@ pub struct Hit {
     pub path: String,
     pub start_line: usize,
     pub end_line: usize,
-    /// Cosine similarity, -1 to 1. Reported so the model can tell a strong
-    /// match from the best of a bad set.
+    /// How this hit scored, on whichever scale [`Hit::ranking`] names.
+    ///
+    /// Reported so the model can tell a strong match from the best of a bad
+    /// set — but only against the other hits in the same result. See
+    /// [`Ranking`] for why the number is not comparable to anything else.
     pub score: f32,
+    /// Which stage produced [`Hit::score`] and the order these came back in.
+    pub ranking: Ranking,
     pub text: String,
+}
+
+/// Which stage decided the order a set of hits is in.
+///
+/// Carried on the hit rather than assumed by the caller because the two scales
+/// do not mean the same thing and are not comparable. A cosine similarity is
+/// bounded at -1 to 1 and says how close two vectors point; a reranker's score
+/// is whatever that model emits, which on a local llama.cpp is a raw logit that
+/// is routinely negative. Printing "similarity 0.71" above a number that is
+/// neither a similarity nor on that scale would be a small lie told to the
+/// model in the one place it is trying to judge whether a result is worth
+/// reading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ranking {
+    /// Cosine against the query vector, -1 to 1.
+    Similarity,
+    /// A reranking model's judgement of the passage against the query. Higher
+    /// is better and that is the only guarantee — see
+    /// [`taurus_provider::RerankScore::score`].
+    Relevance,
+}
+
+impl Ranking {
+    /// The word the model reads beside the number.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Similarity => "similarity",
+            Self::Relevance => "relevance",
+        }
+    }
 }
 
 /// One workspace's index.
@@ -294,10 +330,81 @@ pub fn search(entries: &[Entry], query: &[f32], limit: usize, workspace: &Path) 
             start_line: entry.start_line,
             end_line: entry.end_line,
             score,
+            ranking: Ranking::Similarity,
             // Read from disk rather than stored: the index would otherwise hold
             // a second copy of the workspace, and the file on disk is the one
             // the model is about to act on anyway.
             text: excerpt(workspace, entry),
+        })
+        .collect()
+}
+
+/// Reorders a cosine shortlist by a reranker's scores, best first, keeping
+/// `limit`.
+///
+/// The second half of a two-stage retrieval. The first stage compares a query
+/// vector against passage vectors that were embedded without ever having seen
+/// the query, which is what makes an index possible and also what caps how good
+/// it can be. This stage reads the query and the passage together and is
+/// markedly better at judging them, at a cost that only makes sense over a
+/// shortlist — which is exactly what [`search`] just produced.
+///
+/// Pure, and separate from the call that produces the scores, because the
+/// ordering rules are where the mistakes live and they should be testable
+/// without a server.
+///
+/// # What it guarantees
+///
+/// - Every hit that was scored comes before every hit that was not. A server
+///   honoring its own `top_n` returns fewer scores than documents, and the
+///   unscored remainder is *not* evidence of irrelevance — it is the absence of
+///   an opinion, so those hits keep their cosine order behind the scored ones
+///   rather than being discarded.
+/// - A score naming a hit that does not exist is ignored rather than trusted.
+///   The provider adapters reject this at the boundary; this is the second
+///   layer, because a panic here would be an index-out-of-bounds in a tool call
+///   rather than an error a model can read.
+/// - Ties hold their previous order, so a reranker that scores two passages
+///   identically leaves cosine to break it.
+pub fn rerank(
+    mut hits: Vec<Hit>,
+    scores: &[taurus_provider::RerankScore],
+    limit: usize,
+) -> Vec<Hit> {
+    // Rank by position in the reranker's descending order, not by the score
+    // itself: the scores are only ordinal, and sorting hits by a float that
+    // means something different on every backend would invite exactly the
+    // comparisons `RerankScore::score` warns against.
+    let mut ordered: Vec<&taurus_provider::RerankScore> =
+        scores.iter().filter(|s| s.index < hits.len()).collect();
+    ordered.sort_by(|a, b| b.score.total_cmp(&a.score));
+
+    let mut rank = vec![usize::MAX; hits.len()];
+    for (position, scored) in ordered.iter().enumerate() {
+        // First score wins if a server sent the same index twice, which puts
+        // the duplicate's higher score in front rather than its lower one.
+        if rank[scored.index] == usize::MAX {
+            rank[scored.index] = position;
+        }
+    }
+
+    // `usize::MAX` for the unscored sorts them last by construction, and a
+    // stable sort keeps them in the cosine order they arrived in.
+    let mut indexed: Vec<(usize, Hit)> = hits.drain(..).enumerate().collect();
+    indexed.sort_by_key(|(original, _)| rank[*original]);
+
+    indexed
+        .into_iter()
+        .take(limit)
+        .map(|(original, mut hit)| {
+            // A hit the reranker never scored keeps the cosine number it came
+            // with, and says so. Overwriting it with a placeholder would lose
+            // the only judgement anything actually made about it.
+            if let Some(scored) = scores.iter().find(|s| s.index == original) {
+                hit.score = scored.score;
+                hit.ranking = Ranking::Relevance;
+            }
+            hit
         })
         .collect()
 }
@@ -352,6 +459,112 @@ pub fn stamp(path: &Path) -> Option<(u64, u64)> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    use taurus_provider::RerankScore;
+
+    fn hit(path: &str, score: f32) -> Hit {
+        Hit {
+            path: path.into(),
+            start_line: 1,
+            end_line: 10,
+            score,
+            ranking: Ranking::Similarity,
+            text: format!("body of {path}"),
+        }
+    }
+
+    fn scored(index: usize, score: f32) -> RerankScore {
+        RerankScore { index, score }
+    }
+
+    fn paths(hits: &[Hit]) -> Vec<&str> {
+        hits.iter().map(|h| h.path.as_str()).collect()
+    }
+
+    #[test]
+    fn reranking_reorders_the_shortlist_and_relabels_the_score() {
+        // Cosine put c.rs last; the reranker puts it first, which is the whole
+        // point of the second stage.
+        let hits = vec![hit("a.rs", 0.90), hit("b.rs", 0.85), hit("c.rs", 0.80)];
+        let out = rerank(hits, &[scored(2, 8.1), scored(0, 2.0), scored(1, -4.5)], 5);
+
+        assert_eq!(paths(&out), ["c.rs", "a.rs", "b.rs"]);
+        assert!(out.iter().all(|h| h.ranking == Ranking::Relevance));
+        // The number reported is the one that decided the order, not the
+        // cosine it replaced.
+        assert_eq!(out[0].score, 8.1);
+    }
+
+    #[test]
+    fn a_negative_score_is_an_ordinary_ranking_not_a_rejection() {
+        // llama.cpp returns raw cross-encoder logits, where every document in a
+        // weak result set scores below zero. Treating that as "no match" would
+        // empty the result exactly when the model most needs something to read.
+        let hits = vec![hit("a.rs", 0.5), hit("b.rs", 0.4)];
+        let out = rerank(hits, &[scored(0, -8.3), scored(1, -4.7)], 5);
+
+        assert_eq!(paths(&out), ["b.rs", "a.rs"], "less negative ranks higher");
+        assert_eq!(out.len(), 2, "nothing is dropped for scoring below zero");
+    }
+
+    #[test]
+    fn unscored_hits_fall_behind_the_scored_ones_in_cosine_order() {
+        // A server honoring a smaller `top_n` than it was asked for says
+        // nothing about the rest. Silence is not a low score, so the remainder
+        // keeps its original order behind everything that was judged.
+        let hits = vec![
+            hit("a.rs", 0.90),
+            hit("b.rs", 0.85),
+            hit("c.rs", 0.80),
+            hit("d.rs", 0.75),
+        ];
+        let out = rerank(hits, &[scored(3, 5.0)], 5);
+
+        assert_eq!(paths(&out), ["d.rs", "a.rs", "b.rs", "c.rs"]);
+        assert_eq!(out[0].ranking, Ranking::Relevance);
+        assert_eq!(
+            out[1].ranking,
+            Ranking::Similarity,
+            "a hit nobody judged keeps the score and the label it arrived with"
+        );
+        assert_eq!(out[1].score, 0.90);
+    }
+
+    #[test]
+    fn a_score_for_a_document_that_was_not_sent_is_ignored() {
+        // The adapters reject this at the boundary; this is the layer that
+        // keeps a misbehaving server from turning into a panic inside a tool
+        // call rather than an answer.
+        let hits = vec![hit("a.rs", 0.9), hit("b.rs", 0.8)];
+        let out = rerank(hits, &[scored(7, 9.9), scored(1, 1.0)], 5);
+
+        assert_eq!(paths(&out), ["b.rs", "a.rs"]);
+    }
+
+    #[test]
+    fn reranking_truncates_to_the_limit_after_reordering_not_before() {
+        // The candidate list is deliberately much longer than the result, so
+        // truncating first would throw away the passage the reranker exists to
+        // promote.
+        let hits = vec![
+            hit("a.rs", 0.90),
+            hit("b.rs", 0.85),
+            hit("c.rs", 0.80),
+            hit("d.rs", 0.75),
+        ];
+        let out = rerank(hits, &[scored(3, 9.0), scored(0, 1.0)], 2);
+
+        assert_eq!(paths(&out), ["d.rs", "a.rs"]);
+    }
+
+    #[test]
+    fn no_scores_at_all_leaves_the_cosine_order_standing() {
+        let hits = vec![hit("a.rs", 0.9), hit("b.rs", 0.8), hit("c.rs", 0.7)];
+        let out = rerank(hits, &[], 2);
+
+        assert_eq!(paths(&out), ["a.rs", "b.rs"]);
+        assert!(out.iter().all(|h| h.ranking == Ranking::Similarity));
+    }
 
     fn entry(path: &str, vector: &[f32]) -> Entry {
         Entry {

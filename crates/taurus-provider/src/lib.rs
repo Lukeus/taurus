@@ -15,7 +15,7 @@ pub mod stream;
 pub use error::{ProviderError, Result};
 pub use message::{ContentBlock, Message, Role};
 pub use prompted::PromptedTools;
-pub use provider::{Capabilities, ModelInfo, Provider};
+pub use provider::{Capabilities, ModelInfo, Provider, RerankScore};
 pub use request::{ChatRequest, ToolDef};
 pub use stream::{StopReason, StreamAccumulator, StreamEvent, TokenUsage};
 
