@@ -422,6 +422,12 @@ impl Provider for OpenAiProvider {
                 usage = TokenUsage {
                     input_tokens: u.prompt_tokens.unwrap_or(0),
                     output_tokens: u.completion_tokens.unwrap_or(0),
+                    cache_read_input_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+                    // No compatible server bills cache *writes* separately;
+                    // the ones with a cache populate it as a side effect of an
+                    // ordinary request.
+                    cache_creation_input_tokens: None,
+                    reasoning_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
                 };
             }
 

@@ -1026,6 +1026,36 @@ pub struct Settings {
     /// and it resolves to that server.
     #[serde(default)]
     pub rerank_provider: String,
+    /// Where to send traces, in OTLP over HTTP. Empty means nowhere.
+    ///
+    /// There is no default and localhost is not one. A harness that reads
+    /// private repositories has no business having an opinion about where a
+    /// description of that work should be sent, so an endpoint is a thing
+    /// somebody types — `http://localhost:4318` for a collector on this
+    /// machine, or whatever Langfuse, Phoenix, or Honeycomb gave you.
+    ///
+    /// What is sent is the shape of a turn: which model, how many tokens, how
+    /// long, which tools ran, what failed. Not the conversation — that is
+    /// [`Settings::otlp_capture_content`], and it is a separate decision.
+    ///
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT` overrides this, because that is the
+    /// variable every other instrumented program reads and tracing one run
+    /// should not mean editing a file.
+    #[serde(default)]
+    pub otlp_endpoint: String,
+    /// Whether exported traces may carry the messages themselves.
+    ///
+    /// Off, and it takes saying so to turn on. Token counts *describe* a
+    /// conversation; messages *are* it — the files read, the commands run,
+    /// whatever was pasted in — and a trace exporter is a network destination.
+    /// Turning telemetry on should tell somebody how much a turn cost, never
+    /// what was in it.
+    ///
+    /// Worth having anyway: debugging why a model went the wrong way is
+    /// reading the prompt it actually got, and a collector you run yourself is
+    /// a reasonable place to read it.
+    #[serde(default)]
+    pub otlp_capture_content: bool,
     /// Model turns one message may take before the turn is stopped.
     ///
     /// A ceiling on a loop that has no other one: a model that keeps calling
@@ -1064,6 +1094,8 @@ impl Default for Settings {
             embedding_model: String::new(),
             rerank_model: String::new(),
             rerank_provider: String::new(),
+            otlp_endpoint: String::new(),
+            otlp_capture_content: false,
             max_iterations: default_max_iterations(),
         }
     }
@@ -1102,6 +1134,14 @@ pub struct StoredSettings {
     /// See [`Settings::rerank_provider`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank_provider: Option<String>,
+    /// See [`Settings::otlp_endpoint`]. Per-layer so one project can be traced
+    /// without every other workspace on the machine being traced too — which
+    /// is the usual shape of wanting this at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otlp_endpoint: Option<String>,
+    /// See [`Settings::otlp_capture_content`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otlp_capture_content: Option<bool>,
     /// See [`Settings::max_iterations`]. Per-layer so one project that needs
     /// long turns can raise it without loosening the ceiling everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1127,6 +1167,8 @@ impl StoredSettings {
         self.embedding_model = other.embedding_model.or(self.embedding_model.take());
         self.rerank_model = other.rerank_model.or(self.rerank_model.take());
         self.rerank_provider = other.rerank_provider.or(self.rerank_provider.take());
+        self.otlp_endpoint = other.otlp_endpoint.or(self.otlp_endpoint.take());
+        self.otlp_capture_content = other.otlp_capture_content.or(self.otlp_capture_content);
         self.max_iterations = other.max_iterations.or(self.max_iterations);
     }
 
@@ -1147,6 +1189,10 @@ impl StoredSettings {
             embedding_model: self.embedding_model.unwrap_or(defaults.embedding_model),
             rerank_model: self.rerank_model.unwrap_or(defaults.rerank_model),
             rerank_provider: self.rerank_provider.unwrap_or(defaults.rerank_provider),
+            otlp_endpoint: self.otlp_endpoint.unwrap_or(defaults.otlp_endpoint),
+            otlp_capture_content: self
+                .otlp_capture_content
+                .unwrap_or(defaults.otlp_capture_content),
             // Clamped rather than rejected: this file is hand-edited, and a
             // settings file that will not load is a worse answer to a typo'd
             // number than a number brought back into range. Zero would be a

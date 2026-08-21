@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 taurus-core.workspace = true
 taurus-host.workspace = true
+taurus-telemetry.workspace = true
 taurus-provider.workspace = true
 taurus-agents.workspace = true
 taurus-skills.workspace = true

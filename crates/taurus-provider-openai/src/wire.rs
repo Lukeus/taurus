@@ -100,6 +100,27 @@ pub struct Usage {
     pub prompt_tokens: Option<u32>,
     #[serde(default)]
     pub completion_tokens: Option<u32>,
+    /// Where the cache hit is reported. Absent on most compatible servers,
+    /// which have no cache; present on OpenAI itself and on the gateways that
+    /// imitate it closely enough to bill for one.
+    #[serde(default)]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompletionTokensDetails {
+    /// Counted inside `completion_tokens` rather than beside it, so adding the
+    /// two would bill the reasoning twice.
+    #[serde(default)]
+    pub reasoning_tokens: Option<u32>,
 }
 
 /// A reranking request.

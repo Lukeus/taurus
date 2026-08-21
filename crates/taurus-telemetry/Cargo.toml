@@ -1,0 +1,32 @@
+[package]
+name = "taurus-telemetry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Optional OTLP export of the Taurus agent harness's traces"
+
+[dependencies]
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+# The blocking HTTP client, not the async one. The batch processor exports from
+# a thread of its own with no Tokio reactor on it, so an async client panics
+# there the first time it tries to send — after the process has already printed
+# everything it was going to print, which is the worst place to find out.
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "trace",
+    "http-proto",
+    "reqwest-blocking-client",
+    "reqwest-rustls",
+] }
+tracing.workspace = true
+tracing-opentelemetry = "0.33"
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+taurus-core.workspace = true
+taurus-provider.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

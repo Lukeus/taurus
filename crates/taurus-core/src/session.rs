@@ -696,10 +696,12 @@ mod tests {
         session.add_usage(TokenUsage {
             input_tokens: 10,
             output_tokens: 5,
+            ..Default::default()
         });
         session.add_usage(TokenUsage {
             input_tokens: 3,
             output_tokens: 2,
+            ..Default::default()
         });
         assert_eq!(session.usage.total(), 20);
     }

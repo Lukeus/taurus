@@ -60,6 +60,20 @@ pub enum ToolError {
 }
 
 impl ToolError {
+    /// A stable, low-cardinality name for this kind of failure, for
+    /// `error.type` on a span. See [`taurus_provider::ProviderError::kind`].
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidInput(_) => "invalid_input",
+            Self::OutsideWorkspace { .. } => "outside_workspace",
+            Self::Denied => "denied",
+            Self::NotFound(_) => "not_found",
+            Self::Failed(_) => "failed",
+            Self::Canceled => "canceled",
+            Self::Io(_) => "io",
+        }
+    }
+
     /// Rendered back to the model as an error tool result. Phrased so the model
     /// can act on it rather than just apologize.
     pub fn to_model_message(&self) -> String {

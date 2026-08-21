@@ -1124,6 +1124,7 @@ mod tests {
         session.add_usage(TokenUsage {
             input_tokens: 10,
             output_tokens: 4,
+            ..Default::default()
         });
         let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);

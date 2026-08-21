@@ -399,6 +399,10 @@ impl Provider for OllamaProvider {
                 usage = TokenUsage {
                     input_tokens: chunk.prompt_eval_count.unwrap_or(0),
                     output_tokens: chunk.eval_count.unwrap_or(0),
+                    // Ollama has no prompt cache to report and folds any
+                    // reasoning into `eval_count`. Absent rather than zero:
+                    // see `TokenUsage::cache_read_input_tokens`.
+                    ..Default::default()
                 };
                 done_reason = chunk.done_reason;
                 break;

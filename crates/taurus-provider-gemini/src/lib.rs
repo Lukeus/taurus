@@ -302,6 +302,12 @@ impl Provider for GeminiProvider {
                 usage = TokenUsage {
                     input_tokens: u.prompt_token_count.unwrap_or(usage.input_tokens),
                     output_tokens: u.output_total(),
+                    cache_read_input_tokens: u.cached_content_token_count,
+                    cache_creation_input_tokens: None,
+                    // Already inside `output_total`, and reported separately so
+                    // a turn that spent its budget thinking can be seen to have
+                    // done so.
+                    reasoning_tokens: u.thoughts_token_count,
                 };
             }
 

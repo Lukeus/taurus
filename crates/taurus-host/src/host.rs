@@ -966,6 +966,15 @@ impl Host {
                 // Settings applies to the next message instead of the next
                 // launch.
                 max_iterations: self.settings.read().await.max_iterations,
+                // Same rule, and it matters more here: turning content capture
+                // off has to take effect on the next message rather than the
+                // next launch, or somebody who has just realized what they
+                // switched on cannot switch it off.
+                capture: if self.settings.read().await.otlp_capture_content {
+                    taurus_core::Capture::Content
+                } else {
+                    taurus_core::Capture::MetadataOnly
+                },
                 ..Default::default()
             },
         )

@@ -376,6 +376,27 @@ and they are the minority.
   the number is not read as a cosine — but there is no way to make one backend's
   0.82 mean the same thing as another's, and there is no threshold below which a
   result is known to be worthless.
+- **Traces go out over HTTP, and only over HTTP.** OTLP has a gRPC transport
+  too and this speaks the `http/protobuf` one alone. Every collector worth
+  naming accepts it, so this is a smaller gap than it sounds — but a setup
+  standardized on gRPC needs a collector in front, and the port is the other
+  one (4318 rather than 4317), which is the mistake everybody makes once.
+- **A trace says which tools ran, not what they were called with.** Arguments
+  are absent from tool spans even when content capture is on: they are the one
+  place a path, a URL, or a command line would end up on a dashboard with no
+  way to notice. Closing it means deciding what an argument may contain, which
+  is the same unanswerable question redaction always is.
+- **Cache and reasoning tokens are only as good as the backend's report.**
+  Anthropic reports cache reads and writes, OpenAI-compatible servers report
+  cached prompt tokens and reasoning tokens when they have them, Gemini reports
+  cached content and thoughts. Ollama reports none of it, and a compatible
+  gateway may report a subset or nothing. Absent is recorded as absent rather
+  than zero — but that means a dashboard comparing two backends is comparing
+  what each chose to say.
+- **Reasoning tokens are inside the output count, not beside it.** Every
+  backend that reports both counts reasoning within `output_tokens`, so adding
+  the two double-counts. The field is kept because it is the only way to see
+  that a turn spent its budget thinking rather than answering.
 - **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
   that renders its content client-side comes back near-empty. Closing this
   means shipping a browser engine, so it is a limit rather than a to-do.

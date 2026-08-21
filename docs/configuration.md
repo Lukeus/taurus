@@ -422,6 +422,63 @@ than the model spending a turn discovering it has no credential. Picking a
 backend and it still not running is a state the tab names explicitly, since a
 selection alone is not the same as a working one.
 
+## Tracing a turn
+
+Off, and there is no default endpoint — not localhost, not a vendor. A harness
+that reads private repositories has no business having an opinion about where a
+description of that work should be sent, so an endpoint is a thing you type:
+
+```json
+{ "otlp_endpoint": "http://localhost:4318" }
+```
+
+That is OTLP over HTTP, which Langfuse, Phoenix, Jaeger, Grafana Tempo,
+Honeycomb, and `docker run otel/opentelemetry-collector` all read. The spans are
+named the way the OpenTelemetry GenAI semantic conventions name them, so those
+tools read the *fields* too rather than showing a span called `chat` with an
+opaque bag beside it:
+
+```
+invoke_agent  gen_ai.request.model=qwen3.6:27b  gen_ai.conversation.id=…
+├─ chat            gen_ai.usage.input_tokens=1204  output_tokens=88
+├─ execute_tool    gen_ai.tool.name=read_file
+├─ execute_tool    gen_ai.tool.name=spawn_subagent
+│  ├─ chat         …the delegate's own calls, nested
+│  └─ execute_tool gen_ai.tool.name=grep
+└─ chat            gen_ai.response.finish_reasons=stop
+```
+
+Delegation nesting is most of why this is worth having. A nine-step turn that
+delegated twice reads as a tree instead of a flat list you reassemble by
+timestamp, and the question it answers — *why did that take ninety seconds* — is
+one no log line has ever answered well.
+
+`OTEL_EXPORTER_OTLP_ENDPOINT` overrides the setting, because that is the
+variable every other instrumented program reads and tracing one run should not
+mean editing a file:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 taurus run "fix the flaky test"
+```
+
+**What is sent is the shape of a turn, not the turn.** Which model, how many
+tokens, how long, which tools ran, what failed. Not the conversation. Carrying
+that is a second setting and it is off:
+
+```json
+{ "otlp_capture_content": true }
+```
+
+Turn it on to debug why a model went the wrong way — reading the prompt it
+actually got is the only way to answer that — and turn it off afterwards. It
+sends the files it read, the commands it ran, and whatever you pasted in, to
+whatever address is in the field above. See
+[What a trace carries](safety.md#what-a-trace-carries).
+
+A collector that cannot be reached is reported once, at startup, and changes
+nothing else: the turn runs, the logs still work. The alternative — refusing to
+start because a dashboard is down — would be a strange trade.
+
 ## Ollama, and the window nothing chooses for you
 
 Ollama needs no configuration at all — a `base_url` and nothing else. It probes

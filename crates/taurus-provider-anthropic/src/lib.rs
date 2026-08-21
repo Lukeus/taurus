@@ -418,6 +418,12 @@ impl Provider for AnthropicProvider {
                 StreamFrame::MessageStart { message } => {
                     if let Some(u) = message.usage {
                         usage.input_tokens = u.input_total();
+                        // Already counted into `input_total`, and kept apart
+                        // because a cached read costs about a tenth of a fresh
+                        // one — the split is the difference between a bill
+                        // somebody can explain and a number that just went up.
+                        usage.cache_read_input_tokens = u.cache_read_input_tokens;
+                        usage.cache_creation_input_tokens = u.cache_creation_input_tokens;
                     }
                 }
 
@@ -627,6 +633,12 @@ mod tests {
                 StreamFrame::MessageStart { message } => {
                     if let Some(u) = message.usage {
                         usage.input_tokens = u.input_total();
+                        // Already counted into `input_total`, and kept apart
+                        // because a cached read costs about a tenth of a fresh
+                        // one — the split is the difference between a bill
+                        // somebody can explain and a number that just went up.
+                        usage.cache_read_input_tokens = u.cache_read_input_tokens;
+                        usage.cache_creation_input_tokens = u.cache_creation_input_tokens;
                     }
                 }
                 StreamFrame::ContentBlockStart {

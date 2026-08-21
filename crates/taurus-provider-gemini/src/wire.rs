@@ -159,6 +159,9 @@ pub struct UsageMetadata {
     /// Reasoning tokens, billed as output and reported separately.
     #[serde(default)]
     pub thoughts_token_count: Option<u32>,
+    /// Prompt tokens served from context caching, when it is in use.
+    #[serde(default)]
+    pub cached_content_token_count: Option<u32>,
 }
 
 impl UsageMetadata {
@@ -219,6 +222,7 @@ mod tests {
             prompt_token_count: Some(100),
             candidates_token_count: Some(50),
             thoughts_token_count: Some(400),
+            cached_content_token_count: None,
         };
         assert_eq!(usage.output_total(), 450);
     }
