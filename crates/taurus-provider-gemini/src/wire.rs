@@ -256,3 +256,46 @@ mod tests {
         assert!(json.get("system_instruction").is_none());
     }
 }
+
+/// A batch embedding request.
+///
+/// Every entry repeats the model name. That is the API's shape, not a mistake
+/// here: `batchEmbedContents` is defined as a list of the single-content
+/// requests, and the one in the URL does not stand in for them.
+#[derive(Debug, Serialize)]
+pub struct BatchEmbedBody {
+    pub requests: Vec<EmbedRequest>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmbedRequest {
+    /// Fully qualified — `models/text-embedding-004` — which is how this API
+    /// names a model everywhere it appears in a body rather than a path.
+    pub model: String,
+    pub content: EmbedContent,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmbedContent {
+    pub parts: Vec<EmbedPart>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmbedPart {
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BatchEmbedResponse {
+    #[serde(default)]
+    pub embeddings: Vec<EmbeddingValues>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingValues {
+    /// No index here, unlike OpenAI: this API answers strictly in request
+    /// order and gives nothing to check that against. The count is the only
+    /// guard available, so it is the one that is enforced.
+    #[serde(default)]
+    pub values: Vec<f32>,
+}

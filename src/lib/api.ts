@@ -496,9 +496,17 @@ export const setAgentSynthesis = (enabled: boolean) =>
 
 export const setTheme = (theme: Theme) => invoke<void>("set_theme", { theme });
 
-/** Which embedding model semantic search runs on. Empty turns it off. */
-export const setEmbeddingModel = (model: string) =>
-  invoke<void>("set_embedding_model", { model });
+/**
+ * Which embedding model semantic search runs on, and which backend serves it.
+ * An empty model turns search off; an empty provider means the one the
+ * conversation is using.
+ *
+ * Both at once because they are one decision — a model saved without a provider
+ * embeds on whichever backend the conversation is on, and Anthropic has no
+ * embedding endpoint at all.
+ */
+export const setEmbeddingModel = (model: string, provider = "") =>
+  invoke<void>("set_embedding_model", { model, provider });
 
 /**
  * The optional second stage that reorders search results before the model

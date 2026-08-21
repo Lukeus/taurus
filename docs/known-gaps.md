@@ -360,6 +360,13 @@ and they are the minority.
   that lands badly returns three confident near-misses, and the tool says they
   are leads rather than answers, which is the whole of what it can do about it.
   Where the literal text is known, grep is exact and this is only close.
+- **Nothing here embeds in-process.** An index needs a backend with an
+  embedding endpoint, and every provider this speaks to except Anthropic has
+  one — so this is a gap for exactly one setup: chatting to Claude with no
+  other backend reachable. Closing it means running an embedding model inside
+  this process, which is a model to download on first use and a machine-learning
+  runtime to carry on all three platforms, for a case a second provider entry
+  already answers. Not built, and not obviously worth building.
 - **Reranking needs a second server, and most backends cannot be it.** The
   `/rerank` route is Cohere's shape rather than OpenAI's, and OpenAI never
   shipped one to imitate — so it is served by llama.cpp started with

@@ -999,6 +999,18 @@ pub struct Settings {
     /// mean different things.
     #[serde(default)]
     pub embedding_model: String,
+    /// Which provider serves [`Settings::embedding_model`]. Empty means the one
+    /// the conversation is on.
+    ///
+    /// Empty is right for a local setup, where the embedding model sits on the
+    /// same server as the chat model and a second entry naming the same machine
+    /// would be one more thing to keep in step. It stopped being right the
+    /// moment a hosted backend was in play: Anthropic has no embedding endpoint
+    /// at all and points at Voyage instead, so somebody chatting to Claude has
+    /// to be able to index somewhere else without switching the conversation to
+    /// get it.
+    #[serde(default)]
+    pub embedding_provider: String,
     /// Reranking model that reorders `search_code`'s shortlist before the model
     /// reads it. Empty means the similarity order is the answer.
     ///
@@ -1092,6 +1104,7 @@ impl Default for Settings {
             disabled_tools: Vec::new(),
             theme: Theme::System,
             embedding_model: String::new(),
+            embedding_provider: String::new(),
             rerank_model: String::new(),
             rerank_provider: String::new(),
             otlp_endpoint: String::new(),
@@ -1126,6 +1139,9 @@ pub struct StoredSettings {
     /// without touching the global setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
+    /// See [`Settings::embedding_provider`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_provider: Option<String>,
     /// See [`Settings::rerank_model`]. Per-layer so a project whose codebase
     /// actually benefits from reranking can turn it on without paying the
     /// extra round trip on every other workspace.
@@ -1165,6 +1181,7 @@ impl StoredSettings {
         self.disabled_tools = other.disabled_tools.or(self.disabled_tools.take());
         self.theme = other.theme.or(self.theme);
         self.embedding_model = other.embedding_model.or(self.embedding_model.take());
+        self.embedding_provider = other.embedding_provider.or(self.embedding_provider.take());
         self.rerank_model = other.rerank_model.or(self.rerank_model.take());
         self.rerank_provider = other.rerank_provider.or(self.rerank_provider.take());
         self.otlp_endpoint = other.otlp_endpoint.or(self.otlp_endpoint.take());
@@ -1187,6 +1204,9 @@ impl StoredSettings {
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
             theme: self.theme.unwrap_or(defaults.theme),
             embedding_model: self.embedding_model.unwrap_or(defaults.embedding_model),
+            embedding_provider: self
+                .embedding_provider
+                .unwrap_or(defaults.embedding_provider),
             rerank_model: self.rerank_model.unwrap_or(defaults.rerank_model),
             rerank_provider: self.rerank_provider.unwrap_or(defaults.rerank_provider),
             otlp_endpoint: self.otlp_endpoint.unwrap_or(defaults.otlp_endpoint),

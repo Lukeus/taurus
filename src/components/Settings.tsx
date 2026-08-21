@@ -200,6 +200,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <SearchTab />
             <CodeSearch
               model={status?.settings.embedding_model ?? ""}
+              provider={status?.settings.embedding_provider ?? ""}
               rerankModel={status?.settings.rerank_model ?? ""}
               rerankProvider={status?.settings.rerank_provider ?? ""}
             />
@@ -565,24 +566,35 @@ export function SearchTab() {
  */
 export function CodeSearch({
   model,
+  provider,
   rerankModel,
   rerankProvider,
 }: {
   model: string;
+  provider: string;
   rerankModel: string;
   rerankProvider: string;
 }) {
   const refresh = useStore((s) => s.refresh);
   const [draft, setDraft] = useState(model);
+  const [providerDraft2, setProviderDraft2] = useState(provider);
   const [rerankDraft, setRerankDraft] = useState(rerankModel);
   const [providerDraft, setProviderDraft] = useState(rerankProvider);
   const [progress, setProgress] = useState<IndexProgress | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
   const building = progress !== null;
 
-  const save = async (next: string) => {
-    if (next.trim() === model.trim()) return;
-    await api.setEmbeddingModel(next);
+  // Model and provider save together, because the backend takes them together:
+  // a model with no provider embeds on whichever backend the conversation is
+  // using, and Anthropic has no embedding endpoint at all.
+  const save = async (nextModel: string, nextProvider: string) => {
+    if (
+      nextModel.trim() === model.trim() &&
+      nextProvider.trim() === provider.trim()
+    ) {
+      return;
+    }
+    await api.setEmbeddingModel(nextModel, nextProvider);
     await refresh();
   };
 
@@ -638,9 +650,25 @@ export function CodeSearch({
           placeholder="nomic-embed-text"
           disabled={building}
           onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => save(draft)}
+          onBlur={() => save(draft, providerDraft2)}
         />
       </Field>
+
+      {draft.trim() && (
+        <Field
+          label="Embedding provider"
+          hint="Which backend serves it. Leave empty to use the one this conversation is on — name another if that backend has no embedding endpoint, which is the case for Anthropic."
+        >
+          <input
+            value={providerDraft2}
+            spellCheck={false}
+            placeholder="the one this conversation is on"
+            disabled={building}
+            onChange={(e) => setProviderDraft2(e.target.value)}
+            onBlur={() => save(draft, providerDraft2)}
+          />
+        </Field>
+      )}
 
       {model.trim() && (
         <>

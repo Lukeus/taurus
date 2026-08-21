@@ -1344,19 +1344,31 @@ impl Host {
 
     /// Which provider serves the embedding model.
     ///
-    /// The one the conversation is on, falling back to the first configured:
-    /// an embedding model lives on the same server as the chat model in every
-    /// local setup, and a second provider entry naming the same machine would
-    /// be one more thing to keep in step.
+    /// What the config named, if it named one. Otherwise the one the
+    /// conversation is on, falling back to the first configured: an embedding
+    /// model lives on the same server as the chat model in every local setup,
+    /// and a second provider entry naming the same machine would be one more
+    /// thing to keep in step.
+    ///
+    /// The configured case exists because that stopped covering everything.
+    /// Anthropic has no embedding endpoint and points at Voyage instead, so
+    /// somebody chatting to Claude has to be able to index somewhere else
+    /// without switching the conversation to do it.
     ///
     /// A method rather than an expression at each of its two call sites because
     /// the first version was written twice and the copy reached for
     /// `blocking_read` inside an async fn — which tokio answers by panicking,
     /// on the one path nobody exercises: a machine with no remembered provider.
     async fn embedding_provider_id(&self) -> Option<String> {
-        if let Some(id) = self.settings.read().await.last_provider.clone() {
+        let settings = self.settings.read().await;
+        let named = settings.embedding_provider.trim();
+        if !named.is_empty() {
+            return Some(named.to_string());
+        }
+        if let Some(id) = settings.last_provider.clone() {
             return Some(id);
         }
+        drop(settings);
         self.providers.read().await.first().map(|p| p.id.clone())
     }
 
@@ -1396,13 +1408,24 @@ impl Host {
         }
     }
 
-    /// Which embedding model semantic search runs on. Empty means off.
+    /// Which embedding model semantic search runs on, and which backend serves
+    /// it. An empty model means off; an empty provider means the one the
+    /// conversation is on.
+    ///
+    /// Both at once because they are one decision, the same as reranking: a
+    /// model saved without a provider embeds on whichever backend the
+    /// conversation happens to be using, and for somebody chatting to Claude
+    /// that is a backend with no embedding endpoint at all.
     ///
     /// Global only. It names a model on the machine's own server, which is a
     /// property of the machine rather than of any one project.
-    pub async fn set_embedding_model(&self, model: &str) {
+    pub async fn set_embedding_model(&self, model: &str, provider: &str) {
         let model = model.trim().to_string();
-        config::edit_settings(Scope::Global, None, |s| s.embedding_model = Some(model));
+        let provider = provider.trim().to_string();
+        config::edit_settings(Scope::Global, None, |s| {
+            s.embedding_model = Some(model);
+            s.embedding_provider = Some(provider);
+        });
         let workspace = self.workspace.read().await.clone();
         *self.settings.write().await = config::load_settings(Some(&workspace));
     }

@@ -28,7 +28,10 @@ use taurus_provider::{
     TokenUsage,
 };
 
-use wire::{GenerateBody, ModelsResponse, StreamChunk};
+use wire::{
+    BatchEmbedBody, BatchEmbedResponse, EmbedContent, EmbedPart, EmbedRequest, GenerateBody,
+    ModelsResponse, StreamChunk,
+};
 
 pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
@@ -235,6 +238,68 @@ impl Provider for GeminiProvider {
             .await
             .insert(model.to_string(), capabilities);
         Ok(capabilities)
+    }
+
+    /// Embeds through `batchEmbedContents`.
+    ///
+    /// One request for the whole batch rather than one per chunk. Indexing a
+    /// repository is thousands of passages, and a round trip each would make
+    /// the first build a matter of minutes rather than the minute it already
+    /// is.
+    async fn embed(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // The model appears twice by design: once in the path, which selects
+        // the endpoint, and once per entry in the body, which this API
+        // requires and does not default.
+        let qualified = if model.starts_with("models/") {
+            model.to_string()
+        } else {
+            format!("models/{model}")
+        };
+        let body = BatchEmbedBody {
+            requests: inputs
+                .iter()
+                .map(|text| EmbedRequest {
+                    model: qualified.clone(),
+                    content: EmbedContent {
+                        parts: vec![EmbedPart { text: text.clone() }],
+                    },
+                })
+                .collect(),
+        };
+
+        let url = self.url(&format!("/{qualified}:batchEmbedContents"));
+        let response = self
+            .authorize(self.client.post(url).json(&body))
+            .send()
+            .await
+            .map_err(|e| self.unreachable(e))?;
+        let response = self.check_status(response).await.map_err(|e| match e {
+            ProviderError::Api { status: 404, .. } => ProviderError::Protocol(format!(
+                "{} has no embedding model called '{model}'. Embedding models are a separate \
+                 namespace from chat models here — `text-embedding-004` is the usual one.",
+                self.id
+            )),
+            other => other,
+        })?;
+        let embedded: BatchEmbedResponse =
+            response.json().await.map_err(|e| self.unreachable(e))?;
+
+        // Position is the only thing tying a vector to its chunk, and this API
+        // offers no index to check it against — so the count is the whole of
+        // the guard, and it is not optional.
+        if embedded.embeddings.len() != inputs.len() {
+            return Err(ProviderError::Protocol(format!(
+                "asked {} for {} embeddings and got {}",
+                self.id,
+                inputs.len(),
+                embedded.embeddings.len()
+            )));
+        }
+        Ok(embedded.embeddings.into_iter().map(|e| e.values).collect())
     }
 
     async fn stream(
@@ -643,5 +708,58 @@ mod tests {
         let caps = provider.capabilities("gemini-2.5-pro").await.unwrap();
         assert!(caps.native_tools);
         assert_eq!(caps.context_length, 32_768);
+    }
+}
+
+#[cfg(test)]
+mod embed_tests {
+    use super::*;
+
+    #[test]
+    fn a_model_name_is_qualified_once_and_only_once() {
+        // This API names a model `models/x` in a body, and somebody will
+        // configure it either way. Qualifying an already-qualified name gives
+        // `models/models/x`, which 404s with a message about the model rather
+        // than about the name.
+        for written in ["text-embedding-004", "models/text-embedding-004"] {
+            let qualified = if written.starts_with("models/") {
+                written.to_string()
+            } else {
+                format!("models/{written}")
+            };
+            assert_eq!(qualified, "models/text-embedding-004");
+        }
+    }
+
+    #[test]
+    fn every_entry_repeats_the_model_because_the_api_requires_it() {
+        // Not redundancy to tidy away: `batchEmbedContents` is defined as a
+        // list of single-content requests and the model in the URL does not
+        // stand in for the ones in the body.
+        let body = BatchEmbedBody {
+            requests: vec!["a", "b"]
+                .into_iter()
+                .map(|text| EmbedRequest {
+                    model: "models/text-embedding-004".into(),
+                    content: EmbedContent {
+                        parts: vec![EmbedPart { text: text.into() }],
+                    },
+                })
+                .collect(),
+        };
+        let json = serde_json::to_value(&body).expect("serializes");
+        assert_eq!(json["requests"][0]["model"], "models/text-embedding-004");
+        assert_eq!(json["requests"][1]["model"], "models/text-embedding-004");
+        assert_eq!(json["requests"][1]["content"]["parts"][0]["text"], "b");
+    }
+
+    #[tokio::test]
+    async fn embedding_nothing_asks_the_server_nothing() {
+        let provider = GeminiProvider::new("gemini", "http://127.0.0.1:1", None);
+        let vectors = provider
+            .embed("text-embedding-004", &[])
+            .await
+            .expect("an empty batch must not touch the network");
+        assert!(vectors.is_empty());
     }
 }

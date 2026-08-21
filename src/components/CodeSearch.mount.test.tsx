@@ -26,13 +26,19 @@ import { CodeSearch } from "./Settings";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
-const mount = async (model: string, rerank = "", rerankProvider = "") => {
+const mount = async (
+  model: string,
+  rerank = "",
+  rerankProvider = "",
+  provider = "",
+) => {
   const host = document.createElement("div");
   document.body.appendChild(host);
   await act(async () => {
     createRoot(host).render(
       <CodeSearch
         model={model}
+        provider={provider}
         rerankModel={rerank}
         rerankProvider={rerankProvider}
       />,
@@ -93,6 +99,7 @@ describe("building the code index from settings", () => {
     });
     expect(invoke).toHaveBeenCalledWith("set_embedding_model", {
       model: "nomic-embed-text",
+      provider: "",
     });
   });
 
@@ -203,6 +210,39 @@ describe("the reranking fields", () => {
 
     expect(invoke).toHaveBeenCalledWith("set_rerank", {
       model: "bge-reranker-v2-m3",
+      provider: "",
+    });
+  });
+});
+
+describe("the embedding provider field", () => {
+  it("is not offered until a model is named", async () => {
+    // It is the follow-up question. Asking which backend should run nothing is
+    // asking about something that does not exist yet.
+    const host = await mount("");
+    expect(fieldNamed(host, "Embedding provider")).toBeUndefined();
+  });
+
+  it("saves the model and the provider in one call", async () => {
+    // One decision on the backend: a model saved without a provider embeds on
+    // whichever backend the conversation is on, and Anthropic has none.
+    const host = await mount("");
+    const field = host.querySelector("input")!;
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(field, "nomic-embed-text");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+
+    expect(invoke).toHaveBeenCalledWith("set_embedding_model", {
+      model: "nomic-embed-text",
       provider: "",
     });
   });

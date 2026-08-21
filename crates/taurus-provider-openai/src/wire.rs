@@ -159,3 +159,30 @@ pub struct RerankResult {
     #[serde(alias = "score")]
     pub relevance_score: f32,
 }
+
+/// An embedding request.
+///
+/// `input` is an array even for one string. The API accepts a bare string too
+/// and answers the same shape either way, but sending the array unconditionally
+/// means one code path rather than two that have to agree.
+#[derive(Debug, Serialize)]
+pub struct EmbedBody<'a> {
+    pub model: &'a str,
+    pub input: &'a [String],
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmbedResponse {
+    #[serde(default)]
+    pub data: Vec<Embedding>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Embedding {
+    /// Which input this answers. Documented as returned in order, and not
+    /// trusted to be: a vector attached to the wrong chunk is a search that
+    /// quietly returns the wrong file, which is worse than one that fails.
+    #[serde(default)]
+    pub index: usize,
+    pub embedding: Vec<f32>,
+}

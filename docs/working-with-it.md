@@ -511,13 +511,33 @@ something to embed with, so it is not registered until one is set — under
 { "embedding_model": "nomic-embed-text" }
 ```
 
-It runs on the provider the conversation is already using — an embedding model
-lives on the same server as the chat model in every local setup, and a second
-provider entry naming the same machine would be one more thing to keep in step.
+By default it runs on the provider the conversation is already using — in a
+local setup the embedding model is on the same server as the chat model, and a
+second entry naming the same machine would be one more thing to keep in step.
 Pull one first (`ollama pull nomic-embed-text`); the name is what the index is
 keyed on, so changing it discards the index rather than mixing vectors that mean
 different things. See [Finding code by what it
 does](#finding-code-by-what-it-does).
+
+**Name a provider when the conversation's cannot embed.** Ollama, any
+OpenAI-compatible server — llama.cpp, LM Studio, vLLM, text-embeddings-inference,
+OpenAI itself — and Gemini all serve embeddings. Anthropic does not; it has no
+embedding endpoint at all and points at Voyage AI instead. So somebody chatting
+to Claude names a second backend for the index rather than switching the
+conversation to get one:
+
+```json
+{
+  "embedding_model": "text-embedding-3-small",
+  "embedding_provider": "openai"
+}
+```
+
+Leave the provider empty and it follows the conversation, which is what a local
+setup wants. The field appears under **Settings → Search** once a model is
+named, and the two save together — a model with no provider would embed on
+whichever backend the conversation happened to be on, which is exactly the case
+this exists for.
 
 **A reranker can be put in front of the results.** Optional, off by default, and
 a second stage rather than a replacement for the first:

@@ -26,7 +26,9 @@ use taurus_provider::{
     StreamEvent, TokenUsage,
 };
 
-use wire::{ChatBody, ModelsResponse, RerankBody, RerankResponse, StreamChunk};
+use wire::{
+    ChatBody, EmbedBody, EmbedResponse, ModelsResponse, RerankBody, RerankResponse, StreamChunk,
+};
 
 /// Path the OpenAI routes live under on almost every server.
 pub const DEFAULT_API_PREFIX: &str = "/v1";
@@ -186,6 +188,10 @@ impl OpenAiProvider {
         self.url("/rerank")
     }
 
+    fn embeddings_url(&self) -> String {
+        self.url("/embeddings")
+    }
+
     fn authorize(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let Some(key) = &self.api_key else {
             return builder;
@@ -301,6 +307,82 @@ impl Provider for OpenAiProvider {
                 .and_then(|m| m.context_length)
                 .unwrap_or(self.capabilities.context_length),
         })
+    }
+
+    /// Embeds against `/v1/embeddings`.
+    ///
+    /// The one OpenAI route this adapter had not implemented, which meant
+    /// `search_code` was unavailable to everybody not running Ollama — on a
+    /// backend that has served embeddings the whole time. llama.cpp,
+    /// LM Studio, vLLM, text-embeddings-inference, Together and OpenAI itself
+    /// all answer here.
+    async fn embed(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let response = self
+            .authorize(self.client.post(self.embeddings_url()).json(&EmbedBody {
+                model,
+                input: inputs,
+            }))
+            .send()
+            .await
+            .map_err(|e| self.unreachable(e))?;
+        let response = self.check_status(response).await.map_err(|e| match e {
+            // The common misconfiguration is naming a *chat* model here. The
+            // API says "not found" for that, which reads as a typo rather than
+            // as the two namespaces being separate.
+            ProviderError::Api { status: 404, .. } => ProviderError::Protocol(format!(
+                "{} has no embedding model called '{model}'. Embedding models are a separate \
+                 namespace from chat models — `text-embedding-3-small` on OpenAI, or whatever \
+                 your server loaded with `--embedding`.",
+                self.id
+            )),
+            other => other,
+        })?;
+        let embedded: EmbedResponse = response.json().await.map_err(|e| self.unreachable(e))?;
+
+        // A backend that answered with a different number of vectors than it
+        // was given texts has broken the only contract that makes the result
+        // usable: position is the only thing tying a vector to its chunk.
+        if embedded.data.len() != inputs.len() {
+            return Err(ProviderError::Protocol(format!(
+                "asked {} for {} embeddings and got {}",
+                self.id,
+                inputs.len(),
+                embedded.data.len()
+            )));
+        }
+
+        // Placed by the index the server reported rather than by arrival order.
+        // The order is documented, and a server that got it wrong would attach
+        // every vector to the wrong chunk — a search that confidently returns
+        // the wrong file, which is far harder to notice than one that fails.
+        let mut vectors: Vec<Option<Vec<f32>>> = vec![None; inputs.len()];
+        for item in embedded.data {
+            let Some(slot) = vectors.get_mut(item.index) else {
+                return Err(ProviderError::Protocol(format!(
+                    "{} returned an embedding for input {} of {}",
+                    self.id,
+                    item.index,
+                    inputs.len()
+                )));
+            };
+            *slot = Some(item.embedding);
+        }
+        vectors
+            .into_iter()
+            .enumerate()
+            .map(|(n, vector)| {
+                vector.ok_or_else(|| {
+                    ProviderError::Protocol(format!(
+                        "{} returned no embedding for input {n}",
+                        self.id
+                    ))
+                })
+            })
+            .collect()
     }
 
     /// Reranks against the Cohere-shaped `/rerank` route.
@@ -946,5 +1028,61 @@ mod tests {
     fn a_trailing_slash_on_the_base_url_does_not_double_up() {
         let p = provider("http://localhost:8000/", Some("/v3"));
         assert_eq!(p.models_url(), "http://localhost:8000/v3/models");
+    }
+
+    #[test]
+    fn the_embeddings_route_follows_the_configured_prefix() {
+        assert_eq!(
+            provider("http://x", None).embeddings_url(),
+            "http://x/v1/embeddings"
+        );
+        assert_eq!(
+            provider("http://x", Some("/v3")).embeddings_url(),
+            "http://x/v3/embeddings"
+        );
+    }
+
+    #[test]
+    fn an_embedding_body_sends_an_array_even_for_one_string() {
+        // The API takes a bare string too. Always sending the array means one
+        // code path rather than two that have to agree about the response.
+        let inputs = vec!["one chunk".to_string()];
+        let body = serde_json::to_value(EmbedBody {
+            model: "text-embedding-3-small",
+            input: &inputs,
+        })
+        .expect("serializes");
+        assert!(body["input"].is_array());
+        assert_eq!(body["input"][0], "one chunk");
+    }
+
+    #[tokio::test]
+    async fn embedding_nothing_asks_the_server_nothing() {
+        let vectors = provider("http://127.0.0.1:1", None)
+            .embed("any-model", &[])
+            .await
+            .expect("an empty batch must not touch the network");
+        assert!(vectors.is_empty());
+    }
+
+    #[test]
+    fn embeddings_are_placed_by_the_index_the_server_reported() {
+        // Out of order on the wire, in order in the result. A vector attached
+        // to the wrong chunk is a search that confidently returns the wrong
+        // file, which is far harder to notice than one that fails.
+        let raw = r#"{"data":[
+            {"index":2,"embedding":[3.0]},
+            {"index":0,"embedding":[1.0]},
+            {"index":1,"embedding":[2.0]}
+        ]}"#;
+        let parsed: EmbedResponse = serde_json::from_str(raw).expect("parses");
+        let mut placed = vec![None; 3];
+        for item in parsed.data {
+            placed[item.index] = Some(item.embedding);
+        }
+        assert_eq!(
+            placed,
+            vec![Some(vec![1.0]), Some(vec![2.0]), Some(vec![3.0])]
+        );
     }
 }

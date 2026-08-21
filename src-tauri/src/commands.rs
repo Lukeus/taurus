@@ -1738,8 +1738,12 @@ pub async fn set_theme(state: State<'_, Arc<AppState>>, theme: Theme) -> CmdResu
 }
 
 #[tauri::command]
-pub async fn set_embedding_model(state: State<'_, Arc<AppState>>, model: String) -> CmdResult<()> {
-    state.host.set_embedding_model(&model).await;
+pub async fn set_embedding_model(
+    state: State<'_, Arc<AppState>>,
+    model: String,
+    provider: String,
+) -> CmdResult<()> {
+    state.host.set_embedding_model(&model, &provider).await;
     // The tool is registered by `reload`, so without this a model named here
     // does not become a `search_code` until the next workspace change — which
     // reads as the setting not having taken.
