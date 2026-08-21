@@ -714,7 +714,9 @@ impl Host {
             .ok_or_else(|| format!("no provider configured with id '{id}'"))?;
 
         Ok(match config.kind {
-            ProviderKind::Ollama => Arc::new(OllamaProvider::new(config.base_url)),
+            ProviderKind::Ollama => Arc::new(
+                OllamaProvider::new(config.base_url).with_context_limit(config.context_length),
+            ),
             ProviderKind::OpenAiCompatible => {
                 let defaults = OpenAiCapabilities::default();
                 Arc::new(

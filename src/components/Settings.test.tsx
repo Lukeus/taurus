@@ -265,10 +265,23 @@ describe("which settings each provider kind shows", () => {
     ]);
   });
 
-  it("asks Ollama for nothing, because it answers for itself", () => {
+  it("asks Ollama for nothing it answers for itself", () => {
     expect(FIELDS.ollama.key).toBe(false);
     expect(FIELDS.ollama.declareContext).toBe(false);
     expect(FIELDS.ollama.declareTools).toBe(false);
+  });
+
+  it("offers a ceiling on the one number Ollama reports that is not the answer", () => {
+    // It reports the window the model was trained for. What the machine in
+    // front of it can serve at a usable speed is a different question, and
+    // nothing on the wire answers it — so the field is a cap rather than a
+    // declaration, and it is the only kind that gets one.
+    expect(FIELDS.ollama.contextCap).toBe(true);
+    expect(FIELDS.ollama.declareContext).toBe(false);
+    expect(FIELDS.ollama.contextFallback).toBe(false);
+    for (const kind of ["anthropic", "gemini", "open_ai_compatible"] as const) {
+      expect(FIELDS[kind].contextCap).toBe(false);
+    }
   });
 
   it("does not offer a key header or prefix where the route is fixed", () => {

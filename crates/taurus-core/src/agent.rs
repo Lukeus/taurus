@@ -553,17 +553,15 @@ impl Agent {
 
             // Did this round change anything, and did it check anything?
             //
-            // A round that captured new pre-images did work. A round that ran a
-            // command and captured nothing asked the project a question and got
-            // an answer back — that is what checking looks like from here, and
-            // it clears the debt. A command that did both is more work, not a
-            // check, so the debt stands.
+            // A round that captured new pre-images did work, and work nothing
+            // has been run against is the debt the nudge exists to collect.
+            // Running something clears it — but only when nothing was written
+            // afterwards, because the word the nudge uses is *since*.
             if let Some(recorder) = &recorder {
                 let now = recorder.changed_count().await;
                 let wrote = now > captured;
                 captured = now;
                 if wrote {
-                    unverified = true;
                     // Only when the count moved. The set is read off a lock the
                     // tools are also using, and a round that changed nothing
                     // has nothing to tell anybody.
@@ -572,8 +570,19 @@ impl Agent {
                             paths: recorder.changed_paths().await,
                         })
                         .await;
-                } else if self.ran_a_check(&assistant) {
+                }
+                // Order first, and the file count only as a fallback. This used
+                // to read "wrote something, so the debt stands; otherwise, ran
+                // something, so it is cleared" — which cannot see that the
+                // thing that wrote *was* the check. A test runner leaves a
+                // `.coverage` behind, and the sweep looks past a file an ignore
+                // rule excludes on purpose, so the run counted as work and the
+                // model was told it had not run anything since — one line after
+                // it ran the tests and reported them passing.
+                if self.checked_with_nothing_written_after(&assistant) {
                     unverified = false;
+                } else if wrote {
+                    unverified = true;
                 }
             }
 
@@ -788,14 +797,17 @@ impl Agent {
             self.registry.definitions_for(&self.config.allowed_tools)
         };
 
+        let mut messages = if vision {
+            session.messages.clone()
+        } else {
+            without_images(&session.messages)
+        };
+        self.append_plan(&mut messages);
+
         ChatRequest {
             model: session.model.clone(),
-            system: self.system_prompt(),
-            messages: if vision {
-                session.messages.clone()
-            } else {
-                without_images(&session.messages)
-            },
+            system: Some(self.config.system_prompt.clone()).filter(|s| !s.trim().is_empty()),
+            messages,
             tools,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
@@ -803,32 +815,39 @@ impl Agent {
         }
     }
 
-    /// The system prompt for this iteration, with the plan appended when there
-    /// is one.
+    /// Puts the live plan at the very end of the request.
     ///
-    /// Appended to the system prompt rather than pushed as another message,
-    /// for two reasons. A message would be part of the history — compacted,
-    /// trimmed, and eventually summarized away, which is exactly the drift the
-    /// plan exists to survive. And a second copy would accumulate: one per
-    /// iteration, each slightly staler than the last, until the model is
-    /// reading nine versions of its own checklist and has to work out which one
-    /// is current. The system prompt is rebuilt every iteration, so there is
-    /// only ever one, and it is always the live one.
-    fn system_prompt(&self) -> Option<String> {
-        let base = self.config.system_prompt.trim();
-        let plan = match &self.plan {
-            Some(board) => board.reminder(),
-            None => None,
+    /// Written onto the copy being sent, never into the session. That is what
+    /// keeps the two properties the plan needs: it is not part of the history,
+    /// so compaction cannot summarize it away and it cannot drift; and it is
+    /// rebuilt every iteration, so there is only ever one copy and it is always
+    /// the live one.
+    ///
+    /// Position is the whole point. This used to hang off the end of the system
+    /// prompt, which reads like the end of something and is in fact the very
+    /// beginning of the request — ahead of the tool schemas and every message.
+    /// A backend serving this reuses the longest identical prefix of a prompt
+    /// it has already processed, and `update_plan` is called at the start and
+    /// end of every step, so a plan sitting up there invalidated the tools and
+    /// the whole conversation each time it moved. Measured on a local 30B, one
+    /// 9,550-token prompt: 16ms to repeat unchanged, 10,933ms to repeat with
+    /// one line of the plan edited. On Anthropic it is the same fact with a
+    /// price on it — the cache breakpoint sits on the system field and covers
+    /// the tools rendered before it, and a moved plan misses both.
+    ///
+    /// At the tail it invalidates only itself, and it is nearer the model's
+    /// attention than it was before rather than further away.
+    fn append_plan(&self, messages: &mut Vec<Message>) {
+        let Some(plan) = self.plan.as_ref().and_then(|board| board.reminder()) else {
+            return;
         };
-
-        match (base.is_empty(), plan) {
-            (true, None) => None,
-            (true, Some(plan)) => Some(plan),
-            (false, None) => Some(self.config.system_prompt.clone()),
-            // Last, so it is the nearest thing to the conversation. A model
-            // that reads the end of its prompt most closely is reading the
-            // thing this feature exists to put there.
-            (false, Some(plan)) => Some(format!("{}\n\n{plan}", self.config.system_prompt)),
+        // Onto the last message rather than after it. Every request is built
+        // with a user message last — the person's turn, a round of tool
+        // results, or a nudge — and a second one beside it is a shape some of
+        // these APIs reject outright.
+        match messages.last_mut() {
+            Some(last) if last.role == Role::User => last.content.push(ContentBlock::text(plan)),
+            _ => messages.push(Message::user(plan)),
         }
     }
 
@@ -913,12 +932,35 @@ impl Agent {
     /// Keyed off the same declaration the checkpoint sweep uses, so "the tools
     /// that run a program" has one definition rather than a list here that
     /// quietly falls behind the registry.
-    fn ran_a_check(&self, assistant: &Message) -> bool {
-        assistant.tool_uses().any(|(_, name, _)| {
-            self.registry
-                .get(name)
-                .is_some_and(|tool| tool.touches_unpredictably())
-        })
+    /// Whether this round ran something and then wrote nothing after it.
+    ///
+    /// Calls in one message run in the order they appear, so this is a walk
+    /// rather than a pair of `any`s: a command that cannot say what it touches
+    /// is the model asking the project a question, and a tool that names the
+    /// file it is about to write is the model changing its answer. The last one
+    /// of the two decides, exactly as it would across two rounds.
+    ///
+    /// Which leaves out one case on purpose. A command that both checks and
+    /// works — a `make` that builds and formats, a test run that updates its
+    /// own snapshots — clears the debt here, because there is nothing in a
+    /// shell command to tell the two apart and the alternative is what this
+    /// replaced: the harness telling a model that just ran the tests that it
+    /// has not run anything. A wrong nudge costs a round trip and says
+    /// something false; a missed one leaves a backstop unused, with the system
+    /// prompt still asking for the same thing.
+    fn checked_with_nothing_written_after(&self, assistant: &Message) -> bool {
+        let mut checked = false;
+        for (_, name, input) in assistant.tool_uses() {
+            let Some(tool) = self.registry.get(name) else {
+                continue;
+            };
+            if tool.touches_unpredictably() {
+                checked = true;
+            } else if !tool.touches(input).is_empty() {
+                checked = false;
+            }
+        }
+        checked
     }
 
     /// This turn's tool context, bound to one call so anything it reports lands

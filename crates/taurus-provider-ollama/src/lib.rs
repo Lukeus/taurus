@@ -28,9 +28,47 @@ use wire::{ChatBody, ChatChunk, EmbedResponse, Options, ShowResponse, TagsRespon
 pub const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 const PROVIDER_ID: &str = "ollama";
 
+/// The largest window this asks Ollama to allocate, unless configured otherwise.
+///
+/// A model reports the window it was *trained* for, and Ollama allocates that
+/// much when nothing says otherwise. Those are not the same question. On a
+/// machine that has to hold the weights and the KV cache at once, the trained
+/// window is often far past the point where the model still runs well, and the
+/// symptom is not an error — it is a model that answers so slowly it reads as
+/// broken.
+///
+/// Measured on `qwen3-coder:30b` (trained window 262,144) with an ordinary
+/// 9,019-token agent prompt, warm, on one machine:
+///
+/// | allocated | prompt eval | total  | VRAM    |
+/// |-----------|-------------|--------|---------|
+/// | 262,144   | 202.8s      | 233.3s | 29.0 GB |
+/// | 32,768    | 10.7s       | 10.8s  | 21.7 GB |
+///
+/// A turn is a dozen of those. The difference is between a local model that
+/// works and one nobody waits for.
+///
+/// Not sized per request, deliberately: changing this value makes Ollama
+/// reallocate the cache and reload the model — measured at five seconds a time
+/// against six milliseconds for a request that leaves it alone. It has to be
+/// one stable number per model, which is what makes it configuration rather
+/// than something computed from the prompt in hand.
+///
+/// 32,768 because the harness compacts at a fraction of the window, so this is
+/// a working history of roughly 26,000 tokens — more than a coding turn spends
+/// — while staying inside what a machine that can run the weights can also
+/// hold. A model trained for less than this keeps its own smaller number; a
+/// machine with room for more says so with `context_length` in `providers.json`.
+pub const DEFAULT_CONTEXT_LIMIT: u32 = 32_768;
+
+/// What a model reports when `/api/show` will not answer at all.
+const UNKNOWN_CONTEXT: u32 = 8192;
+
 pub struct OllamaProvider {
     base_url: String,
     client: reqwest::Client,
+    /// Ceiling on the window, whatever the model says it was trained for.
+    context_limit: u32,
     /// `/api/show` costs a round trip and the answer never changes for a given
     /// model tag, so resolve it once per process.
     caps: Arc<Mutex<HashMap<String, Capabilities>>>,
@@ -42,8 +80,22 @@ impl OllamaProvider {
         Self {
             base_url,
             client: reqwest::Client::new(),
+            context_limit: DEFAULT_CONTEXT_LIMIT,
             caps: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Raises or lowers the ceiling from [`DEFAULT_CONTEXT_LIMIT`].
+    ///
+    /// `None` keeps the default. The value is a ceiling rather than a setting:
+    /// a model trained for less than this is still served its own smaller
+    /// window, because asking for more than a model has is not a window, it is
+    /// an error.
+    pub fn with_context_limit(mut self, limit: Option<u32>) -> Self {
+        if let Some(limit) = limit.filter(|l| *l > 0) {
+            self.context_limit = limit;
+        }
+        self
     }
 
     fn url(&self, path: &str) -> String {
@@ -149,7 +201,16 @@ impl Provider for OllamaProvider {
             native_tools: has("tools"),
             vision: has("vision"),
             thinking: has("thinking"),
-            context_length: show.context_length().unwrap_or(8192),
+            // Capped rather than reported. This one number is both what
+            // compaction plans against and what the request asks Ollama to
+            // allocate, so the two cannot come to disagree — and a harness that
+            // planned for a window the server was not serving would fill a
+            // prompt the server then silently truncated from the front, taking
+            // the system prompt and the tools with it.
+            context_length: show
+                .context_length()
+                .unwrap_or(UNKNOWN_CONTEXT)
+                .min(self.context_limit),
         };
 
         debug!(model, ?caps, "resolved ollama capabilities");
@@ -234,6 +295,8 @@ impl Provider for OllamaProvider {
         let options = Options {
             temperature: request.temperature,
             num_predict: request.max_tokens,
+            // The same number compaction is planning against, by construction.
+            num_ctx: Some(caps.context_length),
             stop: request.stop_sequences.clone(),
         };
         let body = ChatBody {
@@ -412,5 +475,107 @@ where
                 None => self.done = true,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use taurus_provider::Message;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A server that answers `/api/show` for a model with the given trained
+    /// window, and `/api/chat` with an empty final chunk.
+    async fn server_reporting(trained: u32) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "capabilities": ["completion", "tools"],
+                "model_info": { "qwen3moe.context_length": trained },
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"done\":true,\"done_reason\":\"stop\"}\n",
+                "application/x-ndjson",
+            ))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn a_window_past_what_a_machine_can_serve_is_capped() {
+        // The reported number is what the model was trained for, not what the
+        // machine in front of it can hold.
+        let server = server_reporting(262_144).await;
+        let provider = OllamaProvider::new(server.uri());
+        let caps = provider.capabilities("qwen3-coder").await.unwrap();
+        assert_eq!(caps.context_length, DEFAULT_CONTEXT_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn a_model_trained_for_less_keeps_its_own_window() {
+        // A ceiling, not a setting. Asking for more window than a model has is
+        // not a larger window, it is an error.
+        let server = server_reporting(8_192).await;
+        let provider = OllamaProvider::new(server.uri());
+        let caps = provider.capabilities("small").await.unwrap();
+        assert_eq!(caps.context_length, 8_192);
+    }
+
+    #[tokio::test]
+    async fn a_configured_limit_replaces_the_default() {
+        let server = server_reporting(262_144).await;
+        let provider = OllamaProvider::new(server.uri()).with_context_limit(Some(131_072));
+        let caps = provider.capabilities("qwen3-coder").await.unwrap();
+        assert_eq!(caps.context_length, 131_072);
+
+        // And is still a ceiling rather than a demand.
+        let server = server_reporting(4_096).await;
+        let provider = OllamaProvider::new(server.uri()).with_context_limit(Some(131_072));
+        let caps = provider.capabilities("small").await.unwrap();
+        assert_eq!(caps.context_length, 4_096);
+    }
+
+    #[tokio::test]
+    async fn an_unset_limit_keeps_the_default() {
+        let server = server_reporting(262_144).await;
+        let provider = OllamaProvider::new(server.uri()).with_context_limit(None);
+        let caps = provider.capabilities("qwen3-coder").await.unwrap();
+        assert_eq!(caps.context_length, DEFAULT_CONTEXT_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn the_request_allocates_exactly_the_window_compaction_plans_against() {
+        // The failure this rules out is the two disagreeing: a harness filling
+        // a prompt for a window the server was never asked to allocate, and a
+        // server quietly dropping the front of it.
+        let server = server_reporting(262_144).await;
+        let provider = OllamaProvider::new(server.uri());
+        let planned = provider.capabilities("qwen3-coder").await.unwrap();
+
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        provider
+            .stream(
+                ChatRequest::new("qwen3-coder", vec![Message::user("go")]),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let chat = requests
+            .iter()
+            .find(|r| r.url.path() == "/api/chat")
+            .expect("a chat request");
+        let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
+        assert_eq!(body["options"]["num_ctx"], planned.context_length);
     }
 }

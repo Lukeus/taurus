@@ -422,6 +422,49 @@ than the model spending a turn discovering it has no credential. Picking a
 backend and it still not running is a state the tab names explicitly, since a
 selection alone is not the same as a working one.
 
+## Ollama, and the window nothing chooses for you
+
+Ollama needs no configuration at all — a `base_url` and nothing else. It probes
+its own models: tool support, vision, thinking, and the context window all come
+back from `/api/show`, per model tag, remembered for the life of the provider.
+
+One of those answers is not the answer to the question Taurus is asking. A model
+reports the window it was **trained** for. What the machine in front of it can
+serve at a speed anyone will wait for is a different number, and nothing on the
+wire reports it. Left to itself, Ollama allocates the trained window, and on a
+modern local model that is a KV cache far larger than the machine wants to hold.
+
+Measured on `qwen3-coder:30b` — trained window 262,144 — with an ordinary
+9,019-token agent prompt, warm, on one machine:
+
+| Allocated | Prompt eval | Total | VRAM |
+|---|---|---|---|
+| 262,144 | 202.8s | 233.3s | 29.0 GB |
+| 32,768 | 10.7s | 10.8s | 21.7 GB |
+
+A turn is a dozen requests like that. The difference is between a local model
+that works and one nobody waits for — and the symptom is never an error, just a
+model that seems to have stopped thinking.
+
+So `context_length` here is a **ceiling**, not a declaration:
+
+```jsonc
+[{ "id": "ollama", "base_url": "http://localhost:11434", "context_length": 65536 }]
+```
+
+Left unset it is 32,768, which after compaction is a working history of roughly
+26,000 tokens. Set it higher on a machine with room to spare, lower on one
+without. A model trained for less than the ceiling keeps its own smaller window
+either way: this only ever takes the smaller of the two, because asking for more
+window than a model has is not a larger window, it is an error.
+
+The same number is what compaction plans against, by construction — the request
+allocates exactly the window the harness is filling. The two cannot come to
+disagree, which matters more than it sounds: a harness planning for a window the
+server was never asked to allocate fills a prompt the server then truncates from
+the front, taking the system prompt and the tool definitions with it. The model
+does not report that. It just gets worse.
+
 ## Anthropic and Google Gemini
 
 Both are their own `kind` rather than a `base_url` pointed at a different host,

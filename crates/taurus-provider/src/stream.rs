@@ -59,12 +59,16 @@ pub enum StreamEvent {
     ToolUseEnd {
         id: String,
     },
-    /// Proof of origin for the thinking block currently open.
+    /// Proof of origin for the block currently open.
     ///
     /// Emitted by adapters whose provider issues one and demands it back
     /// unedited on the next request. Arrives while the block is still open, so
     /// there is no separate close event for reasoning the way there is for a
     /// tool call.
+    ///
+    /// Named for the Anthropic case, where the block it signs is always
+    /// thinking. Gemini signs the tool call a model reasoned its way to, and
+    /// the signature lands on whichever of the two is open.
     ThinkingSignature {
         signature: String,
     },
@@ -107,11 +111,8 @@ impl StreamAccumulator {
             StreamEvent::ThinkingDelta { text } => self.append_text(text, true),
             StreamEvent::ToolUseStart { id, name } => {
                 self.close_open();
-                self.blocks.push(ContentBlock::ToolUse {
-                    id,
-                    name,
-                    input: serde_json::Value::Null,
-                });
+                self.blocks
+                    .push(ContentBlock::tool_use(id, name, serde_json::Value::Null));
                 self.open = Some(Open::ToolUse {
                     index: self.blocks.len() - 1,
                     json: String::new(),
@@ -124,16 +125,23 @@ impl StreamAccumulator {
             }
             StreamEvent::ToolUseEnd { .. } => self.close_open(),
             // Attached to the open block rather than closing it: the provider
-            // sends this before the block ends, and a signature with no
-            // thinking to sign is nothing to keep.
+            // sends this before the block ends, and a signature with nothing
+            // open to sign is nothing to keep.
             StreamEvent::ThinkingSignature { signature } => {
-                if let Some(Open::Thinking(i)) = self.open {
-                    if let Some(ContentBlock::Thinking {
+                let open = match self.open {
+                    Some(Open::Thinking(i)) | Some(Open::ToolUse { index: i, .. }) => Some(i),
+                    _ => None,
+                };
+                if let Some(
+                    ContentBlock::Thinking {
                         signature: slot, ..
-                    }) = self.blocks.get_mut(i)
-                    {
-                        *slot = Some(signature);
                     }
+                    | ContentBlock::ToolUse {
+                        signature: slot, ..
+                    },
+                ) = open.and_then(|i| self.blocks.get_mut(i))
+                {
+                    *slot = Some(signature);
                 }
             }
             StreamEvent::Usage { usage } => self.usage = usage,
@@ -217,6 +225,41 @@ mod tests {
     }
 
     #[test]
+    fn a_signature_lands_on_an_open_tool_call() {
+        // Anthropic signs the thinking; Gemini signs the call the model
+        // reasoned its way to. The event attaches to whichever is open.
+        let mut acc = StreamAccumulator::new();
+        acc.push(StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "run_command".into(),
+        });
+        acc.push(StreamEvent::ToolUseInputDelta {
+            id: "t1".into(),
+            json: "{}".into(),
+        });
+        acc.push(StreamEvent::ThinkingSignature {
+            signature: "sig-call".into(),
+        });
+        acc.push(StreamEvent::ToolUseEnd { id: "t1".into() });
+
+        let (message, _, _) = acc.finish();
+        let ContentBlock::ToolUse { signature, .. } = &message.content[0] else {
+            panic!("expected a tool use, got {:?}", message.content[0]);
+        };
+        assert_eq!(signature.as_deref(), Some("sig-call"));
+    }
+
+    #[test]
+    fn a_signature_with_nothing_open_is_dropped() {
+        let mut acc = StreamAccumulator::new();
+        acc.push(StreamEvent::ThinkingSignature {
+            signature: "orphan".into(),
+        });
+        let (message, _, _) = acc.finish();
+        assert!(message.content.is_empty());
+    }
+
+    #[test]
     fn merges_consecutive_text_deltas() {
         let mut acc = StreamAccumulator::new();
         acc.push(text("Hel"));
@@ -258,11 +301,11 @@ mod tests {
         assert!(bad.is_empty());
         assert_eq!(
             msg.content,
-            vec![ContentBlock::ToolUse {
-                id: "t1".into(),
-                name: "read_file".into(),
-                input: serde_json::json!({"path": "a.txt"}),
-            }]
+            vec![ContentBlock::tool_use(
+                "t1",
+                "read_file",
+                serde_json::json!({"path": "a.txt"})
+            )]
         );
     }
 

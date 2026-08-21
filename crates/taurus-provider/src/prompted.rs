@@ -417,11 +417,11 @@ mod tests {
                 Message::user("hi"),
                 Message::new(
                     Role::Assistant,
-                    vec![ContentBlock::ToolUse {
-                        id: "t1".into(),
-                        name: "read_file".into(),
-                        input: serde_json::json!({"path": "a.txt"}),
-                    }],
+                    vec![ContentBlock::tool_use(
+                        "t1",
+                        "read_file",
+                        serde_json::json!({"path": "a.txt"}),
+                    )],
                 ),
                 Message::new(
                     Role::User,

@@ -108,8 +108,9 @@ not because it forgot the steps. They are still there, twenty messages back,
 behind a wall of tool output, competing with everything else for attention.
 
 So `update_plan` writes a checklist, and the checklist is not left in the
-history. It is rebuilt into the system prompt on **every** iteration, where it
-is the last thing the model reads before deciding what to do next:
+history. It is rebuilt onto the **end of every request** — the very last thing
+the model reads before deciding what to do next, written onto the copy being
+sent and never into the conversation being stored:
 
 ```
 # Your current plan
@@ -130,6 +131,21 @@ every step 'done' first, and then say what you did and stop.
 
 The same list is drawn in the transcript, so the user is reading what the model
 is reading.
+
+**Why the end, and not the system prompt.** It used to hang off the end of the
+system prompt, which reads like the end of something and is in fact the very
+beginning of a request — ahead of the tool schemas and every message in the
+conversation. A backend serving a prompt reuses the longest identical prefix of
+one it has already processed, and `update_plan` is called at the start and the
+end of every step, so a plan sitting up there threw away the tools and the whole
+conversation each time a checkbox moved. On one local 30B, a 9,550-token prompt
+costs 16ms to repeat unchanged and 10,933ms to repeat with a single line of the
+plan edited; the same three-step task ran in 75 seconds with the plan at the end
+and 194 seconds with it at the front. On Anthropic it is the same fact with a
+price on it — the cache breakpoint sits on the system field and covers the tools
+rendered before it, so a moved plan misses both. At the tail the plan
+invalidates only itself, and it is nearer the model's attention than it was
+before rather than further away.
 
 Three properties do the work, and each one is a test:
 
@@ -365,9 +381,27 @@ check its own work before it is allowed to finish:
 
 The system prompt says the same thing, and saying it there is not enough: a 9B
 model edits a file and stops anyway. Asked at the moment it tries to finish, it
-goes and runs the build. What counts as having checked is a command that ran
-and changed nothing — the model asking the project a question and getting an
-answer. A command that changed files as well is more work, not a check.
+goes and runs the build.
+
+What counts as having checked is a command that ran with nothing written after
+it — the model asking the project a question and getting an answer, with no
+edit since. The order decides, not which of the two happened: calls in one
+message run in the order they appear, so a round that ran the tests and then
+edited still owes a check, exactly as if the edit had come in a round of its
+own.
+
+The word doing the work there is *since*. It used to be enough for a round to
+have written anything at all for the debt to stand, on the reasoning that a
+command which wrote was doing work rather than asking a question. That cannot
+see the case where the thing that wrote *was* the check: a test runner leaves a
+`.coverage` beside the code, and a file an ignore rule excludes is one the sweep
+looks past on purpose, so the run counted as work and the model was told it had
+not run anything since — one line after running the tests and reporting them
+passing. One command is still ambiguous and always will be: a `make` that builds
+and formats, or a test run that updates its own snapshots, clears the debt now.
+Nothing in a shell command distinguishes those from a test runner writing a
+stamp, and a nudge that fires wrongly costs a round trip and says something
+false, while one that stays quiet leaves a backstop unused.
 
 Once per turn, and phrased with a way out, so a documentation edit costs one
 round trip rather than an argument. `verify_changes` in `AgentConfig` turns it

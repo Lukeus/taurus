@@ -25,13 +25,23 @@ pub struct Options {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_predict: Option<u32>,
+    /// The window to allocate for this request.
+    ///
+    /// Left unsent, Ollama allocates whatever the model was trained for, which
+    /// on a modern local model is a KV cache far larger than the machine wants
+    /// to hold. See `OllamaProvider::context_limit`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_ctx: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stop: Vec<String>,
 }
 
 impl Options {
     pub fn is_empty(&self) -> bool {
-        self.temperature.is_none() && self.num_predict.is_none() && self.stop.is_empty()
+        self.temperature.is_none()
+            && self.num_predict.is_none()
+            && self.num_ctx.is_none()
+            && self.stop.is_empty()
     }
 }
 

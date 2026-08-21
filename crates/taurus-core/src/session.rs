@@ -349,11 +349,11 @@ mod tests {
     fn tool_call() -> Message {
         Message::new(
             Role::Assistant,
-            vec![ContentBlock::ToolUse {
-                id: "t1".into(),
-                name: "read_file".into(),
-                input: serde_json::json!({}),
-            }],
+            vec![ContentBlock::tool_use(
+                "t1",
+                "read_file",
+                serde_json::json!({}),
+            )],
         )
     }
 
@@ -364,11 +364,11 @@ mod tests {
     fn call(id: &str, name: &str, path: &str) -> Message {
         Message::new(
             Role::Assistant,
-            vec![ContentBlock::ToolUse {
-                id: id.into(),
-                name: name.into(),
-                input: serde_json::json!({ "path": path }),
-            }],
+            vec![ContentBlock::tool_use(
+                id,
+                name,
+                serde_json::json!({ "path": path }),
+            )],
         )
     }
 
