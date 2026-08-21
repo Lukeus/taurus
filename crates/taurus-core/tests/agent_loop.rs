@@ -1279,6 +1279,73 @@ async fn a_turn_that_already_checked_its_work_is_left_alone() {
 }
 
 #[tokio::test]
+async fn a_check_that_leaves_a_file_behind_is_still_a_check() {
+    // The bug this replaced. A test runner writes a `.coverage` beside the
+    // code, and the sweep looks past a file an ignore rule excludes on purpose
+    // — so the run registered as work, the debt stood, and the model was told
+    // it had not run anything since, one line after running the tests.
+    let (agent, provider, workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_call(
+                "t1",
+                "write_file",
+                serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+            ),
+            ScriptedTurn::tool_call(
+                "t2",
+                "run_command",
+                serde_json::json!({"command": "echo data > .coverage"}),
+            ),
+            ScriptedTurn::text("Done, and the tests pass."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "write a.rs and test it").await;
+
+    assert!(workspace.join(".coverage").exists(), "the check wrote it");
+    assert_eq!(
+        nudges(&provider.last_request().await.unwrap()),
+        0,
+        "told to check work it had just checked"
+    );
+    assert_eq!(provider.request_count().await, 3, "a wasted round trip");
+}
+
+#[tokio::test]
+async fn writing_after_the_check_still_owes_a_check() {
+    // The order is what decides, not which of the two happened. A round that
+    // ran the tests and *then* edited has changed something nothing has been
+    // run against, exactly as if the edit had come in a round of its own.
+    let (agent, provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_calls(vec![
+                ("t1", "run_command", serde_json::json!({"command": "true"})),
+                (
+                    "t2",
+                    "write_file",
+                    serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+                ),
+            ]),
+            ScriptedTurn::text("Done."),
+            ScriptedTurn::tool_call("t3", "run_command", serde_json::json!({"command": "true"})),
+            ScriptedTurn::text("Checked."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "test then write").await;
+
+    assert_eq!(
+        nudges(&provider.last_request().await.unwrap()),
+        1,
+        "an edit after the check went unchecked"
+    );
+}
+
+#[tokio::test]
 async fn a_turn_that_only_read_things_is_left_alone() {
     let (agent, provider, _workspace, _dir, _logs) = recorded(
         vec![

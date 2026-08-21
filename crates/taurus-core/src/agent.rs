@@ -553,17 +553,15 @@ impl Agent {
 
             // Did this round change anything, and did it check anything?
             //
-            // A round that captured new pre-images did work. A round that ran a
-            // command and captured nothing asked the project a question and got
-            // an answer back — that is what checking looks like from here, and
-            // it clears the debt. A command that did both is more work, not a
-            // check, so the debt stands.
+            // A round that captured new pre-images did work, and work nothing
+            // has been run against is the debt the nudge exists to collect.
+            // Running something clears it — but only when nothing was written
+            // afterwards, because the word the nudge uses is *since*.
             if let Some(recorder) = &recorder {
                 let now = recorder.changed_count().await;
                 let wrote = now > captured;
                 captured = now;
                 if wrote {
-                    unverified = true;
                     // Only when the count moved. The set is read off a lock the
                     // tools are also using, and a round that changed nothing
                     // has nothing to tell anybody.
@@ -572,8 +570,19 @@ impl Agent {
                             paths: recorder.changed_paths().await,
                         })
                         .await;
-                } else if self.ran_a_check(&assistant) {
+                }
+                // Order first, and the file count only as a fallback. This used
+                // to read "wrote something, so the debt stands; otherwise, ran
+                // something, so it is cleared" — which cannot see that the
+                // thing that wrote *was* the check. A test runner leaves a
+                // `.coverage` behind, and the sweep looks past a file an ignore
+                // rule excludes on purpose, so the run counted as work and the
+                // model was told it had not run anything since — one line after
+                // it ran the tests and reported them passing.
+                if self.checked_with_nothing_written_after(&assistant) {
                     unverified = false;
+                } else if wrote {
+                    unverified = true;
                 }
             }
 
@@ -913,12 +922,35 @@ impl Agent {
     /// Keyed off the same declaration the checkpoint sweep uses, so "the tools
     /// that run a program" has one definition rather than a list here that
     /// quietly falls behind the registry.
-    fn ran_a_check(&self, assistant: &Message) -> bool {
-        assistant.tool_uses().any(|(_, name, _)| {
-            self.registry
-                .get(name)
-                .is_some_and(|tool| tool.touches_unpredictably())
-        })
+    /// Whether this round ran something and then wrote nothing after it.
+    ///
+    /// Calls in one message run in the order they appear, so this is a walk
+    /// rather than a pair of `any`s: a command that cannot say what it touches
+    /// is the model asking the project a question, and a tool that names the
+    /// file it is about to write is the model changing its answer. The last one
+    /// of the two decides, exactly as it would across two rounds.
+    ///
+    /// Which leaves out one case on purpose. A command that both checks and
+    /// works — a `make` that builds and formats, a test run that updates its
+    /// own snapshots — clears the debt here, because there is nothing in a
+    /// shell command to tell the two apart and the alternative is what this
+    /// replaced: the harness telling a model that just ran the tests that it
+    /// has not run anything. A wrong nudge costs a round trip and says
+    /// something false; a missed one leaves a backstop unused, with the system
+    /// prompt still asking for the same thing.
+    fn checked_with_nothing_written_after(&self, assistant: &Message) -> bool {
+        let mut checked = false;
+        for (_, name, input) in assistant.tool_uses() {
+            let Some(tool) = self.registry.get(name) else {
+                continue;
+            };
+            if tool.touches_unpredictably() {
+                checked = true;
+            } else if !tool.touches(input).is_empty() {
+                checked = false;
+            }
+        }
+        checked
     }
 
     /// This turn's tool context, bound to one call so anything it reports lands
