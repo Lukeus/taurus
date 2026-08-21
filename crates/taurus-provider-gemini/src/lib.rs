@@ -340,6 +340,13 @@ impl Provider for GeminiProvider {
                         },
                     )
                     .await?;
+                    // Before the close, because it attaches to the block that
+                    // is still open. The signature arrives on the part holding
+                    // the call, not inside the call, and this API wants it back
+                    // on that same part next request.
+                    if let Some(signature) = part.thought_signature {
+                        send(&tx, StreamEvent::ThinkingSignature { signature }).await?;
+                    }
                     send(&tx, StreamEvent::ToolUseEnd { id }).await?;
                     continue;
                 }
@@ -427,69 +434,53 @@ mod tests {
     use super::*;
     use taurus_provider::{ContentBlock, Message, StreamAccumulator};
 
-    /// Runs recorded chunks through the same part-handling the adapter uses and
-    /// folds the result with the shared accumulator, so the assertion is about
-    /// the `Message` a turn produces.
+    /// Serves recorded chunks as an event stream, drives the adapter through
+    /// its own HTTP path, and folds the result with the shared accumulator, so
+    /// the assertion is about the `Message` a turn produces.
+    ///
+    /// Through `stream()` rather than around it. This used to re-implement the
+    /// adapter's part handling, which meant every test in here asserted against
+    /// a copy — and the copy went on passing after the adapter learned to keep
+    /// a signature the copy dropped.
     async fn replay(chunks: &[&str]) -> (Message, TokenUsage) {
-        let (tx, mut rx) = mpsc::channel(64);
-        let mut usage = TokenUsage::default();
-        let mut call_index = 0usize;
+        // Recorded chunks are written across lines for reading. A newline ends
+        // a `data:` line, so each one is re-serialized onto one.
+        let body: String = chunks
+            .iter()
+            .map(|raw| {
+                let chunk: serde_json::Value = serde_json::from_str(raw).expect(raw);
+                format!("data: {chunk}\n\n")
+            })
+            .collect();
 
-        for raw in chunks {
-            let chunk: StreamChunk = serde_json::from_str(raw).expect(raw);
-            if let Some(u) = chunk.usage_metadata {
-                usage = TokenUsage {
-                    input_tokens: u.prompt_token_count.unwrap_or(usage.input_tokens),
-                    output_tokens: u.output_total(),
-                };
-            }
-            let Some(candidate) = chunk.candidates.into_iter().next() else {
-                continue;
-            };
-            let Some(content) = candidate.content else {
-                continue;
-            };
-            for part in content.parts {
-                if let Some(call) = part.function_call {
-                    let id = call.id.unwrap_or_else(|| {
-                        call_index += 1;
-                        format!("call_{call_index}")
-                    });
-                    tx.send(StreamEvent::ToolUseStart {
-                        id: id.clone(),
-                        name: call.name,
-                    })
-                    .await
-                    .unwrap();
-                    tx.send(StreamEvent::ToolUseInputDelta {
-                        id: id.clone(),
-                        json: call.args.to_string(),
-                    })
-                    .await
-                    .unwrap();
-                    tx.send(StreamEvent::ToolUseEnd { id }).await.unwrap();
-                    continue;
-                }
-                let Some(text) = part.text else { continue };
-                if part.thought.unwrap_or(false) {
-                    tx.send(StreamEvent::ThinkingDelta { text }).await.unwrap();
-                    if let Some(signature) = part.thought_signature {
-                        tx.send(StreamEvent::ThinkingSignature { signature })
-                            .await
-                            .unwrap();
-                    }
-                } else if !text.is_empty() {
-                    tx.send(StreamEvent::TextDelta { text }).await.unwrap();
-                }
-            }
-        }
-        drop(tx);
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_raw(body, "text/event-stream")
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = GeminiProvider::new("gemini", server.uri(), None);
+        let (tx, mut rx) = mpsc::channel(64);
+        let turn = tokio::spawn(async move {
+            provider
+                .stream(
+                    ChatRequest::new("gemini-2.5-pro", vec![Message::user("go")]),
+                    tx,
+                    CancellationToken::new(),
+                )
+                .await
+        });
 
         let mut acc = StreamAccumulator::new();
         while let Some(event) = rx.recv().await {
             acc.push(event);
         }
-        let (message, _, _) = acc.finish();
+        turn.await.expect("the turn task").expect("the turn");
+        let (message, usage, _) = acc.finish();
         (message, usage)
     }
 
@@ -543,6 +534,32 @@ mod tests {
                 {"functionCall":{"id":"fc_real","name":"x","args":{}}}],"role":"model"}}]}"#])
         .await;
         assert_eq!(message.tool_uses().next().unwrap().0, "fc_real");
+    }
+
+    #[tokio::test]
+    async fn a_signed_call_keeps_its_signature() {
+        // The signature rides the part holding the call, not the call. This
+        // API refuses a request whose history replays the call without it.
+        let (message, _) = replay(&[r#"{"candidates":[{"content":{"parts":[
+                {"functionCall":{"name":"run_command","args":{"cmd":"ls"}},
+                 "thoughtSignature":"sig-call"}],"role":"model"}}]}"#])
+        .await;
+        let ContentBlock::ToolUse { signature, .. } = &message.content[0] else {
+            panic!("expected a tool use, got {:?}", message.content[0]);
+        };
+        assert_eq!(signature.as_deref(), Some("sig-call"));
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_call_is_still_a_call() {
+        // Every other model on this API, and every other provider.
+        let (message, _) = replay(&[r#"{"candidates":[{"content":{"parts":[
+                {"functionCall":{"name":"run_command","args":{}}}],"role":"model"}}]}"#])
+        .await;
+        let ContentBlock::ToolUse { signature, .. } = &message.content[0] else {
+            panic!("expected a tool use, got {:?}", message.content[0]);
+        };
+        assert_eq!(*signature, None);
     }
 
     #[tokio::test]

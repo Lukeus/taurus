@@ -62,7 +62,9 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
                 // Ollama does not accept it as input.
                 ContentBlock::Thinking { .. } => {}
                 ContentBlock::Image { data, .. } => images.push(data.clone()),
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     names_by_id.insert(id.as_str(), name.as_str());
                     tool_calls.push(WireToolCall {
                         id: Some(id.clone()),
@@ -136,11 +138,11 @@ mod tests {
             vec![
                 Message::new(
                     Role::Assistant,
-                    vec![ContentBlock::ToolUse {
-                        id: "t1".into(),
-                        name: "read_file".into(),
-                        input: serde_json::json!({"path": "a"}),
-                    }],
+                    vec![ContentBlock::tool_use(
+                        "t1",
+                        "read_file",
+                        serde_json::json!({"path": "a"}),
+                    )],
                 ),
                 Message::new(Role::User, vec![ContentBlock::tool_result("t1", "body")]),
             ],

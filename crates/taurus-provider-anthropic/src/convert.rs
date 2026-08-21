@@ -129,7 +129,9 @@ fn block_list(message: &Message) -> Vec<Value> {
                 }
             }
 
-            ContentBlock::ToolUse { id, name, input } => blocks.push(json!({
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => blocks.push(json!({
                 "type": "tool_use",
                 "id": id,
                 "name": name,
@@ -191,11 +193,11 @@ mod tests {
                 Message::user("hello"),
                 Message::new(
                     Role::Assistant,
-                    vec![ContentBlock::ToolUse {
-                        id: "toolu_1".into(),
-                        name: "read_file".into(),
-                        input: json!({"path": "a.txt"}),
-                    }],
+                    vec![ContentBlock::tool_use(
+                        "toolu_1",
+                        "read_file",
+                        json!({"path": "a.txt"}),
+                    )],
                 ),
                 Message::new(
                     Role::User,

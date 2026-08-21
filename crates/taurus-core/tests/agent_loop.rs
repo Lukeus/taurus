@@ -478,11 +478,11 @@ async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
     for i in 0..4 {
         session.push(Message::new(
             Role::Assistant,
-            vec![ContentBlock::ToolUse {
-                id: format!("t{i}"),
-                name: "read_file".into(),
-                input: serde_json::json!({ "path": "a.rs" }),
-            }],
+            vec![ContentBlock::tool_use(
+                format!("t{i}"),
+                "read_file",
+                serde_json::json!({ "path": "a.rs" }),
+            )],
         ));
         session.push(Message::new(
             Role::User,

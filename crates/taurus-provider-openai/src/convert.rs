@@ -55,7 +55,9 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
                         "image_url": { "url": format!("data:{mime_type};base64,{data}") }
                     }));
                 }
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     tool_calls.push(serde_json::json!({
                         "id": id,
                         "type": "function",
@@ -117,11 +119,11 @@ mod tests {
             "m",
             vec![Message::new(
                 Role::Assistant,
-                vec![ContentBlock::ToolUse {
-                    id: "call_1".into(),
-                    name: "read_file".into(),
-                    input: serde_json::json!({"path": "a.txt"}),
-                }],
+                vec![ContentBlock::tool_use(
+                    "call_1",
+                    "read_file",
+                    serde_json::json!({"path": "a.txt"}),
+                )],
             )],
         );
         let wire = messages_to_wire(&req);

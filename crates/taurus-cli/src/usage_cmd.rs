@@ -205,7 +205,9 @@ impl Report {
 
             for block in &message.content {
                 match block {
-                    ContentBlock::ToolUse { id, name, input } => {
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => {
                         let cost = estimate_block(block);
                         let entry = self.by_tool.entry(name.to_string()).or_default();
                         entry.calls += 1;
@@ -320,11 +322,7 @@ mod tests {
     fn call(id: &str, name: &str, path: &str) -> Message {
         Message::new(
             Role::Assistant,
-            vec![ContentBlock::ToolUse {
-                id: id.into(),
-                name: name.into(),
-                input: json!({ "path": path }),
-            }],
+            vec![ContentBlock::tool_use(id, name, json!({ "path": path }))],
         )
     }
 

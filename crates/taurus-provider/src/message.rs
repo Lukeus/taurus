@@ -50,6 +50,21 @@ pub enum ContentBlock {
         name: String,
         #[ts(type = "unknown")]
         input: serde_json::Value,
+        /// Opaque proof-of-origin for the *call*, for providers that issue one.
+        ///
+        /// Gemini is the case, and it is separate from the one on `Thinking`:
+        /// a model that reasoned its way to a tool call signs the call itself,
+        /// and replaying that call without the signature is a 400 naming the
+        /// tool and its position in the history. Anthropic signs the thinking
+        /// instead, which is why this is a second field rather than the same
+        /// one moved.
+        ///
+        /// `None` on every other backend, and on transcripts written before
+        /// this field existed, which is why it defaults rather than being
+        /// required.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        signature: Option<String>,
     },
     ToolResult {
         tool_use_id: String,
@@ -72,6 +87,20 @@ impl ContentBlock {
     pub fn thinking(text: impl Into<String>) -> Self {
         Self::Thinking {
             text: text.into(),
+            signature: None,
+        }
+    }
+
+    /// A call with no signature, which is every provider but Gemini.
+    pub fn tool_use(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: serde_json::Value,
+    ) -> Self {
+        Self::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input,
             signature: None,
         }
     }
@@ -137,7 +166,9 @@ impl Message {
 
     pub fn tool_uses(&self) -> impl Iterator<Item = (&str, &str, &serde_json::Value)> {
         self.content.iter().filter_map(|b| match b {
-            ContentBlock::ToolUse { id, name, input } => Some((id.as_str(), name.as_str(), input)),
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => Some((id.as_str(), name.as_str(), input)),
             _ => None,
         })
     }
