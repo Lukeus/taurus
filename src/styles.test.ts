@@ -114,6 +114,63 @@ describe("the stylesheet", () => {
     expect(body).toMatch(/color:/);
   });
 
+  it("paints the window in the same two inks the stylesheet does", () => {
+    /*
+     * A webview holds its host's default ground — white — until the document
+     * first paints, so the window itself has to be told the palette before
+     * there is a stylesheet to read it from. That means these two values exist
+     * twice, in `src-tauri`, and nothing in either file can derive the other.
+     *
+     * This is the thing that notices when the palette moves and the window
+     * does not: the symptom otherwise is a one-frame flash of the *old* theme
+     * on every launch, which nobody reports and nobody can screenshot.
+     */
+    const ink = (body: string | undefined) =>
+      body?.match(/--lk-ink:\s*(#[0-9a-f]{6})/i)?.[1].toLowerCase();
+
+    const dark = ink(block(":root"));
+    const light = ink(block(':root[data-theme="light"]'));
+    expect(dark, "the dark palette declares no --lk-ink").toBeDefined();
+    expect(light, "the light palette declares no --lk-ink").toBeDefined();
+
+    const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    const constant = (name: string) => {
+      const hex = rust
+        .match(new RegExp(`${name}: tauri::window::Color = [^;]+;`))?.[0]
+        .match(/0x([0-9a-f]{2}), 0x([0-9a-f]{2}), 0x([0-9a-f]{2})/i);
+      return hex && `#${hex[1]}${hex[2]}${hex[3]}`.toLowerCase();
+    };
+    expect(constant("DARK"), "the window's dark ground has drifted").toBe(dark);
+    expect(constant("LIGHT"), "the window's light ground has drifted").toBe(light);
+
+    // The config value is what the window is created with, before any of the
+    // above runs; it is the dark one because that is what the app defaults to.
+    const conf = JSON.parse(
+      readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+    );
+    expect(conf.app.windows[0].backgroundColor?.toLowerCase()).toBe(dark);
+  });
+
+  it("lets the browser skip a turn that is scrolled off", () => {
+    /*
+     * The transcript has no virtualiser: every turn ever rendered stays in the
+     * document, so layout and paint cost grow with conversation length however
+     * well the React memos hold. `content-visibility` is what buys that back,
+     * and it is only worth having with an intrinsic size beside it — without
+     * one every off-screen turn collapses to zero height and the scrollbar
+     * jumps. The `auto` keyword is the part that stops a turn already measured
+     * from being guessed at again.
+     */
+    const body = block(".turn");
+    expect(body).toBeDefined();
+    expect(body, "off-screen turns still cost a full layout").toMatch(
+      /content-visibility:\s*auto/,
+    );
+    expect(body, "a skipped turn would collapse to nothing").toMatch(
+      /contain-intrinsic-size:\s*auto\s+[\d.]+px/,
+    );
+  });
+
   it("keeps empty, loading and failed as three different states", () => {
     /*
      * All three used to share `.drawer-empty`, so a drawer whose read failed

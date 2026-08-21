@@ -9,8 +9,18 @@ mod state;
 
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{Manager, Theme};
 use tracing_subscriber::EnvFilter;
+
+use taurus_host::config::{self, Scope};
+
+/// The window's own background, in the palette the app is about to paint in.
+///
+/// `--lk-ink` in `src/styles.css`, both halves. Kept in step by a test there,
+/// which reads this file — the two cannot be derived from one another because
+/// this one is needed before a stylesheet exists to read.
+const DARK: tauri::window::Color = tauri::window::Color(0x0b, 0x0f, 0x14, 0xff);
+const LIGHT: tauri::window::Color = tauri::window::Color(0xf7, 0xf9, 0xfb, 0xff);
 
 // An optimized build with `cfg(dev)` still set is the one broken artifact that
 // looks entirely healthy: it compiles, links, bundles, and then opens on
@@ -23,6 +33,48 @@ compile_error!(
     "a release build without the `custom-protocol` feature would load `devUrl` instead of the \
      bundled frontend. Build with `pnpm tauri build`, or add `--features custom-protocol`."
 );
+
+/// Paints the window before anything is in it.
+///
+/// A webview opens on its host's default ground, which is white, and holds it
+/// until the first paint of the document. The stylesheet already covers the
+/// frame after that — see the `prefers-color-scheme` guard in `styles.css` —
+/// but not this one, which is the window itself and belongs to the platform.
+/// A dark-mode user saw it as a white flash on every launch.
+///
+/// `backgroundColor` in `tauri.conf.json` is the dark value, because that is
+/// what the design system is; this corrects it for someone who has asked for
+/// light. Read from the settings file rather than from the frontend's cached
+/// copy, because the frontend has not run yet — that cache exists for the
+/// opposite problem, the frame *after* this one.
+///
+/// Best-effort throughout. Every failure here costs a flash, and none of them
+/// is worth refusing to open the window over.
+fn paint_window(app: &tauri::App) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    // Global layer only, and deliberately: the workspace layer belongs to a
+    // folder that has not been resolved yet, and a window that opened in one
+    // palette because of the last project it was in would be worse than one
+    // that opened in the user's own.
+    let stored = config::read_settings(Scope::Global, None).theme;
+    let resolved = match stored {
+        Some(config::Theme::Light) => Some(Theme::Light),
+        Some(config::Theme::Dark) => Some(Theme::Dark),
+        // "Follow the system" is answered by the window, which is the only
+        // thing here that has been told. A platform that will not say leaves
+        // the config's value standing.
+        Some(config::Theme::System) | None => window.theme().ok(),
+    };
+
+    if resolved == Some(Theme::Light) {
+        let _ = window.set_background_color(Some(LIGHT));
+    } else {
+        let _ = window.set_background_color(Some(DARK));
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -67,6 +119,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            paint_window(app);
+
             let state = Arc::new(state::AppState::new(app.handle().clone()));
             app.manage(state.clone());
 
@@ -74,14 +128,29 @@ pub fn run() {
             // so the window paints immediately. `mark_loaded` is what lets
             // `get_status` answer — until then the catalog is empty, and a
             // status read from it is a zero the rail keeps.
+            //
+            // The two halves of a reload are run separately here, and this is
+            // the only caller that does. `mark_loaded` sits between them: what
+            // the window is waiting on is a catalog with something in it, which
+            // the local half produces in milliseconds, and gating it on the MCP
+            // half as well made the price of becoming usable at all the sum of
+            // every configured server's startup. See `Host::reload_local`.
             tauri::async_runtime::spawn(async move {
-                state.host.reload().await;
+                state.host.reload_local().await;
                 state.mark_loaded();
                 // For a window that painted before any of this existed. The
                 // frontend's own first `get_status` waits for the same load, so
                 // this is the one that matters when the wait times out, and
                 // the one that keeps startup a thing the shell is told about
                 // rather than a thing it has to sit blocked on.
+                commands::emit_status(&state).await;
+
+                // Seconds, potentially, and nothing above needs it: an MCP tool
+                // is used by a turn, and the earliest turn is the one the user
+                // starts after the shell they are now looking at finishes
+                // drawing. Pushed rather than waited for, so the MCP panel and
+                // the tool counts fill in when the servers actually answer.
+                state.host.reload_mcp().await;
                 commands::emit_status(&state).await;
             });
             Ok(())

@@ -128,6 +128,103 @@ pub async fn refresh(
     cancel: &CancellationToken,
     progress: Option<&dyn IndexProgress>,
 ) -> Result<(Vec<Entry>, Refreshed), String> {
+    // Off the runtime, all of it. What follows reads the whole index off disk,
+    // walks the tree, and stats and reads every file in it — tens of thousands
+    // of syscalls on a large repository, none of them yielding. Left inline it
+    // occupied a runtime worker for the duration, and the thing sharing that
+    // pool is the forwarder pumping a live turn's tokens into the window.
+    let scanned = {
+        let index = index.clone();
+        let workspace = workspace.to_path_buf();
+        let model = model.to_string();
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || scan(&index, &workspace, &model, &cancel))
+            .await
+            .map_err(|e| format!("indexing failed to run: {e}"))??
+    };
+    let Scan {
+        mut keep,
+        pending,
+        mut report,
+    } = scanned;
+    report.chunks = pending.len();
+    let total = pending.len();
+    let mut done = 0;
+    for batch in pending.chunks(BATCH) {
+        if cancel.is_cancelled() {
+            return Err("indexing was canceled".into());
+        }
+        let texts: Vec<String> = batch.iter().map(|(_, _, _, c)| c.text.clone()).collect();
+        let vectors = provider
+            .embed(model, &texts)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        for ((path, len, modified, piece), vector) in batch.iter().zip(vectors) {
+            keep.push(Entry {
+                path: path.clone(),
+                start_line: piece.start_line,
+                end_line: piece.end_line,
+                len: *len,
+                modified: *modified,
+                vector: encode(&vector),
+            });
+        }
+
+        // Reported after the batch lands rather than before it is sent, so the
+        // number is work finished rather than work started. On a first index
+        // this is the only thing between the caller and forty-four seconds of
+        // nothing.
+        let before = done;
+        done += batch.len();
+        if let Some(progress) = progress {
+            if reports_at(done, before, total) {
+                progress.embedding(done, total).await;
+            }
+        }
+    }
+
+    // Written only when something moved. A search on an unchanged workspace
+    // should not rewrite a 20 MB file to say so — and when it does move, the
+    // write goes to a blocking thread for the reason the scan does: 20 MB of
+    // JSON serialized in-line is 20 MB a streaming turn is not being pumped
+    // through.
+    let keep = if report.embedded > 0 || report.removed > 0 {
+        let index = index.clone();
+        let model = model.to_string();
+        // Handed over and handed back rather than copied: these entries carry
+        // every vector in the workspace, and the caller is about to search them.
+        tokio::task::spawn_blocking(move || index.save(&model, &keep).map(|()| keep))
+            .await
+            .map_err(|e| format!("writing the index failed to run: {e}"))??
+    } else {
+        keep
+    };
+
+    Ok((keep, report))
+}
+
+/// What one pass over the workspace found, before anything is embedded.
+struct Scan {
+    /// Entries still good, carried over from the index on disk.
+    keep: Vec<Entry>,
+    /// Chunks of files that moved, waiting for a vector.
+    pending: Vec<(String, u64, u64, chunk::Chunk)>,
+    report: Refreshed,
+}
+
+/// The whole synchronous half of a refresh: read the index, walk the tree, and
+/// sort every file into "unchanged" or "needs embedding".
+///
+/// Split out so it can be handed to a blocking thread — see [`refresh`]. It is
+/// also the only part that can be reasoned about without a runtime, which makes
+/// it the part worth testing directly.
+fn scan(
+    index: &Index,
+    workspace: &Path,
+    model: &str,
+    cancel: &CancellationToken,
+) -> Result<Scan, String> {
     let held = index.load(model);
 
     // Grouped by file, because staleness is a property of a file and every
@@ -192,50 +289,11 @@ pub async fn refresh(
     // Files the index knew about that are no longer there.
     report.removed = by_file.keys().filter(|path| !seen.contains(*path)).count();
 
-    report.chunks = pending.len();
-    let total = pending.len();
-    let mut done = 0;
-    for batch in pending.chunks(BATCH) {
-        if cancel.is_cancelled() {
-            return Err("indexing was canceled".into());
-        }
-        let texts: Vec<String> = batch.iter().map(|(_, _, _, c)| c.text.clone()).collect();
-        let vectors = provider
-            .embed(model, &texts)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        for ((path, len, modified, piece), vector) in batch.iter().zip(vectors) {
-            keep.push(Entry {
-                path: path.clone(),
-                start_line: piece.start_line,
-                end_line: piece.end_line,
-                len: *len,
-                modified: *modified,
-                vector: encode(&vector),
-            });
-        }
-
-        // Reported after the batch lands rather than before it is sent, so the
-        // number is work finished rather than work started. On a first index
-        // this is the only thing between the caller and forty-four seconds of
-        // nothing.
-        let before = done;
-        done += batch.len();
-        if let Some(progress) = progress {
-            if reports_at(done, before, total) {
-                progress.embedding(done, total).await;
-            }
-        }
-    }
-
-    // Written only when something moved. A search on an unchanged workspace
-    // should not rewrite a 20 MB file to say so.
-    if report.embedded > 0 || report.removed > 0 {
-        index.save(model, &keep)?;
-    }
-
-    Ok((keep, report))
+    Ok(Scan {
+        keep,
+        pending,
+        report,
+    })
 }
 
 /// Every indexable file, as `(workspace-relative, absolute)`.

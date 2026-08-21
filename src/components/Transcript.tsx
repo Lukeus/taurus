@@ -76,10 +76,28 @@ const CLASS_NOUN: Record<string, string> = {
 export type TranscriptProps = {
   entries: Entry[];
   busy: boolean;
+  /**
+   * Stop has been pressed and the turn has not finished unwinding.
+   *
+   * Only ever read while `busy`, and only to change what the marker says: a
+   * cancel takes as long as the in-flight tool call takes to notice, and a
+   * `working…` that carried on through that read as a Stop that had not
+   * registered.
+   */
+  stopping?: boolean;
+  /**
+   * The conversation on screen is being replaced by another.
+   *
+   * Drawn as a fade that only starts after a sixth of a second — see
+   * `.transcript.pending`. An ordinary reopen is faster than that and shows
+   * nothing at all, which is the point: a dim that flashes on every switch
+   * would be worse than the wait it is reporting.
+   */
+  pending?: boolean;
   /** Shown in place of the transcript before there is anything to show. */
   empty: React.ReactNode;
   /** Answers a question card, releasing the tool call parked behind it. */
-  onAnswer: (id: string, answers: Answer[]) => void;
+  onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   /** Opens a delegation's own conversation. Absent where there is nowhere to
    * open one — inside a delegate's transcript, which cannot delegate further. */
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
@@ -96,6 +114,8 @@ export type TranscriptProps = {
 export function Transcript({
   entries,
   busy,
+  stopping = false,
+  pending = false,
   empty,
   onAnswer,
   onOpenDelegate,
@@ -126,6 +146,23 @@ export function Transcript({
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
+  /*
+   * Stay at the foot of the stream.
+   *
+   * `scrollIntoView` rather than `scrollTop = scrollHeight`, which looks like
+   * the cheaper way to say the same thing and is not the same thing. `.turn`
+   * carries `content-visibility: auto`, so a turn scrolled off is measured by
+   * its `contain-intrinsic-size` estimate rather than its contents — jumping to
+   * `scrollHeight` therefore aims past the real bottom, the turns it lands on
+   * render at their true height, the document shrinks under the scroll, and the
+   * view snaps back up. Measured: it lands at the *top* of a long conversation.
+   * Asking for an element instead lets the browser iterate that to a fixed
+   * point, which is the whole reason the API exists.
+   *
+   * The cost this used to carry — a full-transcript layout on every batched
+   * frame, ~30 a second while streaming — is paid down by the windowing rather
+   * than by scrolling differently: off-screen turns no longer take part in it.
+   */
   useEffect(() => {
     if (follow && pinned.current) bottom.current?.scrollIntoView({ block: "end" });
   }, [entries, follow]);
@@ -145,7 +182,11 @@ export function Transcript({
   }
 
   return (
-    <div className="transcript" ref={container}>
+    <div
+      className={`transcript${pending ? " pending" : ""}`}
+      aria-busy={pending || undefined}
+      ref={container}
+    >
       {conversation.map((turn, i) => (
         <TurnView
           key={turn.prompt?.id ?? `preamble-${i}`}
@@ -154,6 +195,7 @@ export function Transcript({
           // question most recently asked, and the marker belongs on its rail
           // rather than floating under the conversation as a whole.
           working={busy && i === conversation.length - 1}
+          stopping={stopping}
           onAnswer={answer}
           onOpenDelegate={openDelegate}
         />
@@ -320,12 +362,15 @@ function unchanged(a: Turn, b: Turn): boolean {
 const TurnView = memo(function TurnView({
   turn,
   working,
+  stopping,
   onAnswer,
   onOpenDelegate,
 }: {
   turn: Turn;
   working: boolean;
-  onAnswer: (id: string, answers: Answer[]) => void;
+  /** Cancelling. Only ever read when `working`. */
+  stopping: boolean;
+  onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
 }) {
   return (
@@ -348,7 +393,7 @@ const TurnView = memo(function TurnView({
       )}
       {working && (
         <div className="turn-step working" aria-live="polite">
-          working…
+          {stopping ? "stopping…" : "working…"}
         </div>
       )}
     </section>
@@ -410,7 +455,7 @@ const EntryView = memo(function EntryView({
   onOpenDelegate,
 }: {
   entry: Entry;
-  onAnswer: (id: string, answers: Answer[]) => void;
+  onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
 }) {
   if (entry.kind === "tool" && entry.view) {

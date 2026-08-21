@@ -9,6 +9,7 @@ import {
 } from "../lib/limits";
 import { AgentEditor } from "./AgentEditor";
 import { useStore } from "../state/store";
+import { Modal } from "./Modal";
 
 type Filter = "all" | "builtin" | "attention";
 
@@ -38,6 +39,13 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
   const refreshStatus = useStore((s) => s.refresh);
   const problems = (status?.problems ?? []).filter((p) => p.source === "agents");
 
+  /*
+   * Whether a rescan is in flight. Kept for the reason `McpDrawer` keeps one:
+   * a button that does not change when pressed reads as one that did not
+   * register, and this one is re-pressable while it runs.
+   */
+  const [rescanning, setRescanning] = useState(false);
+
   const refresh = async () => {
     const [found, roster] = await Promise.all([
       api.listAgents(),
@@ -59,14 +67,29 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
   const { all, builtin, attention, shown } = partition(agents ?? [], filter);
 
   return (
-    <div className="scrim" onClick={onClose}>
+    <Modal onClose={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
           <h2>Agents</h2>
           {/* The roster is a directory, and a directory changes under a drawer
               that is already open. Mounting rescans; this is how you rescan
               without closing and reopening. */}
-          <button onClick={() => refresh().catch(() => {})}>Rescan</button>
+          <button
+            disabled={rescanning}
+            onClick={async () => {
+              setRescanning(true);
+              try {
+                await refresh();
+              } catch {
+                // The list on screen is the one from before, which is still
+                // true; the drawer says nothing rather than emptying itself.
+              } finally {
+                setRescanning(false);
+              }
+            }}
+          >
+            {rescanning ? "Rescanning…" : "Rescan"}
+          </button>
           <button className="drawer-close" onClick={onClose} aria-label="Close">
             ✕
           </button>
@@ -86,27 +109,33 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
           its own — Settings › Behavior.
         </p>
 
-        <div className="pill-row">
-          <button
-            className={`pill${filter === "all" ? " on" : ""}`}
-            onClick={() => setFilter("all")}
-          >
-            All {all.length}
-          </button>
-          <button
-            className={`pill${filter === "builtin" ? " on" : ""}`}
-            onClick={() => setFilter("builtin")}
-          >
-            Built-in {builtin.length}
-          </button>
-          <button
-            className={`pill${filter === "attention" ? " on" : ""}`}
-            onClick={() => setFilter("attention")}
-            disabled={attention.length === 0}
-          >
-            Needs attention {attention.length}
-          </button>
-        </div>
+        {agents === null ? (
+          // A count of zero is an answer, and this is not one yet. The same
+          // distinction `MemoryDrawer` draws between empty and still reading.
+          <p className="drawer-loading">Reading…</p>
+        ) : (
+          <div className="pill-row">
+            <button
+              className={`pill${filter === "all" ? " on" : ""}`}
+              onClick={() => setFilter("all")}
+            >
+              All {all.length}
+            </button>
+            <button
+              className={`pill${filter === "builtin" ? " on" : ""}`}
+              onClick={() => setFilter("builtin")}
+            >
+              Built-in {builtin.length}
+            </button>
+            <button
+              className={`pill${filter === "attention" ? " on" : ""}`}
+              onClick={() => setFilter("attention")}
+              disabled={attention.length === 0}
+            >
+              Needs attention {attention.length}
+            </button>
+          </div>
+        )}
 
         {agents !== null && shown.length === 0 && (
           <p className="drawer-empty">Nothing here.</p>
@@ -150,7 +179,7 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
           }}
         />
       )}
-    </div>
+    </Modal>
   );
 }
 

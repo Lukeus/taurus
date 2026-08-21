@@ -8,6 +8,7 @@ import {
   MAX_ITERATIONS_LIMIT,
 } from "../lib/limits";
 import { useStore } from "../state/store";
+import { Modal } from "./Modal";
 
 /**
  * Writing an agent without already knowing the frontmatter.
@@ -101,7 +102,7 @@ export function AgentEditor({
   const complete = name.trim() && description.trim() && prompt.trim();
 
   return (
-    <div className="scrim modal-scrim" onClick={onClose}>
+    <Modal onClose={onClose} className="scrim modal-scrim">
       <div className="modal agent-editor" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
           <h2>New agent</h2>
@@ -257,6 +258,6 @@ export function AgentEditor({
           </button>
         </footer>
       </div>
-    </div>
+    </Modal>
   );
 }

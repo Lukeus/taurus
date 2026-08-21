@@ -1,10 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
 import { Attachments } from "./components/Attachments";
-import { ChangesDrawer } from "./components/ChangesDrawer";
-import { DelegateTranscript } from "./components/DelegateTranscript";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { ConversationTitle } from "./components/ConversationTitle";
 import { PermissionDialog } from "./components/PermissionDialog";
@@ -16,11 +14,6 @@ import {
   ResizeHandle,
   useResizableWidth,
 } from "./components/ResizeHandle";
-import { Settings } from "./components/Settings";
-import { AgentsDrawer } from "./components/AgentsDrawer";
-import { McpDrawer } from "./components/McpDrawer";
-import { MemoryDrawer } from "./components/MemoryDrawer";
-import { SkillsDrawer } from "./components/SkillsDrawer";
 import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript, type TranscriptProps } from "./components/Transcript";
@@ -37,6 +30,68 @@ import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
 import { pinnedPlan, useStore } from "./state/store";
+
+/*
+ * The panels that open over the app, loaded when one is first needed rather
+ * than while the window is still trying to paint.
+ *
+ * Every one of these already mounts behind a flag, so nothing about *when*
+ * they appear changes. What changes is when their code is read and evaluated:
+ * `Settings` alone is the largest module in the frontend, and it and the five
+ * drawers were parsed on the main thread before React's first render, for a
+ * user who in most sessions opens none of them. There is no download to save
+ * in Tauri — the chunks are on disk beside the app — so this is purely about
+ * getting the parse off the path to a usable window.
+ *
+ * One list, used twice: `lazy` below hangs off it, and `warm` walks it once
+ * the window is idle. That second half is what keeps this from being a trade —
+ * without it the parse merely moves onto the click that opens the drawer.
+ */
+const PANELS = {
+  settings: () => import("./components/Settings"),
+  skills: () => import("./components/SkillsDrawer"),
+  agents: () => import("./components/AgentsDrawer"),
+  mcp: () => import("./components/McpDrawer"),
+  memory: () => import("./components/MemoryDrawer"),
+  changes: () => import("./components/ChangesDrawer"),
+  delegate: () => import("./components/DelegateTranscript"),
+};
+
+const Settings = lazy(() => PANELS.settings().then((m) => ({ default: m.Settings })));
+const SkillsDrawer = lazy(() =>
+  PANELS.skills().then((m) => ({ default: m.SkillsDrawer })),
+);
+const AgentsDrawer = lazy(() =>
+  PANELS.agents().then((m) => ({ default: m.AgentsDrawer })),
+);
+const McpDrawer = lazy(() => PANELS.mcp().then((m) => ({ default: m.McpDrawer })));
+const MemoryDrawer = lazy(() =>
+  PANELS.memory().then((m) => ({ default: m.MemoryDrawer })),
+);
+const ChangesDrawer = lazy(() =>
+  PANELS.changes().then((m) => ({ default: m.ChangesDrawer })),
+);
+const DelegateTranscript = lazy(() =>
+  PANELS.delegate().then((m) => ({ default: m.DelegateTranscript })),
+);
+
+/**
+ * Reads the panels in once the window has nothing better to do.
+ *
+ * A dynamic import is answered from the module map the second time, so this
+ * costs nothing at the point of use — it only decides *when* the cost is paid.
+ * Idle rather than on a timer, and a timeout so a permanently busy window still
+ * gets there; `requestIdleCallback` is missing on some WebKit builds, which is
+ * what the fallback is for.
+ */
+function warmPanels() {
+  const read = () => Object.values(PANELS).forEach((load) => void load());
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(read, { timeout: 2_000 });
+  } else {
+    setTimeout(read, 500);
+  }
+}
 
 export default function App() {
   // Everything except the transcript, compared field by field.
@@ -60,6 +115,8 @@ export default function App() {
       sessions: s.sessions,
       changed: s.changed,
       busy: s.busy,
+      stopping: s.stopping,
+      resuming: s.resuming,
       error: s.error,
       permission: s.permission,
       proposals: s.proposals,
@@ -107,6 +164,7 @@ export default function App() {
 
   useEffect(() => {
     store.init();
+    warmPanels();
     // Intentionally once: init wires the event listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -174,10 +232,25 @@ export default function App() {
    * retyping it. Nothing in the history is provider-shaped, so carrying it
    * across is a matter of saying so — see `switch_model`.
    */
-  const moveTo = (provider: string, model: string) =>
-    store.session
-      ? store.switchModel(provider, model)
-      : store.startSession(provider, model);
+  /*
+   * Whether a move to another model or backend is in flight.
+   *
+   * A switch recreates the session, which is a round trip and a capability
+   * lookup. The pickers stayed live through it, so a second change could be
+   * made against a session the first was still replacing — and nothing on
+   * screen said the first had been heard.
+   */
+  const [moving, setMoving] = useState(false);
+  const moveTo = async (provider: string, model: string) => {
+    setMoving(true);
+    try {
+      await (store.session
+        ? store.switchModel(provider, model)
+        : store.startSession(provider, model));
+    } finally {
+      setMoving(false);
+    }
+  };
 
   /**
    * Switches provider, which means moving the conversation to that backend's
@@ -313,7 +386,7 @@ export default function App() {
               className="provider-select"
               aria-label="Provider"
               value={providerId ?? ""}
-              disabled={store.busy}
+              disabled={store.busy || moving}
               onChange={(e) => chooseProvider(e.target.value)}
             >
               {providers.map((p) => (
@@ -328,7 +401,7 @@ export default function App() {
             className="model-select"
             aria-label="Model"
             value={store.session?.model ?? ""}
-            disabled={store.busy || !providerId}
+            disabled={store.busy || moving || !providerId}
             onChange={(e) => providerId && moveTo(providerId, e.target.value)}
           >
             {available.length === 0 && <option value="">no models</option>}
@@ -346,6 +419,8 @@ export default function App() {
         <main>
           <TranscriptPane
             busy={store.busy}
+            stopping={store.stopping}
+            pending={store.resuming}
             onAnswer={store.answerQuestions}
             onOpenDelegate={setDelegate}
             empty={
@@ -414,6 +489,7 @@ export default function App() {
 
         <Composer
           busy={store.busy}
+          stopping={store.stopping}
           ready={!!store.session}
           vision={store.session?.vision ?? false}
           workspace={workspace}
@@ -430,41 +506,49 @@ export default function App() {
         />
       )}
 
-      {memoryOpen && (
-        <MemoryDrawer
-          onClose={() => setMemoryOpen(false)}
-          // Not offered mid-turn: switching conversations under a running one
-          // is not something the rail offers either.
-          onOpenSession={
-            store.busy
-              ? undefined
-              : (id) => {
-                  setMemoryOpen(false);
-                  void store.resume(id);
-                }
-          }
-        />
-      )}
+      {/* One boundary for all of them: they are mutually exclusive in practice
+          and none is ever nested inside another, so a boundary each would be
+          seven of the same thing. `null` rather than a spinner because by the
+          time a drawer is opened its module is almost always already in hand —
+          see `warmPanels` — and a flash of skeleton for a frame that usually
+          does not happen reads worse than the drawer simply appearing. */}
+      <Suspense fallback={null}>
+        {memoryOpen && (
+          <MemoryDrawer
+            onClose={() => setMemoryOpen(false)}
+            // Not offered mid-turn: switching conversations under a running one
+            // is not something the rail offers either.
+            onOpenSession={
+              store.busy
+                ? undefined
+                : (id) => {
+                    setMemoryOpen(false);
+                    void store.resume(id);
+                  }
+            }
+          />
+        )}
 
-      {changesOpen && store.session && (
-        <ChangesDrawer
-          sessionId={store.session.id}
-          busy={store.busy}
-          onClose={() => setChangesOpen(false)}
-        />
-      )}
-      {delegate && store.session && (
-        <DelegateTranscript
-          sessionId={store.session.id}
-          subagentId={delegate.session}
-          agent={delegate.agent}
-          onClose={() => setDelegate(null)}
-        />
-      )}
-      {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
-      {agentsOpen && <AgentsDrawer onClose={() => setAgentsOpen(false)} />}
-      {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
-      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+        {changesOpen && store.session && (
+          <ChangesDrawer
+            sessionId={store.session.id}
+            busy={store.busy}
+            onClose={() => setChangesOpen(false)}
+          />
+        )}
+        {delegate && store.session && (
+          <DelegateTranscript
+            sessionId={store.session.id}
+            subagentId={delegate.session}
+            agent={delegate.agent}
+            onClose={() => setDelegate(null)}
+          />
+        )}
+        {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
+        {agentsOpen && <AgentsDrawer onClose={() => setAgentsOpen(false)} />}
+        {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
+        {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+      </Suspense>
     </div>
   );
 }
@@ -661,6 +745,7 @@ function PinnedPlan() {
 
 function Composer({
   busy,
+  stopping,
   ready,
   vision,
   workspace,
@@ -669,6 +754,8 @@ function Composer({
   onStop,
 }: {
   busy: boolean;
+  /** Pressed Stop, and the turn has not finished unwinding yet. */
+  stopping: boolean;
   ready: boolean;
   /**
    * Whether this session's model reads images.
@@ -692,6 +779,7 @@ function Composer({
   // `dragleave` on the parent, so a boolean flickers the highlight off while
   // the file is still over the composer.
   const [dragDepth, setDragDepth] = useState(0);
+  const box = useRef<HTMLTextAreaElement>(null);
 
   const attach = async (files: File[]) => {
     const wanted = files.filter(isImage);
@@ -736,6 +824,9 @@ function Composer({
     setImages([]);
     setAttachError(null);
     setActive(0);
+    // Sending with Enter never lost focus; sending with the button did, so the
+    // next thing typed went nowhere. Both routes end in the same place.
+    box.current?.focus();
   };
 
   return (
@@ -774,6 +865,7 @@ function Composer({
         {attachError && <p className="composer-problem">{attachError}</p>}
 
         <textarea
+          ref={box}
           value={text}
           placeholder={ready ? "Ask Taurus to do something…" : "Connect a model to begin"}
           disabled={!ready}
@@ -851,8 +943,15 @@ function Composer({
             {vision && " · paste an image"}
           </span>
           {busy ? (
-            <button className="danger composer-send" onClick={onStop}>
-              Stop
+            // Disabled while it takes, because a second press does nothing the
+            // first did not — and a button that still says "Stop" after being
+            // pressed reads as one that did not register.
+            <button
+              className="danger composer-send"
+              onClick={onStop}
+              disabled={stopping}
+            >
+              {stopping ? "Stopping…" : "Stop"}
             </button>
           ) : (
             <button

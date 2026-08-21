@@ -280,8 +280,12 @@ A stored value that is not a `${VAR}` reference is treated as a secret: the
 panel is told the key is set and never given the value. Leaving that field alone
 keeps what is on disk; typing over it replaces it.
 
-Saving reconnects the MCP servers and nothing else — skills, agents, providers,
-and the index are untouched, which is the same rule agent edits already follow.
+Saving reconnects the MCP servers and nothing else — skills, providers, and the
+index are untouched, which is the same rule agent edits already follow. The one
+exception is the agent roster, and only when a save changed which tools the
+servers offer: an agent can be scoped to an MCP tool, so adding the server it
+needs has to make that agent usable, and deleting it has to stop the roster
+claiming a tool that is gone.
 
 ### When a server will not start
 

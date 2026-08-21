@@ -37,6 +37,30 @@ use crate::state::{AppState, SessionEntry};
 /// serialized Rust error.
 pub type CmdResult<T> = Result<T, String>;
 
+/// Runs synchronous filesystem work somewhere other than the runtime.
+///
+/// Every `#[tauri::command]` here is `async` and therefore runs on a shared
+/// Tokio worker — the same pool the forwarder pumping a live turn's tokens into
+/// the webview runs on. A command that reads and parses a multi-megabyte
+/// transcript in-line occupies one of those workers for the whole read, and the
+/// stream it stalls is not the one the user clicked on. The lower layers of the
+/// tree already draw this line (see `taurus_tools::sweep`); the command layer
+/// did not.
+///
+/// The `Err` a panicking task produces is deliberately not swallowed into a
+/// plausible-looking value: a command that reports "no such conversation"
+/// because its worker crashed is a bug that reads like a missing file.
+async fn off_runtime<T, F>(work: F) -> CmdResult<T>
+where
+    F: FnOnce() -> CmdResult<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(e) => Err(format!("reading from disk failed: {e}")),
+    }
+}
+
 async fn session_model(entry: &Arc<SessionEntry>) -> String {
     entry.session.lock().await.model.clone()
 }
@@ -331,8 +355,11 @@ pub async fn list_sessions(
     state: State<'_, Arc<AppState>>,
     all: bool,
 ) -> CmdResult<Vec<SessionMeta>> {
+    // Every transcript in the workspace is opened and partly parsed to build
+    // this, and with `all` every transcript on the machine is — so it is one of
+    // the two reads that most needs to be off the runtime.
     let workspace = state.host.workspace().await;
-    Ok(sessions::list(if all { None } else { Some(&workspace) }))
+    off_runtime(move || Ok(sessions::list(if all { None } else { Some(&workspace) }))).await
 }
 
 /// What a resumed conversation needs to be redrawn and continued.
@@ -370,7 +397,10 @@ pub async fn read_subagent_transcript(
     session_id: String,
     subagent_id: String,
 ) -> CmdResult<Vec<Message>> {
-    sessions::load_subagent(&session_id, &subagent_id).map(|loaded| loaded.session.messages)
+    off_runtime(move || {
+        sessions::load_subagent(&session_id, &subagent_id).map(|loaded| loaded.session.messages)
+    })
+    .await
 }
 
 /// Reopens a saved conversation as a live session.
@@ -391,11 +421,37 @@ pub async fn resume_session(
             let entry = open.clone();
             let provider_id = entry.provider_id.lock().await.clone();
             let switches = entry.switches.lock().await.clone();
-            let session = entry.session.lock().await.clone();
-            (session, provider_id, switches, None)
+            // Never waited for. A turn holds this lock for its whole run, which
+            // is minutes for a long one, and awaiting it here hung the window
+            // on the click that reopens the conversation that is *already*
+            // streaming — the one case where the frontend does not close the
+            // previous session first, so the one case that could reach it.
+            //
+            // `delete` and `rewind` meet the same lock and refuse; this does
+            // not, because reopening a conversation has to work. What it falls
+            // back to is what a cold open would have read: the transcript on
+            // disk, complete to the end of the last round. The turn's own
+            // stream carries on appending from there.
+            let live = entry.session.try_lock().ok().map(|s| s.clone());
+            match live {
+                Some(session) => (session, provider_id, switches, None),
+                None => {
+                    let id = session_id.clone();
+                    let loaded = off_runtime(move || sessions::load(&id)).await?;
+                    // Deliberately not `Some(loaded)`: that is what opens a log
+                    // and installs a session entry, and this conversation
+                    // already has both — with a turn running through them.
+                    (loaded.session, provider_id, switches, None)
+                }
+            }
         }
         None => {
-            let loaded = sessions::load(&session_id)?;
+            // The whole `.jsonl` — file contents, shell output, MCP results
+            // and all — parsed a line at a time. Several megabytes is ordinary
+            // for a long coding conversation, and this is the click that used
+            // to stutter an unrelated live stream.
+            let id = session_id.clone();
+            let loaded = off_runtime(move || sessions::load(&id)).await?;
             // Whichever provider the caller is on; failing that the one this
             // conversation was last worked on, which is known only for one that
             // has moved at least once; failing that whatever the host resolves.
@@ -609,6 +665,12 @@ pub async fn close_session(state: State<'_, Arc<AppState>>, session_id: String) 
     if let Some((_, entry)) = state.sessions.remove(&session_id) {
         entry.cancel.lock().await.cancel();
     }
+    // The board goes with the conversation it belongs to. `delete_session` and
+    // `rewind_to` already did this; closing did not, and closing is the one
+    // that happens on every switch between conversations — so the map grew by
+    // one for each and never shrank. Nothing can reach a board whose session
+    // entry is gone, which is what made it a leak rather than a cache.
+    state.host.forget_plan(&session_id).await;
     Ok(())
 }
 
@@ -1773,8 +1835,15 @@ pub async fn list_checkpoints(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> CmdResult<Vec<Checkpoint>> {
-    let workspace = session_workspace(&state, &session_id).await;
-    state.host.checkpoints_for(&workspace).turns(&session_id)
+    // `turns` deserializes the whole checkpoint log, and a `Before` record
+    // carries the full pre-image of every file the turn touched — all of which
+    // this then throws away, keeping only the names. The cost is (turns × files
+    // × file size) rather than anything the drawer shows, so it stays off the
+    // runtime until the log grows a lighter header to read instead.
+    let store = state
+        .host
+        .checkpoints_for(&session_workspace(&state, &session_id).await);
+    off_runtime(move || store.turns(&session_id)).await
 }
 
 /// Restores the workspace to just before `turn`.

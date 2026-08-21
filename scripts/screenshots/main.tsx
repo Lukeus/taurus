@@ -130,9 +130,20 @@ requestAnimationFrame(() => {
   }, 400);
 });
 
-/** Puts `element` at the top of the scrolling transcript, with a little air. */
+/**
+ * Puts `element` at the top of the scrolling transcript, with a little air.
+ *
+ * Asked for rather than measured. `.turn` carries `content-visibility: auto`,
+ * so a turn that is currently scrolled off has no layout boxes for anything
+ * inside it — `getBoundingClientRect` on a card in one reads zero, and the
+ * framing computed from that put every image back at the top of the
+ * conversation. `scrollIntoView` is the API that copes: the browser renders the
+ * skipped subtree to answer it. The measurement afterwards is what places the
+ * card exactly, and it is accurate now that the subtree is no longer skipped.
+ */
 function scrollTo(container: Element | null, element: Element | null | undefined) {
   if (!container || !element) return;
+  element.scrollIntoView({ block: "start" });
   const gap = element.getBoundingClientRect().top - container.getBoundingClientRect().top;
   container.scrollTop += gap - 24;
 }

@@ -4,6 +4,7 @@ import * as api from "../lib/api";
 import type { Instructions, SkillSummary } from "../lib/api";
 import { plural } from "../lib/format";
 import { useStore } from "../state/store";
+import { Modal } from "./Modal";
 
 type Filter = "all" | "project" | "attention";
 
@@ -40,6 +41,16 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   );
 
   const [instructions, setInstructions] = useState<Instructions[]>([]);
+  /*
+   * Whether a rescan is in flight.
+   *
+   * Worth a state of its own because the call is not the directory read its
+   * name suggests: `reloadConfig` reconnects every MCP server on the way, so a
+   * rescan can take seconds. Without this the button stayed live and unchanged
+   * through all of them, and pressing it again did the whole thing twice.
+   * `McpDrawer` has always done this; this is the same shape.
+   */
+  const [rescanning, setRescanning] = useState(false);
 
   useEffect(() => {
     api.listSkills().then(setSkills).catch(() => setSkills([]));
@@ -52,29 +63,42 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   const { all, project, attention, shown } = partition(skills ?? [], filter);
 
   return (
-    <div className="scrim" onClick={onClose}>
+    <Modal onClose={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
           <h2>Skills</h2>
           <button
+            disabled={rescanning}
             onClick={async () => {
-              await api.reloadConfig();
-              setSkills(await api.listSkills());
-              setInstructions(await api.listInstructions().catch(() => []));
-              // The rescan replaced the host's catalog and its problems, so
-              // the count on the rail and the list in here have to come from
-              // after it. Without this a rescan that found a new skill showed
-              // it below and left the badge on the old number.
-              await refreshStatus();
+              setRescanning(true);
+              try {
+                await api.reloadConfig();
+                setSkills(await api.listSkills());
+                setInstructions(await api.listInstructions().catch(() => []));
+                // The rescan replaced the host's catalog and its problems, so
+                // the count on the rail and the list in here have to come from
+                // after it. Without this a rescan that found a new skill showed
+                // it below and left the badge on the old number.
+                await refreshStatus();
+              } finally {
+                setRescanning(false);
+              }
             }}
           >
-            Rescan
+            {rescanning ? "Rescanning…" : "Rescan"}
           </button>
           <button className="drawer-close" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </header>
 
+        {skills === null ? (
+          // Not "All 0" over an empty list, which is what a drawer that has
+          // finished reading and found nothing looks like. `MemoryDrawer` has
+          // always drawn the distinction; the counts here made it worse, by
+          // stating a number that was not an answer yet.
+          <p className="drawer-loading">Reading…</p>
+        ) : (
         <div className="pill-row">
           <button
             className={`pill${filter === "all" ? " on" : ""}`}
@@ -96,6 +120,7 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
             Needs attention {attention.length}
           </button>
         </div>
+        )}
 
         {skills !== null && shown.length === 0 && (
           <p className="drawer-empty">
@@ -178,7 +203,7 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
           </section>
         )}
       </aside>
-    </div>
+    </Modal>
   );
 }
 

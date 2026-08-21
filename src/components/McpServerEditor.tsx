@@ -18,6 +18,7 @@ import {
   joinCommandLine,
   splitCommandLine,
 } from "../lib/mcp";
+import { Modal } from "./Modal";
 
 /**
  * Adding or changing one MCP server.
@@ -121,7 +122,7 @@ export function McpServerEditor({
   const parts = splitCommandLine(commandLine);
 
   return (
-    <div className="scrim modal-scrim" onClick={onClose}>
+    <Modal onClose={onClose} className="scrim modal-scrim">
       <div className="modal mcp-editor" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
           <h2>{server ? `Edit ${server.name}` : "Add MCP server"}</h2>
@@ -268,7 +269,7 @@ export function McpServerEditor({
           </button>
         </footer>
       </div>
-    </div>
+    </Modal>
   );
 }
 

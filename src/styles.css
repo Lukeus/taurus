@@ -949,6 +949,45 @@ body.resizing * {
   flex: none;
 }
 
+/*
+ * The panel a modal lands focus on when it opens.
+ *
+ * `Modal` gives it `tabindex="-1"` and focuses it, so that a keyboard is
+ * inside the panel rather than on the row behind the scrim — and so that the
+ * landing spot is not a *button*, which would turn a stray Enter into a press
+ * nobody chose. A ring around the whole drawer would be the one thing that
+ * makes that unusable: it is a two-inch cyan box around a container that
+ * cannot be actioned, and it says nothing, because there is nowhere else the
+ * focus could be. Every control inside keeps its own ring.
+ */
+.scrim > [tabindex="-1"]:focus,
+.scrim > [tabindex="-1"]:focus-visible {
+  outline: none;
+}
+
+/*
+ * The conversation being replaced by another.
+ *
+ * An animation rather than a class that dims outright, for the delay: a reopen
+ * is usually faster than a person can notice, and a dim that flashed on every
+ * switch between conversations would be reporting a wait nobody was having.
+ * `both` holds the first frame through the delay, so removing the class inside
+ * it shows nothing at all; past it the transcript fades and says the click was
+ * heard. Pointer events are left alone — the old transcript is still readable
+ * and still scrollable while the new one is being fetched.
+ */
+.transcript.pending {
+  animation: transcript-pending 160ms ease-out 160ms both;
+}
+@keyframes transcript-pending {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.45;
+  }
+}
+
 .transcript.empty {
   justify-content: center;
   align-items: center;
@@ -1043,6 +1082,26 @@ body.resizing * {
   /* No cap. The turn is the width of the pane, which is the width of the
      composer below it — see --measure for why that does not make the prose wide
      with it. */
+
+  /*
+   * A turn nobody can see costs nothing to keep.
+   *
+   * The transcript is not windowed: every turn, tool row and diagram card ever
+   * rendered stays in the document for the life of the conversation, and
+   * layout, paint and hit-testing are all O(total nodes) however well React
+   * memoises above them. On a long or resumed conversation that is what turns
+   * scrolling choppy and makes every streaming frame — which re-pins the
+   * scroll — re-lay-out the whole history.
+   *
+   * `content-visibility` hands that to the browser instead of to a virtualiser:
+   * off-screen turns skip layout and paint entirely, with no code around the
+   * scroll container to get scroll anchoring wrong. `auto` on the intrinsic
+   * size is the half that matters — a turn that has been on screen once is
+   * remembered at its real height, so only turns never yet seen are guessed at,
+   * and the 420px is a plausible turn rather than a load-bearing number.
+   */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px;
 }
 /*
  * The rail.

@@ -4,6 +4,7 @@ import * as api from "../lib/api";
 import { entriesFromMessages, type Entry } from "../state/store";
 import { ResizeHandle, useResizableWidth } from "./ResizeHandle";
 import { Transcript } from "./Transcript";
+import { Modal } from "./Modal";
 
 /** Wider than the other drawers: this one holds a conversation, not a list. */
 const WIDTH = { initial: 560, min: 380, max: 900 };
@@ -56,7 +57,7 @@ export function DelegateTranscript({
   }, [sessionId, subagentId]);
 
   return (
-    <div className="scrim" onClick={onClose}>
+    <Modal onClose={onClose}>
       <div className="drawer-dock" onClick={(e) => e.stopPropagation()}>
         <ResizeHandle pane={pane} label="Delegate transcript width" />
         <aside className="drawer delegate-drawer" style={{ width: pane.width }}>
@@ -98,6 +99,6 @@ export function DelegateTranscript({
           )}
         </aside>
       </div>
-    </div>
+    </Modal>
   );
 }

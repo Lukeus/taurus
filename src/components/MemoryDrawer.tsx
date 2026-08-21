@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import type { Note } from "../lib/api";
 import { plural, when } from "../lib/format";
+import { Modal } from "./Modal";
 
 /**
  * What earlier conversations in this workspace left for the next one.
@@ -46,7 +47,7 @@ export function MemoryDrawer({
   };
 
   return (
-    <div className="scrim" onClick={onClose}>
+    <Modal onClose={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
           <h2>Memory</h2>
@@ -108,6 +109,6 @@ export function MemoryDrawer({
           {plural(notes?.length ?? 0, "note")} · also `taurus notes list`
         </p>
       </aside>
-    </div>
+    </Modal>
   );
 }
