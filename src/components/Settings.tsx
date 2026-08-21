@@ -716,10 +716,21 @@ export const FIELDS: Record<
     declareContext: boolean;
     /** A context length used only when the backend will not answer. */
     contextFallback: boolean;
+    /**
+     * A ceiling on a context length the backend reports perfectly well.
+     *
+     * Ollama's case, and the reason this is a third kind rather than one of
+     * the two above: a local model reports the window it was *trained* for,
+     * and the machine running it usually cannot serve that at any speed worth
+     * waiting for. Left blank it is capped at a default rather than unbounded.
+     */
+    contextCap: boolean;
     thinking: boolean;
   }
 > = {
-  // Probes everything about itself, locally, with no credential.
+  // Probes everything about itself, locally, with no credential. The one
+  // number it reports that is not the whole answer is the context window: it
+  // says what the model was trained for, not what this machine can serve.
   ollama: {
     key: false,
     models: false,
@@ -728,6 +739,7 @@ export const FIELDS: Record<
     declareVision: false,
     declareContext: false,
     contextFallback: false,
+    contextCap: true,
     thinking: false,
   },
   // Reports nothing about itself, so all of it has to be declared.
@@ -745,6 +757,7 @@ export const FIELDS: Record<
     declareTools: true,
     declareVision: true,
     declareContext: true,
+    contextCap: false,
     contextFallback: false,
     thinking: false,
   },
@@ -765,6 +778,7 @@ export const FIELDS: Record<
     declareTools: false,
     declareVision: false,
     declareContext: false,
+    contextCap: false,
     contextFallback: true,
     thinking: true,
   },
@@ -775,6 +789,7 @@ export const FIELDS: Record<
     declareTools: false,
     declareVision: false,
     declareContext: false,
+    contextCap: false,
     contextFallback: true,
     thinking: false,
   },
@@ -1119,19 +1134,29 @@ function ProviderForm({
             </Field>
           )}
 
-          {(fields.declareContext || fields.contextFallback) && (
+          {(fields.declareContext ||
+            fields.contextFallback ||
+            fields.contextCap) && (
             <Field
               label="Context length"
               hint={
-                fields.contextFallback
-                  ? "Only used if the backend will not report its own window. Drives when history is compacted."
-                  : "Drives when history is compacted. 8192 for OpenVINO on NPU."
+                fields.contextCap
+                  ? "A ceiling, not a request. A local model reports the window it was trained for, which is often far more than this machine can serve — allocating all of it can make a model many times slower. Blank means 32768, or the model's own window when that is smaller."
+                  : fields.contextFallback
+                    ? "Only used if the backend will not report its own window. Drives when history is compacted."
+                    : "Drives when history is compacted. 8192 for OpenVINO on NPU."
               }
             >
               <input
                 inputMode="numeric"
                 value={provider.context_length ?? ""}
-                placeholder={fields.contextFallback ? "probed" : "128000"}
+                placeholder={
+                  fields.contextCap
+                    ? "32768"
+                    : fields.contextFallback
+                      ? "probed"
+                      : "128000"
+                }
                 onChange={(e) =>
                   onChange({ context_length: parseContextLength(e.target.value) })
                 }

@@ -520,6 +520,14 @@ pub struct ProviderConfig {
     /// reports its own capabilities per model.
     #[serde(default)]
     pub native_tools: Option<bool>,
+    /// The context window, in tokens.
+    ///
+    /// For a backend that cannot be asked, this *is* the window. For Ollama it
+    /// is a ceiling on one that can: a local model reports the window it was
+    /// trained for, which is regularly larger than the machine running it can
+    /// serve at any usable speed, and unset means
+    /// [`taurus_provider_ollama::DEFAULT_CONTEXT_LIMIT`] rather than unbounded.
+    /// A model trained for less keeps its own smaller number either way.
     #[serde(default)]
     pub context_length: Option<u32>,
     /// Whether the models here read images. Unset means the provider's own
