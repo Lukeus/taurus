@@ -100,7 +100,16 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
             if !tool_calls.is_empty() {
                 msg.insert("tool_calls".into(), tool_calls.into());
             }
-            out.push(serde_json::Value::Object(msg));
+            // Results first when a message carries both. A `role: "tool"`
+            // message answers the assistant call before it and nothing may come
+            // between the two, so text sharing a message with tool results has
+            // to follow them rather than lead.
+            if results.is_empty() {
+                out.push(serde_json::Value::Object(msg));
+            } else {
+                out.extend(std::mem::take(&mut results));
+                out.push(serde_json::Value::Object(msg));
+            }
         }
         out.extend(results);
     }
@@ -193,5 +202,36 @@ mod tests {
             )],
         );
         assert!(messages_to_wire(&req).is_empty());
+    }
+    #[test]
+    fn text_beside_tool_results_follows_them() {
+        // A `role: "tool"` message answers the assistant call before it and
+        // nothing may come between the two. The plan rides the last message,
+        // which is the one carrying a round of tool results, so leading with
+        // the text would orphan every result behind it.
+        let req = ChatRequest::new(
+            "m",
+            vec![
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "call_1",
+                        "read_file",
+                        serde_json::json!({}),
+                    )],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![
+                        ContentBlock::tool_result("call_1", "contents"),
+                        ContentBlock::text("# Your current plan"),
+                    ],
+                ),
+            ],
+        );
+        let wire = messages_to_wire(&req);
+        let roles: Vec<&str> = wire.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, vec!["assistant", "tool", "user"]);
+        assert_eq!(wire[2]["content"], "# Your current plan");
     }
 }

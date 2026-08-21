@@ -108,8 +108,9 @@ not because it forgot the steps. They are still there, twenty messages back,
 behind a wall of tool output, competing with everything else for attention.
 
 So `update_plan` writes a checklist, and the checklist is not left in the
-history. It is rebuilt into the system prompt on **every** iteration, where it
-is the last thing the model reads before deciding what to do next:
+history. It is rebuilt onto the **end of every request** — the very last thing
+the model reads before deciding what to do next, written onto the copy being
+sent and never into the conversation being stored:
 
 ```
 # Your current plan
@@ -130,6 +131,21 @@ every step 'done' first, and then say what you did and stop.
 
 The same list is drawn in the transcript, so the user is reading what the model
 is reading.
+
+**Why the end, and not the system prompt.** It used to hang off the end of the
+system prompt, which reads like the end of something and is in fact the very
+beginning of a request — ahead of the tool schemas and every message in the
+conversation. A backend serving a prompt reuses the longest identical prefix of
+one it has already processed, and `update_plan` is called at the start and the
+end of every step, so a plan sitting up there threw away the tools and the whole
+conversation each time a checkbox moved. On one local 30B, a 9,550-token prompt
+costs 16ms to repeat unchanged and 10,933ms to repeat with a single line of the
+plan edited; the same three-step task ran in 75 seconds with the plan at the end
+and 194 seconds with it at the front. On Anthropic it is the same fact with a
+price on it — the cache breakpoint sits on the system field and covers the tools
+rendered before it, so a moved plan misses both. At the tail the plan
+invalidates only itself, and it is nearer the model's attention than it was
+before rather than further away.
 
 Three properties do the work, and each one is a test:
 

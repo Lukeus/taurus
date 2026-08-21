@@ -1448,6 +1448,20 @@ fn plan_call(id: &str, steps: serde_json::Value) -> ScriptedTurn {
 }
 
 /// How many times the model has been asked to close its plan.
+/// The plan as the request actually carries it, wherever that is.
+///
+/// A helper rather than a field read, because *where* is the thing that changed
+/// and the properties below are about the plan being in front of the model at
+/// all — one copy, always live — not about which field holds it.
+fn plan_as_sent(request: &taurus_provider::ChatRequest) -> String {
+    let mut out = request.system.clone().unwrap_or_default();
+    for message in &request.messages {
+        out.push('\n');
+        out.push_str(&message.text());
+    }
+    out
+}
+
 fn plan_nudges(request: &taurus_provider::ChatRequest) -> usize {
     request
         .messages
@@ -1504,9 +1518,9 @@ async fn a_turn_that_stops_with_steps_open_is_asked_to_close_them() {
     // Asked once, and the turn ran on rather than ending on the prose.
     let last = provider.last_request().await.unwrap();
     assert_eq!(plan_nudges(&last), 1);
-    // And the list it went back and closed is the one the prompt now carries.
-    let system = last.system.clone().unwrap();
-    assert!(system.contains("[x] Add the version field"), "{system}");
+    // And the list it went back and closed is the one the request now carries.
+    let sent = plan_as_sent(&last);
+    assert!(sent.contains("[x] Add the version field"), "{sent}");
 }
 
 #[tokio::test]
@@ -1585,8 +1599,8 @@ async fn a_plan_is_restated_to_the_model_on_every_later_iteration() {
     // The whole feature. A 9B model does not lose the steps because it forgot
     // them — they are still in the history — it loses them because by iteration
     // nine they are twenty messages back behind a wall of tool output. So the
-    // plan is not left in the history: it is rebuilt into the system prompt
-    // every time, and this is the test that it actually arrives there.
+    // plan is not left in the history: it is rebuilt onto the end of every
+    // request, and this is the test that it actually arrives there.
     let (agent, provider, _dir) = planning(vec![
         plan_call(
             "t1",
@@ -1615,14 +1629,18 @@ async fn a_plan_is_restated_to_the_model_on_every_later_iteration() {
     assert_eq!(seen.len(), 4);
 
     // Nothing on the first request: the plan did not exist when it was built.
-    let first = seen[0].system.clone().unwrap_or_default();
-    assert!(!first.contains("Read the parser"), "{first}");
+    let first = plan_as_sent(&seen[0]);
+    assert!(!first.contains("[>] Read the parser"), "{first}");
 
-    // On every request after the call, in the state the model set.
+    // On every request after the call, in the state the model set, and last of
+    // everything — nearer the model's attention than the system prompt was, and
+    // behind a prefix that no longer moves when a step does.
     for request in &seen[1..] {
-        let system = request.system.clone().expect("a system prompt");
-        assert!(system.contains("[>] Read the parser"), "{system}");
-        assert!(system.contains("[ ] Add the token type"), "{system}");
+        let sent = plan_as_sent(request);
+        assert!(sent.contains("[>] Read the parser"), "{sent}");
+        assert!(sent.contains("[ ] Add the token type"), "{sent}");
+        let tail = request.messages.last().expect("a message").text();
+        assert!(tail.contains("# Your current plan"), "{tail}");
     }
 }
 
@@ -1651,17 +1669,17 @@ async fn the_prompt_carries_the_plan_as_it_stands_rather_than_as_it_started() {
         .await
         .unwrap();
 
-    let last = provider.last_request().await.unwrap().system.unwrap();
+    let last = plan_as_sent(&provider.last_request().await.unwrap());
     assert!(last.contains("[x] Read the parser"), "{last}");
     assert!(!last.contains("[>] Read the parser"), "{last}");
 }
 
 #[tokio::test]
 async fn only_one_copy_of_the_plan_is_ever_in_front_of_the_model() {
-    // Pushed as a message instead, this would accumulate: one copy per
+    // Stored in the session instead, this would accumulate: one copy per
     // iteration, each staler than the last, leaving the model to work out which
-    // of nine checklists is current. The system prompt is rebuilt each time, so
-    // there is only ever the live one.
+    // of nine checklists is current. It is written onto the copy being sent and
+    // never into the session, so there is only ever the live one.
     let (agent, provider, _dir) = planning(vec![
         plan_call(
             "t1",
@@ -1681,18 +1699,73 @@ async fn only_one_copy_of_the_plan_is_ever_in_front_of_the_model() {
         .unwrap();
 
     let last = provider.last_request().await.unwrap();
-    let system = last.system.unwrap();
+    let sent = plan_as_sent(&last);
     assert_eq!(
-        system.matches("# Your current plan").count(),
+        sent.matches("# Your current plan").count(),
         1,
-        "the plan was stacked rather than rebuilt: {system}"
+        "the plan was stacked rather than rebuilt: {sent}"
     );
-    // And it is nowhere in the history, which is what compaction would erode.
-    let in_messages = last
+    // And nothing of it is in the session, which is the copy that persists and
+    // the one compaction would erode. The request carries it; the record does
+    // not.
+    let stored = session
         .messages
         .iter()
         .any(|m| m.text().contains("# Your current plan"));
-    assert!(!in_messages, "the plan leaked into the conversation");
+    assert!(!stored, "the plan leaked into the stored conversation");
+}
+
+#[tokio::test]
+async fn moving_a_step_leaves_the_prompt_prefix_untouched() {
+    // Why the plan sits where it does. A backend reuses the longest identical
+    // prefix of a prompt it has already processed, and this one is asked to
+    // move a step at the start and end of every step it works on. Measured on a
+    // local 30B: one 9,550-token prompt costs 16ms to repeat unchanged and
+    // 10,933ms to repeat with one line of the plan edited — so anything ahead
+    // of the plan is paid for again every time a checkbox moves. On Anthropic
+    // it is the same fact with a price on it: the cache breakpoint sits on the
+    // system field and covers the tools rendered before it.
+    let (agent, provider, _dir) = planning(vec![
+        plan_call(
+            "t1",
+            serde_json::json!([
+                {"text": "Read the parser", "state": "active"},
+                {"text": "Add the token type", "state": "todo"},
+            ]),
+        ),
+        plan_call(
+            "t2",
+            serde_json::json!([
+                {"text": "Read the parser", "state": "done"},
+                {"text": "Add the token type", "state": "active"},
+            ]),
+        ),
+        ScriptedTurn::text("Done."),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("do the thing"), tx)
+        .await
+        .unwrap();
+
+    let seen = provider.seen.lock().await;
+    let plans: Vec<String> = seen.iter().map(plan_as_sent).collect();
+    assert!(plans.last().unwrap().contains("[x] Read the parser"));
+
+    // The plan moved. Nothing ahead of it did.
+    for pair in seen.windows(2) {
+        assert_eq!(
+            pair[0].system, pair[1].system,
+            "the system prompt moved between iterations"
+        );
+        assert_eq!(
+            pair[0].tools, pair[1].tools,
+            "the tool schemas moved between iterations"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1748,9 +1821,9 @@ async fn a_refused_plan_leaves_the_previous_one_standing() {
         .unwrap();
 
     let last = provider.last_request().await.unwrap();
-    let system = last.system.unwrap();
-    assert!(system.contains("[>] Read the parser"), "{system}");
-    assert!(!system.contains("Add the token type"), "{system}");
+    let sent = plan_as_sent(&last);
+    assert!(sent.contains("[>] Read the parser"), "{sent}");
+    assert!(!sent.contains("[>] Add the token type"), "{sent}");
     // And the model was told what was wrong with it, in terms it can act on.
     let told = last.messages.iter().any(|m| {
         m.text().contains("exactly one step may be in progress")

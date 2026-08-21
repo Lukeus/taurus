@@ -797,14 +797,17 @@ impl Agent {
             self.registry.definitions_for(&self.config.allowed_tools)
         };
 
+        let mut messages = if vision {
+            session.messages.clone()
+        } else {
+            without_images(&session.messages)
+        };
+        self.append_plan(&mut messages);
+
         ChatRequest {
             model: session.model.clone(),
-            system: self.system_prompt(),
-            messages: if vision {
-                session.messages.clone()
-            } else {
-                without_images(&session.messages)
-            },
+            system: Some(self.config.system_prompt.clone()).filter(|s| !s.trim().is_empty()),
+            messages,
             tools,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
@@ -812,32 +815,39 @@ impl Agent {
         }
     }
 
-    /// The system prompt for this iteration, with the plan appended when there
-    /// is one.
+    /// Puts the live plan at the very end of the request.
     ///
-    /// Appended to the system prompt rather than pushed as another message,
-    /// for two reasons. A message would be part of the history — compacted,
-    /// trimmed, and eventually summarized away, which is exactly the drift the
-    /// plan exists to survive. And a second copy would accumulate: one per
-    /// iteration, each slightly staler than the last, until the model is
-    /// reading nine versions of its own checklist and has to work out which one
-    /// is current. The system prompt is rebuilt every iteration, so there is
-    /// only ever one, and it is always the live one.
-    fn system_prompt(&self) -> Option<String> {
-        let base = self.config.system_prompt.trim();
-        let plan = match &self.plan {
-            Some(board) => board.reminder(),
-            None => None,
+    /// Written onto the copy being sent, never into the session. That is what
+    /// keeps the two properties the plan needs: it is not part of the history,
+    /// so compaction cannot summarize it away and it cannot drift; and it is
+    /// rebuilt every iteration, so there is only ever one copy and it is always
+    /// the live one.
+    ///
+    /// Position is the whole point. This used to hang off the end of the system
+    /// prompt, which reads like the end of something and is in fact the very
+    /// beginning of the request — ahead of the tool schemas and every message.
+    /// A backend serving this reuses the longest identical prefix of a prompt
+    /// it has already processed, and `update_plan` is called at the start and
+    /// end of every step, so a plan sitting up there invalidated the tools and
+    /// the whole conversation each time it moved. Measured on a local 30B, one
+    /// 9,550-token prompt: 16ms to repeat unchanged, 10,933ms to repeat with
+    /// one line of the plan edited. On Anthropic it is the same fact with a
+    /// price on it — the cache breakpoint sits on the system field and covers
+    /// the tools rendered before it, and a moved plan misses both.
+    ///
+    /// At the tail it invalidates only itself, and it is nearer the model's
+    /// attention than it was before rather than further away.
+    fn append_plan(&self, messages: &mut Vec<Message>) {
+        let Some(plan) = self.plan.as_ref().and_then(|board| board.reminder()) else {
+            return;
         };
-
-        match (base.is_empty(), plan) {
-            (true, None) => None,
-            (true, Some(plan)) => Some(plan),
-            (false, None) => Some(self.config.system_prompt.clone()),
-            // Last, so it is the nearest thing to the conversation. A model
-            // that reads the end of its prompt most closely is reading the
-            // thing this feature exists to put there.
-            (false, Some(plan)) => Some(format!("{}\n\n{plan}", self.config.system_prompt)),
+        // Onto the last message rather than after it. Every request is built
+        // with a user message last — the person's turn, a round of tool
+        // results, or a nudge — and a second one beside it is a shape some of
+        // these APIs reject outright.
+        match messages.last_mut() {
+            Some(last) if last.role == Role::User => last.content.push(ContentBlock::text(plan)),
+            _ => messages.push(Message::user(plan)),
         }
     }
 
