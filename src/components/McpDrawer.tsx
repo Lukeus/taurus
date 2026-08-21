@@ -6,6 +6,7 @@ import { plural } from "../lib/format";
 import { stateOf } from "../lib/mcp";
 import { McpServerEditor } from "./McpServerEditor";
 import { useStore } from "../state/store";
+import { Modal } from "./Modal";
 
 /**
  * Every tool server this workspace reaches, and everything needed to work out
@@ -89,7 +90,7 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
   );
 
   return (
-    <div className="scrim" onClick={onClose}>
+    <Modal onClose={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
           <h2>MCP servers</h2>
@@ -111,6 +112,11 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
           External tool servers. Everything they offer becomes a tool Taurus can
           call, under the same permission prompt as a built-in.
         </p>
+
+        {/* Between reading and having read nothing: this drawer showed the
+            same blank for both, so a slow read looked like an empty file.
+            `MemoryDrawer` is where this line comes from. */}
+        {servers === null && <p className="drawer-loading">Reading…</p>}
 
         {servers !== null && servers.length > 0 && (
           <p className="drawer-intro hint">
@@ -198,7 +204,7 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
           }}
         />
       )}
-    </div>
+    </Modal>
   );
 }
 

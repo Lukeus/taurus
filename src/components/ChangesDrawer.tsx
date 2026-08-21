@@ -12,6 +12,7 @@ import type {
 import { plural, when } from "../lib/format";
 import { DiffView } from "./DiffView";
 import { CHANGES_WIDTH, ResizeHandle, useResizableWidth } from "./ResizeHandle";
+import { Modal } from "./Modal";
 
 /**
  * Files this conversation changed, the way back, and the way forward.
@@ -99,7 +100,7 @@ export function ChangesDrawer({
   };
 
   return (
-    <div className="scrim" onClick={onClose}>
+    <Modal onClose={onClose}>
       <div className="drawer-dock" onClick={(e) => e.stopPropagation()}>
         <ResizeHandle pane={pane} label="Changes drawer width" />
         <aside className="drawer" style={{ width: pane.width }}>
@@ -278,7 +279,7 @@ export function ChangesDrawer({
           </p>
         </aside>
       </div>
-    </div>
+    </Modal>
   );
 }
 

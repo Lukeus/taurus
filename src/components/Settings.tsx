@@ -20,6 +20,7 @@ import {
 } from "../lib/limits";
 import { applyTheme } from "../lib/theme";
 import { useStore } from "../state/store";
+import { Modal } from "./Modal";
 
 type Tab = "models" | "search" | "permissions" | "behavior";
 
@@ -101,7 +102,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="scrim" onClick={onClose}>
+    <Modal onClose={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
           <h2>Settings</h2>
@@ -304,7 +305,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
           </dl>
         </section>
       </aside>
-    </div>
+    </Modal>
   );
 }
 

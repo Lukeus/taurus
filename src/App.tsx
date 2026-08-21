@@ -115,6 +115,8 @@ export default function App() {
       sessions: s.sessions,
       changed: s.changed,
       busy: s.busy,
+      stopping: s.stopping,
+      resuming: s.resuming,
       error: s.error,
       permission: s.permission,
       proposals: s.proposals,
@@ -230,10 +232,25 @@ export default function App() {
    * retyping it. Nothing in the history is provider-shaped, so carrying it
    * across is a matter of saying so — see `switch_model`.
    */
-  const moveTo = (provider: string, model: string) =>
-    store.session
-      ? store.switchModel(provider, model)
-      : store.startSession(provider, model);
+  /*
+   * Whether a move to another model or backend is in flight.
+   *
+   * A switch recreates the session, which is a round trip and a capability
+   * lookup. The pickers stayed live through it, so a second change could be
+   * made against a session the first was still replacing — and nothing on
+   * screen said the first had been heard.
+   */
+  const [moving, setMoving] = useState(false);
+  const moveTo = async (provider: string, model: string) => {
+    setMoving(true);
+    try {
+      await (store.session
+        ? store.switchModel(provider, model)
+        : store.startSession(provider, model));
+    } finally {
+      setMoving(false);
+    }
+  };
 
   /**
    * Switches provider, which means moving the conversation to that backend's
@@ -369,7 +386,7 @@ export default function App() {
               className="provider-select"
               aria-label="Provider"
               value={providerId ?? ""}
-              disabled={store.busy}
+              disabled={store.busy || moving}
               onChange={(e) => chooseProvider(e.target.value)}
             >
               {providers.map((p) => (
@@ -384,7 +401,7 @@ export default function App() {
             className="model-select"
             aria-label="Model"
             value={store.session?.model ?? ""}
-            disabled={store.busy || !providerId}
+            disabled={store.busy || moving || !providerId}
             onChange={(e) => providerId && moveTo(providerId, e.target.value)}
           >
             {available.length === 0 && <option value="">no models</option>}
@@ -402,6 +419,8 @@ export default function App() {
         <main>
           <TranscriptPane
             busy={store.busy}
+            stopping={store.stopping}
+            pending={store.resuming}
             onAnswer={store.answerQuestions}
             onOpenDelegate={setDelegate}
             empty={
@@ -470,6 +489,7 @@ export default function App() {
 
         <Composer
           busy={store.busy}
+          stopping={store.stopping}
           ready={!!store.session}
           vision={store.session?.vision ?? false}
           workspace={workspace}
@@ -725,6 +745,7 @@ function PinnedPlan() {
 
 function Composer({
   busy,
+  stopping,
   ready,
   vision,
   workspace,
@@ -733,6 +754,8 @@ function Composer({
   onStop,
 }: {
   busy: boolean;
+  /** Pressed Stop, and the turn has not finished unwinding yet. */
+  stopping: boolean;
   ready: boolean;
   /**
    * Whether this session's model reads images.
@@ -756,6 +779,7 @@ function Composer({
   // `dragleave` on the parent, so a boolean flickers the highlight off while
   // the file is still over the composer.
   const [dragDepth, setDragDepth] = useState(0);
+  const box = useRef<HTMLTextAreaElement>(null);
 
   const attach = async (files: File[]) => {
     const wanted = files.filter(isImage);
@@ -800,6 +824,9 @@ function Composer({
     setImages([]);
     setAttachError(null);
     setActive(0);
+    // Sending with Enter never lost focus; sending with the button did, so the
+    // next thing typed went nowhere. Both routes end in the same place.
+    box.current?.focus();
   };
 
   return (
@@ -838,6 +865,7 @@ function Composer({
         {attachError && <p className="composer-problem">{attachError}</p>}
 
         <textarea
+          ref={box}
           value={text}
           placeholder={ready ? "Ask Taurus to do something…" : "Connect a model to begin"}
           disabled={!ready}
@@ -915,8 +943,15 @@ function Composer({
             {vision && " · paste an image"}
           </span>
           {busy ? (
-            <button className="danger composer-send" onClick={onStop}>
-              Stop
+            // Disabled while it takes, because a second press does nothing the
+            // first did not — and a button that still says "Stop" after being
+            // pressed reads as one that did not register.
+            <button
+              className="danger composer-send"
+              onClick={onStop}
+              disabled={stopping}
+            >
+              {stopping ? "Stopping…" : "Stop"}
             </button>
           ) : (
             <button

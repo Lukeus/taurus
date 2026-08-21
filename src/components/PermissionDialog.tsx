@@ -1,5 +1,6 @@
 import type { PermissionDecision, PermissionRequest } from "../lib/api";
 import { DiffView } from "./DiffView";
+import { Modal } from "./Modal";
 
 const EFFECT_LABEL: Record<string, string> = {
   write: "wants to change a file",
@@ -15,6 +16,10 @@ const EFFECT_LABEL: Record<string, string> = {
  * approving this command line or this file write, not the tool in general.
  * The scope sentence sits above the buttons because it is the thing that
  * distinguishes them — which of these grants is wider, and by how much.
+ *
+ * The one `Modal` with no `onClose`: this is answered, not dismissed. Escape
+ * would have to mean one of the buttons, and none of them is what a person
+ * pressing Escape has decided.
  */
 export function PermissionDialog({
   request,
@@ -24,7 +29,7 @@ export function PermissionDialog({
   onDecide: (decision: PermissionDecision) => void;
 }) {
   return (
-    <div className="scrim">
+    <Modal>
       <div className="dialog" role="alertdialog" aria-labelledby="perm-title">
         <div className="dialog-head">
           <span className={`effect ${request.effect}`}>{VERB[request.effect]}</span>
@@ -51,7 +56,11 @@ export function PermissionDialog({
         )}
 
         <div className="dialog-actions">
-          <button className="primary" onClick={() => onDecide("allow_once")} autoFocus>
+          {/* Not `autoFocus`. Focus lands on the dialog itself — see `Modal` —
+              because a prompt that opens with the affirmative already focused
+              turns a stray Enter, from someone typing when it appeared, into a
+              grant they never read. Tab reaches it in one press. */}
+          <button className="primary" onClick={() => onDecide("allow_once")}>
             Allow once
           </button>
           {/* Absent in a workspace whose own config is not being read: there
@@ -82,7 +91,7 @@ export function PermissionDialog({
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 

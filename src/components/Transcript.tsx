@@ -76,6 +76,24 @@ const CLASS_NOUN: Record<string, string> = {
 export type TranscriptProps = {
   entries: Entry[];
   busy: boolean;
+  /**
+   * Stop has been pressed and the turn has not finished unwinding.
+   *
+   * Only ever read while `busy`, and only to change what the marker says: a
+   * cancel takes as long as the in-flight tool call takes to notice, and a
+   * `working…` that carried on through that read as a Stop that had not
+   * registered.
+   */
+  stopping?: boolean;
+  /**
+   * The conversation on screen is being replaced by another.
+   *
+   * Drawn as a fade that only starts after a sixth of a second — see
+   * `.transcript.pending`. An ordinary reopen is faster than that and shows
+   * nothing at all, which is the point: a dim that flashes on every switch
+   * would be worse than the wait it is reporting.
+   */
+  pending?: boolean;
   /** Shown in place of the transcript before there is anything to show. */
   empty: React.ReactNode;
   /** Answers a question card, releasing the tool call parked behind it. */
@@ -96,6 +114,8 @@ export type TranscriptProps = {
 export function Transcript({
   entries,
   busy,
+  stopping = false,
+  pending = false,
   empty,
   onAnswer,
   onOpenDelegate,
@@ -162,7 +182,11 @@ export function Transcript({
   }
 
   return (
-    <div className="transcript" ref={container}>
+    <div
+      className={`transcript${pending ? " pending" : ""}`}
+      aria-busy={pending || undefined}
+      ref={container}
+    >
       {conversation.map((turn, i) => (
         <TurnView
           key={turn.prompt?.id ?? `preamble-${i}`}
@@ -171,6 +195,7 @@ export function Transcript({
           // question most recently asked, and the marker belongs on its rail
           // rather than floating under the conversation as a whole.
           working={busy && i === conversation.length - 1}
+          stopping={stopping}
           onAnswer={answer}
           onOpenDelegate={openDelegate}
         />
@@ -337,11 +362,14 @@ function unchanged(a: Turn, b: Turn): boolean {
 const TurnView = memo(function TurnView({
   turn,
   working,
+  stopping,
   onAnswer,
   onOpenDelegate,
 }: {
   turn: Turn;
   working: boolean;
+  /** Cancelling. Only ever read when `working`. */
+  stopping: boolean;
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
 }) {
@@ -365,7 +393,7 @@ const TurnView = memo(function TurnView({
       )}
       {working && (
         <div className="turn-step working" aria-live="polite">
-          working…
+          {stopping ? "stopping…" : "working…"}
         </div>
       )}
     </section>

@@ -124,6 +124,26 @@ interface Store {
    */
   changed: string[];
   busy: boolean;
+  /**
+   * Set between pressing Stop and the turn actually unwinding.
+   *
+   * The two are not the same moment: a cancel has to reach the loop, the
+   * in-flight tool call has to notice, and the stream has to drain. Until this
+   * existed the button still read "Stop" and the `working…` marker stayed up
+   * through all of it, so the only feedback a second press gave was a second
+   * cancel.
+   */
+  stopping: boolean;
+  /**
+   * Set while a conversation is being reopened.
+   *
+   * The transcript on screen is the previous one until the new entries land in
+   * a single `set`, so between the click and that moment the app looks like it
+   * ignored the click. Only *shown* if the wait is long enough to notice — see
+   * `.transcript.pending`, which holds off for a sixth of a second so an
+   * ordinary switch does not flicker.
+   */
+  resuming: boolean;
   /** Set while a turn is running so the composer can show Stop instead of Send. */
   permission: PermissionRequest | null;
   proposals: SkillProposal[];
@@ -259,6 +279,8 @@ export const useStore = create<Store>((set, get) => ({
   entries: [],
   changed: [],
   busy: false,
+  stopping: false,
+  resuming: false,
   permission: null,
   proposals: [],
   agentProposals: [],
@@ -393,19 +415,27 @@ export const useStore = create<Store>((set, get) => ({
 
   resume: async (sessionId) => {
     const previous = get().session;
-    const { messages, switches, ...session } = await api.resumeSession(sessionId);
-    // As in `startSession`: a resume that fails must leave the conversation on
-    // screen exactly as it was.
-    await release(previous, session.id);
-    set({
-      session,
-      entries: entriesFromMessages(messages, switches),
-      changed: [],
-      error: null,
-      proposals: [],
-      agentProposals: [],
-    });
-    void get().reload();
+    // Raised around the whole thing rather than only the round trip: the
+    // transcript on screen is still the previous conversation's until the
+    // `set` below replaces it, and that is the whole of what this marks.
+    set({ resuming: true });
+    try {
+      const { messages, switches, ...session } = await api.resumeSession(sessionId);
+      // As in `startSession`: a resume that fails must leave the conversation
+      // on screen exactly as it was.
+      await release(previous, session.id);
+      set({
+        session,
+        entries: entriesFromMessages(messages, switches),
+        changed: [],
+        error: null,
+        proposals: [],
+        agentProposals: [],
+      });
+      void get().reload();
+    } finally {
+      set({ resuming: false });
+    }
   },
 
   remove: async (sessionId) => {
@@ -442,6 +472,26 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   rename: async (sessionId, title) => {
+    const before = get().sessions;
+    /*
+     * Shown before it has landed, and only when there is something to show.
+     *
+     * The announcement comes back on `EVENT_SESSION`, a round trip later, so
+     * until this the committed name flicked back to the old one for a frame —
+     * which reads as the rename having been refused. An empty title is the one
+     * case left alone: it restores the name derived from the conversation's
+     * first question, which only the backend knows, and guessing at it would
+     * be inventing a title rather than echoing one.
+     */
+    const wanted = title.trim();
+    if (wanted) {
+      set((s) => ({
+        sessions: s.sessions.map((session) =>
+          session.id === sessionId ? { ...session, title: wanted } : session,
+        ),
+      }));
+    }
+
     try {
       // The result is ignored: the backend announces the rename on the same
       // event every other change to a listing entry arrives on, so taking it
@@ -449,7 +499,9 @@ export const useStore = create<Store>((set, get) => ({
       // with two chances to disagree about the order they landed in.
       await api.renameSession(sessionId, title);
     } catch (e) {
-      set({ error: String(e) });
+      // Put the list back as it was rather than leaving a name on screen that
+      // is not the one on disk.
+      set({ sessions: before, error: String(e) });
     }
   },
 
@@ -483,6 +535,7 @@ export const useStore = create<Store>((set, get) => ({
 
     set((s) => ({
       busy: true,
+      stopping: false,
       error: null,
       entries: [...s.entries, { kind: "user", id: nextId(), text, images }],
     }));
@@ -514,6 +567,7 @@ export const useStore = create<Store>((set, get) => ({
       stream.flush();
       set((s) => ({
         busy: false,
+        stopping: false,
         // Close the open assistant entry so the next turn starts a new bubble.
         entries: s.entries.map((e) =>
           e.kind === "assistant" ? { ...e, open: false } : e,
@@ -530,7 +584,19 @@ export const useStore = create<Store>((set, get) => ({
 
   stop: async () => {
     const { session } = get();
-    if (session) await api.cancelSession(session.id);
+    if (!session) return;
+    // Set before the call, not after it: the whole point is to say something
+    // during the wait. Cleared by the turn ending, in `send`'s `finally` —
+    // which is the only thing that knows the cancel actually took.
+    set({ stopping: true });
+    try {
+      await api.cancelSession(session.id);
+    } catch (e) {
+      // The turn is still running, so the button has to become pressable
+      // again. Anything else leaves a conversation that cannot be stopped and
+      // does not say why.
+      set({ stopping: false, error: String(e) });
+    }
   },
 
   answerPermission: async (decision) => {
