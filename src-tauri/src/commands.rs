@@ -421,8 +421,29 @@ pub async fn resume_session(
             let entry = open.clone();
             let provider_id = entry.provider_id.lock().await.clone();
             let switches = entry.switches.lock().await.clone();
-            let session = entry.session.lock().await.clone();
-            (session, provider_id, switches, None)
+            // Never waited for. A turn holds this lock for its whole run, which
+            // is minutes for a long one, and awaiting it here hung the window
+            // on the click that reopens the conversation that is *already*
+            // streaming — the one case where the frontend does not close the
+            // previous session first, so the one case that could reach it.
+            //
+            // `delete` and `rewind` meet the same lock and refuse; this does
+            // not, because reopening a conversation has to work. What it falls
+            // back to is what a cold open would have read: the transcript on
+            // disk, complete to the end of the last round. The turn's own
+            // stream carries on appending from there.
+            let live = entry.session.try_lock().ok().map(|s| s.clone());
+            match live {
+                Some(session) => (session, provider_id, switches, None),
+                None => {
+                    let id = session_id.clone();
+                    let loaded = off_runtime(move || sessions::load(&id)).await?;
+                    // Deliberately not `Some(loaded)`: that is what opens a log
+                    // and installs a session entry, and this conversation
+                    // already has both — with a turn running through them.
+                    (loaded.session, provider_id, switches, None)
+                }
+            }
         }
         None => {
             // The whole `.jsonl` — file contents, shell output, MCP results
@@ -644,6 +665,12 @@ pub async fn close_session(state: State<'_, Arc<AppState>>, session_id: String) 
     if let Some((_, entry)) = state.sessions.remove(&session_id) {
         entry.cancel.lock().await.cancel();
     }
+    // The board goes with the conversation it belongs to. `delete_session` and
+    // `rewind_to` already did this; closing did not, and closing is the one
+    // that happens on every switch between conversations — so the map grew by
+    // one for each and never shrank. Nothing can reach a board whose session
+    // entry is gone, which is what made it a leak rather than a cache.
+    state.host.forget_plan(&session_id).await;
     Ok(())
 }
 

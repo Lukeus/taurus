@@ -36,6 +36,41 @@ impl ScriptedTurn {
         }
     }
 
+    /// A turn streamed a token at a time, the way a real one arrives.
+    ///
+    /// `ScriptedTurn::text` sends the whole answer as one delta, which is the
+    /// shape almost every test wants and the one shape that cannot show what
+    /// the loop does with a *run* of them.
+    pub fn tokens(tokens: &[&str]) -> Self {
+        Self {
+            events: tokens
+                .iter()
+                .map(|text| StreamEvent::TextDelta {
+                    text: (*text).into(),
+                })
+                .collect(),
+            stop: StopReason::EndTurn,
+            failure: None,
+        }
+    }
+
+    /// A turn that thinks out loud before answering.
+    pub fn thinks_then_says(thinking: &[&str], text: &[&str]) -> Self {
+        let mut events: Vec<StreamEvent> = thinking
+            .iter()
+            .map(|t| StreamEvent::ThinkingDelta { text: (*t).into() })
+            .collect();
+        events.extend(
+            text.iter()
+                .map(|t| StreamEvent::TextDelta { text: (*t).into() }),
+        );
+        Self {
+            events,
+            stop: StopReason::EndTurn,
+            failure: None,
+        }
+    }
+
     /// A request that fails before producing anything, with a status the
     /// provider layer classifies as worth retrying.
     pub fn transient_failure() -> Self {

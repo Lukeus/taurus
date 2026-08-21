@@ -124,6 +124,100 @@ async fn a_plain_answer_ends_the_turn_in_one_iteration() {
         .any(|e| matches!(e, UiEvent::TextDelta { text } if text == "Hello there")));
 }
 
+/// Every `TextDelta` in order, and how many events carried them.
+fn text_deltas(events: &[UiEvent]) -> (String, usize) {
+    let parts: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    (parts.concat(), parts.len())
+}
+
+#[tokio::test]
+async fn a_run_of_tokens_crosses_to_the_ui_in_one_piece() {
+    /*
+     * One `UiEvent` per token means one serialize, one webview message and one
+     * JS dispatch per token, and a small local model streams hundreds a second
+     * — all of them competing with rendering for the same main thread. The
+     * gathering window is short enough that a scripted turn, which streams with
+     * no pauses at all, arrives inside a single one.
+     *
+     * The text itself has to survive intact: the frontend appends what it is
+     * given, so a delta dropped or reordered here is a word missing from the
+     * answer on screen.
+     */
+    let h = harness(vec![ScriptedTurn::tokens(&[
+        "The ", "quick ", "brown ", "fox ", "jumps",
+    ])]);
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "hi").await;
+
+    outcome.unwrap();
+    let (text, pieces) = text_deltas(&events);
+    assert_eq!(text, "The quick brown fox jumps");
+    assert!(pieces < 5, "{pieces} events for 5 tokens is not coalescing");
+    assert_eq!(session.messages[1].text(), "The quick brown fox jumps");
+}
+
+#[tokio::test]
+async fn thinking_is_never_gathered_into_the_answer_beside_it() {
+    // The two are separate messages on screen. A run of one absorbing the other
+    // would put the model's reasoning into what it said out loud.
+    let h = harness(vec![ScriptedTurn::thinks_then_says(
+        &["let me ", "check"],
+        &["Here ", "you ", "go"],
+    )]);
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "hi").await;
+
+    outcome.unwrap();
+    let (text, _) = text_deltas(&events);
+    assert_eq!(text, "Here you go");
+
+    let thinking: String = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::ThinkingDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(thinking, "let me check");
+
+    // And in that order, which the flush on a change of kind is what preserves.
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::ThinkingDelta { .. } => Some("thinking"),
+            UiEvent::TextDelta { .. } => Some("text"),
+            _ => None,
+        })
+        .collect();
+    let first_text = kinds.iter().position(|k| *k == "text").unwrap();
+    assert!(
+        !kinds[first_text..].contains(&"thinking"),
+        "thinking arrived after the answer began: {kinds:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_stream_that_dies_mid_answer_still_shows_what_it_said() {
+    // The gathered deltas are handed on before the failure is looked at. This
+    // is also what `produced_output` promises — the loop refuses to retry a
+    // stream that already put text on screen, so that text has to be on screen.
+    let h = harness(vec![
+        ScriptedTurn::transient_failure_after_text("half an ans"),
+        ScriptedTurn::text("recovered"),
+    ]);
+    let mut session = Session::new("fake");
+    let (_, events) = run(&h, &mut session, "hi").await;
+
+    let (text, _) = text_deltas(&events);
+    assert!(text.starts_with("half an ans"), "{text:?}");
+}
+
 #[tokio::test]
 async fn a_tool_call_runs_and_the_result_feeds_the_next_iteration() {
     let h = harness(vec![

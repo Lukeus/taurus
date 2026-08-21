@@ -131,6 +131,10 @@ pub struct Hit {
 }
 
 /// One workspace's index.
+///
+/// Two paths and nothing else, so a caller that needs one on a blocking thread
+/// clones it rather than borrowing across the boundary.
+#[derive(Clone)]
 pub struct Index {
     path: PathBuf,
     workspace: PathBuf,

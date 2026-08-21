@@ -21,6 +21,48 @@ use tracing::{debug, info, warn};
 use crate::event::{truncate_for_ui, UiEvent};
 use crate::session::{split_for_compaction, Session};
 
+/// How long consecutive deltas of one kind are gathered before being handed on.
+///
+/// Every token a model produces used to be its own `UiEvent`, which is its own
+/// `serde_json` serialize, its own webview message and its own JS dispatch. A
+/// small local model streams 200–500 tokens a second, so that was hundreds of
+/// crossings a second competing for the same main thread the tokens are being
+/// rendered on — jank on exactly the fastest setups.
+///
+/// Chosen against what the frontend does with them rather than by feel: it
+/// coalesces events into one render per 30ms frame, so anything gathered inside
+/// that window would have waited for the same frame anyway. The cost is that
+/// the *first* token of a turn is handed on up to this late; a frame is the
+/// smallest unit the screen can show it in either way.
+const COALESCE: Duration = Duration::from_millis(16);
+
+/// Deltas of one kind, gathered but not yet handed on.
+struct Held {
+    thinking: bool,
+    text: String,
+    /// When this has to go, whatever else has happened by then.
+    due: std::time::Instant,
+}
+
+impl Held {
+    fn new(thinking: bool, text: &str) -> Self {
+        Self {
+            thinking,
+            text: text.to_string(),
+            due: std::time::Instant::now() + COALESCE,
+        }
+    }
+
+    async fn send(self, ui: &mpsc::Sender<UiEvent>) {
+        let event = if self.thinking {
+            UiEvent::ThinkingDelta { text: self.text }
+        } else {
+            UiEvent::TextDelta { text: self.text }
+        };
+        let _ = ui.send(event).await;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
     pub system_prompt: String,
@@ -669,19 +711,51 @@ impl Agent {
         // a stream that dies part-way through a tool call can still be retried
         // without the user seeing anything twice.
         let mut produced_output = false;
-        while let Some(event) = rx.recv().await {
-            match &event {
-                StreamEvent::TextDelta { text } => {
-                    produced_output = true;
-                    let _ = ui.send(UiEvent::TextDelta { text: text.clone() }).await;
+        // What has arrived since the last thing was handed on. See `COALESCE`.
+        let mut held: Option<Held> = None;
+
+        loop {
+            let arrived = match &held {
+                // Something is being held back, so this cannot block until the
+                // model happens to speak again: a model that stops mid-sentence
+                // to think would leave the last few tokens of it unsent.
+                Some(h) => match tokio::time::timeout_at(h.due.into(), rx.recv()).await {
+                    Ok(arrived) => arrived,
+                    Err(_) => {
+                        held.take().unwrap().send(ui).await;
+                        continue;
+                    }
+                },
+                None => rx.recv().await,
+            };
+            let Some(event) = arrived else { break };
+
+            let delta = match &event {
+                StreamEvent::TextDelta { text } => Some((false, text)),
+                StreamEvent::ThinkingDelta { text } => Some((true, text)),
+                _ => None,
+            };
+            if let Some((thinking, text)) = delta {
+                produced_output = true;
+                match &mut held {
+                    // The two kinds are separate messages on screen, so a run
+                    // of one cannot absorb the other.
+                    Some(h) if h.thinking == thinking => h.text.push_str(text),
+                    Some(_) => {
+                        held.take().unwrap().send(ui).await;
+                        held = Some(Held::new(thinking, text));
+                    }
+                    None => held = Some(Held::new(thinking, text)),
                 }
-                StreamEvent::ThinkingDelta { text } => {
-                    produced_output = true;
-                    let _ = ui.send(UiEvent::ThinkingDelta { text: text.clone() }).await;
-                }
-                _ => {}
             }
             acc.push(event);
+        }
+
+        // Whatever the stream ended mid-window with. Before the error is
+        // looked at, so a stream that failed part-way still shows what it did
+        // manage to say — which is also what `produced_output` promises.
+        if let Some(h) = held.take() {
+            h.send(ui).await;
         }
 
         let joined = handle.await.unwrap_or_else(|e| {

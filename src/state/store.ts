@@ -1452,7 +1452,13 @@ function appendAssistant(
 ): Entry[] {
   const last = entries[entries.length - 1];
   if (last?.kind === "assistant" && last.open) {
-    return [...entries.slice(0, -1), update(last)];
+    // Copied once, not twice. `[...entries.slice(0, -1), x]` builds an
+    // intermediate array and then spreads it into another, and this runs on
+    // every delta that reaches the store — the one place in the reducer whose
+    // cost is (conversation length × token rate) rather than either alone.
+    const next = entries.slice();
+    next[next.length - 1] = update(last);
+    return next;
   }
   return [
     ...entries,
