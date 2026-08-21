@@ -27,6 +27,7 @@ import type {
   Step,
   Switch,
   TranscriptView,
+  ToolOutput,
   TrustStatus,
   UiEvent,
 } from "../lib/api";
@@ -53,6 +54,16 @@ export type Entry =
       preview: string;
       status: "running" | "ok" | "error";
       output?: string;
+      /**
+       * Pictures the tool handed back — a screenshot, a rendered chart, a page
+       * of a PDF.
+       *
+       * Separate from `output` because they are different things. `output` is
+       * truncated for display; an image cannot be, since half a PNG is not
+       * half a picture. Empty for every tool that returns prose, which is
+       * nearly all of them.
+       */
+      images?: Attachment[];
       /**
        * What a still-running tool has reported doing.
        *
@@ -808,7 +819,8 @@ export function entriesFromMessages(
             entries[index] = {
               ...call,
               status: block.is_error ? "error" : "ok",
-              output: block.content,
+              output: toolText(block.content),
+              images: toolImages(block.content),
               // The same rule the live reducer applies: a call the harness
               // refused drew nothing, so a reopened conversation must not
               // show it having drawn something.
@@ -883,6 +895,35 @@ export function entriesFromMessages(
  * moved from is on screen directly above the line, and recording it as well
  * would be a second copy of that, written to disk, able to disagree with it.
  */
+/**
+ * What a tool result reads as, when a transcript is rebuilt from disk.
+ *
+ * An image leaves a line saying it was there rather than nothing. A result
+ * whose only block was a picture would otherwise redraw as a call that
+ * returned empty, which is indistinguishable from one that failed.
+ */
+function toolText(content: ToolOutput): string {
+  return content
+    .map((block) => {
+      if (block.type === "text") return block.text;
+      if (block.type === "json") return JSON.stringify(block.value);
+      return `[image: ${block.mime_type}]`;
+    })
+    .join("\n");
+}
+
+/** The pictures in a tool result, in the order the tool returned them. */
+function toolImages(content: ToolOutput): Attachment[] | undefined {
+  const images = content
+    .filter((block) => block.type === "image")
+    .map((block) =>
+      block.type === "image"
+        ? { mime_type: block.mime_type, data: block.data }
+        : null!,
+    );
+  return images.length > 0 ? images : undefined;
+}
+
 function switchNotice(moved: {
   provider?: string;
   provider_id?: string;
@@ -1437,6 +1478,7 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
               ...e,
               status: event.ok ? "ok" : "error",
               output: event.output,
+              images: event.images?.length ? event.images : undefined,
               // A refused call leaves nothing behind. The view went out before
               // the call ran, so a chart whose series did not line up is on
               // screen by the time the harness says so — and a wrong chart

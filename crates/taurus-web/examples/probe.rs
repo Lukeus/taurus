@@ -55,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Follow the first URL the search returned, which is the handoff the two
     // tools exist to make.
+    let results = results.to_text();
     let Some(url) = results
         .split_whitespace()
         .find(|word| word.starts_with("https://") || word.starts_with("http://"))

@@ -308,11 +308,35 @@ and they are the minority.
   that would mean deciding when two calls are *near* enough to be the same
   mistake, which is a guess the iteration ceiling makes unnecessary. See
   [When a turn stops](working-with-it.md#when-a-turn-stops).
-- **An image can only be sent, never received.** The model reads pictures and
-  cannot produce or edit one, so a turn that would be best answered with a
-  diagram answers in prose. That is a limit of what the normalized types carry
-  in the other direction, and closing it means a shape for image output that
-  only some backends could fill.
+- **The *model* still cannot produce an image.** A tool can hand one back now,
+  but the model itself reads pictures and cannot draw or edit one, so a turn
+  best answered with a diagram answers in prose or reaches for `show_chart`.
+  Closing that means image *generation*, which only some backends offer and none
+  of them the same way.
+- **No built-in tool returns an image yet.** The shape exists and every adapter
+  carries it, but the only things exercising it are MCP servers — a browser
+  driver's screenshot, a renderer's output. A built-in that rasterizes a PDF
+  page or captures a window is a tool nobody has written here, not a limit of
+  what a tool may return.
+- **Only Anthropic carries a tool's image inside the result.** OpenAI's
+  `role: "tool"`, Gemini's `functionResponse`, and Ollama's tool message are
+  text, so on those three the picture is relocated to immediately after the
+  result, with a marker line left where it was and a note naming the call. It
+  arrives, in order, attributed — but it is a separate part of the conversation
+  rather than part of the answer, and a model that weighs a tool result
+  differently from a user message will weigh it differently. This is what the
+  wire formats allow; closing it means those APIs changing, not this one.
+- **A tool's image is budgeted at a flat estimate, like a pasted one.** 1,000
+  tokens, regardless of its dimensions, because the real cost has nothing to do
+  with the length of its base64 and each provider prices it differently. The
+  number the compaction trigger reads is therefore approximate in exactly the
+  place the stakes are highest — a turn that returned four screenshots may have
+  less room left than the counter says.
+- **Trimming an old tool result drops its picture.** Deliberate: the point of
+  shortening an old result is to reclaim the window, and the image is the most
+  expensive thing in it. But it means a screenshot from earlier in a long
+  conversation is gone from the model's view while its caption remains, and
+  nothing says which it was.
 - **An attached image is not in the checkpoint log.** It goes into the
   transcript, so it survives and redraws; it is not a file in the workspace, so
   a rewind neither restores nor reports it. That is correct — there is nothing

@@ -180,6 +180,16 @@ impl ToolRegistry {
         debug!(tool = name, "executing");
         let mut result = tool.execute(input, ctx).await;
 
+        // Every image any tool hands back passes through here, whoever wrote
+        // the tool. A built-in is trusted to produce a valid PNG; a skill and
+        // an MCP server are not, and neither is a built-in with a bug. An
+        // unusable image that reaches the provider costs a round trip and comes
+        // back as a wire error naming a field, which tells the model nothing
+        // about which of its calls produced it.
+        if let Ok(output) = &mut result {
+            vet_images(name, output);
+        }
+
         // Unconditionally: a command that failed, timed out, or was canceled
         // has still written whatever it got as far as writing, and that is
         // precisely the turn someone reaches for undo on.
@@ -256,6 +266,65 @@ fn hook_payload(
     Some(payload)
 }
 
+/// Replaces any image this harness cannot pass on with a line saying why.
+///
+/// Refused rather than repaired, and refused *here* rather than at the call
+/// site: this is the one funnel every tool result passes through, so it is the
+/// only place the rule can be stated once. Dropping the block outright would
+/// leave a tool that returned only a picture answering with nothing at all,
+/// which reads to the model as a tool that did not work — the truth is that it
+/// worked and its answer could not be carried.
+///
+/// The text names the tool, because the model's next move is to decide whether
+/// to call it differently.
+fn vet_images(tool: &str, output: &mut taurus_provider::ToolOutput) {
+    use taurus_provider::image::{self, Rejected};
+    use taurus_provider::ToolResultBlock;
+
+    if !output.has_images() {
+        return;
+    }
+
+    let vetted: Vec<ToolResultBlock> = output
+        .as_slice()
+        .iter()
+        .map(|block| {
+            let ToolResultBlock::Image { mime_type, data } = block else {
+                return block.clone();
+            };
+            match image::check(mime_type, data) {
+                Ok(_) => block.clone(),
+                Err(reason) => {
+                    let why = match reason {
+                        Rejected::UnknownFormat => format!(
+                            "it is {mime_type}, and only PNG, JPEG, WebP, and GIF can be sent"
+                        ),
+                        Rejected::NotBase64 => "its data is not valid base64".to_string(),
+                        Rejected::Empty => "it is empty".to_string(),
+                        Rejected::TooLarge { bytes } => format!(
+                            "it is {:.1} MB, past the {} MB limit",
+                            bytes as f64 / (1024.0 * 1024.0),
+                            image::MAX_IMAGE_BYTES / (1024 * 1024)
+                        ),
+                        Rejected::Mismatch { actual } => {
+                            format!("it says it is {mime_type} but the bytes are {actual}")
+                        }
+                    };
+                    warn!(tool, "an image from this tool could not be sent: {why}");
+                    ToolResultBlock::text(format!(
+                        "[an image from `{tool}` could not be sent: {why}]"
+                    ))
+                }
+            }
+        })
+        .collect();
+
+    // Cannot be empty: this maps one block to one block.
+    if let Ok(replaced) = taurus_provider::ToolOutput::blocks(vetted) {
+        *output = replaced;
+    }
+}
+
 /// Adds a note about the call to whatever the call produced.
 ///
 /// A timeout and a cancellation are `Err`, and they are exactly the outcomes a
@@ -266,7 +335,11 @@ fn hook_payload(
 /// changed nothing.
 fn annotate(result: &mut ToolResult, note: &str) {
     match result {
-        Ok(output) => output.push_str(&format!("\n\n[taurus] {note}")),
+        // Appended as its own block rather than glued onto the last one. A
+        // result whose final block is a picture has no text to extend, and a
+        // note welded to the end of a JSON block would make it unparseable —
+        // which is the one thing a tool returning JSON was promised.
+        Ok(output) => output.push_text(format!("\n\n[taurus] {note}")),
         Err(ToolError::Failed(message)) => {
             message.push_str(&format!("\n\n[taurus] {note}"));
         }
@@ -394,7 +467,7 @@ mod tests {
             .expect("a post hook must not fail the call");
 
         // The model has to be told, or it reads the file back to find out.
-        assert!(output.contains("reformatted 1 file"), "{output}");
+        assert!(output.to_text().contains("reformatted 1 file"), "{output}");
     }
 
     #[cfg(unix)]
@@ -478,7 +551,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("2 replacements"));
+        assert!(out.to_text().contains("2 replacements"));
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "y y"
@@ -596,7 +669,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("Exit code 1"), "{out}");
+        assert!(out.to_text().contains("Exit code 1"), "{out}");
 
         assert_eq!(store.turns("s1").unwrap()[0].files, vec!["out.txt"]);
         store.rewind("s1", &root, 1, false).unwrap();
@@ -630,8 +703,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.contains("[taurus]"), "no warning on the result: {out}");
-        assert!(out.contains("ignore rule"), "{out}");
+        assert!(
+            out.to_text().contains("[taurus]"),
+            "no warning on the result: {out}"
+        );
+        assert!(out.to_text().contains("ignore rule"), "{out}");
 
         // And the thing the warning is about actually held: the rewind leaves
         // the revealed file alone rather than deleting it.
@@ -681,7 +757,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(out, "{\"temperature\": 12}", "the payload was altered");
+        assert_eq!(
+            out.to_text(),
+            "{\"temperature\": 12}",
+            "the payload was altered"
+        );
         assert!(store.turns("s1").unwrap().is_empty());
     }
 
@@ -775,6 +855,6 @@ mod tests {
             .execute("read_file", serde_json::json!({"path": "a.txt"}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("hi"));
+        assert!(out.to_text().contains("hi"));
     }
 }

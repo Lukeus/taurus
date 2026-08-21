@@ -67,6 +67,8 @@ import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
 import type { Theme } from "../bindings/Theme";
+import type { ToolOutput } from "../bindings/ToolOutput";
+import type { ToolResultBlock } from "../bindings/ToolResultBlock";
 import type { TranscriptView } from "../bindings/TranscriptView";
 import type { PendingConfig } from "../bindings/PendingConfig";
 import type { TrustStatus } from "../bindings/TrustStatus";
@@ -135,6 +137,8 @@ export type {
   Switch,
   Theme,
   PendingConfig,
+  ToolOutput,
+  ToolResultBlock,
   TranscriptView,
   TrustStatus,
   TurnChange,

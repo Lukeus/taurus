@@ -219,7 +219,8 @@ impl Tool for SearchCode {
             return Ok(format!(
                 "Nothing indexed in this workspace, so there is nothing to search. {}",
                 report.summary()
-            ));
+            )
+            .into());
         }
 
         ctx.report("searching").await;
@@ -238,7 +239,8 @@ impl Tool for SearchCode {
                 "No match for '{query}' in {} indexed passages. Try describing it differently, or \
                  use grep if you know the literal text.",
                 entries.len()
-            ));
+            )
+            .into());
         }
 
         if self.rerank.is_some() {
@@ -246,7 +248,7 @@ impl Tool for SearchCode {
         }
         let hits = self.reranked(query, hits).await;
 
-        Ok(render(query, &hits, ctx.workspace.as_path()))
+        Ok(render(query, &hits, ctx.workspace.as_path()).into())
     }
 }
 
@@ -468,7 +470,7 @@ mod tests {
             .await
             .expect("search succeeds");
         assert!(
-            plain.find("src/net.rs") < plain.find("src/store.rs"),
+            plain.to_text().find("src/net.rs") < plain.to_text().find("src/store.rs"),
             "similarity should favour net.rs to begin with:\n{plain}"
         );
 
@@ -485,7 +487,7 @@ mod tests {
             .expect("search succeeds");
 
         assert!(
-            reranked.find("src/store.rs") < reranked.find("src/net.rs"),
+            reranked.to_text().find("src/store.rs") < reranked.to_text().find("src/net.rs"),
             "the reranker should have promoted store.rs:\n{reranked}"
         );
     }
@@ -510,10 +512,10 @@ mod tests {
             .await
             .expect("search succeeds");
 
-        assert!(out.contains("(relevance "), "{out}");
-        assert!(!out.contains("(similarity "), "{out}");
+        assert!(out.to_text().contains("(relevance "), "{out}");
+        assert!(!out.to_text().contains("(similarity "), "{out}");
         assert!(
-            out.contains("-6.00"),
+            out.to_text().contains("-6.00"),
             "a negative score is a ranking, not a result to hide:\n{out}"
         );
     }
@@ -539,9 +541,9 @@ mod tests {
             .await
             .expect("a failed rerank is not a failed search");
 
-        assert!(out.contains("src/net.rs"), "{out}");
+        assert!(out.to_text().contains("src/net.rs"), "{out}");
         assert!(
-            out.contains("(similarity "),
+            out.to_text().contains("(similarity "),
             "the fallback is the similarity order, labelled as such:\n{out}"
         );
     }
@@ -566,8 +568,11 @@ mod tests {
             .await
             .expect("search succeeds");
 
-        assert!(out.contains("(similarity "), "{out}");
-        assert!(out.find("src/net.rs") < out.find("src/store.rs"), "{out}");
+        assert!(out.to_text().contains("(similarity "), "{out}");
+        assert!(
+            out.to_text().find("src/net.rs") < out.to_text().find("src/store.rs"),
+            "{out}"
+        );
     }
 
     fn write(root: &Path, name: &str, body: &str) {
@@ -615,8 +620,11 @@ mod tests {
             .await
             .expect("a search");
 
-        let net = out.find("src/net.rs").expect("net.rs in the results");
-        let store = out.find("src/store.rs");
+        let net = out
+            .to_text()
+            .find("src/net.rs")
+            .expect("net.rs in the results");
+        let store = out.to_text().find("src/store.rs");
         assert!(
             store.is_none_or(|store| net < store),
             "the wrong file ranked first:\n{out}"
@@ -641,8 +649,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.contains("src/net.rs:1-"), "{out}");
-        assert!(out.contains("similarity"), "{out}");
+        assert!(out.to_text().contains("src/net.rs:1-"), "{out}");
+        assert!(out.to_text().contains("similarity"), "{out}");
         drop(dir);
     }
 
@@ -657,7 +665,7 @@ mod tests {
             .execute(serde_json::json!({ "query": "anything" }), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("Nothing indexed"), "{out}");
+        assert!(out.to_text().contains("Nothing indexed"), "{out}");
         drop(dir);
     }
 
@@ -693,7 +701,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.contains("src/new.rs"), "{out}");
+        assert!(out.to_text().contains("src/new.rs"), "{out}");
         drop(dir);
     }
 
@@ -725,7 +733,10 @@ mod tests {
             .execute(serde_json::json!({ "query": "retry" }), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("Read the files before acting"), "{out}");
+        assert!(
+            out.to_text().contains("Read the files before acting"),
+            "{out}"
+        );
         drop(dir);
     }
 }

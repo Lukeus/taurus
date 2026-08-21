@@ -261,6 +261,49 @@ in and the order the transcript draws them. A reopened conversation rebuilds the
 strip from the transcript's own `image` blocks, so the screenshot is still
 beside the question that asked about it.
 
+### A tool can hand one back
+
+The other direction, and the newer one. A tool's answer is a list of blocks
+rather than a string, so a tool that took a screenshot, rendered a chart, or
+rasterized a page of a PDF can return the picture itself:
+
+```
+mcp__playwright__screenshot  https://example.com
+
+  ✓ the page as rendered
+  [thumb]
+```
+
+The blocks are text, image, and JSON, and which one a tool means is stated
+rather than guessed. Text that happens to look like JSON stays text — a
+`read_file` on a `.json` returns JSON-shaped prose, and a tool whose output
+changed shape depending on the file it was pointed at would be worse than one
+that never structured anything.
+
+**MCP servers get this for free and were the reason for it.** A server that
+screenshots a page used to have its whole answer flattened to the literal words
+`[image: image/png]`, because the normalized types had nowhere to put a picture
+inside a result. That is now the picture.
+
+**Only Anthropic carries an image inside the result.** OpenAI's `role: "tool"`
+message, Gemini's `functionResponse`, and Ollama's tool message are all text, so
+there the image travels immediately after the result — as its own user message
+on OpenAI and Ollama, as further parts of the same content on Gemini — with a
+line naming the call it answers. The result itself keeps a marker where the
+picture was, so a tool that returned a sentence and a chart does not appear to
+have returned only the sentence.
+
+**On a model that cannot see, an image becomes a line saying so.** Not dropped:
+a tool whose only answer vanished reads as a tool that did not work, and the
+truth is that it worked and this model cannot look at the answer.
+
+Every image a tool returns is checked by the same rules a pasted one is — the
+four formats, the magic number against the declared type, the five-megabyte
+cap — because a built-in with a bug and an MCP server nobody here wrote are
+equally capable of producing something no provider will take. One that fails is
+replaced by a line naming the tool and saying why, which is what the model needs
+to decide whether to call it differently.
+
 ## Finding code by what it does
 
 `grep` answers *where does this string appear*. The question someone actually

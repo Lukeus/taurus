@@ -192,7 +192,7 @@ impl Renderer {
                 self.dim(&format!("    · {label}"));
             }
 
-            UiEvent::ToolCallFinished { id, ok, output } => {
+            UiEvent::ToolCallFinished { id, ok, output, .. } => {
                 if self.quiet || self.drawn.remove(id) {
                     return;
                 }
@@ -391,6 +391,7 @@ mod tests {
                 id: "t".into(),
                 ok: true,
                 output: "body".into(),
+                images: Vec::new(),
             },
             UiEvent::Compacted {
                 messages_removed: 3,

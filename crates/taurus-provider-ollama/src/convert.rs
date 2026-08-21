@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use taurus_provider::{ChatRequest, ContentBlock, Role, ToolDef};
+use taurus_provider::{relocated_note, ChatRequest, ContentBlock, Role, ToolDef};
 
 use crate::wire::{WireFunction, WireMessage, WireTool, WireToolCall, WireToolCallFunction};
 
@@ -80,10 +80,16 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
                     is_error,
                 } => {
                     let name = names_by_id.get(tool_use_id.as_str()).copied();
+                    // A tool message here is text and an `images` array it does
+                    // not read, so a picture a tool handed back travels as the
+                    // user message straight after it.
+                    let (body, relocated) = content.split_relocating_images();
+                    // No error flag on this message shape, so the marker has
+                    // to be in the text.
                     let body = if *is_error {
-                        format!("Error: {content}")
+                        format!("Error: {body}")
                     } else {
-                        content.clone()
+                        body
                     };
                     results.push(WireMessage {
                         role: "tool",
@@ -92,6 +98,18 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
                         tool_calls: Vec::new(),
                         tool_name: name.map(str::to_string),
                     });
+                    if !relocated.is_empty() {
+                        results.push(WireMessage {
+                            role: "user",
+                            content: relocated_note(name, relocated.len()),
+                            images: relocated
+                                .iter()
+                                .map(|(_, data)| (*data).to_string())
+                                .collect(),
+                            tool_calls: Vec::new(),
+                            tool_name: None,
+                        });
+                    }
                 }
             }
         }
@@ -216,5 +234,73 @@ mod tests {
         let roles: Vec<&str> = wire.iter().map(|m| m.role).collect();
         assert_eq!(roles, vec!["assistant", "tool", "user"]);
         assert_eq!(wire[2].content, "# Your current plan");
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use taurus_provider::{ChatRequest, Message};
+
+    fn with_image() -> taurus_provider::ToolOutput {
+        taurus_provider::ToolOutput::blocks(vec![
+            taurus_provider::ToolResultBlock::text("the chart"),
+            taurus_provider::ToolResultBlock::image("image/png", "aGk="),
+        ])
+        .expect("two blocks")
+    }
+
+    #[test]
+    fn a_tool_image_follows_its_result_as_its_own_user_message() {
+        // A tool message here has an `images` array the server does not read
+        // for that role, so the picture travels as the message straight after.
+        let request = ChatRequest::new(
+            "llama",
+            vec![
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use("t1", "draw", serde_json::json!({}))],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::tool_result("t1", with_image())],
+                ),
+            ],
+        );
+
+        let wire = messages_to_wire(&request);
+        let tool_index = wire
+            .iter()
+            .position(|m| m.role == "tool")
+            .expect("a tool message");
+        let follower = &wire[tool_index + 1];
+
+        assert_eq!(follower.role, "user");
+        assert_eq!(follower.images, vec!["aGk=".to_string()]);
+        assert!(
+            follower.content.contains("draw"),
+            "the note must name the call: {}",
+            follower.content
+        );
+        assert!(
+            wire[tool_index].content.contains("[image 1"),
+            "the result must say where the picture went: {}",
+            wire[tool_index].content
+        );
+    }
+
+    #[test]
+    fn a_text_only_result_gains_no_extra_message() {
+        // The overwhelmingly common case has to stay byte-identical.
+        let request = ChatRequest::new(
+            "llama",
+            vec![Message::new(
+                Role::User,
+                vec![ContentBlock::tool_result("t1", "459 lines")],
+            )],
+        );
+        let wire = messages_to_wire(&request);
+        assert_eq!(wire.len(), 1);
+        assert_eq!(wire[0].content, "459 lines");
     }
 }

@@ -107,21 +107,31 @@ impl Session {
                     && last_use.get(call.signature.as_str()).is_some_and(|&last| {
                         last > index && mutations[last + 1] == mutations[index]
                     });
+                // Measured in the units the budget is kept in, not in bytes.
+                // A result carrying a screenshot is a few hundred bytes of
+                // text and the most expensive thing in the window; compared by
+                // byte length it would look like the one result not worth
+                // shortening, which is exactly backwards.
+                let cost = output_chars(content);
                 let replacement = if superseded {
                     superseded_note(&call.name)
-                } else if content.len() > squeeze_floor(&call.name) {
-                    squeeze(content, &call.name)
+                } else if cost > squeeze_floor(&call.name) {
+                    squeeze(&content.to_text(), &call.name)
                 } else {
                     continue;
                 };
 
                 // A note longer than what it replaces is not a saving.
-                if replacement.len() >= content.len() {
+                if replacement.len() >= cost {
                     continue;
                 }
                 trimmed.results += 1;
-                trimmed.tokens_saved += ((content.len() - replacement.len()) / 4) as u32;
-                *content = replacement;
+                trimmed.tokens_saved += ((cost - replacement.len()) / 4) as u32;
+                // Replaces the images along with the text, which is the point:
+                // reclaiming the window means letting go of the most expensive
+                // block in it, not keeping the picture and shortening the
+                // caption.
+                content.replace_with_text(replacement);
             }
         }
         trimmed
@@ -281,11 +291,33 @@ pub fn estimate_tokens(text: &str) -> u32 {
     (text.len() / 4) as u32
 }
 
+/// What a tool's answer costs, in the character units everything here budgets
+/// in.
+///
+/// An image inside a tool result is charged the same flat 4,000 characters an
+/// attached one is, and for the same reason: its real cost has nothing to do
+/// with the length of its base64. Counting the base64 instead would put a
+/// small screenshot at ten times what the model is billed for it and a large
+/// one at a hundred, and the compaction trigger reading those numbers would
+/// summarize a conversation that had plenty of room left.
+pub fn output_chars(output: &taurus_provider::ToolOutput) -> usize {
+    use taurus_provider::ToolResultBlock;
+    output
+        .as_slice()
+        .iter()
+        .map(|block| match block {
+            ToolResultBlock::Text { text } => text.len(),
+            ToolResultBlock::Json { value } => value.to_string().len(),
+            ToolResultBlock::Image { .. } => 4000,
+        })
+        .sum()
+}
+
 /// What a single block costs, on the same basis.
 pub fn estimate_block(block: &ContentBlock) -> u32 {
     match block {
         ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => estimate_tokens(text),
-        ContentBlock::ToolResult { content, .. } => estimate_tokens(content),
+        ContentBlock::ToolResult { content, .. } => (output_chars(content) / 4) as u32,
         ContentBlock::ToolUse { name, input, .. } => {
             estimate_tokens(name) + estimate_tokens(&input.to_string())
         }
@@ -307,7 +339,7 @@ pub fn estimate_message(message: &Message) -> u32 {
         .iter()
         .map(|block| match block {
             ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => text.len(),
-            ContentBlock::ToolResult { content, .. } => content.len(),
+            ContentBlock::ToolResult { content, .. } => output_chars(content),
             ContentBlock::ToolUse { name, input, .. } => name.len() + input.to_string().len(),
             ContentBlock::Image { .. } => 4000,
         })
@@ -383,9 +415,9 @@ mod tests {
         matches!(name, "read_file" | "grep" | "list_dir")
     }
 
-    fn body_of(message: &Message) -> &str {
+    fn body_of(message: &Message) -> String {
         match &message.content[0] {
-            ContentBlock::ToolResult { content, .. } => content,
+            ContentBlock::ToolResult { content, .. } => content.to_text().into_owned(),
             other => panic!("expected a tool result, got {other:?}"),
         }
     }

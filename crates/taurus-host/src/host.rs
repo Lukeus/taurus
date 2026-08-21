@@ -3913,7 +3913,7 @@ Say hello.",
             )
             .await
             .expect("a skill's own reference file must be readable");
-        assert!(read.contains("the reference text"));
+        assert!(read.to_text().contains("the reference text"));
 
         // The allowance is for reading. Nothing about it lets the agent write
         // to a directory another client owns.

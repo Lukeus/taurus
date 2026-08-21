@@ -622,6 +622,16 @@ function ToolRow({
         </span>
       </button>
 
+      {/* Pictures a tool handed back, shown without needing the row opened.
+          The same argument the chart and table cards make: a tool returned an
+          image because looking at it is the answer, and a thumbnail behind a
+          disclosure triangle is a picture nobody looks at. The same strip an
+          attached image uses, because they are the same question — what is
+          this — asked from the other direction. */}
+      {step.images && step.images.length > 0 && (
+        <Attachments images={step.images} />
+      )}
+
       {terminal && body && (
         <Terminal text={body} following={step.status === "running"} expanded={open} />
       )}

@@ -18,7 +18,7 @@ use taurus_tools::{Effect, PlanBoard, ToolContext, ToolError, ToolProgress, Tool
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::event::{truncate_for_ui, UiEvent};
+use crate::event::{truncate_for_ui, ResultImage, UiEvent};
 use crate::session::{split_for_compaction, Session};
 
 /// How long consecutive deltas of one kind are gathered before being handed on.
@@ -980,7 +980,7 @@ impl Agent {
         name: &str,
         input: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<String, ToolError> {
+    ) -> taurus_tools::ToolResult {
         // The prompted fallback surfaces syntax failures under this name. A
         // bare "no such tool" would send the model looking for a different
         // tool instead of fixing its formatting.
@@ -997,7 +997,7 @@ impl Agent {
     async fn report(
         &self,
         id: &str,
-        outcome: Result<String, ToolError>,
+        outcome: taurus_tools::ToolResult,
         ui: &mpsc::Sender<UiEvent>,
     ) -> ContentBlock {
         match outcome {
@@ -1006,7 +1006,19 @@ impl Agent {
                     .send(UiEvent::ToolCallFinished {
                         id: id.to_string(),
                         ok: true,
-                        output: truncate_for_ui(&output),
+                        output: truncate_for_ui(&output.to_text()),
+                        // Full size, not truncated: an image is not text with a
+                        // tail to cut off, and half of a PNG is not half a
+                        // picture. The size cap that keeps this bounded is
+                        // applied where the result is produced — see
+                        // `taurus_tools::registry`.
+                        images: output
+                            .images()
+                            .map(|(mime_type, data)| ResultImage {
+                                mime_type: mime_type.to_string(),
+                                data: data.to_string(),
+                            })
+                            .collect(),
                     })
                     .await;
                 ContentBlock::tool_result(id, output)
@@ -1019,6 +1031,7 @@ impl Agent {
                         id: id.to_string(),
                         ok: false,
                         output: truncate_for_ui(&message),
+                        images: Vec::new(),
                     })
                     .await;
                 ContentBlock::tool_error(id, message)

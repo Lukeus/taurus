@@ -5027,12 +5027,14 @@ name = "taurus-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "futures",
  "reqwest",
  "rmcp",
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "taurus-provider",
  "taurus-tools",
  "tempfile",
  "tokio",
@@ -5046,6 +5048,7 @@ name = "taurus-provider"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

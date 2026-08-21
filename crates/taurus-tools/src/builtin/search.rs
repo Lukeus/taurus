@@ -97,7 +97,7 @@ impl Tool for Glob {
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;
 
-        Ok(format_hits(hits, "files"))
+        Ok(format_hits(hits, "files").into())
     }
 }
 
@@ -187,7 +187,7 @@ impl Tool for Grep {
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;
 
-        Ok(format_hits(hits, "matches"))
+        Ok(format_hits(hits, "matches").into())
     }
 }
 
@@ -226,9 +226,9 @@ mod tests {
             .execute(serde_json::json!({"pattern": "**/*.rs"}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("src/main.rs"));
-        assert!(out.contains("src/lib.rs"));
-        assert!(!out.contains("notes.md"));
+        assert!(out.to_text().contains("src/main.rs"));
+        assert!(out.to_text().contains("src/lib.rs"));
+        assert!(!out.to_text().contains("notes.md"));
     }
 
     #[tokio::test]
@@ -239,7 +239,7 @@ mod tests {
             .execute(serde_json::json!({"pattern": "**/*.zig"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(out, "No files found.");
+        assert_eq!(out.to_text(), "No files found.");
     }
 
     #[tokio::test]
@@ -260,7 +260,7 @@ mod tests {
             .execute(serde_json::json!({"pattern": "fn main"}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("src/main.rs:1: fn main() {"));
+        assert!(out.to_text().contains("src/main.rs:1: fn main() {"));
     }
 
     #[tokio::test]
@@ -274,8 +274,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("notes.md"));
-        assert!(!out.contains(".rs"));
+        assert!(out.to_text().contains("notes.md"));
+        assert!(!out.to_text().contains(".rs"));
     }
 
     #[tokio::test]
@@ -289,7 +289,7 @@ mod tests {
             .execute(serde_json::json!({"pattern": "hidden"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(out, "No matches found.");
+        assert_eq!(out.to_text(), "No matches found.");
     }
 
     #[tokio::test]

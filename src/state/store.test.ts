@@ -232,7 +232,7 @@ describe("replaying a saved conversation", () => {
     {
       role: "user",
       content: [
-        { type: "tool_result", tool_use_id: "t1", content: "body", is_error: false },
+        { type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "body" }], is_error: false },
       ],
     },
     { role: "assistant", content: [{ type: "text", text: "Done." }] },
@@ -266,7 +266,7 @@ describe("replaying a saved conversation", () => {
       {
         role: "user",
         content: [
-          { type: "tool_result", tool_use_id: "t1", content: "nope", is_error: true },
+          { type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "nope" }], is_error: true },
         ],
       },
     ]);
@@ -351,7 +351,7 @@ describe("drawn tool results", () => {
       {
         role: "user",
         content: [
-          { type: "tool_result", tool_use_id: "t1", content: "Drew it.", is_error: false },
+          { type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "Drew it." }], is_error: false },
         ],
       },
     ];
@@ -392,7 +392,7 @@ describe("drawn tool results", () => {
       {
         role: "user",
         content: [
-          { type: "tool_result", tool_use_id: "t1", content: "refused", is_error: true },
+          { type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "refused" }], is_error: true },
         ],
       },
     ];
@@ -509,7 +509,7 @@ describe("the plan supersedes itself", () => {
       {
         role: "user",
         content: [
-          { type: "tool_result", tool_use_id: "p1", content: "ok", is_error: false },
+          { type: "tool_result", tool_use_id: "p1", content: [{ type: "text", text: "ok" }], is_error: false },
         ],
       },
       {
@@ -775,6 +775,93 @@ describe("images on a user message", () => {
 
     expect(entries[0].images).toHaveLength(1);
     expect(entries[1].images).toBeUndefined();
+  });
+});
+
+describe("images a tool handed back", () => {
+  const called: Message = {
+    role: "assistant",
+    content: [
+      { type: "tool_use", id: "t1", name: "screenshot", input: { url: "x" } },
+    ],
+  };
+
+  it("attaches them to the call they answer when a conversation is reopened", () => {
+    const entries = entriesFromMessages([
+      called,
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "t1",
+            content: [
+              { type: "text", text: "the page as rendered" },
+              { type: "image", mime_type: "image/png", data: "AAAA" },
+            ],
+            is_error: false,
+          },
+        ],
+      },
+    ]);
+
+    const tool = entries.find((e) => e.kind === "tool") as Extract<
+      Entry,
+      { kind: "tool" }
+    >;
+    expect(tool.status).toBe("ok");
+    expect(tool.images).toEqual([{ mime_type: "image/png", data: "AAAA" }]);
+  });
+
+  it("leaves a line where the picture was rather than an empty result", () => {
+    // A result whose only block was an image would otherwise redraw as a call
+    // that returned nothing, which is what a failed call looks like.
+    const entries = entriesFromMessages([
+      called,
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "t1",
+            content: [{ type: "image", mime_type: "image/png", data: "AAAA" }],
+            is_error: false,
+          },
+        ],
+      },
+    ]);
+
+    const tool = entries.find((e) => e.kind === "tool") as Extract<
+      Entry,
+      { kind: "tool" }
+    >;
+    expect(tool.output).toBe("[image: image/png]");
+  });
+
+  it("leaves an ordinary text result without an images field", () => {
+    // Nearly every call takes this path, and an empty array on each would be a
+    // strip rendered for nothing.
+    const entries = entriesFromMessages([
+      called,
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "t1",
+            content: [{ type: "text", text: "459 lines" }],
+            is_error: false,
+          },
+        ],
+      },
+    ]);
+
+    const tool = entries.find((e) => e.kind === "tool") as Extract<
+      Entry,
+      { kind: "tool" }
+    >;
+    expect(tool.output).toBe("459 lines");
+    expect(tool.images).toBeUndefined();
   });
 });
 

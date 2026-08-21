@@ -458,7 +458,7 @@ mod tests {
             self.effect
         }
         async fn execute(&self, _: serde_json::Value, _: &ToolContext) -> ToolResult {
-            Ok(String::new())
+            Ok(String::new().into())
         }
     }
 
