@@ -1,10 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
 import { Attachments } from "./components/Attachments";
-import { ChangesDrawer } from "./components/ChangesDrawer";
-import { DelegateTranscript } from "./components/DelegateTranscript";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { ConversationTitle } from "./components/ConversationTitle";
 import { PermissionDialog } from "./components/PermissionDialog";
@@ -16,11 +14,6 @@ import {
   ResizeHandle,
   useResizableWidth,
 } from "./components/ResizeHandle";
-import { Settings } from "./components/Settings";
-import { AgentsDrawer } from "./components/AgentsDrawer";
-import { McpDrawer } from "./components/McpDrawer";
-import { MemoryDrawer } from "./components/MemoryDrawer";
-import { SkillsDrawer } from "./components/SkillsDrawer";
 import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript, type TranscriptProps } from "./components/Transcript";
@@ -37,6 +30,68 @@ import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
 import { pinnedPlan, useStore } from "./state/store";
+
+/*
+ * The panels that open over the app, loaded when one is first needed rather
+ * than while the window is still trying to paint.
+ *
+ * Every one of these already mounts behind a flag, so nothing about *when*
+ * they appear changes. What changes is when their code is read and evaluated:
+ * `Settings` alone is the largest module in the frontend, and it and the five
+ * drawers were parsed on the main thread before React's first render, for a
+ * user who in most sessions opens none of them. There is no download to save
+ * in Tauri — the chunks are on disk beside the app — so this is purely about
+ * getting the parse off the path to a usable window.
+ *
+ * One list, used twice: `lazy` below hangs off it, and `warm` walks it once
+ * the window is idle. That second half is what keeps this from being a trade —
+ * without it the parse merely moves onto the click that opens the drawer.
+ */
+const PANELS = {
+  settings: () => import("./components/Settings"),
+  skills: () => import("./components/SkillsDrawer"),
+  agents: () => import("./components/AgentsDrawer"),
+  mcp: () => import("./components/McpDrawer"),
+  memory: () => import("./components/MemoryDrawer"),
+  changes: () => import("./components/ChangesDrawer"),
+  delegate: () => import("./components/DelegateTranscript"),
+};
+
+const Settings = lazy(() => PANELS.settings().then((m) => ({ default: m.Settings })));
+const SkillsDrawer = lazy(() =>
+  PANELS.skills().then((m) => ({ default: m.SkillsDrawer })),
+);
+const AgentsDrawer = lazy(() =>
+  PANELS.agents().then((m) => ({ default: m.AgentsDrawer })),
+);
+const McpDrawer = lazy(() => PANELS.mcp().then((m) => ({ default: m.McpDrawer })));
+const MemoryDrawer = lazy(() =>
+  PANELS.memory().then((m) => ({ default: m.MemoryDrawer })),
+);
+const ChangesDrawer = lazy(() =>
+  PANELS.changes().then((m) => ({ default: m.ChangesDrawer })),
+);
+const DelegateTranscript = lazy(() =>
+  PANELS.delegate().then((m) => ({ default: m.DelegateTranscript })),
+);
+
+/**
+ * Reads the panels in once the window has nothing better to do.
+ *
+ * A dynamic import is answered from the module map the second time, so this
+ * costs nothing at the point of use — it only decides *when* the cost is paid.
+ * Idle rather than on a timer, and a timeout so a permanently busy window still
+ * gets there; `requestIdleCallback` is missing on some WebKit builds, which is
+ * what the fallback is for.
+ */
+function warmPanels() {
+  const read = () => Object.values(PANELS).forEach((load) => void load());
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(read, { timeout: 2_000 });
+  } else {
+    setTimeout(read, 500);
+  }
+}
 
 export default function App() {
   // Everything except the transcript, compared field by field.
@@ -107,6 +162,7 @@ export default function App() {
 
   useEffect(() => {
     store.init();
+    warmPanels();
     // Intentionally once: init wires the event listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -430,41 +486,49 @@ export default function App() {
         />
       )}
 
-      {memoryOpen && (
-        <MemoryDrawer
-          onClose={() => setMemoryOpen(false)}
-          // Not offered mid-turn: switching conversations under a running one
-          // is not something the rail offers either.
-          onOpenSession={
-            store.busy
-              ? undefined
-              : (id) => {
-                  setMemoryOpen(false);
-                  void store.resume(id);
-                }
-          }
-        />
-      )}
+      {/* One boundary for all of them: they are mutually exclusive in practice
+          and none is ever nested inside another, so a boundary each would be
+          seven of the same thing. `null` rather than a spinner because by the
+          time a drawer is opened its module is almost always already in hand —
+          see `warmPanels` — and a flash of skeleton for a frame that usually
+          does not happen reads worse than the drawer simply appearing. */}
+      <Suspense fallback={null}>
+        {memoryOpen && (
+          <MemoryDrawer
+            onClose={() => setMemoryOpen(false)}
+            // Not offered mid-turn: switching conversations under a running one
+            // is not something the rail offers either.
+            onOpenSession={
+              store.busy
+                ? undefined
+                : (id) => {
+                    setMemoryOpen(false);
+                    void store.resume(id);
+                  }
+            }
+          />
+        )}
 
-      {changesOpen && store.session && (
-        <ChangesDrawer
-          sessionId={store.session.id}
-          busy={store.busy}
-          onClose={() => setChangesOpen(false)}
-        />
-      )}
-      {delegate && store.session && (
-        <DelegateTranscript
-          sessionId={store.session.id}
-          subagentId={delegate.session}
-          agent={delegate.agent}
-          onClose={() => setDelegate(null)}
-        />
-      )}
-      {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
-      {agentsOpen && <AgentsDrawer onClose={() => setAgentsOpen(false)} />}
-      {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
-      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+        {changesOpen && store.session && (
+          <ChangesDrawer
+            sessionId={store.session.id}
+            busy={store.busy}
+            onClose={() => setChangesOpen(false)}
+          />
+        )}
+        {delegate && store.session && (
+          <DelegateTranscript
+            sessionId={store.session.id}
+            subagentId={delegate.session}
+            agent={delegate.agent}
+            onClose={() => setDelegate(null)}
+          />
+        )}
+        {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
+        {agentsOpen && <AgentsDrawer onClose={() => setAgentsOpen(false)} />}
+        {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
+        {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+      </Suspense>
     </div>
   );
 }

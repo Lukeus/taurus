@@ -5027,6 +5027,7 @@ name = "taurus-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "reqwest",
  "rmcp",
  "schemars 1.2.2",

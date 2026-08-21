@@ -38,7 +38,9 @@ function mount(entries: Entry[]) {
         entries={next}
         busy={false}
         empty={null}
-        onAnswer={(id, answers) => answered.push({ id, answers })}
+        onAnswer={(id, answers) => {
+          answered.push({ id, answers });
+        }}
         onOpenDelegate={(transcript) => opened.push(transcript)}
       />,
     );

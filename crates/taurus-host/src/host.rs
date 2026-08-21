@@ -7,7 +7,7 @@
 //! so it is built once here and the frontends supply only what genuinely
 //! differs: how to ask the user for permission, and where skill proposals go.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -227,7 +227,29 @@ impl Host {
     /// workspace layer belongs to a directory the user can change at any time,
     /// so "which providers exist" is not a fact that survives a workspace
     /// switch.
+    ///
+    /// Two halves, and callers that care about how soon the first one lands
+    /// should run them separately — see [`Host::reload_local`].
     pub async fn reload(&self) {
+        self.reload_local().await;
+        self.reload_mcp().await;
+    }
+
+    /// Everything a reload does except start an MCP server.
+    ///
+    /// The split exists because the two halves cost wildly different amounts.
+    /// This one reads a handful of directories and finishes in milliseconds;
+    /// [`Host::reload_mcp`] spawns child processes and waits on them, which is
+    /// seconds when a server is an `npx` package being unpacked. Running them
+    /// together made the second the price of the first, and the window's very
+    /// first `get_status` waits on the first — so a user with three MCP servers
+    /// opened the app onto a shell with no providers, no model picker and no
+    /// rail until every one of those servers had answered.
+    ///
+    /// Startup calls the two in order, marking itself loaded in between. A
+    /// caller with nothing to gain from that should call [`Host::reload`] and
+    /// get both.
+    pub async fn reload_local(&self) {
         let workspace = self.workspace.read().await.clone();
 
         let (providers, provider_problems) = config::load_providers(Some(&workspace));
@@ -363,36 +385,26 @@ impl Host {
             taurus_mcp::DraftMcpServer::new(config::home_dir()),
         ));
 
-        // Reconnecting drops the previous connections, stopping the old child
-        // processes; leaving them would leak one per workspace change.
-        self.mcp.shutdown().await;
-        let mut layers = Vec::new();
-        for dir in config::config_dirs(Some(&workspace)) {
-            match taurus_mcp::load(&dir) {
-                Ok(layer) => layers.push(layer),
-                // A layer that will not parse is skipped, not fatal: the other
-                // one is still a working set of servers.
-                Err(e) => problems.push(Problem::new(ProblemSource::Mcp, e)),
-            }
-        }
-        let (mcp_config, mcp_problems) = config::merge_mcp(layers);
-        problems.extend(Problem::tag(ProblemSource::Mcp, mcp_problems));
-        for tool in self.mcp.connect_all(&mcp_config).await {
-            registry.register(tool);
-        }
-
-        // Last, so it applies to everything the harness assembled — built-ins,
-        // skill tools, web, MCP — rather than to whichever of them happened to
+        // Last, so it applies to everything this half assembled — built-ins,
+        // skill tools, web — rather than to whichever of them happened to
         // register before the setting was read.
         let disabled = self.settings.read().await.disabled_tools.clone();
+        // Two families are held back rather than applied here, and for the same
+        // reason: naming one of them must not be reported as naming a tool that
+        // does not exist, which is the one message that would send someone
+        // looking for a typo in a line that works.
+        //
         // The per-turn tools are not in this registry to be removed from — a
-        // turn adds them to its own copy, and takes them away there. Held back
-        // so that naming one is not reported as naming a tool that does not
-        // exist, which is the one message that would send someone looking for a
-        // typo in a line that works.
+        // turn adds them to its own copy, and takes them away there. The MCP
+        // tools are not here *yet*, and `reload_mcp` never registers one the
+        // settings disable, so the effect is identical; what would differ is a
+        // warning about the user's own working config, appearing or not
+        // depending on whether a server happened to be up this second.
         let here: Vec<String> = disabled
             .iter()
-            .filter(|name| !PER_TURN_TOOLS.contains(&name.as_str()))
+            .filter(|name| {
+                !PER_TURN_TOOLS.contains(&name.as_str()) && !taurus_mcp::is_mcp_tool(name)
+            })
             .cloned()
             .collect();
         problems.extend(Problem::tag(
@@ -1651,11 +1663,12 @@ impl Host {
 
     /// Reconnects the MCP servers without rebuilding anything else.
     ///
-    /// What the MCP panel calls after a save. [`Host::reload`] would also do it,
-    /// and also rescan every skill directory, re-read both provider layers, and
-    /// rebuild the agent roster — none of which a change to `mcp.json` can
-    /// affect. The narrower call is the same argument `rescan_agents` makes in
-    /// the other direction: editing one thing should not restart the rest.
+    /// What the MCP panel calls after a save, and the second half of a
+    /// [`Host::reload`]. It would also be done by a full reload, which would
+    /// also rescan every skill directory and re-read both provider layers —
+    /// none of which a change to `mcp.json` can affect. The narrower call is the
+    /// same argument `rescan_agents` makes in the other direction: editing one
+    /// thing should not restart the rest.
     ///
     /// The swap is by name. Every MCP tool carries the `mcp__` prefix, so the
     /// old set can be lifted out of the live registry and a new one put back
@@ -1669,42 +1682,62 @@ impl Host {
         for dir in config::config_dirs(Some(&workspace)) {
             match taurus_mcp::load(&dir) {
                 Ok(layer) => layers.push(layer),
+                // A layer that will not parse is skipped, not fatal: the other
+                // one is still a working set of servers.
                 Err(e) => problems.push(Problem::new(ProblemSource::Mcp, e)),
             }
         }
         let (config, merge_problems) = config::merge_mcp(layers);
         problems.extend(Problem::tag(ProblemSource::Mcp, merge_problems));
 
+        // Reconnecting drops the previous connections, stopping the old child
+        // processes; leaving them would leak one per workspace change.
         self.mcp.shutdown().await;
         let tools = self.mcp.connect_all(&config).await;
 
-        // Applied to the new tools only. `reload` applies it to everything, but
-        // there is nothing else here to apply it to, and a tool the user turned
-        // off must not come back because its server reconnected.
+        // Applied to the new tools only. `reload_local` applies it to everything
+        // else, and a tool the user turned off must not come back because its
+        // server reconnected.
         let disabled = self.settings.read().await.disabled_tools.clone();
         let mut registry = self.registry.write().await;
-        let stale: Vec<String> = registry
+        let before: HashSet<String> = registry
             .names()
             .filter(|name| taurus_mcp::is_mcp_tool(name))
             .map(str::to_string)
             .collect();
-        for name in stale {
-            registry.remove(&name);
+        for name in &before {
+            registry.remove(name);
         }
+        let mut after: HashSet<String> = HashSet::new();
         for tool in tools {
             if disabled.iter().any(|off| off == tool.name()) {
                 continue;
             }
+            after.insert(tool.name().to_string());
             registry.register(tool);
         }
+        let available: Vec<String> = registry.names().map(str::to_string).collect();
         drop(registry);
 
         // Only this source. A malformed `providers.json` reported at the last
         // full reload is still malformed, and clearing it here would make it
         // vanish from Settings until something unrelated reloaded.
-        let mut held = self.problems.write().await;
-        held.retain(|p| p.source != ProblemSource::Mcp);
-        held.extend(problems);
+        self.replace_problems(ProblemSource::Mcp, problems).await;
+
+        // The roster is checked against the tools that exist, so which MCP tools
+        // exist is an input to it — and this is the only place that changes.
+        //
+        // Gated on the set actually moving rather than run every time, because
+        // it is a rescan of every agent file and this runs on every save in the
+        // MCP panel. It matters in both directions: an agent scoped only to a
+        // server's tools is *refused* while that server is absent, so a startup
+        // that checked the roster before connecting would have dropped it for
+        // the session, and a server the user has just deleted leaves the roster
+        // holding a tool that is gone.
+        if before != after {
+            let found = self.load_agents(&workspace, &available).await;
+            self.replace_problems(ProblemSource::Agents, found).await;
+        }
     }
 
     /// Connects to one server, reports what it offers, and disconnects.
@@ -2502,6 +2535,71 @@ mod tests {
         let servers = host.mcp_servers().await;
         assert_eq!(servers.len(), 1);
         assert!(servers[0].status.as_ref().unwrap().error.is_some());
+    }
+
+    #[tokio::test]
+    async fn the_local_half_of_a_reload_starts_no_mcp_server() {
+        // The whole point of the split. `get_status` — the first thing the
+        // window awaits — waits on this half, so anything that spawns a child
+        // process here is back in front of the shell becoming usable.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        std::fs::write(
+            taurus_mcp::config::config_file(home.path()),
+            r#"{"mcpServers": {"broken": {"command": "definitely-not-a-real-program-xyz"}}}"#,
+        )
+        .unwrap();
+
+        host.reload_local().await;
+
+        // Everything a status reports is already here...
+        assert!(host.tool_names().await.iter().any(|t| t == "read_file"));
+        // ...and the server has not been reached for. It is listed, because the
+        // panel lists what is configured; it has no status, because nothing has
+        // tried to start it.
+        let servers = host.mcp_servers().await;
+        assert_eq!(servers.len(), 1);
+        assert!(
+            servers[0].status.is_none(),
+            "the local half waited on a server: {:?}",
+            servers[0].status
+        );
+
+        host.reload_mcp().await;
+        assert!(host.mcp_servers().await[0]
+            .status
+            .as_ref()
+            .is_some_and(|s| s.error.is_some()));
+    }
+
+    #[tokio::test]
+    async fn disabling_an_mcp_tool_is_not_reported_as_a_name_that_does_not_exist() {
+        // The local half applies `disabled_tools` before any MCP tool exists to
+        // apply it to, so an MCP name is held back for the half that knows those
+        // names — `reload_mcp` never registers a tool the settings disable.
+        //
+        // Reported, it would be a warning about the user's own working config
+        // that appeared or not depending on whether a server was up that
+        // second, which is worse than not warning at all.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/settings.json"),
+            r#"{"disabled_tools": ["mcp__notes__search", "read_file"]}"#,
+        )
+        .unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(
+            !host.tool_names().await.iter().any(|t| t == "read_file"),
+            "an ordinary name is still applied"
+        );
+        let problems = host.problems_from(&[ProblemSource::Tools]).await;
+        assert!(problems.is_empty(), "{problems:?}");
     }
 
     #[tokio::test]

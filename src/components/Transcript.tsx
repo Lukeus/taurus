@@ -79,7 +79,7 @@ export type TranscriptProps = {
   /** Shown in place of the transcript before there is anything to show. */
   empty: React.ReactNode;
   /** Answers a question card, releasing the tool call parked behind it. */
-  onAnswer: (id: string, answers: Answer[]) => void;
+  onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   /** Opens a delegation's own conversation. Absent where there is nowhere to
    * open one — inside a delegate's transcript, which cannot delegate further. */
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
@@ -126,6 +126,23 @@ export function Transcript({
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
+  /*
+   * Stay at the foot of the stream.
+   *
+   * `scrollIntoView` rather than `scrollTop = scrollHeight`, which looks like
+   * the cheaper way to say the same thing and is not the same thing. `.turn`
+   * carries `content-visibility: auto`, so a turn scrolled off is measured by
+   * its `contain-intrinsic-size` estimate rather than its contents — jumping to
+   * `scrollHeight` therefore aims past the real bottom, the turns it lands on
+   * render at their true height, the document shrinks under the scroll, and the
+   * view snaps back up. Measured: it lands at the *top* of a long conversation.
+   * Asking for an element instead lets the browser iterate that to a fixed
+   * point, which is the whole reason the API exists.
+   *
+   * The cost this used to carry — a full-transcript layout on every batched
+   * frame, ~30 a second while streaming — is paid down by the windowing rather
+   * than by scrolling differently: off-screen turns no longer take part in it.
+   */
   useEffect(() => {
     if (follow && pinned.current) bottom.current?.scrollIntoView({ block: "end" });
   }, [entries, follow]);
@@ -325,7 +342,7 @@ const TurnView = memo(function TurnView({
 }: {
   turn: Turn;
   working: boolean;
-  onAnswer: (id: string, answers: Answer[]) => void;
+  onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
 }) {
   return (
@@ -410,7 +427,7 @@ const EntryView = memo(function EntryView({
   onOpenDelegate,
 }: {
   entry: Entry;
-  onAnswer: (id: string, answers: Answer[]) => void;
+  onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
 }) {
   if (entry.kind === "tool" && entry.view) {

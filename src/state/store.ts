@@ -159,6 +159,9 @@ interface Store {
   /**
    * Releases the tool call parked behind a question card. One answer per
    * question, in order; an empty one is a skip, which every question allows.
+   *
+   * Rejects if the call did not land, having already raised the banner. The
+   * card catches that to make itself answerable again — see `QuestionsCard`.
    */
   answerQuestions: (id: string, answers: Answer[]) => Promise<void>;
   resolveProposal: (
@@ -187,8 +190,12 @@ interface Store {
    * Shared by startup and the workspace switch, which have to agree: a folder
    * opened from the picker must land in the same state as one the app was
    * launched into.
+   *
+   * `listed` is a listing a caller already had in flight — startup asks for it
+   * alongside the status rather than after it. A switch has none, and fetches
+   * its own.
    */
-  adoptWorkspace: () => Promise<void>;
+  adoptWorkspace: (listed?: Promise<SessionMeta[]>) => Promise<void>;
   /**
    * Re-reads the status and the trust question together.
    *
@@ -261,11 +268,29 @@ export const useStore = create<Store>((set, get) => ({
     if (initialized) return;
     initialized = true;
 
-    const status = await api.getStatus();
+    /*
+     * Three round trips that do not depend on each other, started together
+     * rather than one after the next.
+     *
+     * Each is its own IPC call, and `listSessions` opens and partly parses
+     * every transcript in the workspace — so waiting for each in turn put the
+     * sum of all three in front of the first frame the user can do anything
+     * with. The listing is started here and handed on rather than fetched
+     * inside `adoptWorkspace`, because that call is also the workspace switch,
+     * where there is nothing to have started early.
+     */
+    const listing = api.listSessions();
+    // Marked as handled the moment it exists. `adoptWorkspace` still awaits
+    // this same promise and still sees the failure; without this, a listing
+    // that fails while the two below are in flight is an unhandled rejection
+    // in the window before anything is there to catch it.
+    listing.catch(() => {});
+
+    const [status, trust] = await Promise.all([api.getStatus(), api.workspaceTrust()]);
     // Read at startup, not on first refresh: the banner is about the state the
     // session is already running in, and one that appeared a minute later would
     // be reporting config that had been unread the whole time.
-    set({ status, trust: await api.workspaceTrust() });
+    set({ status, trust });
 
     api.onPermissionRequest((permission) => set({ permission }));
     api.onSkillProposal((proposal) =>
@@ -295,15 +320,15 @@ export const useStore = create<Store>((set, get) => ({
       set((s) => (s.session?.id === session ? { changed: files } : {})),
     );
 
-    await get().adoptWorkspace();
+    await get().adoptWorkspace(listing);
   },
 
-  adoptWorkspace: async () => {
+  adoptWorkspace: async (listed) => {
     // Reopen this workspace's most recent conversation. Failing that — a first
     // run, a deleted transcript, a model that no longer exists — fall through
     // to a fresh session rather than leaving the app with none.
     try {
-      const sessions = await api.listSessions();
+      const sessions = await (listed ?? api.listSessions());
       set({ sessions });
       if (sessions[0]) {
         await get().resume(sessions[0].id);
@@ -511,8 +536,19 @@ export const useStore = create<Store>((set, get) => ({
   answerPermission: async (decision) => {
     const { permission } = get();
     if (!permission) return;
+    // Cleared first, so the dialog goes the moment a button is pressed rather
+    // than a round trip later.
     set({ permission: null });
-    await api.respondPermission(permission.id, decision);
+    try {
+      await api.respondPermission(permission.id, decision);
+    } catch (e) {
+      // Put back exactly what was taken away. The turn is still parked on this
+      // decision — the call that would have released it is the one that just
+      // failed — so a dialog that stayed dismissed would leave the conversation
+      // waiting forever on an answer with nothing on screen to give it, and no
+      // sign that anything had gone wrong.
+      set({ permission, error: String(e) });
+    }
   },
 
   answerQuestions: async (id, answers) => {
@@ -520,7 +556,15 @@ export const useStore = create<Store>((set, get) => ({
     // belongs to, and that call turns from running to done when the harness
     // releases it. Marking it answered here would show it as settled a beat
     // before the turn had actually resumed.
-    await api.answerQuestions(id, answers);
+    try {
+      await api.answerQuestions(id, answers);
+    } catch (e) {
+      // Both, and neither on its own is enough. The banner is the only thing
+      // that says anything happened; the rethrow is what hands the card back,
+      // since the turn is still parked on an answer it never received.
+      set({ error: String(e) });
+      throw e;
+    }
   },
 
   resolveProposal: async (id, approve, target = "project") => {
@@ -598,12 +642,15 @@ export const useStore = create<Store>((set, get) => ({
     // own it would still hold the *previous* folder's settings at the moment
     // that decision is made, and the new folder would open on the old one's
     // model. A push is for state nothing is waiting on; this is sequenced.
-    set({ status: await api.getStatus(), trust: await api.workspaceTrust() });
+    const [status, trust] = await Promise.all([api.getStatus(), api.workspaceTrust()]);
+    set({ status, trust });
     await get().adoptWorkspace();
   },
 
-  refresh: async () =>
-    set({ status: await api.getStatus(), trust: await api.workspaceTrust() }),
+  refresh: async () => {
+    const [status, trust] = await Promise.all([api.getStatus(), api.workspaceTrust()]);
+    set({ status, trust });
+  },
 
   decideTrust: async (trusted) => {
     set({

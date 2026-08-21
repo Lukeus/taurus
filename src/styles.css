@@ -1043,6 +1043,26 @@ body.resizing * {
   /* No cap. The turn is the width of the pane, which is the width of the
      composer below it — see --measure for why that does not make the prose wide
      with it. */
+
+  /*
+   * A turn nobody can see costs nothing to keep.
+   *
+   * The transcript is not windowed: every turn, tool row and diagram card ever
+   * rendered stays in the document for the life of the conversation, and
+   * layout, paint and hit-testing are all O(total nodes) however well React
+   * memoises above them. On a long or resumed conversation that is what turns
+   * scrolling choppy and makes every streaming frame — which re-pins the
+   * scroll — re-lay-out the whole history.
+   *
+   * `content-visibility` hands that to the browser instead of to a virtualiser:
+   * off-screen turns skip layout and paint entirely, with no code around the
+   * scroll container to get scroll anchoring wrong. `auto` on the intrinsic
+   * size is the half that matters — a turn that has been on screen once is
+   * remembered at its real height, so only turns never yet seen are guessed at,
+   * and the 420px is a plausible turn rather than a load-bearing number.
+   */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px;
 }
 /*
  * The rail.

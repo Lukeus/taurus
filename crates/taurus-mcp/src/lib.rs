@@ -109,10 +109,20 @@ impl McpManager {
     /// A server that fails to start is recorded and skipped rather than
     /// failing the whole load: one broken entry in `mcp.json` must not cost
     /// the user their other servers.
+    ///
+    /// All of them at once. A connection is almost entirely waiting — spawn
+    /// `npx`, wait for it to be ready, then a round trip for `tools/list` — so
+    /// serially this cost the *sum* of every server's startup, each with its
+    /// own timeout, and that sum sat in front of the first thing the window
+    /// asks for. Nothing here contends: each connection touches only its own
+    /// entry in the status map.
+    ///
+    /// The order of the returned tools is still the file's, not the order the
+    /// servers happened to answer in — `join_all` yields results in the order
+    /// the futures were given. A tool list that reshuffles between launches
+    /// would be a prompt that changes for no reason anyone could see.
     pub async fn connect_all(&self, config: &McpConfig) -> Vec<Arc<dyn Tool>> {
-        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-
-        for (name, server) in &config.servers {
+        let connecting = config.servers.iter().map(|(name, server)| async move {
             if server.disabled() {
                 // Listed but not started. A server that vanished from the status
                 // list when switched off looked exactly like one that was never
@@ -129,12 +139,12 @@ impl McpManager {
                         tools: Vec::new(),
                     },
                 );
-                continue;
+                return Vec::new();
             }
             match self.connect(name, server).await {
-                Ok(mut connected) => {
+                Ok(connected) => {
                     info!(server = %name, tools = connected.len(), "mcp server connected");
-                    tools.append(&mut connected);
+                    connected
                 }
                 Err(e) => {
                     warn!(server = %name, error = %e, "mcp server failed to start");
@@ -142,10 +152,16 @@ impl McpManager {
                         .write()
                         .await
                         .insert(name.clone(), ServerStatus::failed(name, server, e));
+                    Vec::new()
                 }
             }
-        }
-        tools
+        });
+
+        futures::future::join_all(connecting)
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     async fn connect(

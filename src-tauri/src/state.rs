@@ -105,9 +105,11 @@ pub struct AppState {
     /// unrelated action happens to refresh it. Waiting here is the difference
     /// between a status that is slightly later and one that is durably wrong.
     ///
-    /// Only the *first* load is gated. A later reload replaces a populated
-    /// catalog with another populated one, and blocking every status on it
-    /// would put an MCP server's startup in front of the window.
+    /// Only the *first* load is gated, and only its local half — see
+    /// `Host::reload_local`. A later reload replaces a populated catalog with
+    /// another populated one, and blocking every status on it would put an MCP
+    /// server's startup in front of the window; so would waiting here for the
+    /// first load's MCP half, which is why `run` marks this between the two.
     loaded: watch::Sender<bool>,
 }
 

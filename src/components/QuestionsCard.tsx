@@ -17,7 +17,9 @@ type QuestionsView = Extract<TranscriptView, { type: "questions" }>;
  *
  * The card goes read-only the instant it is sent rather than when the harness
  * releases the call. Those are milliseconds apart, but they are milliseconds in
- * which a second click would answer a call that is no longer listening.
+ * which a second click would answer a call that is no longer listening. It
+ * comes back if the send fails: a card reading "Answered." over a turn that is
+ * still waiting for the answer is the one state this must not settle into.
  */
 export function QuestionsCard({
   view,
@@ -30,7 +32,7 @@ export function QuestionsCard({
   view: QuestionsView;
   status: "running" | "ok" | "error";
   output?: string;
-  onAnswer: (id: string, answers: Answer[]) => void;
+  onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
 }) {
   const { id, questions } = view;
   const [picked, setPicked] = useState<Record<number, string[]>>({});
@@ -46,9 +48,17 @@ export function QuestionsCard({
     (a) => a.picked.length > 0 || (a.other ?? "").trim() !== "",
   ).length;
 
-  const send = (all: Answer[]) => {
+  const send = async (all: Answer[]) => {
     setSent(true);
-    onAnswer(id, all);
+    try {
+      await onAnswer(id, all);
+    } catch {
+      // The answer never reached the harness, so the call behind this card is
+      // still parked and this card is still the only way to release it. The
+      // banner the store raised says what went wrong; this hands back the
+      // buttons that can try again.
+      setSent(false);
+    }
   };
 
   const toggle = (index: number, label: string, multi: boolean) =>
