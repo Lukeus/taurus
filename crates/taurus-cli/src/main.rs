@@ -253,12 +253,14 @@ impl From<&PolicyArgs> for Policy {
 #[tokio::main]
 async fn main() -> ExitCode {
     // Silent unless asked: a CLI's stderr belongs to the task, not to logs.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_env("TAURUS_LOG").unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    let filter = EnvFilter::try_from_env("TAURUS_LOG").unwrap_or_else(|_| EnvFilter::new("warn"));
+    let settings = taurus_host::config::load_settings(None);
+    // Bound, not discarded: dropping this flushes buffered spans, and a
+    // `taurus run` that finishes and exits immediately would otherwise export
+    // nothing at all — which is exactly the run somebody is watching for the
+    // first time they point this at a collector.
+    let _telemetry =
+        taurus_telemetry::install(filter, "taurus-cli", Some(settings.otlp_endpoint.as_str()));
 
     match run(Cli::parse()).await {
         Ok(code) => code,

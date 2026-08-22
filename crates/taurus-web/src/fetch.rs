@@ -155,7 +155,7 @@ impl Tool for FetchUrl {
 
         let body = http::text(response, ctx, MAX_BODY_BYTES as usize).await?;
         let text = kind.render(&body);
-        Ok(format_page(&final_url, &text, limit))
+        Ok(format_page(&final_url, &text, limit).into())
     }
 }
 

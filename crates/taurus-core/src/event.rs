@@ -68,6 +68,19 @@ pub enum UiEvent {
         ok: bool,
         /// Tool output, truncated for display.
         output: String,
+        /// Pictures the tool handed back, for the card to draw.
+        ///
+        /// Separate from `output` rather than encoded into it because they are
+        /// different things: `output` is shortened to keep the IPC channel
+        /// small, and an image cannot be shortened — half a PNG is not half a
+        /// picture, it is a broken file. What bounds these is the size cap
+        /// applied where the result is produced.
+        ///
+        /// Empty for every tool that returns prose, which is nearly all of
+        /// them, and always empty for a failed call: an error is something to
+        /// read.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ResultImage>,
     },
     /// A request failed in a way a retry could plausibly fix, and is being
     /// retried after a backoff.
@@ -122,6 +135,19 @@ pub enum UiEvent {
     Error {
         message: String,
     },
+}
+
+/// One picture a tool handed back, on its way to the card that draws it.
+///
+/// Its own type rather than [`taurus_provider::ToolResultBlock`] because the UI
+/// has no use for the other two kinds — text is already in `output`, and JSON
+/// is text as far as a transcript is concerned.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ResultImage {
+    pub mime_type: String,
+    /// Base64, no data-URI prefix, exactly as it will be sent to the model.
+    pub data: String,
 }
 
 /// Longest tool output echoed to the UI. The model still receives the full

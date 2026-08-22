@@ -364,6 +364,34 @@ None of this refuses the rewind. It is your tree and there are good reasons to
 want the files back regardless; what there is no good reason for is finding out
 afterwards.
 
+## What a trace carries
+
+Tracing is off until you name a collector, and naming one sends the *shape* of a
+turn: which model, how many tokens in and out, how long each call took, which
+tools ran, and which failed. That is a description of the work. It is not the
+work.
+
+The conversation is a separate setting, `otlp_capture_content`, and it is off.
+Turning it on puts `gen_ai.input.messages` and `gen_ai.output.messages` on every
+completion span — which is the file the model read, the command it ran, the
+diff it wrote, and whatever you pasted into the composer, sent to whatever
+address is configured. There is no redaction pass and there is not going to be
+one: a harness cannot know which line of a file it was handed is the secret.
+
+Two things follow, and both are deliberate.
+
+**Nothing infers content capture from an endpoint being set.** They are separate
+decisions with different stakes, so they are separate switches. Turning
+telemetry on tells you what a turn cost; it never tells anyone what was in it.
+
+**The setting is read per turn, not at launch.** Somebody who has just realized
+what they switched on can switch it off and have it take effect on the next
+message rather than the next restart.
+
+If you are pointing this at a collector you do not run yourself, leave content
+capture alone. The token counts are the part that makes a dashboard useful, and
+they are the part that cannot leak a workspace.
+
 ## Keeping a turn
 
 A rewind is the way back. This is the way forward, and it is the same list read

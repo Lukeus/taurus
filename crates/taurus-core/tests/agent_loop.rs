@@ -310,7 +310,7 @@ async fn a_denied_tool_tells_the_model_not_to_retry() {
     let told = session.messages.iter().any(|m| {
         m.content.iter().any(|b| match b {
             taurus_provider::ContentBlock::ToolResult { content, .. } => {
-                content.contains("denied") && content.contains("Do not retry")
+                content.to_text().contains("denied") && content.to_text().contains("Do not retry")
             }
             _ => false,
         })
@@ -372,7 +372,7 @@ async fn an_unparseable_prompted_call_gets_syntax_guidance_not_a_missing_tool_er
     let guidance = session.messages.iter().any(|m| {
         m.content.iter().any(|b| match b {
             taurus_provider::ContentBlock::ToolResult { content, .. } => {
-                content.contains("<tool_call>")
+                content.to_text().contains("<tool_call>")
             }
             _ => false,
         })
@@ -522,6 +522,7 @@ async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
         ContentBlock::ToolResult { content, .. } => content.clone(),
         other => panic!("expected a tool result, got {other:?}"),
     };
+    let trimmed = trimmed.to_text();
     assert!(trimmed.contains("called again later"), "{trimmed}");
 }
 
@@ -1831,7 +1832,7 @@ async fn a_refused_plan_leaves_the_previous_one_standing() {
                 matches!(
                     b,
                     ContentBlock::ToolResult { content, .. }
-                        if content.contains("exactly one step may be in progress")
+                        if content.to_text().contains("exactly one step may be in progress")
                 )
             })
     });

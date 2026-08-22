@@ -134,7 +134,8 @@ impl Tool for ShowTable {
             input.title,
             input.rows.len(),
             input.columns.len()
-        ))
+        )
+        .into())
     }
 }
 
@@ -246,7 +247,8 @@ impl Tool for ShowChart {
             input.title,
             input.labels.len(),
             input.series.len()
-        ))
+        )
+        .into())
     }
 }
 
@@ -366,7 +368,8 @@ impl Tool for ShowSequence {
             input.title,
             input.messages.len(),
             input.participants.len()
-        ))
+        )
+        .into())
     }
 }
 
@@ -526,7 +529,8 @@ impl Tool for ShowFlow {
             input.title,
             input.stages.len(),
             input.edges.len()
-        ))
+        )
+        .into())
     }
 }
 
@@ -714,13 +718,13 @@ impl Tool for AskUser {
         };
 
         Ok(match answers {
-            Some(answers) => render_answers(&input.questions, &answers),
+            Some(answers) => render_answers(&input.questions, &answers).into(),
             // Not an error. A piped run, a git hook, or CI has nobody to ask,
             // and a turn that fails there because it wanted an opinion is worse
             // than one that decides and says so.
             None => "Nobody is available to answer. Decide each of these yourself, and say which \
                      way you went and why in your reply."
-                .to_string(),
+                .into(),
         })
     }
 }
@@ -800,7 +804,10 @@ mod tests {
             TranscriptView::Table { ref columns, ref rows, .. }
                 if columns[1].kind == ColumnKind::Number && rows.len() == 1
         ));
-        assert!(result.contains("do not repeat the rows"), "{result}");
+        assert!(
+            result.to_text().contains("do not repeat the rows"),
+            "{result}"
+        );
     }
 
     #[tokio::test]
@@ -865,7 +872,10 @@ mod tests {
                     // the one the model should not have to spell out.
                     && messages[0].kind == MessageKind::Call
         ));
-        assert!(result.contains("do not repeat the steps"), "{result}");
+        assert!(
+            result.to_text().contains("do not repeat the steps"),
+            "{result}"
+        );
     }
 
     #[tokio::test]
@@ -974,7 +984,10 @@ mod tests {
                     && stages[1].nodes[0].note.as_deref() == Some("axum")
                     && edges[1].label.is_none()
         ));
-        assert!(result.contains("4 nodes across 3 stages"), "{result}");
+        assert!(
+            result.to_text().contains("4 nodes across 3 stages"),
+            "{result}"
+        );
     }
 
     #[tokio::test]
@@ -1099,7 +1112,10 @@ mod tests {
 
         let result = tool.execute(questions(), &ctx).await.unwrap();
 
-        assert!(result.contains("Decide each of these yourself"), "{result}");
+        assert!(
+            result.to_text().contains("Decide each of these yourself"),
+            "{result}"
+        );
     }
 
     #[tokio::test]

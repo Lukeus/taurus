@@ -1,6 +1,6 @@
 //! Content blocks to OpenAI messages.
 
-use taurus_provider::{ChatRequest, ContentBlock, Role, ToolDef};
+use taurus_provider::{relocated_note, ChatRequest, ContentBlock, Role, ToolDef};
 
 pub fn tools_to_wire(tools: &[ToolDef]) -> Vec<serde_json::Value> {
     tools
@@ -36,6 +36,18 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
     if let Some(system) = request.system.as_ref().filter(|s| !s.trim().is_empty()) {
         out.push(serde_json::json!({ "role": "system", "content": system }));
     }
+
+    // Which call each result answers, for the one thing the wire format does
+    // not carry it for: the note on a relocated image, which has to name the
+    // tool or the picture reads as something the user sent. Built up front
+    // rather than per message because a result and its call are in different
+    // messages by construction.
+    let names_by_id: std::collections::HashMap<&str, &str> = request
+        .messages
+        .iter()
+        .flat_map(|m| m.tool_uses())
+        .map(|(id, name, _)| (id, name))
+        .collect();
 
     for message in &request.messages {
         let mut text = String::new();
@@ -73,16 +85,38 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
                     content,
                     is_error,
                 } => {
+                    // `role: "tool"` carries a string and nothing else here,
+                    // so an image a tool handed back travels as the user
+                    // message directly after it.
+                    let (body, relocated) = content.split_relocating_images();
+                    // No error flag on this message shape, so the marker has
+                    // to be in the text.
                     let body = if *is_error {
-                        format!("Error: {content}")
+                        format!("Error: {body}")
                     } else {
-                        content.clone()
+                        body
                     };
                     results.push(serde_json::json!({
                         "role": "tool",
                         "tool_call_id": tool_use_id,
                         "content": body,
                     }));
+                    if !relocated.is_empty() {
+                        let mut parts = vec![serde_json::json!({
+                            "type": "text",
+                            "text": relocated_note(names_by_id.get(tool_use_id.as_str()).copied(), relocated.len()),
+                        })];
+                        parts.extend(relocated.iter().map(|(mime_type, data)| {
+                            serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": format!("data:{mime_type};base64,{data}") }
+                            })
+                        }));
+                        results.push(serde_json::json!({
+                            "role": "user",
+                            "content": parts,
+                        }));
+                    }
                 }
             }
         }
@@ -233,5 +267,48 @@ mod tests {
         let roles: Vec<&str> = wire.iter().map(|m| m["role"].as_str().unwrap()).collect();
         assert_eq!(roles, vec!["assistant", "tool", "user"]);
         assert_eq!(wire[2]["content"], "# Your current plan");
+    }
+
+    #[test]
+    fn a_tool_image_follows_its_result_as_its_own_user_message() {
+        // `role: "tool"` carries a string here, so the picture cannot ride
+        // inside it. It has to land immediately after, or the model has no way
+        // to know which call it answers.
+        let output = taurus_provider::ToolOutput::blocks(vec![
+            taurus_provider::ToolResultBlock::text("the chart"),
+            taurus_provider::ToolResultBlock::image("image/png", "aGk="),
+        ])
+        .expect("two blocks");
+        let request = ChatRequest::new(
+            "gpt",
+            vec![
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use("t1", "draw", serde_json::json!({}))],
+                ),
+                Message::new(Role::User, vec![ContentBlock::tool_result("t1", output)]),
+            ],
+        );
+
+        let wire = messages_to_wire(&request);
+        let tool_index = wire
+            .iter()
+            .position(|m| m["role"] == "tool")
+            .expect("a tool message");
+        let follower = &wire[tool_index + 1];
+
+        assert_eq!(follower["role"], "user");
+        assert!(
+            follower["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("draw"),
+            "the note must name the call: {follower}"
+        );
+        assert_eq!(follower["content"][1]["type"], "image_url");
+        assert!(wire[tool_index]["content"]
+            .as_str()
+            .unwrap()
+            .contains("[image 1"));
     }
 }

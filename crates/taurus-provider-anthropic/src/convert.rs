@@ -139,6 +139,11 @@ fn block_list(message: &Message) -> Vec<Value> {
                 "input": input,
             })),
 
+            // The one adapter that can carry a picture inside the result
+            // itself. Everywhere else a tool's image has to be relocated into
+            // the message after it; here `content` is a block list of the same
+            // shape the rest of this function is building, so it goes across
+            // as it stands.
             ContentBlock::ToolResult {
                 tool_use_id,
                 content,
@@ -146,7 +151,7 @@ fn block_list(message: &Message) -> Vec<Value> {
             } => blocks.push(json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
-                "content": content,
+                "content": tool_result_content(content),
                 "is_error": is_error,
             })),
 
@@ -343,5 +348,85 @@ mod tests {
         }]);
         assert_eq!(tools[0]["name"], "read_file");
         assert_eq!(tools[0]["input_schema"]["type"], "object");
+    }
+}
+
+/// A tool's answer as Anthropic's `tool_result` content list.
+///
+/// Text and images map straight across. JSON becomes text, because this API has
+/// no structured block inside a tool result and a bare object there is a 400 —
+/// the model still reads it as JSON, which is what the tool meant by it.
+fn tool_result_content(output: &taurus_provider::ToolOutput) -> Value {
+    use taurus_provider::ToolResultBlock;
+    let blocks: Vec<Value> = output
+        .as_slice()
+        .iter()
+        .map(|block| match block {
+            ToolResultBlock::Text { text } => json!({"type": "text", "text": text}),
+            ToolResultBlock::Json { value } => {
+                json!({"type": "text", "text": value.to_string()})
+            }
+            ToolResultBlock::Image { mime_type, data } => json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": data,
+                },
+            }),
+        })
+        .collect();
+    Value::Array(blocks)
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use taurus_provider::{ChatRequest, ContentBlock, Message, Role};
+
+    #[test]
+    fn a_tool_that_returned_a_picture_sends_it_inside_the_result() {
+        // The one adapter that can. Everywhere else the image has to be lifted
+        // into a message of its own; here `tool_result` content is a block list
+        // of the same shape this whole function builds.
+        let output = taurus_provider::ToolOutput::blocks(vec![
+            taurus_provider::ToolResultBlock::text("the chart"),
+            taurus_provider::ToolResultBlock::image("image/png", "aGk="),
+        ])
+        .expect("two blocks");
+        let request = ChatRequest::new(
+            "claude",
+            vec![Message::new(
+                Role::User,
+                vec![ContentBlock::tool_result("t1", output)],
+            )],
+        );
+
+        let wire = messages_to_wire(&request);
+        let content = &wire[0]["content"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "aGk=");
+    }
+
+    #[test]
+    fn structured_output_crosses_as_text_rather_than_a_bare_object() {
+        // There is no JSON block inside a `tool_result` here, and an object in
+        // that position is a 400. The model still reads it as JSON.
+        let request = ChatRequest::new(
+            "claude",
+            vec![Message::new(
+                Role::User,
+                vec![ContentBlock::tool_result(
+                    "t1",
+                    taurus_provider::ToolOutput::json(serde_json::json!({"rows": 3})),
+                )],
+            )],
+        );
+        let wire = messages_to_wire(&request);
+        let content = &wire[0]["content"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert!(content[0]["text"].as_str().unwrap().contains("rows"));
     }
 }

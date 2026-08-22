@@ -368,7 +368,7 @@ impl Tool for SpawnSubagent {
         if !tools_used.is_empty() {
             report.push_str(&format!("\n\n[sub-agent used: {}]", summarize(&tools_used)));
         }
-        Ok(report)
+        Ok(report.into())
     }
 }
 
@@ -574,7 +574,7 @@ mod tests {
             .unwrap();
 
         // What the parent gets back is still one paragraph.
-        assert!(out.contains("There are three files."));
+        assert!(out.to_text().contains("There are three files."));
 
         let opened = spy.opened.lock().await.clone();
         assert_eq!(opened.len(), 1);
@@ -613,7 +613,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("stopped early"), "{out}");
+        assert!(out.to_text().contains("stopped early"), "{out}");
 
         let kept = spy.kept.lock().await.clone();
         assert!(!kept.is_empty(), "a turn that failed is still a transcript");
@@ -633,7 +633,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("The answer is 42."));
+        assert!(out.to_text().contains("The answer is 42."));
     }
 
     #[tokio::test]
@@ -652,7 +652,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("[sub-agent used: list_dir]"));
+        assert!(out.to_text().contains("[sub-agent used: list_dir]"));
     }
 
     #[tokio::test]
@@ -677,7 +677,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("I could not delegate."));
+        assert!(out.to_text().contains("I could not delegate."));
     }
 
     #[tokio::test]

@@ -108,7 +108,7 @@ impl PromptedTools {
                     } else {
                         "tool_result"
                     };
-                    text.push_str(&format!("<{label}>\n{content}\n</{label}>\n"));
+                    text.push_str(&format!("<{label}>\n{}\n</{label}>\n", content.to_text()));
                 }
                 ContentBlock::Text { text: t } => {
                     text.push_str(t);

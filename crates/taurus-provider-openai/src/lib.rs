@@ -22,11 +22,13 @@ use tracing::warn;
 
 use taurus_provider::prompted::{PromptedScanner, PromptedTools};
 use taurus_provider::{
-    Capabilities, ChatRequest, ModelInfo, Provider, ProviderError, Result, StopReason, StreamEvent,
-    TokenUsage,
+    Capabilities, ChatRequest, ModelInfo, Provider, ProviderError, RerankScore, Result, StopReason,
+    StreamEvent, TokenUsage,
 };
 
-use wire::{ChatBody, ModelsResponse, StreamChunk};
+use wire::{
+    ChatBody, EmbedBody, EmbedResponse, ModelsResponse, RerankBody, RerankResponse, StreamChunk,
+};
 
 /// Path the OpenAI routes live under on almost every server.
 pub const DEFAULT_API_PREFIX: &str = "/v1";
@@ -170,7 +172,7 @@ impl OpenAiProvider {
         format!("{}{}{}", self.base_url, self.api_prefix, path)
     }
 
-    // The two routes, named rather than spelled out at the call sites, so a
+    // The routes, named rather than spelled out at the call sites, so a
     // test asserts the same string the request uses. Written inline they were
     // passed to `url` still carrying the `/v1` the prefix now supplies, and
     // every test still passed.
@@ -180,6 +182,14 @@ impl OpenAiProvider {
 
     fn chat_url(&self) -> String {
         self.url("/chat/completions")
+    }
+
+    fn rerank_url(&self) -> String {
+        self.url("/rerank")
+    }
+
+    fn embeddings_url(&self) -> String {
+        self.url("/embeddings")
     }
 
     fn authorize(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -299,6 +309,148 @@ impl Provider for OpenAiProvider {
         })
     }
 
+    /// Embeds against `/v1/embeddings`.
+    ///
+    /// The one OpenAI route this adapter had not implemented, which meant
+    /// `search_code` was unavailable to everybody not running Ollama — on a
+    /// backend that has served embeddings the whole time. llama.cpp,
+    /// LM Studio, vLLM, text-embeddings-inference, Together and OpenAI itself
+    /// all answer here.
+    async fn embed(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let response = self
+            .authorize(self.client.post(self.embeddings_url()).json(&EmbedBody {
+                model,
+                input: inputs,
+            }))
+            .send()
+            .await
+            .map_err(|e| self.unreachable(e))?;
+        let response = self.check_status(response).await.map_err(|e| match e {
+            // The common misconfiguration is naming a *chat* model here. The
+            // API says "not found" for that, which reads as a typo rather than
+            // as the two namespaces being separate.
+            ProviderError::Api { status: 404, .. } => ProviderError::Protocol(format!(
+                "{} has no embedding model called '{model}'. Embedding models are a separate \
+                 namespace from chat models — `text-embedding-3-small` on OpenAI, or whatever \
+                 your server loaded with `--embedding`.",
+                self.id
+            )),
+            other => other,
+        })?;
+        let embedded: EmbedResponse = response.json().await.map_err(|e| self.unreachable(e))?;
+
+        // A backend that answered with a different number of vectors than it
+        // was given texts has broken the only contract that makes the result
+        // usable: position is the only thing tying a vector to its chunk.
+        if embedded.data.len() != inputs.len() {
+            return Err(ProviderError::Protocol(format!(
+                "asked {} for {} embeddings and got {}",
+                self.id,
+                inputs.len(),
+                embedded.data.len()
+            )));
+        }
+
+        // Placed by the index the server reported rather than by arrival order.
+        // The order is documented, and a server that got it wrong would attach
+        // every vector to the wrong chunk — a search that confidently returns
+        // the wrong file, which is far harder to notice than one that fails.
+        let mut vectors: Vec<Option<Vec<f32>>> = vec![None; inputs.len()];
+        for item in embedded.data {
+            let Some(slot) = vectors.get_mut(item.index) else {
+                return Err(ProviderError::Protocol(format!(
+                    "{} returned an embedding for input {} of {}",
+                    self.id,
+                    item.index,
+                    inputs.len()
+                )));
+            };
+            *slot = Some(item.embedding);
+        }
+        vectors
+            .into_iter()
+            .enumerate()
+            .map(|(n, vector)| {
+                vector.ok_or_else(|| {
+                    ProviderError::Protocol(format!(
+                        "{} returned no embedding for input {n}",
+                        self.id
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    /// Reranks against the Cohere-shaped `/rerank` route.
+    ///
+    /// On this adapter rather than Ollama's because this is where the servers
+    /// that serve it are reached: llama.cpp started with `--reranking`,
+    /// text-embeddings-inference, and the hosted rerankers all sit behind an
+    /// OpenAI-compatible base URL, and Ollama has no reranking route at all.
+    async fn rerank(
+        &self,
+        model: &str,
+        query: &str,
+        documents: &[String],
+    ) -> Result<Vec<RerankScore>> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let body = RerankBody {
+            model,
+            query,
+            documents,
+            top_n: documents.len(),
+            return_documents: false,
+        };
+        let response = self
+            .authorize(self.client.post(self.rerank_url()).json(&body))
+            .send()
+            .await
+            .map_err(|e| self.unreachable(e))?;
+        let response = self.check_status(response).await.map_err(|e| match e {
+            // A 404 here is the common misconfiguration and it is worth naming,
+            // because the generic form of it — "returned 404" against a URL the
+            // user never typed — reads as a broken Taurus rather than a server
+            // that was started without the flag that serves this route.
+            ProviderError::Api { status: 404, .. } => ProviderError::Protocol(format!(
+                "{} has no reranking route at {}. A llama.cpp server serves one only when \
+                 started with `--reranking`; most other backends serve none at all.",
+                self.id,
+                self.rerank_url()
+            )),
+            other => other,
+        })?;
+        let scored: RerankResponse = response.json().await.map_err(|e| self.unreachable(e))?;
+
+        // Position is the only thing tying a score back to a document, so an
+        // index outside the slice is not a score that can be used — and taking
+        // it on trust would panic in the caller's indexing rather than fail
+        // here, where the provider that produced it can be named.
+        if let Some(bad) = scored.results.iter().find(|r| r.index >= documents.len()) {
+            return Err(ProviderError::Protocol(format!(
+                "{} scored document {} of {}, which was not sent",
+                self.id,
+                bad.index,
+                documents.len()
+            )));
+        }
+
+        Ok(scored
+            .results
+            .into_iter()
+            .map(|r| RerankScore {
+                index: r.index,
+                score: r.relevance_score,
+            })
+            .collect())
+    }
+
     async fn stream(
         &self,
         mut request: ChatRequest,
@@ -352,6 +504,12 @@ impl Provider for OpenAiProvider {
                 usage = TokenUsage {
                     input_tokens: u.prompt_tokens.unwrap_or(0),
                     output_tokens: u.completion_tokens.unwrap_or(0),
+                    cache_read_input_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+                    // No compatible server bills cache *writes* separately;
+                    // the ones with a cache populate it as a side effect of an
+                    // ordinary request.
+                    cache_creation_input_tokens: None,
+                    reasoning_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
                 };
             }
 
@@ -749,6 +907,103 @@ mod tests {
     }
 
     #[test]
+    fn the_rerank_route_follows_the_configured_prefix() {
+        // Same trap the other two routes already have a test for: written
+        // inline as `url("/v1/rerank")` this becomes `/v1/v1/rerank` on a
+        // default config and nothing catches it.
+        assert_eq!(
+            provider("http://x", None).rerank_url(),
+            "http://x/v1/rerank"
+        );
+        assert_eq!(
+            provider("http://x", Some("/v3")).rerank_url(),
+            "http://x/v3/rerank"
+        );
+    }
+
+    #[test]
+    fn a_rerank_body_asks_for_ranks_rather_than_the_documents_back() {
+        let documents = vec!["alpha".to_string(), "beta".to_string()];
+        let body = serde_json::to_value(RerankBody {
+            model: "bge-reranker-v2-m3",
+            query: "where the retry backoff is",
+            documents: &documents,
+            top_n: documents.len(),
+            return_documents: false,
+        })
+        .expect("serializes");
+
+        assert_eq!(body["top_n"], 2);
+        assert_eq!(
+            body["return_documents"], false,
+            "the caller still holds the documents; echoing them back doubles \
+             the response for nothing"
+        );
+        assert_eq!(body["documents"][1], "beta");
+    }
+
+    #[test]
+    fn a_reranked_response_is_read_whichever_name_the_server_gives_the_score() {
+        // Cohere, Jina, Voyage and llama.cpp say `relevance_score`; TEI says
+        // `score`. Both are the same field and neither is wrong.
+        for field in ["relevance_score", "score"] {
+            let raw = format!(r#"{{"results":[{{"index":1,"{field}":-4.75}}]}}"#);
+            let parsed: RerankResponse = serde_json::from_str(&raw).expect("{field} should parse");
+            assert_eq!(parsed.results[0].index, 1);
+            assert_eq!(parsed.results[0].relevance_score, -4.75);
+        }
+    }
+
+    #[tokio::test]
+    async fn reranking_nothing_asks_the_server_nothing() {
+        // The empty shortlist is reachable: a search that matched no passages
+        // still runs the tool to the end. A round trip to score zero documents
+        // is a round trip that can fail, so it is not made.
+        let scores = provider("http://127.0.0.1:1", None)
+            .rerank("any-model", "any query", &[])
+            .await
+            .expect("an empty rerank must not touch the network");
+        assert!(scores.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_backend_with_no_reranking_route_says_so_by_name() {
+        // The default on the trait, exercised through a provider that never
+        // implemented it. The message has to name the provider, because the
+        // user's next move is to point the setting at a different one.
+        struct Chatty;
+
+        #[async_trait]
+        impl Provider for Chatty {
+            fn id(&self) -> &str {
+                "ollama"
+            }
+            async fn models(&self) -> Result<Vec<ModelInfo>> {
+                Ok(Vec::new())
+            }
+            async fn capabilities(&self, _: &str) -> Result<Capabilities> {
+                Ok(Capabilities::default())
+            }
+            async fn stream(
+                &self,
+                _: ChatRequest,
+                _: mpsc::Sender<StreamEvent>,
+                _: CancellationToken,
+            ) -> Result<StopReason> {
+                Ok(StopReason::EndTurn)
+            }
+        }
+
+        let error = Chatty
+            .rerank("m", "q", &["doc".to_string()])
+            .await
+            .expect_err("the default refuses");
+        let message = error.to_string();
+        assert!(message.contains("ollama"), "{message}");
+        assert!(message.contains("--reranking"), "{message}");
+    }
+
+    #[test]
     fn an_empty_prefix_puts_the_routes_on_the_base_url() {
         // What a reverse proxy that already strips the version segment needs.
         for written in ["", "/", "  "] {
@@ -773,5 +1028,61 @@ mod tests {
     fn a_trailing_slash_on_the_base_url_does_not_double_up() {
         let p = provider("http://localhost:8000/", Some("/v3"));
         assert_eq!(p.models_url(), "http://localhost:8000/v3/models");
+    }
+
+    #[test]
+    fn the_embeddings_route_follows_the_configured_prefix() {
+        assert_eq!(
+            provider("http://x", None).embeddings_url(),
+            "http://x/v1/embeddings"
+        );
+        assert_eq!(
+            provider("http://x", Some("/v3")).embeddings_url(),
+            "http://x/v3/embeddings"
+        );
+    }
+
+    #[test]
+    fn an_embedding_body_sends_an_array_even_for_one_string() {
+        // The API takes a bare string too. Always sending the array means one
+        // code path rather than two that have to agree about the response.
+        let inputs = vec!["one chunk".to_string()];
+        let body = serde_json::to_value(EmbedBody {
+            model: "text-embedding-3-small",
+            input: &inputs,
+        })
+        .expect("serializes");
+        assert!(body["input"].is_array());
+        assert_eq!(body["input"][0], "one chunk");
+    }
+
+    #[tokio::test]
+    async fn embedding_nothing_asks_the_server_nothing() {
+        let vectors = provider("http://127.0.0.1:1", None)
+            .embed("any-model", &[])
+            .await
+            .expect("an empty batch must not touch the network");
+        assert!(vectors.is_empty());
+    }
+
+    #[test]
+    fn embeddings_are_placed_by_the_index_the_server_reported() {
+        // Out of order on the wire, in order in the result. A vector attached
+        // to the wrong chunk is a search that confidently returns the wrong
+        // file, which is far harder to notice than one that fails.
+        let raw = r#"{"data":[
+            {"index":2,"embedding":[3.0]},
+            {"index":0,"embedding":[1.0]},
+            {"index":1,"embedding":[2.0]}
+        ]}"#;
+        let parsed: EmbedResponse = serde_json::from_str(raw).expect("parses");
+        let mut placed = vec![None; 3];
+        for item in parsed.data {
+            placed[item.index] = Some(item.embedding);
+        }
+        assert_eq!(
+            placed,
+            vec![Some(vec![1.0]), Some(vec![2.0]), Some(vec![3.0])]
+        );
     }
 }

@@ -261,6 +261,49 @@ in and the order the transcript draws them. A reopened conversation rebuilds the
 strip from the transcript's own `image` blocks, so the screenshot is still
 beside the question that asked about it.
 
+### A tool can hand one back
+
+The other direction, and the newer one. A tool's answer is a list of blocks
+rather than a string, so a tool that took a screenshot, rendered a chart, or
+rasterized a page of a PDF can return the picture itself:
+
+```
+mcp__playwright__screenshot  https://example.com
+
+  ✓ the page as rendered
+  [thumb]
+```
+
+The blocks are text, image, and JSON, and which one a tool means is stated
+rather than guessed. Text that happens to look like JSON stays text — a
+`read_file` on a `.json` returns JSON-shaped prose, and a tool whose output
+changed shape depending on the file it was pointed at would be worse than one
+that never structured anything.
+
+**MCP servers get this for free and were the reason for it.** A server that
+screenshots a page used to have its whole answer flattened to the literal words
+`[image: image/png]`, because the normalized types had nowhere to put a picture
+inside a result. That is now the picture.
+
+**Only Anthropic carries an image inside the result.** OpenAI's `role: "tool"`
+message, Gemini's `functionResponse`, and Ollama's tool message are all text, so
+there the image travels immediately after the result — as its own user message
+on OpenAI and Ollama, as further parts of the same content on Gemini — with a
+line naming the call it answers. The result itself keeps a marker where the
+picture was, so a tool that returned a sentence and a chart does not appear to
+have returned only the sentence.
+
+**On a model that cannot see, an image becomes a line saying so.** Not dropped:
+a tool whose only answer vanished reads as a tool that did not work, and the
+truth is that it worked and this model cannot look at the answer.
+
+Every image a tool returns is checked by the same rules a pasted one is — the
+four formats, the magic number against the declared type, the five-megabyte
+cap — because a built-in with a bug and an MCP server nobody here wrote are
+equally capable of producing something no provider will take. One that fails is
+replaced by a line naming the tool and saying why, which is what the model needs
+to decide whether to call it differently.
+
 ## Finding code by what it does
 
 `grep` answers *where does this string appear*. The question someone actually
@@ -468,13 +511,69 @@ something to embed with, so it is not registered until one is set — under
 { "embedding_model": "nomic-embed-text" }
 ```
 
-It runs on the provider the conversation is already using — an embedding model
-lives on the same server as the chat model in every local setup, and a second
-provider entry naming the same machine would be one more thing to keep in step.
+By default it runs on the provider the conversation is already using — in a
+local setup the embedding model is on the same server as the chat model, and a
+second entry naming the same machine would be one more thing to keep in step.
 Pull one first (`ollama pull nomic-embed-text`); the name is what the index is
 keyed on, so changing it discards the index rather than mixing vectors that mean
 different things. See [Finding code by what it
 does](#finding-code-by-what-it-does).
+
+**Name a provider when the conversation's cannot embed.** Ollama, any
+OpenAI-compatible server — llama.cpp, LM Studio, vLLM, text-embeddings-inference,
+OpenAI itself — and Gemini all serve embeddings. Anthropic does not; it has no
+embedding endpoint at all and points at Voyage AI instead. So somebody chatting
+to Claude names a second backend for the index rather than switching the
+conversation to get one:
+
+```json
+{
+  "embedding_model": "text-embedding-3-small",
+  "embedding_provider": "openai"
+}
+```
+
+Leave the provider empty and it follows the conversation, which is what a local
+setup wants. The field appears under **Settings → Search** once a model is
+named, and the two save together — a model with no provider would embed on
+whichever backend the conversation happened to be on, which is exactly the case
+this exists for.
+
+**A reranker can be put in front of the results.** Optional, off by default, and
+a second stage rather than a replacement for the first:
+
+```json
+{ "rerank_model": "bge-reranker-v2-m3", "rerank_provider": "llamacpp" }
+```
+
+Embeddings score a query and a passage separately and compare the two numbers,
+which is what makes an index possible — every vector is computed once and kept —
+and also what caps how good it can be. A reranker reads the query and the
+passage *together*, which is markedly better and far too expensive to do against
+a whole repository. So the cosine pass stops being the thing that picks the
+answer and becomes the thing that draws up a shortlist of thirty; the reranker
+picks five out of those. That division is worth the extra round trip at 8k for
+the same reason the index is worth having at all: the cost of being wrong is a
+`read_file` on a file that was not the answer.
+
+`rerank_provider` is a separate setting from the embedding one because the
+common local setup cannot serve both — Ollama has no reranking route at all.
+A llama.cpp server started with `--reranking` is the usual second entry, and
+anything speaking the Cohere-shaped `/rerank` route works: text-embeddings-
+inference, Jina, Voyage, Cohere itself. Leave it empty if one server already
+does everything, and it resolves to the one the index embeds on.
+
+Two things follow from the scores not being comparable across backends. Results
+say `relevance` rather than `similarity` once a reranker has ordered them,
+because the number beside them is no longer a cosine and on a local llama.cpp is
+routinely negative — a passage scoring −4.75 may still be the best answer in the
+repository. And nothing is ever *filtered* by that number, only ordered by it.
+
+Reranking never takes the search away. An unreachable server, a model that was
+never pulled, or a backend with no such route leaves the similarity order
+standing and says so in the log — the search already worked before this stage
+existed, and an accuracy pass that could fail the whole tool mid-turn would cost
+far more than the reordering is worth.
 
 **The first index can be paid up front.** Embedding a repository takes the
 better part of a minute, and left to itself that lands inside whichever turn

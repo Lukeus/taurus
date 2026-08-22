@@ -29,6 +29,7 @@ use serde::Deserialize;
 use taurus_provider::Provider;
 use taurus_tools::tool::{parse_input, schema_for};
 use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolResult};
+use tracing::warn;
 
 use crate::build::refresh;
 use crate::store::{search, Index};
@@ -41,6 +42,19 @@ pub const SEARCH_CODE_TOOL: &str = "search_code";
 /// five stops being a ranking — the sixth result is not evidence, it is the
 /// model reading whatever came back.
 const MAX_RESULTS: usize = 5;
+
+/// Passages the cosine pass hands to the reranker, when one is configured.
+///
+/// Six times what survives, which is the shape a two-stage retrieval wants: the
+/// first stage's job stops being "pick the answer" and becomes "do not lose
+/// it", and it is much better at the second job than the first. Past roughly
+/// this many the reranker is reading passages the cosine pass had already
+/// ranked below things it got wrong, and the cost is linear in the count
+/// because a cross-encoder scores every pair.
+///
+/// Unused when nothing reranks, and deliberately not the number returned then:
+/// thirty excerpts is a context window, not an answer.
+const RERANK_CANDIDATES: usize = 30;
 
 /// Lines of an excerpt shown per hit.
 ///
@@ -64,6 +78,9 @@ pub struct SearchCode {
     /// Where this workspace's index lives. Rebuilt with the tool whenever the
     /// workspace changes, so the tool never has to ask which one it is on.
     dir: std::path::PathBuf,
+    /// Reranking model and the provider serving it. `None` means the cosine
+    /// order is the answer.
+    rerank: Option<(Arc<dyn Provider>, String)>,
 }
 
 impl SearchCode {
@@ -76,6 +93,66 @@ impl SearchCode {
             provider,
             model: model.into(),
             dir: dir.into(),
+            rerank: None,
+        }
+    }
+
+    /// Adds a second retrieval stage that reorders the shortlist.
+    ///
+    /// Takes its own provider rather than reusing the embedding one, because
+    /// they are usually not the same server. The backend most people embed on
+    /// is Ollama, which has no reranking route at all; the ones that do are
+    /// reached through the OpenAI-compatible adapter. Reusing the embedding
+    /// provider would mean this feature could only ever be configured by
+    /// somebody who had already given up on the common setup.
+    #[must_use]
+    pub fn with_rerank(mut self, provider: Arc<dyn Provider>, model: impl Into<String>) -> Self {
+        let model = model.into();
+        self.rerank = (!model.trim().is_empty()).then_some((provider, model));
+        self
+    }
+
+    /// The shortlist, reordered if anything is configured to reorder it.
+    ///
+    /// A failure here is not a failed search. Reranking is an accuracy stage on
+    /// top of a retrieval that already worked, so an unreachable server, a
+    /// model that was never pulled, or a backend with no such route leaves the
+    /// cosine order standing and logs why. Returning an error instead would
+    /// mean an optional stage could take `search_code` away entirely — and it
+    /// would do it at the exact moment the model was mid-turn and least able to
+    /// recover.
+    async fn reranked(&self, query: &str, hits: Vec<crate::store::Hit>) -> Vec<crate::store::Hit> {
+        let Some((provider, model)) = &self.rerank else {
+            let mut hits = hits;
+            hits.truncate(MAX_RESULTS);
+            return hits;
+        };
+
+        // The reranker scores the excerpt the model is about to read, not the
+        // whole file and not the chunk as it was embedded. Judging anything
+        // else would rank a passage on evidence the model never sees.
+        let documents: Vec<String> = hits.iter().map(|h| h.text.clone()).collect();
+        match provider.rerank(model, query, &documents).await {
+            Ok(scores) => crate::store::rerank(hits, &scores, MAX_RESULTS),
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    model = %model,
+                    "reranking failed; falling back to similarity order"
+                );
+                let mut hits = hits;
+                hits.truncate(MAX_RESULTS);
+                hits
+            }
+        }
+    }
+
+    /// How many passages the cosine pass should hand on.
+    fn candidates(&self) -> usize {
+        if self.rerank.is_some() {
+            RERANK_CANDIDATES
+        } else {
+            MAX_RESULTS
         }
     }
 }
@@ -142,7 +219,8 @@ impl Tool for SearchCode {
             return Ok(format!(
                 "Nothing indexed in this workspace, so there is nothing to search. {}",
                 report.summary()
-            ));
+            )
+            .into());
         }
 
         ctx.report("searching").await;
@@ -155,16 +233,22 @@ impl Tool for SearchCode {
             .next()
             .ok_or_else(|| ToolError::Failed("the backend returned no embedding".into()))?;
 
-        let hits = search(&entries, &vector, MAX_RESULTS, &ctx.workspace);
+        let hits = search(&entries, &vector, self.candidates(), &ctx.workspace);
         if hits.is_empty() {
             return Ok(format!(
                 "No match for '{query}' in {} indexed passages. Try describing it differently, or \
                  use grep if you know the literal text.",
                 entries.len()
-            ));
+            )
+            .into());
         }
 
-        Ok(render(query, &hits, ctx.workspace.as_path()))
+        if self.rerank.is_some() {
+            ctx.report("ranking the results").await;
+        }
+        let hits = self.reranked(query, hits).await;
+
+        Ok(render(query, &hits, ctx.workspace.as_path()).into())
     }
 }
 
@@ -192,15 +276,24 @@ impl crate::build::IndexProgress for Reporting<'_> {
 /// excerpt to find out where it came from.
 fn render(query: &str, hits: &[crate::store::Hit], _workspace: &Path) -> String {
     let mut out = format!(
-        "{} match{} for '{query}', closest first.\n",
+        "{} match{} for '{query}', best first.\n",
         hits.len(),
         if hits.len() == 1 { "" } else { "es" }
     );
 
     for hit in hits {
+        // The scale is named per hit rather than once at the top, because a
+        // reranked set can hold both: a server that honored a smaller `top_n`
+        // than it was asked for leaves the tail carrying cosine numbers, and
+        // one heading calling all of them "relevance" would be wrong about
+        // exactly the hits the reranker declined to judge.
         out.push_str(&format!(
-            "\n{}:{}-{} (similarity {:.2})\n",
-            hit.path, hit.start_line, hit.end_line, hit.score
+            "\n{}:{}-{} ({} {:.2})\n",
+            hit.path,
+            hit.start_line,
+            hit.end_line,
+            hit.ranking.label(),
+            hit.score
         ));
         let lines: Vec<&str> = hit.text.lines().take(MAX_EXCERPT_LINES).collect();
         for (n, line) in lines.iter().enumerate() {
@@ -287,6 +380,201 @@ mod tests {
         SearchCode::new(Arc::new(Bagged), "test-embed", dir)
     }
 
+    /// A reranker that promotes whichever passage mentions `favors`, and scores
+    /// on llama.cpp's scale rather than a normalized one — negatives included,
+    /// because that is the case a threshold somewhere would silently break.
+    struct Promoting {
+        favors: &'static str,
+        /// Refuses instead of scoring, standing in for an unreachable server or
+        /// a model that was never pulled.
+        broken: bool,
+    }
+
+    #[async_trait]
+    impl Provider for Promoting {
+        fn id(&self) -> &str {
+            "promoting"
+        }
+        async fn models(&self) -> taurus_provider::Result<Vec<ModelInfo>> {
+            Ok(Vec::new())
+        }
+        async fn capabilities(&self, _: &str) -> taurus_provider::Result<Capabilities> {
+            Ok(Capabilities::default())
+        }
+        async fn stream(
+            &self,
+            _: ChatRequest,
+            _: mpsc::Sender<StreamEvent>,
+            _: CancellationToken,
+        ) -> taurus_provider::Result<StopReason> {
+            Ok(StopReason::EndTurn)
+        }
+        async fn rerank(
+            &self,
+            _: &str,
+            _: &str,
+            documents: &[String],
+        ) -> taurus_provider::Result<Vec<taurus_provider::RerankScore>> {
+            if self.broken {
+                return Err(taurus_provider::ProviderError::Protocol(
+                    "no reranking model is loaded".into(),
+                ));
+            }
+            Ok(documents
+                .iter()
+                .enumerate()
+                .map(|(index, text)| taurus_provider::RerankScore {
+                    index,
+                    score: if text.contains(self.favors) {
+                        2.5
+                    } else {
+                        -6.0
+                    },
+                })
+                .collect())
+        }
+    }
+
+    /// Two passages, each about a different thing, both indexed.
+    async fn two_passage_workspace(ctx: &ToolContext) {
+        write(
+            &ctx.workspace,
+            "src/net.rs",
+            &format!(
+                "{}// the retry backoff doubles on each attempt\nfn retry() {{ backoff(); retry(); }}\n{}",
+                filler(3),
+                filler(3)
+            ),
+        );
+        write(
+            &ctx.workspace,
+            "src/store.rs",
+            &format!(
+                "{}// a session transcript is written to disk\nfn session() {{ transcript(); disk(); }}\n{}",
+                filler(3),
+                filler(3)
+            ),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reranker_can_overturn_the_similarity_order() {
+        let (ctx, _dir) = allowing_ctx();
+        let index_dir = tempfile::TempDir::new().unwrap();
+        two_passage_workspace(&ctx).await;
+
+        // The embedding pass puts net.rs first for this query. The reranker
+        // disagrees, and the reranker is the one that decides.
+        let plain = tool(index_dir.path())
+            .execute(serde_json::json!({ "query": "retry backoff" }), &ctx)
+            .await
+            .expect("search succeeds");
+        assert!(
+            plain.to_text().find("src/net.rs") < plain.to_text().find("src/store.rs"),
+            "similarity should favour net.rs to begin with:\n{plain}"
+        );
+
+        let reranked = tool(index_dir.path())
+            .with_rerank(
+                Arc::new(Promoting {
+                    favors: "transcript",
+                    broken: false,
+                }),
+                "test-rerank",
+            )
+            .execute(serde_json::json!({ "query": "retry backoff" }), &ctx)
+            .await
+            .expect("search succeeds");
+
+        assert!(
+            reranked.to_text().find("src/store.rs") < reranked.to_text().find("src/net.rs"),
+            "the reranker should have promoted store.rs:\n{reranked}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reranked_result_says_relevance_rather_than_similarity() {
+        // The scale changed, so the word beside the number has to change with
+        // it — a reranker's score is not a cosine and is routinely negative.
+        let (ctx, _dir) = allowing_ctx();
+        let index_dir = tempfile::TempDir::new().unwrap();
+        two_passage_workspace(&ctx).await;
+
+        let out = tool(index_dir.path())
+            .with_rerank(
+                Arc::new(Promoting {
+                    favors: "transcript",
+                    broken: false,
+                }),
+                "test-rerank",
+            )
+            .execute(serde_json::json!({ "query": "retry backoff" }), &ctx)
+            .await
+            .expect("search succeeds");
+
+        assert!(out.to_text().contains("(relevance "), "{out}");
+        assert!(!out.to_text().contains("(similarity "), "{out}");
+        assert!(
+            out.to_text().contains("-6.00"),
+            "a negative score is a ranking, not a result to hide:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reranker_that_fails_leaves_the_search_working() {
+        // The whole reason this stage is allowed to exist. An accuracy pass on
+        // top of a retrieval that already worked must never be able to take the
+        // retrieval away — least of all mid-turn, which is when it would.
+        let (ctx, _dir) = allowing_ctx();
+        let index_dir = tempfile::TempDir::new().unwrap();
+        two_passage_workspace(&ctx).await;
+
+        let out = tool(index_dir.path())
+            .with_rerank(
+                Arc::new(Promoting {
+                    favors: "transcript",
+                    broken: true,
+                }),
+                "test-rerank",
+            )
+            .execute(serde_json::json!({ "query": "retry backoff" }), &ctx)
+            .await
+            .expect("a failed rerank is not a failed search");
+
+        assert!(out.to_text().contains("src/net.rs"), "{out}");
+        assert!(
+            out.to_text().contains("(similarity "),
+            "the fallback is the similarity order, labelled as such:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn naming_no_rerank_model_leaves_the_tool_exactly_as_it_was() {
+        // Empty is how the setting is turned off, and it has to mean off rather
+        // than "rerank with a model called nothing".
+        let (ctx, _dir) = allowing_ctx();
+        let index_dir = tempfile::TempDir::new().unwrap();
+        two_passage_workspace(&ctx).await;
+
+        let out = tool(index_dir.path())
+            .with_rerank(
+                Arc::new(Promoting {
+                    favors: "transcript",
+                    broken: true,
+                }),
+                "   ",
+            )
+            .execute(serde_json::json!({ "query": "retry backoff" }), &ctx)
+            .await
+            .expect("search succeeds");
+
+        assert!(out.to_text().contains("(similarity "), "{out}");
+        assert!(
+            out.to_text().find("src/net.rs") < out.to_text().find("src/store.rs"),
+            "{out}"
+        );
+    }
+
     fn write(root: &Path, name: &str, body: &str) {
         let path = root.join(name);
         if let Some(parent) = path.parent() {
@@ -332,8 +620,11 @@ mod tests {
             .await
             .expect("a search");
 
-        let net = out.find("src/net.rs").expect("net.rs in the results");
-        let store = out.find("src/store.rs");
+        let net = out
+            .to_text()
+            .find("src/net.rs")
+            .expect("net.rs in the results");
+        let store = out.to_text().find("src/store.rs");
         assert!(
             store.is_none_or(|store| net < store),
             "the wrong file ranked first:\n{out}"
@@ -358,8 +649,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.contains("src/net.rs:1-"), "{out}");
-        assert!(out.contains("similarity"), "{out}");
+        assert!(out.to_text().contains("src/net.rs:1-"), "{out}");
+        assert!(out.to_text().contains("similarity"), "{out}");
         drop(dir);
     }
 
@@ -374,7 +665,7 @@ mod tests {
             .execute(serde_json::json!({ "query": "anything" }), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("Nothing indexed"), "{out}");
+        assert!(out.to_text().contains("Nothing indexed"), "{out}");
         drop(dir);
     }
 
@@ -410,7 +701,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.contains("src/new.rs"), "{out}");
+        assert!(out.to_text().contains("src/new.rs"), "{out}");
         drop(dir);
     }
 
@@ -442,7 +733,10 @@ mod tests {
             .execute(serde_json::json!({ "query": "retry" }), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("Read the files before acting"), "{out}");
+        assert!(
+            out.to_text().contains("Read the files before acting"),
+            "{out}"
+        );
         drop(dir);
     }
 }

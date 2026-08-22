@@ -78,14 +78,21 @@ fn paint_window(app: &tauri::App) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_env("TAURUS_LOG").unwrap_or_else(|_| {
-            EnvFilter::new(
-                "taurus_app=info,taurus_core=info,taurus_provider_ollama=info,taurus_skills=info",
-            )
-        }))
-        .with_target(true)
-        .init();
+    let filter = EnvFilter::try_from_env("TAURUS_LOG").unwrap_or_else(|_| {
+        EnvFilter::new(
+            "taurus_app=info,taurus_core=info,taurus_provider_ollama=info,taurus_skills=info",
+        )
+    });
+    // Settings are read here rather than after the app is built, because a
+    // subscriber can only be installed once and this is the only moment before
+    // anything has emitted a span. Global settings only: a trace destination is
+    // a property of the machine, and reading the workspace's would mean the
+    // exporter changed every time somebody opened a different folder.
+    let settings = taurus_host::config::load_settings(None);
+    // Held for the life of the process. Dropping it flushes whatever is
+    // buffered — which is why it is bound rather than discarded.
+    let _telemetry =
+        taurus_telemetry::install(filter, "taurus-app", Some(settings.otlp_endpoint.as_str()));
 
     // Before the builder, and so before anything is spawned: an app started from
     // the Dock inherits launchd's PATH, which is four system directories and
@@ -197,6 +204,7 @@ pub fn run() {
             commands::set_agent_iterations,
             commands::set_theme,
             commands::set_embedding_model,
+            commands::set_rerank,
             commands::build_index,
             commands::stop_index_build,
             commands::save_providers,

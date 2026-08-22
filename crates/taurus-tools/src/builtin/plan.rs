@@ -109,7 +109,7 @@ impl Tool for UpdatePlan {
     async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
         let input: UpdatePlanInput = parse_input(input)?;
         check(&input.steps, &self.board.steps())?;
-        Ok(self.board.set(input.steps))
+        Ok(self.board.set(input.steps).into())
     }
 }
 

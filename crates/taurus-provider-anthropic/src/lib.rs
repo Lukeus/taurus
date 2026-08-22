@@ -374,6 +374,23 @@ impl Provider for AnthropicProvider {
         Ok(capabilities)
     }
 
+    /// Refuses, and says what to do instead.
+    ///
+    /// Anthropic ships no embedding endpoint and recommends Voyage AI, which
+    /// speaks the OpenAI-compatible shape — so the fix is a second provider
+    /// entry rather than anything unbuildable. Overridden here rather than left
+    /// to the default because the default's advice ("a local Ollama") is the
+    /// wrong advice for somebody who chose a hosted model on purpose.
+    async fn embed(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        let _ = (model, inputs);
+        Err(ProviderError::Protocol(format!(
+            "{} has no embedding endpoint — Anthropic does not offer one and points at Voyage AI \
+             instead. Add an OpenAI-compatible provider for embeddings (Voyage, a local llama.cpp, \
+             or an Ollama) and name its model under Settings → Search.",
+            self.id
+        )))
+    }
+
     async fn stream(
         &self,
         request: ChatRequest,
@@ -418,6 +435,12 @@ impl Provider for AnthropicProvider {
                 StreamFrame::MessageStart { message } => {
                     if let Some(u) = message.usage {
                         usage.input_tokens = u.input_total();
+                        // Already counted into `input_total`, and kept apart
+                        // because a cached read costs about a tenth of a fresh
+                        // one — the split is the difference between a bill
+                        // somebody can explain and a number that just went up.
+                        usage.cache_read_input_tokens = u.cache_read_input_tokens;
+                        usage.cache_creation_input_tokens = u.cache_creation_input_tokens;
                     }
                 }
 
@@ -627,6 +650,12 @@ mod tests {
                 StreamFrame::MessageStart { message } => {
                     if let Some(u) = message.usage {
                         usage.input_tokens = u.input_total();
+                        // Already counted into `input_total`, and kept apart
+                        // because a cached read costs about a tenth of a fresh
+                        // one — the split is the difference between a bill
+                        // somebody can explain and a number that just went up.
+                        usage.cache_read_input_tokens = u.cache_read_input_tokens;
+                        usage.cache_creation_input_tokens = u.cache_creation_input_tokens;
                     }
                 }
                 StreamFrame::ContentBlockStart {

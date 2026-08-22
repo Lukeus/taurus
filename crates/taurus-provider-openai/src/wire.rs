@@ -100,4 +100,89 @@ pub struct Usage {
     pub prompt_tokens: Option<u32>,
     #[serde(default)]
     pub completion_tokens: Option<u32>,
+    /// Where the cache hit is reported. Absent on most compatible servers,
+    /// which have no cache; present on OpenAI itself and on the gateways that
+    /// imitate it closely enough to bill for one.
+    #[serde(default)]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompletionTokensDetails {
+    /// Counted inside `completion_tokens` rather than beside it, so adding the
+    /// two would bill the reasoning twice.
+    #[serde(default)]
+    pub reasoning_tokens: Option<u32>,
+}
+
+/// A reranking request.
+///
+/// The Cohere-shaped body, which is what every server serving this route
+/// speaks — llama.cpp, text-embeddings-inference, Jina, Voyage, Cohere itself.
+/// There is no OpenAI original to be compatible with here: OpenAI has never
+/// shipped a reranking endpoint, and the imitators standardized on Cohere's
+/// instead.
+#[derive(Debug, Serialize)]
+pub struct RerankBody<'a> {
+    pub model: &'a str,
+    pub query: &'a str,
+    pub documents: &'a [String],
+    /// Asked for explicitly rather than left to the server's default, which is
+    /// not the same number everywhere and on some servers is "all of them".
+    pub top_n: usize,
+    /// The documents come back only if asked for, and they are not wanted: the
+    /// caller sent them and still holds them in order. Sent as `false` rather
+    /// than omitted because at least one server defaults it on.
+    pub return_documents: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RerankResponse {
+    #[serde(default)]
+    pub results: Vec<RerankResult>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RerankResult {
+    pub index: usize,
+    /// Cohere, Jina, Voyage and llama.cpp all spell it this way. TEI answers
+    /// with `score` instead, which is why the alias is here rather than a
+    /// second response type.
+    #[serde(alias = "score")]
+    pub relevance_score: f32,
+}
+
+/// An embedding request.
+///
+/// `input` is an array even for one string. The API accepts a bare string too
+/// and answers the same shape either way, but sending the array unconditionally
+/// means one code path rather than two that have to agree.
+#[derive(Debug, Serialize)]
+pub struct EmbedBody<'a> {
+    pub model: &'a str,
+    pub input: &'a [String],
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmbedResponse {
+    #[serde(default)]
+    pub data: Vec<Embedding>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Embedding {
+    /// Which input this answers. Documented as returned in order, and not
+    /// trusted to be: a vector attached to the wrong chunk is a search that
+    /// quietly returns the wrong file, which is worse than one that fails.
+    #[serde(default)]
+    pub index: usize,
+    pub embedding: Vec<f32>,
 }

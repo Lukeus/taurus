@@ -6,6 +6,7 @@
 //! against the trait alone.
 
 pub mod error;
+pub mod image;
 pub mod message;
 pub mod prompted;
 pub mod provider;
@@ -13,9 +14,9 @@ pub mod request;
 pub mod stream;
 
 pub use error::{ProviderError, Result};
-pub use message::{ContentBlock, Message, Role};
+pub use message::{relocated_note, ContentBlock, Message, Role, ToolOutput, ToolResultBlock};
 pub use prompted::PromptedTools;
-pub use provider::{Capabilities, ModelInfo, Provider};
+pub use provider::{Capabilities, ModelInfo, Provider, RerankScore};
 pub use request::{ChatRequest, ToolDef};
 pub use stream::{StopReason, StreamAccumulator, StreamEvent, TokenUsage};
 

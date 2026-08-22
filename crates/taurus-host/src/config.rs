@@ -999,6 +999,75 @@ pub struct Settings {
     /// mean different things.
     #[serde(default)]
     pub embedding_model: String,
+    /// Which provider serves [`Settings::embedding_model`]. Empty means the one
+    /// the conversation is on.
+    ///
+    /// Empty is right for a local setup, where the embedding model sits on the
+    /// same server as the chat model and a second entry naming the same machine
+    /// would be one more thing to keep in step. It stopped being right the
+    /// moment a hosted backend was in play: Anthropic has no embedding endpoint
+    /// at all and points at Voyage instead, so somebody chatting to Claude has
+    /// to be able to index somewhere else without switching the conversation to
+    /// get it.
+    #[serde(default)]
+    pub embedding_provider: String,
+    /// Reranking model that reorders `search_code`'s shortlist before the model
+    /// reads it. Empty means the similarity order is the answer.
+    ///
+    /// A second retrieval stage, and optional in a way the embedding model is
+    /// not: without an embedding model there is no index and no tool, whereas
+    /// without this there is a search that already works and is merely less
+    /// accurate. That is why every failure here falls back rather than
+    /// surfacing — see `taurus_index::SearchCode::with_rerank`.
+    ///
+    /// Named separately from [`Settings::embedding_model`] because the two are
+    /// different namespaces on every backend that serves both, and because the
+    /// index is keyed on the embedding model alone: changing this one reorders
+    /// results but does not invalidate a single vector, so it must not discard
+    /// the index the way changing that one does.
+    #[serde(default)]
+    pub rerank_model: String,
+    /// Which provider serves [`Settings::rerank_model`]. Empty means the same
+    /// one the index embeds on.
+    ///
+    /// Needed as its own setting, unlike embedding, because the common local
+    /// setup cannot serve both. Ollama has no reranking route at all, so a
+    /// machine embedding on Ollama has to name an OpenAI-compatible provider
+    /// here — llama.cpp started with `--reranking` is the usual second entry.
+    /// Anyone already running everything on one such server leaves this empty
+    /// and it resolves to that server.
+    #[serde(default)]
+    pub rerank_provider: String,
+    /// Where to send traces, in OTLP over HTTP. Empty means nowhere.
+    ///
+    /// There is no default and localhost is not one. A harness that reads
+    /// private repositories has no business having an opinion about where a
+    /// description of that work should be sent, so an endpoint is a thing
+    /// somebody types — `http://localhost:4318` for a collector on this
+    /// machine, or whatever Langfuse, Phoenix, or Honeycomb gave you.
+    ///
+    /// What is sent is the shape of a turn: which model, how many tokens, how
+    /// long, which tools ran, what failed. Not the conversation — that is
+    /// [`Settings::otlp_capture_content`], and it is a separate decision.
+    ///
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT` overrides this, because that is the
+    /// variable every other instrumented program reads and tracing one run
+    /// should not mean editing a file.
+    #[serde(default)]
+    pub otlp_endpoint: String,
+    /// Whether exported traces may carry the messages themselves.
+    ///
+    /// Off, and it takes saying so to turn on. Token counts *describe* a
+    /// conversation; messages *are* it — the files read, the commands run,
+    /// whatever was pasted in — and a trace exporter is a network destination.
+    /// Turning telemetry on should tell somebody how much a turn cost, never
+    /// what was in it.
+    ///
+    /// Worth having anyway: debugging why a model went the wrong way is
+    /// reading the prompt it actually got, and a collector you run yourself is
+    /// a reasonable place to read it.
+    #[serde(default)]
+    pub otlp_capture_content: bool,
     /// Model turns one message may take before the turn is stopped.
     ///
     /// A ceiling on a loop that has no other one: a model that keeps calling
@@ -1035,6 +1104,11 @@ impl Default for Settings {
             disabled_tools: Vec::new(),
             theme: Theme::System,
             embedding_model: String::new(),
+            embedding_provider: String::new(),
+            rerank_model: String::new(),
+            rerank_provider: String::new(),
+            otlp_endpoint: String::new(),
+            otlp_capture_content: false,
             max_iterations: default_max_iterations(),
         }
     }
@@ -1065,6 +1139,25 @@ pub struct StoredSettings {
     /// without touching the global setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
+    /// See [`Settings::embedding_provider`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_provider: Option<String>,
+    /// See [`Settings::rerank_model`]. Per-layer so a project whose codebase
+    /// actually benefits from reranking can turn it on without paying the
+    /// extra round trip on every other workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_model: Option<String>,
+    /// See [`Settings::rerank_provider`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_provider: Option<String>,
+    /// See [`Settings::otlp_endpoint`]. Per-layer so one project can be traced
+    /// without every other workspace on the machine being traced too — which
+    /// is the usual shape of wanting this at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otlp_endpoint: Option<String>,
+    /// See [`Settings::otlp_capture_content`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otlp_capture_content: Option<bool>,
     /// See [`Settings::max_iterations`]. Per-layer so one project that needs
     /// long turns can raise it without loosening the ceiling everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1088,6 +1181,11 @@ impl StoredSettings {
         self.disabled_tools = other.disabled_tools.or(self.disabled_tools.take());
         self.theme = other.theme.or(self.theme);
         self.embedding_model = other.embedding_model.or(self.embedding_model.take());
+        self.embedding_provider = other.embedding_provider.or(self.embedding_provider.take());
+        self.rerank_model = other.rerank_model.or(self.rerank_model.take());
+        self.rerank_provider = other.rerank_provider.or(self.rerank_provider.take());
+        self.otlp_endpoint = other.otlp_endpoint.or(self.otlp_endpoint.take());
+        self.otlp_capture_content = other.otlp_capture_content.or(self.otlp_capture_content);
         self.max_iterations = other.max_iterations.or(self.max_iterations);
     }
 
@@ -1106,6 +1204,15 @@ impl StoredSettings {
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
             theme: self.theme.unwrap_or(defaults.theme),
             embedding_model: self.embedding_model.unwrap_or(defaults.embedding_model),
+            embedding_provider: self
+                .embedding_provider
+                .unwrap_or(defaults.embedding_provider),
+            rerank_model: self.rerank_model.unwrap_or(defaults.rerank_model),
+            rerank_provider: self.rerank_provider.unwrap_or(defaults.rerank_provider),
+            otlp_endpoint: self.otlp_endpoint.unwrap_or(defaults.otlp_endpoint),
+            otlp_capture_content: self
+                .otlp_capture_content
+                .unwrap_or(defaults.otlp_capture_content),
             // Clamped rather than rejected: this file is hand-edited, and a
             // settings file that will not load is a worse answer to a typo'd
             // number than a number brought back into range. Zero would be a

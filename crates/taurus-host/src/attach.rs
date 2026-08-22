@@ -20,15 +20,11 @@
 //! matters: the vision check comes first, because on a model that cannot see,
 //! every other complaint is beside the point.
 
-use base64::Engine;
 use taurus_provider::{Capabilities, ContentBlock};
 
-/// Largest single image, decoded.
-///
-/// Anthropic refuses past 5 MB and the others are looser, so this is the
-/// binding constraint rather than a house rule — a limit picked here that let
-/// something through would only move the failure to somewhere it reads worse.
-pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+/// Largest single image, decoded. See [`taurus_provider::image`], which is
+/// where the rule lives now that a tool can hand one back too.
+pub use taurus_provider::image::MAX_IMAGE_BYTES;
 
 /// Images one message may carry.
 ///
@@ -38,14 +34,6 @@ pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// images is already half of one. Past that the pictures crowd out the
 /// conversation they were sent to illustrate.
 pub const MAX_IMAGES: usize = 4;
-
-/// Formats every backend here accepts.
-///
-/// The intersection, not the union. Gemini would take HEIC and Anthropic would
-/// not, and a format that works until the day someone switches provider is
-/// worse than one that never worked — the failure arrives detached from the
-/// change that caused it.
-const ACCEPTED: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
 /// One image as a frontend hands it over.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, ts_rs::TS)]
@@ -102,51 +90,38 @@ pub fn to_blocks(
         .collect()
 }
 
+/// The rules are [`taurus_provider::image`]'s; the words are this function's.
+///
+/// Shared with the path a tool's image takes, so the two cannot disagree about
+/// what an image is. Kept separate here is the wording, because the reader is
+/// different: a person holding a screenshot can scale it down, and telling them
+/// which block index of which tool result was wrong would mean nothing.
 fn block(position: usize, attachment: &Attachment) -> Result<ContentBlock, String> {
+    use taurus_provider::image::Rejected;
+
     let declared = attachment.mime_type.trim().to_ascii_lowercase();
-    if !ACCEPTED.contains(&declared.as_str()) {
-        return Err(format!(
+    taurus_provider::image::check(&declared, &attachment.data).map_err(|reason| match reason {
+        Rejected::UnknownFormat => format!(
             "Image {position} is {}, which no model here accepts. Use PNG, JPEG, WebP, or GIF.",
             if declared.is_empty() {
-                "of no stated type".into()
+                "of no stated type".to_string()
             } else {
-                declared
+                declared.clone()
             }
-        ));
-    }
-
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(attachment.data.as_bytes())
-        .map_err(|e| format!("Image {position} is not valid base64 ({e})."))?;
-
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(format!(
+        ),
+        Rejected::NotBase64 => format!("Image {position} is not valid base64."),
+        Rejected::Empty => format!("Image {position} is empty."),
+        Rejected::TooLarge { bytes } => format!(
             "Image {position} is {:.1} MB, past the {} MB limit. Scale it down or crop to the part \
              that matters.",
-            bytes.len() as f64 / (1024.0 * 1024.0),
+            bytes as f64 / (1024.0 * 1024.0),
             MAX_IMAGE_BYTES / (1024 * 1024)
-        ));
-    }
-    if bytes.is_empty() {
-        return Err(format!("Image {position} is empty."));
-    }
-
-    // The bytes are the authority. A frontend guesses the type from a clipboard
-    // flavour or a file extension, and both are wrong often enough to matter —
-    // a `.png` that is really a JPEG reaches the provider, is rejected there,
-    // and comes back as a wire error about a field name.
-    match sniff(&bytes) {
-        Some(actual) if actual != declared => {
-            return Err(format!(
-                "Image {position} says it is {declared} but the bytes are {actual}. Re-export it, \
-                 or send it with the right type."
-            ))
-        }
-        // Not sniffable and not refused: the accepted list already bounds this
-        // to four formats, and a magic-number table that grew a gap would
-        // reject a perfectly good picture for a reason nobody could act on.
-        _ => {}
-    }
+        ),
+        Rejected::Mismatch { actual } => format!(
+            "Image {position} says it is {declared} but the bytes are {actual}. Re-export it, or \
+             send it with the right type."
+        ),
+    })?;
 
     Ok(ContentBlock::Image {
         mime_type: declared,
@@ -154,32 +129,10 @@ fn block(position: usize, attachment: &Attachment) -> Result<ContentBlock, Strin
     })
 }
 
-/// The format the bytes actually are, for the four this accepts.
-///
-/// Deliberately answers `None` rather than guessing: an unrecognized header is
-/// only ever used to *skip* the comparison, never to refuse.
-fn sniff(bytes: &[u8]) -> Option<String> {
-    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-
-    if bytes.starts_with(PNG) {
-        return Some("image/png".into());
-    }
-    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        return Some("image/jpeg".into());
-    }
-    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        return Some("image/gif".into());
-    }
-    // RIFF....WEBP — the size field sits between the two markers.
-    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        return Some("image/webp".into());
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     fn encode(bytes: &[u8]) -> String {
         base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -263,16 +216,6 @@ mod tests {
             data: encode(b"not really a webp header but claimed as one"),
         };
         assert!(to_blocks(&[odd], &seeing()).is_ok());
-    }
-
-    #[test]
-    fn a_webp_is_recognized_past_its_size_field() {
-        // RIFF....WEBP: the four bytes between the markers are a length, so a
-        // naive `starts_with` on the whole signature would never match.
-        let mut bytes = b"RIFF".to_vec();
-        bytes.extend_from_slice(&[0x24, 0x00, 0x00, 0x00]);
-        bytes.extend_from_slice(b"WEBPVP8 ");
-        assert_eq!(sniff(&bytes).as_deref(), Some("image/webp"));
     }
 
     #[test]

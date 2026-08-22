@@ -143,7 +143,8 @@ impl Tool for ProposeAgent {
             "Proposed agent '{name}'. It is queued for the user to review, and becomes available \
              to delegate to once they approve it — not in this turn, since the roster is fixed \
              when a turn starts. Carry on with the current task."
-        ))
+        )
+        .into())
     }
 }
 
@@ -221,8 +222,8 @@ mod tests {
 
         let message = tool.execute(input(None), &ctx).await.unwrap();
 
-        assert!(message.contains("review"), "{message}");
-        assert!(message.contains("not in this turn"), "{message}");
+        assert!(message.to_text().contains("review"), "{message}");
+        assert!(message.to_text().contains("not in this turn"), "{message}");
     }
 
     #[tokio::test]

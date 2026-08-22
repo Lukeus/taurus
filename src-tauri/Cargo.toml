@@ -31,6 +31,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 taurus-core.workspace = true
 taurus-host.workspace = true
+taurus-telemetry.workspace = true
 taurus-mcp.workspace = true
 taurus-provider.workspace = true
 taurus-agents.workspace = true

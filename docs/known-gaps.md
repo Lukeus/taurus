@@ -308,11 +308,35 @@ and they are the minority.
   that would mean deciding when two calls are *near* enough to be the same
   mistake, which is a guess the iteration ceiling makes unnecessary. See
   [When a turn stops](working-with-it.md#when-a-turn-stops).
-- **An image can only be sent, never received.** The model reads pictures and
-  cannot produce or edit one, so a turn that would be best answered with a
-  diagram answers in prose. That is a limit of what the normalized types carry
-  in the other direction, and closing it means a shape for image output that
-  only some backends could fill.
+- **The *model* still cannot produce an image.** A tool can hand one back now,
+  but the model itself reads pictures and cannot draw or edit one, so a turn
+  best answered with a diagram answers in prose or reaches for `show_chart`.
+  Closing that means image *generation*, which only some backends offer and none
+  of them the same way.
+- **No built-in tool returns an image yet.** The shape exists and every adapter
+  carries it, but the only things exercising it are MCP servers — a browser
+  driver's screenshot, a renderer's output. A built-in that rasterizes a PDF
+  page or captures a window is a tool nobody has written here, not a limit of
+  what a tool may return.
+- **Only Anthropic carries a tool's image inside the result.** OpenAI's
+  `role: "tool"`, Gemini's `functionResponse`, and Ollama's tool message are
+  text, so on those three the picture is relocated to immediately after the
+  result, with a marker line left where it was and a note naming the call. It
+  arrives, in order, attributed — but it is a separate part of the conversation
+  rather than part of the answer, and a model that weighs a tool result
+  differently from a user message will weigh it differently. This is what the
+  wire formats allow; closing it means those APIs changing, not this one.
+- **A tool's image is budgeted at a flat estimate, like a pasted one.** 1,000
+  tokens, regardless of its dimensions, because the real cost has nothing to do
+  with the length of its base64 and each provider prices it differently. The
+  number the compaction trigger reads is therefore approximate in exactly the
+  place the stakes are highest — a turn that returned four screenshots may have
+  less room left than the counter says.
+- **Trimming an old tool result drops its picture.** Deliberate: the point of
+  shortening an old result is to reclaim the window, and the image is the most
+  expensive thing in it. But it means a screenshot from earlier in a long
+  conversation is gone from the model's view while its caption remains, and
+  nothing says which it was.
 - **An attached image is not in the checkpoint log.** It goes into the
   transcript, so it survives and redraws; it is not a file in the workspace, so
   a rewind neither restores nor reports it. That is correct — there is nothing
@@ -330,12 +354,56 @@ and they are the minority.
   modification time, the same comparison the sweep uses and blind in the same
   place: a rewrite to the same length within one filesystem tick is invisible,
   and the stale chunk stays until something else about the file moves.
-- **Semantic search is only as good as the embedding model.** `search_code`
-  ranks by cosine similarity and nothing else — no reranking, no keyword
-  fallback, no blend with grep. A query that lands badly returns three confident
-  near-misses, and the tool says they are leads rather than answers, which is
-  the whole of what it can do about it. Where the literal text is known, grep is
-  exact and this is only close.
+- **Semantic search is only as good as what ranks it.** `search_code` ranks by
+  cosine similarity, and optionally by a reranking model over the top thirty of
+  those — but there is still no keyword fallback and no blend with grep. A query
+  that lands badly returns three confident near-misses, and the tool says they
+  are leads rather than answers, which is the whole of what it can do about it.
+  Where the literal text is known, grep is exact and this is only close.
+- **Nothing here embeds in-process.** An index needs a backend with an
+  embedding endpoint, and every provider this speaks to except Anthropic has
+  one — so this is a gap for exactly one setup: chatting to Claude with no
+  other backend reachable. Closing it means running an embedding model inside
+  this process, which is a model to download on first use and a machine-learning
+  runtime to carry on all three platforms, for a case a second provider entry
+  already answers. Not built, and not obviously worth building.
+- **Reranking needs a second server, and most backends cannot be it.** The
+  `/rerank` route is Cohere's shape rather than OpenAI's, and OpenAI never
+  shipped one to imitate — so it is served by llama.cpp started with
+  `--reranking`, by text-embeddings-inference, and by the hosted rerankers, and
+  by almost nothing else. Ollama, which is where most local setups embed, has no
+  such route at all, which is why `rerank_provider` exists as a setting separate
+  from the embedding provider. Closing this properly means running a reranking
+  model in-process rather than asking for an endpoint, which is the same
+  unbuilt thing that would let the index work with no local server at all.
+- **A reranked score cannot be compared to anything but its own result set.**
+  Voyage and Cohere normalize to 0–1; llama.cpp returns the cross-encoder's raw
+  logit, where negative values are ordinary. Taurus orders by it and never
+  filters on it, and labels the column `relevance` rather than `similarity` so
+  the number is not read as a cosine — but there is no way to make one backend's
+  0.82 mean the same thing as another's, and there is no threshold below which a
+  result is known to be worthless.
+- **Traces go out over HTTP, and only over HTTP.** OTLP has a gRPC transport
+  too and this speaks the `http/protobuf` one alone. Every collector worth
+  naming accepts it, so this is a smaller gap than it sounds — but a setup
+  standardized on gRPC needs a collector in front, and the port is the other
+  one (4318 rather than 4317), which is the mistake everybody makes once.
+- **A trace says which tools ran, not what they were called with.** Arguments
+  are absent from tool spans even when content capture is on: they are the one
+  place a path, a URL, or a command line would end up on a dashboard with no
+  way to notice. Closing it means deciding what an argument may contain, which
+  is the same unanswerable question redaction always is.
+- **Cache and reasoning tokens are only as good as the backend's report.**
+  Anthropic reports cache reads and writes, OpenAI-compatible servers report
+  cached prompt tokens and reasoning tokens when they have them, Gemini reports
+  cached content and thoughts. Ollama reports none of it, and a compatible
+  gateway may report a subset or nothing. Absent is recorded as absent rather
+  than zero — but that means a dashboard comparing two backends is comparing
+  what each chose to say.
+- **Reasoning tokens are inside the output count, not beside it.** Every
+  backend that reports both counts reasoning within `output_tokens`, so adding
+  the two double-counts. The field is kept because it is the only way to see
+  that a turn spent its budget thinking rather than answering.
 - **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
   that renders its content client-side comes back near-empty. Closing this
   means shipping a browser engine, so it is a limit rather than a to-do.

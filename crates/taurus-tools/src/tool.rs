@@ -60,6 +60,20 @@ pub enum ToolError {
 }
 
 impl ToolError {
+    /// A stable, low-cardinality name for this kind of failure, for
+    /// `error.type` on a span. See [`taurus_provider::ProviderError::kind`].
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidInput(_) => "invalid_input",
+            Self::OutsideWorkspace { .. } => "outside_workspace",
+            Self::Denied => "denied",
+            Self::NotFound(_) => "not_found",
+            Self::Failed(_) => "failed",
+            Self::Canceled => "canceled",
+            Self::Io(_) => "io",
+        }
+    }
+
     /// Rendered back to the model as an error tool result. Phrased so the model
     /// can act on it rather than just apologize.
     pub fn to_model_message(&self) -> String {
@@ -84,7 +98,13 @@ impl ToolError {
     }
 }
 
-pub type ToolResult = Result<String, ToolError>;
+/// What a tool call produced, or why it did not.
+///
+/// The success side is a block list rather than a string because some answers
+/// are not text: a screenshot, a rendered chart, a page of a PDF. `From<String>`
+/// and `From<&str>` are implemented, so a tool with nothing but prose to return
+/// still writes `Ok("...".into())` and never thinks about blocks.
+pub type ToolResult = Result<taurus_provider::ToolOutput, ToolError>;
 
 /// Where a tool reports what it is doing before it has a result.
 ///

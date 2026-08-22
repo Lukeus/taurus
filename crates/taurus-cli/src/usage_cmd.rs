@@ -168,6 +168,12 @@ struct Report {
     /// What the provider actually billed, summed over the sessions read.
     reported_in: u32,
     reported_out: u32,
+    /// Of `reported_in`, what came from the provider's prompt cache.
+    ///
+    /// `None` until a backend reports one, and shown only then. A local Ollama
+    /// has no cache to have missed, and a line reading `0 cached` beside its
+    /// numbers would invite exactly the wrong conclusion.
+    cached_in: Option<u32>,
     /// What the transcript holds now, estimated.
     history: u32,
     by_tool: HashMap<String, ToolCost>,
@@ -181,6 +187,9 @@ impl Report {
     fn absorb(&mut self, session: &Session) {
         self.reported_in += session.usage.input_tokens;
         self.reported_out += session.usage.output_tokens;
+        if let Some(cached) = session.usage.cache_read_input_tokens {
+            *self.cached_in.get_or_insert(0) += cached;
+        }
         self.messages += session.messages.len();
 
         // Tool name and cost, keyed by the call id its result will carry.
@@ -254,6 +263,16 @@ impl Report {
             thousands(self.reported_in),
             thousands(self.reported_out)
         );
+        // Only when there was a cache to read from. The split is the difference
+        // between a bill somebody can explain and a number that just went up:
+        // a cached input token costs about a tenth of a fresh one.
+        if let Some(cached) = self.cached_in.filter(|c| *c > 0) {
+            let share = (cached as f64 / self.reported_in.max(1) as f64) * 100.0;
+            println!(
+                "  of which cached  {} ({share:.0}% of input)",
+                thousands(cached)
+            );
+        }
         println!("Transcript holds   ~{} tokens\n", thousands(self.history));
 
         if self.by_tool.is_empty() {

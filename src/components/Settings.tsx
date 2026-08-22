@@ -198,7 +198,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
         {tab === "search" && (
           <>
             <SearchTab />
-            <CodeSearch model={status?.settings.embedding_model ?? ""} />
+            <CodeSearch
+              model={status?.settings.embedding_model ?? ""}
+              provider={status?.settings.embedding_provider ?? ""}
+              rerankModel={status?.settings.rerank_model ?? ""}
+              rerankProvider={status?.settings.rerank_provider ?? ""}
+            />
           </>
         )}
 
@@ -559,16 +564,52 @@ export function SearchTab() {
  * index needs somewhere to say what to build it with, and `embedding_model` was
  * reachable only by hand-editing `~/.taurus/settings.json`.
  */
-export function CodeSearch({ model }: { model: string }) {
+export function CodeSearch({
+  model,
+  provider,
+  rerankModel,
+  rerankProvider,
+}: {
+  model: string;
+  provider: string;
+  rerankModel: string;
+  rerankProvider: string;
+}) {
   const refresh = useStore((s) => s.refresh);
   const [draft, setDraft] = useState(model);
+  const [providerDraft2, setProviderDraft2] = useState(provider);
+  const [rerankDraft, setRerankDraft] = useState(rerankModel);
+  const [providerDraft, setProviderDraft] = useState(rerankProvider);
   const [progress, setProgress] = useState<IndexProgress | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
   const building = progress !== null;
 
-  const save = async (next: string) => {
-    if (next.trim() === model.trim()) return;
-    await api.setEmbeddingModel(next);
+  // Model and provider save together, because the backend takes them together:
+  // a model with no provider embeds on whichever backend the conversation is
+  // using, and Anthropic has no embedding endpoint at all.
+  const save = async (nextModel: string, nextProvider: string) => {
+    if (
+      nextModel.trim() === model.trim() &&
+      nextProvider.trim() === provider.trim()
+    ) {
+      return;
+    }
+    await api.setEmbeddingModel(nextModel, nextProvider);
+    await refresh();
+  };
+
+  // Both fields save together, because the backend takes them together: a
+  // model with no provider reranks on whichever server the conversation is
+  // using, and for the Ollama setup most people have that is a round trip that
+  // fails on every search.
+  const saveRerank = async (nextModel: string, nextProvider: string) => {
+    if (
+      nextModel.trim() === rerankModel.trim() &&
+      nextProvider.trim() === rerankProvider.trim()
+    ) {
+      return;
+    }
+    await api.setRerank(nextModel, nextProvider);
     await refresh();
   };
 
@@ -609,9 +650,25 @@ export function CodeSearch({ model }: { model: string }) {
           placeholder="nomic-embed-text"
           disabled={building}
           onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => save(draft)}
+          onBlur={() => save(draft, providerDraft2)}
         />
       </Field>
+
+      {draft.trim() && (
+        <Field
+          label="Embedding provider"
+          hint="Which backend serves it. Leave empty to use the one this conversation is on — name another if that backend has no embedding endpoint, which is the case for Anthropic."
+        >
+          <input
+            value={providerDraft2}
+            spellCheck={false}
+            placeholder="the one this conversation is on"
+            disabled={building}
+            onChange={(e) => setProviderDraft2(e.target.value)}
+            onBlur={() => save(draft, providerDraft2)}
+          />
+        </Field>
+      )}
 
       {model.trim() && (
         <>
@@ -638,6 +695,40 @@ export function CodeSearch({ model }: { model: string }) {
             reaches for it. Building it here pays the same cost where you can
             watch it and stop it.
           </p>
+
+          <Field
+            label="Reranking model"
+            hint={
+              rerankModel.trim()
+                ? "Reads each result against your question and reorders the top thirty. Leave empty to rank by similarity alone."
+                : "Optional. A reranking model reads the question and the passage together, which is more accurate than similarity — and needs a server that serves a /rerank route, which Ollama does not."
+            }
+          >
+            <input
+              value={rerankDraft}
+              spellCheck={false}
+              placeholder="bge-reranker-v2-m3"
+              disabled={building}
+              onChange={(e) => setRerankDraft(e.target.value)}
+              onBlur={() => saveRerank(rerankDraft, providerDraft)}
+            />
+          </Field>
+
+          {rerankDraft.trim() && (
+            <Field
+              label="Reranking provider"
+              hint="Which backend serves it. Leave empty if the same server embeds and reranks — name one of your other providers if not."
+            >
+              <input
+                value={providerDraft}
+                spellCheck={false}
+                placeholder="the one that embeds"
+                disabled={building}
+                onChange={(e) => setProviderDraft(e.target.value)}
+                onBlur={() => saveRerank(rerankDraft, providerDraft)}
+              />
+            </Field>
+          )}
         </>
       )}
     </section>

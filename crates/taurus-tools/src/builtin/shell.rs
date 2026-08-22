@@ -152,7 +152,8 @@ impl Tool for RunCommand {
                         // label. Saying so keeps the model from reading its
                         // absence as the command having written nothing to it.
                         None,
-                    ));
+                    )
+                    .into());
                 }
                 // The command itself went wrong, or was canceled, or timed out.
                 // Re-running it with pipes would run it twice.
@@ -241,7 +242,7 @@ impl Tool for RunCommand {
         if let Some(reason) = no_terminal {
             report = with_no_terminal_note(&reason, &report);
         }
-        Ok(report)
+        Ok(report.into())
     }
 }
 
@@ -444,7 +445,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("tty"), "{out}");
+        assert!(out.to_text().contains("tty"), "{out}");
     }
 
     #[tokio::test]
@@ -463,7 +464,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("pipe"), "{out}");
+        assert!(out.to_text().contains("pipe"), "{out}");
     }
 
     #[tokio::test]
@@ -484,7 +485,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("got:yes"), "{out}");
+        assert!(out.to_text().contains("got:yes"), "{out}");
     }
 
     #[test]
@@ -521,8 +522,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.starts_with("Exit code 3"), "{out}");
-        assert!(out.contains("oops"), "{out}");
+        assert!(out.to_text().starts_with("Exit code 3"), "{out}");
+        assert!(out.to_text().contains("oops"), "{out}");
     }
 
     #[tokio::test]
@@ -551,7 +552,7 @@ mod tests {
             .execute(serde_json::json!({"command": "echo hello"}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("hello"));
+        assert!(out.to_text().contains("hello"));
     }
 
     #[tokio::test]
@@ -562,7 +563,7 @@ mod tests {
             .execute(serde_json::json!({"command": "ls"}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("marker.txt"));
+        assert!(out.to_text().contains("marker.txt"));
     }
 
     // `shell_invocation` runs the platform's own shell -- /bin/sh elsewhere,
@@ -588,8 +589,8 @@ mod tests {
             .execute(serde_json::json!({"command": FAILS_WITH_STDERR}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("Exit code 3"));
-        assert!(out.contains("oops"));
+        assert!(out.to_text().contains("Exit code 3"));
+        assert!(out.to_text().contains("oops"));
     }
 
     #[tokio::test]
@@ -599,7 +600,7 @@ mod tests {
             .execute(serde_json::json!({"command": "true"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(out, "(no output)");
+        assert_eq!(out.to_text(), "(no output)");
     }
 
     /// Records progress reports with the moment each one arrived.
@@ -665,7 +666,7 @@ mod tests {
         );
 
         // And the model still gets everything, in one piece.
-        assert!(out.contains("first") && out.contains("second"));
+        assert!(out.to_text().contains("first") && out.to_text().contains("second"));
     }
 
     #[tokio::test]
@@ -678,7 +679,7 @@ mod tests {
             .execute(serde_json::json!({"command": "echo hello"}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("hello"));
+        assert!(out.to_text().contains("hello"));
     }
 
     /// Reading is byte-oriented, so a build log does not end at the first byte
@@ -700,7 +701,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.contains("after"),
+            out.to_text().contains("after"),
             "reading stopped at the bad byte: {out:?}"
         );
     }
@@ -728,7 +729,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("got:"));
+        assert!(out.to_text().contains("got:"));
     }
 
     #[tokio::test]

@@ -16,9 +16,9 @@ use taurus_provider::{
 };
 use taurus_tools::{Effect, PlanBoard, ToolContext, ToolError, ToolProgress, ToolRegistry};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, Instrument};
 
-use crate::event::{truncate_for_ui, UiEvent};
+use crate::event::{truncate_for_ui, ResultImage, UiEvent};
 use crate::session::{split_for_compaction, Session};
 
 /// How long consecutive deltas of one kind are gathered before being handed on.
@@ -104,6 +104,12 @@ pub struct AgentConfig {
     /// succeeds resets the count, which is what keeps a model working through
     /// genuinely different candidates from tripping it.
     pub stall_limit: u32,
+    /// Whether a trace may carry the conversation itself, not only its shape.
+    ///
+    /// [`Capture::MetadataOnly`] by default, and that default is the feature:
+    /// turning telemetry on says how much a turn cost, not what was in it. See
+    /// [`crate::telemetry::Capture`].
+    pub capture: crate::telemetry::Capture,
     /// Whether a turn that changed files without running anything afterwards
     /// gets asked, once, to check its work before it is allowed to finish.
     ///
@@ -158,6 +164,7 @@ impl Default for AgentConfig {
             retry_backoff: Duration::from_millis(500),
             stall_limit: 3,
             verify_changes: true,
+            capture: crate::telemetry::Capture::MetadataOnly,
         }
     }
 }
@@ -177,6 +184,24 @@ pub enum AgentError {
     /// hook wrote is the whole of what there is to report.
     #[error("{0}")]
     Refused(String),
+}
+
+impl AgentError {
+    /// A stable, low-cardinality name for this kind of failure, for
+    /// `error.type` on the turn's span.
+    ///
+    /// A refused turn and a stalled one are the two worth charting: the first
+    /// is a hook doing its job, the second is a model that could not make
+    /// progress, and reading a rise in either as "errors are up" would send
+    /// somebody looking in the wrong place.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Provider(error) => error.kind(),
+            Self::IterationLimit(_) => "iteration_limit",
+            Self::Stalled(_) => "stalled",
+            Self::Refused(_) => "refused_by_hook",
+        }
+    }
 }
 
 /// The history with every image replaced by a line saying one was there.
@@ -340,7 +365,25 @@ impl Agent {
             return Err(AgentError::Refused(refusal));
         }
 
-        let outcome = self.turn(session, user_message, ui).await;
+        // Parent to every model call and tool call the turn makes — and, for
+        // free, to a delegate's, because a sub-agent runs inside the `spawn`
+        // tool's span. A nine-step turn that delegated twice reads as a tree
+        // rather than a flat list somebody reassembles by timestamp.
+        let span = crate::telemetry::turn_span(self.provider.id(), &session.model, &session.id);
+        let outcome = self
+            .turn(session, user_message, ui)
+            .instrument(span.clone())
+            .await;
+        match &outcome {
+            Ok(finished) => {
+                crate::telemetry::record_usage(&span, &finished.usage);
+                span.record(
+                    "gen_ai.response.finish_reasons",
+                    crate::telemetry::finish_reason(finished.stop_reason),
+                );
+            }
+            Err(error) => crate::telemetry::record_error(&span, error.kind()),
+        }
         // Here rather than at each `return` inside `turn`: it ends at half a
         // dozen of them — finished, canceled twice, out of iterations, stalled,
         // and any provider error — and the one that would eventually be
@@ -709,6 +752,22 @@ impl Agent {
             .unwrap_or(true);
 
         let request = self.build_request(session, vision);
+
+        // Per attempt rather than per iteration: a request that 429'd and was
+        // retried is two round trips against the backend and, on a metered
+        // provider, potentially two bills. One span covering both would be
+        // telling a story about the backend that did not happen.
+        let span = crate::telemetry::chat_span(self.provider.id(), &session.model, &session.id);
+        if self.config.capture.content() {
+            // Serialized only when asked. The messages are the workspace — the
+            // files read, the commands run, whatever was pasted in — and the
+            // cost of building this string is the smaller reason not to.
+            if let Ok(messages) = serde_json::to_string(&request.messages) {
+                span.record("gen_ai.input.messages", messages.as_str());
+            }
+        }
+        let _entered = span.enter();
+
         let (tx, mut rx) = mpsc::channel(128);
         let provider = self.provider.clone();
         let cancel = self.tools.cancel.clone();
@@ -772,15 +831,37 @@ impl Agent {
                 "stream task failed: {e}"
             )))
         });
-        let stop = joined.map_err(|error| FailedAttempt {
-            error,
-            produced_output,
-        })?;
+        let stop = match joined {
+            Ok(stop) => stop,
+            Err(error) => {
+                // By type, not by message: `error.type` is meant to be
+                // something a dashboard can group by, and the message is
+                // already on the log event beside it.
+                crate::telemetry::record_error(&span, error.kind());
+                return Err(FailedAttempt {
+                    error,
+                    produced_output,
+                });
+            }
+        };
 
         let (message, usage, malformed) = acc.finish();
         if !malformed.is_empty() {
             warn!(?malformed, "model produced unparseable tool input");
         }
+
+        span.record("gen_ai.response.model", session.model.as_str());
+        span.record(
+            "gen_ai.response.finish_reasons",
+            crate::telemetry::finish_reason(stop),
+        );
+        crate::telemetry::record_usage(&span, &usage);
+        if self.config.capture.content() {
+            if let Ok(output) = serde_json::to_string(&message) {
+                span.record("gen_ai.output.messages", output.as_str());
+            }
+        }
+
         Ok((message, usage, stop))
     }
 
@@ -980,7 +1061,7 @@ impl Agent {
         name: &str,
         input: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<String, ToolError> {
+    ) -> taurus_tools::ToolResult {
         // The prompted fallback surfaces syntax failures under this name. A
         // bare "no such tool" would send the model looking for a different
         // tool instead of fixing its formatting.
@@ -991,13 +1072,22 @@ impl Agent {
                     .into(),
             ));
         }
-        self.registry.execute(name, input, ctx).await
+        let span = crate::telemetry::tool_span(name, ctx.call_id.as_deref().unwrap_or("unknown"));
+        let result = self
+            .registry
+            .execute(name, input, ctx)
+            .instrument(span.clone())
+            .await;
+        if let Err(error) = &result {
+            crate::telemetry::record_error(&span, error.kind());
+        }
+        result
     }
 
     async fn report(
         &self,
         id: &str,
-        outcome: Result<String, ToolError>,
+        outcome: taurus_tools::ToolResult,
         ui: &mpsc::Sender<UiEvent>,
     ) -> ContentBlock {
         match outcome {
@@ -1006,7 +1096,19 @@ impl Agent {
                     .send(UiEvent::ToolCallFinished {
                         id: id.to_string(),
                         ok: true,
-                        output: truncate_for_ui(&output),
+                        output: truncate_for_ui(&output.to_text()),
+                        // Full size, not truncated: an image is not text with a
+                        // tail to cut off, and half of a PNG is not half a
+                        // picture. The size cap that keeps this bounded is
+                        // applied where the result is produced — see
+                        // `taurus_tools::registry`.
+                        images: output
+                            .images()
+                            .map(|(mime_type, data)| ResultImage {
+                                mime_type: mime_type.to_string(),
+                                data: data.to_string(),
+                            })
+                            .collect(),
                     })
                     .await;
                 ContentBlock::tool_result(id, output)
@@ -1019,6 +1121,7 @@ impl Agent {
                         id: id.to_string(),
                         ok: false,
                         output: truncate_for_ui(&message),
+                        images: Vec::new(),
                     })
                     .await;
                 ContentBlock::tool_error(id, message)

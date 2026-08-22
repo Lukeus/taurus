@@ -24,12 +24,60 @@ pub enum StopReason {
 pub struct TokenUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// Input tokens served from the provider's prompt cache, when it says.
+    ///
+    /// `None` rather than zero on a backend that has no cache, and the
+    /// difference matters: a cache that missed and a cache that does not exist
+    /// both cost full price, but only one of them is worth trying to improve.
+    /// Written as zero, a local Ollama would sit on a dashboard beside a hosted
+    /// model showing the same 0% hit rate for opposite reasons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cache_read_input_tokens: Option<u32>,
+    /// Input tokens written *into* the cache by this request, when the backend
+    /// bills them separately. Anthropic is the case; most do not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cache_creation_input_tokens: Option<u32>,
+    /// Output tokens spent on reasoning the model did not show, when reported.
+    ///
+    /// Part of `output_tokens` rather than additional to it on every backend
+    /// that reports both, so adding the two would double-count. Kept because it
+    /// is the only way to see that a turn spent its budget thinking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning_tokens: Option<u32>,
 }
 
 impl TokenUsage {
     pub fn total(&self) -> u32 {
         self.input_tokens.saturating_add(self.output_tokens)
     }
+
+    /// Adds another request's usage to this one.
+    ///
+    /// The optionals stay absent until something reports one, then accumulate
+    /// from zero — so a session that used a cached provider for one turn and a
+    /// local one for the next reports the cache reads it actually had, rather
+    /// than nothing because half the turns had nothing to say.
+    pub fn add(&mut self, other: &Self) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        accumulate(
+            &mut self.cache_read_input_tokens,
+            other.cache_read_input_tokens,
+        );
+        accumulate(
+            &mut self.cache_creation_input_tokens,
+            other.cache_creation_input_tokens,
+        );
+        accumulate(&mut self.reasoning_tokens, other.reasoning_tokens);
+    }
+}
+
+fn accumulate(total: &mut Option<u32>, reported: Option<u32>) {
+    let Some(reported) = reported else { return };
+    *total = Some(total.unwrap_or(0).saturating_add(reported));
 }
 
 /// The single stream shape every provider adapter must produce.

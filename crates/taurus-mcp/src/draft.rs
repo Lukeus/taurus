@@ -191,7 +191,7 @@ impl Tool for DraftMcpServer {
              installs it, and it connects on the next reload.\n",
         );
 
-        Ok(report)
+        Ok(report.into())
     }
 }
 
@@ -240,6 +240,7 @@ mod tests {
         .await
         .unwrap();
 
+        let report = report.to_text();
         assert!(report.contains("npx"), "{report}");
         let block = report
             .split_once("\n\n")
@@ -271,10 +272,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(report.contains("GITHUB_TOKEN"), "{report}");
-        assert!(report.contains(PLACEHOLDER), "{report}");
+        assert!(report.to_text().contains("GITHUB_TOKEN"), "{report}");
+        assert!(report.to_text().contains(PLACEHOLDER), "{report}");
         assert!(
-            report.contains("only the user has"),
+            report.to_text().contains("only the user has"),
             "the user has to be told to fill it in: {report}"
         );
     }
@@ -288,8 +289,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(report.contains("mcp.json"), "{report}");
-        assert!(report.contains("nothing was written"), "{report}");
+        assert!(report.to_text().contains("mcp.json"), "{report}");
+        assert!(report.to_text().contains("nothing was written"), "{report}");
     }
 
     #[tokio::test]
@@ -308,8 +309,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(report.contains("already configured"), "{report}");
-        assert!(report.contains("old-binary"), "{report}");
+        assert!(report.to_text().contains("already configured"), "{report}");
+        assert!(report.to_text().contains("old-binary"), "{report}");
     }
 
     #[tokio::test]

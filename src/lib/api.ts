@@ -67,6 +67,8 @@ import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
 import type { Theme } from "../bindings/Theme";
+import type { ToolOutput } from "../bindings/ToolOutput";
+import type { ToolResultBlock } from "../bindings/ToolResultBlock";
 import type { TranscriptView } from "../bindings/TranscriptView";
 import type { PendingConfig } from "../bindings/PendingConfig";
 import type { TrustStatus } from "../bindings/TrustStatus";
@@ -135,6 +137,8 @@ export type {
   Switch,
   Theme,
   PendingConfig,
+  ToolOutput,
+  ToolResultBlock,
   TranscriptView,
   TrustStatus,
   TurnChange,
@@ -492,9 +496,29 @@ export const setAgentSynthesis = (enabled: boolean) =>
 
 export const setTheme = (theme: Theme) => invoke<void>("set_theme", { theme });
 
-/** Which embedding model semantic search runs on. Empty turns it off. */
-export const setEmbeddingModel = (model: string) =>
-  invoke<void>("set_embedding_model", { model });
+/**
+ * Which embedding model semantic search runs on, and which backend serves it.
+ * An empty model turns search off; an empty provider means the one the
+ * conversation is using.
+ *
+ * Both at once because they are one decision — a model saved without a provider
+ * embeds on whichever backend the conversation is on, and Anthropic has no
+ * embedding endpoint at all.
+ */
+export const setEmbeddingModel = (model: string, provider = "") =>
+  invoke<void>("set_embedding_model", { model, provider });
+
+/**
+ * The optional second stage that reorders search results before the model
+ * reads them. An empty model turns it off; an empty provider means the one the
+ * index already embeds on.
+ *
+ * Both at once because they are one decision — a model saved without a
+ * provider would rerank on whichever backend the conversation is using, which
+ * for a local Ollama is one that cannot rerank at all.
+ */
+export const setRerank = (model: string, provider: string) =>
+  invoke<void>("set_rerank", { model, provider });
 
 /**
  * Builds this workspace's code index now, resolving to its one-line summary.

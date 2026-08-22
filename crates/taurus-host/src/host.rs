@@ -354,14 +354,32 @@ impl Host {
                 Some(id) => match self.provider(&id).await {
                     Ok(provider) => {
                         info!(model = %embedding_model, provider = %id, "semantic search enabled");
-                        registry.register(Arc::new(taurus_index::SearchCode::new(
-                            provider,
+                        let mut search = taurus_index::SearchCode::new(
+                            provider.clone(),
                             &embedding_model,
                             taurus_index::index_dir(
                                 &config::home_dir(),
                                 &crate::sessions::workspace_key(&workspace),
                             ),
-                        )));
+                        );
+                        // The second stage, when one is configured. A provider
+                        // that cannot be resolved is a problem worth reporting
+                        // but not one worth withholding the search over: the
+                        // tool works without it, and taking `search_code` away
+                        // because its optional half is misconfigured would cost
+                        // far more than the reordering was worth.
+                        match self.rerank_for(&provider).await {
+                            Ok(Some((reranker, model))) => {
+                                info!(model = %model, "reranking enabled");
+                                search = search.with_rerank(reranker, model);
+                            }
+                            Ok(None) => {}
+                            Err(message) => problems.push(Problem {
+                                source: ProblemSource::Providers,
+                                message,
+                            }),
+                        }
+                        registry.register(Arc::new(search));
                     }
                     Err(e) => problems.push(Problem {
                         source: ProblemSource::Providers,
@@ -373,6 +391,19 @@ impl Host {
                     message: "semantic search is configured but no provider is".into(),
                 }),
             }
+        } else if !self.settings.read().await.rerank_model.trim().is_empty() {
+            // Stage two of a feature whose stage one is off. Unreachable
+            // through the panel, which only offers the field once an embedding
+            // model is named, but `settings.json` is hand-edited and this is
+            // exactly the edit somebody makes on the way to turning search on.
+            // Saying nothing would leave them waiting for a reordering of
+            // results that are never produced.
+            problems.push(Problem {
+                source: ProblemSource::Providers,
+                message: "a reranking model is set but no embedding model is, so there is no \
+                          search for it to reorder. Name one under Settings → Search."
+                    .into(),
+            });
         }
 
         // Unconditional, unlike everything else registered here. It is how a
@@ -935,6 +966,15 @@ impl Host {
                 // Settings applies to the next message instead of the next
                 // launch.
                 max_iterations: self.settings.read().await.max_iterations,
+                // Same rule, and it matters more here: turning content capture
+                // off has to take effect on the next message rather than the
+                // next launch, or somebody who has just realized what they
+                // switched on cannot switch it off.
+                capture: if self.settings.read().await.otlp_capture_content {
+                    taurus_core::Capture::Content
+                } else {
+                    taurus_core::Capture::MetadataOnly
+                },
                 ..Default::default()
             },
         )
@@ -1304,29 +1344,111 @@ impl Host {
 
     /// Which provider serves the embedding model.
     ///
-    /// The one the conversation is on, falling back to the first configured:
-    /// an embedding model lives on the same server as the chat model in every
-    /// local setup, and a second provider entry naming the same machine would
-    /// be one more thing to keep in step.
+    /// What the config named, if it named one. Otherwise the one the
+    /// conversation is on, falling back to the first configured: an embedding
+    /// model lives on the same server as the chat model in every local setup,
+    /// and a second provider entry naming the same machine would be one more
+    /// thing to keep in step.
+    ///
+    /// The configured case exists because that stopped covering everything.
+    /// Anthropic has no embedding endpoint and points at Voyage instead, so
+    /// somebody chatting to Claude has to be able to index somewhere else
+    /// without switching the conversation to do it.
     ///
     /// A method rather than an expression at each of its two call sites because
     /// the first version was written twice and the copy reached for
     /// `blocking_read` inside an async fn — which tokio answers by panicking,
     /// on the one path nobody exercises: a machine with no remembered provider.
     async fn embedding_provider_id(&self) -> Option<String> {
-        if let Some(id) = self.settings.read().await.last_provider.clone() {
+        let settings = self.settings.read().await;
+        let named = settings.embedding_provider.trim();
+        if !named.is_empty() {
+            return Some(named.to_string());
+        }
+        if let Some(id) = settings.last_provider.clone() {
             return Some(id);
         }
+        drop(settings);
         self.providers.read().await.first().map(|p| p.id.clone())
     }
 
-    /// Which embedding model semantic search runs on. Empty means off.
+    /// The reranking provider and model, when both are configured.
+    ///
+    /// `Ok(None)` is the ordinary case: nothing is configured and the
+    /// similarity order stands. `Err` means something *was* configured and
+    /// could not be resolved, which is worth telling the user about — a
+    /// reranker that silently never runs is indistinguishable from one that is
+    /// running and not helping, and those two want opposite fixes.
+    ///
+    /// `embedding` is the provider the index already resolved, used when no
+    /// separate one is named. Passed in rather than looked up again so the two
+    /// cannot drift apart on a machine whose configured provider changed
+    /// between the two lookups.
+    async fn rerank_for(
+        &self,
+        embedding: &Arc<dyn taurus_provider::Provider>,
+    ) -> Result<Option<(Arc<dyn taurus_provider::Provider>, String)>, String> {
+        let settings = self.settings.read().await;
+        let model = settings.rerank_model.trim().to_string();
+        let named = settings.rerank_provider.trim().to_string();
+        drop(settings);
+
+        if model.is_empty() {
+            return Ok(None);
+        }
+        if named.is_empty() {
+            return Ok(Some((Arc::clone(embedding), model)));
+        }
+        match self.provider(&named).await {
+            Ok(provider) => Ok(Some((provider, model))),
+            Err(e) => Err(format!(
+                "reranking is configured on '{named}' but {e}. Search still works; results are \
+                 ordered by similarity alone until this resolves."
+            )),
+        }
+    }
+
+    /// Which embedding model semantic search runs on, and which backend serves
+    /// it. An empty model means off; an empty provider means the one the
+    /// conversation is on.
+    ///
+    /// Both at once because they are one decision, the same as reranking: a
+    /// model saved without a provider embeds on whichever backend the
+    /// conversation happens to be using, and for somebody chatting to Claude
+    /// that is a backend with no embedding endpoint at all.
     ///
     /// Global only. It names a model on the machine's own server, which is a
     /// property of the machine rather than of any one project.
-    pub async fn set_embedding_model(&self, model: &str) {
+    pub async fn set_embedding_model(&self, model: &str, provider: &str) {
         let model = model.trim().to_string();
-        config::edit_settings(Scope::Global, None, |s| s.embedding_model = Some(model));
+        let provider = provider.trim().to_string();
+        config::edit_settings(Scope::Global, None, |s| {
+            s.embedding_model = Some(model);
+            s.embedding_provider = Some(provider);
+        });
+        let workspace = self.workspace.read().await.clone();
+        *self.settings.write().await = config::load_settings(Some(&workspace));
+    }
+
+    /// Which reranking model reorders search results, and which provider
+    /// serves it. An empty model turns the stage off.
+    ///
+    /// Global, like the embedding model beside it and for the same reason: it
+    /// names a model on a server this machine can reach, which is a property of
+    /// the machine rather than of any project opened on it.
+    ///
+    /// Both at once because they are one decision. Saved separately, a model
+    /// with no provider yet would spend one save reranking on whichever backend
+    /// the conversation happened to be on — which for the common Ollama setup
+    /// is a backend that cannot rerank at all, and so a round trip that fails
+    /// on every search until the second field lands.
+    pub async fn set_rerank(&self, model: &str, provider: &str) {
+        let model = model.trim().to_string();
+        let provider = provider.trim().to_string();
+        config::edit_settings(Scope::Global, None, |s| {
+            s.rerank_model = Some(model);
+            s.rerank_provider = Some(provider);
+        });
         let workspace = self.workspace.read().await.clone();
         *self.settings.write().await = config::load_settings(Some(&workspace));
     }
@@ -3823,7 +3945,7 @@ Say hello.",
             )
             .await
             .expect("a skill's own reference file must be readable");
-        assert!(read.contains("the reference text"));
+        assert!(read.to_text().contains("the reference text"));
 
         // The allowance is for reading. Nothing about it lets the agent write
         // to a directory another client owns.

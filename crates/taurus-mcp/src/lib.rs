@@ -459,39 +459,95 @@ impl Tool for McpTool {
             ))
         })?;
 
-        let text = render(&result);
+        let blocks = render(&result);
         // MCP reports tool-level failure in-band; surface it as an error result
-        // so the model can react rather than treating it as success.
+        // so the model can react rather than treating it as success. An error
+        // is flattened to text on the way out: what a failed call has to say is
+        // something to read.
         if result.is_error.unwrap_or(false) {
-            return Err(ToolError::Failed(text));
+            return Err(ToolError::Failed(blocks.to_text().into_owned()));
         }
-        Ok(if text.trim().is_empty() {
-            "(no output)".into()
-        } else {
-            text
-        })
+        Ok(blocks)
     }
 }
 
-/// Flattens MCP's content blocks into text for the model.
-fn render(result: &rmcp::model::CallToolResult) -> String {
-    let mut out = Vec::new();
+/// MCP's content blocks as this harness's own.
+///
+/// An image crosses as an image. It used to become the literal words
+/// `[image: image/png]`, which is what a server that screenshots a page, renders
+/// a diagram, or rasterizes a PDF page had its whole answer reduced to — the
+/// normalized types could not express a picture inside a tool result, so there
+/// was nowhere for it to go.
+///
+/// The rest still become text, and each says what it was rather than vanishing.
+/// A model told `[audio: audio/wav]` knows the tool worked and that it cannot
+/// listen to the answer; one told nothing concludes the tool is broken.
+fn render(result: &rmcp::model::CallToolResult) -> taurus_provider::ToolOutput {
+    use taurus_provider::ToolResultBlock;
+
+    let mut out: Vec<ToolResultBlock> = Vec::new();
     for item in &result.content {
         match item {
-            ContentBlock::Text(text) => out.push(text.text.clone()),
-            ContentBlock::Image(image) => out.push(format!("[image: {}]", image.mime_type)),
-            ContentBlock::Audio(audio) => out.push(format!("[audio: {}]", audio.mime_type)),
+            ContentBlock::Text(text) => out.push(ToolResultBlock::text(text.text.clone())),
+            ContentBlock::Image(image) => {
+                // Checked rather than trusted. A server's declared mime type is
+                // as good a guess as a file extension, and an image rejected
+                // here costs a sentence while one rejected by the provider
+                // costs a round trip and comes back naming a field.
+                match taurus_provider::image::check(&image.mime_type, &image.data) {
+                    Ok(_) => out.push(ToolResultBlock::image(
+                        image.mime_type.clone(),
+                        image.data.clone(),
+                    )),
+                    Err(rejected) => out.push(ToolResultBlock::text(format!(
+                        "[an image this harness cannot pass on: {}]",
+                        describe(rejected)
+                    ))),
+                }
+            }
+            ContentBlock::Audio(audio) => {
+                out.push(ToolResultBlock::text(format!(
+                    "[audio: {}, which no model here can listen to]",
+                    audio.mime_type
+                )));
+            }
             // Resources and links carry a URI the model can ask about; the
             // payload itself is usually too large to inline.
-            ContentBlock::Resource(_) => out.push("[embedded resource]".into()),
-            ContentBlock::ResourceLink(link) => out.push(format!("[resource: {}]", link.uri)),
+            ContentBlock::Resource(_) => out.push(ToolResultBlock::text("[embedded resource]")),
+            ContentBlock::ResourceLink(link) => {
+                out.push(ToolResultBlock::text(format!("[resource: {}]", link.uri)));
+            }
             // The content set grows with the protocol; an unknown block is
             // reported rather than dropped so the model is not left guessing
             // why a tool returned nothing.
-            _ => out.push("[unsupported content block]".into()),
+            _ => out.push(ToolResultBlock::text("[unsupported content block]")),
         }
     }
-    out.join("\n")
+
+    // A server that answered with no content at all said something — that the
+    // call worked and produced nothing — and the model has to be able to tell
+    // that apart from a tool that hung.
+    taurus_provider::ToolOutput::blocks(out)
+        .unwrap_or_else(|_| taurus_provider::ToolOutput::text("(no output)"))
+}
+
+/// Why an image from a server could not be passed on, in words a model can act
+/// on: it is the one that has to decide whether to call the tool differently.
+fn describe(rejected: taurus_provider::image::Rejected) -> String {
+    use taurus_provider::image::Rejected;
+    match rejected {
+        Rejected::UnknownFormat => "the format is not one of PNG, JPEG, WebP, or GIF".to_string(),
+        Rejected::NotBase64 => "the data is not valid base64".to_string(),
+        Rejected::Empty => "it is empty".to_string(),
+        Rejected::TooLarge { bytes } => format!(
+            "it is {:.1} MB, past the {} MB limit",
+            bytes as f64 / (1024.0 * 1024.0),
+            taurus_provider::image::MAX_IMAGE_BYTES / (1024 * 1024)
+        ),
+        Rejected::Mismatch { actual } => {
+            format!("it is declared as one type but the bytes are {actual}")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -764,5 +820,69 @@ mod tests {
         assert!(is_mcp_tool(&namespaced("github", "create_issue")));
         assert!(!is_mcp_tool("read_file"));
         assert!(!is_mcp_tool(DRAFT_MCP_TOOL));
+    }
+
+    /// Builds a `CallToolResult` the way a server would.
+    fn result(content: Vec<ContentBlock>) -> rmcp::model::CallToolResult {
+        let mut result = rmcp::model::CallToolResult::success(content);
+        result.is_error = Some(false);
+        result
+    }
+
+    fn png() -> String {
+        use base64::Engine;
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        bytes.extend_from_slice(b"and then some pixels");
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn a_screenshot_from_a_server_crosses_as_a_picture() {
+        // The gap this whole change exists to close. A server that screenshots
+        // a page used to have its entire answer reduced to the eight characters
+        // `[image: image/png]`, because there was nowhere for a picture to go.
+        let data = png();
+        let out = render(&result(vec![
+            ContentBlock::text("here is the page"),
+            ContentBlock::image(data.clone(), "image/png"),
+        ]));
+
+        assert_eq!(out.as_slice().len(), 2);
+        assert_eq!(
+            out.images().collect::<Vec<_>>(),
+            vec![("image/png", data.as_str())]
+        );
+    }
+
+    #[test]
+    fn an_image_the_harness_cannot_send_says_why_instead_of_vanishing() {
+        // A server's declared type is as good a guess as a file extension. The
+        // block is replaced rather than dropped: a tool whose only answer
+        // disappeared reads as a tool that did not work.
+        let out = render(&result(vec![ContentBlock::image(
+            "not base64 at all!",
+            "image/png",
+        )]));
+
+        assert!(!out.has_images());
+        let text = out.to_text();
+        assert!(text.contains("cannot pass on"), "{text}");
+        assert!(text.contains("base64"), "{text}");
+    }
+
+    #[test]
+    fn what_cannot_be_carried_still_says_what_it_was() {
+        // A model told `[audio: audio/wav]` knows the call worked and that it
+        // cannot listen to the answer. One told nothing concludes it is broken.
+        let out = render(&result(vec![ContentBlock::audio("AAAA", "audio/wav")]));
+        let text = out.to_text();
+        assert!(text.contains("audio/wav"), "{text}");
+    }
+
+    #[test]
+    fn a_server_that_answered_with_nothing_says_so() {
+        // Distinguishable from a call that hung, which is the point.
+        let out = render(&result(Vec::new()));
+        assert_eq!(out.as_text(), Some("(no output)"));
     }
 }

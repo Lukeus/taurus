@@ -342,7 +342,8 @@ impl taurus_tools::Tool for Remember {
             "Noted. The next conversation in this workspace will be told this before it starts. \
              {} kept for this workspace.",
             crate::memory::count(notes.len())
-        ))
+        )
+        .into())
     }
 }
 
@@ -602,7 +603,7 @@ mod tests {
                 .await
                 .expect("the note lands");
 
-            assert!(said.contains("next conversation"), "{said}");
+            assert!(said.to_text().contains("next conversation"), "{said}");
             assert_eq!(
                 load(&workspace())[0].text,
                 "the migration is staged, not live"

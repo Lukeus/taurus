@@ -82,7 +82,7 @@ impl Tool for LoadSkill {
 
         // No arguments: a tool call carries its request in the conversation
         // already, unlike a slash command where the user's line is the input.
-        Ok(skill.render(""))
+        Ok(skill.render("").into())
     }
 }
 
@@ -276,9 +276,9 @@ impl Tool for RunSkillScript {
         }
 
         Ok(match status.code() {
-            Some(0) => report,
-            Some(code) => format!("Exit code {code}\n{report}"),
-            None => format!("Killed by signal\n{report}"),
+            Some(0) => report.into(),
+            Some(code) => format!("Exit code {code}\n{report}").into(),
+            None => format!("Killed by signal\n{report}").into(),
         })
     }
 }
@@ -408,7 +408,8 @@ impl Tool for ProposeSkill {
         Ok(format!(
             "Proposed skill '{name}'. It is queued for the user to review; it becomes available \
              once they approve it. Carry on with the current task."
-        ))
+        )
+        .into())
     }
 }
 
@@ -485,8 +486,8 @@ mod tests {
             .execute(serde_json::json!({"name": "alpha"}), &f.ctx)
             .await
             .unwrap();
-        assert!(out.contains("Procedure for alpha."));
-        assert!(out.contains("# Skill: alpha"));
+        assert!(out.to_text().contains("Procedure for alpha."));
+        assert!(out.to_text().contains("# Skill: alpha"));
     }
 
     #[tokio::test]
@@ -510,12 +511,12 @@ mod tests {
         // workspace, and a skill under the home directory is not there.
         let expected = refs.join("REFERENCE.md");
         assert!(
-            out.contains(&expected.display().to_string()),
+            out.to_text().contains(&expected.display().to_string()),
             "expected {} in:\n{out}",
             expected.display()
         );
         assert!(
-            !out.contains("the whole reference text"),
+            !out.to_text().contains("the whole reference text"),
             "a reference file must cost nothing until it is asked for"
         );
     }
@@ -553,8 +554,8 @@ mod tests {
             .execute(serde_json::json!({"name": "needs-tooling"}), &f.ctx)
             .await
             .unwrap();
-        assert!(out.contains("cannot run on this machine"));
-        assert!(out.contains("Follow the written steps"));
+        assert!(out.to_text().contains("cannot run on this machine"));
+        assert!(out.to_text().contains("Follow the written steps"));
     }
 
     #[tokio::test]
@@ -577,7 +578,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("hi there"));
+        assert!(out.to_text().contains("hi there"));
     }
 
     #[tokio::test]
@@ -608,7 +609,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("from a subdirectory"), "{out}");
+        assert!(out.to_text().contains("from a subdirectory"), "{out}");
     }
 
     #[tokio::test]
@@ -632,7 +633,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("bundled data"));
+        assert!(out.to_text().contains("bundled data"));
     }
 
     #[tokio::test]
@@ -651,7 +652,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("marker.txt"));
+        assert!(out.to_text().contains("marker.txt"));
     }
 
     #[tokio::test]
@@ -706,7 +707,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.contains("queued"));
+        assert!(out.to_text().contains("queued"));
         let queued = sink.proposals.lock().await;
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].name, "release-notes");

@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use serde_json::{json, Map, Value};
-use taurus_provider::{ChatRequest, ContentBlock, Role, ToolDef};
+use taurus_provider::{relocated_note, ChatRequest, ContentBlock, Role, ToolDef};
 
 /// The one `tools` entry, holding every declaration.
 pub fn tools_to_wire(tools: &[ToolDef]) -> Vec<Value> {
@@ -395,6 +395,12 @@ fn part_list(message: &taurus_provider::Message, names: &HashMap<&str, &str>) ->
                     .get(tool_use_id.as_str())
                     .copied()
                     .unwrap_or(tool_use_id);
+                // A `functionResponse` carries JSON, not blocks, so a
+                // picture a tool handed back cannot ride inside it. Unlike
+                // OpenAI and Ollama it does not need a message of its own
+                // either: this API takes mixed parts, so the image follows the
+                // response in the same user content.
+                let (body, relocated) = content.split_relocating_images();
                 parts.push(json!({
                     "functionResponse": {
                         "id": tool_use_id,
@@ -402,12 +408,22 @@ fn part_list(message: &taurus_provider::Message, names: &HashMap<&str, &str>) ->
                         // Always an object: this API rejects a bare string
                         // here, and the error does not say that is why.
                         "response": if *is_error {
-                            json!({ "error": content })
+                            json!({ "error": body })
                         } else {
-                            json!({ "output": content })
+                            json!({ "output": body })
                         },
                     }
                 }));
+                if !relocated.is_empty() {
+                    parts.push(json!({
+                        "text": relocated_note(Some(name), relocated.len())
+                    }));
+                    for (mime_type, data) in relocated {
+                        parts.push(json!({
+                            "inlineData": { "mimeType": mime_type, "data": data }
+                        }));
+                    }
+                }
             }
 
             ContentBlock::Image { mime_type, data } => parts.push(json!({
@@ -874,5 +890,54 @@ mod tests {
         let wire = contents_to_wire(&request);
         assert_eq!(wire[0]["parts"][0]["inlineData"]["mimeType"], "image/png");
         assert_eq!(wire[0]["parts"][0]["inlineData"]["data"], "AAAA");
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use taurus_provider::{ChatRequest, ContentBlock, Message, Role};
+
+    #[test]
+    fn a_tool_image_follows_its_response_in_the_same_content() {
+        // A `functionResponse` carries JSON, so the picture cannot ride inside
+        // it — but unlike OpenAI and Ollama this API takes mixed parts, so it
+        // does not need a message of its own either.
+        let output = taurus_provider::ToolOutput::blocks(vec![
+            taurus_provider::ToolResultBlock::text("the chart"),
+            taurus_provider::ToolResultBlock::image("image/png", "aGk="),
+        ])
+        .expect("two blocks");
+        let request = ChatRequest::new(
+            "gemini",
+            vec![
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use("t1", "draw", serde_json::json!({}))],
+                ),
+                Message::new(Role::User, vec![ContentBlock::tool_result("t1", output)]),
+            ],
+        );
+
+        let wire = contents_to_wire(&request);
+        let parts = wire
+            .iter()
+            .flat_map(|c| c["parts"].as_array().cloned().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        let response = parts
+            .iter()
+            .position(|p| p.get("functionResponse").is_some())
+            .expect("a function response");
+        assert!(parts[response]["functionResponse"]["response"]["output"]
+            .as_str()
+            .unwrap()
+            .contains("[image 1"));
+        assert!(parts[response + 1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("draw"));
+        assert_eq!(parts[response + 2]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(parts[response + 2]["inlineData"]["data"], "aGk=");
     }
 }

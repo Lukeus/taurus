@@ -109,13 +109,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("ok: NOTES.md is unchanged — the scope held");
     }
-    if report.contains(SPAWN_TOOL) {
+    if report.to_text().contains(SPAWN_TOOL) {
         println!("FAILED: the child reached the spawn tool");
     } else {
         println!("ok: the child did not delegate further");
     }
     for forbidden in ["write_file", "edit_file", "run_command"] {
-        if report.contains(forbidden) {
+        if report.to_text().contains(forbidden) {
             println!("FAILED: the child used {forbidden}, which is outside its list");
         }
     }

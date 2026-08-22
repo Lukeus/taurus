@@ -100,7 +100,7 @@ impl Tool for ReadFile {
 
         let text = String::from_utf8_lossy(slice);
         if text.is_empty() {
-            return Ok(format!("{} is empty.", ctx.display(&path)));
+            return Ok(format!("{} is empty.", ctx.display(&path)).into());
         }
 
         let lines: Vec<&str> = text.lines().collect();
@@ -146,7 +146,7 @@ impl Tool for ReadFile {
         if truncated || start > 0 || end < lines.len() {
             out.push_str(&range_note(start + 1, end, lines.len(), truncated));
         }
-        Ok(out)
+        Ok(out.into())
     }
 }
 
@@ -252,7 +252,7 @@ impl Tool for WriteFile {
         tokio::fs::write(&path, content)
             .await
             .map_err(|e| ToolError::Failed(format!("cannot write {}: {e}", ctx.display(&path))))?;
-        Ok(format!("Wrote {bytes} bytes to {}", ctx.display(&path)))
+        Ok(format!("Wrote {bytes} bytes to {}", ctx.display(&path)).into())
     }
 }
 
@@ -333,8 +333,8 @@ impl Tool for EditFile {
             .await
             .map_err(|e| ToolError::Failed(format!("cannot write {display}: {e}")))?;
         Ok(match count {
-            1 => format!("Edited {display}"),
-            n => format!("Edited {display} ({n} replacements)"),
+            1 => format!("Edited {display}").into(),
+            n => format!("Edited {display} ({n} replacements)").into(),
         })
     }
 }
@@ -441,7 +441,7 @@ impl Tool for ListDir {
         }
 
         if rows.is_empty() {
-            return Ok(format!("{} is empty.", ctx.display(&path)));
+            return Ok(format!("{} is empty.", ctx.display(&path)).into());
         }
         // Directories first, then alphabetical, so the listing reads the same
         // on every platform regardless of readdir order.
@@ -449,7 +449,7 @@ impl Tool for ListDir {
             let key = |s: &String| (!s.ends_with('/'), s.to_lowercase());
             key(a).cmp(&key(b))
         });
-        Ok(rows.join("\n"))
+        Ok(rows.join("\n").into())
     }
 }
 
@@ -559,8 +559,8 @@ mod tests {
             .execute(serde_json::json!({"path": "a.txt"}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("    1\tone"));
-        assert!(out.contains("    2\ttwo"));
+        assert!(out.to_text().contains("    1\tone"));
+        assert!(out.to_text().contains("    2\ttwo"));
     }
 
     /// A file of `n` numbered lines, for exercising windowed reads.
@@ -577,8 +577,8 @@ mod tests {
             .execute(serde_json::json!({"path": "a.txt"}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains("    3\tline 3"));
-        assert!(!out.contains("showing lines"), "{out}");
+        assert!(out.to_text().contains("    3\tline 3"));
+        assert!(!out.to_text().contains("showing lines"), "{out}");
     }
 
     #[tokio::test]
@@ -589,13 +589,15 @@ mod tests {
             .execute(serde_json::json!({"path": "big.txt"}), &ctx)
             .await
             .unwrap();
-        assert!(out.contains(&format!(
+        assert!(out.to_text().contains(&format!(
             "{:>5}\tline {}",
             DEFAULT_READ_LINES, DEFAULT_READ_LINES
         )));
-        assert!(!out.contains(&format!("line {}", DEFAULT_READ_LINES + 1)));
+        assert!(!out
+            .to_text()
+            .contains(&format!("line {}", DEFAULT_READ_LINES + 1)));
         assert!(
-            out.contains(&format!(
+            out.to_text().contains(&format!(
                 "read again with offset {}",
                 DEFAULT_READ_LINES + 1
             )),
@@ -614,10 +616,13 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("   40\tline 40"), "{out}");
-        assert!(out.contains("   41\tline 41"), "{out}");
-        assert!(!out.contains("line 42"), "{out}");
-        assert!(out.contains("showing lines 40-41 of 100"), "{out}");
+        assert!(out.to_text().contains("   40\tline 40"), "{out}");
+        assert!(out.to_text().contains("   41\tline 41"), "{out}");
+        assert!(!out.to_text().contains("line 42"), "{out}");
+        assert!(
+            out.to_text().contains("showing lines 40-41 of 100"),
+            "{out}"
+        );
     }
 
     #[tokio::test]
@@ -631,8 +636,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.contains("showing lines 9-10 of 10"), "{out}");
-        assert!(!out.contains("read again"), "{out}");
+        assert!(out.to_text().contains("showing lines 9-10 of 10"), "{out}");
+        assert!(!out.to_text().contains("read again"), "{out}");
     }
 
     #[tokio::test]
@@ -803,6 +808,7 @@ mod tests {
         std::fs::write(dir.path().join("b.txt"), "").unwrap();
         std::fs::create_dir(dir.path().join("a_dir")).unwrap();
         let out = ListDir.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let out = out.to_text();
         let lines: Vec<_> = out.lines().collect();
         assert_eq!(lines[0], "a_dir/");
         assert!(lines.contains(&"b.txt"));

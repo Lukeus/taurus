@@ -105,7 +105,7 @@ impl Tool for WebSearch {
         }
 
         let results = self.parse(&body)?;
-        Ok(render(query, &results, count))
+        Ok(render(query, &results, count).into())
     }
 }
 
