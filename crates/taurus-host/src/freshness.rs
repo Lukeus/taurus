@@ -54,6 +54,11 @@ enum Watched {
         suffix: String,
         recursive: bool,
     },
+    /// One level down and no further — see [`Freshness::of_child_dirs`].
+    ChildDirs {
+        root: PathBuf,
+        suffix: String,
+    },
 }
 
 /// What one file looked like, or `None` for one that was not there.
@@ -101,6 +106,31 @@ impl Freshness {
         )
     }
 
+    /// Every `suffix` file sitting directly inside a child of each directory.
+    ///
+    /// The shape a skill library has: a source directory holds one folder per
+    /// skill, and the file that makes a folder a skill is the `SKILL.md`
+    /// immediately inside it. Neither of the two above fits — the flat form
+    /// finds nothing, because no `SKILL.md` sits at the root, and the recursive
+    /// form walks every `scripts/`, `references/` and `assets/` directory of
+    /// every skill installed, on every message, to look for a file that is
+    /// never in one.
+    ///
+    /// So this reads exactly what the scan it guards reads: the roots' children,
+    /// one level, no deeper. A skill added, removed, or renamed changes the set
+    /// of paths; a skill *edited* changes its stamp. Neither needs the tree
+    /// underneath to be walked at all.
+    pub fn of_child_dirs<'a>(dirs: impl IntoIterator<Item = &'a Path>, suffix: &str) -> Self {
+        Self::of(
+            dirs.into_iter()
+                .map(|root| Watched::ChildDirs {
+                    root: root.to_path_buf(),
+                    suffix: suffix.to_string(),
+                })
+                .collect(),
+        )
+    }
+
     /// Both fingerprints as one.
     ///
     /// Config is rarely all of one shape: a brief is six named files plus
@@ -142,19 +172,37 @@ impl Watched {
             } => {
                 let mut found = Vec::new();
                 collect(root, suffix, *recursive, &mut found);
-                // A directory listing's order is the filesystem's business, and
-                // two reads of an unchanged directory have to compare equal.
-                found.sort();
-                found
-                    .into_iter()
-                    .map(|path| {
-                        let stamp = stat(&path);
-                        (path, stamp)
-                    })
-                    .collect()
+                stamped(found)
+            }
+            Self::ChildDirs { root, suffix } => {
+                let mut found = Vec::new();
+                if let Ok(entries) = std::fs::read_dir(root) {
+                    for entry in entries.flatten() {
+                        let child = entry.path();
+                        if child.is_dir() {
+                            collect(&child, suffix, false, &mut found);
+                        }
+                    }
+                }
+                stamped(found)
             }
         }
     }
+}
+
+/// A set of paths as the sorted, stat-ed pairs a fingerprint is made of.
+///
+/// The sort is not cosmetic: a directory listing's order is the filesystem's
+/// business, and two reads of an unchanged directory have to compare equal.
+fn stamped(mut found: Vec<PathBuf>) -> Vec<(PathBuf, Stat)> {
+    found.sort();
+    found
+        .into_iter()
+        .map(|path| {
+            let stamp = stat(&path);
+            (path, stamp)
+        })
+        .collect()
 }
 
 /// Every matching file under `root`, which may not be there at all.
@@ -333,4 +381,67 @@ mod tests {
             Freshness::of_dirs([agents.as_path()], ".md", false)
         );
     }
+    #[test]
+    fn a_skill_library_notices_a_folder_appearing_one_level_down() {
+        // The layout every skill library uses: a source directory of folders,
+        // each holding the file that makes it a skill. Neither of the other
+        // two shapes sees it — flat looks only at the root, recursive walks
+        // every asset directory of every skill to find it.
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("skills");
+        std::fs::create_dir_all(&root).unwrap();
+        let before = Freshness::of_child_dirs([root.as_path()], "SKILL.md");
+
+        write(&root, "summarize/SKILL.md", "---\nname: summarize\n---\n");
+
+        assert_ne!(before, before.refreshed(), "a new skill was not noticed");
+    }
+
+    #[test]
+    fn an_edited_skill_is_noticed_and_a_rewritten_asset_is_not() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("skills");
+        write(&root, "summarize/SKILL.md", "---\nname: summarize\n---\n");
+        write(&root, "summarize/scripts/run.py", "print(1)\n");
+        let before = Freshness::of_child_dirs([root.as_path()], "SKILL.md");
+
+        // What the scan behind this fingerprint actually reads.
+        write(&root, "summarize/SKILL.md", "---\nname: summarize\ndescription: x\n---\n");
+        assert_ne!(before, before.refreshed(), "an edited SKILL.md was not noticed");
+
+        // And what it does not: a script is read when it is run, not when the
+        // catalog is built, so a fingerprint that moved on this would rescan
+        // every skill in the library for nothing.
+        let after = Freshness::of_child_dirs([root.as_path()], "SKILL.md");
+        write(&root, "summarize/scripts/run.py", "print(1); print(2)\n");
+        assert_eq!(after, after.refreshed(), "an edited script forced a rescan");
+    }
+
+    #[test]
+    fn a_removed_skill_is_noticed() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("skills");
+        write(&root, "doomed/SKILL.md", "---\nname: doomed\n---\n");
+        let before = Freshness::of_child_dirs([root.as_path()], "SKILL.md");
+
+        std::fs::remove_dir_all(root.join("doomed")).unwrap();
+
+        assert_ne!(before, before.refreshed(), "a deleted skill was not noticed");
+    }
+
+    #[test]
+    fn a_skill_directory_that_does_not_exist_yet_is_still_watched() {
+        // `.taurus/skills` is created by the first person to write a skill into
+        // it. A fingerprint that could only watch directories already there
+        // would never notice that first one.
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("never-created-yet");
+        let before = Freshness::of_child_dirs([root.as_path()], "SKILL.md");
+        assert_eq!(before, before.refreshed());
+
+        write(&root, "first/SKILL.md", "---\nname: first\n---\n");
+
+        assert_ne!(before, before.refreshed());
+    }
+
 }

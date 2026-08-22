@@ -1241,6 +1241,13 @@ pub async fn revoke_permission_rule(
 
 #[tauri::command]
 pub async fn list_skills(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<SkillSummary>> {
+    // Rescanned first, the same as `list_agents`: the whole authoring surface
+    // for a skill is a text editor and a folder, so a drawer showing the
+    // catalog as it was at startup is not showing the feature working.
+    state.host.rescan_skills().await;
+    // The rail carries the count beside the drawer that lists them, and the two
+    // disagreeing is worse than either being slightly late.
+    emit_status(&state).await;
     Ok(state.host.skills().await)
 }
 
@@ -1280,6 +1287,9 @@ pub async fn list_commands(
 #[tauri::command]
 pub async fn list_agents(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<AgentSummary>> {
     state.host.rescan_agents().await;
+    // Same reason the skills listing does it: the rail's count and the drawer's
+    // list are two views of one scan and must not disagree.
+    emit_status(&state).await;
     Ok(state.host.agents().await)
 }
 
@@ -1850,6 +1860,27 @@ pub async fn reload_config(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
     Ok(())
 }
 
+/// Re-reads the files a person edits in an editor: instructions, skills,
+/// sub-agents, hooks.
+///
+/// What returning to the window calls. These are the four things somebody
+/// writes in another application and then expects to find here, and coming back
+/// from that application is the closest thing to an event their arrival has —
+/// nothing watches those directories, deliberately.
+///
+/// The same gate a turn uses, so this is a `stat` per file when nothing moved
+/// rather than a rescan on every alt-tab. Much narrower than [`reload_config`]
+/// either way: that one also re-reads both provider layers and reconnects every
+/// MCP server.
+///
+/// Refuses nothing, but the caller is expected not to ask mid-turn — see
+/// `Host::refresh_config`.
+#[tauri::command]
+pub async fn rescan_library(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
+    state.host.refresh_config().await;
+    emit_status(&state).await;
+    Ok(())
+}
 
 #[tauri::command]
 pub async fn list_checkpoints(

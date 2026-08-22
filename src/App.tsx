@@ -232,11 +232,19 @@ export default function App() {
    * at.
    */
   const refresh = store.refresh;
+  const busy = store.busy;
   useEffect(() => {
-    const ask = () => void refresh();
+    const ask = () => {
+      void refresh();
+      // The other thing that changed while the window was not looked at: a
+      // skill or an agent written in an editor. Skipped mid-turn, because a
+      // turn runs against the catalog and roster it started with — and the
+      // turn about to finish refreshes them itself.
+      if (!busy) void api.rescanLibrary().catch(() => {});
+    };
     window.addEventListener("focus", ask);
     return () => window.removeEventListener("focus", ask);
-  }, [refresh]);
+  }, [refresh, busy]);
 
   // Settings are the authority; main.tsx only guessed from the last run. Also
   // where following the OS is honoured — while the preference is `system`, a
@@ -346,6 +354,18 @@ export default function App() {
 
   // The listing entry rather than the session: a title is a fact about the
   // transcript, and a conversation with no entry has none of either yet.
+  /*
+   * How many skills and agents there are, as one value to notice moving.
+   *
+   * The `/` menu is a snapshot of the last scan, and this is what tells it the
+   * scan has been redone: a rescan that found something new emits a status with
+   * a different count, and the composer re-reads the namespace off the back of
+   * it. Counting rather than comparing the lists themselves because the counts
+   * are already on screen — the rail draws both — and a menu that refreshed on
+   * an unchanged catalog would refetch on every status.
+   */
+  const library = `${store.status?.skill_count ?? 0}:${store.status?.agent_count ?? 0}`;
+
   const listed = store.sessions.find((s) => s.id === store.session?.id);
   const title = listed?.title || "New conversation";
 
@@ -544,6 +564,7 @@ export default function App() {
           vision={store.session?.vision ?? false}
           workspace={workspace}
           onPickWorkspace={pickWorkspace}
+          library={library}
           onSend={store.send}
           onStop={store.stop}
         />
@@ -824,6 +845,7 @@ function Composer({
   ready,
   vision,
   workspace,
+  library,
   onPickWorkspace,
   onSend,
   onStop,
@@ -841,6 +863,14 @@ function Composer({
    */
   vision: boolean;
   workspace: string | null;
+  /**
+   * A signature of how many skills and agents there are.
+   *
+   * Not shown. It is what the `/` namespace re-reads on: the list below is the
+   * last scan the backend did, and this changing is the only signal that it did
+   * another one. See where `App` builds it.
+   */
+  library: string;
   onPickWorkspace: () => void;
   onSend: (text: string, images: Attachment[]) => void;
   onStop: () => void;
@@ -872,12 +902,13 @@ function Composer({
     setAttachError(errors.length > 0 ? errors.join(" ") : null);
   };
 
-  // Fetched once the composer is usable, and again whenever a workspace change
-  // could have brought a different library with it.
+  // Fetched once the composer is usable, again whenever a workspace change
+  // could have brought a different library with it, and again whenever a rescan
+  // found a different number of things to offer.
   useEffect(() => {
     if (!ready) return;
     api.listCommands().then(setCommands).catch(() => setCommands([]));
-  }, [ready, workspace]);
+  }, [ready, workspace, library]);
 
   const query = commandQuery(text);
   const shown = query === null ? [] : matches(commands, query);

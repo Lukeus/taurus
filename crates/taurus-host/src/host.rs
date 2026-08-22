@@ -135,6 +135,20 @@ pub struct Host {
     /// reach the OS keychain, so learning that nothing moved has to be cheaper
     /// than that by a wide margin.
     agents_seen: RwLock<Freshness>,
+    /// What the held skill catalog was scanned from.
+    ///
+    /// The same bargain as the roster above: discovery parses a `SKILL.md` for
+    /// every skill installed and validates each one's frontmatter, so a turn
+    /// asks a `stat` per skill whether that work would produce anything
+    /// different. Without this a skill written into `.taurus/skills` was
+    /// invisible until the app was restarted — the one piece of config that
+    /// still worked that way after agents and instructions stopped.
+    skills_seen: RwLock<Freshness>,
+    /// The same, for the two hook files. Cheapest of the three to check and to
+    /// re-read, and the promise it keeps is the one the hooks documentation
+    /// already made: a hook edited in an editor takes effect on the next
+    /// message rather than the next launch.
+    hooks_seen: RwLock<Freshness>,
     /// Shared rather than owned so sub-agents can be handed the same registry:
     /// it has no spawn tool, which is what caps delegation depth.
     registry: Arc<RwLock<ToolRegistry>>,
@@ -193,6 +207,8 @@ impl Host {
             agents: Arc::new(RwLock::new(AgentCatalog::default())),
             agent_models: RwLock::new(ModelOverrides::new()),
             agents_seen: RwLock::new(Freshness::default()),
+            skills_seen: RwLock::new(Freshness::default()),
+            hooks_seen: RwLock::new(Freshness::default()),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             hooks: RwLock::new(Arc::new(taurus_hooks::HookRunner::default())),
             permissions: RwLock::new(permissions),
@@ -257,25 +273,11 @@ impl Host {
         *self.providers.write().await = providers;
         *self.settings.write().await = config::load_settings(Some(&workspace));
 
-        let sources = config::skill_sources(Some(&workspace));
-        let (catalog, skill_problems) = SkillCatalog::discover(&sources);
-        info!(
-            skills = catalog.len(),
-            problems = skill_problems.len(),
-            "skills loaded"
-        );
-        problems.extend(Problem::tag(
-            ProblemSource::Skills,
-            skill_problems.iter().map(|p| p.to_string()),
-        ));
-        *self.catalog.write().await = catalog;
-
-        // Re-read on every reload, like every other layered file. A hook edited
-        // in an editor takes effect on the next message rather than the next
-        // launch, which is the same promise skills and agents make.
-        let (hooks, hook_problems) = config::load_hooks(Some(&workspace));
-        problems.extend(Problem::tag(ProblemSource::Hooks, hook_problems));
-        *self.hooks.write().await = Arc::new(hooks);
+        // Through the same two loaders a turn calls, so a reload and a turn
+        // cannot come to disagree about what is installed — and so that both
+        // record the fingerprint the turn will check against.
+        problems.extend(self.load_skills(&workspace).await);
+        problems.extend(self.load_hooks(&workspace).await);
 
         // Re-read on every reload for the reason providers are: these files
         // belong to the workspace, and a switch changes which of them exist.
@@ -486,6 +488,69 @@ impl Host {
         Problem::tag(ProblemSource::Instructions, loaded.problems)
     }
 
+    /// Scans every skill directory and installs what it finds.
+    ///
+    /// The catalog is shared rather than owned — the `load_skill`,
+    /// `run_skill_script` and `propose_skill` tools all hold the same handle —
+    /// so replacing its contents is enough. Nothing here rebuilds the tool
+    /// registry, which is what makes this safe to call at a turn boundary
+    /// rather than only from a full reload.
+    async fn load_skills(&self, workspace: &Path) -> Vec<Problem> {
+        let sources = config::skill_sources(Some(workspace));
+        // Taken before the scan, for the reason `load_instructions` takes its
+        // own before reading: a skill saved while this runs has to leave the
+        // fingerprint stale rather than be recorded as already seen.
+        *self.skills_seen.write().await = skill_freshness(&sources);
+
+        let (catalog, skill_problems) = SkillCatalog::discover(&sources);
+        info!(
+            skills = catalog.len(),
+            problems = skill_problems.len(),
+            "skills loaded"
+        );
+        *self.catalog.write().await = catalog;
+        Problem::tag(
+            ProblemSource::Skills,
+            skill_problems.iter().map(|p| p.to_string()),
+        )
+    }
+
+    /// Re-reads both hook files and installs the runner they describe.
+    async fn load_hooks(&self, workspace: &Path) -> Vec<Problem> {
+        *self.hooks_seen.write().await = hook_freshness(workspace);
+
+        let (hooks, hook_problems) = config::load_hooks(Some(workspace));
+        *self.hooks.write().await = Arc::new(hooks);
+        Problem::tag(ProblemSource::Hooks, hook_problems)
+    }
+
+    /// Rescans the skill directories without touching anything else.
+    ///
+    /// What the Skills drawer calls, for the reason [`Host::rescan_agents`]
+    /// exists: a drawer showing the catalog as it was at startup is not showing
+    /// the feature working. Narrower than [`Host::reload`] — scanning a
+    /// directory should not restart every MCP server.
+    pub async fn rescan_skills(&self) {
+        let workspace = self.workspace.read().await.clone();
+        let found = self.load_skills(&workspace).await;
+        self.replace_problems(ProblemSource::Skills, found).await;
+    }
+
+    /// The check a turn makes, asked for outside one.
+    ///
+    /// Same gate, same cost: a `stat` of each file, and a re-read only where
+    /// something moved. It exists because a turn is not the only moment a
+    /// person expects their edits to have landed — returning to the window
+    /// after writing a skill in an editor is the other one, and polling for it
+    /// would be a watcher with extra steps.
+    ///
+    /// Not safe mid-turn, for the reason the whole design is at turn
+    /// boundaries: a turn runs against the brief, roster and catalog it started
+    /// with. The caller is the one that knows whether a turn is running.
+    pub async fn refresh_config(&self) {
+        self.refresh_for_turn().await;
+    }
+
     /// Re-reads the config this turn is about to be built from.
     ///
     /// Called from the two places a turn begins — [`Self::expand_command`],
@@ -527,6 +592,21 @@ impl Host {
             != agent_freshness(&config::agent_sources(Some(&workspace)))
         {
             self.rescan_agents().await;
+        }
+
+        if *self.skills_seen.read().await
+            != skill_freshness(&config::skill_sources(Some(&workspace)))
+        {
+            self.rescan_skills().await;
+        }
+
+        // Rebuilt rather than restated, unlike instructions: a hook file has no
+        // imports, so the set to watch is knowable from the config layer — and
+        // rebuilding it is what also notices the set *changing*, which is what
+        // trusting a workspace does.
+        if *self.hooks_seen.read().await != hook_freshness(&workspace) {
+            let found = self.load_hooks(&workspace).await;
+            self.replace_problems(ProblemSource::Hooks, found).await;
         }
     }
 
@@ -1969,6 +2049,33 @@ fn disable(registry: &mut ToolRegistry, disabled: &[String]) -> Vec<String> {
 /// `.md` and not `.agent.md`, because both spellings are read: Copilot's
 /// doubled extension still ends in `.md`, and narrowing the suffix would leave
 /// a Taurus-native file in the same folder unwatched.
+/// A fingerprint over the `hooks.json` of every layer that would be read.
+///
+/// The directories rather than a fixed pair, because [`config::config_dirs`] is
+/// trust-gated: an untrusted workspace contributes no layer at all, and
+/// trusting one adds a file that was not being watched a moment ago. Built from
+/// the config layer on both sides of the comparison, so that change registers
+/// as a change.
+fn hook_freshness(workspace: &Path) -> Freshness {
+    let files: Vec<PathBuf> = config::config_dirs(Some(workspace))
+        .iter()
+        .map(|dir| taurus_hooks::config_file(dir))
+        .collect();
+    Freshness::of_files(files.iter().map(PathBuf::as_path))
+}
+
+/// A fingerprint over every `SKILL.md` a scan of these sources would read.
+///
+/// One level inside each source directory, because that is the layout: a source
+/// holds a folder per skill and the folder holds the file. See
+/// [`Freshness::of_child_dirs`] for why neither of the other two shapes fits.
+fn skill_freshness(sources: &[taurus_skills::SkillSource]) -> Freshness {
+    Freshness::of_child_dirs(
+        sources.iter().map(|s| s.dir.as_path()),
+        taurus_skills::catalog::SKILL_FILE,
+    )
+}
+
 fn agent_freshness(sources: &[taurus_agents::AgentSource]) -> Freshness {
     Freshness::of_dirs(sources.iter().map(|s| s.dir.as_path()), ".md", false)
 }
@@ -3213,6 +3320,127 @@ mod tests {
             .expect("a leading slash is a command")
             .expect("and the agent it names was written before this turn began");
         assert_eq!(invocation.name, "oracle");
+    }
+
+    /// A skill in the workspace library: a folder with a `SKILL.md` in it.
+    fn write_skill(workspace: &Path, name: &str, description: &str) {
+        let dir = workspace.join(".taurus/skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n\nDo {name}.\n"),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_skill_written_between_turns_is_there_for_the_next_one() {
+        // The complaint this closes: a skill dropped into the library was
+        // invisible until the app was restarted. Agents and instructions had
+        // stopped working that way; skills had not, and there is nothing about
+        // a skill that makes it the exception.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert_eq!(host.skill_count().await, 0);
+
+        write_skill(&workspace, "late-arrival", "arrives late");
+        a_turn(&host).await;
+
+        assert!(host.skills().await.iter().any(|s| s.name == "late-arrival"));
+    }
+
+    #[tokio::test]
+    async fn a_skill_deleted_between_turns_is_gone_by_the_next_one() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_skill(&workspace, "doomed", "will be removed");
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert_eq!(host.skill_count().await, 1);
+
+        std::fs::remove_dir_all(workspace.join(".taurus/skills/doomed")).unwrap();
+        a_turn(&host).await;
+
+        assert_eq!(host.skill_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn an_edited_skill_is_re_read_rather_than_merely_counted() {
+        // A count that is right while the text behind it is stale is the worse
+        // half of this bug: the drawer looks correct and the model is still
+        // being told the old description.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_skill(&workspace, "shifting", "the first description");
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        write_skill(&workspace, "shifting", "the second description");
+        a_turn(&host).await;
+
+        let skill = host
+            .skills()
+            .await
+            .into_iter()
+            .find(|s| s.name == "shifting")
+            .expect("the skill is still installed");
+        assert_eq!(skill.description, "the second description");
+    }
+
+    #[tokio::test]
+    async fn a_broken_skill_fixed_between_turns_stops_being_a_problem() {
+        // The problem list is what tells the user their skill is not loading.
+        // Leaving a fixed one on it is the same failure in the other direction.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let broken = workspace.join(".taurus/skills/broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("SKILL.md"), "no frontmatter here").unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        let before = host.problems().await;
+        assert!(
+            before.iter().any(|p| p.source == ProblemSource::Skills),
+            "a malformed skill is reported: {before:?}"
+        );
+
+        write_skill(&workspace, "broken", "now it parses");
+        a_turn(&host).await;
+
+        let after = host.problems().await;
+        assert!(
+            !after.iter().any(|p| p.source == ProblemSource::Skills),
+            "the fixed skill is still reported as a problem: {after:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hook_file_written_between_turns_takes_effect_on_the_next_one() {
+        // The hooks documentation already promised this — "a hook edited in an
+        // editor takes effect on the next message rather than the next launch"
+        // — and the reload it described only ever ran at startup.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert!(host.hooks().await.is_empty());
+
+        let taurus = workspace.join(".taurus");
+        std::fs::create_dir_all(&taurus).unwrap();
+        std::fs::write(
+            taurus.join("hooks.json"),
+            r#"{"hooks":{"guard":{"on":"pre_tool_use","command":"true"}}}"#,
+        )
+        .unwrap();
+        a_turn(&host).await;
+
+        assert!(
+            !host.hooks().await.is_empty(),
+            "a hooks.json written between turns was not picked up"
+        );
     }
 
     #[tokio::test]

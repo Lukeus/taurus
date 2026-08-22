@@ -258,7 +258,9 @@ and they are the minority.
   surface still lags on purpose: the `/` command *menu* lists the last scan,
   because it redraws on every keystroke and taking config locks there is how a
   reload deadlocks against typing — typing the name in full works immediately,
-  and the menu catches up after the next message. See
+  and the menu re-reads itself whenever a rescan changes how many skills or
+  agents there are, which is a message finishing, a drawer opening, or coming
+  back to the window. See
   [Sub-agents](capabilities.md#sub-agents).
 - **A proposed agent's system prompt is reviewed by eye, and nothing else.**
   `propose_agent` checks the shape — the name, the description, the tool scope,
@@ -416,6 +418,21 @@ and they are the minority.
   system settings, and refusing to work behind a corporate proxy would cost
   more than this buys. `"allow_private_hosts": true` in `search.json` turns
   the check off deliberately.
+- **Config is re-read at turn boundaries, and nothing is watched.** Instructions,
+  sub-agents, skills, and hooks are all fingerprinted — a `stat` of the files
+  behind each — and re-read at the start of a turn when that fingerprint moved.
+  So an edit lands on your next message rather than the next launch, and coming
+  back to the window runs the same check on top of that. What
+  is deliberately absent is a file watcher: one fires whenever an editor happens
+  to save, which is routinely the middle of a running turn, and the brief a turn
+  was given and the roster it delegates against have to be the ones it started
+  with. The costs are a one-turn delay in the worst case, and the same
+  same-length-same-tick blind spot every fingerprint here has. Two things are
+  *not* on this path and still need a reload: the provider list and
+  `settings.json`. Both are edited in the app rather than in a file most of the
+  time, and both are re-read when they are saved there — a hand edit to
+  `providers.json` while the app is open is the case that still waits.
+
 - **The terminal dock is a terminal, not part of the conversation.** It runs
   your shell in the window the agent works in, and that is the whole of the
   connection between them. The agent cannot read what you ran there, you cannot

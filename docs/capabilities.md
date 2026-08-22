@@ -221,6 +221,21 @@ near-duplicate of an existing skill, no destructive script patterns) before it
 reaches a review card, and nothing touches disk until you approve it. Approving
 reloads the catalog, so a skill is usable in the session that wrote it.
 
+**A new or edited skill is available on your next message.** The eight
+directories are checked at the start of each turn and rescanned only when
+something in them moved, so a skill dropped into `.taurus/skills` — or installed
+by another client into one of the shared ones — is usable in the next message
+without a reload. Coming back to the window rescans too, which is the case worth
+naming: writing a skill in an editor and switching back is the way most of them
+arrive. Opening the Skills drawer rescans as well, so the drawer and the rail's
+count are never the startup catalog.
+
+The catalog is frozen *within* a turn, the same as the sub-agent roster and for
+the same reason — a skill saved while a turn is running is not visible to it,
+because a turn has to run against the library it started with. The check itself
+is a `stat` per skill: what it guards is parsing every `SKILL.md` in the
+library, which is why it is worth asking first.
+
 Scripts declare a logical interpreter (`python3`, `node`, `bash`, …) which is
 resolved per platform at load time. When it cannot be found, the skill is
 marked degraded and the model is told to follow the written steps instead — a
@@ -314,11 +329,13 @@ started with, and that is exactly what a file watcher could not promise. The
 drawer's **Rescan** is still there for the moment you want it now rather than on
 the next message.
 
-One place lags by design: the `/` command menu lists what the last scan found,
-because it is redrawn on every keystroke and taking config locks there is how a
-reload comes to deadlock against typing. Typing the agent's name in full works
-straight away — the name is resolved against a fresh roster — and the menu
-catches up after the next message.
+The `/` command menu is the one surface that cannot rescan on its own, because
+it is redrawn on every keystroke and taking config locks there is how a reload
+comes to deadlock against typing. It lists what the last scan found — but it
+re-reads that list whenever the number of skills or agents changes, so a rescan
+is what refreshes it: coming back to the window, finishing a message, or opening
+either drawer. Typing the name in full works straight away regardless, because
+that path resolves against a fresh roster.
 
 `max_iterations:` is how many model/tool round trips this agent gets before it
 is stopped, between 1 and 100. It is editable on the agent's card in the Agents

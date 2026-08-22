@@ -630,6 +630,22 @@ export const repoStatus = () => invoke<RepoStatus>("repo_status");
 export const commitTurn = (sessionId: string, turn: number, message: string) =>
   invoke<Commit>("commit_turn", { sessionId, turn, message });
 
+/**
+ * Re-reads the files a person edits in an editor: instructions, skills,
+ * sub-agents, hooks.
+ *
+ * Called when the window regains focus, which is when somebody has most likely
+ * just been in an editor writing one of them. Nothing watches those directories
+ * — see the backend's `refresh_config` for why — so returning to the window is
+ * the closest thing to an event their arrival has.
+ *
+ * The same fingerprint check a turn makes, so this is a `stat` per file when
+ * nothing moved. Not called while a turn is running: a turn runs against the
+ * brief, roster and catalog it started with, and the turn will refresh on its
+ * own boundary anyway.
+ */
+export const rescanLibrary = () => invoke<void>("rescan_library");
+
 /* --------------------------------------------------------------- terminal */
 
 /**

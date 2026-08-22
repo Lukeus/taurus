@@ -245,6 +245,7 @@ pub fn run() {
             commands::set_search_key,
             commands::clear_search_key,
             commands::reload_config,
+            commands::rescan_library,
             commands::open_mcp_config,
             commands::list_mcp_servers,
             commands::mcp_environment,
