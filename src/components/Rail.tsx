@@ -13,6 +13,7 @@ import {
   SparkIcon,
   SunIcon,
   SwapIcon,
+  TerminalIcon,
   TrashIcon,
 } from "./icons";
 
@@ -55,6 +56,7 @@ export function Rail({
   onAgents,
   onMemory,
   onMcp,
+  onTerminal,
   onSettings,
 }: {
   /** Set by the handle beside it; the rail only has to wear the number. */
@@ -97,6 +99,9 @@ export function Rail({
   onAgents: () => void;
   onMemory: () => void;
   onMcp: () => void;
+  /** Shows or hides the terminal dock. The dock says which it is; this row
+   *  only has to be the way to reach it. */
+  onTerminal: () => void;
   onSettings: () => void;
 }) {
   /**
@@ -283,6 +288,16 @@ export function Rail({
                 : mcp.total}
             </span>
           )}
+        </button>
+        <button
+          className="rail-link"
+          onClick={onTerminal}
+          title="A shell in this folder (⌃`)"
+        >
+          <span className="glyph">
+            <TerminalIcon />
+          </span>
+          <b>Terminal</b>
         </button>
         <button className="rail-link" onClick={onSettings}>
           <span className="glyph">

@@ -416,3 +416,47 @@ and they are the minority.
   system settings, and refusing to work behind a corporate proxy would cost
   more than this buys. `"allow_private_hosts": true` in `search.json` turns
   the check off deliberately.
+- **The terminal dock is a terminal, not part of the conversation.** It runs
+  your shell in the window the agent works in, and that is the whole of the
+  connection between them. The agent cannot read what you ran there, you cannot
+  hand it a failed command without copying the text across, and its own
+  `run_command` calls appear in the transcript rather than in the pane. All
+  three are the same missing piece: the shell has no way to say where one
+  command ended and the next began, so there is nothing for either side to point
+  at. Closing it means shell integration — the `OSC 133` marks a prompt emits
+  around each command, injected per shell — which is what would turn a
+  scrollback into addressable blocks with an exit code and a duration on each.
+  That is the next thing to build here rather than a limit. See
+  [Terminal](capabilities.md#terminal).
+- **What you run in the terminal is outside the undo history.** Every command
+  the *agent* runs is bracketed by a sweep of the workspace, so anything it
+  changed can be put back by a rewind. A command you type in the dock is not:
+  the shell runs it directly, nothing reads the workspace before or after, and a
+  `sed -i` there is invisible to the Changes drawer and to every checkpoint. The
+  dock does not pretend otherwise — it is a terminal, and a terminal has never
+  had an undo — but it is worth knowing that the two halves of the window keep
+  different promises. Covering it needs the same command boundaries the entry
+  above is about, and it would cost a read of the workspace per command you
+  type. See [Rewinding a turn](safety.md#rewinding-a-turn).
+- **One shell, and it ends when the dock does.** There are no tabs and no
+  splits, and hiding the pane is not hiding it — closing the dock ends the
+  shell, the same as closing a terminal window. So a long `cargo build` started
+  there does not survive ⌃`, and there is no second pane to run something else
+  in while it works. Both are worth having and neither is written; a shell that
+  outlived the pane would also need somewhere for its output to go while nothing
+  is watching, which is a scrollback the backend would have to keep.
+- **A prompt's icons need a font this app cannot ship.** Powerline separators
+  and the git glyphs a modern prompt draws come from the private-use area, which
+  the app's own mono has nothing in. The dock names the Nerd Fonts people
+  actually install and falls back through them, so a machine with any of them
+  renders the prompt correctly — and a machine with none shows those glyphs as
+  empty boxes, with the text around them intact. Bundling one would be tens of
+  megabytes for a decoration, and there is no setting to name a different font
+  yet.
+- **On Windows the dock holds a console window open for as long as it is open.**
+  The ConPTY gap above is the same bug seen for longer: a release build has no
+  console of its own, so a pty opened without the sideloaded runtime creates
+  one, and where a tool call showed it for the length of a command the dock
+  shows it for the length of the session. The fix is the same — the two files
+  the Windows bundle ships beside the executable — and the startup log line
+  saying whether they were found is still the only warning available.

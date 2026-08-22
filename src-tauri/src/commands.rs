@@ -32,6 +32,7 @@ use taurus_host::{
 };
 
 use crate::state::{AppState, SessionEntry};
+use crate::terminal::TerminalEvent;
 
 /// Commands return this so the frontend gets a readable message rather than a
 /// serialized Rust error.
@@ -1849,6 +1850,7 @@ pub async fn reload_config(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
     Ok(())
 }
 
+
 #[tauri::command]
 pub async fn list_checkpoints(
     state: State<'_, Arc<AppState>>,
@@ -1994,6 +1996,74 @@ pub async fn commit_turn(
         "committed a turn"
     );
     Ok(commit)
+}
+
+/* ------------------------------------------------------------- terminal */
+
+/// Starts a shell and streams it to the pane that asked.
+///
+/// `cwd` is the workspace root when the pane does not name one, which is what
+/// it wants on the first open: a terminal that starts in the home directory
+/// beside a window that is looking at a project is one `cd` away from being
+/// useful and nobody remembers to type it.
+///
+/// The size is the pane's, measured after it is laid out. A terminal opened at
+/// a guessed size and corrected a moment later shows the shell's first prompt
+/// wrapped at the wrong column, which is the one artifact of a resize that does
+/// not redraw away.
+#[tauri::command]
+pub async fn terminal_open(
+    state: State<'_, Arc<AppState>>,
+    cwd: Option<String>,
+    rows: u16,
+    cols: u16,
+    on_event: Channel<TerminalEvent>,
+) -> CmdResult<String> {
+    let root = state.host.workspace().await;
+    let cwd = match cwd {
+        Some(path) => PathBuf::from(path),
+        None => root.clone(),
+    };
+    // A folder that has been renamed or unmounted under the window would
+    // otherwise fail inside the spawn as a message about the shell, which is
+    // the wrong thing to name.
+    let cwd = if cwd.is_dir() { cwd } else { root };
+    state.terminals.open(&cwd, rows, cols, on_event)
+}
+
+/// Sends keystrokes. `data` is the text the emulator produced, escape
+/// sequences and all — arrow keys and Ctrl chords arrive here as the bytes a
+/// terminal would have sent.
+#[tauri::command]
+pub async fn terminal_write(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    data: String,
+) -> CmdResult<()> {
+    state.terminals.write(&id, data.as_bytes())
+}
+
+/// Tells the shell how big its window is now.
+///
+/// This is what makes a full-screen program redraw at the new size, and it is
+/// also the only thing that tells a shell where to wrap. A pane that resizes
+/// without saying so leaves every program inside it drawing to the old
+/// geometry.
+#[tauri::command]
+pub async fn terminal_resize(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    rows: u16,
+    cols: u16,
+) -> CmdResult<()> {
+    state.terminals.resize(&id, rows, cols)
+}
+
+/// Ends a shell, and anything it is running.
+#[tauri::command]
+pub async fn terminal_close(state: State<'_, Arc<AppState>>, id: String) -> CmdResult<()> {
+    state.terminals.close(&id);
+    Ok(())
 }
 
 #[cfg(test)]

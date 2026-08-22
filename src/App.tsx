@@ -12,6 +12,8 @@ import { Rail, type ProviderHealth } from "./components/Rail";
 import {
   RAIL_WIDTH,
   ResizeHandle,
+  TERMINAL_HEIGHT,
+  useResizableHeight,
   useResizableWidth,
 } from "./components/ResizeHandle";
 import { AgentProposalCard } from "./components/AgentProposalCard";
@@ -73,6 +75,20 @@ const ChangesDrawer = lazy(() =>
 );
 const DelegateTranscript = lazy(() =>
   PANELS.delegate().then((m) => ({ default: m.DelegateTranscript })),
+);
+
+/*
+ * The terminal, deliberately not in `PANELS`.
+ *
+ * Everything above is warmed once the window goes idle, because a drawer is
+ * small and opening one should be instant. This is neither: it carries a whole
+ * terminal emulator, which is the largest thing the frontend can import, and a
+ * session that never opens the dock should never pay to parse it. So it loads
+ * on the first ⌃` and not before — and once loaded it stays, because the module
+ * map answers the second import.
+ */
+const TerminalDock = lazy(() =>
+  import("./components/TerminalDock").then((m) => ({ default: m.TerminalDock })),
 );
 
 /**
@@ -140,6 +156,19 @@ export default function App() {
     })),
   );
   const rail = useResizableWidth({ storageKey: "taurus.railWidth", ...RAIL_WIDTH });
+  const dock = useResizableHeight({
+    storageKey: "taurus.terminalHeight",
+    ...TERMINAL_HEIGHT,
+  });
+  /**
+   * Whether the terminal dock is showing.
+   *
+   * Unmounted rather than hidden when it is not: hiding it would keep a shell
+   * running behind a pane nobody can see, and a laid-out-to-nothing terminal
+   * would still be told it is zero columns wide. Closing it ends the shell, the
+   * same as closing a terminal window anywhere else.
+   */
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
@@ -167,6 +196,26 @@ export default function App() {
     warmPanels();
     // Intentionally once: init wires the event listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /*
+   * Control-backtick shows and hides the terminal, which is what it does in
+   * every other editor a developer has open at the same time.
+   *
+   * On the window rather than on the dock, because the point of a toggle is
+   * that it works when the thing is not there — and once the dock has focus,
+   * every other key belongs to the shell inside it. Ctrl on all three
+   * platforms, not Cmd: a macOS terminal has always been reached with Control
+   * here, and ⌘` is the system's "next window".
+   */
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "`" || !e.ctrlKey || e.metaKey || e.altKey) return;
+      e.preventDefault();
+      setTerminalOpen((open) => !open);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
   }, []);
 
   /*
@@ -317,7 +366,7 @@ export default function App() {
   return (
     <div className="app">
       <Rail
-        width={rail.width}
+        width={rail.size}
         workspace={workspace}
         sessions={store.sessions}
         currentId={store.session?.id}
@@ -339,6 +388,7 @@ export default function App() {
         onAgents={() => setAgentsOpen(true)}
         onMemory={() => setMemoryOpen(true)}
         onMcp={() => setMcpOpen(true)}
+        onTerminal={() => setTerminalOpen((open) => !open)}
         onSettings={() => setSettingsOpen(true)}
       />
 
@@ -497,6 +547,31 @@ export default function App() {
           onSend={store.send}
           onStop={store.stop}
         />
+
+        {/* Below the composer rather than between it and the transcript: the
+            box you type in belongs to the conversation above it, and a
+            terminal wedged between the two would separate a message from the
+            thread it is being written into. Mounted only while it is showing
+            — see `terminalOpen`. */}
+        {terminalOpen && (
+          <>
+            <ResizeHandle pane={dock} label="Terminal height" />
+            <Suspense fallback={<div className="dock-loading" />}>
+              <div className="dock-slot" style={{ height: dock.size }}>
+                <TerminalDock
+                  // A new folder is a new shell. Keyed rather than handled
+                  // inside, so the old one is torn down by the same path that
+                  // closes the dock instead of a second one that has to agree
+                  // with it.
+                  key={workspace ?? "none"}
+                  workspace={workspace}
+                  theme={theme ?? "system"}
+                  onClose={() => setTerminalOpen(false)}
+                />
+              </div>
+            </Suspense>
+          </>
+        )}
       </div>
 
       {store.permission && (

@@ -60,7 +60,7 @@ export function DelegateTranscript({
     <Modal onClose={onClose}>
       <div className="drawer-dock" onClick={(e) => e.stopPropagation()}>
         <ResizeHandle pane={pane} label="Delegate transcript width" />
-        <aside className="drawer delegate-drawer" style={{ width: pane.width }}>
+        <aside className="drawer delegate-drawer" style={{ width: pane.size }}>
           <header className="drawer-head">
             <h2>{agent}</h2>
             <button className="drawer-close" onClick={onClose} aria-label="Close">

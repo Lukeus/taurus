@@ -208,6 +208,39 @@ export function PlugIcon({ size }: { size?: number }) {
  * never rendered that pair together. Sliders read as settings at any size and
  * share nothing with a sun.
  */
+/**
+ * The terminal dock's mark: a prompt and the line you type on.
+ *
+ * The one glyph in this set that is a quotation rather than a drawing — `>_` is
+ * what a terminal has looked like for fifty years, and anything more inventive
+ * would be less recognisable, not more.
+ */
+export function TerminalIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path
+        d="M2.4 3.2h11.2v9.6H2.4z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4.9 6.4L6.7 8l-1.8 1.6"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8.4 10.1h2.9"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </Icon>
+  );
+}
+
 export function SlidersIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>

@@ -66,6 +66,7 @@ import type { Skipped } from "../bindings/Skipped";
 import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
+import type { TerminalEvent } from "../bindings/TerminalEvent";
 import type { Theme } from "../bindings/Theme";
 import type { ToolOutput } from "../bindings/ToolOutput";
 import type { ToolResultBlock } from "../bindings/ToolResultBlock";
@@ -135,6 +136,7 @@ export type {
   Step,
   StepState,
   Switch,
+  TerminalEvent,
   Theme,
   PendingConfig,
   ToolOutput,
@@ -627,6 +629,44 @@ export const repoStatus = () => invoke<RepoStatus>("repo_status");
  */
 export const commitTurn = (sessionId: string, turn: number, message: string) =>
   invoke<Commit>("commit_turn", { sessionId, turn, message });
+
+/* --------------------------------------------------------------- terminal */
+
+/**
+ * Starts a shell in the dock, streaming what it prints to `onEvent`.
+ *
+ * Resolves with the id every other call here takes. The size is the pane's real
+ * one, measured after layout: a shell told the wrong geometry wraps its first
+ * prompt at the wrong column, and no later resize redraws a line that has
+ * already been printed.
+ */
+export function openTerminal(
+  rows: number,
+  cols: number,
+  onEvent: (event: TerminalEvent) => void,
+  cwd?: string,
+): Promise<string> {
+  const channel = new Channel<TerminalEvent>();
+  channel.onmessage = onEvent;
+  return invoke<string>("terminal_open", { cwd, rows, cols, onEvent: channel });
+}
+
+/**
+ * Sends keystrokes to a shell.
+ *
+ * `data` is what the emulator produced rather than what was typed: an arrow key
+ * arrives here as the escape sequence a terminal would have sent, and a paste
+ * arrives as its whole text at once.
+ */
+export const writeTerminal = (id: string, data: string) =>
+  invoke<void>("terminal_write", { id, data });
+
+/** Tells a shell how big its window is now, so full-screen programs redraw. */
+export const resizeTerminal = (id: string, rows: number, cols: number) =>
+  invoke<void>("terminal_resize", { id, rows, cols });
+
+/** Ends a shell, and anything it is running. */
+export const closeTerminal = (id: string) => invoke<void>("terminal_close", { id });
 
 export const onPermissionRequest = (
   handler: (request: PermissionRequest) => void,

@@ -103,7 +103,7 @@ export function ChangesDrawer({
     <Modal onClose={onClose}>
       <div className="drawer-dock" onClick={(e) => e.stopPropagation()}>
         <ResizeHandle pane={pane} label="Changes drawer width" />
-        <aside className="drawer" style={{ width: pane.width }}>
+        <aside className="drawer" style={{ width: pane.size }}>
           <header className="drawer-head">
             <h2>Changes</h2>
             <button onClick={refresh}>Refresh</button>

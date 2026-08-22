@@ -20,6 +20,7 @@ use taurus_skills::proposal::SkillProposal;
 use taurus_tools::{Answer, PermissionDecision, PermissionPrompt};
 
 use crate::bridge::{UiAgentProposalSink, UiAsker, UiPermissionPrompt, UiProposalSink};
+use crate::terminal::Terminals;
 
 /// One live conversation.
 pub struct SessionEntry {
@@ -88,6 +89,14 @@ pub struct AppState {
     pub pending_questions: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>>,
     pub pending_proposals: Arc<DashMap<String, SkillProposal>>,
     pub pending_agent_proposals: Arc<DashMap<String, AgentProposal>>,
+    /// Every shell open in the terminal dock.
+    ///
+    /// Here rather than beside the sessions because a terminal is not part of a
+    /// conversation: it outlives every turn, belongs to the window, and is the
+    /// one thing in this struct whose children keep running if nobody tidies
+    /// them up. See [`Terminals::close_all`], and the call to it as the window
+    /// goes away.
+    pub terminals: Arc<Terminals>,
     /// Cancels a **Build index** started from Settings.
     ///
     /// One, not one per session: the index belongs to the workspace rather than
@@ -150,6 +159,7 @@ impl AppState {
             pending_questions,
             pending_proposals,
             pending_agent_proposals,
+            terminals: Arc::new(Terminals::default()),
             index_build: Mutex::new(CancellationToken::new()),
             loaded: watch::channel(false).0,
         }

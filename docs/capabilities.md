@@ -441,3 +441,33 @@ out of the menu, and typing one anyway says that rather than "no such command".
 Ordinary text that begins with a slash is never treated as a command:
 `/usr/bin/env is portable` is sent as written. A command has to name a skill or
 an agent, start with a letter, and be followed by a space or nothing.
+
+## Terminal
+
+<kbd>Ctrl</kbd>+<kbd>`</kbd> opens a shell in the bottom of the window, in the
+folder the window is pointed at. It is your own shell — `$SHELL` on macOS and
+Linux, the console Windows names — started the way any other terminal starts
+one, so the rc file you already have is the rc file it reads. Aliases, prompt,
+completions: all of it is there, because none of it is reimplemented here.
+
+A real pseudo-terminal underneath, and a real emulator on top, which together
+are what make it a terminal rather than a log with colours in it. `vim` opens.
+`htop` redraws. `less` pages. A progress bar overwrites its own line instead of
+printing a hundred of them. Resizing the pane tells the shell its new geometry,
+so a full-screen program reflows with it rather than drawing to the size it
+started at.
+
+The dock is desktop-only, and deliberately so: `taurus` on the command line is
+already in a terminal, and a second one inside it would be a worse version of
+the one it is running in.
+
+Closing the dock ends the shell, the same as closing a terminal window anywhere
+else — and so does closing the app, which is the part worth stating, because a
+shell started under a pty is not in the app's process tree in any way the
+operating system would clean up on its own.
+
+What it is **not**, yet: it is not wired to the conversation. The agent does not
+read what you type there, what you run is not checkpointed the way the agent's
+own commands are, and commands are a scrollback rather than the blocks a
+Warp-style terminal groups them into. Each of those is written down in
+[Known gaps](known-gaps.md).
