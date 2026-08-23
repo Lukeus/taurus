@@ -61,6 +61,11 @@ const SHOTS = [
   // the offer to keep it. Captured by pressing the card rather than by opening
   // the tab, so the image is of the trip and not of the destination.
   { name: "query-run", shot: "query-run", theme: "dark" },
+  // The box mid-join: the query painted, the schema of both files open under
+  // it, and the completion list showing one table's columns after its alias.
+  // The join marks are why two tables are loaded — a column both files have is
+  // a column they can be joined on, and that is said in both places at once.
+  { name: "query-complete", shot: "query-complete", theme: "dark" },
 ];
 
 const CHROME = [

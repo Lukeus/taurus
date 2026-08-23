@@ -551,6 +551,38 @@ and they are the minority.
   person could have saved by typing four words. The button is a head start, not
   a complete instruction, which is why nothing is sent and the cursor is left at
   the end of it.
+- **The query box's highlighting is a scanner, not a grammar.** It knows where
+  a literal starts and ends, which is the half a regex gets wrong, and it knows
+  nothing about scope. The function list is a fixed set of the common ones, so
+  a DataFusion function nobody thought of — and any UDF — draws as a plain
+  identifier rather than as a call. Nothing is *wrong* on screen when that
+  happens; a word is simply the wrong colour, which is the failure mode a
+  scanner is chosen for.
+- **Completion knows the files, not the query.** It offers columns that exist
+  in a loaded dataset, and a CTE's output columns do not — `WITH t AS (SELECT
+  a + b AS total …) SELECT | FROM t` will not offer `total`, because knowing it
+  exists means planning the query, which is the engine's job and a round trip
+  away. Aliases are found by sweeping for `FROM`/`JOIN` and the name after it,
+  so the subquery form `FROM (SELECT …) t` is not matched either and `t.` falls
+  back to offering every column in the workspace. Both cases degrade to a
+  longer list rather than to a wrong one.
+- **The caret the completion list hangs off is computed, not measured.** The
+  box is monospace and does not wrap, so the list's position is arithmetic: one
+  cell width, times the column, plus the padding. A character that is not one
+  cell wide — CJK, most emoji — puts the list a few characters off for the rest
+  of that line. The alternative is measuring a mirror element on every
+  keystroke, which is a lot of DOM for a case that does not arise in SQL.
+- **A selection in the query box shows as a block of colour with no text in
+  it.** The consequence of painting the query on a layer behind a transparent
+  textarea: the browser draws the selection on the real control, whose text is
+  invisible. The highlight is tinted harder than the app's default to
+  compensate. Fixing it properly means an editor component, which is the
+  dependency the whole arrangement exists to avoid.
+- **The tables panel is reference and nothing is clickable in it.** Deliberate
+  rather than unfinished — completion is the way text gets into the box, and a
+  second insertion route is a second set of rules about where the caret lands.
+  It does mean a column read there still has to be typed, and the first three
+  letters are all that costs.
 - **Identifier case is Taurus's own dialect choice, and a recipe carries it.**
   DataFusion lowercases an unquoted identifier by default, the way Postgres
   does; Taurus turns that off, so a column reported as `Material` is written as

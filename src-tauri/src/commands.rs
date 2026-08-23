@@ -1345,6 +1345,44 @@ pub async fn dataset_profile(
     state.host.dataset_profile(&name).await
 }
 
+/// One loaded dataset and its columns, without anything having been counted.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct DataTable {
+    pub name: String,
+    pub path: String,
+    pub columns: Vec<taurus_data::ColumnHead>,
+    /// Rows, where the format keeps a count. Parquet does; a CSV would have to
+    /// be read, and this call is the one that refuses to read anything.
+    #[ts(type = "number | null")]
+    pub rows: Option<u64>,
+}
+
+/// Every table a query in this workspace can name, and what is in it.
+///
+/// The query box's own schema. Kept apart from `dataset_profile` because the
+/// two questions are different sizes: a profile counts nulls and distinct
+/// values over the whole file, and this reads a header. Completion needs the
+/// second one every time the box is opened and could never afford the first.
+///
+/// A dataset whose file has gone is left out rather than failing the call —
+/// see `Host::dataset_schemas`.
+#[tauri::command]
+pub async fn dataset_tables(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<DataTable>> {
+    Ok(state
+        .host
+        .dataset_schemas()
+        .await
+        .into_iter()
+        .map(|(dataset, schema)| DataTable {
+            name: dataset.name,
+            path: dataset.path,
+            columns: schema.columns,
+            rows: schema.rows,
+        })
+        .collect())
+}
+
 /// A window of a dataset's rows.
 ///
 /// `limit` is clamped by the engine rather than trusted, so a frontend asking

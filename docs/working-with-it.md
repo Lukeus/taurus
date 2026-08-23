@@ -1019,7 +1019,7 @@ missing count so a forty-column table can be scanned down rather than read.
 **Rows** is a page of the data itself, a hundred at a time, with the row number
 so a window into a million-row file says where in it you are. **Query** is a
 SQL box over all of them — ⌘↵ runs it — answering into the same grid, with what
-the query cost beside the row count; the box grows to fit what is in it. **Recipes** lists what this workspace has,
+the query cost beside the row count; see below. **Recipes** lists what this workspace has,
 opens one to show its steps, and runs it — the button carries the path it
 writes, because that is the thing worth reading before clicking it rather than
 in a dialog after.
@@ -1027,6 +1027,41 @@ in a dialog after.
 The query box is deliberately not checked in the frontend. The refusal above
 lives in one place, where the model's calls go through it too; a second rule
 here would be one more thing to keep in step with the real one.
+
+### Writing the query
+
+![The query box mid-join: the SQL painted, both files' columns listed under it
+with the shared ones marked, and the completion list showing one table's
+columns after its alias](screenshots/query-complete.png)
+
+**It is coloured, and it is not an editor.** The query is painted on a layer
+behind a plain `<textarea>` — so the browser's own undo works, a paste is a
+paste, and none of it costs the quarter-megabyte an embedded editor would. What
+does the colouring is a scanner rather than a regex, which is why a keyword
+inside a string stays a string. `"Material"` is drawn as the identifier it is
+and `'Material'` as the word it is, which in a dialect with case-sensitive
+columns is the difference worth seeing.
+
+**It completes against the real columns.** Not a keyword list — the actual
+schema of every loaded file, read from a Parquet footer or a CSV header each
+time the box is opened. Type three letters and it offers the columns that fit,
+each labelled with the file it is in; type `i.` after aliasing a table and it
+offers that table's columns and no others. ⌃space asks without typing
+anything, Tab or ↵ takes one, Esc dismisses.
+
+**A column two files share is marked `joins`.** That is the feature the rest of
+it is arranged around. Two files that both have a `user_id` are two files that
+can be joined on it, and the completion list is the cheapest place anybody will
+ever notice that — while writing the join, rather than by opening two profiles
+side by side and holding forty column names in your head. The same columns are
+tinted in the **tables** panel under the box, which lists what each file holds
+for the case completion cannot reach: you cannot type the first three letters
+of a column you have never seen.
+
+Names are inserted in a form that parses. Taurus leaves identifier case alone,
+so `Material` needs no quotes — but a spreadsheet header with a space in it
+does, and the list quotes it for you rather than leaving that to be discovered
+from an error message.
 
 A cell is drawn exactly as the engine rendered it. Nothing re-formats a number,
 because half the values that look like numbers are not — a zero-padded product

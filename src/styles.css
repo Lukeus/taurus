@@ -4096,8 +4096,11 @@ button.link:hover {
 
 .profile-row {
   display: grid;
-  grid-template-columns: minmax(9rem, 1.4fr) minmax(6rem, 0.8fr) 7rem 6rem minmax(9rem, 1.2fr) minmax(12rem, 2fr);
-  gap: 12px;
+  /* Range gets more of the row than it used to, at the type column's expense.
+     A type name is a dozen characters; a range over timestamps is two of them
+     and a separator, and it was the column that ran out. */
+  grid-template-columns: minmax(9rem, 1.3fr) minmax(5.5rem, 0.7fr) 7rem 5.5rem minmax(11rem, 1.5fr) minmax(12rem, 1.9fr);
+  gap: 14px;
   align-items: center;
   padding: 7px 12px;
   font-size: 12.5px;
@@ -4131,14 +4134,29 @@ button.link:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.profile-type,
-.profile-range {
+.profile-type {
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/*
+ * The range, wrapped rather than clipped — the same argument the commonest
+ * values make below, and it was wrong here for exactly as long.
+ *
+ * A timestamp range is `2024-01-01T10:00:00 … 2024-12-28T10:00:00`, which did
+ * not fit and was cut after the minimum: the reader saw one end of a range and
+ * an ellipsis. Worse on a numeric column, where `1.00 … 1498.99` clipped to
+ * `1.00 … 149` is not a truncated maximum, it is a different one. Wrapping
+ * costs a taller row and cannot lie.
+ */
+.profile-range {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
 }
 .profile-nulls {
   display: flex;
@@ -4184,7 +4202,10 @@ button.link:hover {
 .profile-common {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  /* Wider between pairs than the space inside one, so `view 219,922` reads as
+     one thing and the pair after it as another. At an even gap the row was a
+     run of alternating words and numbers. */
+  gap: 4px 16px;
   font-size: 11.5px;
   color: var(--text-faint);
 }
@@ -4352,10 +4373,19 @@ button.link:hover {
 /*
  * The query box.
  *
- * A textarea rather than an editor. Syntax highlighting SQL means either a
- * dependency the size of the terminal emulator or a regex that is wrong on the
- * first string literal containing a keyword — and what makes a query readable
- * here is monospace and room, both of which are free.
+ * A `<textarea>` with the query painted behind it, rather than an editor
+ * component. The half of the original argument that still holds is the size:
+ * CodeMirror or Monaco is a quarter of a megabyte upwards of parser and
+ * virtualized rendering for a box that holds ten lines, and the dock already
+ * carries the largest thing the frontend imports. The half that did not hold
+ * was "a regex that is wrong on the first string literal containing a
+ * keyword" — that is true of a regex, so `lib/sql.ts` is a scanner instead,
+ * which walks the text once and knows it is inside a literal.
+ *
+ * No `overflow: hidden` here, unlike every other rounded box in this file:
+ * the completion list hangs off the caret and out of the box, and clipping is
+ * exactly what it must not do. The foot rounds its own bottom corners
+ * instead — the top two are painted by this element and need no clip.
  */
 .query-box {
   flex: none;
@@ -4364,32 +4394,201 @@ button.link:hover {
   border: 1px solid var(--rule);
   border-radius: var(--r-md);
   background: var(--bg-sunken);
-  overflow: hidden;
 }
-.query-sql {
+.sql-editor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The two layers, and the reason they are one rule.
+
+   Every property here decides where a character lands. The painted `<pre>`
+   sits exactly under the transparent `<textarea>`, so anything that differed
+   between them — a hair of letter-spacing, a different tab size, one of them
+   wrapping — would slide the colour off the text a little further with every
+   character. Declared once so they cannot drift. */
+.sql-ink,
+.sql-input {
+  margin: 0;
+  padding: 11px 13px;
   font-family: var(--mono);
   font-size: 12.5px;
   line-height: 1.55;
-  color: var(--text);
-  background: transparent;
+  letter-spacing: normal;
+  tab-size: 2;
+  /* Not `pre-wrap`. A wrapped SELECT is harder to read than a scrolled one,
+     and wrapping would also make the caret's line unknowable without
+     measuring the DOM — which is what lets `caretAt` be arithmetic. */
+  white-space: pre;
+  overflow: auto;
   border: none;
-  border-radius: 0;
-  padding: 11px 13px;
-  /* No `resize` handle any more. The box sizes itself to what is in it, and a
-     height dragged by hand would be snapped back by the next keystroke —
-     a control that undoes itself is worse than one that is not offered. */
+  background: transparent;
+}
+.sql-ink {
+  position: absolute;
+  inset: 0;
+  /* Behind the textarea and unclickable: every pointer event belongs to the
+     real control on top. */
+  pointer-events: none;
+  overflow: hidden;
+  color: var(--text);
+}
+.sql-input {
+  position: relative;
+  z-index: 1;
   resize: none;
+  border-radius: 0;
+  /* The text itself is invisible; what is read is the layer underneath. The
+     caret is not, and neither is the selection — which is the one thing given
+     up by painting rather than by using an editor, so the selection is tinted
+     harder than the app's default to make up for having no text in it. */
+  color: transparent;
+  caret-color: var(--text);
   /* Four lines' worth of floor and about fourteen of ceiling. The box grows to
-     what is in it — see `fit` in `DataPane` — so these are the two ends of
-     that: never a single-line slot for something you are about to write a
-     join in, and never so tall that the answer is pushed off the screen by
-     the question. */
+     what is in it — see the effect in `SqlEditor` — so these are the two ends
+     of that: never a single-line slot for something you are about to write a
+     join in, and never so tall that the answer is pushed off the screen by the
+     question. */
   min-height: 4.5em;
   max-height: 22em;
 }
-.query-sql:focus {
+.sql-input:focus {
   outline: none;
 }
+/* Its own colour, because the box's text is transparent — a placeholder
+   inheriting that would be an empty box with nothing in it and no hint that
+   there could be. */
+.sql-input::placeholder {
+  color: var(--text-faint);
+}
+.sql-input::selection {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+/* Ten characters of the box's own font, measured and never seen. `hidden`
+   rather than `display: none`, which has no size to measure. */
+.sql-probe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre;
+}
+
+/* Five colours and two greys, out of the palette the rest of the app is in —
+   so both themes get this for free. Keywords are the shape of the statement,
+   literals are the values in it, and a quoted identifier is deliberately the
+   same colour as a bare one: `"Material"` is the same column as `Material`,
+   only spelled defensively, and the difference that matters is between it and
+   `'Material'`, which is a string. */
+.sql-keyword {
+  color: var(--accent);
+}
+.sql-fn {
+  color: var(--ok);
+}
+.sql-string,
+.sql-number {
+  color: var(--warn);
+}
+.sql-quoted,
+.sql-plain {
+  color: var(--text);
+}
+.sql-comment {
+  color: var(--text-faint);
+  font-style: italic;
+}
+.sql-punct {
+  color: var(--text-dim);
+}
+
+/* The completion list, hung off the caret. */
+.sql-menu {
+  position: absolute;
+  z-index: 5;
+  margin: 3px 0 0;
+  padding: 4px;
+  list-style: none;
+  min-width: 17rem;
+  max-width: 30rem;
+  max-height: 15rem;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.32);
+}
+.sql-choice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+/* The same pair the `/` menu in the composer uses, and for the same reason it
+   had to be a pair: a menu on `--bg-elevated` with a row on `--bg-active` is
+   two names for one colour, and the highlighted row was invisible. The surface
+   steps *down* and the label takes the accent, so which one Enter takes is
+   readable at a glance and in a photograph. */
+.sql-choice:hover,
+.sql-choice.on {
+  background: var(--bg-sunken);
+}
+.sql-choice.on .sql-label {
+  color: var(--accent);
+}
+/* One glyph per kind, so the list is scannable by shape before it is read —
+   which is what tells a column from a table without reading either. */
+.sql-tag {
+  flex: none;
+  width: 0.9rem;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.sql-tag.table {
+  color: var(--accent);
+}
+.sql-tag.fn {
+  color: var(--ok);
+}
+.sql-label {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.sql-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The whole point of the list, for anybody with two files open. */
+.sql-shared {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--ok);
+}
+
 .query-foot {
   display: flex;
   align-items: center;
@@ -4397,6 +4596,79 @@ button.link:hover {
   padding: 8px 10px 8px 13px;
   border-top: 1px solid var(--rule);
   background: var(--bg-raised);
+  border-radius: 0 0 calc(var(--r-md) - 1px) calc(var(--r-md) - 1px);
+}
+.query-tables {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What each table holds, under the box that queries them. */
+.schema-box {
+  flex: none;
+  max-height: 16rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+}
+.schema-join {
+  margin: 0;
+  color: var(--text-dim);
+}
+.schema-join code {
+  color: var(--ok);
+}
+.schema-table {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.schema-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.schema-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.schema-column {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+/* A column two files both have is a column two files can be joined on. Tinted
+   rather than listed separately, so the fact is found where the columns are
+   being read rather than in a second place that has to be looked at. */
+.schema-column.shared {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--rule));
+  color: var(--ok);
+}
+.schema-column i {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--text-faint);
 }
 .query-foot .micro {
   overflow: hidden;

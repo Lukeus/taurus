@@ -215,6 +215,7 @@ pub fn run() {
             commands::list_datasets,
             commands::dataset_profile,
             commands::dataset_page,
+            commands::dataset_tables,
             commands::query_data,
             commands::forget_dataset,
             commands::list_recipes,

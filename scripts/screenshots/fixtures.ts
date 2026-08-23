@@ -517,6 +517,38 @@ export const DATA_PROFILE = {
 };
 
 /*
+ * What the query box knows about the tables it can name.
+ *
+ * The same columns the profile above reports, minus everything the profile had
+ * to read the file to find out — which is the difference between the two calls
+ * and the reason completion can afford this one. `items` is a second file
+ * sharing `item_id` and `category`, because a workspace with one table has
+ * nothing to demonstrate: the join marks in the list and in the schema panel
+ * are the whole point of both.
+ */
+export const DATA_TABLES = [
+  {
+    name: "interactions",
+    path: "data/interactions.csv",
+    // A CSV keeps no count, so there is none to give without reading it.
+    rows: null,
+    columns: DATA_PROFILE.columns.map((c) => c.head),
+  },
+  {
+    name: "items",
+    path: "data/items.parquet",
+    rows: 9_000,
+    columns: [
+      { name: "item_id", kind: "text", type_name: "Utf8", nullable: false },
+      { name: "title", kind: "text", type_name: "Utf8", nullable: false },
+      { name: "category", kind: "text", type_name: "Utf8", nullable: true },
+      { name: "list_price", kind: "number", type_name: "Float64", nullable: true },
+      { name: "in_stock", kind: "boolean", type_name: "Boolean", nullable: false },
+    ],
+  },
+];
+
+/*
  * A recipe, and a run of it.
  *
  * The numbers are a real `taurus data run` over the same 400,000-row file the

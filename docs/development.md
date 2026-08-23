@@ -3,7 +3,7 @@
 <sub>[← Taurus AI Shell](../README.md)</sub>
 
 ```bash
-cargo test --workspace     # 1463 tests
+cargo test --workspace     # 1466 tests
 pnpm test                  # transcript reducer, replay, settings, rewind, diffs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -140,10 +140,19 @@ Some of these shots are the only check a behaviour has, and that is on purpose
 rather than a gap. `query-run` presses **Run in Query** on a card in the
 transcript and photographs where it lands — a lazily mounted pane, a tab
 switch, and a query that comes back — which is a real browser doing the whole
-round trip. It is also the only place the query box's auto-sizing is checked at
-all: jsdom reports `scrollHeight` as `0` for everything, so a unit test of it
-would assert a number the browser never produces. When a change touches
-anything measured from the DOM, the PNG is the test.
+round trip. `query-complete` types a half-written join into the query box and
+photographs the completion list under the caret. Between them they are the only
+check of anything measured from the DOM: jsdom has no layout, so it reports
+every `scrollHeight` and every `getBoundingClientRect` as zero, and a unit test
+of the box's auto-sizing or of where the list lands would be asserting numbers
+the browser never produces. The mount tests prove the list has the right rows
+in it; the PNG is what proves it is in the right place.
+
+Both of those scenes type into a React-controlled textarea, which needs the
+value written through `HTMLTextAreaElement.prototype`'s own setter before the
+`input` event — React keeps a tracker on the node and silently drops an event
+whose value it believes it already has. `typeInto` in `scripts/screenshots/`
+does it; the mount tests do the same thing for the same reason.
 
 ## Live checks
 

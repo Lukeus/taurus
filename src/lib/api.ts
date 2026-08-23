@@ -24,6 +24,7 @@ import type { DataDistinct } from "../bindings/DataDistinct";
 import type { DataFormat } from "../bindings/DataFormat";
 import type { DataPage } from "../bindings/DataPage";
 import type { DataProfile } from "../bindings/DataProfile";
+import type { DataTable } from "../bindings/DataTable";
 import type { DataQueryResult } from "../bindings/DataQueryResult";
 import type { DataRun } from "../bindings/DataRun";
 import type { DataStep } from "../bindings/DataStep";
@@ -114,6 +115,7 @@ export type {
   DataFormat,
   DataPage,
   DataProfile,
+  DataTable,
   DataQueryResult,
   DataRun,
   DataStep,
@@ -395,6 +397,17 @@ export const listDatasets = () => invoke<Dataset[]>("list_datasets");
  */
 export const datasetProfile = (name: string) =>
   invoke<DataProfile>("dataset_profile", { name });
+
+/**
+ * Every table a query here can name, with its columns and nothing counted.
+ *
+ * The query box's own schema, and cheap on purpose: a Parquet footer or a CSV
+ * header, where `datasetProfile` is a full scan. That difference is what lets
+ * completion ask for this every time the box is opened.
+ *
+ * A dataset whose file has moved is left out rather than failing the call.
+ */
+export const datasetTables = () => invoke<DataTable[]>("dataset_tables");
 
 /** A window of a dataset's rows. The backend caps `limit`; asking for the
  *  whole file gets a page rather than a hang. */

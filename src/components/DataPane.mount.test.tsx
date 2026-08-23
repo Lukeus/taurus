@@ -293,14 +293,40 @@ describe("the rows view", () => {
 });
 
 describe("the query view", () => {
+  const TABLES = [
+    {
+      name: "events",
+      path: "data/events.csv",
+      rows: null,
+      columns: [
+        { name: "user_id", kind: "number", type_name: "Int64", nullable: true },
+        { name: "event", kind: "text", type_name: "Utf8", nullable: true },
+      ],
+    },
+    {
+      name: "items",
+      path: "data/items.parquet",
+      rows: 4_200,
+      columns: [
+        { name: "user_id", kind: "number", type_name: "Int64", nullable: false },
+        { name: "price", kind: "number", type_name: "Float64", nullable: true },
+      ],
+    },
+  ];
+
   /** An empty profile for the tab that renders first, and `answer` for the
    *  query itself — the pane opens on Columns, so a single mock would feed a
    *  query result to the profile view. */
-  function answering(answer: () => Promise<unknown>) {
+  function answering(answer: () => Promise<unknown>, schemas: unknown[] = TABLES) {
     invoke.mockImplementation((name: string) =>
       name === "query_data"
         ? answer()
-        : Promise.resolve({ rows: 0, engine: "DataFusion", columns: [] }),
+        : // The schema read the completion list runs on. A list, not a
+          // profile: the two commands answer different shapes and the box
+          // asks for both.
+          name === "dataset_tables"
+          ? Promise.resolve(schemas)
+          : Promise.resolve({ rows: 0, engine: "DataFusion", columns: [] }),
     );
   }
 
@@ -316,7 +342,7 @@ describe("the query view", () => {
   }
 
   const sqlBox = (host: HTMLElement) =>
-    host.querySelector(".query-sql") as HTMLTextAreaElement;
+    host.querySelector(".sql-input") as HTMLTextAreaElement;
 
   async function run(host: HTMLElement) {
     const button = [...host.querySelectorAll("button")].find((b) =>
@@ -569,6 +595,53 @@ describe("the query view", () => {
     });
     expect(drafts[0]).toContain("recipe");
     expect(drafts[0]).toContain("SELECT count(*) FROM events");
+  });
+
+  it("names a table that is actually loaded in the empty box", async () => {
+    // The shape of a SELECT is the easy half. Which file this workspace has is
+    // the half worth being told without having to ask.
+    answering(() => Promise.resolve(null));
+    const host = await mount([EVENTS], () => {}, () => {}, "");
+    const tab = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Query",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      tab.click();
+    });
+    expect(sqlBox(host).placeholder).toBe("SELECT * FROM events LIMIT 20");
+  });
+
+  /*
+   * The reference half, next to the completion half. You cannot type the first
+   * three letters of a column you have never seen, which is what this answers
+   * and what a completion list structurally cannot.
+   */
+  it("shows what each table holds, and marks the columns two of them share", async () => {
+    answering(() => Promise.resolve(null));
+    const host = await queryTab();
+    expect(host.querySelector(".schema-box")).toBeNull();
+
+    const disclosure = host.querySelector(".query-tables") as HTMLButtonElement;
+    expect(disclosure.textContent).toContain("tables: events, items");
+    await act(async () => {
+      disclosure.click();
+    });
+
+    const panel = host.querySelector(".schema-box") as HTMLElement;
+    expect(panel.textContent).toContain("price");
+    expect(panel.textContent).toContain("Float64");
+    // A Parquet footer carries a count; a CSV does not, and inventing one
+    // would be the panel claiming something this call refuses to read.
+    expect(panel.textContent).toContain("4,200 rows · 2 columns");
+
+    // The join key, tinted where the columns are rather than listed somewhere
+    // else that has to be looked at as well.
+    const shared = [...panel.querySelectorAll(".schema-column.shared")].map(
+      (e) => e.textContent,
+    );
+    expect(shared).toHaveLength(2);
+    expect(shared.every((text) => text?.startsWith("user_id"))).toBe(true);
+    expect(panel.querySelector(".schema-join")?.textContent).toContain("user_id");
   });
 
   it("says so when the query matched nothing, rather than drawing an empty table", async () => {

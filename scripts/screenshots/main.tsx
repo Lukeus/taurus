@@ -21,6 +21,7 @@ import {
   DATA_PROFILE,
   DATA_PROMPT,
   DATA_QUERY,
+  DATA_TABLES,
   EVENTS,
   MCP_ENVIRONMENT,
   MCP_SERVERS,
@@ -69,6 +70,37 @@ async function click(selector: string, text: (label: string) => boolean) {
   return () => (button as HTMLButtonElement).click();
 }
 
+/**
+ * The half-written join the completion shot is of.
+ *
+ * Ends on `i.` because that is the moment the list is worth a picture: two
+ * files are in scope, one of them is aliased, and what comes next is a column
+ * of that one specifically.
+ */
+const JOIN = `SELECT i.category, count(*) AS n
+  FROM interactions x
+  JOIN items i ON i.item_id = x.item_id
+ WHERE x.event = 'add_to_cart'
+ GROUP BY i.`;
+
+/**
+ * Types into a React-controlled textarea.
+ *
+ * Setting `.value` alone is swallowed: React keeps a tracker on the node and
+ * skips an event whose value it believes it already has. Going through the
+ * prototype's setter writes past the tracker, which is what makes the `input`
+ * that follows look like a keystroke.
+ */
+function typeInto(area: HTMLTextAreaElement, text: string) {
+  const write = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "value",
+  )!.set!;
+  write.call(area, text);
+  area.setSelectionRange(text.length, text.length);
+  area.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 const ANSWERS: Record<string, unknown> = {
   get_status: { ...STATUS, settings: { ...STATUS.settings, theme } },
   list_sessions: SESSIONS,
@@ -84,6 +116,7 @@ const ANSWERS: Record<string, unknown> = {
   list_recipes: RECIPES,
   run_recipe: RECIPE_RUN,
   query_data: DATA_QUERY,
+  dataset_tables: DATA_TABLES,
   list_mcp_servers: MCP_SERVERS,
   mcp_environment: MCP_ENVIRONMENT,
   // Empty, because the turn below is replayed as live events instead. Resume
@@ -220,6 +253,20 @@ requestAnimationFrame(() => {
       "query-run": async () => {
         (await click(".query-card button", (b) => b === "Run in Query"))();
         await until(() => document.querySelector(".grid-box"));
+      },
+      // A join, halfway through being written. This is the only picture of
+      // the completion list there is, and the only check of where it lands:
+      // jsdom has no layout, so the mount tests can prove the list has the
+      // right rows in it and nothing about whether it is under the caret.
+      "query-complete": async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Data")))();
+        (await click(".data-switch .seg", (b) => b === "Query"))();
+        const box = (await until(() =>
+          document.querySelector(".sql-input"),
+        )) as HTMLTextAreaElement;
+        (await click(".query-tables", (b) => b.includes("tables")))();
+        typeInto(box, JOIN);
+        await until(() => document.querySelector(".sql-menu"));
       },
       mcp: () => {
         const link = [...document.querySelectorAll(".rail-link")].find(

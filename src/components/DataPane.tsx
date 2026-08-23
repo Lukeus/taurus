@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { FORMAT_LABEL } from "./DatasetCard";
+import { SqlEditor } from "./SqlEditor";
 import * as api from "../lib/api";
 import type {
   DataColumn,
@@ -10,6 +11,7 @@ import type {
   DataProfile,
   DataQueryResult,
   DataRun,
+  DataTable,
   Dataset,
   Recipe,
 } from "../lib/api";
@@ -207,7 +209,7 @@ export function DataPane({
       {tab === "rows" && <Rows key={dataset.name} name={dataset.name} />}
       {tab === "query" && (
         <Query
-          tables={datasets.map((d) => d.name)}
+          datasets={datasets}
           sql={sql}
           onSql={onSql}
           pending={pending}
@@ -492,14 +494,17 @@ function Grid({
  * keep in step with the real one.
  */
 function Query({
-  tables,
+  datasets,
   sql,
   onSql,
   pending,
   onPendingRun,
   onAsk,
 }: {
-  tables: string[];
+  /** Which datasets are loaded. Only used to notice that the set has changed,
+   *  so the schemas are read again — the columns themselves come from the
+   *  backend, because a name is not a schema. */
+  datasets: Dataset[];
   /** Held by `App`, not here. See the note where it is declared. */
   sql: string;
   onSql: (sql: string) => void;
@@ -521,20 +526,33 @@ function Query({
    * is right — the edit is being made *because* of it.
    */
   const [ran, setRan] = useState("");
-  const box = useRef<HTMLTextAreaElement>(null);
-
-  /*
-   * The box takes the shape of what is in it.
+  /**
+   * Every table this query can name, with its columns.
    *
-   * Four lines was the right default when everything in here was typed, and
-   * the wrong one the moment a card in the transcript started putting the
-   * model's SQL in — a seven-line aggregate arrived clipped through the middle
-   * of a `WHERE`, which reads as broken rather than as scrolled. The floor and
-   * the ceiling are in the stylesheet; this measures what is between them.
+   * Read here rather than passed in, and read again whenever the set of
+   * datasets changes. It is the cheap half of what the pane knows how to ask
+   * — a Parquet footer, a CSV header — where a profile is a full scan, which
+   * is why completion can afford this on every visit and could not afford
+   * that. Empty until it lands, which costs the first keystroke its
+   * suggestions and nothing else.
    */
+  const [schemas, setSchemas] = useState<DataTable[]>([]);
+  const [showSchema, setShowSchema] = useState(false);
+
+  const loaded = datasets.map((d) => d.name).join(",");
   useEffect(() => {
-    fit(box.current);
-  }, [sql]);
+    let live = true;
+    api
+      .datasetTables()
+      .then((found) => live && setSchemas(found))
+      // Silently. This feeds completion and a reference panel, and a workspace
+      // whose files have moved should still be able to type a query and be
+      // told what is wrong by the engine, in the one message that knows.
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [loaded]);
 
   const run = async (text = sql) => {
     if (!text.trim() || running) return;
@@ -573,31 +591,33 @@ function Query({
   return (
     <div className="data-body">
       <div className="query-box">
-        <textarea
-          ref={box}
-          className="query-sql"
+        <SqlEditor
           value={sql}
-          spellCheck={false}
-          rows={4}
-          aria-label="SQL"
-          onChange={(e) => onSql(e.target.value)}
-          onKeyDown={(e) => {
-            // Enter is a newline: this is SQL, and a query worth writing is
-            // more than one line. ⌘↵ and ⌃↵ run it, as every SQL client does.
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void run();
-            }
-          }}
+          onChange={onSql}
+          onRun={() => void run()}
+          tables={schemas}
+          // Names a table that is actually here. The shape of a `SELECT` is
+          // the easy half; which file this workspace happens to have loaded is
+          // the half worth being told without asking.
+          placeholder={
+            datasets[0] ? `SELECT * FROM ${datasets[0].name} LIMIT 20` : "SELECT …"
+          }
         />
         <div className="query-foot">
-          <span className="micro">
-            {tables.length === 1
-              ? `table: ${tables[0]}`
-              : `tables: ${tables.join(", ")}`}
-          </span>
+          {/* Was a line of text naming the tables; it is a control now,
+              because with two files loaded the next question is always which
+              of them has the column you half-remember. */}
+          <button
+            className="pill query-tables"
+            aria-expanded={showSchema}
+            onClick={() => setShowSchema(!showSchema)}
+            title="What each table has in it"
+          >
+            <span className="recipe-caret">{showSchema ? "▾" : "▸"}</span>
+            {tableLine(schemas, datasets)}
+          </button>
           <div className="spacer" />
-          <span className="micro">⌘↵ run</span>
+          <span className="micro">⌃space complete · ⌘↵ run</span>
           <button
             className="primary"
             disabled={running || !sql.trim()}
@@ -607,6 +627,8 @@ function Query({
           </button>
         </div>
       </div>
+
+      {showSchema && <Schema tables={schemas} />}
 
       {problem && (
         <p className="data-problem">
@@ -662,19 +684,95 @@ function Query({
 }
 
 /**
- * Sizes a textarea to its content, between whatever bounds the CSS sets.
+ * What each table has in it, and which columns two of them share.
  *
- * `auto` first, and that is the whole trick: `scrollHeight` on an element that
- * is already tall enough reports the height it currently has, so measuring
- * without collapsing it first makes the box grow and never shrink. The
- * stylesheet keeps both ends — `min-height` so an empty box is still worth
- * typing a join into, `max-height` so a long one scrolls rather than pushing
- * the answer off the screen.
+ * Reference, not input: nothing here is clickable, and that is a decision
+ * rather than an omission. Completion is the way text gets into the box —
+ * ⌃space, or just keep typing — and a second insertion route would be a second
+ * set of rules about where the caret goes. What this answers is the question
+ * completion cannot, which is *what is there at all*: you cannot type the first
+ * three letters of a column you have never seen.
+ *
+ * The line at the top is the reason it is worth opening. Two files that share a
+ * column are two files that can be joined on it, and finding that out otherwise
+ * means reading two profiles side by side and holding forty names in your head.
  */
-function fit(area: HTMLTextAreaElement | null) {
-  if (!area) return;
-  area.style.height = "auto";
-  area.style.height = `${area.scrollHeight}px`;
+function Schema({ tables }: { tables: DataTable[] }) {
+  const shared = joinable(tables);
+  return (
+    <div className="schema-box">
+      {shared.length > 0 && (
+        <p className="micro schema-join">
+          Shared by more than one table:{" "}
+          {shared.map((name, i) => (
+            <span key={name}>
+              {i > 0 && ", "}
+              <code>{name}</code>
+            </span>
+          ))}
+        </p>
+      )}
+      {tables.map((table) => (
+        <div className="schema-table" key={table.name}>
+          <div className="schema-name">
+            <b>{table.name}</b>
+            <span className="micro" title={table.path}>
+              {/* A CSV has no row count until something reads it, and this is
+                  the call that refuses to. Saying nothing is better than
+                  saying a number the footer did not have. */}
+              {table.rows === null
+                ? `${table.columns.length} columns`
+                : `${table.rows.toLocaleString()} rows · ${table.columns.length} columns`}
+            </span>
+          </div>
+          <div className="schema-columns">
+            {table.columns.map((column) => (
+              <span
+                key={column.name}
+                className={`schema-column${shared.includes(column.name) ? " shared" : ""}`}
+                title={`${column.type_name}${
+                  shared.includes(column.name) ? " · more than one table has this" : ""
+                }`}
+              >
+                {column.name}
+                <i>{column.type_name}</i>
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+      {tables.length === 0 && (
+        <p className="micro">Reading what each table has in it…</p>
+      )}
+    </div>
+  );
+}
+
+/** Column names more than one loaded table has, in the order the first table
+ *  lists them — which is the order somebody reading a profile met them in. */
+function joinable(tables: DataTable[]): string[] {
+  const seen = new Map<string, number>();
+  for (const table of tables) {
+    for (const name of new Set(table.columns.map((c) => c.name))) {
+      seen.set(name, (seen.get(name) ?? 0) + 1);
+    }
+  }
+  return [...seen].filter(([, n]) => n > 1).map(([name]) => name);
+}
+
+/**
+ * The label on the disclosure, which has to say something true before the
+ * schemas have arrived.
+ *
+ * The dataset list is in hand immediately and the schema read is a round trip
+ * behind it, so for one frame there are names and no columns. Naming the
+ * tables from whichever list is further along keeps the control from flashing
+ * `no tables` at a workspace that has two.
+ */
+function tableLine(schemas: DataTable[], datasets: Dataset[]): string {
+  const names = (schemas.length > 0 ? schemas : datasets).map((t) => t.name);
+  if (names.length === 0) return "no tables";
+  return names.length === 1 ? `table: ${names[0]}` : `tables: ${names.join(", ")}`;
 }
 
 /*

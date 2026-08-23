@@ -1869,6 +1869,39 @@ impl Host {
             .map_err(|e| e.to_string())
     }
 
+    /// The columns of every dataset loaded here, without reading any of them.
+    ///
+    /// [`taurus_data::Engine::schema`] rather than `profile`, and that is the
+    /// whole point: a profile is a full scan and this is asked for on every
+    /// visit to the query box. A Parquet footer answers it instantly and a CSV
+    /// costs the few rows the inference reads.
+    ///
+    /// A dataset whose file has gone is **left out rather than failing the
+    /// call**. This exists to feed completion, and a workspace with one stale
+    /// entry should still be able to complete the other three — the same
+    /// argument recipes make for carrying their problems beside the list. The
+    /// missing file is not silently swallowed either: opening that dataset in
+    /// the pane says so, from the read that actually needed it.
+    pub async fn dataset_schemas(&self) -> Vec<(taurus_data::Dataset, taurus_data::Schema)> {
+        let workspace = self.workspace().await;
+        let mut out = Vec::new();
+        for dataset in self.datasets().await {
+            // Through the guard, like every other read of an entry's path. An
+            // entry is a line in a file somebody can edit, so `../` in one is a
+            // thing that can happen rather than a thing that cannot.
+            let Ok(path) = taurus_tools::path_guard::resolve(&workspace, &dataset.path) else {
+                continue;
+            };
+            let Ok(source) = taurus_data::Source::at(path) else {
+                continue;
+            };
+            if let Ok(schema) = self.engine.schema(&source).await {
+                out.push((dataset, schema));
+            }
+        }
+        out
+    }
+
     /// A window of a dataset's rows.
     pub async fn dataset_page(
         &self,
@@ -2416,6 +2449,77 @@ mod tests {
             Arc::new(NoProposals),
         );
         (host, home)
+    }
+
+    /// Registers a dataset the way `load_dataset` does, so the reads below
+    /// have something to read.
+    fn load_csv(host: &Host, workspace: &Path, name: &str, body: &str) {
+        std::fs::create_dir_all(workspace.join("data")).unwrap();
+        let relative = format!("data/{name}.csv");
+        std::fs::write(workspace.join(&relative), body).unwrap();
+        let dir = taurus_data::data_dir(
+            &config::home_dir(),
+            &crate::sessions::workspace_key(workspace),
+        );
+        let _ = host;
+        taurus_data::catalog::register(
+            &dir,
+            taurus_data::Dataset {
+                name: name.to_string(),
+                path: relative,
+                format: taurus_data::Format::Csv,
+            },
+        )
+        .unwrap();
+    }
+
+    /// The read the query box's completion runs on: every table, its columns,
+    /// and nothing that would need the file to be scanned.
+    #[tokio::test]
+    async fn every_loaded_table_reports_its_columns_without_being_counted() {
+        let dir = TempDir::new().unwrap();
+        let (host, _home) = host(dir.path());
+        load_csv(
+            &host,
+            dir.path(),
+            "events",
+            "user_id,event\n1,view\n2,click\n",
+        );
+        load_csv(&host, dir.path(), "users", "user_id,country\n1,SE\n");
+
+        let found = host.dataset_schemas().await;
+        let named: Vec<&str> = found.iter().map(|(d, _)| d.name.as_str()).collect();
+        assert_eq!(named, vec!["events", "users"]);
+
+        let columns: Vec<&str> = found[0].1.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(columns, vec!["user_id", "event"]);
+        // A CSV keeps no count, and this call is the one that refuses to read
+        // the file to find one. Saying nothing beats saying a guess.
+        assert_eq!(found[0].1.rows, None);
+    }
+
+    /// The property that makes this usable for completion: one dead entry must
+    /// not cost the reader the tables that are fine. Opening the missing one in
+    /// the pane still says so, from the read that actually needed it.
+    #[tokio::test]
+    async fn a_dataset_whose_file_has_gone_is_left_out_rather_than_failing_the_call() {
+        let dir = TempDir::new().unwrap();
+        let (host, _home) = host(dir.path());
+        load_csv(&host, dir.path(), "events", "user_id,event\n1,view\n");
+        load_csv(&host, dir.path(), "gone", "a\n1\n");
+        std::fs::remove_file(dir.path().join("data/gone.csv")).unwrap();
+
+        let found = host.dataset_schemas().await;
+        assert_eq!(
+            found
+                .iter()
+                .map(|(d, _)| d.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["events"]
+        );
+        // And the list itself still has both, because forgetting one is a
+        // decision the person makes rather than one a failed read makes.
+        assert_eq!(host.datasets().await.len(), 2);
     }
 
     /// Writes an agent file into a workspace's `.taurus/agents`.

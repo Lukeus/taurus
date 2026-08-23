@@ -132,6 +132,11 @@ to put things back after.
   [**recipe**](docs/working-with-it.md#recipes): a chain of SQL steps committed
   with the code, re-runnable on next month's export, reporting what each step
   did to the row count.
+- [**A query box that knows your columns**](docs/working-with-it.md#writing-the-query)
+  — SQL coloured as you type, completing against the real schema of every
+  loaded file rather than a keyword list. A column two files share is marked
+  `joins`, which is how you find the key to join them on while writing the
+  join.
 
 ![The Data pane: a profile of a 400,000-row file, with the missing values
 marked](docs/screenshots/data.png)
