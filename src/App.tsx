@@ -572,6 +572,7 @@ export default function App() {
                 selected={dataset}
                 onSelect={setDataset}
                 onForget={forgetDataset}
+                onRan={() => void store.refreshDatasets()}
               />
             </Suspense>
           ) : (

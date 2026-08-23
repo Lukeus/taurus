@@ -14,9 +14,13 @@ thiserror.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml_ng.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+# Scratch files for a recipe's intermediate steps. See `Engine::materialize`
+# for why they exist at all and why they are not in the workspace.
+tempfile = "3"
 ts-rs.workspace = true
 
 # Trimmed deliberately, and the trim is part of the argument for this engine

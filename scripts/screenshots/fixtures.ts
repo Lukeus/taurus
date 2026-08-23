@@ -457,3 +457,90 @@ export const DATA_PROFILE = {
     }),
   ],
 };
+
+/*
+ * A recipe, and a run of it.
+ *
+ * The numbers are a real `taurus data run` over the same 400,000-row file the
+ * profile above came from, not invented ones — and the reason to photograph
+ * this view rather than the recipe sitting still is the delta column. A step
+ * that dropped 375,968 rows is the whole argument for reporting per step, and
+ * a frame of four rows all saying "done" would say nothing about it.
+ */
+export const RECIPES = {
+  recipes: [
+    {
+      name: "purchases",
+      source: "data/interactions.csv",
+      output: "data/purchases.parquet",
+      description: "the purchases, deduplicated, rated, and ranked per user",
+      path: ".taurus/recipes/purchases.sql",
+      tables: [],
+      steps: [
+        { title: "drop exact duplicates", sql: "SELECT DISTINCT * FROM input" },
+        {
+          title: "keep the purchases",
+          sql: "SELECT * FROM input WHERE event = 'purchase'",
+        },
+        {
+          title: "drop the rows with no rating",
+          sql: "SELECT * FROM input WHERE rating IS NOT NULL",
+        },
+        {
+          title: "rank each user's purchases by price",
+          sql: "SELECT user_id, item_id, category, price, rating, ts,\n       row_number() OVER (PARTITION BY user_id ORDER BY price DESC) AS rank_for_user\nFROM input",
+        },
+      ],
+    },
+    // A second one, unrun, and one that binds a table of its own — because a
+    // workspace with a single recipe says nothing about what the list is for,
+    // and `tables:` is the thing that makes a recipe an enrichment rather than
+    // only a filter.
+    {
+      name: "enriched",
+      source: "data/interactions.csv",
+      output: "data/enriched.parquet",
+      description: "interactions with each item's title and brand alongside",
+      path: ".taurus/recipes/enriched.sql",
+      tables: [{ name: "items", path: "data/items.parquet" }],
+      steps: [
+        {
+          title: "attach the catalogue",
+          sql: "SELECT i.*, c.title, c.brand\nFROM input i\nLEFT JOIN items c ON i.item_id = c.id",
+        },
+        {
+          title: "drop the interactions with no item",
+          sql: "SELECT * FROM input WHERE title IS NOT NULL",
+        },
+      ],
+    },
+  ],
+  problems: [],
+};
+
+export const RECIPE_RUN = {
+  started_with: 400_000,
+  steps: [
+    { title: "drop exact duplicates", rows: 400_000, columns: 7, took_ms: 517 },
+    { title: "keep the purchases", rows: 24_032, columns: 7, took_ms: 240 },
+    { title: "drop the rows with no rating", rows: 13_980, columns: 7, took_ms: 41 },
+    {
+      title: "rank each user's purchases by price",
+      rows: 13_980,
+      columns: 7,
+      took_ms: 50,
+    },
+  ],
+  columns: [
+    { name: "user_id", kind: "text", type_name: "Utf8View", nullable: true },
+    { name: "item_id", kind: "text", type_name: "Utf8View", nullable: true },
+    { name: "category", kind: "text", type_name: "Utf8View", nullable: true },
+    { name: "price", kind: "number", type_name: "Float64", nullable: true },
+    { name: "rating", kind: "number", type_name: "Int64", nullable: true },
+    { name: "ts", kind: "temporal", type_name: "Timestamp(s)", nullable: true },
+    { name: "rank_for_user", kind: "number", type_name: "UInt64", nullable: false },
+  ],
+  rows: 13_980,
+  bytes: 233_472,
+  took_ms: 848,
+};

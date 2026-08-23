@@ -24,6 +24,8 @@ import {
   MODELS,
   PERMISSION,
   PROMPT,
+  RECIPES,
+  RECIPE_RUN,
   SESSIONS,
   STATUS,
 } from "./fixtures";
@@ -31,6 +33,38 @@ import {
 /** Which part of the conversation to frame. See `capture.mjs` for the set. */
 const shot = new URLSearchParams(location.search).get("shot") ?? "top";
 const theme = new URLSearchParams(location.search).get("theme") ?? "dark";
+
+/**
+ * Polls until something is there, or gives up rather than hanging.
+ *
+ * On a timer rather than on `requestAnimationFrame`, which is the obvious
+ * choice and the wrong one here: Chrome runs these shots under
+ * `--virtual-time-budget`, and a frame loop that reschedules itself every
+ * frame spends the whole budget without ever letting the fetch it is waiting
+ * on land. A timer is fast-forwarded instead, so the wait costs nothing and
+ * the work in between actually happens.
+ */
+function until<T>(look: () => T | null | undefined, tries = 200): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const tick = (left: number) => {
+      const found = look();
+      if (found) return resolve(found);
+      if (left <= 0) return reject(new Error("nothing turned up to click"));
+      setTimeout(() => tick(left - 1), 20);
+    };
+    tick(tries);
+  });
+}
+
+/** Waits for a button matching `text` to exist, and hands back its click. */
+async function click(selector: string, text: (label: string) => boolean) {
+  const button = await until(() =>
+    [...document.querySelectorAll(selector)].find((element) =>
+      text(element.textContent ?? ""),
+    ),
+  );
+  return () => (button as HTMLButtonElement).click();
+}
 
 const ANSWERS: Record<string, unknown> = {
   get_status: { ...STATUS, settings: { ...STATUS.settings, theme } },
@@ -44,6 +78,8 @@ const ANSWERS: Record<string, unknown> = {
   agent_roster_cost: 0,
   list_datasets: DATASETS,
   dataset_profile: DATA_PROFILE,
+  list_recipes: RECIPES,
+  run_recipe: RECIPE_RUN,
   list_mcp_servers: MCP_SERVERS,
   mcp_environment: MCP_ENVIRONMENT,
   // Empty, because the turn below is replayed as live events instead. Resume
@@ -108,7 +144,9 @@ requestAnimationFrame(() => {
       // Seeded rather than fetched, for the same reason the entries above are:
       // the list arrives from `refresh`, which the harness never calls, and
       // the switch this shot presses does not exist until the list is there.
-      ...(shot === "data" ? { datasets: DATASETS as never } : {}),
+      ...(shot === "data" || shot === "recipes"
+        ? { datasets: DATASETS as never }
+        : {}),
     });
 
     const transcript = document.querySelector(".transcript");
@@ -133,6 +171,18 @@ requestAnimationFrame(() => {
         );
         (tab as HTMLButtonElement | undefined)?.click();
       },
+      // Three clicks, so the picture is of a run somebody actually asked for
+      // rather than of a report seeded into place. Each one has to wait for
+      // what the last one fetched — the Recipes tab does not exist until the
+      // pane is open, and the Run button does not exist until the recipe list
+      // has arrived — which is why this is the one target that is async.
+      recipes: async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Data")))();
+        (await click(".data-switch .seg", (b) => b === "Recipes"))();
+        (await click(".recipe button.primary", (b) => b.startsWith("Run")))();
+        // And the report itself, which arrives a round trip after the click.
+        await until(() => document.querySelector(".recipe-run"));
+      },
       mcp: () => {
         const link = [...document.querySelectorAll(".rail-link")].find(
           (button) => button.textContent?.startsWith("MCP"),
@@ -141,10 +191,13 @@ requestAnimationFrame(() => {
       },
     }[shot];
     // A frame for React to paint the seeded entries before anything is
-    // measured; the scroll targets do not exist until it has.
+    // measured; the scroll targets do not exist until it has. The flag waits
+    // on the target rather than racing it — a shot that clicks through two
+    // fetches would otherwise be photographed on the first one.
     requestAnimationFrame(() => {
-      target?.();
-      document.body.dataset.ready = "true";
+      void Promise.resolve(target?.()).then(() => {
+        document.body.dataset.ready = "true";
+      });
     });
   }, 400);
 });

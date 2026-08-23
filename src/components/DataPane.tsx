@@ -9,7 +9,9 @@ import type {
   DataPage,
   DataProfile,
   DataQueryResult,
+  DataRun,
   Dataset,
+  Recipe,
 } from "../lib/api";
 
 /**
@@ -41,6 +43,7 @@ export function DataPane({
   selected,
   onSelect,
   onForget,
+  onRan,
 }: {
   datasets: Dataset[];
   /** Which dataset is open. Held by the caller so a transcript card can
@@ -48,8 +51,12 @@ export function DataPane({
   selected: string | null;
   onSelect: (name: string) => void;
   onForget: (name: string) => void;
+  /** A recipe wrote a file and loaded it, so the dataset list has changed. */
+  onRan: () => void;
 }) {
-  const [tab, setTab] = useState<"columns" | "rows" | "query">("columns");
+  const [tab, setTab] = useState<"columns" | "rows" | "query" | "recipes">(
+    "columns",
+  );
 
   // Falls back to the first, so the pane is never open on nothing while there
   // is something to be open on. A name that no longer exists — a dataset
@@ -132,6 +139,12 @@ export function DataPane({
         >
           Query
         </button>
+        <button
+          className={`seg${tab === "recipes" ? " on" : ""}`}
+          onClick={() => setTab("recipes")}
+        >
+          Recipes
+        </button>
       </div>
 
       {/* The first two are keyed on the dataset, so switching between two of
@@ -147,6 +160,11 @@ export function DataPane({
       {tab === "query" && (
         <Query tables={datasets.map((d) => d.name)} start={dataset.name} />
       )}
+      {/* Not scoped to the selected dataset, and not keyed on it. A recipe
+          names its own source and can join every other loaded one, so hiding
+          the ones whose source is not the open chip would hide most of them
+          most of the time. */}
+      {tab === "recipes" && <Recipes onRan={onRan} />}
     </div>
   );
 }
@@ -507,6 +525,240 @@ function Query({ tables, start }: { tables: string[]; start: string }) {
       )}
     </div>
   );
+}
+
+/**
+ * The recipes this workspace has, and the button that runs one.
+ *
+ * A recipe is the difference between having looked at some data and having a
+ * dataset: a committed chain of SQL steps that produces the same file from
+ * next month's export without anybody remembering what was decided. So this
+ * list is read off `.taurus/recipes` every time it is opened rather than
+ * cached — the file is in the project, and the agent, an editor, or a `git
+ * pull` can all have changed it since.
+ *
+ * # Why Run does not confirm
+ *
+ * It writes a file, and it asks nothing first. The same arrangement the query
+ * box has: the person clicked it, and the button says where it writes, so a
+ * dialog repeating the path back would be asking somebody to agree with
+ * themselves. What is still refused — one layer down, in the engine — is a
+ * *step* that writes somewhere other than the path on the button. That
+ * refusal is not repeated here, for the reason the query box does not repeat
+ * its own: a second rule in the frontend is a rule that drifts.
+ */
+function Recipes({ onRan }: { onRan: () => void }) {
+  const [recipes, setRecipes] = useState<Recipe[] | null>(null);
+  const [problems, setProblems] = useState<string[]>([]);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const answer = await api.listRecipes();
+        if (!live) return;
+        setRecipes(answer.recipes);
+        setProblems(answer.problems);
+      } catch (e) {
+        if (live) setFailed(String(e));
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (failed) return <p className="data-problem">{failed}</p>;
+  if (!recipes) return <p className="data-reading">Reading recipes…</p>;
+
+  return (
+    <div className="data-body">
+      {recipes.length === 0 && problems.length === 0 && (
+        <div className="recipe-blank">
+          <p>No recipes in this workspace yet.</p>
+          <p className="micro">
+            A recipe is a <code>.sql</code> file in{" "}
+            <code>.taurus/recipes</code> — a <code>source:</code> and an{" "}
+            <code>output:</code> between <code>---</code> lines, then one{" "}
+            <code>SELECT</code> per step, each under a{" "}
+            <code>-- step: what it does</code> line. Every step reads from{" "}
+            <code>input</code>, which is the step before it. Ask Taurus to
+            write one.
+          </p>
+        </div>
+      )}
+
+      {recipes.map((recipe) => (
+        <RecipeCard key={recipe.name} recipe={recipe} onRan={onRan} />
+      ))}
+
+      {/* Below the list rather than instead of it: a file somebody is halfway
+          through writing should not hide the four that work. */}
+      {problems.map((problem) => (
+        <p key={problem} className="data-problem">
+          {problem}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function RecipeCard({
+  recipe,
+  onRan,
+}: {
+  recipe: Recipe;
+  onRan: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [run, setRun] = useState<DataRun | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const go = async () => {
+    if (running) return;
+    setRunning(true);
+    setProblem(null);
+    try {
+      setRun(await api.runRecipe(recipe.name));
+      // The output is loaded as a dataset on the way out, so the chips above
+      // this and the count on the rail have both just changed.
+      onRan();
+    } catch (e) {
+      setRun(null);
+      setProblem(String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div className="recipe">
+      <div className="recipe-head">
+        <button
+          className="recipe-name"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+          title={recipe.path}
+        >
+          <span className="recipe-caret">{open ? "▾" : "▸"}</span>
+          <b>{recipe.name}</b>
+        </button>
+        <span className="micro recipe-flow">
+          {recipe.source} → {recipe.output}
+        </span>
+        <div className="spacer" />
+        <span className="micro">
+          {recipe.steps.length} {recipe.steps.length === 1 ? "step" : "steps"}
+        </span>
+        {/* The path is on the button, not in a dialog after it. This writes a
+            file, and what it writes is the thing worth reading before
+            clicking. */}
+        <button
+          className="primary"
+          disabled={running}
+          title={`Run ${recipe.steps.length} steps over ${recipe.source} and write ${recipe.output}`}
+          onClick={() => void go()}
+        >
+          {running ? "Running…" : `Run → ${recipe.output}`}
+        </button>
+      </div>
+
+      {recipe.description && (
+        <p className="micro recipe-note">{recipe.description}</p>
+      )}
+
+      {open && recipe.tables.length > 0 && (
+        <p className="micro recipe-note">
+          {/* Shown only when opened, because it is a detail of what the steps
+              can see rather than of what the run writes — but shown, because a
+              recipe that joins against another file is reading something the
+              header line does not name. */}
+          also reads{" "}
+          {recipe.tables.map((t, i) => (
+            <span key={t.name}>
+              {i > 0 && ", "}
+              <code>{t.name}</code> from {t.path}
+            </span>
+          ))}
+        </p>
+      )}
+
+      {open && (
+        <ol className="recipe-steps">
+          {recipe.steps.map((step, i) => (
+            <li key={i}>
+              <span className="recipe-step-title">{step.title}</span>
+              <pre className="recipe-sql">{step.sql}</pre>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {problem && <p className="data-problem">{problem}</p>}
+      {run && !problem && <RunReport run={run} output={recipe.output} />}
+    </div>
+  );
+}
+
+/**
+ * What a run did, step by step.
+ *
+ * The deltas are the reason this exists rather than a single "done". A step
+ * meant to drop a hundred duplicates that dropped four hundred thousand rows
+ * is invisible in the SQL and unmissable in this column, and finding that out
+ * a week later from a model that trained on the result is the failure the
+ * whole feature is arranged against.
+ */
+function RunReport({ run, output }: { run: DataRun; output: string }) {
+  let previous = run.started_with;
+  const rows = run.steps.map((step) => {
+    const change = step.rows - previous;
+    previous = step.rows;
+    return { step, change };
+  });
+
+  return (
+    <div className="recipe-run">
+      <div className="recipe-run-row start">
+        <span className="recipe-run-n" />
+        <span className="recipe-run-title">before any step</span>
+        <span className="recipe-run-rows">{run.started_with.toLocaleString()}</span>
+        <span className="recipe-run-delta" />
+        <span className="recipe-run-ms" />
+      </div>
+      {rows.map(({ step, change }, i) => (
+        <div className="recipe-run-row" key={i}>
+          <span className="recipe-run-n">{i + 1}</span>
+          <span className="recipe-run-title">{step.title}</span>
+          <span className="recipe-run-rows">{step.rows.toLocaleString()}</span>
+          <span className={`recipe-run-delta${change < 0 ? " down" : change > 0 ? " up" : ""}`}>
+            {/* A step that changed nothing says so. A `0` here reads as a row
+                count rather than as a difference. */}
+            {change === 0
+              ? "—"
+              : `${change < 0 ? "−" : "+"}${Math.abs(change).toLocaleString()}`}
+          </span>
+          <span className="recipe-run-ms">{step.took_ms.toLocaleString()} ms</span>
+        </div>
+      ))}
+      <p className="micro recipe-run-foot">
+        Wrote <b>{run.rows.toLocaleString()}</b> rows ×{" "}
+        {run.columns.length.toLocaleString()} columns to <code>{output}</code> ·{" "}
+        {size(run.bytes)} · {run.took_ms.toLocaleString()} ms
+      </p>
+    </div>
+  );
+}
+
+/** A file size as a person reads it. */
+function size(bytes: number): string {
+  const MB = 1024 * 1024;
+  if (bytes >= 1024 * MB) return `${(bytes / (1024 * MB)).toFixed(1)} GB`;
+  if (bytes >= MB) return `${(bytes / MB).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} bytes`;
 }
 
 /**

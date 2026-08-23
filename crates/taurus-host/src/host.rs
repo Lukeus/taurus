@@ -363,7 +363,12 @@ impl Host {
             )));
             registry.register(Arc::new(taurus_data::QueryData::new(
                 self.engine.clone(),
+                dir.clone(),
+            )));
+            registry.register(Arc::new(taurus_data::RunRecipe::new(
+                self.engine.clone(),
                 dir,
+                &workspace,
             )));
         }
 
@@ -1916,6 +1921,67 @@ impl Host {
                 }
                 other => other.to_string(),
             })
+    }
+
+    /// Every recipe this workspace has, and anything wrong with the rest.
+    ///
+    /// Problems travel beside the list rather than instead of it, the same way
+    /// a skill's warnings do: one torn file should cost the reader that file
+    /// and not the other four.
+    pub async fn recipes(&self) -> (Vec<taurus_data::Recipe>, Vec<String>) {
+        taurus_data::recipe::load(&self.workspace().await)
+    }
+
+    /// Runs a recipe and writes the file it names.
+    ///
+    /// The one method here that changes the workspace, and the only caller is
+    /// somebody clicking Run on a button that says where it writes. That is
+    /// the same arrangement [`Self::query_data`] has with the query box: the
+    /// person is doing it, so there is nobody to ask — but unlike a query this
+    /// leaves a file behind, so the button has to name it and the pane has to
+    /// keep naming it.
+    ///
+    /// Read-only is still enforced per step, one layer down, for the reason it
+    /// always is: the button promised one path.
+    pub async fn run_recipe(&self, name: &str) -> Result<taurus_data::Materialized, String> {
+        let workspace = self.workspace().await;
+        let recipe = taurus_data::recipe::find(&workspace, name).map_err(|e| e.to_string())?;
+        let loaded = taurus_data::tables(&self.data_dir_for(&workspace), &workspace);
+        let (tables, start) =
+            taurus_data::recipe::resolve(&recipe, &workspace, loaded).map_err(|e| e.to_string())?;
+        let output = taurus_tools::path_guard::resolve(&workspace, &recipe.output)
+            .map_err(|e| e.to_string())?;
+
+        let steps: Vec<(String, String)> = recipe
+            .steps
+            .iter()
+            .map(|step| (step.title.clone(), step.sql.clone()))
+            .collect();
+        let run = self
+            .engine
+            .materialize(&tables, &start, &steps, &output)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Loaded on the way out, so the pane can show what came out without a
+        // second action. Skipped rather than forced when the name is spoken
+        // for — see the tool, which makes the same call for the same reason.
+        let dir = self.data_dir_for(&workspace);
+        let shown = taurus_tools::path_guard::display(&workspace, &output);
+        let name = taurus_data::catalog::suggest_name(&output);
+        if taurus_data::catalog::taken_by(&dir, &name, &shown).is_none() {
+            if let Ok(format) = taurus_data::Format::of(&output) {
+                let _ = taurus_data::catalog::register(
+                    &dir,
+                    taurus_data::Dataset {
+                        name,
+                        path: shown,
+                        format,
+                    },
+                );
+            }
+        }
+        Ok(run)
     }
 
     /// Resolves a named dataset to a file this workspace is allowed to read.

@@ -6,6 +6,7 @@
 
 mod agents_cmd;
 mod ask;
+mod data_cmd;
 mod hooks_cmd;
 mod key_cmd;
 mod markdown;
@@ -119,6 +120,13 @@ enum Command {
     Agents {
         #[command(subcommand)]
         command: agents_cmd::AgentsCommand,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
+    /// List loaded datasets and recipes, and run a recipe.
+    Data {
+        #[command(subcommand)]
+        command: data_cmd::DataCommand,
         #[command(flatten)]
         session: SessionArgs,
     },
@@ -382,6 +390,10 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Agents { command, session } => {
             let runtime = build_host(&session, Policy::default()).await?;
             agents_cmd::run(&runtime.host, command).await
+        }
+        Command::Data { command, session } => {
+            let runtime = build_host(&session, Policy::default()).await?;
+            data_cmd::run(&runtime.host, command).await
         }
 
         Command::Key { command, session } => {

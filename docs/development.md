@@ -3,7 +3,7 @@
 <sub>[← Taurus AI Shell](../README.md)</sub>
 
 ```bash
-cargo test --workspace     # 1383 tests
+cargo test --workspace     # 1437 tests
 pnpm test                  # transcript reducer, replay, settings, rewind, diffs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -125,7 +125,16 @@ components would look right while the code that feeds them was broken.
 
 Regenerate after a visible UI change, and eyeball the result: this is the only
 check in the repository that looks at pixels, and reviewing the PNG in the diff
-is the whole of it.
+is the whole of it. Commit only the images your change is actually about — a
+different Chrome or a different font stack rewrites every file, and five
+unrelated PNGs in a diff make the one that matters unreviewable.
+
+A shot that has to *click* through something waits with a timer rather than
+with `requestAnimationFrame`. That is the counter-intuitive half and it is
+worth knowing before writing the next one: these run under Chrome's
+`--virtual-time-budget`, and a frame loop that reschedules itself every frame
+spends the entire budget without ever letting the fetch it is waiting on
+land.
 
 ## Live checks
 
@@ -215,6 +224,22 @@ cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
 cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
   "COPY interactions TO '/tmp/escaped.parquet'"   # must refuse, and write nothing
 
+# A recipe, which is the only thing in this crate that writes a file the user
+# can see. Same argument as the probe and more so: a step that drops every row
+# because a column arrived as text, or a join that fans out because a key is
+# not unique, are properties of real data and cannot happen in a fixture. Watch
+# the delta column — that is the whole reason a run is reported per step.
+cargo run -p taurus-data --example recipe -- .taurus/recipes/purchases.sql
+cargo run -p taurus-data --example recipe -- .taurus/recipes/sneaky.sql
+#   ^ with a `COPY … TO` in step 2: must refuse by step number and write nothing,
+#     not even the output the earlier steps had already produced.
+
+# The same run with the harness around it — the catalog, the path guard, and
+# the output being loaded as a dataset afterwards. Needs no provider either,
+# which is the point: a recipe is deterministic, so it belongs in a make target.
+taurus data list -w ~/data
+taurus data run purchases -w ~/data
+
 # The half the probe cannot check: whether a model reaches for these at all.
 # The failure worth catching is a model answering a question about a CSV with
 # `read_file`, which costs a whole context window and answers nothing — so what
@@ -226,6 +251,13 @@ taurus run -w ~/data "What is in interactions.csv, and which event type is most 
 # thing to watch is that it writes SQL rather than reaching for a shell and an
 # awk pipeline — the tool description is the only thing steering that.
 taurus run -w ~/data "Which three categories have the highest share of refunds?"
+
+# And the recipe half: whether a model writes one rather than answering once and
+# forgetting. What to watch is that it reaches for `write_file` into
+# `.taurus/recipes` and then `run_recipe`, rather than running four `query_data`
+# calls and pasting the numbers into the answer.
+taurus run -w ~/data "Build me a purchases table: drop duplicates, keep only \
+  purchases with a rating, and rank each user's by price. Save it so I can re-run it."
 
 # Index a real workspace and ask it real questions. Proves the second pass is
 # near-free, which is the property the whole design turns on, and prints

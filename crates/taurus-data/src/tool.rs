@@ -1,10 +1,18 @@
-//! The two tools the model calls: `load_dataset` and `profile_dataset`.
+//! The four tools the model calls: `load_dataset`, `profile_dataset`,
+//! `query_data`, and `run_recipe`.
 //!
-//! Both are [`Effect::Read`], and both mean it. Loading writes one line into
-//! the harness's own dataset list and touches nothing in the workspace — the
-//! same distinction [`taurus_host::memory`]'s `remember` draws, and for the
-//! same reason: a permission dialog in front of *looking at a CSV* would put a
-//! decision where there is nothing to decide.
+//! The first three are [`Effect::Read`], and they mean it. Loading writes one
+//! line into the harness's own dataset list and touches nothing in the
+//! workspace — the same distinction [`taurus_host::memory`]'s `remember`
+//! draws, and for the same reason: a permission dialog in front of *looking at
+//! a CSV* would put a decision where there is nothing to decide.
+//!
+//! `run_recipe` is the one that writes, and it is the only thing in this crate
+//! that puts a file in the user's project. It prompts, it declares the path it
+//! will write through [`Tool::touches`] so a rewind can undo it, and the steps
+//! it runs are held to the same read-only rule the query tool is — because the
+//! prompt named one output path and a step that could write elsewhere would be
+//! writing somewhere nobody was shown.
 //!
 //! # What they hand back, and what they do not
 //!
@@ -34,13 +42,15 @@ use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolResult};
 use crate::catalog::{self, Dataset};
 use crate::df::TOP_VALUES_MAX_DISTINCT;
 use crate::engine::{
-    ColumnProfile, DataError, Distinct, Engine, Format, Profile, QueryResult, Schema, Source,
-    MAX_QUERY_ROWS,
+    ColumnProfile, DataError, Distinct, Engine, Format, Materialized, Profile, QueryResult, Schema,
+    Source, MAX_QUERY_ROWS,
 };
+use crate::recipe::{self, Recipe, RecipeError};
 
 pub const LOAD_DATASET_TOOL: &str = "load_dataset";
 pub const PROFILE_DATASET_TOOL: &str = "profile_dataset";
 pub const QUERY_DATA_TOOL: &str = "query_data";
+pub const RUN_RECIPE_TOOL: &str = "run_recipe";
 
 /// Columns one tool result may name.
 ///
@@ -72,8 +82,25 @@ impl From<DataError> for ToolError {
             // both are fixable by writing different SQL — which is what
             // `InvalidInput` tells it to do.
             | DataError::NotReadOnly { .. }
-            | DataError::BadQuery { .. } => ToolError::InvalidInput(error.to_string()),
+            | DataError::BadQuery { .. }
+            // A bad step is a line in a file the model can rewrite, which is
+            // exactly what `InvalidInput` tells it to go and do.
+            | DataError::StepNotReadOnly { .. }
+            | DataError::BadStep { .. } => ToolError::InvalidInput(error.to_string()),
             other => ToolError::Failed(other.to_string()),
+        }
+    }
+}
+
+impl From<RecipeError> for ToolError {
+    /// A recipe is a file the model can open and rewrite, so nearly everything
+    /// wrong with one is something it can fix on the next turn — which is what
+    /// `InvalidInput` says. Only failing to read the file at all is the
+    /// harness's problem rather than the recipe's.
+    fn from(error: RecipeError) -> Self {
+        match error {
+            RecipeError::Unreadable { .. } => ToolError::Failed(error.to_string()),
+            other => ToolError::InvalidInput(other.to_string()),
         }
     }
 }
@@ -352,6 +379,277 @@ impl Tool for QueryData {
             Err(error) => Err(error.into()),
         }
     }
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct RunRecipeInput {
+    /// The recipe's name, which is its filename in `.taurus/recipes` without
+    /// the `.sql` — so `.taurus/recipes/clean.sql` is `clean`.
+    pub recipe: String,
+}
+
+/// Runs a recipe: a committed chain of SQL steps that writes a file.
+pub struct RunRecipe {
+    engine: Arc<dyn Engine>,
+    dir: PathBuf,
+    /// The project. Recipes live in it, unlike the dataset list — see the note
+    /// on [`crate::recipe`].
+    workspace: PathBuf,
+}
+
+impl RunRecipe {
+    pub fn new(
+        engine: Arc<dyn Engine>,
+        dir: impl Into<PathBuf>,
+        workspace: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            engine,
+            dir: dir.into(),
+            workspace: workspace.into(),
+        }
+    }
+
+    /// The recipe a call names, read from disk.
+    ///
+    /// Called from `preview`, `touches`, `view`, and `execute` — four places
+    /// that each need to know where this will write, and none of which may be
+    /// allowed to answer differently. Reading the file each time rather than
+    /// caching it is what keeps them honest: the prompt the user approves and
+    /// the run that follows it parsed the same bytes.
+    fn recipe(&self, input: &serde_json::Value) -> Option<Recipe> {
+        let name = input.get("recipe")?.as_str()?;
+        recipe::find(&self.workspace, name).ok()
+    }
+}
+
+#[async_trait]
+impl Tool for RunRecipe {
+    fn name(&self) -> &str {
+        RUN_RECIPE_TOOL
+    }
+
+    fn description(&self) -> &str {
+        "Run a saved recipe: a chain of SQL steps that reads a loaded dataset, transforms it step \
+         by step, and writes the result to a file in the workspace. Answers with what each step \
+         did to the row count, which is how a step that dropped far more than it should be shows \
+         itself. \
+         Recipes are .sql files in .taurus/recipes — read one to see what it does before running \
+         it. Write a new one with write_file when a transformation is worth keeping: a recipe is \
+         reviewed in a diff, committed with the code, and re-run on next month's export, which is \
+         the difference between having looked at some data and having a dataset. \
+         For a one-off question, use query_data instead — this writes a file and asks permission \
+         to."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        schema_for::<RunRecipeInput>()
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
+    /// Names the file this will write, because that is the decision.
+    ///
+    /// Read out of the recipe rather than out of the call, so the line the
+    /// user approves is the path the run will actually use. A recipe that will
+    /// not parse says so here too — better to be told the file is broken while
+    /// deciding than after agreeing.
+    fn preview(&self, input: &serde_json::Value) -> String {
+        let name = input.get("recipe").and_then(|r| r.as_str()).unwrap_or("?");
+        match self.recipe(input) {
+            Some(recipe) => format!(
+                "Run the {name} recipe over {} — {} step{} — and write {}",
+                recipe.source,
+                recipe.steps.len(),
+                if recipe.steps.len() == 1 { "" } else { "s" },
+                recipe.output
+            ),
+            None => format!("Run the {name} recipe"),
+        }
+    }
+
+    /// No card, deliberately — and the reason is the rule the other cards keep.
+    ///
+    /// [`TranscriptView::Dataset`] works for `load_dataset` because the name is
+    /// derivable from the call's own input, so a reopened conversation redraws
+    /// the same card from the transcript alone. A run's output name is not: it
+    /// lives in the recipe file, which the frontend cannot read while
+    /// rehydrating. A card that appeared during the run and vanished when the
+    /// conversation was reopened would be worse than no card. What the reader
+    /// gets instead is the row's own preview, which names the file, and the
+    /// answer below it, which is the step table — and the output shows up in
+    /// the Data pane as a dataset a moment later, because the run loads it.
+    ///
+    /// The output path, so a rewind has something to put back.
+    ///
+    /// One entry and only one. Everything else a run touches is in a scratch
+    /// directory outside the workspace that goes away with the call — see
+    /// [`Engine::materialize`].
+    fn touches(&self, input: &serde_json::Value) -> Vec<String> {
+        self.recipe(input)
+            .map(|recipe| vec![recipe.output])
+            .unwrap_or_default()
+    }
+
+    async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let input: RunRecipeInput = parse_input(input)?;
+        let recipe = recipe::find(&ctx.workspace, &input.recipe)?;
+
+        // The loaded datasets first, so a step can join against something
+        // somebody was already looking at, then whatever the recipe names for
+        // itself on top. See `recipe::resolve` for why the order is that way
+        // round.
+        let loaded = catalog::tables(&self.dir, &ctx.workspace);
+        let (tables, start) = recipe::resolve(&recipe, &ctx.workspace, loaded)?;
+
+        // The one place a path from the recipe file becomes a path on disk, and
+        // it goes through the write guard rather than a join. A committed file
+        // saying `output: ../../.ssh/authorized_keys` is a thing somebody can
+        // write, and the prompt above said "write data/clean.parquet".
+        let output = ctx.resolve(&recipe.output)?;
+        let shown = ctx.display(&output);
+
+        ctx.report(format!(
+            "{} step{} over {}",
+            recipe.steps.len(),
+            if recipe.steps.len() == 1 { "" } else { "s" },
+            recipe.source
+        ))
+        .await;
+
+        let steps: Vec<(String, String)> = recipe
+            .steps
+            .iter()
+            .map(|step| (step.title.clone(), step.sql.clone()))
+            .collect();
+
+        // Cancellable for the same reason a query is, and more so: a recipe is
+        // several passes over the same data rather than one.
+        let running = self.engine.materialize(&tables, &start, &steps, &output);
+        let run = tokio::select! {
+            result = running => result?,
+            () = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
+        };
+
+        // What comes out is a dataset. It is the thing the next question is
+        // about, and making somebody load a file this harness just wrote would
+        // be the harness forgetting what it did a second ago.
+        let name = catalog::suggest_name(&output);
+        let loaded = match catalog::taken_by(&self.dir, &name, &shown) {
+            // Not an error, and not a silent repoint either. The file is
+            // written; the only question left is what to call it, and quietly
+            // moving somebody's existing dataset onto a new file would be the
+            // worse of the two answers.
+            Some(existing) => Err(existing),
+            None => {
+                catalog::register(
+                    &self.dir,
+                    Dataset {
+                        name: name.clone(),
+                        path: shown.clone(),
+                        format: Format::of(&output)?,
+                    },
+                )?;
+                Ok(name)
+            }
+        };
+
+        Ok(describe_run(&recipe, &run, &shown, &loaded).into())
+    }
+}
+
+/// What `run_recipe` says back.
+fn describe_run(
+    recipe: &Recipe,
+    run: &Materialized,
+    output: &str,
+    loaded: &Result<String, Dataset>,
+) -> String {
+    let mut out = format!(
+        "Ran `{}` over {} → {}\n\n{:>13}  rows to start\n",
+        recipe.name,
+        recipe.source,
+        output,
+        thousands(run.started_with),
+    );
+
+    let width = run
+        .steps
+        .iter()
+        .map(|s| s.title.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(MAX_CELL);
+
+    // Numbers first and the title after, so the column that matters is a
+    // column rather than something to find at the end of four sentences of
+    // different lengths. The middle one is why this is reported per step at
+    // all: a cleaning step meant to drop a hundred duplicates that dropped
+    // four hundred thousand rows is invisible in the SQL and unmissable here.
+    let mut rows = run.started_with;
+    let mut columns = run.steps.first().map(|s| s.columns).unwrap_or(0);
+    for (index, step) in run.steps.iter().enumerate() {
+        // Only when it changes, because a `7 cols` repeated down every line is
+        // noise on four rows and hides the one row where the shape moved.
+        let shape = match step.columns.cmp(&columns) {
+            std::cmp::Ordering::Equal => String::new(),
+            std::cmp::Ordering::Less => shape(columns - step.columns, "−"),
+            std::cmp::Ordering::Greater => shape(step.columns - columns, "+"),
+        };
+        out.push_str(&format!(
+            "{:>13} {:>10}  {}. {:width$}  {} ms{shape}\n",
+            thousands(step.rows),
+            delta(rows, step.rows),
+            index + 1,
+            cut(&step.title),
+            step.took_ms,
+            width = width
+        ));
+        rows = step.rows;
+        columns = step.columns;
+    }
+
+    out.push_str(&format!(
+        "\n{} rows × {} columns, {}, in {}.",
+        thousands(run.rows),
+        run.columns.len(),
+        bytes(run.bytes),
+        seconds(run.took_ms)
+    ));
+
+    match loaded {
+        Ok(name) => out.push_str(&format!(" Loaded as `{name}`.")),
+        Err(existing) => out.push_str(&format!(
+            " Not loaded as a dataset: the name `{}` is already taken by {}. \
+             Call load_dataset with a `name` to give the new file one.",
+            existing.name, existing.path
+        )),
+    }
+    out
+}
+
+/// A step that changed how many columns there are, said once.
+fn shape(by: u64, sign: &str) -> String {
+    format!("  ({sign}{by} col{})", if by == 1 { "" } else { "s" })
+}
+
+/// How a step changed the row count, or that it did not.
+fn delta(before: u64, after: u64) -> String {
+    match after.cmp(&before) {
+        std::cmp::Ordering::Equal => "—".to_string(),
+        std::cmp::Ordering::Less => format!("−{}", thousands(before - after)),
+        std::cmp::Ordering::Greater => format!("+{}", thousands(after - before)),
+    }
+}
+
+/// A duration a person reads, from milliseconds.
+fn seconds(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{ms} ms");
+    }
+    format!("{:.1} s", ms as f64 / 1_000.0)
 }
 
 /// A query result, as a table the model reads.
@@ -1046,6 +1344,231 @@ mod calls {
         let (load, profile) = tools(&home);
         assert_eq!(load.effect(), Effect::Read);
         assert_eq!(profile.effect(), Effect::Read);
+    }
+
+    const RECIPE: &str = "---\n\
+        source: events\n\
+        output: data/clean.parquet\n\
+        ---\n\
+        \n\
+        -- step: keep the views\n\
+        SELECT * FROM input WHERE event = 'view'\n\
+        \n\
+        -- step: name the price\n\
+        SELECT id, price AS amount FROM input\n";
+
+    /// Loads `data/events.csv`, writes a recipe, and hands back the tool.
+    async fn with_recipe(text: &str) -> (ToolContext, TempDir, TempDir, RunRecipe) {
+        let (ctx, dir, home) = workspace();
+        let (load, _) = tools(&home);
+        load.execute(serde_json::json!({ "path": "data/events.csv" }), &ctx)
+            .await
+            .unwrap();
+
+        let recipes = ctx.workspace.join(crate::recipe::RECIPE_DIR);
+        std::fs::create_dir_all(&recipes).unwrap();
+        std::fs::write(recipes.join("clean.sql"), text).unwrap();
+
+        let tool = RunRecipe::new(
+            Arc::new(crate::df::DataFusionEngine::new()),
+            home.path(),
+            &ctx.workspace,
+        );
+        (ctx, dir, home, tool)
+    }
+
+    #[tokio::test]
+    async fn a_recipe_writes_its_file_and_reports_what_each_step_did() {
+        let (ctx, _dir, home, tool) = with_recipe(RECIPE).await;
+
+        let out = tool
+            .execute(serde_json::json!({ "recipe": "clean" }), &ctx)
+            .await
+            .unwrap();
+        let text = out.to_text();
+
+        assert!(text.contains("data/clean.parquet"), "{text}");
+        assert!(text.contains("keep the views"), "{text}");
+        // Three rows in, two views, and the delta is the number the whole
+        // report exists for.
+        assert!(text.contains("−1"), "no delta in: {text}");
+        assert!(text.contains("2 rows"), "{text}");
+        assert!(ctx.workspace.join("data/clean.parquet").is_file());
+
+        // And what came out is a dataset, because it is what the next question
+        // is about.
+        let listed = catalog::load(home.path());
+        let names: Vec<&str> = listed.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"clean"), "{names:?}");
+        assert!(text.contains("Loaded as `clean`"), "{text}");
+    }
+
+    /// The line the user is agreeing to has to name the file, and it has to
+    /// come out of the recipe rather than out of the call.
+    #[tokio::test]
+    async fn the_prompt_names_the_file_the_run_will_write() {
+        let (_ctx, _dir, _home, tool) = with_recipe(RECIPE).await;
+        let input = serde_json::json!({ "recipe": "clean" });
+
+        assert_eq!(tool.effect(), Effect::Write);
+        let preview = tool.preview(&input);
+        assert!(preview.contains("data/clean.parquet"), "{preview}");
+        assert!(preview.contains("2 steps"), "{preview}");
+        // And the same path is declared, so a rewind has something to put back.
+        assert_eq!(tool.touches(&input), vec!["data/clean.parquet".to_string()]);
+    }
+
+    /// A recipe that will not parse should say so while somebody is deciding,
+    /// not after they have agreed.
+    #[tokio::test]
+    async fn a_broken_recipe_is_not_previewed_as_if_it_were_fine() {
+        let (_ctx, _dir, _home, tool) = with_recipe("not a recipe at all").await;
+        let input = serde_json::json!({ "recipe": "clean" });
+        assert!(tool.touches(&input).is_empty());
+        assert!(
+            !tool.preview(&input).contains("write"),
+            "{}",
+            tool.preview(&input)
+        );
+    }
+
+    /// A card that appeared during the run and vanished when the conversation
+    /// was reopened would be worse than no card. See the note on the tool.
+    #[tokio::test]
+    async fn a_run_draws_no_card_it_could_not_draw_again() {
+        let (_ctx, _dir, _home, tool) = with_recipe(RECIPE).await;
+        assert!(tool
+            .view("call-1", &serde_json::json!({ "recipe": "clean" }))
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_recipe_that_does_not_exist_lists_the_ones_that_do() {
+        let (ctx, _dir, _home, tool) = with_recipe(RECIPE).await;
+        let error = tool
+            .execute(serde_json::json!({ "recipe": "clen" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::InvalidInput(_)), "{error}");
+        assert!(error.to_string().contains("clean"), "{error}");
+    }
+
+    /// The output path comes out of a committed file, so it goes through the
+    /// write guard rather than a join — and the prompt above it said
+    /// `data/clean.parquet`.
+    #[tokio::test]
+    async fn an_output_outside_the_workspace_is_refused() {
+        let text = RECIPE.replace("data/clean.parquet", "../escaped.parquet");
+        let (ctx, dir, _home, tool) = with_recipe(&text).await;
+        let error = tool
+            .execute(serde_json::json!({ "recipe": "clean" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("escaped.parquet"), "{error}");
+        assert!(!dir.path().join("escaped.parquet").exists());
+    }
+
+    #[tokio::test]
+    async fn a_step_that_writes_is_refused_before_anything_lands() {
+        let text = "---\nsource: events\noutput: data/clean.parquet\n---\n\
+                    -- step: sneaky\nCREATE TABLE t AS SELECT * FROM input\n";
+        let (ctx, _dir, _home, tool) = with_recipe(text).await;
+        let error = tool
+            .execute(serde_json::json!({ "recipe": "clean" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::InvalidInput(_)), "{error}");
+        // Named by number, by title, and as SQL rather than as a plan node.
+        assert!(error.to_string().contains("step 1 (sneaky)"), "{error}");
+        assert!(error.to_string().contains("TABLE"), "{error}");
+        assert!(!ctx.workspace.join("data/clean.parquet").exists());
+    }
+
+    /// A recipe naming a dataset nobody has loaded should say which one, and
+    /// point at the fix that makes the recipe work anywhere — naming the file.
+    #[tokio::test]
+    async fn a_recipe_with_no_datasets_loaded_names_the_one_it_needs() {
+        let (ctx, _dir, home) = workspace();
+        let recipes = ctx.workspace.join(crate::recipe::RECIPE_DIR);
+        std::fs::create_dir_all(&recipes).unwrap();
+        std::fs::write(recipes.join("clean.sql"), RECIPE).unwrap();
+        let tool = RunRecipe::new(
+            Arc::new(crate::df::DataFusionEngine::new()),
+            home.path(),
+            &ctx.workspace,
+        );
+
+        let error = tool
+            .execute(serde_json::json!({ "recipe": "clean" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("events"), "{error}");
+        assert!(
+            error.to_string().contains("source: data/events.csv"),
+            "{error}"
+        );
+    }
+
+    /// The whole point of letting a recipe name its own file: a committed
+    /// recipe runs on a fresh clone, where the dataset list is empty because
+    /// the dataset list is not committed.
+    #[tokio::test]
+    async fn a_recipe_naming_its_own_file_runs_with_nothing_loaded() {
+        let text = RECIPE.replace("source: events", "source: data/events.csv");
+        let (ctx, _dir, home) = workspace();
+        let recipes = ctx.workspace.join(crate::recipe::RECIPE_DIR);
+        std::fs::create_dir_all(&recipes).unwrap();
+        std::fs::write(recipes.join("clean.sql"), &text).unwrap();
+        let tool = RunRecipe::new(
+            Arc::new(crate::df::DataFusionEngine::new()),
+            home.path(),
+            &ctx.workspace,
+        );
+
+        assert!(catalog::load(home.path()).is_empty());
+        let out = tool
+            .execute(serde_json::json!({ "recipe": "clean" }), &ctx)
+            .await
+            .unwrap();
+        assert!(out.to_text().contains("2 rows"), "{}", out.to_text());
+        assert!(ctx.workspace.join("data/clean.parquet").is_file());
+    }
+
+    /// The file is written by then, so this is a naming problem rather than a
+    /// failure — and quietly repointing somebody's dataset would be worse than
+    /// saying so.
+    #[tokio::test]
+    async fn an_output_whose_name_is_taken_is_written_but_not_loaded() {
+        let (ctx, _dir, home, tool) = with_recipe(RECIPE).await;
+        catalog::register(
+            home.path(),
+            Dataset {
+                name: "clean".into(),
+                path: "somewhere/else.csv".into(),
+                format: Format::Csv,
+            },
+        )
+        .unwrap();
+
+        let out = tool
+            .execute(serde_json::json!({ "recipe": "clean" }), &ctx)
+            .await
+            .unwrap();
+        let text = out.to_text();
+
+        assert!(ctx.workspace.join("data/clean.parquet").is_file());
+        assert!(text.contains("already taken"), "{text}");
+        assert!(text.contains("somewhere/else.csv"), "{text}");
+        // The existing entry is untouched.
+        let listed = catalog::find(home.path(), "clean").unwrap();
+        assert_eq!(listed.path, "somewhere/else.csv");
+    }
+
+    #[test]
+    fn a_step_that_changed_nothing_says_so_rather_than_showing_a_zero() {
+        assert_eq!(delta(100, 100), "—");
+        assert_eq!(delta(100, 40), "−60");
+        assert_eq!(delta(100, 140), "+40");
     }
 
     fn query(home: &TempDir) -> QueryData {

@@ -48,6 +48,10 @@ const SHOTS = [
   // one column 42% missing, one with too many distinct values to rank. A grid
   // of clean numbers would be a picture of a spreadsheet.
   { name: "data", shot: "data", theme: "dark" },
+  // A recipe mid-report rather than sitting still. The delta column is the
+  // whole reason a run is reported per step, and a frame of four rows all
+  // saying "done" would say nothing about what it is for.
+  { name: "recipe", shot: "recipes", theme: "dark" },
 ];
 
 const CHROME = [

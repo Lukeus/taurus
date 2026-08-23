@@ -54,6 +54,7 @@ function column(
 async function mount(
   datasets: Dataset[] = [EVENTS],
   onForget: (name: string) => void = () => {},
+  onRan: () => void = () => {},
 ) {
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -65,6 +66,7 @@ async function mount(
         selected={datasets[0]?.name ?? null}
         onSelect={() => {}}
         onForget={onForget}
+        onRan={onRan}
       />,
     );
   });
@@ -408,5 +410,229 @@ describe("forgetting a dataset", () => {
       button.click();
     });
     expect(forgotten).toEqual(["events"]);
+  });
+});
+
+describe("the recipes view", () => {
+  const CLEAN = {
+    name: "clean",
+    source: "events",
+    output: "data/clean.parquet",
+    description: "drop duplicates and the rows with no user",
+    path: ".taurus/recipes/clean.sql",
+    tables: [],
+    steps: [
+      { title: "drop exact duplicates", sql: "SELECT DISTINCT * FROM input" },
+      {
+        title: "keep the rows that name a user",
+        sql: "SELECT * FROM input WHERE user_id IS NOT NULL",
+      },
+    ],
+  };
+
+  /** Routes each command to its own answer. One blanket `mockResolvedValue`
+   *  feeds a recipe list to `dataset_profile`, which crashes the Columns tab
+   *  the pane opens on. */
+  function answering(over: Record<string, () => Promise<unknown>>) {
+    invoke.mockImplementation((name: string) => {
+      const answer = over[name];
+      if (answer) return answer();
+      if (name === "list_recipes")
+        return Promise.resolve({ recipes: [], problems: [] });
+      return Promise.resolve({ rows: 0, engine: "DataFusion", columns: [] });
+    });
+  }
+
+  async function recipesTab(datasets: Dataset[] = [EVENTS]) {
+    const host = await mount(datasets);
+    const tab = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Recipes",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      tab.click();
+    });
+    return host;
+  }
+
+  it("says what a recipe is when there are none, rather than showing a blank", async () => {
+    answering({});
+    const host = await recipesTab();
+    expect(host.textContent).toContain("No recipes");
+    // The route in is asking, the same as loading a dataset.
+    expect(host.textContent).toContain("Ask Taurus to write one");
+    expect(host.textContent).toContain(".taurus/recipes");
+  });
+
+  it("lists a recipe with what it reads and where it writes", async () => {
+    answering({
+      list_recipes: () =>
+        Promise.resolve({ recipes: [CLEAN], problems: [] }),
+    });
+    const host = await recipesTab();
+    expect(host.textContent).toContain("clean");
+    expect(host.textContent).toContain("events → data/clean.parquet");
+    expect(host.textContent).toContain("2 steps");
+    expect(host.textContent).toContain("drop duplicates and the rows");
+  });
+
+  /** The button writes a file and asks nothing first, so the path it writes
+   *  has to be on the button rather than in a dialog after it. */
+  it("names the file the run will write on the button itself", async () => {
+    answering({
+      list_recipes: () =>
+        Promise.resolve({ recipes: [CLEAN], problems: [] }),
+    });
+    const host = await recipesTab();
+    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+      b.textContent?.startsWith("Run"),
+    ) as HTMLButtonElement;
+    expect(button.textContent).toContain("data/clean.parquet");
+    expect(button.title).toContain("2 steps over events");
+  });
+
+  it("shows the SQL of each step when the recipe is opened", async () => {
+    answering({
+      list_recipes: () =>
+        Promise.resolve({ recipes: [CLEAN], problems: [] }),
+    });
+    const host = await recipesTab();
+    expect(host.textContent).not.toContain("SELECT DISTINCT");
+    await act(async () => {
+      (host.querySelector(".recipe-name") as HTMLButtonElement).click();
+    });
+    expect(host.textContent).toContain("SELECT DISTINCT * FROM input");
+    expect(host.textContent).toContain("WHERE user_id IS NOT NULL");
+  });
+
+  /** A recipe that joins against another file is reading something the header
+   *  line does not name, so opening it has to say so. */
+  it("names the extra files a recipe binds for itself", async () => {
+    answering({
+      list_recipes: () =>
+        Promise.resolve({
+          recipes: [
+            {
+              ...CLEAN,
+              tables: [{ name: "items", path: "data/catalogue.parquet" }],
+            },
+          ],
+          problems: [],
+        }),
+    });
+    const host = await recipesTab();
+    expect(host.textContent).not.toContain("data/catalogue.parquet");
+    await act(async () => {
+      (host.querySelector(".recipe-name") as HTMLButtonElement).click();
+    });
+    expect(host.textContent).toContain("also reads");
+    expect(host.textContent).toContain("data/catalogue.parquet");
+  });
+
+  it("reports what each step did to the row count", async () => {
+    answering({
+      list_recipes: () =>
+        Promise.resolve({ recipes: [CLEAN], problems: [] }),
+      run_recipe: () =>
+        Promise.resolve({
+          started_with: 400000,
+          steps: [
+            { title: "drop exact duplicates", rows: 398412, columns: 4, took_ms: 211 },
+            {
+              title: "keep the rows that name a user",
+              rows: 219922,
+              columns: 4,
+              took_ms: 180,
+            },
+          ],
+          columns: [
+            { name: "id", kind: "number", type_name: "Int64", nullable: false },
+          ],
+          rows: 219922,
+          bytes: 3_250_000,
+          took_ms: 612,
+        }),
+    });
+    const host = await recipesTab([EVENTS]);
+
+    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+      b.textContent?.startsWith("Run"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      button.click();
+    });
+
+    // The deltas are the whole reason this is reported per step. A step meant
+    // to drop a hundred duplicates that dropped four hundred thousand rows is
+    // invisible in the SQL and unmissable here.
+    expect(host.textContent).toContain("400,000");
+    expect(host.textContent).toContain("−1,588");
+    expect(host.textContent).toContain("−178,490");
+    expect(host.textContent).toContain("3.1 MB");
+  });
+
+  /** A file somebody is halfway through writing should not hide the four that
+   *  work. */
+  it("shows a broken recipe beside the ones that parsed", async () => {
+    answering({
+      list_recipes: () =>
+        Promise.resolve({
+          recipes: [CLEAN],
+          problems: [".taurus/recipes/torn.sql: there are no steps."],
+        }),
+    });
+    const host = await recipesTab();
+    expect(host.textContent).toContain("clean");
+    expect(host.textContent).toContain("torn.sql");
+  });
+
+  it("tells the dataset list to refresh, because a run loads what it wrote", async () => {
+    answering({
+      list_recipes: () =>
+        Promise.resolve({ recipes: [CLEAN], problems: [] }),
+      run_recipe: () =>
+        Promise.resolve({
+          started_with: 5,
+          steps: [{ title: "one", rows: 5, columns: 2, took_ms: 3 }],
+          columns: [],
+          rows: 5,
+          bytes: 900,
+          took_ms: 9,
+        }),
+    });
+    let refreshed = 0;
+    const host = await mount([EVENTS], () => {}, () => {
+      refreshed += 1;
+    });
+    const tab = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Recipes",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      tab.click();
+    });
+    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+      b.textContent?.startsWith("Run"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      button.click();
+    });
+    expect(refreshed).toBe(1);
+  });
+
+  it("keeps a failed run's error where the recipe is, and drops no other recipe", async () => {
+    answering({
+      list_recipes: () =>
+        Promise.resolve({ recipes: [CLEAN], problems: [] }),
+      run_recipe: () =>
+        Promise.reject("step 2 (typo) will not run: No field named nope."),
+    });
+    const host = await recipesTab();
+    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+      b.textContent?.startsWith("Run"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      button.click();
+    });
+    expect(host.textContent).toContain("step 2 (typo)");
+    expect(host.textContent).toContain("clean");
   });
 });

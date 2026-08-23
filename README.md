@@ -128,7 +128,10 @@ to put things back after.
   with a million rows in it is not a file to read. It loads one as a table
   instead, describes every column from the whole file rather than a sample,
   answers questions about it in SQL, and puts the rows on a surface of their
-  own.
+  own. A transformation worth keeping becomes a
+  [**recipe**](docs/working-with-it.md#recipes): a chain of SQL steps committed
+  with the code, re-runnable on next month's export, reporting what each step
+  did to the row count.
 
 ![The Data pane: a profile of a 400,000-row file, with the missing values
 marked](docs/screenshots/data.png)
@@ -169,7 +172,7 @@ crates/
   taurus-mcp/               MCP client
   taurus-web/               Web search and page fetching
   taurus-index/             Local semantic search: chunking, embedding, ranking
-  taurus-data/              Reading and profiling tabular files, behind one engine trait
+  taurus-data/              Reading, profiling, and transforming tabular files, behind one engine trait
   taurus-core/              Session state, the agent loop, sub-agents
   taurus-host/              Config, system prompt, registry assembly
   taurus-cli/               The `taurus` binary

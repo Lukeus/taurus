@@ -25,7 +25,8 @@ use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
 use taurus_data::{
-    Dataset, Page as DataPage, Profile as DataProfile, QueryResult as DataQueryResult,
+    Dataset, Materialized as DataRun, Page as DataPage, Profile as DataProfile,
+    QueryResult as DataQueryResult, Recipe,
 };
 
 use taurus_host::trust::TrustStatus;
@@ -1360,6 +1361,41 @@ pub async fn query_data(
     sql: String,
 ) -> CmdResult<DataQueryResult> {
     state.host.query_data(&sql).await
+}
+
+/// Every recipe this workspace has, with anything wrong with the rest.
+///
+/// Problems travel with the list rather than as a failure. A recipe that will
+/// not parse is a file somebody is halfway through writing, and hiding the
+/// other four while they finish would be the pane arguing with an editor.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct Recipes {
+    pub recipes: Vec<Recipe>,
+    /// One line per unreadable file, each naming its path.
+    pub problems: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn list_recipes(state: State<'_, Arc<AppState>>) -> CmdResult<Recipes> {
+    let (recipes, problems) = state.host.recipes().await;
+    Ok(Recipes { recipes, problems })
+}
+
+/// Runs a recipe and writes the file it names.
+///
+/// The one command in this family that changes the workspace, and it does it
+/// without a permission prompt for the same reason `query_data` does not have
+/// one: the person clicked the button, and the button says what it writes.
+/// What the engine still refuses is a *step* that writes somewhere else — the
+/// button named one path and only that path was agreed to.
+#[tauri::command]
+pub async fn run_recipe(state: State<'_, Arc<AppState>>, name: String) -> CmdResult<DataRun> {
+    let run = state.host.run_recipe(&name).await?;
+    // A recipe's output is loaded as a dataset on the way out, so the pane's
+    // list and the rail's count have both just changed.
+    emit_status(&state).await;
+    Ok(run)
 }
 
 /// Drops a dataset from the list and answers with what is left.

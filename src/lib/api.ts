@@ -25,8 +25,14 @@ import type { DataFormat } from "../bindings/DataFormat";
 import type { DataPage } from "../bindings/DataPage";
 import type { DataProfile } from "../bindings/DataProfile";
 import type { DataQueryResult } from "../bindings/DataQueryResult";
+import type { DataRun } from "../bindings/DataRun";
+import type { DataStep } from "../bindings/DataStep";
 import type { DataValueCount } from "../bindings/DataValueCount";
 import type { Dataset } from "../bindings/Dataset";
+import type { Recipe } from "../bindings/Recipe";
+import type { RecipeStep } from "../bindings/RecipeStep";
+import type { RecipeTable } from "../bindings/RecipeTable";
+import type { Recipes } from "../bindings/Recipes";
 import type { Commit } from "../bindings/Commit";
 import type { ContentBlock } from "../bindings/ContentBlock";
 import type { DiffHunk } from "../bindings/DiffHunk";
@@ -108,8 +114,14 @@ export type {
   DataPage,
   DataProfile,
   DataQueryResult,
+  DataRun,
+  DataStep,
   DataValueCount,
   Dataset,
+  Recipe,
+  RecipeStep,
+  RecipeTable,
+  Recipes,
   ContentBlock,
   CreatedSession,
   DiffHunk,
@@ -388,6 +400,26 @@ export const queryData = (sql: string) =>
  *  pointed at is not touched. */
 export const forgetDataset = (name: string) =>
   invoke<Dataset[]>("forget_dataset", { name });
+
+/**
+ * The recipes this workspace has, with anything wrong with the rest.
+ *
+ * Read from `.taurus/recipes` every time rather than cached: a recipe is a
+ * file in the project that the agent, an editor, or a `git pull` can change,
+ * and the pane showing yesterday's steps beside a Run button is the one
+ * failure this list can have.
+ */
+export const listRecipes = () => invoke<Recipes>("list_recipes");
+
+/**
+ * Runs a recipe and writes the file it names.
+ *
+ * The one call in this file that changes the workspace. It asks nothing first,
+ * for the same reason `queryData` does not — the person clicked a button that
+ * says where it writes. What is still refused, one layer down, is a *step*
+ * that writes somewhere other than that path.
+ */
+export const runRecipe = (name: string) => invoke<DataRun>("run_recipe", { name });
 
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 

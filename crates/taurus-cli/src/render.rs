@@ -357,6 +357,7 @@ fn glyph(tool: &str) -> &'static str {
         "load_dataset" => "load",
         "profile_dataset" => "profile",
         "query_data" => "query",
+        "run_recipe" => "recipe",
         // show_table and show_chart never reach here: their view is printed in
         // full instead of announced. `ask_user` does, because the prompt that
         // follows is what draws it.
@@ -442,6 +443,7 @@ mod tests {
             "load_dataset",
             "profile_dataset",
             "query_data",
+            "run_recipe",
         ] {
             assert_ne!(glyph(tool), "tool", "{tool} fell through to the default");
         }

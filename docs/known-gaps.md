@@ -493,27 +493,62 @@ and they are the minority.
   cross join over two million-row files is a legal SELECT. There is a 512 MB
   ceiling per query so one of those fails instead of taking the app with it,
   and the tool is cancellable, but nothing estimates a query before running it.
-- **Data is read and never written.** `load_dataset` and `profile_dataset`
-  describe a file, and `query_data` asks questions about one; nothing here
-  transforms one. There is no cleaning step, no
-  derived column, no join, no export, and no recipe that records a sequence of
-  those so it can be run again — which is the thing that would turn this from a
-  viewer into a way to *build* a dataset. That is a phase boundary rather than
-  an oversight, and the reason it is drawn here is written into
-  `taurus_data::engine`: a transformation is where an engine's identity leaks,
-  because its SQL dialect becomes the language a recipe is written in and a
-  recipe is a file on disk that outlives the choice of engine. Reading is behind
-  a three-method trait precisely so that call can be made later on evidence.
-  See [Working with data](working-with-it.md#working-with-data).
+- **A recipe transforms; nothing here judges.** A recipe is a chain of SQL
+  steps, so it can clean, filter, join, derive, and rank — everything SQL can
+  express. What it cannot do is anything that needs a *model*: classify a free
+  text column into a taxonomy, extract fields from a description, embed a
+  column for a recommender. Those are the reason the whole feature exists for
+  anybody building a dataset for an agent, and none of them is written. They
+  need a different shape from a SQL step, because a judgement over a million
+  rows is a bill: it wants to be sampled first, reviewed, and only then
+  committed to the whole file. Adding one as another `-- step:` would skip
+  exactly the gate that makes it safe to run.
+  See [Recipes](working-with-it.md#recipes).
+- **A recipe's SQL is DataFusion's SQL, and that is now committed to your
+  repository.** The engine sits behind a trait so the rest of the harness does
+  not name it, but a recipe is a file with SQL text in it, so swapping engines
+  would mean every recipe anybody wrote is a file in a dialect nothing reads.
+  That cost was taken knowingly — the alternative is an invented step language,
+  which buys portability nobody wants with unfamiliarity everybody pays — and
+  it is the reason exactly one method on the trait writes. What is not written
+  is any way to *tell* you a recipe uses something dialect-specific; a
+  `row_number() OVER` is portable and a DataFusion-only function is not, and
+  nothing distinguishes them.
+- **A recipe writes one file, and there is no incremental run.** Every run
+  reads the source from the beginning and rewrites the output whole. There is
+  no "only the rows since last time", no partitioning, and no way to append —
+  so a recipe over a growing export costs the whole export every time. Each
+  intermediate step also spills to a scratch file, which keeps memory flat and
+  the row counts exact but means a five-step recipe over a gigabyte does
+  several gigabytes of temporary I/O. That scratch goes in the system temp
+  directory, so a machine with a small `/tmp` is the case that fails; there is
+  no setting to move it.
+- **Running a recipe from the pane asks nothing first.** The button carries the
+  path it writes, and that is the whole of the consent — the same arrangement
+  the query box has. `run_recipe` called by the *model* does prompt, and its
+  prompt names the path parsed from the same file the run will use. What
+  neither offers is a preview of the output before it lands: there is no dry
+  run, no "this would drop 380,000 rows, continue", and the per-step deltas
+  arrive after the file is already written. A rewind undoes it, which is what
+  makes that acceptable rather than fine.
+- **Writing or editing a recipe is not rewindable.** `.taurus` is skipped by
+  the checkpoint sweep, so a turn that authors a recipe leaves nothing for
+  `taurus rewind` to put back — the same property project skills already have,
+  for the same reason: these are the instructions, not the output. The file a
+  recipe *writes* is fully rewindable. Git is the undo for the recipe itself,
+  which is an argument for committing them and not much comfort before the
+  first commit.
 - **The list of loaded datasets does not travel with the repository.** It lives
   in `~/.taurus/data/<workspace>/datasets.json`, beside the transcripts and the
   search index, not in the project's own `.taurus`. That is what keeps loading a
   file from being a *write* to the workspace — otherwise looking at a CSV would
   cost a permission dialog, a diff in the Changes drawer, and a line in the next
   commit. The cost is that a teammate who clones the repository loads the files
-  again, which is one sentence to the agent. It stops being the right trade the
-  moment an entry carries a recipe, because a recipe is exactly the thing you
-  want committed.
+  again, which is one sentence to the agent. A recipe sidesteps it by naming its
+  own files — `source: data/events.csv`, plus a `tables:` block for anything it
+  joins against — which is what makes a committed recipe run on a fresh clone.
+  A recipe that names loaded datasets instead still does not, and nothing warns
+  you which kind you have written.
 - **A profile is a full scan every time, and it cannot be cancelled.** Nothing
   is cached: a dataset entry points at a file anything can rewrite, and a
   remembered row count is the kind of number that is right for a week and then
@@ -536,7 +571,8 @@ and they are the minority.
   range, no common values, because none of those are questions with an answer
   until the column is flattened. It is kept rather than refused so that one
   nested column in an export does not cost you the other thirteen. Flattening is
-  a transformation, which is the entry above.
+  a transformation: a recipe can flatten one with an `unnest` step, and until
+  somebody does, the profile says what it can.
 - **The grid does not sort or filter.** It pages, a hundred rows at a time, in
   the order the file is in. Sorting a million rows is a query rather than a
   click — it has to go back to the engine, and the pane would need somewhere to

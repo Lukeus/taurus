@@ -1,18 +1,21 @@
 //! What a data engine has to do, and the vocabulary it answers in.
 //!
-//! Three methods. That is deliberate and it is the whole point of this file:
-//! the engine underneath is a decision made once, on evidence that does not
-//! exist yet, and nothing outside this crate should be able to tell which one
-//! was picked. A tool, a command, and a pane all speak [`Schema`], [`Profile`],
-//! and [`Page`] — none of them names a `SessionContext`, a `RecordBatch`, or a
-//! dialect of SQL.
+//! Five methods. That is deliberate and it is the whole point of this file:
+//! the engine underneath is a decision made once, on evidence that did not
+//! exist when it was made, and nothing outside this crate should be able to
+//! tell which one was picked. A tool, a command, and a pane all speak
+//! [`Schema`], [`Profile`], and [`Page`] — none of them names a
+//! `SessionContext`, a `RecordBatch`, or a dialect of SQL.
 //!
-//! The narrowness is load-bearing rather than tidy. Phase 1 reads and
-//! describes; the phase after it transforms, and a transformation is where an
-//! engine's identity actually leaks — its SQL dialect becomes the language the
-//! recipe is written in, and the recipe is a file on disk that outlives the
-//! choice. Keeping the read half behind a trait is what buys the right to make
-//! that call later against a real dataset instead of now against an argument.
+//! The narrowness is load-bearing rather than tidy, and the write half is
+//! where it stops being free. A recipe's steps are SQL text in a committed
+//! file, so the engine's dialect is now spelled out in the user's repository
+//! and outlives any decision to replace it. That is a real cost and it was
+//! taken knowingly: the alternative is an invented step language, which buys
+//! portability nobody will use with unfamiliarity everybody pays. What the
+//! trait still buys is that *one* method writes — [`Engine::materialize`] —
+//! and swapping engines is a question about one function and a dialect rather
+//! than about the whole surface.
 
 use std::path::{Path, PathBuf};
 
@@ -329,6 +332,57 @@ pub struct QueryResult {
     pub took_ms: u64,
 }
 
+/// One step of a recipe, after it ran.
+///
+/// The row count is the point. A cleaning step that was supposed to drop a
+/// hundred duplicates and dropped four hundred thousand is a mistake nobody
+/// catches by reading the SQL, and catches immediately by reading the number
+/// next to it — which is why this is measured per step rather than only at the
+/// end.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, rename = "DataStep")]
+pub struct StepStat {
+    /// What the `-- step:` line called it.
+    pub title: String,
+    /// Rows this step produced.
+    #[ts(type = "number")]
+    pub rows: u64,
+    /// Columns this step produced.
+    #[ts(type = "number")]
+    pub columns: u64,
+    /// How long it took, in milliseconds.
+    #[ts(type = "number")]
+    pub took_ms: u64,
+}
+
+/// What a chain of steps produced, and what each of them cost.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, rename = "DataRun")]
+pub struct Materialized {
+    /// Where the first step read from, and how many rows were there.
+    ///
+    /// Carried so the report can open with a number to compare against.
+    /// Without it the first step's count is a figure with nothing beside it,
+    /// and the whole value of a per-step count is the difference.
+    #[ts(type = "number")]
+    pub started_with: u64,
+    pub steps: Vec<StepStat>,
+    /// The columns of the file that was written.
+    ///
+    /// Read back off the file rather than taken from the last plan. What was
+    /// meant to be written and what is on disk are the same thing almost
+    /// always, and the whole reason to report at all is the time they are not.
+    pub columns: Vec<ColumnHead>,
+    #[ts(type = "number")]
+    pub rows: u64,
+    /// The output file, in bytes, as it now sits on disk.
+    #[ts(type = "number")]
+    pub bytes: u64,
+    /// The whole run, in milliseconds, including writing the file.
+    #[ts(type = "number")]
+    pub took_ms: u64,
+}
+
 /// Rows one [`Engine::query`] call may return.
 ///
 /// Smaller than [`MAX_PAGE`], and for a different reason. A page is scrolled
@@ -405,6 +459,28 @@ pub enum DataError {
     #[error("that query will not run: {detail}")]
     BadQuery { detail: String },
 
+    #[error(
+        "step {number} ({title}) is not a read-only query. A recipe's steps are SELECTs — the \
+         writing is done by the recipe, to the one file its `output:` names, and a step that \
+         could write elsewhere would go somewhere nobody approved. No {kind}."
+    )]
+    StepNotReadOnly {
+        /// One-based, as the recipe reads.
+        number: usize,
+        title: String,
+        kind: String,
+    },
+
+    #[error("step {number} ({title}) will not run: {detail}")]
+    BadStep {
+        number: usize,
+        title: String,
+        detail: String,
+    },
+
+    #[error("could not write {path}: {detail}")]
+    NotWritten { path: String, detail: String },
+
     #[error("{0}")]
     Failed(String),
 }
@@ -425,13 +501,11 @@ impl DataError {
     }
 }
 
-/// Reading and describing tabular data.
+/// Reading, describing, and transforming tabular data.
 ///
-/// Everything here is read-only, and that is the whole of phase 1. Writing —
-/// a transformed table, a recipe, a split — is deliberately absent rather than
-/// unimplemented: a method nothing calls is a decision made early and quietly,
-/// and the shape of the write half depends on things this phase exists to find
-/// out.
+/// Four of the five methods are read-only. The fifth,
+/// [`Engine::materialize`], is the only thing in this crate that writes a file
+/// the user can see, and it writes exactly one: the file a recipe names.
 #[async_trait]
 pub trait Engine: Send + Sync {
     /// How the profile names this engine. Shown, not switched on.
@@ -469,6 +543,34 @@ pub trait Engine: Send + Sync {
         sql: &str,
         limit: u64,
     ) -> Result<QueryResult, DataError>;
+
+    /// Runs a chain of read-only steps and writes the last one's rows to a file.
+    ///
+    /// This is the write half, and it is one method rather than several
+    /// because there is exactly one thing worth being able to write: the rows a
+    /// named, reviewed chain of steps produced. Anything narrower — a `CREATE
+    /// TABLE`, a scratch table, an `INSERT` — would be an engine's own
+    /// vocabulary leaking through a trait that exists to keep it out.
+    ///
+    /// Each step reads from a table called `input`, which holds the previous
+    /// step's rows; the first step's `input` is `start`, which must be one of
+    /// `tables`. Every entry in `tables` is also reachable under its own name,
+    /// so a step can join what it is cleaning against something else.
+    ///
+    /// **The steps are read-only, and that is a different guarantee from the
+    /// one [`Self::query`] makes.** The tool above this one *does* prompt, and
+    /// what it puts in front of the user is the output path the recipe
+    /// declares. A step that could write somewhere else would be writing
+    /// somewhere the person approving it was not shown — so the same refusal
+    /// applies, for a reason that is about consent rather than about surprise.
+    /// See [`DataError::StepNotReadOnly`].
+    async fn materialize(
+        &self,
+        tables: &[(String, Source)],
+        start: &str,
+        steps: &[(String, String)],
+        output: &Path,
+    ) -> Result<Materialized, DataError>;
 }
 
 #[cfg(test)]

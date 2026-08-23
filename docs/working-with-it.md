@@ -755,7 +755,7 @@ which way it went.
 
 A CSV with a million rows in it is not a file to read. `read_file` on one costs
 a whole context window and answers nothing, and it is the single most expensive
-mistake an agent can make in a folder that has data in it. So two tools treat a
+mistake an agent can make in a folder that has data in it. So four tools treat a
 data file as a table rather than as text, and a surface of its own holds what
 they find.
 
@@ -764,6 +764,7 @@ they find.
 | `load_dataset` | Reads a file's columns and gives it a short name | A question is about the *contents* of a data file |
 | `profile_dataset` | Reads the whole file and describes every column | You have not seen the data and need to know its shape |
 | `query_data` | Runs one read-only SQL query over the loaded datasets | The question is specific, or spans two files |
+| `run_recipe` | Runs a saved chain of SQL steps and writes the result | The transformation is worth keeping and re-running |
 
 `.csv`, `.tsv`, `.parquet`, and newline-delimited `.ndjson` / `.jsonl` /
 `.json`. A `.json` file holding a single array is not newline-delimited JSON
@@ -839,9 +840,127 @@ Quoted file paths are not tables either. DataFusion can be configured to treat
 `SELECT * FROM '/etc/passwd'` as a read of that file; Taurus never enables it,
 and there is a test that fails if that default ever moves.
 
+### Recipes
+
+A query answers a question. A **recipe** answers it the same way next month, on
+next month's export, without anybody remembering what was decided — which is
+the difference between having looked at some data and having a dataset.
+
+A recipe is a `.sql` file in `.taurus/recipes`, committed with the code and
+reviewed in a diff like anything else that decides what the software does. It
+is SQL with a YAML header, the same shape a `SKILL.md` has:
+
+```sql
+--- .taurus/recipes/purchases.sql ---
+---
+source: data/interactions.csv
+output: data/purchases.parquet
+description: the purchases, deduplicated, rated, and ranked per user
+---
+
+-- step: drop exact duplicates
+SELECT DISTINCT * FROM input
+
+-- step: keep the purchases
+SELECT * FROM input WHERE event = 'purchase'
+
+-- step: drop the rows with no rating
+SELECT * FROM input WHERE rating IS NOT NULL
+
+-- step: rank each user's purchases by price
+SELECT user_id, item_id, category, price, rating, ts,
+       row_number() OVER (PARTITION BY user_id ORDER BY price DESC) AS rank_for_user
+FROM input
+```
+
+Every step reads from **`input`**, which is the rows the step before it
+produced. The first step's `input` is the `source`. Every loaded dataset is
+also in scope under its own name, and a recipe can bind names to files of its
+own with a `tables:` block — which is what makes a recipe an enrichment rather
+than only a filter, because a step can join what it is cleaning against a
+lookup table.
+
+```yaml
+source: data/interactions.csv
+output: data/enriched.parquet
+tables:
+  items: data/catalogue.parquet
+```
+
+`source:` takes either a file path or a loaded dataset's name — anything with a
+data extension is a path. **Naming the file is what makes a recipe portable.**
+The dataset list lives in Taurus's own config directory and is not committed,
+so a recipe that could only name loaded datasets would be a file in the
+repository that does nothing on a fresh clone until somebody works out what to
+load first.
+
+Running it reports what each step did:
+
+```
+data/interactions.csv → data/purchases.parquet
+      400,000 rows to start
+      400,000          —  1. drop exact duplicates                517 ms
+       24,032   −375,968  2. keep the purchases                   240 ms
+       13,980    −10,052  3. drop the rows with no rating          41 ms
+       13,980          —  4. rank each user's purchases by price   50 ms
+
+Wrote 13,980 rows × 7 columns.
+```
+
+![Two recipes in the Data pane, one of them just run — four steps, with what
+each did to the row count](screenshots/recipe.png)
+
+**The middle column is the reason this is reported per step rather than as a
+single "done".** A cleaning step that was supposed to drop a hundred duplicates
+and dropped four hundred thousand rows is invisible in the SQL and unmissable
+here — and finding it out a week later, from a model trained on the result, is
+the failure the whole arrangement is arranged against.
+
+Output is Parquet by default because it keeps the column types, so the result
+loads straight back as a dataset and the next recipe can read it without
+re-guessing what a column is. `.csv`, `.tsv`, and `.ndjson` also work when what
+you want is a file to hand to somebody.
+
+`run_recipe` writes a file, so unlike the other three it asks permission — and
+the line it asks with names the path from the recipe rather than from the call,
+so what you approve is what gets written. The write is checkpointed like any
+other, so `taurus rewind` undoes it. When the run finishes, the output is
+loaded as a dataset, because it is what the next question is about.
+
+**Steps are SELECTs, and that is enforced for a different reason than
+`query_data`'s.** There the point is that nothing was approved. Here the point
+is that *one path* was: the prompt named `data/purchases.parquet`, so a step
+containing `COPY … TO '/somewhere/else'` would write somewhere you were never
+shown. It is refused by step number and title:
+
+> step 2 (write somewhere nobody agreed to) is not a read-only query. A
+> recipe's steps are SELECTs — the writing is done by the recipe, to the one
+> file its `output:` names, and a step that could write elsewhere would go
+> somewhere nobody approved. No COPY.
+
+Intermediate steps go to a scratch directory outside the workspace, so a
+four-step recipe writes one file into the project and not four. That also keeps
+memory flat: each step streams into the next through a file rather than being
+held whole, which is why a recipe works on a file bigger than the machine's RAM
+— the case where writing a recipe beats doing it by hand.
+
+Recipes work without the app or a model at all:
+
+```sh
+taurus data list             # what is loaded here, and what recipes exist
+taurus data run purchases    # run one, and print the per-step deltas
+```
+
+which is what makes a recipe something you can put in a `make` target.
+
+One thing to know: `.taurus` is skipped by the checkpoint sweep, so writing or
+editing a recipe is not itself rewindable. Skills already work that way, for
+the same reason — these are the instructions, not the output — but the file a
+recipe *writes* is fully rewindable.
+
 ### The Data pane
 
-Neither tool hands rows back to the model. A page of a dataset is the most
+No tool here hands rows back to the model. A page of a dataset is the most
 expensive and least useful thing that could go in a tool result — a sample it
 will over-generalize from, priced like a document — so what comes back is
 shape, and the rows live on a surface of their own.
@@ -857,12 +976,15 @@ loaded a file shows no switch at all — the same rule the composer's `/` hint a
 the rail's MCP badge follow. Loading the first one makes the tab appear, and
 forgetting the last one takes it away again.
 
-Three views. **Columns** is the profile: a row per column, with a bar on the
+Four views. **Columns** is the profile: a row per column, with a bar on the
 missing count so a forty-column table can be scanned down rather than read.
 **Rows** is a page of the data itself, a hundred at a time, with the row number
 so a window into a million-row file says where in it you are. **Query** is a
 SQL box over all of them — ⌘↵ runs it — answering into the same grid, with what
-the query cost beside the row count.
+the query cost beside the row count. **Recipes** lists what this workspace has,
+opens one to show its steps, and runs it — the button carries the path it
+writes, because that is the thing worth reading before clicking it rather than
+in a dialog after.
 
 The query box is deliberately not checked in the frontend. The refusal above
 lives in one place, where the model's calls go through it too; a second rule

@@ -7,8 +7,10 @@
 //! - [`df`] is the implementation, today. Apache DataFusion, embedded.
 //! - [`catalog`] is what a workspace has loaded — a list of pointers, kept in
 //!   the harness's config home rather than in the project.
-//! - [`tool`] is `load_dataset`, `profile_dataset`, and `query_data`, which
-//!   the model calls.
+//! - [`recipe`] is a committed chain of SQL steps: what one looks like, and
+//!   how one is read off disk.
+//! - [`tool`] is `load_dataset`, `profile_dataset`, `query_data`, and
+//!   `run_recipe`, which the model calls.
 //!
 //! # Why a dataset is a handle and not a view
 //!
@@ -28,27 +30,33 @@
 //! conversation records what was decided about a dataset. The dataset itself
 //! lives in the pane.
 //!
-//! # What this phase does not do
+//! # What writes, and what cannot
 //!
-//! It does not write. `query_data` runs SQL, and refuses anything that is not
-//! a read — see [`engine::DataError::NotReadOnly`], which is a guarantee rather
-//! than a hope, because the tool above it asks no permission. There is no
-//! transform that lands anywhere, no recipe, and no derived table; their
-//! absence is a scope decision rather than an oversight, and the note on
-//! [`engine::Engine`] says why the line is drawn where it is.
+//! One thing writes: [`tool::RunRecipe`], to the single path the recipe's
+//! `output:` names. It asks permission and it is rewindable.
+//!
+//! Nothing else can. `query_data` refuses any statement that is not a read —
+//! see [`engine::DataError::NotReadOnly`] — and so does every step of a
+//! recipe, for a different reason: the prompt showed one path, so a step must
+//! not be able to name another. Both refusals come out of the same exhaustive
+//! match in [`df`], which is written out rather than defaulted so a future
+//! engine release that adds a writing statement fails to compile until
+//! somebody classifies it.
 
 pub mod catalog;
 pub mod df;
 pub mod engine;
+pub mod recipe;
 pub mod tool;
 
 pub use catalog::{data_dir, tables, Dataset};
 pub use df::DataFusionEngine;
 pub use engine::{
-    ColumnHead, ColumnKind, ColumnProfile, DataError, Distinct, Engine, Format, Page, Profile,
-    QueryResult, Schema, Source, ValueCount, MAX_PAGE, MAX_QUERY_ROWS,
+    ColumnHead, ColumnKind, ColumnProfile, DataError, Distinct, Engine, Format, Materialized, Page,
+    Profile, QueryResult, Schema, Source, StepStat, ValueCount, MAX_PAGE, MAX_QUERY_ROWS,
 };
+pub use recipe::{Recipe, RecipeError, RECIPE_DIR};
 pub use tool::{
-    LoadDataset, ProfileDataset, QueryData, LOAD_DATASET_TOOL, PROFILE_DATASET_TOOL,
-    QUERY_DATA_TOOL,
+    LoadDataset, ProfileDataset, QueryData, RunRecipe, LOAD_DATASET_TOOL, PROFILE_DATASET_TOOL,
+    QUERY_DATA_TOOL, RUN_RECIPE_TOOL,
 };

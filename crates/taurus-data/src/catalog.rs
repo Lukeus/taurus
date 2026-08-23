@@ -15,11 +15,16 @@
 //! a CSV.
 //!
 //! The cost is honest and worth naming: the list does not travel with the
-//! repository, so a teammate who clones it has to load the files again. That is
-//! the right trade while an entry is only a pointer. It stops being the right
-//! trade the moment an entry carries a recipe — a recipe is exactly the thing
-//! you want committed — which is why this is written down here rather than
-//! assumed to be settled.
+//! repository, so a teammate who clones it has to load the files again.
+//!
+//! That was written before recipes existed, with a note that it would stop
+//! being the right trade the moment an entry carried one — because a recipe is
+//! exactly the thing you want committed. A recipe now exists and the trade
+//! held, because the answer turned out to be elsewhere: a recipe names its own
+//! files rather than depending on this list. See [`crate::recipe`]. So the list
+//! stays what it always was — a record of what somebody has been looking at,
+//! which is per-person and disposable — and the committed thing is committed
+//! somewhere it can be reviewed.
 
 use std::path::{Path, PathBuf};
 

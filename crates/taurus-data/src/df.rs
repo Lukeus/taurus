@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::path::Path;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -33,7 +34,9 @@ use datafusion::arrow::array::Array;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
+use datafusion::common::config::CsvOptions;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{
@@ -42,9 +45,11 @@ use datafusion::prelude::{
 use futures::StreamExt;
 
 use crate::engine::{
-    ColumnHead, ColumnKind, ColumnProfile, DataError, Distinct, Engine, Format, Page, Profile,
-    QueryResult, Schema, Source, ValueCount, MAX_PAGE, MAX_QUERY_ROWS, TOP_VALUES,
+    ColumnHead, ColumnKind, ColumnProfile, DataError, Distinct, Engine, Format, Materialized, Page,
+    Profile, QueryResult, Schema, Source, StepStat, ValueCount, MAX_PAGE, MAX_QUERY_ROWS,
+    TOP_VALUES,
 };
+use crate::recipe::INPUT;
 
 /// Distinct values above which a column has no "most common" worth showing.
 ///
@@ -399,6 +404,196 @@ impl Engine for DataFusionEngine {
             truncated,
             took_ms,
         })
+    }
+
+    async fn materialize(
+        &self,
+        tables: &[(String, Source)],
+        start: &str,
+        steps: &[(String, String)],
+        output: &Path,
+    ) -> Result<Materialized, DataError> {
+        let whole = Instant::now();
+
+        let start_source = tables
+            .iter()
+            .find(|(name, _)| name == start)
+            .map(|(_, source)| source.clone())
+            .ok_or_else(|| DataError::NoSuchDataset {
+                name: start.to_string(),
+                available: format!(
+                    "Loaded here: {}.",
+                    tables
+                        .iter()
+                        .map(|(n, _)| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            })?;
+
+        let started_with = self.count(&start_source).await?;
+
+        // Every step but the last leaves its rows in a scratch file, and the
+        // next step reads that file. The alternatives were both worse. Chaining
+        // the steps lazily would mean counting a step's rows re-ran every step
+        // before it, so a five-step recipe pays fifteen passes to report five
+        // numbers. Holding each result in memory would bound a recipe by RAM,
+        // and a file bigger than RAM is the exact case where writing a recipe
+        // beats doing it by hand.
+        //
+        // Spilling keeps it linear and keeps it streaming: one pass per step,
+        // one batch in memory at a time, and a row count that is free because
+        // Parquet keeps one in its footer.
+        //
+        // Scratch goes in the system temp directory rather than the workspace.
+        // The user approved one file being written, at the path the recipe
+        // named; four more appearing beside it would be four writes nobody
+        // agreed to, in a folder under version control.
+        let scratch = tempfile::Builder::new()
+            .prefix("taurus-recipe-")
+            .tempdir()
+            .map_err(|e| DataError::NotWritten {
+                path: "a scratch directory".into(),
+                detail: e.to_string(),
+            })?;
+
+        let mut stats = Vec::with_capacity(steps.len());
+        let mut current = start_source;
+        for (index, (title, sql)) in steps.iter().enumerate() {
+            let number = index + 1;
+            let last = number == steps.len();
+            let destination = if last {
+                output.to_path_buf()
+            } else {
+                scratch.path().join(format!("step{number}.parquet"))
+            };
+            let format = if last {
+                Format::of(output)?
+            } else {
+                Format::Parquet
+            };
+
+            let started = Instant::now();
+            let columns = self
+                .run_step(tables, &current, sql, &destination, format, number, title)
+                .await?;
+            let took_ms = started.elapsed().as_millis() as u64;
+
+            current = Source::at(&destination)?;
+            stats.push(StepStat {
+                title: title.clone(),
+                rows: self.count(&current).await?,
+                columns: columns as u64,
+                took_ms,
+            });
+        }
+
+        // Read back off the file that now exists rather than off the last
+        // plan. What was meant to be written and what landed are the same
+        // thing almost always, and a report exists for the time they are not.
+        let written = Source::at(output)?;
+        let schema = self.schema(&written).await?;
+        let rows = stats.last().map(|s| s.rows).unwrap_or(0);
+
+        Ok(Materialized {
+            started_with,
+            steps: stats,
+            columns: schema.columns,
+            rows,
+            bytes: schema.bytes,
+            took_ms: whole.elapsed().as_millis() as u64,
+        })
+    }
+}
+
+impl DataFusionEngine {
+    /// Plans one step, refuses it if it writes, and runs it into a file.
+    ///
+    /// Answers with the column count, which comes off the plan and costs
+    /// nothing; the rows are counted from the file afterwards, where the number
+    /// is already recorded.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_step(
+        &self,
+        tables: &[(String, Source)],
+        input: &Source,
+        sql: &str,
+        destination: &Path,
+        format: Format,
+        number: usize,
+        title: &str,
+    ) -> Result<usize, DataError> {
+        let ctx = self.session_for(tables).await?;
+        // Registered last, so it wins. A dataset genuinely called `input` is
+        // shadowed inside a recipe rather than fought with — see the note at
+        // the top of `recipe.rs`.
+        self.register(&ctx, INPUT, input).await?;
+
+        let plan = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .map_err(|e| DataError::BadStep {
+                number,
+                title: title.to_string(),
+                detail: readable(&e.to_string()),
+            })?;
+        // The same guard `query` uses, for a different reason. There the point
+        // is that nothing was approved; here the point is that *one path* was.
+        if let Some(kind) = writes(&plan) {
+            return Err(DataError::StepNotReadOnly {
+                number,
+                title: title.to_string(),
+                kind,
+            });
+        }
+
+        let columns = plan.schema().fields().len();
+        let frame = DataFrame::new(ctx.state(), plan);
+
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| DataError::NotWritten {
+                path: parent.display().to_string(),
+                detail: e.to_string(),
+            })?;
+        }
+        let path = destination.to_str().ok_or_else(|| DataError::NotWritten {
+            path: destination.display().to_string(),
+            detail: "the path is not valid UTF-8".into(),
+        })?;
+
+        // One file, named exactly as asked. Without this DataFusion treats the
+        // path as a directory and writes partitions into it, which is a
+        // reasonable default for a warehouse and the wrong one for somebody who
+        // said `output: data/clean.parquet` and expects that file to exist.
+        let options = DataFrameWriteOptions::new().with_single_file_output(true);
+        let written = match format {
+            Format::Parquet => frame.write_parquet(path, options, None).await,
+            Format::Csv => frame.write_csv(path, options, None).await,
+            Format::Tsv => {
+                frame
+                    .write_csv(
+                        path,
+                        options,
+                        Some(CsvOptions::default().with_delimiter(b'\t')),
+                    )
+                    .await
+            }
+            Format::Ndjson => frame.write_json(path, options, None).await,
+        };
+        written.map_err(|e| DataError::NotWritten {
+            path: destination.display().to_string(),
+            detail: readable(&e.to_string()),
+        })?;
+
+        Ok(columns)
+    }
+
+    /// Rows in a file, counted the cheapest way the format allows.
+    async fn count(&self, source: &Source) -> Result<u64, DataError> {
+        let ctx = self.open(source).await?;
+        let batch = one_row(&ctx, source, &format!("SELECT count(*) FROM {TABLE}")).await?;
+        Ok(as_u64(&batch, 0).unwrap_or(0))
     }
 }
 
@@ -1193,6 +1388,291 @@ id,event,price,active
         .await
         .unwrap_err();
         assert!(matches!(error, DataError::BadQuery { .. }), "{error}");
+    }
+
+    /// A whole recipe, end to end, with the numbers that make it worth having.
+    #[tokio::test]
+    async fn a_chain_of_steps_writes_a_file_and_reports_what_each_one_did() {
+        let dir = TempDir::new().unwrap();
+        // Five events, one of them an exact duplicate of another and one with
+        // no price — the two things a first cleaning step is always for.
+        let source = file(
+            &dir,
+            "events.csv",
+            "id,event,price,active\n\
+             1,view,10.5,true\n\
+             1,view,10.5,true\n\
+             2,click,20.0,false\n\
+             3,view,,true\n\
+             4,purchase,99.99,false\n",
+        );
+        let out = dir.path().join("clean/events.parquet");
+
+        let run = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[
+                    (
+                        "drop duplicates".into(),
+                        "SELECT DISTINCT * FROM input".into(),
+                    ),
+                    (
+                        "drop the priceless".into(),
+                        "SELECT * FROM input WHERE price IS NOT NULL".into(),
+                    ),
+                ],
+                &out,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(run.started_with, 5);
+        assert_eq!(run.steps.len(), 2);
+        assert_eq!(run.steps[0].title, "drop duplicates");
+        assert_eq!(run.steps[0].rows, 4);
+        assert_eq!(run.steps[1].rows, 3);
+        assert_eq!(run.steps[0].columns, 4);
+        assert_eq!(run.rows, 3);
+
+        // One file at the path that was named, not a directory of partitions.
+        assert!(out.is_file(), "the output is not a file");
+        assert!(run.bytes > 0);
+        let names: Vec<&str> = run.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["id", "event", "price", "active"]);
+    }
+
+    /// Parquet keeps its types across the write, which is the reason it is the
+    /// default and the reason a cleaned dataset is worth having as a file.
+    #[tokio::test]
+    async fn what_is_written_can_be_read_straight_back() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("clean.parquet");
+
+        DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[("all of it".into(), "SELECT * FROM input".into())],
+                &out,
+            )
+            .await
+            .unwrap();
+
+        let profile = DataFusionEngine::new()
+            .profile(&Source::at(&out).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(profile.rows, 5);
+        assert_eq!(column(&profile, "price").head.kind, ColumnKind::Number);
+        assert_eq!(column(&profile, "active").head.kind, ColumnKind::Boolean);
+    }
+
+    /// The thing that makes a recipe more than a filter: a step can reach the
+    /// other loaded datasets, so enrichment is the ordinary case.
+    #[tokio::test]
+    async fn a_step_can_join_input_against_another_dataset() {
+        let dir = TempDir::new().unwrap();
+        let events = file(&dir, "events.csv", EVENTS);
+        let items = file(&dir, "items.csv", "id,label\n1,alpha\n2,beta\n3,gamma\n");
+        let out = dir.path().join("labelled.parquet");
+
+        let run = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), events), ("items".to_string(), items)],
+                "events",
+                &[(
+                    "label them".into(),
+                    "SELECT i.label, e.event FROM input e JOIN items i ON e.id = i.id".into(),
+                )],
+                &out,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(run.rows, 3);
+        let names: Vec<&str> = run.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["label", "event"]);
+    }
+
+    /// `input` is the previous step, and the source stays reachable under its
+    /// own name — so a later step can compare what is left against what it
+    /// started with.
+    #[tokio::test]
+    async fn input_is_the_previous_step_and_the_source_is_still_itself() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("compared.parquet");
+
+        let run = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[
+                    (
+                        "keep the views".into(),
+                        "SELECT * FROM input WHERE event = 'view'".into(),
+                    ),
+                    (
+                        "count both sides".into(),
+                        "SELECT (SELECT count(*) FROM input) AS kept, \
+                         (SELECT count(*) FROM events) AS started"
+                            .into(),
+                    ),
+                ],
+                &out,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(run.steps[0].rows, 3);
+        assert_eq!(run.rows, 1);
+    }
+
+    /// The second read-only guarantee, and it is a different one.
+    ///
+    /// `run_recipe` *does* prompt — and what it shows the user is the one path
+    /// the recipe's `output:` names. A step that could write anywhere else
+    /// would be writing somewhere nobody was shown.
+    #[tokio::test]
+    async fn a_step_that_writes_is_refused_and_names_the_step() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("clean.parquet");
+        let escaped = dir.path().join("escaped.parquet");
+
+        let error = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[
+                    ("fine".into(), "SELECT * FROM input".into()),
+                    (
+                        "not fine".into(),
+                        format!("COPY input TO '{}'", escaped.display()),
+                    ),
+                ],
+                &out,
+            )
+            .await
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(
+            matches!(error, DataError::StepNotReadOnly { .. }),
+            "{message}"
+        );
+        // Named by number and by title, because a ten-step recipe with one bad
+        // line is the case this message exists for.
+        assert!(message.contains("step 2"), "{message}");
+        assert!(message.contains("not fine"), "{message}");
+        assert!(message.contains("COPY"), "{message}");
+        assert!(!escaped.exists(), "a refused step still wrote a file");
+    }
+
+    #[tokio::test]
+    async fn a_step_that_will_not_plan_says_which_step_and_why() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("clean.parquet");
+
+        let error = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[
+                    ("fine".into(), "SELECT * FROM input".into()),
+                    ("typo".into(), "SELECT nope FROM input".into()),
+                ],
+                &out,
+            )
+            .await
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(matches!(error, DataError::BadStep { .. }), "{message}");
+        assert!(message.contains("step 2"), "{message}");
+        assert!(message.contains("typo"), "{message}");
+        // The valid-fields half of DataFusion's message survives here too.
+        assert!(message.contains("input.price"), "{message}");
+    }
+
+    /// Nothing outside the one declared file is written, and nothing is left
+    /// behind. The intermediate steps go to a scratch directory that goes away
+    /// with the run.
+    #[tokio::test]
+    async fn a_run_leaves_exactly_one_new_file() {
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = work.join("clean.parquet");
+
+        DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[
+                    ("one".into(), "SELECT * FROM input".into()),
+                    ("two".into(), "SELECT * FROM input".into()),
+                    ("three".into(), "SELECT * FROM input".into()),
+                ],
+                &out,
+            )
+            .await
+            .unwrap();
+
+        let left: Vec<PathBuf> = std::fs::read_dir(&work)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(left, vec![out], "a run left more than its output behind");
+    }
+
+    #[tokio::test]
+    async fn a_source_that_is_not_loaded_lists_what_is() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let error = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "evnts",
+                &[("one".into(), "SELECT * FROM input".into())],
+                &dir.path().join("out.parquet"),
+            )
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("evnts"), "{message}");
+        assert!(message.contains("events"), "{message}");
+    }
+
+    /// CSV is allowed out because somebody does want to hand the result to a
+    /// person rather than to the next step.
+    #[tokio::test]
+    async fn a_recipe_can_write_csv_when_that_is_what_the_output_names() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("clean.csv");
+
+        let run = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[(
+                    "just the views".into(),
+                    "SELECT id, event FROM input WHERE event = 'view'".into(),
+                )],
+                &out,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(run.rows, 3);
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(text.starts_with("id,event\n"), "{text}");
     }
 
     #[tokio::test]
