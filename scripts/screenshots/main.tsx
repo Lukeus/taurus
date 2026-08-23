@@ -17,7 +17,10 @@ import { createRoot } from "react-dom/client";
 import {
   CHECKPOINTS,
   DATASETS,
+  DATA_EVENTS,
   DATA_PROFILE,
+  DATA_PROMPT,
+  DATA_QUERY,
   EVENTS,
   MCP_ENVIRONMENT,
   MCP_SERVERS,
@@ -80,6 +83,7 @@ const ANSWERS: Record<string, unknown> = {
   dataset_profile: DATA_PROFILE,
   list_recipes: RECIPES,
   run_recipe: RECIPE_RUN,
+  query_data: DATA_QUERY,
   list_mcp_servers: MCP_SERVERS,
   mcp_environment: MCP_ENVIRONMENT,
   // Empty, because the turn below is replayed as live events instead. Resume
@@ -135,8 +139,15 @@ requestAnimationFrame(() => {
     // Folded by the store's own reducer, so the transcript on screen is
     // assembled by the code a real turn runs and not by this file.
     useStore.setState({
-      entries: EVENTS.reduce(reduce, [
-        { kind: "user", id: "u1", text: PROMPT },
+      // The query shot is of a data conversation rather than the build-timing
+      // one — there is nothing to load or query in that turn, and the cards
+      // this is a picture of only exist in one that does.
+      entries: (shot.startsWith("query") ? DATA_EVENTS : EVENTS).reduce(reduce, [
+        {
+          kind: "user",
+          id: "u1",
+          text: shot.startsWith("query") ? DATA_PROMPT : PROMPT,
+        },
       ] as never),
       // The dialog is state, not a route, so seeding it is all it takes to
       // photograph the moment a write is actually approved.
@@ -144,8 +155,21 @@ requestAnimationFrame(() => {
       // Seeded rather than fetched, for the same reason the entries above are:
       // the list arrives from `refresh`, which the harness never calls, and
       // the switch this shot presses does not exist until the list is there.
-      ...(shot === "data" || shot === "recipes"
+      ...(shot === "data" || shot === "recipes" || shot.startsWith("query")
         ? { datasets: DATASETS as never }
+        : {}),
+      // The title is the open session's, and this shot puts it directly above
+      // a conversation about something else — the transcript and the header
+      // would visibly disagree. The other data shots show the pane, where
+      // there is no transcript to disagree with, so they keep the default.
+      ...(shot.startsWith("query")
+        ? {
+            sessions: SESSIONS.map((session, index) =>
+              index === 0
+                ? { ...session, title: "Which category people finish" }
+                : session,
+            ) as never,
+          }
         : {}),
     });
 
@@ -182,6 +206,20 @@ requestAnimationFrame(() => {
         (await click(".recipe button.primary", (b) => b.startsWith("Run")))();
         // And the report itself, which arrives a round trip after the click.
         await until(() => document.querySelector(".recipe-run"));
+      },
+      // Nothing to press. The cards are what the shot is of, and they are in
+      // the transcript the moment the entries land — so this only has to put
+      // the frame on them rather than at the bottom, where the reply is.
+      query: () =>
+        scrollTo(transcript, document.querySelector(".dataset-card")),
+      // The other half, taken the way somebody takes it: press the card's own
+      // button and photograph where it lands. Async because the grid does not
+      // exist until the pane has mounted and the query has come back — which
+      // is also what makes this a check of the round trip and not just of the
+      // stylesheet.
+      "query-run": async () => {
+        (await click(".query-card button", (b) => b === "Run in Query"))();
+        await until(() => document.querySelector(".grid-box"));
       },
       mcp: () => {
         const link = [...document.querySelectorAll(".rail-link")].find(

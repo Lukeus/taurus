@@ -52,6 +52,15 @@ const SHOTS = [
   // whole reason a run is reported per step, and a frame of four rows all
   // saying "done" would say nothing about what it is for.
   { name: "recipe", shot: "recipes", theme: "dark" },
+  // What a data turn leaves in the transcript: two references into the pane
+  // and a query that can be taken back out of it. The query card is the point
+  // — it is the one card here that is neither a result nor a pointer but an
+  // offer to ask again.
+  { name: "query", shot: "query", theme: "dark" },
+  // Where that button lands: the same query, asked again at full width, with
+  // the offer to keep it. Captured by pressing the card rather than by opening
+  // the tab, so the image is of the trip and not of the destination.
+  { name: "query-run", shot: "query-run", theme: "dark" },
 ];
 
 const CHROME = [

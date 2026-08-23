@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { ChartCard } from "./ChartCard";
 import { DatasetCard } from "./DatasetCard";
+import { QueryCard } from "./QueryCard";
 import { FlowCard } from "./FlowCard";
 import { SequenceCard } from "./SequenceCard";
 import { Markdown } from "./Markdown";
@@ -111,6 +112,9 @@ export type TranscriptProps = {
   /** Shows a dataset in the Data pane. Absent where there is no pane to show
    *  it in, which is a delegate's transcript for the same reason as above. */
   onOpenDataset?: (name: string) => void;
+  /** Takes a query the model ran to the pane's box and runs it there. Absent
+   *  wherever `onOpenDataset` is, and for the same reason. */
+  onRunQuery?: (sql: string) => void;
   /**
    * Whether to follow new entries to the bottom.
    *
@@ -130,6 +134,7 @@ export function Transcript({
   onAnswer,
   onOpenDelegate,
   onOpenDataset,
+  onRunQuery,
   follow = true,
 }: TranscriptProps) {
   const bottom = useRef<HTMLDivElement>(null);
@@ -146,6 +151,7 @@ export function Transcript({
   const answer = useStable(onAnswer);
   const openDelegate = useStable(onOpenDelegate);
   const openDataset = useStable(onOpenDataset);
+  const runQuery = useStable(onRunQuery);
 
   // Follow the stream, but stop fighting the user the moment they scroll up.
   useEffect(() => {
@@ -211,6 +217,7 @@ export function Transcript({
           onAnswer={answer}
           onOpenDelegate={openDelegate}
           onOpenDataset={openDataset}
+          onRunQuery={runQuery}
         />
       ))}
       <div ref={bottom} />
@@ -379,6 +386,7 @@ const TurnView = memo(function TurnView({
   onAnswer,
   onOpenDelegate,
   onOpenDataset,
+  onRunQuery,
 }: {
   turn: Turn;
   working: boolean;
@@ -387,6 +395,7 @@ const TurnView = memo(function TurnView({
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
   onOpenDataset?: (name: string) => void;
+  onRunQuery?: (sql: string) => void;
 }) {
   return (
     <section className={`turn${turn.prompt ? "" : " unprompted"}`}>
@@ -403,6 +412,7 @@ const TurnView = memo(function TurnView({
               onAnswer={onAnswer}
               onOpenDelegate={onOpenDelegate}
               onOpenDataset={onOpenDataset}
+              onRunQuery={onRunQuery}
             />
           </div>
         ),
@@ -470,11 +480,13 @@ const EntryView = memo(function EntryView({
   onAnswer,
   onOpenDelegate,
   onOpenDataset,
+  onRunQuery,
 }: {
   entry: Entry;
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
   onOpenDataset?: (name: string) => void;
+  onRunQuery?: (sql: string) => void;
 }) {
   if (entry.kind === "tool" && entry.view) {
     switch (entry.view.type) {
@@ -488,6 +500,8 @@ const EntryView = memo(function EntryView({
         return <FlowCard view={entry.view} />;
       case "dataset":
         return <DatasetCard view={entry.view} onOpen={onOpenDataset} />;
+      case "query":
+        return <QueryCard view={entry.view} onRun={onRunQuery} />;
       case "questions":
         return (
           <QuestionsCard

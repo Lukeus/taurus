@@ -4072,6 +4072,14 @@ button.link:hover {
   color: var(--danger);
   max-width: var(--measure);
 }
+/* The button that hands the failure to Taurus, on the same line as the failure
+   it is about. Nudged onto the baseline of the text rather than laid out as a
+   block: it is a footnote to the message, and a row of its own would give it
+   the weight of a decision. */
+.data-problem .pill {
+  margin-left: 10px;
+  vertical-align: middle;
+}
 
 /* Both boxes scroll inside themselves rather than scrolling the pane. The
    header rows stay put, which is the whole reason a forty-column profile is
@@ -4293,6 +4301,40 @@ button.link:hover {
   gap: 2px;
   min-width: 0;
 }
+/*
+ * A query the model ran, offered back.
+ *
+ * Sized between the dataset card, which is one line, and a table, which is the
+ * answer. This is neither: it is a short piece of text somebody may want to
+ * read closely and then take somewhere else, so the SQL gets the room a `pre`
+ * needs and the chrome above it stays out of the way.
+ */
+.query-card {
+  gap: 10px;
+  padding: 12px 14px;
+}
+.query-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.query-card-sql {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  /* Both directions, and capped. A CTE is worth reading in full and a window
+     function is worth not wrapping, but neither is worth pushing the reply
+     below the fold — so the card keeps its size and the query scrolls in it. */
+  max-height: 15em;
+  overflow: auto;
+  white-space: pre;
+}
+
 .dataset-copy b {
   font-family: var(--mono);
   font-size: 13px;
@@ -4333,8 +4375,17 @@ button.link:hover {
   border: none;
   border-radius: 0;
   padding: 11px 13px;
-  resize: vertical;
+  /* No `resize` handle any more. The box sizes itself to what is in it, and a
+     height dragged by hand would be snapped back by the next keystroke —
+     a control that undoes itself is worse than one that is not offered. */
+  resize: none;
+  /* Four lines' worth of floor and about fourteen of ceiling. The box grows to
+     what is in it — see `fit` in `DataPane` — so these are the two ends of
+     that: never a single-line slot for something you are about to write a
+     join in, and never so tall that the answer is pushed off the screen by
+     the question. */
   min-height: 4.5em;
+  max-height: 22em;
 }
 .query-sql:focus {
   outline: none;

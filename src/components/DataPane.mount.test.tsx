@@ -3,7 +3,7 @@
 // Everything this pane shows arrives after the first paint: a profile is a scan
 // of the whole file and a page is a query, so a static render would only ever
 // catch the reading state.
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,7 +13,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {},
 }));
 
-import { DataPane } from "./DataPane";
+import { DataPane, type DataTab } from "./DataPane";
 import type { DataColumnProfile, Dataset } from "../lib/api";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -51,25 +51,70 @@ function column(
   };
 }
 
+/**
+ * The pane with the state its caller holds, held here instead.
+ *
+ * `tab`, `sql` and the pending query all live in `App` in the real thing — see
+ * the notes on the props — so a test that passed them as constants could not
+ * click a tab. This is the smallest stand-in for that caller: it keeps the
+ * three, and it is the reason the assertions below can click through the pane
+ * the way somebody using it does.
+ */
+function Harness({
+  datasets,
+  onForget,
+  onRan,
+  sql: initialSql,
+  pending,
+  onAsk,
+}: {
+  datasets: Dataset[];
+  onForget: (name: string) => void;
+  onRan: () => void;
+  sql: string;
+  pending: string | null;
+  onAsk: (text: string) => void;
+}) {
+  const [tab, setTab] = useState<DataTab>("columns");
+  const [sql, setSql] = useState(initialSql);
+  const [errand, setErrand] = useState(pending);
+  return (
+    <DataPane
+      datasets={datasets}
+      selected={datasets[0]?.name ?? null}
+      onSelect={() => {}}
+      onForget={onForget}
+      onRan={onRan}
+      tab={tab}
+      onTab={setTab}
+      sql={sql}
+      onSql={setSql}
+      pending={errand}
+      onPendingRun={() => setErrand(null)}
+      onAsk={onAsk}
+    />
+  );
+}
+
 async function mount(
   datasets: Dataset[] = [EVENTS],
   onForget: (name: string) => void = () => {},
   onRan: () => void = () => {},
   sql = "SELECT * FROM events LIMIT 20",
+  over: { pending?: string; onAsk?: (text: string) => void } = {},
 ) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => {
     root.render(
-      <DataPane
+      <Harness
         datasets={datasets}
-        selected={datasets[0]?.name ?? null}
-        onSelect={() => {}}
         onForget={onForget}
         onRan={onRan}
         sql={sql}
-        onSql={() => {}}
+        pending={over.pending ?? null}
+        onAsk={over.onAsk ?? (() => {})}
       />,
     );
   });
@@ -380,6 +425,152 @@ describe("the query view", () => {
     expect(host.textContent).toContain("nope");
   });
 
+  /*
+   * The trip in from the transcript. `App` puts the SQL in the box and hands
+   * the pane the errand; the pane's job is to spend it once and only once.
+   */
+  it("runs a query handed over from a card, without being asked twice", async () => {
+    answering(() =>
+      Promise.resolve({
+        columns: [{ name: "n", kind: "number", type_name: "Int64", nullable: false }],
+        rows: [["3"]],
+        truncated: false,
+        took_ms: 4,
+      }),
+    );
+    const host = await mount([EVENTS], () => {}, () => {}, "SELECT 3", {
+      pending: "SELECT 3",
+    });
+    const tab = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Query",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      tab.click();
+    });
+    // Ran on arrival — the card's button says `Run`, and it has to mean it.
+    expect(host.textContent).toContain("1 row");
+    const asked = invoke.mock.calls.filter(([name]) => name === "query_data");
+    expect(asked).toEqual([["query_data", { sql: "SELECT 3" }]]);
+
+    // And the errand is spent. Leaving the pane and coming back re-mounts
+    // everything in it, which is exactly the case a token held down here would
+    // get wrong.
+    const columns = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Columns",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      columns.click();
+    });
+    await act(async () => {
+      tab.click();
+    });
+    expect(
+      invoke.mock.calls.filter(([name]) => name === "query_data"),
+    ).toHaveLength(1);
+  });
+
+  it("offers a failure to Taurus, quoting the query that failed", async () => {
+    answering(() =>
+      Promise.reject(
+        new Error(
+          `No field named s.material. Did you mean 's."Material"'? Column names are case sensitive.`,
+        ),
+      ),
+    );
+    const drafts: string[] = [];
+    const host = await mount([EVENTS], () => {}, () => {}, "SELECT s.material FROM s", {
+      onAsk: (text) => drafts.push(text),
+    });
+    const tab = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Query",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      tab.click();
+    });
+    await run(host);
+
+    const ask = [...host.querySelectorAll(".data-problem button")].find(
+      (b) => b.textContent === "Ask Taurus",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      ask.click();
+    });
+
+    expect(drafts).toHaveLength(1);
+    // Both halves, and the reason both are needed: the context the composer
+    // attaches reaches the model but never the transcript, so a message that
+    // leant on it would be a question about nothing when reopened.
+    expect(drafts[0]).toContain("SELECT s.material FROM s");
+    expect(drafts[0]).toContain("case sensitive");
+    // Nothing is sent. The next thing typed is the half only the person knows.
+    expect(invoke).not.toHaveBeenCalledWith("send_message", expect.anything());
+  });
+
+  /** The button quotes what ran, not what is in the box — by the time anybody
+   *  clicks it they have usually started editing, and quoting the half-fixed
+   *  version would ask about a query that never failed. */
+  it("quotes the query that failed even after the box has moved on", async () => {
+    answering(() => Promise.reject(new Error("no column 'nope'")));
+    const drafts: string[] = [];
+    const host = await mount([EVENTS], () => {}, () => {}, "SELECT nope FROM events", {
+      onAsk: (text) => drafts.push(text),
+    });
+    const tab = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Query",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      tab.click();
+    });
+    await run(host);
+
+    const box = sqlBox(host);
+    await act(async () => {
+      box.value = "SELECT nope_2 FROM events";
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const ask = [...host.querySelectorAll(".data-problem button")].find(
+      (b) => b.textContent === "Ask Taurus",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      ask.click();
+    });
+    expect(drafts[0]).toContain("SELECT nope FROM events");
+    expect(drafts[0]).not.toContain("nope_2");
+  });
+
+  it("offers a query that worked to a recipe, and one that did not to nobody", async () => {
+    answering(() =>
+      Promise.resolve({
+        columns: [{ name: "n", kind: "number", type_name: "Int64", nullable: false }],
+        rows: [["7"]],
+        truncated: false,
+        took_ms: 3,
+      }),
+    );
+    const drafts: string[] = [];
+    const host = await mount([EVENTS], () => {}, () => {}, "SELECT count(*) FROM events", {
+      onAsk: (text) => drafts.push(text),
+    });
+    const tab = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Query",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      tab.click();
+    });
+    // Nothing to keep until something has come back.
+    expect(host.textContent).not.toContain("Make this a step");
+
+    await run(host);
+    const keep = [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "Make this a step",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      keep.click();
+    });
+    expect(drafts[0]).toContain("recipe");
+    expect(drafts[0]).toContain("SELECT count(*) FROM events");
+  });
+
   it("says so when the query matched nothing, rather than drawing an empty table", async () => {
     answering(() =>
       Promise.resolve({
@@ -446,8 +637,11 @@ describe("the recipes view", () => {
     });
   }
 
-  async function recipesTab(datasets: Dataset[] = [EVENTS]) {
-    const host = await mount(datasets);
+  async function recipesTab(
+    datasets: Dataset[] = [EVENTS],
+    onAsk: (text: string) => void = () => {},
+  ) {
+    const host = await mount(datasets, () => {}, () => {}, "", { onAsk });
     const tab = [...host.querySelectorAll("button.seg")].find(
       (b) => b.textContent === "Recipes",
     ) as HTMLButtonElement;
@@ -571,6 +765,40 @@ describe("the recipes view", () => {
     expect(host.textContent).toContain("−1,588");
     expect(host.textContent).toContain("−178,490");
     expect(host.textContent).toContain("3.1 MB");
+  });
+
+  /*
+   * The other half of a failed run. The message is usually a step that will
+   * not plan — a column named as the model remembered it rather than as the
+   * file spells it — and the fix is one line in a file the model wrote.
+   */
+  it("offers a failed run to Taurus, naming the file to open", async () => {
+    answering({
+      list_recipes: () =>
+        Promise.resolve({ recipes: [CLEAN], problems: [] }),
+      run_recipe: () =>
+        Promise.reject("step 1 (costs) will not run: No field named s.material."),
+    });
+    const drafts: string[] = [];
+    const host = await recipesTab([EVENTS], (text) => drafts.push(text));
+    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+      b.textContent?.startsWith("Run"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      button.click();
+    });
+
+    const fix = [...host.querySelectorAll(".data-problem button")].find(
+      (b) => b.textContent === "Fix this",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      fix.click();
+    });
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]).toContain("clean");
+    // The path, not just the name: the name alone is not enough to open it.
+    expect(drafts[0]).toContain(".taurus/recipes/clean.sql");
+    expect(drafts[0]).toContain("No field named s.material");
   });
 
   /** A file somebody is halfway through writing should not hide the four that

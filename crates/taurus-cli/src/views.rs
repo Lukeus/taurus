@@ -159,6 +159,12 @@ pub fn render(view: &TranscriptView, color: bool) -> String {
         // falls through to its ordinary row rather than being replaced by a
         // card that could only repeat the name. See the match in `render.rs`.
         TranscriptView::Dataset { .. } => String::new(),
+
+        // The same, and for the same reason. The card exists to put the SQL
+        // into a query box; there is no query box here, and the row already
+        // prints the query. What a terminal *does* have is the result, which
+        // the tool returns as text either way.
+        TranscriptView::Query { .. } => String::new(),
     }
 }
 
@@ -525,6 +531,17 @@ mod tests {
     fn a_dataset_card_draws_nothing_here() {
         let view = taurus_tools::view::TranscriptView::Dataset {
             name: "events".into(),
+        };
+        assert_eq!(render(&view, false), "");
+    }
+
+    /// The same, and the argument is stronger: the card's whole purpose is a
+    /// button that puts the SQL in a query box, and a terminal has neither.
+    /// The row above already prints the query, and the tool returns the rows.
+    #[test]
+    fn a_query_card_draws_nothing_here() {
+        let view = taurus_tools::view::TranscriptView::Query {
+            sql: "SELECT count(*) FROM events".into(),
         };
         assert_eq!(render(&view, false), "");
     }

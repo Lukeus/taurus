@@ -378,6 +378,64 @@ export const EVENTS = [
  * with too many distinct values for a top five to mean anything. A frame of
  * seven clean columns would say nothing about what this pane is for.
  */
+/**
+ * A short data conversation, for the shot of the cards it leaves behind.
+ *
+ * Separate from `EVENTS`, which is a build-timing conversation and has nothing
+ * to load or query. The point of this one is the three cards a data turn
+ * produces side by side — two references into the pane and one query you can
+ * take back out of it — which is the whole of the round trip in one frame.
+ *
+ * The numbers are the same 400,000-row interactions file the profile below is
+ * a real run over, so the sentences agree with `data.png`.
+ */
+export const DATA_PROMPT = "Load data/interactions.csv and tell me which category people actually finish.";
+
+export const DATA_EVENTS = [
+  say("Loading it now."),
+  call("d1", "load_dataset", "Load data/interactions.csv", {
+    type: "dataset",
+    name: "interactions",
+  }),
+  done("d1", "Loaded 'interactions' — 400,000 rows over 6 columns."),
+  say(
+    "400,000 rows over six columns. `rating` is 42% missing, so anything about satisfaction has to say which rows it is over.",
+  ),
+  call("d2", "query_data", "Query: SELECT category, count(*) AS n, avg(rating)…", {
+    type: "query",
+    sql:
+      "SELECT category,\n       count(*) AS n,\n       round(avg(rating), 2) AS rated\n  FROM interactions\n WHERE rating IS NOT NULL\n GROUP BY category\n ORDER BY rated DESC",
+  }),
+  done("d2", "5 rows.\n\ncategory  n       rated\nbooks     41,208  4.31\nkitchen   28,904  4.02"),
+  say(
+    "`books` finishes highest at 4.31 and `kitchen` is close behind — but both are over the 58% of rows that carry a rating at all.",
+  ),
+];
+
+/**
+ * What the query above answers with, for the other half of the round trip.
+ *
+ * The same five categories the sentence after the card names, so the pane's
+ * grid and the model's prose agree — a picture where they did not would be a
+ * picture of a bug.
+ */
+export const DATA_QUERY = {
+  columns: [
+    { name: "category", kind: "text", type_name: "Utf8", nullable: false },
+    { name: "n", kind: "number", type_name: "Int64", nullable: false },
+    { name: "rated", kind: "number", type_name: "Float64", nullable: true },
+  ],
+  rows: [
+    ["books", "41208", "4.31"],
+    ["kitchen", "28904", "4.02"],
+    ["outdoors", "19430", "3.88"],
+    ["electronics", "44117", "3.51"],
+    ["toys", "12094", "3.44"],
+  ],
+  truncated: false,
+  took_ms: 63,
+};
+
 export const DATASETS = [
   { name: "interactions", path: "data/interactions.csv", format: "csv" },
   { name: "items", path: "data/items.parquet", format: "parquet" },

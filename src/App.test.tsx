@@ -61,6 +61,7 @@ import App, {
   lastActivity,
   offered,
   onScreenFor,
+  withDraft,
   TurnStrip,
 } from "./App";
 
@@ -290,6 +291,27 @@ describe("what a message carries from the pane it was sent in", () => {
 
   it("carries nothing when the pane is open on nothing", () => {
     expect(onScreenFor("data", null, "SELECT 1")).toBeNull();
+  });
+});
+
+describe("a draft put in the composer from elsewhere", () => {
+  const ASK = "This query fails:\n\n```sql\nSELECT 1\n```\n\nWhat should it be?";
+
+  it("fills an empty box with exactly what was offered", () => {
+    expect(withDraft("", ASK)).toBe(ASK);
+    expect(withDraft("  \n ", ASK)).toBe(ASK);
+  });
+
+  it("adds to a half-written question rather than replacing it", () => {
+    // The buttons that offer these sit three inches from the composer, and
+    // both are places you may have started typing before something failed.
+    // Throwing that away to make room for a canned sentence is the app
+    // deciding it knows better.
+    expect(withDraft("and only for EU", ASK)).toBe(`and only for EU\n\n${ASK}`);
+  });
+
+  it("does not leave the join hanging on whitespace", () => {
+    expect(withDraft("  ask me  \n\n", "second")).toBe("ask me\n\nsecond");
   });
 });
 

@@ -113,6 +113,27 @@ pub enum TranscriptView {
         /// Names the dataset, as `load_dataset` derived or was given it.
         name: String,
     },
+    /// A query a call ran, offered back to be run again.
+    ///
+    /// The SQL and nothing else, which is the whole of the call's input — so
+    /// this keeps the rule the cards above keep, and a reopened conversation
+    /// redraws it from the transcript with no lookup at all. Notably it does
+    /// *not* carry the rows: those are a fact about the files as they were at
+    /// the time, and the argument [`Self::Dataset`] makes against a remembered
+    /// row count applies twice over to a remembered answer.
+    ///
+    /// What the card is for is the trip back. A question answered by a query
+    /// usually raises the next one, and re-asking the model to vary a `WHERE`
+    /// clause is slower and less certain than editing it — so the card hands
+    /// the SQL to the pane's query box, where it can be run, changed, and run
+    /// again without a turn.
+    ///
+    /// A frontend with no query box ignores it and prints the call's own row,
+    /// exactly as it does for a dataset; the CLI does that.
+    Query {
+        /// The SQL, verbatim as the call sent it.
+        sql: String,
+    },
 }
 
 // Doc comments on this struct and its fields are advertised to the model

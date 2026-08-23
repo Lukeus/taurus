@@ -19,6 +19,7 @@ import {
 import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript, type TranscriptProps } from "./components/Transcript";
+import type { DataTab } from "./components/DataPane";
 import * as api from "./lib/api";
 import type {
   Attachment,
@@ -215,6 +216,27 @@ export default function App() {
    * message sent from the pane carries it — see `onScreen` below.
    */
   const [sql, setSql] = useState("");
+  /** Which of the pane's four views is showing. Up here for the same reason
+   *  `sql` is, and because a card in the transcript picks it — see
+   *  `showQuery`. */
+  const [tab, setTab] = useState<DataTab>("columns");
+  /**
+   * A query the transcript has handed to the pane, waiting to be run.
+   *
+   * An errand with a lifetime of one render: the pane takes it, clears it, and
+   * runs it. Held here rather than in the pane because the pane is unmounted
+   * every time the conversation is shown, and a marker that went with it would
+   * let the same query be run again by merely coming back.
+   */
+  const [pendingQuery, setPendingQuery] = useState<string | null>(null);
+  /**
+   * Something for the composer to say, put there by a button somewhere else.
+   *
+   * A fresh object every time, including for the same text twice: the composer
+   * reacts to it changing, and two identical drafts have to be two events or
+   * the second one does nothing.
+   */
+  const [draft, setDraft] = useState<{ text: string } | null>(null);
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
@@ -442,6 +464,31 @@ export default function App() {
     setPane("data");
   };
 
+  /**
+   * Takes a query the model ran to the pane and asks it again there.
+   *
+   * The trip out of the conversation, and the only one that changes what the
+   * pane is doing rather than just what it is looking at. Four things at once
+   * because they are one intention: the SQL in the box, the box on screen, the
+   * pane in front, and the query run — leaving any of them out would put
+   * somebody one click from the thing they clicked for.
+   */
+  const showQuery = (next: string) => {
+    setSql(next);
+    setTab("query");
+    setPane("data");
+    setPendingQuery(next);
+  };
+
+  /**
+   * Puts a sentence in the composer without sending it.
+   *
+   * The trip the other way, and the pane's only route into a turn besides
+   * typing. Nothing is sent: every one of these drafts is the first half of a
+   * question, and the second half is the bit only the person knows.
+   */
+  const ask = (text: string) => setDraft({ text });
+
   /** Whichever dataset the pane is actually showing — see `DataPane`, which
    *  falls back to the first rather than being open on nothing. */
   const showing =
@@ -604,8 +651,13 @@ export default function App() {
                 onSelect={setDataset}
                 onForget={forgetDataset}
                 onRan={() => void store.refreshDatasets()}
+                tab={tab}
+                onTab={setTab}
                 sql={sql}
                 onSql={setSql}
+                pending={pendingQuery}
+                onPendingRun={() => setPendingQuery(null)}
+                onAsk={ask}
               />
             </Suspense>
           ) : (
@@ -616,6 +668,7 @@ export default function App() {
               onAnswer={store.answerQuestions}
               onOpenDelegate={setDelegate}
               onOpenDataset={showDataset}
+              onRunQuery={showQuery}
               empty={
                 <FirstRun
                   workspace={workspace}
@@ -701,6 +754,7 @@ export default function App() {
           onPickWorkspace={pickWorkspace}
           library={library}
           onScreen={onScreen}
+          draft={draft}
           onSend={store.send}
           onStop={store.stop}
         />
@@ -1004,6 +1058,21 @@ export function onScreenFor(
 }
 
 /**
+ * What the box says once a draft is put in it.
+ *
+ * Extracted for the same reason `onScreenFor` is: nothing here renders, and
+ * the decision is the whole of it. A draft is offered by a button that has no
+ * idea whether somebody is mid-sentence — the query box and the recipe list
+ * are three inches from the composer, and both are places you might have
+ * started typing before something failed — so it is added to what is there
+ * rather than put in its place. Nothing typed is ever lost to a canned
+ * sentence; the cost is a blank line.
+ */
+export function withDraft(typed: string, draft: string): string {
+  return typed.trim() ? `${typed.trim()}\n\n${draft}` : draft;
+}
+
+/**
  * What the turn is doing, for somebody who is not looking at the transcript.
  *
  * The composer sits under the Data pane as well as under the conversation, so
@@ -1065,6 +1134,7 @@ function Composer({
   workspace,
   library,
   onScreen,
+  draft,
   onPickWorkspace,
   onSend,
   onStop,
@@ -1099,6 +1169,14 @@ function Composer({
    * they cannot explain, and this is the only moment they can see it.
    */
   onScreen: OnScreen | null;
+  /**
+   * Something to say, handed over from a button outside the composer.
+   *
+   * An object rather than a string so that clicking the same button twice is
+   * two events. `null` until something offers one, which for most sessions is
+   * never.
+   */
+  draft: { text: string } | null;
   onPickWorkspace: () => void;
   onSend: (
     text: string,
@@ -1133,6 +1211,33 @@ function Composer({
     if (attachments.length > 0) setImages((held) => [...held, ...attachments]);
     setAttachError(errors.length > 0 ? errors.join(" ") : null);
   };
+
+  /*
+   * Takes a draft from elsewhere in the window and puts the cursor after it.
+   *
+   * Added to rather than substituted for what is already typed. A draft is
+   * offered by a button that has no idea whether somebody is mid-sentence, and
+   * throwing away a half-written question to make room for a canned one is the
+   * app deciding it knows better. Appending costs a blank line and loses
+   * nothing.
+   *
+   * The cursor goes to the end because that is where the sentence continues:
+   * every one of these drafts ends on the ask, and the next thing typed
+   * qualifies it.
+   */
+  useEffect(() => {
+    if (!draft) return;
+    setText((typed) => withDraft(typed, draft.text));
+    const box_ = box.current;
+    if (!box_) return;
+    box_.focus();
+    // After the value lands, not before — the caret is set on the text that is
+    // in the box now, and React has not written the new one yet.
+    requestAnimationFrame(() => {
+      const end = box_.value.length;
+      box_.setSelectionRange(end, end);
+    });
+  }, [draft]);
 
   // Fetched once the composer is usable, again whenever a workspace change
   // could have brought a different library with it, and again whenever a rescan

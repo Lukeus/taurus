@@ -345,6 +345,27 @@ impl Tool for QueryData {
         format!("Query: {}", one_line(sql))
     }
 
+    /// The query, so the reader can take it and keep going.
+    ///
+    /// The row's preview already says what was asked, cut to one line. This
+    /// carries it whole and hands it somewhere it can be edited — the answer
+    /// to a question is where the next question comes from, and varying a
+    /// `WHERE` clause by hand beats spending a turn asking for it.
+    ///
+    /// Nothing is looked up and nothing is remembered: the payload is the
+    /// call's own `sql` and no more, which is what lets a reopened
+    /// conversation redraw this from the transcript. See
+    /// [`TranscriptView::Query`], and the note on `run_recipe` below for the
+    /// case where that could not be arranged.
+    fn view(&self, _id: &str, input: &serde_json::Value) -> Option<TranscriptView> {
+        let sql = input.get("sql")?.as_str()?;
+        // A blank `sql` never plans, so the call it came from failed; a card
+        // offering to run nothing would be a button that cannot work.
+        (!sql.trim().is_empty()).then(|| TranscriptView::Query {
+            sql: sql.to_string(),
+        })
+    }
+
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: QueryDataInput = parse_input(input)?;
         // Through the shared resolver, so a query run from the pane and one run
@@ -421,8 +442,8 @@ impl RunRecipe {
 
     /// The recipe a call names, read from disk.
     ///
-    /// Called from `preview`, `touches`, `view`, and `execute` — four places
-    /// that each need to know where this will write, and none of which may be
+    /// Called from `preview`, `touches`, and `execute` — three places that
+    /// each need to know where this will write, and none of which may be
     /// allowed to answer differently. Reading the file each time rather than
     /// caching it is what keeps them honest: the prompt the user approves and
     /// the run that follows it parsed the same bytes.
@@ -1732,6 +1753,32 @@ mod calls {
     async fn querying_asks_no_permission_either() {
         let (_ctx, _dir, home) = workspace();
         assert_eq!(query(&home).effect(), Effect::Read);
+    }
+
+    /// The property the query card rests on, and the one the whole `view`
+    /// contract is: the payload is the call's own input and nothing else, so
+    /// the frontend can rebuild the identical card from a saved transcript
+    /// without consulting anything that may have changed since.
+    #[tokio::test]
+    async fn the_query_card_carries_the_sql_and_nothing_else() {
+        let (_ctx, _dir, home) = workspace();
+        let sql = "SELECT category, count(*)\n  FROM events\n GROUP BY category";
+        let view = query(&home)
+            .view("call-1", &serde_json::json!({ "sql": sql }))
+            .expect("a query draws a card");
+        assert_eq!(view, TranscriptView::Query { sql: sql.into() });
+    }
+
+    /// A blank query never plans, so the call it came from failed — and a card
+    /// whose only control is `run this` would offer to run nothing.
+    #[tokio::test]
+    async fn a_blank_query_draws_no_card() {
+        let (_ctx, _dir, home) = workspace();
+        let tool = query(&home);
+        assert!(tool
+            .view("call-1", &serde_json::json!({ "sql": "  \n " }))
+            .is_none());
+        assert!(tool.view("call-1", &serde_json::json!({})).is_none());
     }
 
     #[tokio::test]

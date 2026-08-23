@@ -151,13 +151,18 @@ impl Renderer {
                 self.break_thinking();
                 // A table or a chart *is* the output, so it goes to stdout in
                 // full rather than being announced as a call that happened.
-                // Two exceptions among the exceptions. The prompt that follows
-                // draws questions itself, and printing them twice would ask
-                // everything before asking anything. A dataset card points at a
-                // pane that exists only in the app, and the call's own text is
-                // the better answer here — so both keep their ordinary row.
+                // Three exceptions among the exceptions. The prompt that
+                // follows draws questions itself, and printing them twice
+                // would ask everything before asking anything. A dataset card
+                // and a query card both point at a pane that exists only in
+                // the app, and the call's own text is the better answer here —
+                // so all three keep their ordinary row.
                 match view {
-                    Some(TranscriptView::Questions { .. } | TranscriptView::Dataset { .. })
+                    Some(
+                        TranscriptView::Questions { .. }
+                        | TranscriptView::Dataset { .. }
+                        | TranscriptView::Query { .. },
+                    )
                     | None => {
                         self.dim(&format!("  {} {}", glyph(name), preview));
                     }

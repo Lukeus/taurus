@@ -140,6 +140,13 @@ The pane does not exist until a workspace has loaded something. It takes the
 centre column beside the conversation rather than covering it, and the box you
 type in never moves — asking is still how anything gets here.
 
+It goes both ways. A message sent from the pane carries what is on screen, so
+"which category refunds most?" has a referent. A query the model ran leaves a
+card in the transcript with **Run in Query** on it, which asks the same
+question again in the pane at full width. A query that fails, and a recipe run
+that does, each offer themselves back to Taurus with the error already in the
+message.
+
 **[Configuration](docs/configuration.md)** — providers, keys, MCP servers, and
 web search.
 

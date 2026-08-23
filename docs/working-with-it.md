@@ -1019,7 +1019,7 @@ missing count so a forty-column table can be scanned down rather than read.
 **Rows** is a page of the data itself, a hundred at a time, with the row number
 so a window into a million-row file says where in it you are. **Query** is a
 SQL box over all of them — ⌘↵ runs it — answering into the same grid, with what
-the query cost beside the row count. **Recipes** lists what this workspace has,
+the query cost beside the row count; the box grows to fit what is in it. **Recipes** lists what this workspace has,
 opens one to show its steps, and runs it — the button carries the path it
 writes, because that is the thing worth reading before clicking it rather than
 in a dialog after.
@@ -1051,3 +1051,51 @@ rather than a result, and it looks its dataset up as it draws rather than
 carrying a snapshot, so it says what is true now rather than what was true when
 the call ran. **Forget** removes a dataset from the list and touches no file;
 it is how a mistaken load is corrected, so it asks nothing first.
+
+### Going the other way
+
+Everything above is one direction — from the conversation into the pane. Three
+buttons go back, and they exist because the pane is where you find out what the
+next question is.
+
+![A data conversation in the transcript: a dataset card and a query card, the
+query shown whole with copy and Run in Query beside
+it](screenshots/query.png)
+
+**A query the model ran leaves a card you can take.** `query_data` draws the
+SQL in the transcript with **Run in Query** beside it, which puts it in the box
+and asks it again there — at full width, with no cell truncated and no column
+dropped. The answer to a question is where the next one comes from, and varying
+a `WHERE` clause by hand is faster and more certain than spending a turn asking
+for it. The card carries no rows, deliberately: they were true of the files as
+they stood when the call ran, and a card that redrew last week's answer on
+reopening would be confidently wrong in exactly the way this feature is
+arranged against.
+
+![The same query in the pane's box, run: five rows with what each cost, and
+Make this a step beside the count](screenshots/query-run.png)
+
+That is one click from the card above. The box grew to hold the query — it
+sizes itself to what is in it, because model SQL is routinely longer than the
+four lines a typed one starts at — and the chip above the composer picked up
+the query on its own, so the next message from here already carries it.
+
+**A query that fails offers itself to Taurus.** The engine's refusals are good
+and long — `No field named s.material. Did you mean 's."Material"'? Column
+names are case sensitive.` — and handing the whole thing over is faster than
+reading it. **Ask Taurus** fills the composer with the query and the message.
+It quotes the query that *failed*, not what is in the box now: by the time
+anybody clicks it they have usually started editing.
+
+**A query that works offers itself to a recipe.** **Make this a step** is on
+the result, and only there, because a step is a query somebody has decided to
+keep and that decision is made when the right rows come back — not before, when
+it does not run, and not from a transcript a week later. A failed recipe run
+gets the same treatment: **Fix this**, naming the recipe's path so the model
+can open the file it wrote.
+
+None of the three sends anything. Each fills the box and puts the cursor at the
+end, because every one of them is the first half of a question — *why does this
+fail* is usually followed by *and it should be per region* — and a button that
+fired a turn would take that away. What is already typed is added to rather
+than replaced.

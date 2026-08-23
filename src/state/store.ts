@@ -1142,6 +1142,14 @@ export function viewFromCall(
         ? { type: "dataset", name: payload.name }
         : undefined;
 
+    case "query_data":
+      // The one card whose payload is literally the input field, unchanged.
+      // Blank is dropped for the same reason the Rust side drops it: the card
+      // is a button that runs this, and there is nothing to run.
+      return typeof payload.sql === "string" && payload.sql.trim()
+        ? { type: "query", sql: payload.sql }
+        : undefined;
+
     default:
       return undefined;
   }

@@ -3,7 +3,7 @@
 <sub>[← Taurus AI Shell](../README.md)</sub>
 
 ```bash
-cargo test --workspace     # 1460 tests
+cargo test --workspace     # 1463 tests
 pnpm test                  # transcript reducer, replay, settings, rewind, diffs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -135,6 +135,15 @@ worth knowing before writing the next one: these run under Chrome's
 `--virtual-time-budget`, and a frame loop that reschedules itself every frame
 spends the entire budget without ever letting the fetch it is waiting on
 land.
+
+Some of these shots are the only check a behaviour has, and that is on purpose
+rather than a gap. `query-run` presses **Run in Query** on a card in the
+transcript and photographs where it lands — a lazily mounted pane, a tab
+switch, and a query that comes back — which is a real browser doing the whole
+round trip. It is also the only place the query box's auto-sizing is checked at
+all: jsdom reports `scrollHeight` as `0` for everything, so a unit test of it
+would assert a number the browser never produces. When a change touches
+anything measured from the DOM, the PNG is the test.
 
 ## Live checks
 

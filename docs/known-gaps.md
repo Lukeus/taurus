@@ -522,6 +522,35 @@ and they are the minority.
   you can only give by switching. What the strip shows is the call that is
   running (`Ask 2 questions`), which is a hint rather than the card. Clicking
   it is one step; noticing you need to is on you.
+- **A query card stands alone, so a query-heavy turn is a stack of cards.** Any
+  tool call that draws a view is excluded from the folded run header — that is
+  what stops a table being filed under "6 steps · 11s" behind a disclosure
+  triangle. `query_data` now draws one, so a turn that asks six questions
+  leaves six cards where it used to leave one row of six. Each is small and
+  each is useful; six in a column is still more transcript than the turn is
+  worth. The fix is a fold that can hold cards, which is a change to how a run
+  is drawn rather than to this tool.
+- **Running a query from a card can disagree with the transcript above it.**
+  The card carries the SQL and not the rows, on purpose — a remembered answer
+  is the number that is right for a week and then quietly wrong. So **Run in
+  Query** asks the files as they are *now*, and if something has rewritten one
+  since, the pane's answer and the model's sentence about it differ with
+  nothing saying why. That is the right way round — the fresh number is the
+  true one — but the disagreement is left for the reader to notice.
+- **A recipe's steps cannot be taken to the query box.** The pane shows every
+  step's SQL when a recipe is opened, and there is deliberately no button to
+  run one: every step reads from `input`, which is the rows the step before it
+  produced, and no such table exists outside a run. Pasting one into the box
+  gets `table 'input' not found`, which would be the button's fault rather than
+  the user's. Making it work means materializing the chain up to that step,
+  which is most of a run — see the sample-then-commit gating that phase 3 needs
+  anyway.
+- **The drafts these buttons write are a guess at the question.** "Add this as
+  a step in a recipe" does not say *which* recipe, because the pane does not
+  know — so the model asks, or picks, and either way it is a round trip the
+  person could have saved by typing four words. The button is a head start, not
+  a complete instruction, which is why nothing is sent and the cursor is left at
+  the end of it.
 - **Identifier case is Taurus's own dialect choice, and a recipe carries it.**
   DataFusion lowercases an unquoted identifier by default, the way Postgres
   does; Taurus turns that off, so a column reported as `Material` is written as

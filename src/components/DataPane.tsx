@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { FORMAT_LABEL } from "./DatasetCard";
 import * as api from "../lib/api";
@@ -44,8 +44,13 @@ export function DataPane({
   onSelect,
   onForget,
   onRan,
+  tab,
+  onTab,
   sql,
   onSql,
+  pending,
+  onPendingRun,
+  onAsk,
 }: {
   datasets: Dataset[];
   /** Which dataset is open. Held by the caller so a transcript card can
@@ -66,10 +71,40 @@ export function DataPane({
    */
   sql: string;
   onSql: (sql: string) => void;
+  /**
+   * Which of the four views is showing.
+   *
+   * Held by `App` for the same two reasons `sql` is: it survives the round
+   * trip to the conversation, which this lazily mounted pane's own state
+   * would not, and a card in the transcript can choose it — clicking `Run in
+   * Query` has to land on the Query tab and not on whichever one was open
+   * last.
+   */
+  tab: DataTab;
+  onTab: (tab: DataTab) => void;
+  /**
+   * A query to run the moment this appears, from a card in the transcript.
+   *
+   * An errand rather than a state, which is why it is cleared through
+   * `onPendingRun` the instant it is taken. Held by `App` rather than as a
+   * counter down here because this pane is unmounted every time the
+   * conversation is shown — a token compared against a ref would be forgotten
+   * with it, and switching back would re-run a query nobody asked for twice.
+   */
+  pending: string | null;
+  onPendingRun: () => void;
+  /**
+   * Hands the composer something to say, without sending it.
+   *
+   * The pane's way of starting a turn. Not sent, because every one of these
+   * is a sentence somebody will want to add to — *why does this fail* is
+   * usually followed by *and it should be per region* — and a button that
+   * fires a turn takes that away. What it does instead is fill the box and
+   * put the cursor in it, which is the same thing one keystroke later and is
+   * undoable by deleting.
+   */
+  onAsk: (text: string) => void;
 }) {
-  const [tab, setTab] = useState<"columns" | "rows" | "query" | "recipes">(
-    "columns",
-  );
 
   // Falls back to the first, so the pane is never open on nothing while there
   // is something to be open on. A name that no longer exists — a dataset
@@ -136,25 +171,25 @@ export function DataPane({
       <div className="data-switch">
         <button
           className={`seg${tab === "columns" ? " on" : ""}`}
-          onClick={() => setTab("columns")}
+          onClick={() => onTab("columns")}
         >
           Columns
         </button>
         <button
           className={`seg${tab === "rows" ? " on" : ""}`}
-          onClick={() => setTab("rows")}
+          onClick={() => onTab("rows")}
         >
           Rows
         </button>
         <button
           className={`seg${tab === "query" ? " on" : ""}`}
-          onClick={() => setTab("query")}
+          onClick={() => onTab("query")}
         >
           Query
         </button>
         <button
           className={`seg${tab === "recipes" ? " on" : ""}`}
-          onClick={() => setTab("recipes")}
+          onClick={() => onTab("recipes")}
         >
           Recipes
         </button>
@@ -171,16 +206,26 @@ export function DataPane({
       {tab === "columns" && <Columns key={dataset.name} name={dataset.name} />}
       {tab === "rows" && <Rows key={dataset.name} name={dataset.name} />}
       {tab === "query" && (
-        <Query tables={datasets.map((d) => d.name)} sql={sql} onSql={onSql} />
+        <Query
+          tables={datasets.map((d) => d.name)}
+          sql={sql}
+          onSql={onSql}
+          pending={pending}
+          onPendingRun={onPendingRun}
+          onAsk={onAsk}
+        />
       )}
       {/* Not scoped to the selected dataset, and not keyed on it. A recipe
           names its own source and can join every other loaded one, so hiding
           the ones whose source is not the open chip would hide most of them
           most of the time. */}
-      {tab === "recipes" && <Recipes onRan={onRan} />}
+      {tab === "recipes" && <Recipes onRan={onRan} onAsk={onAsk} />}
     </div>
   );
 }
+
+/** The four things the pane can be showing. */
+export type DataTab = "columns" | "rows" | "query" | "recipes";
 
 /** How many rows one page of the grid holds. */
 const PAGE = 100;
@@ -450,22 +495,54 @@ function Query({
   tables,
   sql,
   onSql,
+  pending,
+  onPendingRun,
+  onAsk,
 }: {
   tables: string[];
   /** Held by `App`, not here. See the note where it is declared. */
   sql: string;
   onSql: (sql: string) => void;
+  /** A query handed over from the transcript, to be run on arrival. */
+  pending: string | null;
+  onPendingRun: () => void;
+  onAsk: (text: string) => void;
 }) {
   const [result, setResult] = useState<DataQueryResult | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  /**
+   * The SQL that produced what is showing below.
+   *
+   * Not the same as what is in the box, and the difference matters exactly
+   * once: the button that asks Taurus about a failure has to quote the query
+   * that failed, and by the time anybody clicks it they have usually already
+   * started editing. The box keeps showing the error while that happens, which
+   * is right — the edit is being made *because* of it.
+   */
+  const [ran, setRan] = useState("");
+  const box = useRef<HTMLTextAreaElement>(null);
 
-  const run = async () => {
-    if (!sql.trim() || running) return;
+  /*
+   * The box takes the shape of what is in it.
+   *
+   * Four lines was the right default when everything in here was typed, and
+   * the wrong one the moment a card in the transcript started putting the
+   * model's SQL in — a seven-line aggregate arrived clipped through the middle
+   * of a `WHERE`, which reads as broken rather than as scrolled. The floor and
+   * the ceiling are in the stylesheet; this measures what is between them.
+   */
+  useEffect(() => {
+    fit(box.current);
+  }, [sql]);
+
+  const run = async (text = sql) => {
+    if (!text.trim() || running) return;
     setRunning(true);
     setProblem(null);
+    setRan(text);
     try {
-      setResult(await api.queryData(sql));
+      setResult(await api.queryData(text));
     } catch (e) {
       // The previous result is dropped rather than left standing under a new
       // error, which would read as the answer to the query that just failed.
@@ -476,10 +553,28 @@ function Query({
     }
   };
 
+  /*
+   * A query sent over from a card in the transcript, run as it lands.
+   *
+   * `App` has already put it in the box; this is the half that makes the
+   * button say `Run` rather than `Open`. Cleared through the caller before the
+   * query is even started, so a run in flight when the pane is closed and
+   * reopened is not silently started a second time.
+   */
+  useEffect(() => {
+    if (pending === null) return;
+    onPendingRun();
+    void run(pending);
+    // Deliberately only on the errand itself. `run` closes over state that
+    // changes while it runs, and re-firing on any of that would be a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending]);
+
   return (
     <div className="data-body">
       <div className="query-box">
         <textarea
+          ref={box}
           className="query-sql"
           value={sql}
           spellCheck={false}
@@ -513,7 +608,20 @@ function Query({
         </div>
       </div>
 
-      {problem && <p className="data-problem">{problem}</p>}
+      {problem && (
+        <p className="data-problem">
+          {problem}
+          {/* The one button in the pane that exists because of a specific
+              failure we watched happen: a query written against `material`
+              when the column is `"Material"`, refused with a message that says
+              exactly what to do and is nine words too long to want to retype.
+              Handing the whole thing to the model is faster than reading it,
+              and the model is the one that has to learn the lesson anyway. */}
+          <button className="pill" onClick={() => onAsk(askAboutFailure(ran, problem))}>
+            Ask Taurus
+          </button>
+        </p>
+      )}
 
       {result && !problem && (
         <>
@@ -525,6 +633,15 @@ function Query({
             {result.truncated && <> · capped — add a LIMIT or aggregate</>}
             {" · "}
             {result.took_ms.toLocaleString()} ms
+            <span className="spacer" />
+            {/* Offered on a query that worked, and nowhere else. A step in a
+                recipe is a query somebody has decided to keep, and the moment
+                that decision gets made is the moment the right rows come back
+                — not before, when it does not run, and not from the transcript
+                a week later, when the reason it mattered is gone. */}
+            <button className="pill" onClick={() => onAsk(askForAStep(ran))}>
+              Make this a step
+            </button>
           </p>
           {result.rows.length > 0 ? (
             <Grid columns={result.columns} rows={result.rows} from={1} />
@@ -542,6 +659,65 @@ function Query({
       )}
     </div>
   );
+}
+
+/**
+ * Sizes a textarea to its content, between whatever bounds the CSS sets.
+ *
+ * `auto` first, and that is the whole trick: `scrollHeight` on an element that
+ * is already tall enough reports the height it currently has, so measuring
+ * without collapsing it first makes the box grow and never shrink. The
+ * stylesheet keeps both ends — `min-height` so an empty box is still worth
+ * typing a join into, `max-height` so a long one scrolls rather than pushing
+ * the answer off the screen.
+ */
+function fit(area: HTMLTextAreaElement | null) {
+  if (!area) return;
+  area.style.height = "auto";
+  area.style.height = `${area.scrollHeight}px`;
+}
+
+/*
+ * What the pane's three buttons put in the composer.
+ *
+ * Written out here, together, because they are the pane's only prose and the
+ * one thing about this feature a model reads. Three rules they all keep:
+ *
+ * They quote the SQL or name the file. A message that said "this query fails"
+ * and nothing else would rely on the context the composer attaches — which
+ * reaches the model but not the transcript, so a conversation reopened next
+ * month would be a question about nothing. Everything needed to understand
+ * these is inside them.
+ *
+ * They end with the ask, not the evidence. The last line is where a person
+ * appends — *and it should be per region* — and it is where the model's
+ * attention lands.
+ *
+ * They are a draft, not a message. None of them is sent; each fills the box
+ * and waits. So they are phrased as an opening rather than as a complete
+ * instruction, which is what makes adding a sentence read naturally instead of
+ * as a contradiction.
+ */
+
+/** Why a query in the box did not run. */
+export function askAboutFailure(sql: string, problem: string): string {
+  return `This query fails:\n\n${fence(sql)}\n\n${problem.trim()}\n\nWhat should it be?`;
+}
+
+/** A query worth keeping, offered to a recipe. */
+export function askForAStep(sql: string): string {
+  return `Add this as a step in a recipe:\n\n${fence(sql)}`;
+}
+
+/** A recipe that ran and did not finish. */
+export function askAboutRun(name: string, path: string, problem: string): string {
+  return `Running the ${name} recipe failed:\n\n${problem.trim()}\n\nHave a look at ${path}.`;
+}
+
+/** SQL in a fence, so the model reads it as SQL and the transcript draws it as
+ *  a block rather than as four unindented lines of prose. */
+function fence(sql: string): string {
+  return `\`\`\`sql\n${sql.trim()}\n\`\`\``;
 }
 
 /**
@@ -564,7 +740,13 @@ function Query({
  * refusal is not repeated here, for the reason the query box does not repeat
  * its own: a second rule in the frontend is a rule that drifts.
  */
-function Recipes({ onRan }: { onRan: () => void }) {
+function Recipes({
+  onRan,
+  onAsk,
+}: {
+  onRan: () => void;
+  onAsk: (text: string) => void;
+}) {
   const [recipes, setRecipes] = useState<Recipe[] | null>(null);
   const [problems, setProblems] = useState<string[]>([]);
   const [failed, setFailed] = useState<string | null>(null);
@@ -607,7 +789,12 @@ function Recipes({ onRan }: { onRan: () => void }) {
       )}
 
       {recipes.map((recipe) => (
-        <RecipeCard key={recipe.name} recipe={recipe} onRan={onRan} />
+        <RecipeCard
+          key={recipe.name}
+          recipe={recipe}
+          onRan={onRan}
+          onAsk={onAsk}
+        />
       ))}
 
       {/* Below the list rather than instead of it: a file somebody is halfway
@@ -624,9 +811,11 @@ function Recipes({ onRan }: { onRan: () => void }) {
 function RecipeCard({
   recipe,
   onRan,
+  onAsk,
 }: {
   recipe: Recipe;
   onRan: () => void;
+  onAsk: (text: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [running, setRunning] = useState(false);
@@ -713,7 +902,22 @@ function RecipeCard({
         </ol>
       )}
 
-      {problem && <p className="data-problem">{problem}</p>}
+      {problem && (
+        <p className="data-problem">
+          {problem}
+          {/* The failure this most often answers is a step that will not plan
+              — a column named as the model remembered it rather than as the
+              file spells it — and the fix is one line in a file the model
+              wrote and can read again. The recipe's path goes in the message
+              because the name alone is not enough to open it. */}
+          <button
+            className="pill"
+            onClick={() => onAsk(askAboutRun(recipe.name, recipe.path, problem))}
+          >
+            Fix this
+          </button>
+        </p>
+      )}
       {run && !problem && <RunReport run={run} output={recipe.output} />}
     </div>
   );

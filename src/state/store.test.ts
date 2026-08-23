@@ -478,6 +478,26 @@ describe("replaying a dataset card", () => {
   });
 });
 
+describe("replaying a query card", () => {
+  it("carries the SQL back verbatim, newlines and all", () => {
+    // The one card whose payload is the input field untouched — which is why
+    // this side and the Rust side cannot drift the way `datasetName` can.
+    const sql = "SELECT category, count(*)\n  FROM events\n GROUP BY category";
+    expect(viewFromCall("t1", "query_data", { sql })).toEqual({
+      type: "query",
+      sql,
+    });
+  });
+
+  it("draws nothing for a query there is nothing to run", () => {
+    // Matching the Rust: the card's only control runs this, and a call with a
+    // blank query failed to plan anyway.
+    expect(viewFromCall("t1", "query_data", { sql: "   " })).toBeUndefined();
+    expect(viewFromCall("t1", "query_data", { sql: 7 })).toBeUndefined();
+    expect(viewFromCall("t1", "query_data", {})).toBeUndefined();
+  });
+});
+
 describe("the plan supersedes itself", () => {
   const planEvent = (id: string, steps: unknown[]): UiEvent => ({
     type: "tool_call_started",
