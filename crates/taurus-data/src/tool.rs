@@ -86,6 +86,7 @@ impl From<DataError> for ToolError {
             // A bad step is a line in a file the model can rewrite, which is
             // exactly what `InvalidInput` tells it to go and do.
             | DataError::StepNotReadOnly { .. }
+            | DataError::StepIgnoresInput { .. }
             | DataError::BadStep { .. } => ToolError::InvalidInput(error.to_string()),
             other => ToolError::Failed(other.to_string()),
         }
@@ -442,10 +443,24 @@ impl Tool for RunRecipe {
          by step, and writes the result to a file in the workspace. Answers with what each step \
          did to the row count, which is how a step that dropped far more than it should be shows \
          itself. \
-         Recipes are .sql files in .taurus/recipes — read one to see what it does before running \
-         it. Write a new one with write_file when a transformation is worth keeping: a recipe is \
-         reviewed in a diff, committed with the code, and re-run on next month's export, which is \
-         the difference between having looked at some data and having a dataset. \
+         Recipes are .sql files in .taurus/recipes. Write one with write_file when a \
+         transformation is worth keeping — it is reviewed in a diff, committed with the code, and \
+         re-run on next month's export, which is the difference between having looked at some \
+         data and having a dataset. The format:\n\n\
+         ---\n\
+         source: data/events.csv\n\
+         output: data/clean.parquet\n\
+         ---\n\n\
+         -- step: drop exact duplicates\n\
+         SELECT DISTINCT * FROM input\n\n\
+         -- step: keep the rows that name a user\n\
+         SELECT * FROM input WHERE user_id IS NOT NULL\n\n\
+         Every step reads from `input`, which is the rows the step before it produced; the first \
+         step's `input` is `source`. A later step that queries the source table again instead of \
+         `input` throws away everything above it and is refused. `source` takes a file path or a \
+         loaded dataset's name — a path is what makes the recipe work for somebody who has not \
+         loaded anything. Other loaded datasets are in scope under their own names, and a \
+         `tables:` block binds more; write column names exactly as profile_dataset reported them. \
          For a one-off question, use query_data instead — this writes a file and asks permission \
          to."
     }

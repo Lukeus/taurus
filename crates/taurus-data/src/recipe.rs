@@ -157,10 +157,19 @@ impl Recipe {
 #[derive(Debug, thiserror::Error)]
 pub enum RecipeError {
     #[error(
-        "{path}: a recipe starts with a --- line, then `source:` and `output:`, then another --- \
-         line, then its steps."
+        "{path}: a recipe starts with a line that is exactly ---, then `source:` and `output:`, \
+         then another --- line, then its steps. {found}"
     )]
-    NoFrontmatter { path: String },
+    NoFrontmatter {
+        path: String,
+        /// What is actually at the top, quoted back.
+        ///
+        /// Without this the message is unreadable in the case it is most often
+        /// wrong for: a file that *does* begin with three dashes and something
+        /// else after them reads "a recipe starts with a --- line" as a
+        /// contradiction of what the author can see.
+        found: String,
+    },
 
     #[error("{path}: the frontmatter is not valid YAML: {source}")]
     BadYaml {
@@ -257,6 +266,33 @@ pub fn find(workspace: &Path, name: &str) -> Result<Recipe, RecipeError> {
     parse(&text, name, &relative)
 }
 
+/// What is at the top of the file, said in a way that names the mistake.
+///
+/// The two near-misses are worth recognising by sight rather than leaving the
+/// reader to compare strings: a filename banner above the frontmatter, and a
+/// markdown fence around the whole file. Both are what happens when a recipe is
+/// copied out of documentation, and both leave a file whose first line looks
+/// enough like `---` to make the plain message read as nonsense.
+fn describe_top(text: &str) -> String {
+    let first = text.lines().next().unwrap_or("").trim_end();
+    if first.is_empty() {
+        return "It is empty.".to_string();
+    }
+    if first.starts_with("```") {
+        return format!(
+            "This one starts with `{first}` — that is a markdown fence around the file rather \
+             than part of it. Save the SQL on its own."
+        );
+    }
+    if first.starts_with("---") {
+        return format!(
+            "This one starts with `{first}`, which is not a bare --- line. Anything after the \
+             three dashes, a filename included, makes it something else."
+        );
+    }
+    format!("This one starts with `{first}`.")
+}
+
 /// What to say after "no recipe called x".
 fn available(all: &[Recipe]) -> String {
     if all.is_empty() {
@@ -283,17 +319,22 @@ pub fn parse(text: &str, name: &str, path: &str) -> Result<Recipe, RecipeError> 
     // The same tolerances `parse_skill_md` extends, and for the same reason:
     // these are authored by models and edited by people on three platforms.
     let text = text.trim_start_matches('\u{feff}').replace("\r\n", "\n");
-    let rest = text
-        .strip_prefix("---\n")
-        .ok_or_else(|| RecipeError::NoFrontmatter {
-            path: path.to_string(),
-        })?;
+    // Blank lines above the opening marker are tolerated, and trailing spaces
+    // on it are too. Both are unambiguous and neither is worth an error;
+    // anything else at the top is quoted back rather than guessed at.
+    let text = text.trim_start_matches('\n');
+    let missing = || RecipeError::NoFrontmatter {
+        path: path.to_string(),
+        found: describe_top(text),
+    };
+    let (first, rest) = text.split_once('\n').ok_or_else(missing)?;
+    if first.trim_end() != "---" {
+        return Err(missing());
+    }
     let (yaml, body) = rest
         .split_once("\n---\n")
         .or_else(|| rest.split_once("\n---"))
-        .ok_or_else(|| RecipeError::NoFrontmatter {
-            path: path.to_string(),
-        })?;
+        .ok_or_else(missing)?;
 
     let frontmatter: Frontmatter =
         serde_yaml_ng::from_str(yaml).map_err(|source| RecipeError::BadYaml {
@@ -603,6 +644,39 @@ mod tests {
         let message = parsed("SELECT 1").unwrap_err().to_string();
         assert!(message.contains("source:"), "{message}");
         assert!(message.contains("output:"), "{message}");
+    }
+
+    /// The message that reads as a contradiction otherwise. This file *does*
+    /// start with three dashes, and being told "a recipe starts with a --- line"
+    /// is no help at all unless it also says what is there instead.
+    #[test]
+    fn a_filename_banner_above_the_frontmatter_is_named_rather_than_denied() {
+        let text = format!("--- .taurus/recipes/clean.sql ---\n{GOOD}");
+        let message = parsed(&text).unwrap_err().to_string();
+        assert!(
+            message.contains("--- .taurus/recipes/clean.sql ---"),
+            "{message}"
+        );
+        assert!(message.contains("not a bare"), "{message}");
+    }
+
+    #[test]
+    fn a_markdown_fence_around_the_file_is_named_as_one() {
+        let text = format!("```sql\n{GOOD}```\n");
+        let message = parsed(&text).unwrap_err().to_string();
+        assert!(message.contains("markdown fence"), "{message}");
+    }
+
+    #[test]
+    fn an_empty_file_says_it_is_empty_rather_than_quoting_nothing() {
+        assert!(parsed("").unwrap_err().to_string().contains("empty"));
+    }
+
+    /// Both unambiguous, and neither worth an error.
+    #[test]
+    fn blank_lines_above_the_marker_and_spaces_after_it_are_tolerated() {
+        assert!(parsed(&format!("\n\n{GOOD}")).is_ok());
+        assert!(parsed(&GOOD.replacen("---\n", "---   \n", 1)).is_ok());
     }
 
     #[test]

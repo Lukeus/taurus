@@ -836,6 +836,14 @@ The refusal names what a write is for:
 > that is not a read-only query. `query_data` runs SELECT and nothing else —
 > no COPY. Writing a table is what a recipe does.
 
+**Column names are used exactly as the profile reported them.** A spreadsheet
+export is full of `Material` and `Price_Per_Unit`, and SQL engines conventionally
+lowercase an unquoted identifier — which would mean `profile_dataset` naming a
+column `Material` and then the query tool refusing `SELECT Material`. Taurus
+turns that normalization off, so the name that was reported is the name that
+works, with no quoting needed. A genuinely wrong case still fails, and says
+which column you meant.
+
 Quoted file paths are not tables either. DataFusion can be configured to treat
 `SELECT * FROM '/etc/passwd'` as a read of that file; Taurus never enables it,
 and there is a test that fails if that default ever moves.
@@ -850,8 +858,9 @@ A recipe is a `.sql` file in `.taurus/recipes`, committed with the code and
 reviewed in a diff like anything else that decides what the software does. It
 is SQL with a YAML header, the same shape a `SKILL.md` has:
 
+`.taurus/recipes/purchases.sql`:
+
 ```sql
---- .taurus/recipes/purchases.sql ---
 ---
 source: data/interactions.csv
 output: data/purchases.parquet
@@ -874,9 +883,15 @@ FROM input
 ```
 
 Every step reads from **`input`**, which is the rows the step before it
-produced. The first step's `input` is the `source`. Every loaded dataset is
-also in scope under its own name, and a recipe can bind names to files of its
-own with a `tables:` block — which is what makes a recipe an enrichment rather
+produced. The first step's `input` is the `source`. That is the one rule worth
+reading twice, because the mistake it prevents is silent otherwise: a second
+step that queries the *source table* again rather than `input` computes
+everything above it and throws it away. Taurus refuses that rather than running
+it, and says so by step number. The first step is exempt — its `input` **is**
+the source, so naming the source there is the same query.
+
+Every loaded dataset is also in scope under its own name, and a recipe can bind
+names to files of its own with a `tables:` block — which is what makes a recipe an enrichment rather
 than only a filter, because a step can join what it is cleaning against a
 lookup table.
 
@@ -893,6 +908,12 @@ The dataset list lives in Taurus's own config directory and is not committed,
 so a recipe that could only name loaded datasets would be a file in the
 repository that does nothing on a fresh clone until somebody works out what to
 load first.
+
+**Every step is planned before any of them runs.** Planning reads a header and
+a schema and touches no rows, so a four-step recipe is checked end to end in
+milliseconds — which means a typo in step four is reported before step one has
+read a byte, and a step that writes is refused before the steps in front of it
+have done anything at all.
 
 Running it reports what each step did:
 

@@ -471,6 +471,15 @@ pub enum DataError {
         kind: String,
     },
 
+    #[error(
+        "step {number} ({title}) never reads `input`, so everything the steps before it did is \
+         computed and then thrown away. Every step after the first reads `input`, which is the \
+         rows the step before it produced — so a step that totals what the one above it worked \
+         out is `SELECT ... FROM input`, not the source table again. If the earlier step is not \
+         wanted, remove it."
+    )]
+    StepIgnoresInput { number: usize, title: String },
+
     #[error("step {number} ({title}) will not run: {detail}")]
     BadStep {
         number: usize,

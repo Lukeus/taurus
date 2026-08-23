@@ -27,16 +27,18 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::Array;
-use datafusion::arrow::datatypes::DataType;
+use datafusion::arrow::datatypes::{DataType, SchemaRef as ArrowSchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
 use datafusion::common::config::CsvOptions;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::dataframe::DataFrameWriteOptions;
+use datafusion::datasource::MemTable;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{
@@ -50,6 +52,31 @@ use crate::engine::{
     TOP_VALUES,
 };
 use crate::recipe::INPUT;
+
+/// A session whose SQL means what the column listing said.
+///
+/// **Identifier normalization is off, and that is the whole of this function.**
+/// DataFusion lowercases an unquoted identifier by default, the way Postgres
+/// does — which is invisible in a database whose columns were created
+/// lowercase, and a trap here, because these columns come from the header row
+/// of somebody's spreadsheet export and are full of `Material` and
+/// `Price_Per_Unit`.
+///
+/// With it on, `profile_dataset` reports a column called `Material` and then
+/// the query tool refuses `SELECT Material` — the tool's own output is not
+/// valid input to the tool, which is the worst shape an interface can have and
+/// costs a model a turn every time it meets one. Off, the name that was
+/// reported is the name that works, and a genuinely wrong case still fails with
+/// DataFusion's own "did you mean" beside it.
+///
+/// What this does not break, all covered by tests: `COUNT(*)` and every other
+/// function keeps resolving whatever case it is written in, because function
+/// lookup is separate from identifier normalization.
+fn configured() -> SessionConfig {
+    let mut config = SessionConfig::new();
+    config.options_mut().sql_parser.enable_ident_normalization = false;
+    config
+}
 
 /// Distinct values above which a column has no "most common" worth showing.
 ///
@@ -98,7 +125,7 @@ impl DataFusionEngine {
     /// `search_code` makes for refreshing its index before it searches, and the
     /// same failure if it is got wrong, which is an answer that looks right.
     async fn open(&self, source: &Source) -> Result<SessionContext, DataError> {
-        let ctx = SessionContext::new();
+        let ctx = SessionContext::new_with_config(configured());
         self.register(&ctx, TABLE, source).await?;
         Ok(ctx)
     }
@@ -165,7 +192,7 @@ impl DataFusionEngine {
             .with_memory_limit(QUERY_MEMORY_BYTES, 1.0)
             .build_arc()
             .map_err(|e| DataError::Failed(e.to_string()))?;
-        let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
+        let ctx = SessionContext::new_with_config_rt(configured(), runtime);
 
         for (name, source) in tables {
             // Registered under the dataset's own name, which is what the model
@@ -433,6 +460,14 @@ impl Engine for DataFusionEngine {
 
         let started_with = self.count(&start_source).await?;
 
+        // Every step is planned before any of them runs. Planning reads a
+        // header and a schema and touches no rows, so this costs microseconds
+        // — and without it a typo in step four is reported after three full
+        // passes over the data have already happened. It is also what makes a
+        // refusal a refusal: a writing step is now caught before the steps in
+        // front of it have done anything at all.
+        self.check(tables, &start_source, steps).await?;
+
         // Every step but the last leaves its rows in a scratch file, and the
         // next step reads that file. The alternatives were both worse. Chaining
         // the steps lazily would mean counting a step's rows re-ran every step
@@ -507,6 +542,71 @@ impl Engine for DataFusionEngine {
 }
 
 impl DataFusionEngine {
+    /// Plans the whole chain without running any of it.
+    ///
+    /// Each step is planned against the *schema* the step before it would
+    /// produce, which a plan carries without being executed — so a four-step
+    /// recipe is checked end to end for the cost of four parses. What that
+    /// buys is that every error a recipe can have before it touches data
+    /// arrives before it touches data.
+    async fn check(
+        &self,
+        tables: &[(String, Source)],
+        start: &Source,
+        steps: &[(String, String)],
+    ) -> Result<(), DataError> {
+        // `None` until the first step has been planned, because until then the
+        // real file is what `input` is.
+        let mut shape: Option<ArrowSchemaRef> = None;
+
+        for (index, (title, sql)) in steps.iter().enumerate() {
+            let number = index + 1;
+            let ctx = self.session_for(tables).await?;
+            match &shape {
+                None => self.register(&ctx, INPUT, start).await?,
+                // An empty table with the right columns. Planning asks a table
+                // for its schema and nothing else, so a table with no rows in
+                // it plans exactly as the real one would.
+                Some(schema) => {
+                    let empty = MemTable::try_new(schema.clone(), vec![vec![]])
+                        .map_err(|e| DataError::Failed(e.to_string()))?;
+                    ctx.register_table(INPUT, Arc::new(empty))
+                        .map_err(|e| DataError::Failed(e.to_string()))?;
+                }
+            }
+
+            let plan =
+                ctx.state()
+                    .create_logical_plan(sql)
+                    .await
+                    .map_err(|e| DataError::BadStep {
+                        number,
+                        title: title.clone(),
+                        detail: readable(&e.to_string()),
+                    })?;
+            if let Some(kind) = writes(&plan) {
+                return Err(DataError::StepNotReadOnly {
+                    number,
+                    title: title.clone(),
+                    kind,
+                });
+            }
+            // A later step that never mentions `input` is not a step, it is a
+            // second recipe sharing a file: everything before it is computed,
+            // paid for, and thrown away. There is no version of that which is
+            // what somebody meant — if the earlier step is not wanted, it
+            // should not be there — so it is refused rather than warned about.
+            if number > 1 && !reads_input(&plan) {
+                return Err(DataError::StepIgnoresInput {
+                    number,
+                    title: title.clone(),
+                });
+            }
+            shape = Some(Arc::new(plan.schema().as_arrow().clone()));
+        }
+        Ok(())
+    }
+
     /// Plans one step, refuses it if it writes, and runs it into a file.
     ///
     /// Answers with the column count, which comes off the plan and costs
@@ -595,6 +695,30 @@ impl DataFusionEngine {
         let batch = one_row(&ctx, source, &format!("SELECT count(*) FROM {TABLE}")).await?;
         Ok(as_u64(&batch, 0).unwrap_or(0))
     }
+}
+
+/// Whether this plan reads the previous step's rows at all.
+///
+/// Looks for the table rather than the word, so a step that reaches `input`
+/// inside a subquery or a CTE counts and a step that only mentions it in a
+/// string literal does not.
+///
+/// `apply_with_subqueries` rather than `apply`, and a test failed until it was.
+/// A scalar subquery hangs off an *expression*, not off the plan's children, so
+/// the plain walk never enters it — and `SELECT (SELECT count(*) FROM input)`
+/// would have been refused for ignoring the very table it reads.
+fn reads_input(plan: &LogicalPlan) -> bool {
+    let mut found = false;
+    let _ = plan.apply_with_subqueries(|node| {
+        if let LogicalPlan::TableScan(scan) = node {
+            if scan.table_name.table() == INPUT {
+                found = true;
+                return Ok(TreeNodeRecursion::Stop);
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    found
 }
 
 /// Whether this plan does anything but read, and what it is called if so.
@@ -696,7 +820,7 @@ fn as_sql(name: &str) -> String {
 /// one line, because this goes into a tool result the model pays for on every
 /// later request of the turn.
 fn readable(message: &str) -> String {
-    message
+    let flowed = message
         .lines()
         .take_while(|line| {
             !line
@@ -707,7 +831,35 @@ fn readable(message: &str) -> String {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    without_config_advice(&flowed)
+}
+
+/// Drops the one sentence DataFusion offers that nobody reading this can act on.
+///
+/// A wrong-case column comes back with "You can use double quotes to refer to
+/// the x."Material" column or disable the datafusion.sql_parser
+/// .enable_ident_normalization configuration." Both halves are wrong here.
+/// Normalization is already off — see [`configured`] — so quoting is not the
+/// fix and disabling it is not available; the fix is to write the name the
+/// column listing gave. Left in, it sends a model to look for a setting that
+/// does not exist for it, which is a wasted turn at best.
+///
+/// The useful halves of the same message — "Did you mean" and "Valid fields
+/// are" — are untouched, which is the whole reason this is a sentence trim
+/// rather than a line trim.
+fn without_config_advice(message: &str) -> String {
+    let Some(start) = message.find("You can use double quotes") else {
+        return message.to_string();
+    };
+    let rest = &message[start..];
+    let end = rest
+        .find(". ")
+        .map(|i| start + i + 2)
+        .unwrap_or(message.len());
+    format!("{}{}", &message[..start], &message[end..])
+        .trim()
+        .to_string()
 }
 
 /// Column heads from an Arrow schema.
@@ -1569,6 +1721,176 @@ id,event,price,active
         assert!(message.contains("not fine"), "{message}");
         assert!(message.contains("COPY"), "{message}");
         assert!(!escaped.exists(), "a refused step still wrote a file");
+    }
+
+    /// The trap this is arranged against: `profile_dataset` reports a column
+    /// called `Material`, and with DataFusion's default the query tool then
+    /// refuses `SELECT Material`. A tool whose own output is not valid input to
+    /// itself costs a model a turn every single time.
+    #[tokio::test]
+    async fn a_column_named_the_way_it_is_reported_is_the_name_that_works() {
+        let dir = TempDir::new().unwrap();
+        let source = file(
+            &dir,
+            "scope.csv",
+            "Scenario,Material,Price_Per_Unit\nbase,Steel,10\nbase,Timber,4\n",
+        );
+        let tables = [("scope".to_string(), source)];
+
+        let result = DataFusionEngine::new()
+            .query(
+                &tables,
+                "SELECT Material, Price_Per_Unit FROM scope ORDER BY Material",
+                MAX_QUERY_ROWS,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.rows[0][0].as_deref(), Some("Steel"));
+
+        // And a function keeps resolving in whatever case it is written, which
+        // is the thing turning normalization off could plausibly have broken.
+        let counted = DataFusionEngine::new()
+            .query(&tables, "SELECT COUNT(*) AS N FROM scope", MAX_QUERY_ROWS)
+            .await
+            .unwrap();
+        assert_eq!(counted.rows[0][0].as_deref(), Some("2"));
+        assert_eq!(counted.columns[0].name, "N");
+    }
+
+    /// A genuinely wrong case still fails — and keeps the half of DataFusion's
+    /// message that fixes it while losing the half that cannot.
+    #[tokio::test]
+    async fn the_wrong_case_still_fails_and_says_what_the_right_one_is() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "scope.csv", "Scenario,Material\nbase,Steel\n");
+        let error = DataFusionEngine::new()
+            .query(
+                &[("scope".to_string(), source)],
+                "SELECT material FROM scope",
+                MAX_QUERY_ROWS,
+            )
+            .await
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("Material"), "{message}");
+        // The advice that is no longer true: normalization is already off, so
+        // quoting is not the fix and disabling it is not on offer.
+        assert!(!message.contains("enable_ident_normalization"), "{message}");
+        assert!(!message.contains("double quotes"), "{message}");
+    }
+
+    /// The mistake a real recipe made: a second step that queries the source
+    /// again rather than `input`, so everything the first step did is computed
+    /// and thrown away.
+    #[tokio::test]
+    async fn a_later_step_that_ignores_input_is_refused_before_anything_runs() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("out.parquet");
+
+        let error = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[
+                    (
+                        "keep the views".into(),
+                        "SELECT * FROM input WHERE event = 'view'".into(),
+                    ),
+                    (
+                        "total them".into(),
+                        "SELECT event, count(*) AS n FROM events GROUP BY event".into(),
+                    ),
+                ],
+                &out,
+            )
+            .await
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(
+            matches!(error, DataError::StepIgnoresInput { .. }),
+            "{message}"
+        );
+        assert!(message.contains("step 2 (total them)"), "{message}");
+        assert!(message.contains("input"), "{message}");
+        assert!(!out.exists());
+    }
+
+    /// The first step is exempt, because its `input` *is* the source — naming
+    /// the source table directly there is the same query.
+    #[tokio::test]
+    async fn the_first_step_may_name_the_source_instead_of_input() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("out.parquet");
+
+        let run = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[(
+                    "straight from the source".into(),
+                    "SELECT * FROM events WHERE event = 'view'".into(),
+                )],
+                &out,
+            )
+            .await
+            .unwrap();
+        assert_eq!(run.rows, 3);
+    }
+
+    /// Planning the chain up front is what makes this possible: the bad step is
+    /// last, and nothing before it has read a row by the time it is reported.
+    #[tokio::test]
+    async fn a_broken_last_step_is_reported_before_the_first_one_runs() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("out.parquet");
+
+        let error = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[
+                    ("one".into(), "SELECT * FROM input".into()),
+                    ("two".into(), "SELECT id, price FROM input".into()),
+                    ("three".into(), "SELECT nope FROM input".into()),
+                ],
+                &out,
+            )
+            .await
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("step 3 (three)"), "{message}");
+        // Step 2 narrowed to two columns, so a plan checked against the real
+        // schema of the step before it is the only way this names `input.price`
+        // rather than the source's columns.
+        assert!(message.contains("input.price"), "{message}");
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn only_the_unusable_half_of_a_case_error_is_dropped() {
+        let message = "Schema error: No field named material. Did you mean 's.\"Material\"'? \
+                       Column names are case sensitive. You can use double quotes to refer to \
+                       the s.\"Material\" column or disable the \
+                       datafusion.sql_parser.enable_ident_normalization configuration. Valid \
+                       fields are s.\"Scenario\", s.\"Material\".";
+        let trimmed = without_config_advice(message);
+        assert!(trimmed.contains("Did you mean"), "{trimmed}");
+        assert!(trimmed.contains("Valid fields are"), "{trimmed}");
+        assert!(trimmed.contains("case sensitive"), "{trimmed}");
+        assert!(!trimmed.contains("enable_ident_normalization"), "{trimmed}");
+    }
+
+    /// A message with no such advice in it is passed through untouched.
+    #[test]
+    fn an_ordinary_error_is_not_trimmed() {
+        let message = "Schema error: No field named nope. Valid fields are id, price.";
+        assert_eq!(without_config_advice(message), message);
     }
 
     #[tokio::test]

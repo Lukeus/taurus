@@ -504,6 +504,14 @@ and they are the minority.
   committed to the whole file. Adding one as another `-- step:` would skip
   exactly the gate that makes it safe to run.
   See [Recipes](working-with-it.md#recipes).
+- **Identifier case is Taurus's own dialect choice, and a recipe carries it.**
+  DataFusion lowercases an unquoted identifier by default, the way Postgres
+  does; Taurus turns that off, so a column reported as `Material` is written as
+  `Material`. That is the right trade for data whose column names come from a
+  spreadsheet header — it makes the tool's own output valid input to itself —
+  but it does mean a recipe written here is *stricter* than the same SQL pasted
+  into a database client, where `SELECT MATERIAL` against a lowercase column
+  would have worked. Nothing warns about that when a recipe is copied out.
 - **A recipe's SQL is DataFusion's SQL, and that is now committed to your
   repository.** The engine sits behind a trait so the rest of the harness does
   not name it, but a recipe is a file with SQL text in it, so swapping engines
