@@ -57,6 +57,13 @@
      reaches for on failures and destructive actions is named here with them. */
   --lk-red: #ff9a9a;
 
+  /* Motion, from the design system's own scale. "subtle only, no neon glow,
+     no bounce" — one easing curve, one hover duration, one reveal duration,
+     and everything in the app that moves uses them. */
+  --lk-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --lk-dur-hover: 180ms;
+  --lk-dur-reveal: 320ms;
+
   --lk-display: "Space Grotesk";
   --lk-body: "Manrope";
   --lk-mono-face: "Source Code Pro";
@@ -102,6 +109,13 @@
   --ok: var(--lk-mint);
   --warn: var(--lk-peach);
   --danger: var(--lk-red);
+
+  --ease: var(--lk-ease);
+  /* A state change under the pointer. */
+  --hover: var(--lk-dur-hover);
+  /* Something arriving. Long enough to be seen as a movement rather than a
+     jump, short enough that nothing waits for it. */
+  --reveal: var(--lk-dur-reveal);
 
   --r-sm: 6px;
   --r: 9px;
@@ -596,6 +610,7 @@ body.resizing-y * {
   color: var(--text-dim);
 }
 
+
 .rail-pad {
   padding: 0 12px 10px;
 }
@@ -1043,6 +1058,30 @@ body.resizing-y * {
   display: flex;
   align-items: center;
   justify-content: center;
+  /*
+   * The idle breath, at the five seconds the motion spec asks for: "barely
+   * alive. anything faster reads as activity that isn't happening."
+   *
+   * On the hero mark rather than on the wordmark in the rail, and the reason
+   * is worth writing down because the spec puts it on the wordmark. The
+   * wordmark is on screen a hundred percent of the time, in every window and
+   * every state, so animating it means the app is never still — including in
+   * every screenshot, which turns the one pixel-level check in the repository
+   * into a diff that always has something in it. A hero is the opposite: it is
+   * the *only* thing on screen, it appears exactly when nothing is happening
+   * yet, and it goes away the moment anything does. That is what state 09
+   * describes, and this is where it is true.
+   */
+  animation: idle-breathe 5s ease-in-out infinite;
+}
+@keyframes idle-breathe {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 .hero-copy {
   max-width: 44ch;
@@ -1337,6 +1376,7 @@ body.resizing-y * {
   background: var(--bg-row);
 }
 .run-row-head {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -1346,6 +1386,97 @@ body.resizing-y * {
   background: transparent;
   padding: 7px 13px;
   text-align: left;
+}
+
+/*
+ * What a running call looks like, and why there are three of these.
+ *
+ * The motion spec draws reading, editing and running as three different
+ * things — a scan band, a growing gutter, an indeterminate track — on the
+ * argument that the motion should say what kind of work is happening. The app
+ * already sorts every tool into one of those categories to colour its glyph,
+ * so the same classes pick the motion and nothing new has to be decided.
+ *
+ * All three animate a background position rather than moving an element.
+ * That matters: a `::after` that travelled would need `overflow: hidden` on
+ * the head, and the head is a button whose focus ring is painted outside its
+ * border box — clipping it is exactly the bug `styles.test.ts` guards against.
+ *
+ * Only ever one at a time. The harness runs one call per turn, so a folded run
+ * of six rows has five still ones and one moving.
+ */
+.run-row.running.read .run-row-head {
+  background-image: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 16%, transparent),
+    transparent
+  );
+  background-size: 100% 16px;
+  background-repeat: no-repeat;
+  animation: row-scan 2.6s var(--ease) infinite alternate;
+}
+/* The write head, as a bar down the gutter that fills as the call runs. Peach
+   rather than the accent, which is the spec's colour for anything editing. */
+.run-row.running.wrote .run-row-head::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--warn);
+  transform-origin: top;
+  animation: row-gutter 3s var(--ease) infinite;
+}
+/* Everything else: a hairline that says work is happening and declines to
+   guess how much is left. */
+.run-row.running:not(.read):not(.wrote) .run-row-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background-image: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: row-shimmer 1.8s var(--ease) infinite;
+}
+@keyframes row-scan {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 100%;
+  }
+}
+@keyframes row-gutter {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+@keyframes row-shimmer {
+  from {
+    background-position: -60% 0;
+  }
+  to {
+    background-position: 160% 0;
+  }
+}
+@keyframes state-pop {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 .run-row-head:hover:not(:disabled) {
   background: var(--bg-hover);
@@ -1391,6 +1522,18 @@ body.resizing-y * {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-faint);
+}
+/*
+ * A call landing, drawn once.
+ *
+ * The motion spec's rule for terminal states: it draws in and then holds
+ * still, because a tick that keeps pulsing is a tick that never finished.
+ * Only on `.live` — a row whose call started and ended in front of the reader.
+ * A resumed conversation has no timestamps and gets no class, which is what
+ * stops forty rows popping in unison when one is opened.
+ */
+.run-row.live .run-row-status {
+  animation: state-pop var(--reveal) var(--ease) both;
 }
 .run-row.ok .run-row-status {
   color: var(--ok);
@@ -1498,11 +1641,43 @@ body.resizing-y * {
 }
 
 .working {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   color: var(--text-faint);
+}
+
+/*
+ * The waveform: the shape of the work, as a row of bars.
+ *
+ * Every bar is identical here and none of them is animated by this file — the
+ * height and the weight are written by `Waveform`'s frame loop, because the
+ * four shapes are functions of position as well as time and twelve
+ * hand-written delays would stop being right the moment the count changed.
+ * What CSS owns is the geometry: `transform-origin: center` is what makes a
+ * bar grow from its middle rather than its top, which is the difference
+ * between a waveform and a bar chart.
+ */
+.waveform {
+  flex: none;
+  display: flex;
+  align-items: center;
+  /* The design's own proportions: a 3px bar with a 3px gap. Tighter than that
+     and the bars merge into a block at the peak of a ripple. */
+  gap: 3px;
+  height: 14px;
+}
+.waveform span {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transform-origin: center;
+  transform: scaleY(0.2);
 }
 
 /* ------------------------------------------------------- drawn tool results
@@ -2627,6 +2802,27 @@ body.resizing-y * {
 .banner.error {
   background: color-mix(in srgb, var(--danger) 12%, var(--bg));
   color: var(--danger);
+}
+/* A slow pulse and nothing else. The motion spec is explicit that an error
+   does not shake and does not flash: a banner that flinches is one the reader
+   learns to stop reading. This is here so an error arriving while somebody is
+   looking at another pane is catchable out of the corner of an eye. */
+.banner-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: slow-pulse 1.6s ease-in-out infinite;
+}
+@keyframes slow-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /*
@@ -4831,6 +5027,8 @@ button.link:hover {
    transcript. One line above the composer, only in the Data pane, only while a
    turn is running. */
 .turn-strip {
+  /* The shimmer track is drawn on this element's own top edge. */
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
@@ -4850,29 +5048,120 @@ button.link:hover {
 .turn-strip:hover {
   color: var(--text);
 }
-.turn-dot {
+/*
+ * The run pill, in three states.
+ *
+ * Moving, because the line beside it does not have to: a tool that takes forty
+ * seconds leaves the text unchanged for forty seconds, and a still strip is
+ * indistinguishable from a hung one.
+ *
+ * Working and stopping share a shape and differ in colour, which is the motion
+ * spec's rule — a paused run gets "a slow pulse and nothing else", because the
+ * pause itself is the alarm. Waiting is a different shape entirely, and has to
+ * be: nothing is progressing, and a progress cadence would be a lie told
+ * calmly.
+ */
+.turn-dots {
   flex: none;
-  width: 7px;
-  height: 7px;
+  display: flex;
+  gap: 3px;
+}
+.turn-dots i {
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
   background: var(--accent);
-  /* Moving, because the line under it does not have to. A tool that takes
-     forty seconds leaves the text unchanged for forty seconds, and a still
-     strip is indistinguishable from a hung one. */
-  animation: turn-working 1.6s ease-in-out infinite;
+  animation: turn-cadence 1.4s var(--ease) infinite;
 }
-@keyframes turn-working {
+.turn-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.turn-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+.turn-strip.stopping .turn-dots i {
+  background: var(--warn);
+}
+/* The indeterminate track, along the strip's own top edge. Nothing here knows
+   how far through a turn is — nothing can — so this says "running" and
+   declines to imply a fraction, which a filling bar would. */
+.turn-strip.working::after,
+.turn-strip.stopping::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background-image: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 30% 100%;
+  background-repeat: no-repeat;
+  animation: row-shimmer 1.8s var(--ease) infinite;
+}
+.turn-strip.stopping::after {
+  background-image: linear-gradient(90deg, transparent, var(--warn), transparent);
+}
+/* Waiting: a slow breath inside an expanding ring. Mint, and slower than
+   anything else in the window — the spec's argument is that this has to be
+   catchable in peripheral vision without ever reading as urgent, because the
+   thing it is asking for is attention and not haste. */
+.turn-wait {
+  position: relative;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.turn-wait::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--ok);
+  border-radius: 50%;
+  animation: turn-ring 2.4s var(--ease) infinite;
+}
+.turn-wait::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  animation: turn-breathe 2.4s ease-in-out infinite;
+}
+@keyframes turn-cadence {
   0%,
-  100% {
-    opacity: 1;
+  20% {
+    opacity: 0.2;
   }
   50% {
-    opacity: 0.25;
+    opacity: 1;
+  }
+  80%,
+  100% {
+    opacity: 0.2;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .turn-dot {
-    animation: none;
+@keyframes turn-ring {
+  from {
+    transform: scale(0.6);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+@keyframes turn-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 1;
   }
 }
 .turn-what {
@@ -4880,6 +5169,20 @@ button.link:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Keyed on its own text in `TurnStrip`, so this fires when the turn moves to
+     a different call rather than once when the strip appears. The word slides
+     up into place instead of being swapped under the eye. */
+  animation: word-in var(--reveal) var(--ease);
+}
+@keyframes word-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* What a message is about to carry, said above the box rather than inside it:
@@ -4895,4 +5198,65 @@ button.link:hover {
 .composer-context b {
   color: var(--text);
   font-weight: 600;
+}
+
+/* ------------------------------------------------------------ reduced motion
+ *
+ * One block, at the bottom, switching off everything above that loops.
+ *
+ * Per animation rather than a blanket `* { animation: none }`, and that is
+ * deliberate: a sweeping rule also kills the one-shot reveals, and a reveal is
+ * not what the preference is about — `prefers-reduced-motion` asks for less
+ * *movement*, not for state changes to become invisible. So the loops stop and
+ * the arrivals lose their travel while keeping their fade.
+ *
+ * The waveform is missing from this list on purpose. It is written by a frame
+ * loop rather than by CSS, so switching it off here would hide the movement
+ * while still paying for it — `Waveform` reads the same preference in script
+ * and never starts the loop. It is the one animation in the app that has to be
+ * honoured twice.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .turn-dots i,
+  .turn-wait::before,
+  .turn-wait::after,
+  .turn-strip.working::after,
+  .turn-strip.stopping::after,
+  .run-row.running.read .run-row-head,
+  .run-row.running.wrote .run-row-head::before,
+  .run-row.running:not(.read):not(.wrote) .run-row-head::after,
+  .banner-dot,
+  .hero-mark {
+    animation: none;
+  }
+
+  /* The still frame each of these holds, rather than whatever the first
+     keyframe happened to be. A dot stuck at 20% opacity would read as
+     disabled, and a gutter stuck at `scaleY(0)` would not be there at all. */
+  .turn-dots i,
+  .turn-wait::after,
+  .banner-dot,
+  .hero-mark {
+    opacity: 1;
+  }
+  .turn-wait::before {
+    opacity: 0.45;
+  }
+  .run-row.running.wrote .run-row-head::before {
+    transform: scaleY(1);
+  }
+
+  /* Arrivals keep the fade and lose the travel. */
+  .turn-what,
+  .run-row.live .run-row-status {
+    animation-name: fade-in;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }

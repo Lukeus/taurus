@@ -124,6 +124,10 @@ to put things back after.
   — results you are meant to *look* at stand on their own beside the prose. When
   a decision is genuinely yours, it asks and waits — and every question can be
   skipped.
+- [**Motion that says what it is doing**](docs/working-with-it.md#motion) — a
+  turn in flight draws a waveform whose shape comes from the kind of work
+  running, and a running row wears a scan, a write gutter, or an indeterminate
+  hairline. A spinner says a turn is alive; this says what it is busy with.
 - [**Working with data**](docs/working-with-it.md#working-with-data) — a CSV
   with a million rows in it is not a file to read. It loads one as a table
   instead, describes every column from the whole file rather than a sample,

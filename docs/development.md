@@ -154,6 +154,15 @@ value written through `HTMLTextAreaElement.prototype`'s own setter before the
 whose value it believes it already has. `typeInto` in `scripts/screenshots/`
 does it; the mount tests do the same thing for the same reason.
 
+`motion` is the odd one: a still image of a set of animations, which sounds
+useless and is not. It cannot show that anything moves, and that is not what it
+is for — it is the only check that the waveform renders where it should, that a
+running row wears the treatment its category calls for, and that none of it has
+landed on top of something else. It seeds `busy` and a genuinely in-flight call
+rather than faking either, because the waveform's shape is chosen from the
+category of the call that is running: the picture is only honest if a call
+really is.
+
 ## Live checks
 
 These run against a real Ollama server and are the fastest way to confirm a

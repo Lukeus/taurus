@@ -1007,7 +1007,9 @@ conversation is about the conversation.
 
 While a turn is running, a line above the composer says what it is doing and
 takes you back to the answer. Sending from a screen that shows none of the
-reply would otherwise be typing into a void.
+reply would otherwise be typing into a void. It has three states, and they are
+told apart by how they move rather than only by what they say — see
+[Motion](#motion) below.
 
 **It does not exist until there is something in it.** A workspace that has never
 loaded a file shows no switch at all — the same rule the composer's `/` hint and
@@ -1134,3 +1136,65 @@ end, because every one of them is the first half of a question — *why does thi
 fail* is usually followed by *and it should be per region* — and a button that
 fired a turn would take that away. What is already typed is added to rather
 than replaced.
+
+## Motion
+
+<sub>[← Taurus AI Shell](../README.md)</sub>
+
+Almost nothing in Taurus moves. What does, moves because a still picture would
+be ambiguous — and the ambiguity it resolves is always the same one: *is this
+alive, and what is it doing?* A turn can spend forty seconds inside one tool
+call, and for those forty seconds every word on the screen is unchanged. A
+window that is working and a window that has hung look identical.
+
+![A turn in flight: the running row wearing the write gutter, and the waveform
+under the thread](screenshots/motion.png)
+
+**The waveform under a running turn is the shape of the work.** Eight bars,
+driven by a frame loop, and the shape they draw is picked by the *category of
+the call that is running* — the same classification that colours each tool
+row's glyph. Reading draws a peak sweeping across, which is what a scan looks
+like. Writing draws a ripple from the middle, which reads as something being
+produced. A command draws scattered ticks, the one shape here that is not
+periodic, because a command's output arrives in bursts nobody can predict.
+Thinking — a turn between calls — draws a travelling wave.
+
+That mapping is the whole reason this is not a spinner. A spinner says a turn
+is alive; this says what kind of work it is doing, and after a day of using it
+you stop reading the row above to find out.
+
+**A running tool row wears the motion its category calls for.** A read gets a
+cyan band sweeping down it. A write gets a peach bar filling the gutter, which
+is the write head. Everything else gets a hairline that travels and declines to
+imply a fraction, because nothing here knows how far through a call is. Only
+ever one row at a time — the harness runs one call per turn.
+
+**The strip above the composer has three states**, and they differ in shape
+rather than only in colour. Working is a three-dot cadence over a travelling
+hairline. Stopping is the same cadence in peach: a paused run gets a slow pulse
+and nothing else, because the pause itself is the alarm. Waiting is neither —
+it is a slow mint breath inside an expanding ring, because nothing is
+progressing and a progress cadence there would be a lie told calmly. That third
+state also says which click: **Answer in the conversation**.
+
+**Terminal states draw once and hold still.** A call landing pops its tick in
+and stops. Only for calls that finished in front of you — a reopened
+conversation records what a call did, not when, so nothing pops when one is
+opened.
+
+**An error pulses a dot and does nothing else.** No shake, no flash. A banner
+that flinches is one the reader learns to stop reading; the pulse is there so
+an error arriving while you are looking at another pane is catchable out of the
+corner of an eye.
+
+The one piece of motion here that is decoration rather than information is the
+wordmark in the rail, which breathes at five seconds a cycle while nothing is
+running and stops the moment something is. Anything faster would read as
+activity that is not happening.
+
+Every loop above stops under `prefers-reduced-motion`, and each one holds a
+still frame chosen so it still says something — a gutter frozen at zero would
+not be there at all. Reveals keep their fade and lose their travel: the
+preference asks for less movement, not for state changes to become invisible.
+The waveform honours it twice, in the stylesheet and in script, because a frame
+loop cannot be switched off by a media query.

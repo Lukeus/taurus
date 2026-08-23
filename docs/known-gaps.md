@@ -516,12 +516,27 @@ and they are the minority.
   more than text and images.
 - **The turn strip says what is happening, not what was said.** One line above
   the composer while a turn runs in the Data pane, showing the running tool or
-  the last sentence of prose. It is not a transcript and cannot be: a table,
-  a chart, or a question card has nowhere to go on one line — and a question
-  card is the case that matters, because the turn is then waiting on an answer
-  you can only give by switching. What the strip shows is the call that is
-  running (`Ask 2 questions`), which is a hint rather than the card. Clicking
-  it is one step; noticing you need to is on you.
+  the last sentence of prose. It is not a transcript and cannot be: a table or
+  a chart has nowhere to go on one line. The question card — which was the case
+  that mattered, because the turn parks and only you can unpark it — is now
+  called out rather than left to be inferred: the strip switches to a breathing
+  mint ring and says *Waiting on your answer*. What is still true is that the
+  answer itself has to be given in the conversation, and the strip cannot show
+  you the options.
+- **The waveform's shape is the tool's category, which is coarser than the
+  work.** Four shapes over six categories, and the categories are themselves a
+  simplification — `grep` and `read_file` are both reads and draw the same
+  sweep, though one is a search and the other is not. Finer would mean the
+  harness classifying tools by something other than effect, which is what the
+  categories exist to do and what the run header counts. The shape is a useful
+  hint about the kind of work, not a readout.
+- **Nothing says how long a turn has been running.** The motion says a turn is
+  alive; it says nothing about whether *alive* has meant forty seconds or four
+  minutes. The design's own working state pairs its waveform with an elapsed
+  counter, which Taurus cannot draw honestly — a tool call carries its own
+  start time, but a turn does not, and a resumed conversation carries neither.
+  A finished run reports its duration in the run header, which leaves exactly
+  the case you would want it in uncovered.
 - **A query card stands alone, so a query-heavy turn is a stack of cards.** Any
   tool call that draws a view is excluded from the folded run header — that is
   what stops a table being filed under "6 steps · 11s" behind a disclosure

@@ -369,6 +369,24 @@ export const EVENTS = [
   }),
 ];
 
+/**
+ * The same conversation, caught mid-run.
+ *
+ * `EVENTS` ends on a question card, which is a turn parked rather than a turn
+ * working — so this drops it and leaves a write in flight instead. What the
+ * shot is of is the motion: the waveform under the thread taking the shape of
+ * the category that is running, and the running row wearing the gutter bar
+ * that goes with a write.
+ */
+export const MOTION_EVENTS = [
+  // Two dropped, not one: `EVENTS` ends on a sentence *and* the question card
+  // it leads into, and consecutive text events fold into a single bubble — so
+  // appending after only the card ran two sentences together with no space.
+  ...EVENTS.slice(0, -2),
+  say("Pulling the iteration cap out of the loop so it can be configured."),
+  call("m1", "edit_file", "Edit crates/taurus-core/src/agent.rs"),
+];
+
 /*
  * A dataset, profiled.
  *

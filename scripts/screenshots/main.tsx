@@ -24,6 +24,7 @@ import {
   DATA_TABLES,
   EVENTS,
   MCP_ENVIRONMENT,
+  MOTION_EVENTS,
   MCP_SERVERS,
   MODELS,
   PERMISSION,
@@ -175,7 +176,18 @@ requestAnimationFrame(() => {
       // The query shot is of a data conversation rather than the build-timing
       // one — there is nothing to load or query in that turn, and the cards
       // this is a picture of only exist in one that does.
-      entries: (shot.startsWith("query") ? DATA_EVENTS : EVENTS).reduce(reduce, [
+      // A turn actually in flight, which is the only state the motion exists
+      // for. Seeded here rather than faked in CSS: the waveform's shape comes
+      // from the category of the call that is running, so the picture is only
+      // honest if a call really is.
+      busy: shot === "motion",
+      entries: (
+        shot === "motion"
+          ? MOTION_EVENTS
+          : shot.startsWith("query")
+            ? DATA_EVENTS
+            : EVENTS
+      ).reduce(reduce, [
         {
           kind: "user",
           id: "u1",
@@ -243,6 +255,9 @@ requestAnimationFrame(() => {
       // Nothing to press. The cards are what the shot is of, and they are in
       // the transcript the moment the entries land — so this only has to put
       // the frame on them rather than at the bottom, where the reply is.
+      // Framed on the running row and the line under it, which is where all
+      // of the motion is.
+      motion: () => scrollTo(transcript, document.querySelector(".working")),
       query: () =>
         scrollTo(transcript, document.querySelector(".dataset-card")),
       // The other half, taken the way somebody takes it: press the card's own

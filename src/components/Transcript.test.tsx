@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { breakdown, group, reuse, span, turns } from "./Transcript";
+import { breakdown, busyWith, group, reuse, span, turns } from "./Transcript";
 import type { Entry } from "../state/store";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -301,5 +301,43 @@ describe("carrying turns forward", () => {
   it("has nothing to carry forward on the first render", () => {
     const built = turns(conversation);
     expect(reuse([], built)).toEqual(built);
+  });
+});
+
+describe("what a turn is busy with", () => {
+  /** A tool entry in whatever state, so a turn can be built around it. */
+  const step = (
+    name: string,
+    status: "running" | "ok" | "error",
+  ): Entry => ({ kind: "tool", id: `${name}-${status}`, name, preview: name, status, steps: [] });
+
+  const turn = (body: Entry[]) => turns([{ kind: "user", id: "u", text: "go" }, ...body])[0];
+
+  it("reports the category of the call that is still running", () => {
+    // The category, not the name — it is what picks the waveform's shape, and
+    // it is the same classification the row's own glyph is coloured by.
+    expect(busyWith(turn([step("read_file", "running")]))).toBe("read");
+    expect(busyWith(turn([step("edit_file", "running")]))).toBe("wrote");
+    expect(busyWith(turn([step("run_command", "running")]))).toBe("ran");
+  });
+
+  it("reads the last call and not an earlier one", () => {
+    // One call at a time: anything before the last has finished, and a turn
+    // that showed the shape of a call it stopped making three seconds ago
+    // would be describing the past.
+    const t = turn([step("read_file", "ok"), step("edit_file", "running")]);
+    expect(busyWith(t)).toBe("wrote");
+  });
+
+  it("says nothing when no call is running, which is a turn thinking", () => {
+    expect(busyWith(turn([step("read_file", "ok")]))).toBeNull();
+    expect(busyWith(turn([say("a", "Considering.")]))).toBeNull();
+    expect(busyWith(turn([]))).toBeNull();
+  });
+
+  it("falls back to a category for a tool nothing has classified", () => {
+    // An MCP tool, or one added since. It still gets a shape rather than
+    // dropping to the thinking one, which would say the turn had paused.
+    expect(busyWith(turn([step("acme__deploy", "running")]))).toBe("other");
   });
 });

@@ -56,10 +56,12 @@ vi.mock("./state/store", async (original) => ({
 }));
 
 import type { ProviderConfig } from "./lib/api";
+import type { Entry } from "./state/store";
 import App, {
   currentProvider,
   lastActivity,
   offered,
+  isAsking,
   onScreenFor,
   withDraft,
   TurnStrip,
@@ -291,6 +293,58 @@ describe("what a message carries from the pane it was sent in", () => {
 
   it("carries nothing when the pane is open on nothing", () => {
     expect(onScreenFor("data", null, "SELECT 1")).toBeNull();
+  });
+});
+
+describe("whether the turn is waiting on an answer", () => {
+  const asking = (status: "running" | "ok"): Entry => ({
+    kind: "tool",
+    id: "q1",
+    name: "ask_user",
+    preview: "Ask 2 questions",
+    status,
+    steps: [],
+    view: { type: "questions", id: "q1", questions: [] },
+  });
+
+  /*
+   * The gap this closes: a question card parks the turn, and the strip went on
+   * saying `Ask 2 questions` with a progress cadence under it — a turn that
+   * has been waiting a minute looked exactly like one that was working.
+   */
+  it("notices a question card that is still waiting", () => {
+    expect(isAsking([asking("running")])).toBe(true);
+  });
+
+  it("does not, once it has been answered", () => {
+    expect(isAsking([asking("ok")])).toBe(false);
+  });
+
+  it("does not for an ordinary running call", () => {
+    expect(
+      isAsking([
+        {
+          kind: "tool",
+          id: "t1",
+          name: "read_file",
+          preview: "Read src/main.rs",
+          status: "running",
+          steps: [],
+        },
+      ]),
+    ).toBe(false);
+  });
+
+  it("reads the last entry only, because a parked call is the newest thing", () => {
+    // The harness runs one call at a time and this one is blocking it, so
+    // anything after it means it is no longer what the turn is waiting on.
+    expect(
+      isAsking([
+        asking("running"),
+        { kind: "assistant", id: "a1", text: "Thanks.", thinking: "", open: false },
+      ]),
+    ).toBe(false);
+    expect(isAsking([])).toBe(false);
   });
 });
 

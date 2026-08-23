@@ -66,6 +66,11 @@ const SHOTS = [
   // The join marks are why two tables are loaded — a column both files have is
   // a column they can be joined on, and that is said in both places at once.
   { name: "query-complete", shot: "query-complete", theme: "dark" },
+  // A turn in flight. A still image cannot show motion, which is exactly why
+  // this is worth taking: it is the only check that the waveform renders where
+  // it should, that the running row wears the treatment its category calls
+  // for, and that none of it has landed on top of something else.
+  { name: "motion", shot: "motion", theme: "dark" },
 ];
 
 const CHROME = [

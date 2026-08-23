@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { ChartCard } from "./ChartCard";
 import { DatasetCard } from "./DatasetCard";
 import { QueryCard } from "./QueryCard";
+import { Waveform, waveFor } from "./Waveform";
 import { FlowCard } from "./FlowCard";
 import { SequenceCard } from "./SequenceCard";
 import { Markdown } from "./Markdown";
@@ -419,7 +420,12 @@ const TurnView = memo(function TurnView({
       )}
       {working && (
         <div className="turn-step working" aria-live="polite">
-          {stopping ? "stopping…" : "working…"}
+          {/* The shape of what is running, not a spinner. A spinner says a
+              turn is alive; this says what kind of work it is doing, because
+              the harness already knows and the reader would otherwise have to
+              read the row above to find out. See `Waveform`. */}
+          <Waveform mode={waveFor(stopping ? null : busyWith(turn))} bars={8} />
+          <span>{stopping ? "stopping…" : "working…"}</span>
         </div>
       )}
     </section>
@@ -467,6 +473,21 @@ export function group(entries: Entry[]): (Entry | ToolEntry[])[] {
     }
   }
   return out;
+}
+
+/**
+ * What category of work a turn is doing right now, or `null` for none.
+ *
+ * The last tool call in the body, if it is still running. Last rather than a
+ * search, because the harness runs one call at a time — anything earlier has
+ * finished, and a turn between calls is a turn thinking, which is what `null`
+ * means here.
+ */
+export function busyWith(turn: Turn): string | null {
+  const last = turn.body[turn.body.length - 1];
+  const step = Array.isArray(last) ? last[last.length - 1] : last;
+  if (!step || step.kind !== "tool" || step.status !== "running") return null;
+  return TOOL_CLASS[step.name] ?? "other";
 }
 
 /**
@@ -642,7 +663,12 @@ function ToolRow({
   const body = step.status === "running" ? streamed : (step.output ?? streamed);
 
   return (
-    <div className={`run-row ${kind} ${step.status}`}>
+    // `live` marks a call that started and finished in front of the reader,
+    // which is what `endedAt` means — a resumed transcript records what a call
+    // did and not when. It is the difference between a check that draws itself
+    // once as the call lands and forty of them drawing at once when a
+    // conversation is reopened.
+    <div className={`run-row ${kind} ${step.status}${step.endedAt ? " live" : ""}`}>
       <button
         className="run-row-head"
         disabled={!step.output}

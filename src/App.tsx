@@ -733,6 +733,12 @@ export default function App() {
 
         {store.error && (
           <div className="banner error">
+            {/* A slow pulse on a dot, and nothing else. The motion spec is
+                explicit about this one: no shake, no flash — a banner that
+                flinches trains the reader to stop reading banners. The pulse
+                is there so an error that arrives while you are looking
+                somewhere else is catchable out of the corner of an eye. */}
+            <span className="banner-dot" />
             {store.error}
             <div className="spacer" />
             <button onClick={store.dismissError}>Dismiss</button>
@@ -1090,16 +1096,73 @@ export function TurnStrip({ onOpen }: { onOpen: () => void }) {
   // window on every frame of a streaming turn — and what this needs is one
   // short string, which zustand compares by value and mostly finds unchanged.
   const latest = useStore((s) => lastActivity(s.entries));
+  const asking = useStore((s) => isAsking(s.entries));
   const stopping = useStore((s) => s.stopping);
+  const state = stopping ? "stopping" : asking ? "asking" : "working";
   return (
-    <button className="turn-strip" onClick={onOpen}>
-      <span className="turn-dot" />
-      <span className="turn-what">
-        {stopping ? "Stopping…" : latest ?? "Working…"}
+    <button className={`turn-strip ${state}`} onClick={onOpen}>
+      {/*
+       * Three states, three motions, and the difference between them is the
+       * point rather than the decoration.
+       *
+       * Working is the run pill from the motion spec: a three-dot cadence over
+       * a hairline shimmer, which is what indeterminate progress looks like
+       * when there is no percentage to show. Stopping keeps the cadence and
+       * turns peach — the spec's rule for a run that has paused, a slow pulse
+       * and nothing else, because "the pause itself is the alarm".
+       *
+       * Asking is a different thing entirely, and it is why this is not one
+       * animation with a colour swap: nothing is progressing. It draws the
+       * spec's breathing mint ring, which is calm and catchable in peripheral
+       * vision, because the turn is now waiting on somebody who is looking at
+       * another pane.
+       */}
+      {asking ? (
+        <span className="turn-wait" />
+      ) : (
+        <span className="turn-dots">
+          <i />
+          <i />
+          <i />
+        </span>
+      )}
+      {/* Keyed on the text so a new one animates in rather than swapping under
+          the eye. The spec's word-change reveal: 320ms, up four pixels. */}
+      <span className="turn-what" key={latest ?? ""}>
+        {stopping
+          ? "Stopping…"
+          : asking
+            ? "Waiting on your answer"
+            : (latest ?? "Working…")}
       </span>
       <div className="spacer" />
-      <span className="micro">Show the conversation</span>
+      <span className="micro">
+        {asking ? "Answer in the conversation" : "Show the conversation"}
+      </span>
     </button>
+  );
+}
+
+/**
+ * Whether the turn has stopped and is waiting to be answered.
+ *
+ * A question card is the one thing the strip could never stand in for — it is
+ * a form, and this is one line — and that was written down as a gap: the turn
+ * parks, the strip goes on saying `Ask 2 questions`, and nothing distinguishes
+ * a call that is working from one that has been waiting for a minute. Saying
+ * so is most of the fix; the rest is that the answer is one click away and the
+ * line now says which click.
+ *
+ * Read off the last entry rather than searched for. A parked call is by
+ * definition the newest thing in the transcript — the harness runs one call at
+ * a time and this one is blocking it.
+ */
+export function isAsking(entries: Entry[]): boolean {
+  const last = entries[entries.length - 1];
+  return (
+    last?.kind === "tool" &&
+    last.status === "running" &&
+    last.view?.type === "questions"
   );
 }
 
