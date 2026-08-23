@@ -84,6 +84,56 @@ pub enum TranscriptView {
     /// then forgotten, while this is read back to the *model* on every
     /// iteration as well. See [`crate::plan`].
     Plan { steps: Vec<Step> },
+    /// A dataset a call has just loaded or described.
+    ///
+    /// The one view here that is a **reference rather than a payload**, and the
+    /// exception is worth the words.
+    ///
+    /// Everything above carries what it draws, because a saved conversation
+    /// records a call's input and nothing about how it was rendered — so a view
+    /// that *is* its own input is one a reopened conversation can redraw. A
+    /// dataset cannot work that way and should not: it is a million rows in a
+    /// file, and the interesting facts about it are its current row count and
+    /// its current columns, neither of which was known when the call was
+    /// announced and both of which change when somebody rewrites the file. A
+    /// card carrying a snapshot would be a number that is confidently wrong the
+    /// next time the conversation is opened.
+    ///
+    /// So this carries the handle and the frontend looks the rest up as it
+    /// draws. The rule the others follow still holds — the payload is exactly
+    /// the call's input, because the name is derived from the input alone (see
+    /// `taurus_data::catalog::suggest_name`, which is a pure function of the
+    /// path for precisely this reason). What is looked up is the *content*, the
+    /// way a delegation's card carries a session id and reads the transcript
+    /// behind it rather than inlining a second conversation.
+    ///
+    /// A frontend with nowhere to send the reader ignores it and prints the
+    /// call's own text instead; the CLI does exactly that.
+    Dataset {
+        /// Names the dataset, as `load_dataset` derived or was given it.
+        name: String,
+    },
+    /// A query a call ran, offered back to be run again.
+    ///
+    /// The SQL and nothing else, which is the whole of the call's input — so
+    /// this keeps the rule the cards above keep, and a reopened conversation
+    /// redraws it from the transcript with no lookup at all. Notably it does
+    /// *not* carry the rows: those are a fact about the files as they were at
+    /// the time, and the argument [`Self::Dataset`] makes against a remembered
+    /// row count applies twice over to a remembered answer.
+    ///
+    /// What the card is for is the trip back. A question answered by a query
+    /// usually raises the next one, and re-asking the model to vary a `WHERE`
+    /// clause is slower and less certain than editing it — so the card hands
+    /// the SQL to the pane's query box, where it can be run, changed, and run
+    /// again without a turn.
+    ///
+    /// A frontend with no query box ignores it and prints the call's own row,
+    /// exactly as it does for a dataset; the CLI does that.
+    Query {
+        /// The SQL, verbatim as the call sent it.
+        sql: String,
+    },
 }
 
 // Doc comments on this struct and its fields are advertised to the model

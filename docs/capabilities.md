@@ -221,6 +221,21 @@ near-duplicate of an existing skill, no destructive script patterns) before it
 reaches a review card, and nothing touches disk until you approve it. Approving
 reloads the catalog, so a skill is usable in the session that wrote it.
 
+**A new or edited skill is available on your next message.** The eight
+directories are checked at the start of each turn and rescanned only when
+something in them moved, so a skill dropped into `.taurus/skills` — or installed
+by another client into one of the shared ones — is usable in the next message
+without a reload. Coming back to the window rescans too, which is the case worth
+naming: writing a skill in an editor and switching back is the way most of them
+arrive. Opening the Skills drawer rescans as well, so the drawer and the rail's
+count are never the startup catalog.
+
+The catalog is frozen *within* a turn, the same as the sub-agent roster and for
+the same reason — a skill saved while a turn is running is not visible to it,
+because a turn has to run against the library it started with. The check itself
+is a `stat` per skill: what it guards is parsing every `SKILL.md` in the
+library, which is why it is worth asking first.
+
 Scripts declare a logical interpreter (`python3`, `node`, `bash`, …) which is
 resolved per platform at load time. When it cannot be found, the skill is
 marked degraded and the model is told to follow the written steps instead — a
@@ -314,11 +329,13 @@ started with, and that is exactly what a file watcher could not promise. The
 drawer's **Rescan** is still there for the moment you want it now rather than on
 the next message.
 
-One place lags by design: the `/` command menu lists what the last scan found,
-because it is redrawn on every keystroke and taking config locks there is how a
-reload comes to deadlock against typing. Typing the agent's name in full works
-straight away — the name is resolved against a fresh roster — and the menu
-catches up after the next message.
+The `/` command menu is the one surface that cannot rescan on its own, because
+it is redrawn on every keystroke and taking config locks there is how a reload
+comes to deadlock against typing. It lists what the last scan found — but it
+re-reads that list whenever the number of skills or agents changes, so a rescan
+is what refreshes it: coming back to the window, finishing a message, or opening
+either drawer. Typing the name in full works straight away regardless, because
+that path resolves against a fresh roster.
 
 `max_iterations:` is how many model/tool round trips this agent gets before it
 is stopped, between 1 and 100. It is editable on the agent's card in the Agents
@@ -441,3 +458,33 @@ out of the menu, and typing one anyway says that rather than "no such command".
 Ordinary text that begins with a slash is never treated as a command:
 `/usr/bin/env is portable` is sent as written. A command has to name a skill or
 an agent, start with a letter, and be followed by a space or nothing.
+
+## Terminal
+
+<kbd>Ctrl</kbd>+<kbd>`</kbd> opens a shell in the bottom of the window, in the
+folder the window is pointed at. It is your own shell — `$SHELL` on macOS and
+Linux, the console Windows names — started the way any other terminal starts
+one, so the rc file you already have is the rc file it reads. Aliases, prompt,
+completions: all of it is there, because none of it is reimplemented here.
+
+A real pseudo-terminal underneath, and a real emulator on top, which together
+are what make it a terminal rather than a log with colours in it. `vim` opens.
+`htop` redraws. `less` pages. A progress bar overwrites its own line instead of
+printing a hundred of them. Resizing the pane tells the shell its new geometry,
+so a full-screen program reflows with it rather than drawing to the size it
+started at.
+
+The dock is desktop-only, and deliberately so: `taurus` on the command line is
+already in a terminal, and a second one inside it would be a worse version of
+the one it is running in.
+
+Closing the dock ends the shell, the same as closing a terminal window anywhere
+else — and so does closing the app, which is the part worth stating, because a
+shell started under a pty is not in the app's process tree in any way the
+operating system would clean up on its own.
+
+What it is **not**, yet: it is not wired to the conversation. The agent does not
+read what you type there, what you run is not checkpointed the way the agent's
+own commands are, and commands are a scrollback rather than the blocks a
+Warp-style terminal groups them into. Each of those is written down in
+[Known gaps](known-gaps.md).

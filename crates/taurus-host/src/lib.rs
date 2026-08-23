@@ -14,6 +14,7 @@ pub mod host;
 pub mod instructions;
 pub mod mcp_view;
 pub mod memory;
+pub mod onscreen;
 pub mod problem;
 pub mod prompt;
 pub mod secrets;
@@ -30,6 +31,7 @@ pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS}
 pub use instructions::{Instructions, InstructionsOrigin, InstructionsSource, InstructionsTier};
 pub use mcp_view::{McpServerDraft, McpServerRef, McpServerView, McpTransport, McpValue};
 pub use memory::Note;
+pub use onscreen::OnScreen;
 pub use problem::{Problem, ProblemSource};
 pub use secrets::KeyStatus;
 pub use sessions::{SessionLog, SessionMeta, SubagentLogs, Switch};

@@ -124,6 +124,37 @@ to put things back after.
   — results you are meant to *look* at stand on their own beside the prose. When
   a decision is genuinely yours, it asks and waits — and every question can be
   skipped.
+- [**Motion that says what it is doing**](docs/working-with-it.md#motion) — a
+  turn in flight draws a waveform whose shape comes from the kind of work
+  running, and a running row wears a scan, a write gutter, or an indeterminate
+  hairline. A spinner says a turn is alive; this says what it is busy with.
+- [**Working with data**](docs/working-with-it.md#working-with-data) — a CSV
+  with a million rows in it is not a file to read. It loads one as a table
+  instead, describes every column from the whole file rather than a sample,
+  answers questions about it in SQL, and puts the rows on a surface of their
+  own. A transformation worth keeping becomes a
+  [**recipe**](docs/working-with-it.md#recipes): a chain of SQL steps committed
+  with the code, re-runnable on next month's export, reporting what each step
+  did to the row count.
+- [**A query box that knows your columns**](docs/working-with-it.md#writing-the-query)
+  — SQL coloured as you type, completing against the real schema of every
+  loaded file rather than a keyword list. A column two files share is marked
+  `joins`, which is how you find the key to join them on while writing the
+  join.
+
+![The Data pane: a profile of a 400,000-row file, with the missing values
+marked](docs/screenshots/data.png)
+
+The pane does not exist until a workspace has loaded something. It takes the
+centre column beside the conversation rather than covering it, and the box you
+type in never moves — asking is still how anything gets here.
+
+It goes both ways. A message sent from the pane carries what is on screen, so
+"which category refunds most?" has a referent. A query the model ran leaves a
+card in the transcript with **Run in Query** on it, which asks the same
+question again in the pane at full width. A query that fails, and a recipe run
+that does, each offer themselves back to Taurus with the error already in the
+message.
 
 **[Configuration](docs/configuration.md)** — providers, keys, MCP servers, and
 web search.
@@ -157,6 +188,7 @@ crates/
   taurus-mcp/               MCP client
   taurus-web/               Web search and page fetching
   taurus-index/             Local semantic search: chunking, embedding, ranking
+  taurus-data/              Reading, profiling, and transforming tabular files, behind one engine trait
   taurus-core/              Session state, the agent loop, sub-agents
   taurus-host/              Config, system prompt, registry assembly
   taurus-cli/               The `taurus` binary

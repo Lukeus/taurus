@@ -189,6 +189,17 @@ has to be native. Neither the CLI nor a development build was ever affected —
 both already have a console — which is why this was only ever visible in the
 installed app. See [`scripts/conpty.mjs`](../scripts/conpty.mjs).
 
+**The terminal dock is not on this path at all.** Everything above is about a
+command the *model* asked for: the permission engine sees it, a rule can refuse
+it, and a sweep records what it changed so a rewind can undo it. A command you
+type in the terminal dock goes to your shell directly. Nothing prompts, because
+nothing should — you are the one at the keyboard, and a terminal that asked
+permission before each line would be a worse terminal — but the consequence is
+worth stating in the same place as the rest: what you run there is not
+checkpointed, not recorded in the Changes drawer, and not undoable by a rewind.
+The two halves of the window make different promises. See
+[Terminal](capabilities.md#terminal).
+
 ## Rewinding a turn
 
 A transcript remembers that the model called `edit_file`. It does not remember

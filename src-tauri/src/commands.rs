@@ -24,6 +24,12 @@ use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
+use taurus_data::{
+    Dataset, Materialized as DataRun, Page as DataPage, Profile as DataProfile,
+    QueryResult as DataQueryResult, Recipe,
+};
+
+use taurus_host::onscreen::OnScreen;
 use taurus_host::trust::TrustStatus;
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
@@ -32,6 +38,7 @@ use taurus_host::{
 };
 
 use crate::state::{AppState, SessionEntry};
+use crate::terminal::TerminalEvent;
 
 /// Commands return this so the frontend gets a readable message rather than a
 /// serialized Rust error.
@@ -123,6 +130,14 @@ pub struct AppStatus {
     /// The roster size, so the rail can carry it beside the skill count. Never
     /// zero: two agents ship with the harness.
     pub agent_count: usize,
+    /// How many datasets are loaded here.
+    ///
+    /// The Data pane does not exist until this is non-zero, which is the whole
+    /// of how that surface stays out of the way of everybody who is not using
+    /// it. A count rather than the list: the tab only needs to know whether
+    /// there is anything behind it, and the pane fetches the rest when it
+    /// opens.
+    pub dataset_count: usize,
     /// Everything that failed to load, each tagged with where it came from so
     /// the UI can show it on the screen that can fix it. Previously this was an
     /// untagged list called `skill_problems`, and a malformed `providers.json`
@@ -151,6 +166,7 @@ pub async fn status_of(state: &AppState) -> AppStatus {
         skill_count: state.host.skill_count().await,
         note_count: state.host.notes().await.len(),
         agent_count: state.host.agents().await.len(),
+        dataset_count: state.host.datasets().await.len(),
         problems: state.host.problems().await,
         tool_names: state.host.tool_names().await,
         mcp_servers: state.host.mcp_statuses().await,
@@ -521,6 +537,10 @@ pub async fn send_message(
     session_id: String,
     text: String,
     images: Option<Vec<Attachment>>,
+    // What the Data pane was showing, when the message was sent from it. It
+    // reaches the model and not the transcript — see `taurus_host::onscreen`,
+    // which explains the split and what it costs.
+    on_screen: Option<OnScreen>,
     on_event: Channel<UiEvent>,
 ) -> CmdResult<()> {
     let entry = state.session(&session_id)?;
@@ -552,6 +572,10 @@ pub async fn send_message(
         Some(Err(e)) => return Err(e.to_string()),
         None => text.clone(),
     };
+    // After the command expansion rather than before it: a `/skill` invocation
+    // is still being sent from a pane, and the procedure it expands to wants
+    // the same subject the user had on screen.
+    let prompt = taurus_host::onscreen::with_context(&prompt, on_screen.as_ref());
 
     // Checked before anything is started, and against this model rather than
     // this provider: on Ollama one model on a server reads images and the next
@@ -1240,6 +1264,13 @@ pub async fn revoke_permission_rule(
 
 #[tauri::command]
 pub async fn list_skills(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<SkillSummary>> {
+    // Rescanned first, the same as `list_agents`: the whole authoring surface
+    // for a skill is a text editor and a folder, so a drawer showing the
+    // catalog as it was at startup is not showing the feature working.
+    state.host.rescan_skills().await;
+    // The rail carries the count beside the drawer that lists them, and the two
+    // disagreeing is worse than either being slightly late.
+    emit_status(&state).await;
     Ok(state.host.skills().await)
 }
 
@@ -1279,6 +1310,9 @@ pub async fn list_commands(
 #[tauri::command]
 pub async fn list_agents(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<AgentSummary>> {
     state.host.rescan_agents().await;
+    // Same reason the skills listing does it: the rail's count and the drawer's
+    // list are two views of one scan and must not disagree.
+    emit_status(&state).await;
     Ok(state.host.agents().await)
 }
 
@@ -1291,6 +1325,141 @@ pub async fn list_agents(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Agent
 #[tauri::command]
 pub async fn list_notes(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Note>> {
     Ok(state.host.notes().await)
+}
+
+#[tauri::command]
+pub async fn list_datasets(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Dataset>> {
+    Ok(state.host.datasets().await)
+}
+
+/// Reads a dataset in full and describes every column.
+///
+/// The one command here that can take real time — it is a scan of the whole
+/// file — which is why the pane shows a reading state over it rather than
+/// waiting in silence.
+#[tauri::command]
+pub async fn dataset_profile(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> CmdResult<DataProfile> {
+    state.host.dataset_profile(&name).await
+}
+
+/// One loaded dataset and its columns, without anything having been counted.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct DataTable {
+    pub name: String,
+    pub path: String,
+    pub columns: Vec<taurus_data::ColumnHead>,
+    /// Rows, where the format keeps a count. Parquet does; a CSV would have to
+    /// be read, and this call is the one that refuses to read anything.
+    #[ts(type = "number | null")]
+    pub rows: Option<u64>,
+}
+
+/// Every table a query in this workspace can name, and what is in it.
+///
+/// The query box's own schema. Kept apart from `dataset_profile` because the
+/// two questions are different sizes: a profile counts nulls and distinct
+/// values over the whole file, and this reads a header. Completion needs the
+/// second one every time the box is opened and could never afford the first.
+///
+/// A dataset whose file has gone is left out rather than failing the call —
+/// see `Host::dataset_schemas`.
+#[tauri::command]
+pub async fn dataset_tables(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<DataTable>> {
+    Ok(state
+        .host
+        .dataset_schemas()
+        .await
+        .into_iter()
+        .map(|(dataset, schema)| DataTable {
+            name: dataset.name,
+            path: dataset.path,
+            columns: schema.columns,
+            rows: schema.rows,
+        })
+        .collect())
+}
+
+/// A window of a dataset's rows.
+///
+/// `limit` is clamped by the engine rather than trusted, so a frontend asking
+/// for the whole file gets a page and not a hang. See `taurus_data::MAX_PAGE`.
+#[tauri::command]
+pub async fn dataset_page(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    offset: u64,
+    limit: u64,
+) -> CmdResult<DataPage> {
+    state.host.dataset_page(&name, offset, limit).await
+}
+
+/// Answers one read-only SQL question over every dataset loaded here.
+///
+/// The engine refuses anything that is not a read, which is what lets this be
+/// a plain command rather than one behind a confirmation: the box in the pane
+/// takes arbitrary text, and `COPY … TO` is one line of SQL.
+#[tauri::command]
+pub async fn query_data(
+    state: State<'_, Arc<AppState>>,
+    sql: String,
+) -> CmdResult<DataQueryResult> {
+    state.host.query_data(&sql).await
+}
+
+/// Every recipe this workspace has, with anything wrong with the rest.
+///
+/// Problems travel with the list rather than as a failure. A recipe that will
+/// not parse is a file somebody is halfway through writing, and hiding the
+/// other four while they finish would be the pane arguing with an editor.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct Recipes {
+    pub recipes: Vec<Recipe>,
+    /// One line per unreadable file, each naming its path.
+    pub problems: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn list_recipes(state: State<'_, Arc<AppState>>) -> CmdResult<Recipes> {
+    let (recipes, problems) = state.host.recipes().await;
+    Ok(Recipes { recipes, problems })
+}
+
+/// Runs a recipe and writes the file it names.
+///
+/// The one command in this family that changes the workspace, and it does it
+/// without a permission prompt for the same reason `query_data` does not have
+/// one: the person clicked the button, and the button says what it writes.
+/// What the engine still refuses is a *step* that writes somewhere else — the
+/// button named one path and only that path was agreed to.
+#[tauri::command]
+pub async fn run_recipe(state: State<'_, Arc<AppState>>, name: String) -> CmdResult<DataRun> {
+    let run = state.host.run_recipe(&name).await?;
+    // A recipe's output is loaded as a dataset on the way out, so the pane's
+    // list and the rail's count have both just changed.
+    emit_status(&state).await;
+    Ok(run)
+}
+
+/// Drops a dataset from the list and answers with what is left.
+///
+/// The file it pointed at is not touched. Forgetting a dataset is the opposite
+/// of a destructive act — it is the way to correct a mistaken load — so it
+/// arms no confirmation, unlike deleting a conversation.
+#[tauri::command]
+pub async fn forget_dataset(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> CmdResult<Vec<Dataset>> {
+    let left = state.host.forget_dataset(&name).await?;
+    // The tab disappears when the last one goes, so the rest of the window has
+    // to hear about it.
+    emit_status(&state).await;
+    Ok(left)
 }
 
 /// Drops one note and answers with what is left, so the drawer redraws from the
@@ -1849,6 +2018,28 @@ pub async fn reload_config(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
     Ok(())
 }
 
+/// Re-reads the files a person edits in an editor: instructions, skills,
+/// sub-agents, hooks.
+///
+/// What returning to the window calls. These are the four things somebody
+/// writes in another application and then expects to find here, and coming back
+/// from that application is the closest thing to an event their arrival has —
+/// nothing watches those directories, deliberately.
+///
+/// The same gate a turn uses, so this is a `stat` per file when nothing moved
+/// rather than a rescan on every alt-tab. Much narrower than [`reload_config`]
+/// either way: that one also re-reads both provider layers and reconnects every
+/// MCP server.
+///
+/// Refuses nothing, but the caller is expected not to ask mid-turn — see
+/// `Host::refresh_config`.
+#[tauri::command]
+pub async fn rescan_library(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
+    state.host.refresh_config().await;
+    emit_status(&state).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_checkpoints(
     state: State<'_, Arc<AppState>>,
@@ -1994,6 +2185,74 @@ pub async fn commit_turn(
         "committed a turn"
     );
     Ok(commit)
+}
+
+/* ------------------------------------------------------------- terminal */
+
+/// Starts a shell and streams it to the pane that asked.
+///
+/// `cwd` is the workspace root when the pane does not name one, which is what
+/// it wants on the first open: a terminal that starts in the home directory
+/// beside a window that is looking at a project is one `cd` away from being
+/// useful and nobody remembers to type it.
+///
+/// The size is the pane's, measured after it is laid out. A terminal opened at
+/// a guessed size and corrected a moment later shows the shell's first prompt
+/// wrapped at the wrong column, which is the one artifact of a resize that does
+/// not redraw away.
+#[tauri::command]
+pub async fn terminal_open(
+    state: State<'_, Arc<AppState>>,
+    cwd: Option<String>,
+    rows: u16,
+    cols: u16,
+    on_event: Channel<TerminalEvent>,
+) -> CmdResult<String> {
+    let root = state.host.workspace().await;
+    let cwd = match cwd {
+        Some(path) => PathBuf::from(path),
+        None => root.clone(),
+    };
+    // A folder that has been renamed or unmounted under the window would
+    // otherwise fail inside the spawn as a message about the shell, which is
+    // the wrong thing to name.
+    let cwd = if cwd.is_dir() { cwd } else { root };
+    state.terminals.open(&cwd, rows, cols, on_event)
+}
+
+/// Sends keystrokes. `data` is the text the emulator produced, escape
+/// sequences and all — arrow keys and Ctrl chords arrive here as the bytes a
+/// terminal would have sent.
+#[tauri::command]
+pub async fn terminal_write(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    data: String,
+) -> CmdResult<()> {
+    state.terminals.write(&id, data.as_bytes())
+}
+
+/// Tells the shell how big its window is now.
+///
+/// This is what makes a full-screen program redraw at the new size, and it is
+/// also the only thing that tells a shell where to wrap. A pane that resizes
+/// without saying so leaves every program inside it drawing to the old
+/// geometry.
+#[tauri::command]
+pub async fn terminal_resize(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    rows: u16,
+    cols: u16,
+) -> CmdResult<()> {
+    state.terminals.resize(&id, rows, cols)
+}
+
+/// Ends a shell, and anything it is running.
+#[tauri::command]
+pub async fn terminal_close(state: State<'_, Arc<AppState>>, id: String) -> CmdResult<()> {
+    state.terminals.close(&id);
+    Ok(())
 }
 
 #[cfg(test)]

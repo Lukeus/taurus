@@ -258,7 +258,9 @@ and they are the minority.
   surface still lags on purpose: the `/` command *menu* lists the last scan,
   because it redraws on every keystroke and taking config locks there is how a
   reload deadlocks against typing — typing the name in full works immediately,
-  and the menu catches up after the next message. See
+  and the menu re-reads itself whenever a rescan changes how many skills or
+  agents there are, which is a message finishing, a drawer opening, or coming
+  back to the window. See
   [Sub-agents](capabilities.md#sub-agents).
 - **A proposed agent's system prompt is reviewed by eye, and nothing else.**
   `propose_agent` checks the shape — the name, the description, the tool scope,
@@ -416,3 +418,267 @@ and they are the minority.
   system settings, and refusing to work behind a corporate proxy would cost
   more than this buys. `"allow_private_hosts": true` in `search.json` turns
   the check off deliberately.
+- **Config is re-read at turn boundaries, and nothing is watched.** Instructions,
+  sub-agents, skills, and hooks are all fingerprinted — a `stat` of the files
+  behind each — and re-read at the start of a turn when that fingerprint moved.
+  So an edit lands on your next message rather than the next launch, and coming
+  back to the window runs the same check on top of that. What
+  is deliberately absent is a file watcher: one fires whenever an editor happens
+  to save, which is routinely the middle of a running turn, and the brief a turn
+  was given and the roster it delegates against have to be the ones it started
+  with. The costs are a one-turn delay in the worst case, and the same
+  same-length-same-tick blind spot every fingerprint here has. Two things are
+  *not* on this path and still need a reload: the provider list and
+  `settings.json`. Both are edited in the app rather than in a file most of the
+  time, and both are re-read when they are saved there — a hand edit to
+  `providers.json` while the app is open is the case that still waits.
+
+- **The terminal dock is a terminal, not part of the conversation.** It runs
+  your shell in the window the agent works in, and that is the whole of the
+  connection between them. The agent cannot read what you ran there, you cannot
+  hand it a failed command without copying the text across, and its own
+  `run_command` calls appear in the transcript rather than in the pane. All
+  three are the same missing piece: the shell has no way to say where one
+  command ended and the next began, so there is nothing for either side to point
+  at. Closing it means shell integration — the `OSC 133` marks a prompt emits
+  around each command, injected per shell — which is what would turn a
+  scrollback into addressable blocks with an exit code and a duration on each.
+  That is the next thing to build here rather than a limit. See
+  [Terminal](capabilities.md#terminal).
+- **What you run in the terminal is outside the undo history.** Every command
+  the *agent* runs is bracketed by a sweep of the workspace, so anything it
+  changed can be put back by a rewind. A command you type in the dock is not:
+  the shell runs it directly, nothing reads the workspace before or after, and a
+  `sed -i` there is invisible to the Changes drawer and to every checkpoint. The
+  dock does not pretend otherwise — it is a terminal, and a terminal has never
+  had an undo — but it is worth knowing that the two halves of the window keep
+  different promises. Covering it needs the same command boundaries the entry
+  above is about, and it would cost a read of the workspace per command you
+  type. See [Rewinding a turn](safety.md#rewinding-a-turn).
+- **One shell, and it ends when the dock does.** There are no tabs and no
+  splits, and hiding the pane is not hiding it — closing the dock ends the
+  shell, the same as closing a terminal window. So a long `cargo build` started
+  there does not survive ⌃`, and there is no second pane to run something else
+  in while it works. Both are worth having and neither is written; a shell that
+  outlived the pane would also need somewhere for its output to go while nothing
+  is watching, which is a scrollback the backend would have to keep.
+- **A prompt's icons need a font this app cannot ship.** Powerline separators
+  and the git glyphs a modern prompt draws come from the private-use area, which
+  the app's own mono has nothing in. The dock names the Nerd Fonts people
+  actually install and falls back through them, so a machine with any of them
+  renders the prompt correctly — and a machine with none shows those glyphs as
+  empty boxes, with the text around them intact. Bundling one would be tens of
+  megabytes for a decoration, and there is no setting to name a different font
+  yet.
+- **On Windows the dock holds a console window open for as long as it is open.**
+  The ConPTY gap above is the same bug seen for longer: a release build has no
+  console of its own, so a pty opened without the sideloaded runtime creates
+  one, and where a tool call showed it for the length of a command the dock
+  shows it for the length of the session. The fix is the same — the two files
+  the Windows bundle ships beside the executable — and the startup log line
+  saying whether they were found is still the only warning available.
+- **A query answers thirty rows, and that is a context limit rather than a
+  reading one.** `query_data` results are read by the model, and every row is
+  paid for again on each later request of the turn — so the tool is shaped for
+  aggregating, and a query that wants a thousand rows wants to be writing a
+  file. The pane pays the same cap even though nothing there is paying for
+  context, which is the honest cost of one guarantee rather than two: the pane
+  and the model go through the same call, and the alternative is a second limit
+  that can be got wrong on its own. A result that hit the cap says so.
+- **A refused query is refused by plan shape, not by intent.** `query_data`
+  plans every statement and rejects it if the plan does anything but read, and
+  the match over plan kinds is written out in full so that a future DataFusion
+  release adding a writing statement fails to compile rather than being waved
+  through. What that does not cover is a read that is merely *expensive*: a
+  cross join over two million-row files is a legal SELECT. There is a 512 MB
+  ceiling per query so one of those fails instead of taking the app with it,
+  and the tool is cancellable, but nothing estimates a query before running it.
+- **A recipe transforms; nothing here judges.** A recipe is a chain of SQL
+  steps, so it can clean, filter, join, derive, and rank — everything SQL can
+  express. What it cannot do is anything that needs a *model*: classify a free
+  text column into a taxonomy, extract fields from a description, embed a
+  column for a recommender. Those are the reason the whole feature exists for
+  anybody building a dataset for an agent, and none of them is written. They
+  need a different shape from a SQL step, because a judgement over a million
+  rows is a bill: it wants to be sampled first, reviewed, and only then
+  committed to the whole file. Adding one as another `-- step:` would skip
+  exactly the gate that makes it safe to run.
+  See [Recipes](working-with-it.md#recipes).
+- **What the Data pane was showing reaches the model but not the transcript.**
+  A message sent from the pane carries the open dataset and the query box, so
+  "this" has a referent — but it goes onto the prompt, not onto the transcript's
+  copy of what was said. That is the same split a `/command` expansion makes,
+  and it has the same consequence: a conversation reopened a week later shows
+  "which category refunds most?" with no record of which dataset that meant.
+  The chip above the composer is what makes it visible at the time, and the
+  answer beneath usually names the dataset, which is what makes this bearable
+  rather than fine. Fixing it properly means a transcript entry that can carry
+  more than text and images.
+- **The turn strip says what is happening, not what was said.** One line above
+  the composer while a turn runs in the Data pane, showing the running tool or
+  the last sentence of prose. It is not a transcript and cannot be: a table or
+  a chart has nowhere to go on one line. The question card — which was the case
+  that mattered, because the turn parks and only you can unpark it — is now
+  called out rather than left to be inferred: the strip switches to a breathing
+  mint ring and says *Waiting on your answer*. What is still true is that the
+  answer itself has to be given in the conversation, and the strip cannot show
+  you the options.
+- **The waveform's shape is the tool's category, which is coarser than the
+  work.** Four shapes over six categories, and the categories are themselves a
+  simplification — `grep` and `read_file` are both reads and draw the same
+  sweep, though one is a search and the other is not. Finer would mean the
+  harness classifying tools by something other than effect, which is what the
+  categories exist to do and what the run header counts. The shape is a useful
+  hint about the kind of work, not a readout.
+- **Nothing says how long a turn has been running.** The motion says a turn is
+  alive; it says nothing about whether *alive* has meant forty seconds or four
+  minutes. The design's own working state pairs its waveform with an elapsed
+  counter, which Taurus cannot draw honestly — a tool call carries its own
+  start time, but a turn does not, and a resumed conversation carries neither.
+  A finished run reports its duration in the run header, which leaves exactly
+  the case you would want it in uncovered.
+- **A query card stands alone, so a query-heavy turn is a stack of cards.** Any
+  tool call that draws a view is excluded from the folded run header — that is
+  what stops a table being filed under "6 steps · 11s" behind a disclosure
+  triangle. `query_data` now draws one, so a turn that asks six questions
+  leaves six cards where it used to leave one row of six. Each is small and
+  each is useful; six in a column is still more transcript than the turn is
+  worth. The fix is a fold that can hold cards, which is a change to how a run
+  is drawn rather than to this tool.
+- **Running a query from a card can disagree with the transcript above it.**
+  The card carries the SQL and not the rows, on purpose — a remembered answer
+  is the number that is right for a week and then quietly wrong. So **Run in
+  Query** asks the files as they are *now*, and if something has rewritten one
+  since, the pane's answer and the model's sentence about it differ with
+  nothing saying why. That is the right way round — the fresh number is the
+  true one — but the disagreement is left for the reader to notice.
+- **A recipe's steps cannot be taken to the query box.** The pane shows every
+  step's SQL when a recipe is opened, and there is deliberately no button to
+  run one: every step reads from `input`, which is the rows the step before it
+  produced, and no such table exists outside a run. Pasting one into the box
+  gets `table 'input' not found`, which would be the button's fault rather than
+  the user's. Making it work means materializing the chain up to that step,
+  which is most of a run — see the sample-then-commit gating that phase 3 needs
+  anyway.
+- **The drafts these buttons write are a guess at the question.** "Add this as
+  a step in a recipe" does not say *which* recipe, because the pane does not
+  know — so the model asks, or picks, and either way it is a round trip the
+  person could have saved by typing four words. The button is a head start, not
+  a complete instruction, which is why nothing is sent and the cursor is left at
+  the end of it.
+- **The query box's highlighting is a scanner, not a grammar.** It knows where
+  a literal starts and ends, which is the half a regex gets wrong, and it knows
+  nothing about scope. The function list is a fixed set of the common ones, so
+  a DataFusion function nobody thought of — and any UDF — draws as a plain
+  identifier rather than as a call. Nothing is *wrong* on screen when that
+  happens; a word is simply the wrong colour, which is the failure mode a
+  scanner is chosen for.
+- **Completion knows the files, not the query.** It offers columns that exist
+  in a loaded dataset, and a CTE's output columns do not — `WITH t AS (SELECT
+  a + b AS total …) SELECT | FROM t` will not offer `total`, because knowing it
+  exists means planning the query, which is the engine's job and a round trip
+  away. Aliases are found by sweeping for `FROM`/`JOIN` and the name after it,
+  so the subquery form `FROM (SELECT …) t` is not matched either and `t.` falls
+  back to offering every column in the workspace. Both cases degrade to a
+  longer list rather than to a wrong one.
+- **The caret the completion list hangs off is computed, not measured.** The
+  box is monospace and does not wrap, so the list's position is arithmetic: one
+  cell width, times the column, plus the padding. A character that is not one
+  cell wide — CJK, most emoji — puts the list a few characters off for the rest
+  of that line. The alternative is measuring a mirror element on every
+  keystroke, which is a lot of DOM for a case that does not arise in SQL.
+- **A selection in the query box shows as a block of colour with no text in
+  it.** The consequence of painting the query on a layer behind a transparent
+  textarea: the browser draws the selection on the real control, whose text is
+  invisible. The highlight is tinted harder than the app's default to
+  compensate. Fixing it properly means an editor component, which is the
+  dependency the whole arrangement exists to avoid.
+- **The tables panel is reference and nothing is clickable in it.** Deliberate
+  rather than unfinished — completion is the way text gets into the box, and a
+  second insertion route is a second set of rules about where the caret lands.
+  It does mean a column read there still has to be typed, and the first three
+  letters are all that costs.
+- **Identifier case is Taurus's own dialect choice, and a recipe carries it.**
+  DataFusion lowercases an unquoted identifier by default, the way Postgres
+  does; Taurus turns that off, so a column reported as `Material` is written as
+  `Material`. That is the right trade for data whose column names come from a
+  spreadsheet header — it makes the tool's own output valid input to itself —
+  but it does mean a recipe written here is *stricter* than the same SQL pasted
+  into a database client, where `SELECT MATERIAL` against a lowercase column
+  would have worked. Nothing warns about that when a recipe is copied out.
+- **A recipe's SQL is DataFusion's SQL, and that is now committed to your
+  repository.** The engine sits behind a trait so the rest of the harness does
+  not name it, but a recipe is a file with SQL text in it, so swapping engines
+  would mean every recipe anybody wrote is a file in a dialect nothing reads.
+  That cost was taken knowingly — the alternative is an invented step language,
+  which buys portability nobody wants with unfamiliarity everybody pays — and
+  it is the reason exactly one method on the trait writes. What is not written
+  is any way to *tell* you a recipe uses something dialect-specific; a
+  `row_number() OVER` is portable and a DataFusion-only function is not, and
+  nothing distinguishes them.
+- **A recipe writes one file, and there is no incremental run.** Every run
+  reads the source from the beginning and rewrites the output whole. There is
+  no "only the rows since last time", no partitioning, and no way to append —
+  so a recipe over a growing export costs the whole export every time. Each
+  intermediate step also spills to a scratch file, which keeps memory flat and
+  the row counts exact but means a five-step recipe over a gigabyte does
+  several gigabytes of temporary I/O. That scratch goes in the system temp
+  directory, so a machine with a small `/tmp` is the case that fails; there is
+  no setting to move it.
+- **Running a recipe from the pane asks nothing first.** The button carries the
+  path it writes, and that is the whole of the consent — the same arrangement
+  the query box has. `run_recipe` called by the *model* does prompt, and its
+  prompt names the path parsed from the same file the run will use. What
+  neither offers is a preview of the output before it lands: there is no dry
+  run, no "this would drop 380,000 rows, continue", and the per-step deltas
+  arrive after the file is already written. A rewind undoes it, which is what
+  makes that acceptable rather than fine.
+- **Writing or editing a recipe is not rewindable.** `.taurus` is skipped by
+  the checkpoint sweep, so a turn that authors a recipe leaves nothing for
+  `taurus rewind` to put back — the same property project skills already have,
+  for the same reason: these are the instructions, not the output. The file a
+  recipe *writes* is fully rewindable. Git is the undo for the recipe itself,
+  which is an argument for committing them and not much comfort before the
+  first commit.
+- **The list of loaded datasets does not travel with the repository.** It lives
+  in `~/.taurus/data/<workspace>/datasets.json`, beside the transcripts and the
+  search index, not in the project's own `.taurus`. That is what keeps loading a
+  file from being a *write* to the workspace — otherwise looking at a CSV would
+  cost a permission dialog, a diff in the Changes drawer, and a line in the next
+  commit. The cost is that a teammate who clones the repository loads the files
+  again, which is one sentence to the agent. A recipe sidesteps it by naming its
+  own files — `source: data/events.csv`, plus a `tables:` block for anything it
+  joins against — which is what makes a committed recipe run on a fresh clone.
+  A recipe that names loaded datasets instead still does not, and nothing warns
+  you which kind you have written.
+- **A profile is a full scan every time, and it cannot be cancelled.** Nothing
+  is cached: a dataset entry points at a file anything can rewrite, and a
+  remembered row count is the kind of number that is right for a week and then
+  quietly wrong. So opening the pane on a multi-gigabyte file reads it again,
+  and clicking away leaves that read running to completion rather than stopping
+  it. Caching it properly means invalidating on the file's length and
+  modification time — the same rule the search index already uses — and
+  cancelling means threading a token through the engine trait. Neither is
+  written. What keeps this bearable today is that the scan is the *only*
+  expensive operation: loading reads a header, and paging is flat in the offset.
+- **`.json` means newline-delimited JSON, not a JSON array.** A file holding one
+  big `[ {...}, {...} ]` is refused with a message rather than read, because
+  reading it would mean parsing the whole thing into memory before any of the
+  streaming below it could start — which is the one shape of file this is
+  supposed to protect you from. Converting it is one `jq` line and the agent can
+  run it. There is no Excel reader either, and adding one is a dependency rather
+  than a design question.
+- **A nested column is counted and not described.** A list, a struct, or a map
+  profiles as how many rows have one and nothing else — no distinct count, no
+  range, no common values, because none of those are questions with an answer
+  until the column is flattened. It is kept rather than refused so that one
+  nested column in an export does not cost you the other thirteen. Flattening is
+  a transformation: a recipe can flatten one with an `unnest` step, and until
+  somebody does, the profile says what it can.
+- **The grid does not sort or filter.** It pages, a hundred rows at a time, in
+  the order the file is in. Sorting a million rows is a query rather than a
+  click — it has to go back to the engine, and the pane would need somewhere to
+  say that it is running one — and filtering is the same thing with a predicate.
+  Both are worth having. The transcript's `show_table` sorts because its rows
+  are already in the browser; these are not, and pretending otherwise would sort
+  the hundred rows on screen and call it sorted.

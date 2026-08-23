@@ -17,6 +17,23 @@ import type { ChangedFiles } from "../bindings/ChangedFiles";
 import type { Checkpoint } from "../bindings/Checkpoint";
 import type { CommandKind } from "../bindings/CommandKind";
 import type { CommandSummary } from "../bindings/CommandSummary";
+import type { DataColumn } from "../bindings/DataColumn";
+import type { DataColumnKind } from "../bindings/DataColumnKind";
+import type { DataColumnProfile } from "../bindings/DataColumnProfile";
+import type { DataDistinct } from "../bindings/DataDistinct";
+import type { DataFormat } from "../bindings/DataFormat";
+import type { DataPage } from "../bindings/DataPage";
+import type { DataProfile } from "../bindings/DataProfile";
+import type { DataTable } from "../bindings/DataTable";
+import type { DataQueryResult } from "../bindings/DataQueryResult";
+import type { DataRun } from "../bindings/DataRun";
+import type { DataStep } from "../bindings/DataStep";
+import type { DataValueCount } from "../bindings/DataValueCount";
+import type { Dataset } from "../bindings/Dataset";
+import type { Recipe } from "../bindings/Recipe";
+import type { RecipeStep } from "../bindings/RecipeStep";
+import type { RecipeTable } from "../bindings/RecipeTable";
+import type { Recipes } from "../bindings/Recipes";
 import type { Commit } from "../bindings/Commit";
 import type { ContentBlock } from "../bindings/ContentBlock";
 import type { DiffHunk } from "../bindings/DiffHunk";
@@ -40,6 +57,7 @@ import type { Message } from "../bindings/Message";
 import type { MessageKind } from "../bindings/MessageKind";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { Note } from "../bindings/Note";
+import type { OnScreen } from "../bindings/OnScreen";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
 import type { Problem } from "../bindings/Problem";
@@ -66,6 +84,7 @@ import type { Skipped } from "../bindings/Skipped";
 import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
+import type { TerminalEvent } from "../bindings/TerminalEvent";
 import type { Theme } from "../bindings/Theme";
 import type { ToolOutput } from "../bindings/ToolOutput";
 import type { ToolResultBlock } from "../bindings/ToolResultBlock";
@@ -89,6 +108,23 @@ export type {
   CommandKind,
   CommandSummary,
   Commit,
+  DataColumn,
+  DataColumnKind,
+  DataColumnProfile,
+  DataDistinct,
+  DataFormat,
+  DataPage,
+  DataProfile,
+  DataTable,
+  DataQueryResult,
+  DataRun,
+  DataStep,
+  DataValueCount,
+  Dataset,
+  Recipe,
+  RecipeStep,
+  RecipeTable,
+  Recipes,
   ContentBlock,
   CreatedSession,
   DiffHunk,
@@ -112,6 +148,7 @@ export type {
   ModelEntry,
   ModelInfo,
   Note,
+  OnScreen,
   PermissionDecision,
   PermissionRequest,
   Problem,
@@ -135,6 +172,7 @@ export type {
   Step,
   StepState,
   Switch,
+  TerminalEvent,
   Theme,
   PendingConfig,
   ToolOutput,
@@ -215,10 +253,24 @@ export function sendMessage(
   text: string,
   onEvent: (event: UiEvent) => void,
   images: Attachment[] = [],
+  /**
+   * What the Data pane was showing, when the message was sent from it.
+   *
+   * Reaches the model and not the transcript, which is the same split a
+   * `/command` expansion makes — see `taurus_host::onscreen` for why, and for
+   * what it costs a conversation reopened later.
+   */
+  onScreen: OnScreen | null = null,
 ): Promise<void> {
   const channel = new Channel<UiEvent>();
   channel.onmessage = onEvent;
-  return invoke("send_message", { sessionId, text, images, onEvent: channel });
+  return invoke("send_message", {
+    sessionId,
+    text,
+    images,
+    onScreen,
+    onEvent: channel,
+  });
 }
 
 /**
@@ -327,6 +379,76 @@ export const listNotes = () => invoke<Note[]>("list_notes");
 /** Drops one note and answers with what is left, so the drawer redraws from
  *  the file rather than from its own guess about what the file now says. */
 export const forgetNote = (id: string) => invoke<Note[]>("forget_note", { id });
+
+/**
+ * The data files loaded in this workspace, in the order they were loaded.
+ *
+ * Pointers, not contents. Everything about what is actually in one is asked
+ * for separately and computed when asked — see `datasetProfile`.
+ */
+export const listDatasets = () => invoke<Dataset[]>("list_datasets");
+
+/**
+ * Reads a dataset in full and describes every column.
+ *
+ * The one call in this file that can take real time: it is a scan of the whole
+ * file, and on a large one that is seconds rather than milliseconds. Callers
+ * show a reading state over it rather than waiting in silence.
+ */
+export const datasetProfile = (name: string) =>
+  invoke<DataProfile>("dataset_profile", { name });
+
+/**
+ * Every table a query here can name, with its columns and nothing counted.
+ *
+ * The query box's own schema, and cheap on purpose: a Parquet footer or a CSV
+ * header, where `datasetProfile` is a full scan. That difference is what lets
+ * completion ask for this every time the box is opened.
+ *
+ * A dataset whose file has moved is left out rather than failing the call.
+ */
+export const datasetTables = () => invoke<DataTable[]>("dataset_tables");
+
+/** A window of a dataset's rows. The backend caps `limit`; asking for the
+ *  whole file gets a page rather than a hang. */
+export const datasetPage = (name: string, offset: number, limit: number) =>
+  invoke<DataPage>("dataset_page", { name, offset, limit });
+
+/**
+ * Answers one read-only SQL question over every dataset loaded here.
+ *
+ * Every dataset is a table under its own name, so a query can join two of
+ * them. The engine refuses anything that is not a SELECT, which is what lets
+ * this be an ordinary call rather than one behind a confirmation — the box
+ * this comes from takes arbitrary text.
+ */
+export const queryData = (sql: string) =>
+  invoke<DataQueryResult>("query_data", { sql });
+
+/** Drops a dataset from the list and answers with what is left. The file it
+ *  pointed at is not touched. */
+export const forgetDataset = (name: string) =>
+  invoke<Dataset[]>("forget_dataset", { name });
+
+/**
+ * The recipes this workspace has, with anything wrong with the rest.
+ *
+ * Read from `.taurus/recipes` every time rather than cached: a recipe is a
+ * file in the project that the agent, an editor, or a `git pull` can change,
+ * and the pane showing yesterday's steps beside a Run button is the one
+ * failure this list can have.
+ */
+export const listRecipes = () => invoke<Recipes>("list_recipes");
+
+/**
+ * Runs a recipe and writes the file it names.
+ *
+ * The one call in this file that changes the workspace. It asks nothing first,
+ * for the same reason `queryData` does not — the person clicked a button that
+ * says where it writes. What is still refused, one layer down, is a *step*
+ * that writes somewhere other than that path.
+ */
+export const runRecipe = (name: string) => invoke<DataRun>("run_recipe", { name });
 
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 
@@ -627,6 +749,60 @@ export const repoStatus = () => invoke<RepoStatus>("repo_status");
  */
 export const commitTurn = (sessionId: string, turn: number, message: string) =>
   invoke<Commit>("commit_turn", { sessionId, turn, message });
+
+/**
+ * Re-reads the files a person edits in an editor: instructions, skills,
+ * sub-agents, hooks.
+ *
+ * Called when the window regains focus, which is when somebody has most likely
+ * just been in an editor writing one of them. Nothing watches those directories
+ * — see the backend's `refresh_config` for why — so returning to the window is
+ * the closest thing to an event their arrival has.
+ *
+ * The same fingerprint check a turn makes, so this is a `stat` per file when
+ * nothing moved. Not called while a turn is running: a turn runs against the
+ * brief, roster and catalog it started with, and the turn will refresh on its
+ * own boundary anyway.
+ */
+export const rescanLibrary = () => invoke<void>("rescan_library");
+
+/* --------------------------------------------------------------- terminal */
+
+/**
+ * Starts a shell in the dock, streaming what it prints to `onEvent`.
+ *
+ * Resolves with the id every other call here takes. The size is the pane's real
+ * one, measured after layout: a shell told the wrong geometry wraps its first
+ * prompt at the wrong column, and no later resize redraws a line that has
+ * already been printed.
+ */
+export function openTerminal(
+  rows: number,
+  cols: number,
+  onEvent: (event: TerminalEvent) => void,
+  cwd?: string,
+): Promise<string> {
+  const channel = new Channel<TerminalEvent>();
+  channel.onmessage = onEvent;
+  return invoke<string>("terminal_open", { cwd, rows, cols, onEvent: channel });
+}
+
+/**
+ * Sends keystrokes to a shell.
+ *
+ * `data` is what the emulator produced rather than what was typed: an arrow key
+ * arrives here as the escape sequence a terminal would have sent, and a paste
+ * arrives as its whole text at once.
+ */
+export const writeTerminal = (id: string, data: string) =>
+  invoke<void>("terminal_write", { id, data });
+
+/** Tells a shell how big its window is now, so full-screen programs redraw. */
+export const resizeTerminal = (id: string, rows: number, cols: number) =>
+  invoke<void>("terminal_resize", { id, rows, cols });
+
+/** Ends a shell, and anything it is running. */
+export const closeTerminal = (id: string) => invoke<void>("terminal_close", { id });
 
 export const onPermissionRequest = (
   handler: (request: PermissionRequest) => void,

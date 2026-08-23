@@ -25,9 +25,30 @@
 // rather than deleting every type in the app and burying the Rust error under
 // editor noise. It lives under `target/` so the swap is a rename within one
 // filesystem.
+//
+// # Two Rust types with one name
+//
+// ts-rs writes each type to `<Name>.ts`, and the name is global across the
+// whole workspace while the Rust names it comes from are scoped per crate. So
+// two crates can each define a `ColumnKind`, both write to `ColumnKind.ts`, and
+// whichever ran last wins — leaving the other crate's payload described by the
+// wrong type, with everything still compiling. That happened, and nothing
+// caught it; `taurus_data::ColumnKind` silently replaced `taurus_tools`\''s.
+//
+// It is invisible in the directory listing, because the collision *is* one
+// file. It is visible in the arithmetic: ts-rs generates exactly one
+// `export_bindings_<name>` test per exported type and each writes exactly one
+// file, so a run with more tests than files wrote something twice. `collided`
+// below does that subtraction and refuses the run.
+//
+// Counting is the exact signal; naming the culprit is not, because the test
+// name is the *Rust* type name and the collision is between *TypeScript* names.
+// Two crates may each define a `SaveTarget` and be perfectly fine, because one
+// of them is renamed on export — which is also the fix here:
+// `#[ts(export, rename = "...")]` on one of the two.
 
 import { spawn } from "node:child_process";
-import { renameSync, rmSync } from "node:fs";
+import { readdirSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,15 +60,55 @@ rmSync(staging, { recursive: true, force: true });
 
 // No shell: `cargo` is a real executable, so this needs no quoting, which is
 // what makes a workspace path containing a space survive the trip.
+// Piped rather than inherited so the test names can be read back — see the
+// note on colliding names above. Everything is re-emitted as it arrives, so
+// this still reads like `stdio: "inherit"` from the terminal.
 const cargo = spawn(
   "cargo",
   ["test", "--workspace", "export_bindings", ...process.argv.slice(2)],
   {
     cwd: root,
     env: { ...process.env, TS_RS_EXPORT_DIR: staging },
-    stdio: "inherit",
+    stdio: ["inherit", "pipe", "inherit"],
   },
 );
+
+let output = "";
+cargo.stdout.on("data", (chunk) => {
+  output += chunk;
+  process.stdout.write(chunk);
+});
+
+/**
+ * Every type that was exported, as `module::path` and Rust type name.
+ */
+function exported(text) {
+  return [...text.matchAll(/^test (\S*?)export_bindings_(\w+) \.\.\. ok$/gm)].map(
+    ([, path, name]) => ({ path, name }),
+  );
+}
+
+/**
+ * Whether two exports wrote the same file, and the shortlist to check.
+ *
+ * The shortlist is the Rust type names that appear in more than one crate. It
+ * is where a collision almost always is, and it is a hint rather than the
+ * answer — see the note at the top of this file.
+ */
+function collided(text, written) {
+  const types = exported(text);
+  if (types.length === 0 || types.length === written) return null;
+
+  const byName = new Map();
+  for (const { path, name } of types) {
+    byName.set(name, [...(byName.get(name) ?? []), `${path}export_bindings_${name}`]);
+  }
+  return {
+    types: types.length,
+    written,
+    shortlist: [...byName.entries()].filter(([, tests]) => tests.length > 1),
+  };
+}
 
 cargo.on("error", (error) => {
   console.error(`could not run cargo: ${error.message}`);
@@ -61,6 +122,24 @@ cargo.on("close", (code, signal) => {
   if (status !== 0) {
     rmSync(staging, { recursive: true, force: true });
     process.exit(status);
+  }
+
+  const clash = collided(output, readdirSync(staging).length);
+  if (clash) {
+    rmSync(staging, { recursive: true, force: true });
+    console.error(
+      `\n${clash.types} types were exported but only ${clash.written} files were written, ` +
+        "so two of them share a TypeScript name and one overwrote the other.\n" +
+        (clash.shortlist.length > 0
+          ? "\nRust type names defined in more than one crate — start here:\n" +
+            clash.shortlist
+              .map(([name, tests]) => `  ${name}  <-  ${tests.join(", ")}`)
+              .join("\n") +
+            "\n"
+          : "") +
+        '\nRename one of the pair for export with #[ts(export, rename = "...")].\n',
+    );
+    process.exit(1);
   }
 
   try {

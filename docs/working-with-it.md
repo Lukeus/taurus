@@ -750,3 +750,451 @@ question numbers its options and reads a line, with Enter alone to skip. Where
 there is no terminal at all — a pipe, a git hook, CI — nothing hangs: the tool
 comes back saying nobody was available, and the model is told to decide and say
 which way it went.
+
+## Working with data
+
+A CSV with a million rows in it is not a file to read. `read_file` on one costs
+a whole context window and answers nothing, and it is the single most expensive
+mistake an agent can make in a folder that has data in it. So four tools treat a
+data file as a table rather than as text, and a surface of its own holds what
+they find.
+
+| Tool | Does | Reach for it when |
+| --- | --- | --- |
+| `load_dataset` | Reads a file's columns and gives it a short name | A question is about the *contents* of a data file |
+| `profile_dataset` | Reads the whole file and describes every column | You have not seen the data and need to know its shape |
+| `query_data` | Runs one read-only SQL query over the loaded datasets | The question is specific, or spans two files |
+| `run_recipe` | Runs a saved chain of SQL steps and writes the result | The transformation is worth keeping and re-running |
+
+`.csv`, `.tsv`, `.parquet`, and newline-delimited `.ndjson` / `.jsonl` /
+`.json`. A `.json` file holding a single array is not newline-delimited JSON
+and says so rather than reading as nothing.
+
+Loading is cheap and profiling is not, and the split is deliberate.
+`load_dataset` reads a header — or a Parquet footer, which carries a row count
+for free — and stops. `profile_dataset` reads every row, because the numbers
+worth having are exact ones: how many rows, how many are missing per column,
+how many different values each column holds, the range of the ordered ones, and
+the commonest values of the rest.
+
+```
+`interactions` — 400,000 rows × 7 columns, from data/interactions.csv, profiled by DataFusion.
+
+  user_id   Utf8           49,981 distinct · no nulls · too many values to top
+  item_id   Utf8            9,000 distinct · no nulls · too many values to top
+  event     Utf8                5 distinct · no nulls · view 55%, click 25%, add_to_cart 12%, …
+  category  Utf8                6 distinct · no nulls · electronics 17%, apparel 17%, …
+  price     Float64       138,692 distinct · 12,004 nulls (3%) · 1.00 … 1498.99
+  rating    Int64               5 distinct · 167,853 nulls (42%) · 1 … 5
+  ts        Timestamp(s)      336 distinct · no nulls · 2024-01-01 … 2024-12-28
+```
+
+Distinct counts are exact rather than estimated. `approx_distinct` would be
+cheaper and cannot answer the question a distinct count is actually asked —
+whether a column is unique — and a profile that takes longer is a cost you can
+see, while one that is quietly approximate is a number you will act on.
+
+A column with more different values than a top five says anything about gets
+none, and says that rather than going quiet: five arbitrary user ids read like
+a finding. The exact count is still there.
+
+### Asking a question
+
+A profile answers *what is in here*. `query_data` answers everything after
+that, in SQL, over every loaded dataset at once — each is a table under the
+name `load_dataset` gave it, so a join is just a join.
+
+```
+  tool Query: SELECT category, count(*) AS n FROM interactions GROUP BY category ORDER BY n DESC
+    ✓ category     n
+      electronics  67179
+      apparel      67102
+      …
+      6 rows · 34 ms
+```
+
+It answers with thirty rows at most. That is a context limit rather than a
+reading one: a query result is read by the *model*, and every row is paid for
+again on every later request of the turn. So it is a tool for aggregating, and
+a result that hits the cap says so — a query that filled it and a query that
+answered completely look identical otherwise. When the answer is something you
+should *look* at, the model passes it to `show_table`.
+
+**SELECT only, and that is a guarantee rather than a convention.** `query_data`
+is a read tool, so it runs with no permission prompt — which means anything
+that writes must be impossible rather than discouraged. `COPY … TO 'anywhere'`
+is one line of SQL and would otherwise be an unprompted write to any path the
+process can reach. So every query is planned before it is run and refused if
+the plan does anything but read: no `COPY`, no `CREATE`, no `INSERT`, no `DROP`,
+no `SET`. The whole plan tree is checked, not just the top of it, because
+`EXPLAIN ANALYZE` carries its subject underneath and runs it. A plain `EXPLAIN`
+is still allowed, because it plans without executing and it is what you reach
+for when a query is slow.
+
+The refusal names what a write is for:
+
+> that is not a read-only query. `query_data` runs SELECT and nothing else —
+> no COPY. Writing a table is what a recipe does.
+
+**Column names are used exactly as the profile reported them.** A spreadsheet
+export is full of `Material` and `Price_Per_Unit`, and SQL engines conventionally
+lowercase an unquoted identifier — which would mean `profile_dataset` naming a
+column `Material` and then the query tool refusing `SELECT Material`. Taurus
+turns that normalization off, so the name that was reported is the name that
+works, with no quoting needed. A genuinely wrong case still fails, and says
+which column you meant.
+
+Quoted file paths are not tables either. DataFusion can be configured to treat
+`SELECT * FROM '/etc/passwd'` as a read of that file; Taurus never enables it,
+and there is a test that fails if that default ever moves.
+
+### Recipes
+
+A query answers a question. A **recipe** answers it the same way next month, on
+next month's export, without anybody remembering what was decided — which is
+the difference between having looked at some data and having a dataset.
+
+A recipe is a `.sql` file in `.taurus/recipes`, committed with the code and
+reviewed in a diff like anything else that decides what the software does. It
+is SQL with a YAML header, the same shape a `SKILL.md` has:
+
+`.taurus/recipes/purchases.sql`:
+
+```sql
+---
+source: data/interactions.csv
+output: data/purchases.parquet
+description: the purchases, deduplicated, rated, and ranked per user
+---
+
+-- step: drop exact duplicates
+SELECT DISTINCT * FROM input
+
+-- step: keep the purchases
+SELECT * FROM input WHERE event = 'purchase'
+
+-- step: drop the rows with no rating
+SELECT * FROM input WHERE rating IS NOT NULL
+
+-- step: rank each user's purchases by price
+SELECT user_id, item_id, category, price, rating, ts,
+       row_number() OVER (PARTITION BY user_id ORDER BY price DESC) AS rank_for_user
+FROM input
+```
+
+Every step reads from **`input`**, which is the rows the step before it
+produced. The first step's `input` is the `source`. That is the one rule worth
+reading twice, because the mistake it prevents is silent otherwise: a second
+step that queries the *source table* again rather than `input` computes
+everything above it and throws it away. Taurus refuses that rather than running
+it, and says so by step number. The first step is exempt — its `input` **is**
+the source, so naming the source there is the same query.
+
+Every loaded dataset is also in scope under its own name, and a recipe can bind
+names to files of its own with a `tables:` block — which is what makes a recipe an enrichment rather
+than only a filter, because a step can join what it is cleaning against a
+lookup table.
+
+```yaml
+source: data/interactions.csv
+output: data/enriched.parquet
+tables:
+  items: data/catalogue.parquet
+```
+
+`source:` takes either a file path or a loaded dataset's name — anything with a
+data extension is a path. **Naming the file is what makes a recipe portable.**
+The dataset list lives in Taurus's own config directory and is not committed,
+so a recipe that could only name loaded datasets would be a file in the
+repository that does nothing on a fresh clone until somebody works out what to
+load first.
+
+**Every step is planned before any of them runs.** Planning reads a header and
+a schema and touches no rows, so a four-step recipe is checked end to end in
+milliseconds — which means a typo in step four is reported before step one has
+read a byte, and a step that writes is refused before the steps in front of it
+have done anything at all.
+
+Running it reports what each step did:
+
+```
+data/interactions.csv → data/purchases.parquet
+      400,000 rows to start
+      400,000          —  1. drop exact duplicates                517 ms
+       24,032   −375,968  2. keep the purchases                   240 ms
+       13,980    −10,052  3. drop the rows with no rating          41 ms
+       13,980          —  4. rank each user's purchases by price   50 ms
+
+Wrote 13,980 rows × 7 columns.
+```
+
+![Two recipes in the Data pane, one of them just run — four steps, with what
+each did to the row count](screenshots/recipe.png)
+
+**The middle column is the reason this is reported per step rather than as a
+single "done".** A cleaning step that was supposed to drop a hundred duplicates
+and dropped four hundred thousand rows is invisible in the SQL and unmissable
+here — and finding it out a week later, from a model trained on the result, is
+the failure the whole arrangement is arranged against.
+
+Output is Parquet by default because it keeps the column types, so the result
+loads straight back as a dataset and the next recipe can read it without
+re-guessing what a column is. `.csv`, `.tsv`, and `.ndjson` also work when what
+you want is a file to hand to somebody.
+
+`run_recipe` writes a file, so unlike the other three it asks permission — and
+the line it asks with names the path from the recipe rather than from the call,
+so what you approve is what gets written. The write is checkpointed like any
+other, so `taurus rewind` undoes it. When the run finishes, the output is
+loaded as a dataset, because it is what the next question is about.
+
+**Steps are SELECTs, and that is enforced for a different reason than
+`query_data`'s.** There the point is that nothing was approved. Here the point
+is that *one path* was: the prompt named `data/purchases.parquet`, so a step
+containing `COPY … TO '/somewhere/else'` would write somewhere you were never
+shown. It is refused by step number and title:
+
+> step 2 (write somewhere nobody agreed to) is not a read-only query. A
+> recipe's steps are SELECTs — the writing is done by the recipe, to the one
+> file its `output:` names, and a step that could write elsewhere would go
+> somewhere nobody approved. No COPY.
+
+Intermediate steps go to a scratch directory outside the workspace, so a
+four-step recipe writes one file into the project and not four. That also keeps
+memory flat: each step streams into the next through a file rather than being
+held whole, which is why a recipe works on a file bigger than the machine's RAM
+— the case where writing a recipe beats doing it by hand.
+
+Recipes work without the app or a model at all:
+
+```sh
+taurus data list             # what is loaded here, and what recipes exist
+taurus data run purchases    # run one, and print the per-step deltas
+```
+
+which is what makes a recipe something you can put in a `make` target.
+
+One thing to know: `.taurus` is skipped by the checkpoint sweep, so writing or
+editing a recipe is not itself rewindable. Skills already work that way, for
+the same reason — these are the instructions, not the output — but the file a
+recipe *writes* is fully rewindable.
+
+### The Data pane
+
+No tool here hands rows back to the model. A page of a dataset is the most
+expensive and least useful thing that could go in a tool result — a sample it
+will over-generalize from, priced like a document — so what comes back is
+shape, and the rows live on a surface of their own.
+
+![The Data pane, showing a profile and a page of rows](screenshots/data.png)
+
+The pane takes the centre column, beside the conversation rather than over it.
+The rail and the box you type in do not move: the conversation is still what
+drives this, because asking is how a dataset gets here in the first place.
+
+**The box works from here, and the message knows what you are looking at.** Ask
+"which category refunds most?" with a dataset open and "this" has a referent —
+the turn carries the dataset's name and path, and whatever is in the query box.
+That is what makes "why does this not work?" answerable about SQL you have not
+run yet. The chip above the composer says what is going with the message, and
+it is there because context you cannot see is behaviour you cannot explain.
+
+It carries the handle and the box, and nothing else. Not the columns — the
+model has `profile_dataset` for those, and a forty-column listing on every
+message is a real cost for something it can ask for. Not the rows, ever. And
+nothing at all from the transcript: a question asked while reading a
+conversation is about the conversation.
+
+While a turn is running, a line above the composer says what it is doing and
+takes you back to the answer. Sending from a screen that shows none of the
+reply would otherwise be typing into a void. It has three states, and they are
+told apart by how they move rather than only by what they say — see
+[Motion](#motion) below.
+
+**It does not exist until there is something in it.** A workspace that has never
+loaded a file shows no switch at all — the same rule the composer's `/` hint and
+the rail's MCP badge follow. Loading the first one makes the tab appear, and
+forgetting the last one takes it away again.
+
+Four views. **Columns** is the profile: a row per column, with a bar on the
+missing count so a forty-column table can be scanned down rather than read.
+**Rows** is a page of the data itself, a hundred at a time, with the row number
+so a window into a million-row file says where in it you are. **Query** is a
+SQL box over all of them — ⌘↵ runs it — answering into the same grid, with what
+the query cost beside the row count; see below. **Recipes** lists what this workspace has,
+opens one to show its steps, and runs it — the button carries the path it
+writes, because that is the thing worth reading before clicking it rather than
+in a dialog after.
+
+The query box is deliberately not checked in the frontend. The refusal above
+lives in one place, where the model's calls go through it too; a second rule
+here would be one more thing to keep in step with the real one.
+
+### Writing the query
+
+![The query box mid-join: the SQL painted, both files' columns listed under it
+with the shared ones marked, and the completion list showing one table's
+columns after its alias](screenshots/query-complete.png)
+
+**It is coloured, and it is not an editor.** The query is painted on a layer
+behind a plain `<textarea>` — so the browser's own undo works, a paste is a
+paste, and none of it costs the quarter-megabyte an embedded editor would. What
+does the colouring is a scanner rather than a regex, which is why a keyword
+inside a string stays a string. `"Material"` is drawn as the identifier it is
+and `'Material'` as the word it is, which in a dialect with case-sensitive
+columns is the difference worth seeing.
+
+**It completes against the real columns.** Not a keyword list — the actual
+schema of every loaded file, read from a Parquet footer or a CSV header each
+time the box is opened. Type three letters and it offers the columns that fit,
+each labelled with the file it is in; type `i.` after aliasing a table and it
+offers that table's columns and no others. ⌃space asks without typing
+anything, Tab or ↵ takes one, Esc dismisses.
+
+**A column two files share is marked `joins`.** That is the feature the rest of
+it is arranged around. Two files that both have a `user_id` are two files that
+can be joined on it, and the completion list is the cheapest place anybody will
+ever notice that — while writing the join, rather than by opening two profiles
+side by side and holding forty column names in your head. The same columns are
+tinted in the **tables** panel under the box, which lists what each file holds
+for the case completion cannot reach: you cannot type the first three letters
+of a column you have never seen.
+
+Names are inserted in a form that parses. Taurus leaves identifier case alone,
+so `Material` needs no quotes — but a spreadsheet header with a space in it
+does, and the list quotes it for you rather than leaving that to be discovered
+from an error message.
+
+A cell is drawn exactly as the engine rendered it. Nothing re-formats a number,
+because half the values that look like numbers are not — a zero-padded product
+code, an id, a version — and grouping separators are for the counts the pane
+works out itself.
+
+Nothing is cached. Every profile and every page is read when it is asked for,
+because a dataset entry is a pointer to a file that anything can rewrite — the
+agent, a script, the terminal three inches below the pane — and a remembered row
+count is exactly the kind of number that is right for a week and then quietly
+wrong.
+
+**A null and an empty string are drawn differently**, as `null` and `empty`
+rather than as two blanks. They are the same nothing on screen otherwise, and
+telling them apart is most of what looking at raw rows is for: a column that is
+40% missing and a column that is 40% blank string are different problems with
+different fixes.
+
+A dataset the conversation loads leaves a small card in the transcript — a name,
+a path, and the way into the pane. It is the one card here that is a reference
+rather than a result, and it looks its dataset up as it draws rather than
+carrying a snapshot, so it says what is true now rather than what was true when
+the call ran. **Forget** removes a dataset from the list and touches no file;
+it is how a mistaken load is corrected, so it asks nothing first.
+
+### Going the other way
+
+Everything above is one direction — from the conversation into the pane. Three
+buttons go back, and they exist because the pane is where you find out what the
+next question is.
+
+![A data conversation in the transcript: a dataset card and a query card, the
+query shown whole with copy and Run in Query beside
+it](screenshots/query.png)
+
+**A query the model ran leaves a card you can take.** `query_data` draws the
+SQL in the transcript with **Run in Query** beside it, which puts it in the box
+and asks it again there — at full width, with no cell truncated and no column
+dropped. The answer to a question is where the next one comes from, and varying
+a `WHERE` clause by hand is faster and more certain than spending a turn asking
+for it. The card carries no rows, deliberately: they were true of the files as
+they stood when the call ran, and a card that redrew last week's answer on
+reopening would be confidently wrong in exactly the way this feature is
+arranged against.
+
+![The same query in the pane's box, run: five rows with what each cost, and
+Make this a step beside the count](screenshots/query-run.png)
+
+That is one click from the card above. The box grew to hold the query — it
+sizes itself to what is in it, because model SQL is routinely longer than the
+four lines a typed one starts at — and the chip above the composer picked up
+the query on its own, so the next message from here already carries it.
+
+**A query that fails offers itself to Taurus.** The engine's refusals are good
+and long — `No field named s.material. Did you mean 's."Material"'? Column
+names are case sensitive.` — and handing the whole thing over is faster than
+reading it. **Ask Taurus** fills the composer with the query and the message.
+It quotes the query that *failed*, not what is in the box now: by the time
+anybody clicks it they have usually started editing.
+
+**A query that works offers itself to a recipe.** **Make this a step** is on
+the result, and only there, because a step is a query somebody has decided to
+keep and that decision is made when the right rows come back — not before, when
+it does not run, and not from a transcript a week later. A failed recipe run
+gets the same treatment: **Fix this**, naming the recipe's path so the model
+can open the file it wrote.
+
+None of the three sends anything. Each fills the box and puts the cursor at the
+end, because every one of them is the first half of a question — *why does this
+fail* is usually followed by *and it should be per region* — and a button that
+fired a turn would take that away. What is already typed is added to rather
+than replaced.
+
+## Motion
+
+<sub>[← Taurus AI Shell](../README.md)</sub>
+
+Almost nothing in Taurus moves. What does, moves because a still picture would
+be ambiguous — and the ambiguity it resolves is always the same one: *is this
+alive, and what is it doing?* A turn can spend forty seconds inside one tool
+call, and for those forty seconds every word on the screen is unchanged. A
+window that is working and a window that has hung look identical.
+
+![A turn in flight: the running row wearing the write gutter, and the waveform
+under the thread](screenshots/motion.png)
+
+**The waveform under a running turn is the shape of the work.** Eight bars,
+driven by a frame loop, and the shape they draw is picked by the *category of
+the call that is running* — the same classification that colours each tool
+row's glyph. Reading draws a peak sweeping across, which is what a scan looks
+like. Writing draws a ripple from the middle, which reads as something being
+produced. A command draws scattered ticks, the one shape here that is not
+periodic, because a command's output arrives in bursts nobody can predict.
+Thinking — a turn between calls — draws a travelling wave.
+
+That mapping is the whole reason this is not a spinner. A spinner says a turn
+is alive; this says what kind of work it is doing, and after a day of using it
+you stop reading the row above to find out.
+
+**A running tool row wears the motion its category calls for.** A read gets a
+cyan band sweeping down it. A write gets a peach bar filling the gutter, which
+is the write head. Everything else gets a hairline that travels and declines to
+imply a fraction, because nothing here knows how far through a call is. Only
+ever one row at a time — the harness runs one call per turn.
+
+**The strip above the composer has three states**, and they differ in shape
+rather than only in colour. Working is a three-dot cadence over a travelling
+hairline. Stopping is the same cadence in peach: a paused run gets a slow pulse
+and nothing else, because the pause itself is the alarm. Waiting is neither —
+it is a slow mint breath inside an expanding ring, because nothing is
+progressing and a progress cadence there would be a lie told calmly. That third
+state also says which click: **Answer in the conversation**.
+
+**Terminal states draw once and hold still.** A call landing pops its tick in
+and stops. Only for calls that finished in front of you — a reopened
+conversation records what a call did, not when, so nothing pops when one is
+opened.
+
+**An error pulses a dot and does nothing else.** No shake, no flash. A banner
+that flinches is one the reader learns to stop reading; the pulse is there so
+an error arriving while you are looking at another pane is catchable out of the
+corner of an eye.
+
+The one piece of motion here that is decoration rather than information is the
+wordmark in the rail, which breathes at five seconds a cycle while nothing is
+running and stops the moment something is. Anything faster would read as
+activity that is not happening.
+
+Every loop above stops under `prefers-reduced-motion`, and each one holds a
+still frame chosen so it still says something — a gutter frozen at zero would
+not be there at all. Reveals keep their fade and lose their travel: the
+preference asks for less movement, not for state changes to become invisible.
+The waveform honours it twice, in the stylesheet and in script, because a frame
+loop cannot be switched off by a media query.

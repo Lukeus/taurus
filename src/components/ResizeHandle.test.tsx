@@ -5,12 +5,13 @@ import {
   CHANGES_WIDTH,
   RAIL_WIDTH,
   ResizeHandle,
+  TERMINAL_HEIGHT,
   clamp,
   sizedBy,
   type Resizable,
 } from "./ResizeHandle";
 
-const grabbed = { x: 400, width: 236 };
+const grabbed = { at: 400, size: 236 };
 
 describe("dragging an edge", () => {
   it("moves the rail's edge with the pointer", () => {
@@ -22,7 +23,7 @@ describe("dragging an edge", () => {
     // The Changes drawer is pinned to the right edge of the window, so the room
     // it can take is all to its left. Sharing the rail's sign would shrink it
     // on exactly the gesture that should open it up.
-    const drawer = { x: 900, width: 440 };
+    const drawer = { at: 900, size: 440 };
     expect(sizedBy(drawer, 800, -1, 320, 620)).toBe(540);
     expect(sizedBy(drawer, 1000, -1, 320, 620)).toBe(340);
   });
@@ -43,7 +44,7 @@ describe("dragging an edge", () => {
 
 describe("the handle", () => {
   const pane = (over: Partial<Resizable> = {}): Resizable => ({
-    width: 236,
+    size: 236,
     dragging: false,
     min: 180,
     max: 360,
@@ -76,11 +77,26 @@ describe("the handle", () => {
     );
     expect(html).toContain("rail-handle dragging");
   });
+
+  it("reports a dock's separator as the horizontal line it is", () => {
+    // The orientation named is the separator's own, not the axis it sizes: the
+    // line between the conversation and the dock runs across the window, and a
+    // screen reader announcing it as vertical would describe the wrong gesture.
+    const html = renderToStaticMarkup(
+      <ResizeHandle
+        pane={pane({ axis: "y", size: 300, min: 120, max: 900 })}
+        label="Terminal height"
+      />,
+    );
+    expect(html).toContain('aria-orientation="horizontal"');
+    expect(html).toContain("dock-handle");
+    expect(html).toContain('aria-valuenow="300"');
+  });
 });
 
 describe("the defaults", () => {
-  it("opens each pane at a width inside its own limits", () => {
-    for (const size of [RAIL_WIDTH, CHANGES_WIDTH]) {
+  it("opens each pane at a size inside its own limits", () => {
+    for (const size of [RAIL_WIDTH, CHANGES_WIDTH, TERMINAL_HEIGHT]) {
       expect(clamp(size.initial, size.min, size.max)).toBe(size.initial);
     }
   });

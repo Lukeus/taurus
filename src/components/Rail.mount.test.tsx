@@ -51,6 +51,7 @@ const mount = (props: Partial<Parameters<typeof Rail>[0]> = {}) => {
         onAgents={() => {}}
         onMemory={() => {}}
         onMcp={() => {}}
+        onTerminal={() => {}}
         onSettings={() => {}}
         {...props}
       />,

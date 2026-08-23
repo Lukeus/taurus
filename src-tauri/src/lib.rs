@@ -6,10 +6,11 @@
 mod bridge;
 mod commands;
 mod state;
+mod terminal;
 
 use std::sync::Arc;
 
-use tauri::{Manager, Theme};
+use tauri::{Manager, Theme, WindowEvent};
 use tracing_subscriber::EnvFilter;
 
 use taurus_host::config::{self, Scope};
@@ -125,6 +126,32 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // A shell started under a pty is not in this process's tree in any way
+        // the OS will tidy up, so a closed window would otherwise leave one
+        // running — along with whatever it was in the middle of. Destroyed
+        // rather than CloseRequested: this is cleanup, not a veto, and it must
+        // also run for a window that was closed by the platform.
+        // A reload starts the frontend over with no memory of the shells it
+        // opened, so anything still running belongs to nobody. The window is
+        // not going away — `on_window_event` never fires — and an idle shell
+        // sends no output for a failed send to notice, so this is the one
+        // signal that a page has been replaced. Nothing is open on the first
+        // load, which is why this can simply close everything.
+        .on_page_load(|webview, payload| {
+            if payload.event() != tauri::webview::PageLoadEvent::Started {
+                return;
+            }
+            if let Some(state) = webview.app_handle().try_state::<Arc<state::AppState>>() {
+                state.terminals.close_all();
+            }
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::Destroyed) {
+                if let Some(state) = window.app_handle().try_state::<Arc<state::AppState>>() {
+                    state.terminals.close_all();
+                }
+            }
+        })
         .setup(|app| {
             paint_window(app);
 
@@ -185,6 +212,14 @@ pub fn run() {
             commands::revoke_permission_rule,
             commands::list_notes,
             commands::forget_note,
+            commands::list_datasets,
+            commands::dataset_profile,
+            commands::dataset_page,
+            commands::dataset_tables,
+            commands::query_data,
+            commands::forget_dataset,
+            commands::list_recipes,
+            commands::run_recipe,
             commands::list_skills,
             commands::list_instructions,
             commands::list_commands,
@@ -218,6 +253,7 @@ pub fn run() {
             commands::set_search_key,
             commands::clear_search_key,
             commands::reload_config,
+            commands::rescan_library,
             commands::open_mcp_config,
             commands::list_mcp_servers,
             commands::mcp_environment,
@@ -231,6 +267,10 @@ pub fn run() {
             commands::turn_changes,
             commands::repo_status,
             commands::commit_turn,
+            commands::terminal_open,
+            commands::terminal_write,
+            commands::terminal_resize,
+            commands::terminal_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Taurus");

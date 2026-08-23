@@ -9,11 +9,14 @@ target/
 bindings/
 
 # Per-developer workspace state: the model last used here, and permissions
-# granted for this project only. Project skills are meant to be committed.
+# granted for this project only. Project skills and data recipes are meant to
+# be committed — both are instructions the agent follows, reviewed in a diff
+# like anything else that decides what the software does.
 # Matched at any depth: a `.taurus` appears wherever the app is run from, and
 # an anchored pattern silently misses `src-tauri/.taurus`.
 **/.taurus/*
 !**/.taurus/skills/
+!**/.taurus/recipes/
 
 # Microsoft's redistributable ConPTY, fetched by `scripts/conpty.mjs` during a
 # Windows build and bundled beside the executable. Not committed: 2.2 MB of

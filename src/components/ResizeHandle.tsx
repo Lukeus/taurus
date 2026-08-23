@@ -6,90 +6,134 @@ export const RAIL_WIDTH = { initial: 236, min: 180, max: 360 };
 /** The same, for the Changes drawer. */
 export const CHANGES_WIDTH = { initial: 440, min: 320, max: 620 };
 
+/** The same, for the terminal dock — a height rather than a width. */
+export const TERMINAL_HEIGHT = { initial: 300, min: 120, max: 900 };
+
+/**
+ * Which way a pane is sized.
+ *
+ * `x` is a pane beside another one, sized by dragging its left or right edge;
+ * `y` is a pane above or below one, sized by dragging the edge between them.
+ * Everything else about the two is identical, which is why they share this
+ * file rather than each having their own copy of the drag arithmetic.
+ */
+export type Axis = "x" | "y";
+
 export interface Resizable {
-  width: number;
+  /** How big the pane is along its axis: a width for `x`, a height for `y`. */
+  size: number;
   dragging: boolean;
   min: number;
   max: number;
-  start: (clientX: number) => void;
+  /** Defaults to `x`, which is what every pane here was before docks existed. */
+  axis?: Axis;
+  /** The pointer's position along the axis — `clientX`, or `clientY` for `y`. */
+  start: (client: number) => void;
   nudge: (steps: number) => void;
 }
 
 /**
  * A pane the user can size by dragging its edge.
  *
- * The width outlives the window: a rail that snaps back to 236px every launch
+ * The size outlives the window: a rail that snaps back to 236px every launch
  * is a control that only pretends to be one. It is written when the drag
  * settles rather than on every frame, so a resize costs one write and not two
  * hundred.
  *
  * `grow` is which way the drag runs. The rail is pinned to the left of the
  * window and widens as the pointer moves right; a drawer pinned to the right
- * widens as it moves left, and shares every other line of this.
+ * widens as it moves left, and a dock pinned to the bottom grows as the pointer
+ * moves *up*. All three share every other line of this.
  */
-export function useResizableWidth({
+export function useResizable({
   storageKey,
   initial,
   min,
   max,
   grow = 1,
+  axis = "x",
 }: {
   storageKey: string;
   initial: number;
   min: number;
   max: number;
   grow?: 1 | -1;
+  axis?: Axis;
 }): Resizable {
-  const [width, setWidth] = useState(() =>
+  const [size, setSize] = useState(() =>
     clamp(remembered(storageKey) ?? initial, min, max),
   );
   const [dragging, setDragging] = useState(false);
-  // Where the pointer was, and how wide the pane was, when the drag began.
+  // Where the pointer was, and how big the pane was, when the drag began.
   // Sizing from the delta rather than from the pointer's absolute position is
   // what keeps the edge under the cursor it was grabbed with.
-  const from = useRef({ x: 0, width: initial });
+  const from = useRef({ at: 0, size: initial });
 
   const start = useCallback(
-    (clientX: number) => {
-      from.current = { x: clientX, width };
+    (client: number) => {
+      from.current = { at: client, size };
       setDragging(true);
     },
-    [width],
+    [size],
   );
 
   const nudge = useCallback(
-    (steps: number) => setWidth((w) => clamp(w + steps * grow, min, max)),
+    (steps: number) => setSize((s) => clamp(s + steps * grow, min, max)),
     [grow, min, max],
   );
 
   useEffect(() => {
     if (!dragging) return;
     const move = (e: MouseEvent) =>
-      setWidth(sizedBy(from.current, e.clientX, grow, min, max));
+      setSize(
+        sizedBy(from.current, axis === "y" ? e.clientY : e.clientX, grow, min, max),
+      );
     const stop = () => setDragging(false);
 
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", stop);
     // The pointer leaves the five pixels it grabbed within about a frame of
     // any real drag. Held on the body, the resize cursor survives that.
-    document.body.classList.add("resizing");
+    const held = axis === "y" ? "resizing-y" : "resizing";
+    document.body.classList.add(held);
     return () => {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", stop);
-      document.body.classList.remove("resizing");
+      document.body.classList.remove(held);
     };
-  }, [dragging, grow, min, max]);
+  }, [dragging, grow, min, max, axis]);
 
   useEffect(() => {
     if (dragging) return;
     try {
-      localStorage.setItem(storageKey, String(width));
+      localStorage.setItem(storageKey, String(size));
     } catch {
       // A webview with storage turned off still resizes. It just forgets.
     }
-  }, [dragging, width, storageKey]);
+  }, [dragging, size, storageKey]);
 
-  return { width, dragging, min, max, start, nudge };
+  return { size, dragging, min, max, axis, start, nudge };
+}
+
+/** A pane sized by its width. */
+export function useResizableWidth(
+  options: Parameters<typeof useResizable>[0],
+): Resizable {
+  return useResizable({ ...options, axis: "x" });
+}
+
+/**
+ * A pane sized by its height, pinned to the bottom.
+ *
+ * The sign is fixed here rather than passed, because a bottom dock only has one
+ * edge to grab and it is the top one: the pane grows as the pointer moves up,
+ * which is the negative direction. A caller that had to remember that would
+ * eventually forget.
+ */
+export function useResizableHeight(
+  options: Omit<Parameters<typeof useResizable>[0], "grow" | "axis">,
+): Resizable {
+  return useResizable({ ...options, grow: -1, axis: "y" });
 }
 
 /**
@@ -99,29 +143,37 @@ export function useResizableWidth({
  * means "drag me to resize the thing beside me" — so it takes focus and answers
  * the arrow keys too. A pane that can only be sized with a mouse is a pane half
  * the people who use this app cannot size.
+ *
+ * The orientation reported is the separator's own, which is the opposite of the
+ * axis it sizes: a rail is made wider by dragging a line that runs vertically.
  */
 export function ResizeHandle({ pane, label }: { pane: Resizable; label: string }) {
+  const vertical = (pane.axis ?? "x") === "x";
   return (
     <div
-      className={`rail-handle${pane.dragging ? " dragging" : ""}`}
+      className={`${vertical ? "rail-handle" : "dock-handle"}${
+        pane.dragging ? " dragging" : ""
+      }`}
       role="separator"
-      aria-orientation="vertical"
+      aria-orientation={vertical ? "vertical" : "horizontal"}
       aria-label={label}
-      aria-valuenow={Math.round(pane.width)}
+      aria-valuenow={Math.round(pane.size)}
       aria-valuemin={pane.min}
       aria-valuemax={pane.max}
       tabIndex={0}
       onMouseDown={(e) => {
         // Without this the drag selects the transcript it passes over.
         e.preventDefault();
-        pane.start(e.clientX);
+        pane.start(vertical ? e.clientX : e.clientY);
       }}
       onKeyDown={(e) => {
         // Arrows move the edge the way the pointer would, whichever side of
         // the pane this handle is on. Shift covers the range in a few presses.
         const step = e.shiftKey ? 32 : 8;
-        if (e.key === "ArrowLeft") pane.nudge(-step);
-        else if (e.key === "ArrowRight") pane.nudge(step);
+        const back = vertical ? "ArrowLeft" : "ArrowUp";
+        const forward = vertical ? "ArrowRight" : "ArrowDown";
+        if (e.key === back) pane.nudge(-step);
+        else if (e.key === forward) pane.nudge(step);
         else return;
         e.preventDefault();
       }}
@@ -130,20 +182,20 @@ export function ResizeHandle({ pane, label }: { pane: Resizable; label: string }
 }
 
 /**
- * How wide the pane is once the pointer has reached `clientX`.
+ * How big the pane is once the pointer has reached `client`.
  *
  * Measured from where the drag started rather than from the pane's current
- * width, so a pointer that runs past the limit and comes back tracks the edge
+ * size, so a pointer that runs past the limit and comes back tracks the edge
  * again instead of having quietly lost every pixel it overshot by.
  */
 export function sizedBy(
-  from: { x: number; width: number },
-  clientX: number,
+  from: { at: number; size: number },
+  client: number,
   grow: 1 | -1,
   min: number,
   max: number,
 ): number {
-  return clamp(from.width + (clientX - from.x) * grow, min, max);
+  return clamp(from.size + (client - from.at) * grow, min, max);
 }
 
 export function clamp(value: number, min: number, max: number): number {
@@ -151,10 +203,10 @@ export function clamp(value: number, min: number, max: number): number {
 }
 
 /**
- * The width this pane was left at, if there is one to read.
+ * The size this pane was left at, if there is one to read.
  *
  * Guarded twice over: the tests render these components to a string with no DOM
- * at all, and a stored width can be anything a previous version — or a hand
+ * at all, and a stored size can be anything a previous version — or a hand
  * edit — left behind.
  */
 function remembered(key: string): number | null {

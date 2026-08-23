@@ -3,7 +3,7 @@
 <sub>[← Taurus AI Shell](../README.md)</sub>
 
 ```bash
-cargo test --workspace     # 1078 tests
+cargo test --workspace     # 1466 tests
 pnpm test                  # transcript reducer, replay, settings, rewind, diffs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -125,7 +125,43 @@ components would look right while the code that feeds them was broken.
 
 Regenerate after a visible UI change, and eyeball the result: this is the only
 check in the repository that looks at pixels, and reviewing the PNG in the diff
-is the whole of it.
+is the whole of it. Commit only the images your change is actually about — a
+different Chrome or a different font stack rewrites every file, and five
+unrelated PNGs in a diff make the one that matters unreviewable.
+
+A shot that has to *click* through something waits with a timer rather than
+with `requestAnimationFrame`. That is the counter-intuitive half and it is
+worth knowing before writing the next one: these run under Chrome's
+`--virtual-time-budget`, and a frame loop that reschedules itself every frame
+spends the entire budget without ever letting the fetch it is waiting on
+land.
+
+Some of these shots are the only check a behaviour has, and that is on purpose
+rather than a gap. `query-run` presses **Run in Query** on a card in the
+transcript and photographs where it lands — a lazily mounted pane, a tab
+switch, and a query that comes back — which is a real browser doing the whole
+round trip. `query-complete` types a half-written join into the query box and
+photographs the completion list under the caret. Between them they are the only
+check of anything measured from the DOM: jsdom has no layout, so it reports
+every `scrollHeight` and every `getBoundingClientRect` as zero, and a unit test
+of the box's auto-sizing or of where the list lands would be asserting numbers
+the browser never produces. The mount tests prove the list has the right rows
+in it; the PNG is what proves it is in the right place.
+
+Both of those scenes type into a React-controlled textarea, which needs the
+value written through `HTMLTextAreaElement.prototype`'s own setter before the
+`input` event — React keeps a tracker on the node and silently drops an event
+whose value it believes it already has. `typeInto` in `scripts/screenshots/`
+does it; the mount tests do the same thing for the same reason.
+
+`motion` is the odd one: a still image of a set of animations, which sounds
+useless and is not. It cannot show that anything moves, and that is not what it
+is for — it is the only check that the waveform renders where it should, that a
+running row wears the treatment its category calls for, and that none of it has
+landed on top of something else. It seeds `busy` and a genuinely in-flight call
+rather than faking either, because the waveform's shape is chosen from the
+category of the call that is running: the picture is only honest if a call
+really is.
 
 ## Live checks
 
@@ -193,6 +229,62 @@ cargo run -p taurus-host --example turn
 # image still answers confidently, so "it replied" is not evidence.
 cargo run -p taurus-host --example vision -- gemma4:12b
 cargo run -p taurus-host --example vision -- llama3.2:latest   # refused, and why
+
+# Load, profile, and page a real data file, and say what each one cost. Needs
+# no provider. The unit tests read a five-row CSV; what they cannot show is
+# behaviour on a file somebody actually has, which is the only thing that
+# decides whether this is any good. Run it on something large before touching
+# the caps in `df.rs` or the two-pass arrangement in `profile`.
+#
+# Three numbers, and what each one means is in the example's own header:
+# `schema` must stay flat as the file grows, `profile` is a full pass and is
+# allowed to be slow, and `page` must be flat in the *offset* — which is why it
+# is measured at row 0 and again at the end.
+cargo run -p taurus-data --example probe -- ~/data/interactions.csv
+
+# With a query, which is the other half. The table is named the way
+# `load_dataset` names it, so the SQL here is the SQL you would type in the
+# pane — and handing it a write is how the refusal gets checked against a real
+# file rather than a fixture.
+cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+  "SELECT category, count(*) AS n FROM interactions GROUP BY 1 ORDER BY n DESC"
+cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+  "COPY interactions TO '/tmp/escaped.parquet'"   # must refuse, and write nothing
+
+# A recipe, which is the only thing in this crate that writes a file the user
+# can see. Same argument as the probe and more so: a step that drops every row
+# because a column arrived as text, or a join that fans out because a key is
+# not unique, are properties of real data and cannot happen in a fixture. Watch
+# the delta column — that is the whole reason a run is reported per step.
+cargo run -p taurus-data --example recipe -- .taurus/recipes/purchases.sql
+cargo run -p taurus-data --example recipe -- .taurus/recipes/sneaky.sql
+#   ^ with a `COPY … TO` in step 2: must refuse by step number and write nothing,
+#     not even the output the earlier steps had already produced.
+
+# The same run with the harness around it — the catalog, the path guard, and
+# the output being loaded as a dataset afterwards. Needs no provider either,
+# which is the point: a recipe is deterministic, so it belongs in a make target.
+taurus data list -w ~/data
+taurus data run purchases -w ~/data
+
+# The half the probe cannot check: whether a model reaches for these at all.
+# The failure worth catching is a model answering a question about a CSV with
+# `read_file`, which costs a whole context window and answers nothing — so what
+# this proves is the *absence* of a tool call, and no unit test can see that.
+# Ask a plain question, with nothing in it naming a tool.
+taurus run -w ~/data "What is in interactions.csv, and which event type is most common?"
+
+# And one the profile cannot answer, which is what `query_data` is for. The
+# thing to watch is that it writes SQL rather than reaching for a shell and an
+# awk pipeline — the tool description is the only thing steering that.
+taurus run -w ~/data "Which three categories have the highest share of refunds?"
+
+# And the recipe half: whether a model writes one rather than answering once and
+# forgetting. What to watch is that it reaches for `write_file` into
+# `.taurus/recipes` and then `run_recipe`, rather than running four `query_data`
+# calls and pasting the numbers into the answer.
+taurus run -w ~/data "Build me a purchases table: drop duplicates, keep only \
+  purchases with a rating, and rank each user's by price. Save it so I can re-run it."
 
 # Index a real workspace and ask it real questions. Proves the second pass is
 # near-free, which is the property the whole design turns on, and prints

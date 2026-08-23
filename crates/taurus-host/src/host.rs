@@ -106,6 +106,14 @@ pub struct TurnRef<'a> {
 
 pub struct Host {
     workspace: RwLock<PathBuf>,
+    /// What reads tabular files.
+    ///
+    /// One per host rather than one per call, so that the single line naming a
+    /// concrete engine is in `Host::new` and nowhere else. Everything from the
+    /// tools to the commands takes it as `dyn Engine` — see
+    /// [`taurus_data::engine`] for why that is worth the indirection while the
+    /// choice is still open.
+    engine: Arc<dyn taurus_data::Engine>,
     providers: RwLock<Vec<ProviderConfig>>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
@@ -135,6 +143,20 @@ pub struct Host {
     /// reach the OS keychain, so learning that nothing moved has to be cheaper
     /// than that by a wide margin.
     agents_seen: RwLock<Freshness>,
+    /// What the held skill catalog was scanned from.
+    ///
+    /// The same bargain as the roster above: discovery parses a `SKILL.md` for
+    /// every skill installed and validates each one's frontmatter, so a turn
+    /// asks a `stat` per skill whether that work would produce anything
+    /// different. Without this a skill written into `.taurus/skills` was
+    /// invisible until the app was restarted — the one piece of config that
+    /// still worked that way after agents and instructions stopped.
+    skills_seen: RwLock<Freshness>,
+    /// The same, for the two hook files. Cheapest of the three to check and to
+    /// re-read, and the promise it keeps is the one the hooks documentation
+    /// already made: a hook edited in an editor takes effect on the next
+    /// message rather than the next launch.
+    hooks_seen: RwLock<Freshness>,
     /// Shared rather than owned so sub-agents can be handed the same registry:
     /// it has no spawn tool, which is what caps delegation depth.
     registry: Arc<RwLock<ToolRegistry>>,
@@ -187,12 +209,17 @@ impl Host {
             providers: RwLock::new(providers),
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
+            // The one line in the harness that names a data engine. Everything
+            // downstream holds it as `dyn Engine`.
+            engine: Arc::new(taurus_data::DataFusionEngine::new()),
             catalog: Arc::new(RwLock::new(SkillCatalog::default())),
             instructions: RwLock::new(Vec::new()),
             instructions_seen: RwLock::new(Freshness::default()),
             agents: Arc::new(RwLock::new(AgentCatalog::default())),
             agent_models: RwLock::new(ModelOverrides::new()),
             agents_seen: RwLock::new(Freshness::default()),
+            skills_seen: RwLock::new(Freshness::default()),
+            hooks_seen: RwLock::new(Freshness::default()),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             hooks: RwLock::new(Arc::new(taurus_hooks::HookRunner::default())),
             permissions: RwLock::new(permissions),
@@ -257,25 +284,11 @@ impl Host {
         *self.providers.write().await = providers;
         *self.settings.write().await = config::load_settings(Some(&workspace));
 
-        let sources = config::skill_sources(Some(&workspace));
-        let (catalog, skill_problems) = SkillCatalog::discover(&sources);
-        info!(
-            skills = catalog.len(),
-            problems = skill_problems.len(),
-            "skills loaded"
-        );
-        problems.extend(Problem::tag(
-            ProblemSource::Skills,
-            skill_problems.iter().map(|p| p.to_string()),
-        ));
-        *self.catalog.write().await = catalog;
-
-        // Re-read on every reload, like every other layered file. A hook edited
-        // in an editor takes effect on the next message rather than the next
-        // launch, which is the same promise skills and agents make.
-        let (hooks, hook_problems) = config::load_hooks(Some(&workspace));
-        problems.extend(Problem::tag(ProblemSource::Hooks, hook_problems));
-        *self.hooks.write().await = Arc::new(hooks);
+        // Through the same two loaders a turn calls, so a reload and a turn
+        // cannot come to disagree about what is installed — and so that both
+        // record the fingerprint the turn will check against.
+        problems.extend(self.load_skills(&workspace).await);
+        problems.extend(self.load_hooks(&workspace).await);
 
         // Re-read on every reload for the reason providers are: these files
         // belong to the workspace, and a switch changes which of them exist.
@@ -326,6 +339,37 @@ impl Host {
                 backend.allow_private_hosts,
             )));
             registry.register(Arc::new(taurus_web::WebSearch::new(backend)));
+        }
+
+        // Reading tabular data. Registered unconditionally, unlike the two
+        // blocks above: there is nothing to configure and nothing to be
+        // unreachable, so there is no state in which advertising these costs
+        // the model a turn to discover. What they need is a folder, and every
+        // workspace has one.
+        //
+        // Into the shared registry rather than per turn, for the reason
+        // `search_code` is: a delegate sent to work out what is in an
+        // unfamiliar export is exactly who wants them, and the per-turn set is
+        // the one sub-agents do not get.
+        {
+            let dir = self.data_dir_for(&workspace);
+            registry.register(Arc::new(taurus_data::LoadDataset::new(
+                self.engine.clone(),
+                dir.clone(),
+            )));
+            registry.register(Arc::new(taurus_data::ProfileDataset::new(
+                self.engine.clone(),
+                dir.clone(),
+            )));
+            registry.register(Arc::new(taurus_data::QueryData::new(
+                self.engine.clone(),
+                dir.clone(),
+            )));
+            registry.register(Arc::new(taurus_data::RunRecipe::new(
+                self.engine.clone(),
+                dir,
+                &workspace,
+            )));
         }
 
         // Semantic search, when an embedding model is named. Off by default and
@@ -486,6 +530,69 @@ impl Host {
         Problem::tag(ProblemSource::Instructions, loaded.problems)
     }
 
+    /// Scans every skill directory and installs what it finds.
+    ///
+    /// The catalog is shared rather than owned — the `load_skill`,
+    /// `run_skill_script` and `propose_skill` tools all hold the same handle —
+    /// so replacing its contents is enough. Nothing here rebuilds the tool
+    /// registry, which is what makes this safe to call at a turn boundary
+    /// rather than only from a full reload.
+    async fn load_skills(&self, workspace: &Path) -> Vec<Problem> {
+        let sources = config::skill_sources(Some(workspace));
+        // Taken before the scan, for the reason `load_instructions` takes its
+        // own before reading: a skill saved while this runs has to leave the
+        // fingerprint stale rather than be recorded as already seen.
+        *self.skills_seen.write().await = skill_freshness(&sources);
+
+        let (catalog, skill_problems) = SkillCatalog::discover(&sources);
+        info!(
+            skills = catalog.len(),
+            problems = skill_problems.len(),
+            "skills loaded"
+        );
+        *self.catalog.write().await = catalog;
+        Problem::tag(
+            ProblemSource::Skills,
+            skill_problems.iter().map(|p| p.to_string()),
+        )
+    }
+
+    /// Re-reads both hook files and installs the runner they describe.
+    async fn load_hooks(&self, workspace: &Path) -> Vec<Problem> {
+        *self.hooks_seen.write().await = hook_freshness(workspace);
+
+        let (hooks, hook_problems) = config::load_hooks(Some(workspace));
+        *self.hooks.write().await = Arc::new(hooks);
+        Problem::tag(ProblemSource::Hooks, hook_problems)
+    }
+
+    /// Rescans the skill directories without touching anything else.
+    ///
+    /// What the Skills drawer calls, for the reason [`Host::rescan_agents`]
+    /// exists: a drawer showing the catalog as it was at startup is not showing
+    /// the feature working. Narrower than [`Host::reload`] — scanning a
+    /// directory should not restart every MCP server.
+    pub async fn rescan_skills(&self) {
+        let workspace = self.workspace.read().await.clone();
+        let found = self.load_skills(&workspace).await;
+        self.replace_problems(ProblemSource::Skills, found).await;
+    }
+
+    /// The check a turn makes, asked for outside one.
+    ///
+    /// Same gate, same cost: a `stat` of each file, and a re-read only where
+    /// something moved. It exists because a turn is not the only moment a
+    /// person expects their edits to have landed — returning to the window
+    /// after writing a skill in an editor is the other one, and polling for it
+    /// would be a watcher with extra steps.
+    ///
+    /// Not safe mid-turn, for the reason the whole design is at turn
+    /// boundaries: a turn runs against the brief, roster and catalog it started
+    /// with. The caller is the one that knows whether a turn is running.
+    pub async fn refresh_config(&self) {
+        self.refresh_for_turn().await;
+    }
+
     /// Re-reads the config this turn is about to be built from.
     ///
     /// Called from the two places a turn begins — [`Self::expand_command`],
@@ -527,6 +634,21 @@ impl Host {
             != agent_freshness(&config::agent_sources(Some(&workspace)))
         {
             self.rescan_agents().await;
+        }
+
+        if *self.skills_seen.read().await
+            != skill_freshness(&config::skill_sources(Some(&workspace)))
+        {
+            self.rescan_skills().await;
+        }
+
+        // Rebuilt rather than restated, unlike instructions: a hook file has no
+        // imports, so the set to watch is knowable from the config layer — and
+        // rebuilding it is what also notices the set *changing*, which is what
+        // trusting a workspace does.
+        if *self.hooks_seen.read().await != hook_freshness(&workspace) {
+            let found = self.load_hooks(&workspace).await;
+            self.replace_problems(ProblemSource::Hooks, found).await;
         }
     }
 
@@ -1714,6 +1836,207 @@ impl Host {
         Ok(left)
     }
 
+    /// Where a workspace's dataset list lives.
+    ///
+    /// Takes the workspace rather than reading it, because the one caller that
+    /// matters — the registry rebuild — is already holding it and reading it
+    /// again from inside the same lock would deadlock.
+    fn data_dir_for(&self, workspace: &Path) -> PathBuf {
+        taurus_data::data_dir(
+            &config::home_dir(),
+            &crate::sessions::workspace_key(workspace),
+        )
+    }
+
+    /// Every dataset loaded in this workspace, in the order they were loaded.
+    pub async fn datasets(&self) -> Vec<taurus_data::Dataset> {
+        let workspace = self.workspace().await;
+        taurus_data::catalog::load(&self.data_dir_for(&workspace))
+    }
+
+    /// Reads a dataset in full and reports its shape.
+    ///
+    /// Computed on demand rather than cached with the entry. A profile is a
+    /// statement about the file as it is now, and a stored one would be right
+    /// until somebody rewrote the file and wrong silently afterwards — which is
+    /// the failure a profile exists to catch, arriving from the tool meant to
+    /// catch it.
+    pub async fn dataset_profile(&self, name: &str) -> Result<taurus_data::Profile, String> {
+        let (source, _) = self.dataset_source(name).await?;
+        self.engine
+            .profile(&source)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// The columns of every dataset loaded here, without reading any of them.
+    ///
+    /// [`taurus_data::Engine::schema`] rather than `profile`, and that is the
+    /// whole point: a profile is a full scan and this is asked for on every
+    /// visit to the query box. A Parquet footer answers it instantly and a CSV
+    /// costs the few rows the inference reads.
+    ///
+    /// A dataset whose file has gone is **left out rather than failing the
+    /// call**. This exists to feed completion, and a workspace with one stale
+    /// entry should still be able to complete the other three — the same
+    /// argument recipes make for carrying their problems beside the list. The
+    /// missing file is not silently swallowed either: opening that dataset in
+    /// the pane says so, from the read that actually needed it.
+    pub async fn dataset_schemas(&self) -> Vec<(taurus_data::Dataset, taurus_data::Schema)> {
+        let workspace = self.workspace().await;
+        let mut out = Vec::new();
+        for dataset in self.datasets().await {
+            // Through the guard, like every other read of an entry's path. An
+            // entry is a line in a file somebody can edit, so `../` in one is a
+            // thing that can happen rather than a thing that cannot.
+            let Ok(path) = taurus_tools::path_guard::resolve(&workspace, &dataset.path) else {
+                continue;
+            };
+            let Ok(source) = taurus_data::Source::at(path) else {
+                continue;
+            };
+            if let Ok(schema) = self.engine.schema(&source).await {
+                out.push((dataset, schema));
+            }
+        }
+        out
+    }
+
+    /// A window of a dataset's rows.
+    pub async fn dataset_page(
+        &self,
+        name: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<taurus_data::Page, String> {
+        let (source, _) = self.dataset_source(name).await?;
+        self.engine
+            .page(&source, offset, limit)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Drops a dataset from the list, and returns what is left.
+    ///
+    /// The file is untouched. Returning the remainder rather than nothing so a
+    /// pane can redraw from the answer, the same way [`Self::forget_note`]
+    /// does.
+    pub async fn forget_dataset(&self, name: &str) -> Result<Vec<taurus_data::Dataset>, String> {
+        let workspace = self.workspace().await;
+        let dir = self.data_dir_for(&workspace);
+        taurus_data::catalog::forget(&dir, name).map_err(|e| e.to_string())?;
+        Ok(taurus_data::catalog::load(&dir))
+    }
+
+    /// Answers one read-only query over every dataset loaded here.
+    ///
+    /// Read-only is enforced by the engine rather than by this, and it has to
+    /// be: the pane hands over whatever was typed into a box, so the
+    /// difference between a query and a `COPY … TO` is a refusal one layer
+    /// down. See [`taurus_data::Engine::query`].
+    pub async fn query_data(&self, sql: &str) -> Result<taurus_data::QueryResult, String> {
+        let workspace = self.workspace().await;
+        let tables = taurus_data::tables(&self.data_dir_for(&workspace), &workspace);
+        if tables.is_empty() {
+            return Err(
+                "No datasets are loaded in this workspace, so there is nothing to query.".into(),
+            );
+        }
+        self.engine
+            .query(&tables, sql, taurus_data::MAX_QUERY_ROWS)
+            .await
+            .map_err(|e| match e {
+                // The same courtesy the tool gets: a wrong table name is one
+                // line from a right one.
+                taurus_data::DataError::BadQuery { .. } => {
+                    let names: Vec<&str> = tables.iter().map(|(n, _)| n.as_str()).collect();
+                    format!("{e} Tables here: {}.", names.join(", "))
+                }
+                other => other.to_string(),
+            })
+    }
+
+    /// Every recipe this workspace has, and anything wrong with the rest.
+    ///
+    /// Problems travel beside the list rather than instead of it, the same way
+    /// a skill's warnings do: one torn file should cost the reader that file
+    /// and not the other four.
+    pub async fn recipes(&self) -> (Vec<taurus_data::Recipe>, Vec<String>) {
+        taurus_data::recipe::load(&self.workspace().await)
+    }
+
+    /// Runs a recipe and writes the file it names.
+    ///
+    /// The one method here that changes the workspace, and the only caller is
+    /// somebody clicking Run on a button that says where it writes. That is
+    /// the same arrangement [`Self::query_data`] has with the query box: the
+    /// person is doing it, so there is nobody to ask — but unlike a query this
+    /// leaves a file behind, so the button has to name it and the pane has to
+    /// keep naming it.
+    ///
+    /// Read-only is still enforced per step, one layer down, for the reason it
+    /// always is: the button promised one path.
+    pub async fn run_recipe(&self, name: &str) -> Result<taurus_data::Materialized, String> {
+        let workspace = self.workspace().await;
+        let recipe = taurus_data::recipe::find(&workspace, name).map_err(|e| e.to_string())?;
+        let loaded = taurus_data::tables(&self.data_dir_for(&workspace), &workspace);
+        let (tables, start) =
+            taurus_data::recipe::resolve(&recipe, &workspace, loaded).map_err(|e| e.to_string())?;
+        let output = taurus_tools::path_guard::resolve(&workspace, &recipe.output)
+            .map_err(|e| e.to_string())?;
+
+        let steps: Vec<(String, String)> = recipe
+            .steps
+            .iter()
+            .map(|step| (step.title.clone(), step.sql.clone()))
+            .collect();
+        let run = self
+            .engine
+            .materialize(&tables, &start, &steps, &output)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Loaded on the way out, so the pane can show what came out without a
+        // second action. Skipped rather than forced when the name is spoken
+        // for — see the tool, which makes the same call for the same reason.
+        let dir = self.data_dir_for(&workspace);
+        let shown = taurus_tools::path_guard::display(&workspace, &output);
+        let name = taurus_data::catalog::suggest_name(&output);
+        if taurus_data::catalog::taken_by(&dir, &name, &shown).is_none() {
+            if let Ok(format) = taurus_data::Format::of(&output) {
+                let _ = taurus_data::catalog::register(
+                    &dir,
+                    taurus_data::Dataset {
+                        name,
+                        path: shown,
+                        format,
+                    },
+                );
+            }
+        }
+        Ok(run)
+    }
+
+    /// Resolves a named dataset to a file this workspace is allowed to read.
+    ///
+    /// Through the path guard rather than by joining, and that is not
+    /// ceremony. The list is a JSON file in the config home: it is
+    /// hand-editable, it survives a workspace being moved, and an entry whose
+    /// path climbed out of the tree with `..` would otherwise have every
+    /// command here read a file outside the folder the user opened.
+    async fn dataset_source(
+        &self,
+        name: &str,
+    ) -> Result<(taurus_data::Source, taurus_data::Dataset), String> {
+        let workspace = self.workspace().await;
+        let dataset = taurus_data::catalog::find(&self.data_dir_for(&workspace), name)
+            .map_err(|e| e.to_string())?;
+        let path = taurus_tools::path_guard::resolve(&workspace, &dataset.path)
+            .map_err(|e| e.to_string())?;
+        let source = taurus_data::Source::at(path).map_err(|e| e.to_string())?;
+        Ok((source, dataset))
+    }
+
     /// Everything that failed to load, tagged with where it came from.
     pub async fn problems(&self) -> Vec<Problem> {
         self.problems.read().await.clone()
@@ -1969,6 +2292,33 @@ fn disable(registry: &mut ToolRegistry, disabled: &[String]) -> Vec<String> {
 /// `.md` and not `.agent.md`, because both spellings are read: Copilot's
 /// doubled extension still ends in `.md`, and narrowing the suffix would leave
 /// a Taurus-native file in the same folder unwatched.
+/// A fingerprint over the `hooks.json` of every layer that would be read.
+///
+/// The directories rather than a fixed pair, because [`config::config_dirs`] is
+/// trust-gated: an untrusted workspace contributes no layer at all, and
+/// trusting one adds a file that was not being watched a moment ago. Built from
+/// the config layer on both sides of the comparison, so that change registers
+/// as a change.
+fn hook_freshness(workspace: &Path) -> Freshness {
+    let files: Vec<PathBuf> = config::config_dirs(Some(workspace))
+        .iter()
+        .map(|dir| taurus_hooks::config_file(dir))
+        .collect();
+    Freshness::of_files(files.iter().map(PathBuf::as_path))
+}
+
+/// A fingerprint over every `SKILL.md` a scan of these sources would read.
+///
+/// One level inside each source directory, because that is the layout: a source
+/// holds a folder per skill and the folder holds the file. See
+/// [`Freshness::of_child_dirs`] for why neither of the other two shapes fits.
+fn skill_freshness(sources: &[taurus_skills::SkillSource]) -> Freshness {
+    Freshness::of_child_dirs(
+        sources.iter().map(|s| s.dir.as_path()),
+        taurus_skills::catalog::SKILL_FILE,
+    )
+}
+
 fn agent_freshness(sources: &[taurus_agents::AgentSource]) -> Freshness {
     Freshness::of_dirs(sources.iter().map(|s| s.dir.as_path()), ".md", false)
 }
@@ -2099,6 +2449,77 @@ mod tests {
             Arc::new(NoProposals),
         );
         (host, home)
+    }
+
+    /// Registers a dataset the way `load_dataset` does, so the reads below
+    /// have something to read.
+    fn load_csv(host: &Host, workspace: &Path, name: &str, body: &str) {
+        std::fs::create_dir_all(workspace.join("data")).unwrap();
+        let relative = format!("data/{name}.csv");
+        std::fs::write(workspace.join(&relative), body).unwrap();
+        let dir = taurus_data::data_dir(
+            &config::home_dir(),
+            &crate::sessions::workspace_key(workspace),
+        );
+        let _ = host;
+        taurus_data::catalog::register(
+            &dir,
+            taurus_data::Dataset {
+                name: name.to_string(),
+                path: relative,
+                format: taurus_data::Format::Csv,
+            },
+        )
+        .unwrap();
+    }
+
+    /// The read the query box's completion runs on: every table, its columns,
+    /// and nothing that would need the file to be scanned.
+    #[tokio::test]
+    async fn every_loaded_table_reports_its_columns_without_being_counted() {
+        let dir = TempDir::new().unwrap();
+        let (host, _home) = host(dir.path());
+        load_csv(
+            &host,
+            dir.path(),
+            "events",
+            "user_id,event\n1,view\n2,click\n",
+        );
+        load_csv(&host, dir.path(), "users", "user_id,country\n1,SE\n");
+
+        let found = host.dataset_schemas().await;
+        let named: Vec<&str> = found.iter().map(|(d, _)| d.name.as_str()).collect();
+        assert_eq!(named, vec!["events", "users"]);
+
+        let columns: Vec<&str> = found[0].1.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(columns, vec!["user_id", "event"]);
+        // A CSV keeps no count, and this call is the one that refuses to read
+        // the file to find one. Saying nothing beats saying a guess.
+        assert_eq!(found[0].1.rows, None);
+    }
+
+    /// The property that makes this usable for completion: one dead entry must
+    /// not cost the reader the tables that are fine. Opening the missing one in
+    /// the pane still says so, from the read that actually needed it.
+    #[tokio::test]
+    async fn a_dataset_whose_file_has_gone_is_left_out_rather_than_failing_the_call() {
+        let dir = TempDir::new().unwrap();
+        let (host, _home) = host(dir.path());
+        load_csv(&host, dir.path(), "events", "user_id,event\n1,view\n");
+        load_csv(&host, dir.path(), "gone", "a\n1\n");
+        std::fs::remove_file(dir.path().join("data/gone.csv")).unwrap();
+
+        let found = host.dataset_schemas().await;
+        assert_eq!(
+            found
+                .iter()
+                .map(|(d, _)| d.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["events"]
+        );
+        // And the list itself still has both, because forgetting one is a
+        // decision the person makes rather than one a failed read makes.
+        assert_eq!(host.datasets().await.len(), 2);
     }
 
     /// Writes an agent file into a workspace's `.taurus/agents`.
@@ -3213,6 +3634,127 @@ mod tests {
             .expect("a leading slash is a command")
             .expect("and the agent it names was written before this turn began");
         assert_eq!(invocation.name, "oracle");
+    }
+
+    /// A skill in the workspace library: a folder with a `SKILL.md` in it.
+    fn write_skill(workspace: &Path, name: &str, description: &str) {
+        let dir = workspace.join(".taurus/skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n\nDo {name}.\n"),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_skill_written_between_turns_is_there_for_the_next_one() {
+        // The complaint this closes: a skill dropped into the library was
+        // invisible until the app was restarted. Agents and instructions had
+        // stopped working that way; skills had not, and there is nothing about
+        // a skill that makes it the exception.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert_eq!(host.skill_count().await, 0);
+
+        write_skill(&workspace, "late-arrival", "arrives late");
+        a_turn(&host).await;
+
+        assert!(host.skills().await.iter().any(|s| s.name == "late-arrival"));
+    }
+
+    #[tokio::test]
+    async fn a_skill_deleted_between_turns_is_gone_by_the_next_one() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_skill(&workspace, "doomed", "will be removed");
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert_eq!(host.skill_count().await, 1);
+
+        std::fs::remove_dir_all(workspace.join(".taurus/skills/doomed")).unwrap();
+        a_turn(&host).await;
+
+        assert_eq!(host.skill_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn an_edited_skill_is_re_read_rather_than_merely_counted() {
+        // A count that is right while the text behind it is stale is the worse
+        // half of this bug: the drawer looks correct and the model is still
+        // being told the old description.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        write_skill(&workspace, "shifting", "the first description");
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        write_skill(&workspace, "shifting", "the second description");
+        a_turn(&host).await;
+
+        let skill = host
+            .skills()
+            .await
+            .into_iter()
+            .find(|s| s.name == "shifting")
+            .expect("the skill is still installed");
+        assert_eq!(skill.description, "the second description");
+    }
+
+    #[tokio::test]
+    async fn a_broken_skill_fixed_between_turns_stops_being_a_problem() {
+        // The problem list is what tells the user their skill is not loading.
+        // Leaving a fixed one on it is the same failure in the other direction.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let broken = workspace.join(".taurus/skills/broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("SKILL.md"), "no frontmatter here").unwrap();
+
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        let before = host.problems().await;
+        assert!(
+            before.iter().any(|p| p.source == ProblemSource::Skills),
+            "a malformed skill is reported: {before:?}"
+        );
+
+        write_skill(&workspace, "broken", "now it parses");
+        a_turn(&host).await;
+
+        let after = host.problems().await;
+        assert!(
+            !after.iter().any(|p| p.source == ProblemSource::Skills),
+            "the fixed skill is still reported as a problem: {after:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hook_file_written_between_turns_takes_effect_on_the_next_one() {
+        // The hooks documentation already promised this — "a hook edited in an
+        // editor takes effect on the next message rather than the next launch"
+        // — and the reload it described only ever ran at startup.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+        assert!(host.hooks().await.is_empty());
+
+        let taurus = workspace.join(".taurus");
+        std::fs::create_dir_all(&taurus).unwrap();
+        std::fs::write(
+            taurus.join("hooks.json"),
+            r#"{"hooks":{"guard":{"on":"pre_tool_use","command":"true"}}}"#,
+        )
+        .unwrap();
+        a_turn(&host).await;
+
+        assert!(
+            !host.hooks().await.is_empty(),
+            "a hooks.json written between turns was not picked up"
+        );
     }
 
     #[tokio::test]

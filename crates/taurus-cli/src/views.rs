@@ -153,6 +153,18 @@ pub fn render(view: &TranscriptView, color: bool) -> String {
 
         // Drawn by the prompt that is about to ask them, not here.
         TranscriptView::Questions { .. } => String::new(),
+
+        // A reference to a pane this frontend does not have. The tool's own
+        // text already says what was loaded and how big it is, so the call
+        // falls through to its ordinary row rather than being replaced by a
+        // card that could only repeat the name. See the match in `render.rs`.
+        TranscriptView::Dataset { .. } => String::new(),
+
+        // The same, and for the same reason. The card exists to put the SQL
+        // into a query box; there is no query box here, and the row already
+        // prints the query. What a terminal *does* have is the result, which
+        // the tool returns as text either way.
+        TranscriptView::Query { .. } => String::new(),
     }
 }
 
@@ -511,6 +523,29 @@ fn tint(text: &str, sign: i8, color: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A dataset card points at a pane this frontend has not got, so it draws
+    /// nothing and the call keeps its ordinary row — where the tool's own text
+    /// already says what was loaded and how big it is. Replacing that row with
+    /// a card that could only repeat the name would be strictly less.
+    #[test]
+    fn a_dataset_card_draws_nothing_here() {
+        let view = taurus_tools::view::TranscriptView::Dataset {
+            name: "events".into(),
+        };
+        assert_eq!(render(&view, false), "");
+    }
+
+    /// The same, and the argument is stronger: the card's whole purpose is a
+    /// button that puts the SQL in a query box, and a terminal has neither.
+    /// The row above already prints the query, and the tool returns the rows.
+    #[test]
+    fn a_query_card_draws_nothing_here() {
+        let view = taurus_tools::view::TranscriptView::Query {
+            sql: "SELECT count(*) FROM events".into(),
+        };
+        assert_eq!(render(&view, false), "");
+    }
+
     use super::*;
     use taurus_tools::view::Column;
 

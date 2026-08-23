@@ -57,6 +57,13 @@
      reaches for on failures and destructive actions is named here with them. */
   --lk-red: #ff9a9a;
 
+  /* Motion, from the design system's own scale. "subtle only, no neon glow,
+     no bounce" — one easing curve, one hover duration, one reveal duration,
+     and everything in the app that moves uses them. */
+  --lk-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --lk-dur-hover: 180ms;
+  --lk-dur-reveal: 320ms;
+
   --lk-display: "Space Grotesk";
   --lk-body: "Manrope";
   --lk-mono-face: "Source Code Pro";
@@ -103,6 +110,13 @@
   --warn: var(--lk-peach);
   --danger: var(--lk-red);
 
+  --ease: var(--lk-ease);
+  /* A state change under the pointer. */
+  --hover: var(--lk-dur-hover);
+  /* Something arriving. Long enough to be seen as a movement rather than a
+     jump, short enough that nothing waits for it. */
+  --reveal: var(--lk-dur-reveal);
+
   --r-sm: 6px;
   --r: 9px;
   --r-md: 10px;
@@ -128,6 +142,30 @@
   --measure: 80ch;
 
   --mono: var(--lk-mono-face), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /*
+   * The terminal dock's stack, which is the app's mono plus everything a
+   * prompt needs.
+   *
+   * The app's face first, so a shell's letters and digits are the same
+   * typography as the rest of the window. Then the Nerd Fonts, which is the
+   * part that is not decoration: a modern prompt — powerline, starship,
+   * oh-my-posh — draws its separators and its git icons from the private-use
+   * area, and Source Code Pro has nothing there. Rendered without one of these
+   * the whole prompt line comes through as a row of tofu, which is the single
+   * most common way an embedded terminal looks broken.
+   *
+   * Named rather than generic because there is no generic to ask for: a font
+   * fallback is by family, the browser has no way to say "whichever font here
+   * has this glyph", and the generic `monospace` at the end always answers, so
+   * anything listed after it is never reached. So the families people actually
+   * install are listed by name, and one of them being absent costs nothing.
+   */
+  --mono-terminal: var(--lk-mono-face), "Symbols Nerd Font Mono",
+    "Symbols Nerd Font", "MesloLGS NF", "MesloLGM NF",
+    "JetBrainsMono Nerd Font Mono", "FiraCode Nerd Font Mono",
+    "Hack Nerd Font Mono", "SauceCodePro Nerd Font Mono",
+    "BitstromWera Nerd Font Mono", "CaskaydiaCove Nerd Font Mono",
+    ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans: var(--lk-body), -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
     sans-serif;
   /* Headings only — titles, not prose. A reply's own markdown headings stay in
@@ -542,6 +580,11 @@ body.resizing * {
   cursor: col-resize !important;
   user-select: none;
 }
+body.resizing-y,
+body.resizing-y * {
+  cursor: row-resize !important;
+  user-select: none;
+}
 
 /*
  * The rail's header: the mark, the name, and the hairline under both.
@@ -566,6 +609,7 @@ body.resizing * {
   letter-spacing: 0.06em;
   color: var(--text-dim);
 }
+
 
 .rail-pad {
   padding: 0 12px 10px;
@@ -1014,6 +1058,30 @@ body.resizing * {
   display: flex;
   align-items: center;
   justify-content: center;
+  /*
+   * The idle breath, at the five seconds the motion spec asks for: "barely
+   * alive. anything faster reads as activity that isn't happening."
+   *
+   * On the hero mark rather than on the wordmark in the rail, and the reason
+   * is worth writing down because the spec puts it on the wordmark. The
+   * wordmark is on screen a hundred percent of the time, in every window and
+   * every state, so animating it means the app is never still — including in
+   * every screenshot, which turns the one pixel-level check in the repository
+   * into a diff that always has something in it. A hero is the opposite: it is
+   * the *only* thing on screen, it appears exactly when nothing is happening
+   * yet, and it goes away the moment anything does. That is what state 09
+   * describes, and this is where it is true.
+   */
+  animation: idle-breathe 5s ease-in-out infinite;
+}
+@keyframes idle-breathe {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 .hero-copy {
   max-width: 44ch;
@@ -1308,6 +1376,7 @@ body.resizing * {
   background: var(--bg-row);
 }
 .run-row-head {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -1317,6 +1386,97 @@ body.resizing * {
   background: transparent;
   padding: 7px 13px;
   text-align: left;
+}
+
+/*
+ * What a running call looks like, and why there are three of these.
+ *
+ * The motion spec draws reading, editing and running as three different
+ * things — a scan band, a growing gutter, an indeterminate track — on the
+ * argument that the motion should say what kind of work is happening. The app
+ * already sorts every tool into one of those categories to colour its glyph,
+ * so the same classes pick the motion and nothing new has to be decided.
+ *
+ * All three animate a background position rather than moving an element.
+ * That matters: a `::after` that travelled would need `overflow: hidden` on
+ * the head, and the head is a button whose focus ring is painted outside its
+ * border box — clipping it is exactly the bug `styles.test.ts` guards against.
+ *
+ * Only ever one at a time. The harness runs one call per turn, so a folded run
+ * of six rows has five still ones and one moving.
+ */
+.run-row.running.read .run-row-head {
+  background-image: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 16%, transparent),
+    transparent
+  );
+  background-size: 100% 16px;
+  background-repeat: no-repeat;
+  animation: row-scan 2.6s var(--ease) infinite alternate;
+}
+/* The write head, as a bar down the gutter that fills as the call runs. Peach
+   rather than the accent, which is the spec's colour for anything editing. */
+.run-row.running.wrote .run-row-head::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--warn);
+  transform-origin: top;
+  animation: row-gutter 3s var(--ease) infinite;
+}
+/* Everything else: a hairline that says work is happening and declines to
+   guess how much is left. */
+.run-row.running:not(.read):not(.wrote) .run-row-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background-image: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: row-shimmer 1.8s var(--ease) infinite;
+}
+@keyframes row-scan {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 100%;
+  }
+}
+@keyframes row-gutter {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+@keyframes row-shimmer {
+  from {
+    background-position: -60% 0;
+  }
+  to {
+    background-position: 160% 0;
+  }
+}
+@keyframes state-pop {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 .run-row-head:hover:not(:disabled) {
   background: var(--bg-hover);
@@ -1362,6 +1522,18 @@ body.resizing * {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-faint);
+}
+/*
+ * A call landing, drawn once.
+ *
+ * The motion spec's rule for terminal states: it draws in and then holds
+ * still, because a tick that keeps pulsing is a tick that never finished.
+ * Only on `.live` — a row whose call started and ended in front of the reader.
+ * A resumed conversation has no timestamps and gets no class, which is what
+ * stops forty rows popping in unison when one is opened.
+ */
+.run-row.live .run-row-status {
+  animation: state-pop var(--reveal) var(--ease) both;
 }
 .run-row.ok .run-row-status {
   color: var(--ok);
@@ -1469,11 +1641,43 @@ body.resizing * {
 }
 
 .working {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   color: var(--text-faint);
+}
+
+/*
+ * The waveform: the shape of the work, as a row of bars.
+ *
+ * Every bar is identical here and none of them is animated by this file — the
+ * height and the weight are written by `Waveform`'s frame loop, because the
+ * four shapes are functions of position as well as time and twelve
+ * hand-written delays would stop being right the moment the count changed.
+ * What CSS owns is the geometry: `transform-origin: center` is what makes a
+ * bar grow from its middle rather than its top, which is the difference
+ * between a waveform and a bar chart.
+ */
+.waveform {
+  flex: none;
+  display: flex;
+  align-items: center;
+  /* The design's own proportions: a 3px bar with a 3px gap. Tighter than that
+     and the bars merge into a block at the peak of a ripple. */
+  gap: 3px;
+  height: 14px;
+}
+.waveform span {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transform-origin: center;
+  transform: scaleY(0.2);
 }
 
 /* ------------------------------------------------------- drawn tool results
@@ -2598,6 +2802,27 @@ body.resizing * {
 .banner.error {
   background: color-mix(in srgb, var(--danger) 12%, var(--bg));
   color: var(--danger);
+}
+/* A slow pulse and nothing else. The motion spec is explicit that an error
+   does not shake and does not flash: a banner that flinches is one the reader
+   learns to stop reading. This is here so an error arriving while somebody is
+   looking at another pane is catchable out of the corner of an eye. */
+.banner-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: slow-pulse 1.6s ease-in-out infinite;
+}
+@keyframes slow-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /*
@@ -3744,4 +3969,1294 @@ button.link:hover {
   padding: 16px 20px;
   border-bottom: 1px solid var(--rule);
   margin: 0;
+}
+
+
+/* --------------------------------------------------------- terminal dock */
+
+/*
+ * The edge between the conversation and the terminal.
+ *
+ * The rail's handle turned ninety degrees, and the same bargain: a one-pixel
+ * line drawn down the middle of a five-pixel target, pulled back over the edge
+ * with a negative margin so the panes stay flush against it.
+ */
+.dock-handle {
+  flex: none;
+  height: 5px;
+  margin-bottom: -3px;
+  position: relative;
+  z-index: 2;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  cursor: row-resize;
+  transition: background 0.12s;
+}
+.dock-handle::after {
+  content: "";
+  position: absolute;
+  inset: 2px 0;
+  background: var(--rule);
+}
+.dock-handle:hover,
+.dock-handle:focus-visible {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.dock-handle.dragging {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/*
+ * How much room the dock takes.
+ *
+ * The height is the user's, set inline by the handle above it. The cap is not:
+ * a pane dragged to the full height of a short window would push the box you
+ * type in off the bottom of the screen, and the drag limit alone cannot know
+ * how tall the window is.
+ */
+.dock-slot {
+  flex: none;
+  min-height: 0;
+  max-height: 70vh;
+  display: flex;
+}
+.dock-loading {
+  flex: none;
+  height: 1px;
+}
+
+.dock {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* The deepest surface in the ladder, because a terminal is the most inset
+     thing the window contains — and because a shell's own black should sit on
+     the app's ground rather than a step above it. */
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--rule);
+}
+
+.dock-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg-raised);
+}
+.dock-title {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.dock-where {
+  font-size: 12px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The one state worth a colour here: a dead shell looks exactly like an idle
+   one until you type into it. */
+.dock-ended {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--warn);
+}
+.dock-close {
+  flex: none;
+  padding: 2px 6px;
+  min-width: 28px;
+  min-height: 28px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  cursor: pointer;
+}
+.dock-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.dock-problem {
+  flex: none;
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/*
+ * Where the emulator draws.
+ *
+ * `min-height: 0` is what makes the dock sizable at all: without it this floats
+ * to the height of its content, which for a terminal is the scrollback, and the
+ * pane grows instead of scrolling. The padding is on this rather than on the
+ * emulator inside it — xterm measures its own parent to decide how many columns
+ * there are, and padding it would have the shell told a width the text does not
+ * have.
+ */
+.dock-screen {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 4px 4px 10px;
+  overflow: hidden;
+}
+.dock-screen .xterm {
+  height: 100%;
+}
+.dock-screen .xterm-viewport {
+  /* The emulator ships its own scrollbar; this is only to keep it from being
+     the one loud element in a quiet window. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  background: transparent !important;
+}
+
+/*
+ * The Data pane, and the switch that reaches it.
+ *
+ * The switch is drawn between the topbar and the pane rather than inside the
+ * topbar, because the topbar names the conversation and the model and neither
+ * of those changes when the centre column does. It is also absent entirely
+ * until a dataset is loaded, so most windows never have this row at all — see
+ * `App`, where that condition lives.
+ *
+ * Everything below reuses the surface ladder rather than inventing one: the
+ * pane sits on the window's own ground, the two boxes inside it drop to
+ * `--bg-sunken` the way a table or a block of code does, and the only borders
+ * are the hairlines that mark where a surface ends.
+ */
+
+.pane-switch {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 8px 20px 0;
+}
+
+/* A segmented control. Shared by the pane switch and by Columns/Rows inside
+   the pane, because they are the same gesture at two scales — and a second
+   look for the inner one would read as two unrelated controls. */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 6px 11px;
+}
+.seg:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.seg.on {
+  color: var(--text);
+  background: var(--bg-raised);
+  border-color: var(--rule);
+}
+.seg .count {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.seg.on .count {
+  color: var(--accent);
+}
+
+.data-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 20px 0;
+  gap: 12px;
+}
+.data-pane.empty {
+  justify-content: center;
+}
+
+.data-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.data-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+/* The datasets, as chips rather than a second sidebar — the rail is already
+   one, and a workspace with three datasets does not need a column to hold
+   three names. */
+.data-chip {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  padding: 5px 11px;
+}
+.data-chip:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.data-chip.on {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.data-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40ch;
+}
+
+.data-switch {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+.data-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 14px;
+}
+.data-summary {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.data-summary b {
+  color: var(--text);
+  font-weight: 600;
+}
+.data-reading,
+.data-problem {
+  margin: 0;
+  padding: 20px 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.data-problem {
+  color: var(--danger);
+  max-width: var(--measure);
+}
+/* The button that hands the failure to Taurus, on the same line as the failure
+   it is about. Nudged onto the baseline of the text rather than laid out as a
+   block: it is a footnote to the message, and a row of its own would give it
+   the weight of a decision. */
+.data-problem .pill {
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+/* Both boxes scroll inside themselves rather than scrolling the pane. The
+   header rows stay put, which is the whole reason a forty-column profile is
+   readable at row thirty. */
+.profile-box,
+.grid-box {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+}
+
+.profile-row {
+  display: grid;
+  /* Range gets more of the row than it used to, at the type column's expense.
+     A type name is a dozen characters; a range over timestamps is two of them
+     and a separator, and it was the column that ran out. */
+  grid-template-columns: minmax(9rem, 1.3fr) minmax(5.5rem, 0.7fr) 7rem 5.5rem minmax(11rem, 1.5fr) minmax(12rem, 1.9fr);
+  gap: 14px;
+  align-items: center;
+  padding: 7px 12px;
+  font-size: 12.5px;
+}
+.profile-row + .profile-row {
+  border-top: 1px solid var(--rule);
+}
+.profile-row:not(.head):hover {
+  background: var(--bg-hover);
+}
+.profile-row.head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.profile-row .right {
+  text-align: right;
+  justify-self: stretch;
+}
+.profile-name {
+  font-family: var(--mono);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-type {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/*
+ * The range, wrapped rather than clipped — the same argument the commonest
+ * values make below, and it was wrong here for exactly as long.
+ *
+ * A timestamp range is `2024-01-01T10:00:00 … 2024-12-28T10:00:00`, which did
+ * not fit and was cut after the minimum: the reader saw one end of a range and
+ * an ellipsis. Worse on a numeric column, where `1.00 … 1498.99` clipped to
+ * `1.00 … 149` is not a truncated maximum, it is a different one. Wrapping
+ * costs a taller row and cannot lie.
+ */
+.profile-range {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.profile-nulls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+/*
+ * The missing-value bar.
+ *
+ * The one piece of drawing in this table, and it earns its place: a null count
+ * is a number you have to read, while a bar is a column you can scan a
+ * forty-row profile down and stop at the one that is wrong. Peach rather than
+ * the accent — missing data is a signal, not a selection — and floored at a
+ * sliver so a real but tiny share is still visible rather than rounding away
+ * to nothing, which is the case worth catching.
+ */
+.profile-bar {
+  flex: none;
+  width: 34px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.profile-bar span {
+  display: block;
+  height: 100%;
+  background: var(--warn);
+}
+/*
+ * The commonest values, wrapped rather than clipped.
+ *
+ * Clipping was the first attempt and it was wrong in a way worth recording: a
+ * cell reading `add_to_cart 47,743` cut at the column edge renders as
+ * `add_to_cart 4`, which is not a truncated number, it is a different number.
+ * Nothing marks it as cut, and a count is exactly the thing somebody reads off
+ * this column. Wrapping costs a taller row and cannot lie.
+ */
+.profile-common {
+  display: flex;
+  flex-wrap: wrap;
+  /* Wider between pairs than the space inside one, so `view 219,922` reads as
+     one thing and the pair after it as another. At an even gap the row was a
+     run of alternating words and numbers. */
+  gap: 4px 16px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.profile-value {
+  white-space: nowrap;
+}
+.profile-value b {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--text-dim);
+}
+.profile-value i {
+  font-style: normal;
+  color: var(--text-faint);
+  opacity: 0.8;
+}
+
+.grid-row {
+  display: grid;
+  gap: 0;
+  align-items: center;
+}
+.grid-row + .grid-row {
+  border-top: 1px solid var(--rule);
+}
+.grid-row:not(.head):hover {
+  background: var(--bg-hover);
+}
+.grid-row.head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.grid-row.head > span {
+  padding: 8px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The row number, so a page of a million-row file says where in it you are
+   without counting down from the top of the screen. */
+.grid-n {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-align: right;
+  padding: 6px 10px;
+}
+.grid-cell {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  padding: 6px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-cell.right {
+  text-align: right;
+  color: var(--text-dim);
+}
+/*
+ * A missing value, and an empty one.
+ *
+ * Drawn as words rather than as blank space, because blank space is what an
+ * empty string already looks like and telling the two apart is most of what
+ * looking at raw rows is for. A column that is 40% null and a column that is
+ * 40% empty string are different problems with different fixes, and a grid
+ * that renders both as nothing hides the distinction the data most needs.
+ */
+.grid-cell.null {
+  font-style: italic;
+  color: var(--text-faint);
+  opacity: 0.7;
+}
+
+/*
+ * The dataset card in the transcript.
+ *
+ * One line tall, and that is the design rather than a constraint. Every other
+ * view card carries its answer — a table has its rows, a chart has its numbers
+ * — and this one carries a name, because the thing it names would be worthless
+ * in a conversation and is worth a great deal in a pane. A turn that loads four
+ * files leaves four of these rather than four screens of somebody's
+ * spreadsheet.
+ */
+.dataset-card {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+}
+.dataset-card.gone {
+  border-style: dashed;
+}
+.dataset-mark {
+  font-size: 15px;
+  color: var(--accent);
+  line-height: 1;
+}
+.dataset-card.gone .dataset-mark {
+  color: var(--text-faint);
+}
+.dataset-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+/*
+ * A query the model ran, offered back.
+ *
+ * Sized between the dataset card, which is one line, and a table, which is the
+ * answer. This is neither: it is a short piece of text somebody may want to
+ * read closely and then take somewhere else, so the SQL gets the room a `pre`
+ * needs and the chrome above it stays out of the way.
+ */
+.query-card {
+  gap: 10px;
+  padding: 12px 14px;
+}
+.query-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.query-card-sql {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  /* Both directions, and capped. A CTE is worth reading in full and a window
+     function is worth not wrapping, but neither is worth pushing the reply
+     below the fold — so the card keeps its size and the query scrolls in it. */
+  max-height: 15em;
+  overflow: auto;
+  white-space: pre;
+}
+
+.dataset-copy b {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dataset-copy span {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * The query box.
+ *
+ * A `<textarea>` with the query painted behind it, rather than an editor
+ * component. The half of the original argument that still holds is the size:
+ * CodeMirror or Monaco is a quarter of a megabyte upwards of parser and
+ * virtualized rendering for a box that holds ten lines, and the dock already
+ * carries the largest thing the frontend imports. The half that did not hold
+ * was "a regex that is wrong on the first string literal containing a
+ * keyword" — that is true of a regex, so `lib/sql.ts` is a scanner instead,
+ * which walks the text once and knows it is inside a literal.
+ *
+ * No `overflow: hidden` here, unlike every other rounded box in this file:
+ * the completion list hangs off the caret and out of the box, and clipping is
+ * exactly what it must not do. The foot rounds its own bottom corners
+ * instead — the top two are painted by this element and need no clip.
+ */
+.query-box {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+}
+.sql-editor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The two layers, and the reason they are one rule.
+
+   Every property here decides where a character lands. The painted `<pre>`
+   sits exactly under the transparent `<textarea>`, so anything that differed
+   between them — a hair of letter-spacing, a different tab size, one of them
+   wrapping — would slide the colour off the text a little further with every
+   character. Declared once so they cannot drift. */
+.sql-ink,
+.sql-input {
+  margin: 0;
+  padding: 11px 13px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  letter-spacing: normal;
+  tab-size: 2;
+  /* Not `pre-wrap`. A wrapped SELECT is harder to read than a scrolled one,
+     and wrapping would also make the caret's line unknowable without
+     measuring the DOM — which is what lets `caretAt` be arithmetic. */
+  white-space: pre;
+  overflow: auto;
+  border: none;
+  background: transparent;
+}
+.sql-ink {
+  position: absolute;
+  inset: 0;
+  /* Behind the textarea and unclickable: every pointer event belongs to the
+     real control on top. */
+  pointer-events: none;
+  overflow: hidden;
+  color: var(--text);
+}
+.sql-input {
+  position: relative;
+  z-index: 1;
+  resize: none;
+  border-radius: 0;
+  /* The text itself is invisible; what is read is the layer underneath. The
+     caret is not, and neither is the selection — which is the one thing given
+     up by painting rather than by using an editor, so the selection is tinted
+     harder than the app's default to make up for having no text in it. */
+  color: transparent;
+  caret-color: var(--text);
+  /* Four lines' worth of floor and about fourteen of ceiling. The box grows to
+     what is in it — see the effect in `SqlEditor` — so these are the two ends
+     of that: never a single-line slot for something you are about to write a
+     join in, and never so tall that the answer is pushed off the screen by the
+     question. */
+  min-height: 4.5em;
+  max-height: 22em;
+}
+.sql-input:focus {
+  outline: none;
+}
+/* Its own colour, because the box's text is transparent — a placeholder
+   inheriting that would be an empty box with nothing in it and no hint that
+   there could be. */
+.sql-input::placeholder {
+  color: var(--text-faint);
+}
+.sql-input::selection {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+/* Ten characters of the box's own font, measured and never seen. `hidden`
+   rather than `display: none`, which has no size to measure. */
+.sql-probe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre;
+}
+
+/* Five colours and two greys, out of the palette the rest of the app is in —
+   so both themes get this for free. Keywords are the shape of the statement,
+   literals are the values in it, and a quoted identifier is deliberately the
+   same colour as a bare one: `"Material"` is the same column as `Material`,
+   only spelled defensively, and the difference that matters is between it and
+   `'Material'`, which is a string. */
+.sql-keyword {
+  color: var(--accent);
+}
+.sql-fn {
+  color: var(--ok);
+}
+.sql-string,
+.sql-number {
+  color: var(--warn);
+}
+.sql-quoted,
+.sql-plain {
+  color: var(--text);
+}
+.sql-comment {
+  color: var(--text-faint);
+  font-style: italic;
+}
+.sql-punct {
+  color: var(--text-dim);
+}
+
+/* The completion list, hung off the caret. */
+.sql-menu {
+  position: absolute;
+  z-index: 5;
+  margin: 3px 0 0;
+  padding: 4px;
+  list-style: none;
+  min-width: 17rem;
+  max-width: 30rem;
+  max-height: 15rem;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.32);
+}
+.sql-choice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+/* The same pair the `/` menu in the composer uses, and for the same reason it
+   had to be a pair: a menu on `--bg-elevated` with a row on `--bg-active` is
+   two names for one colour, and the highlighted row was invisible. The surface
+   steps *down* and the label takes the accent, so which one Enter takes is
+   readable at a glance and in a photograph. */
+.sql-choice:hover,
+.sql-choice.on {
+  background: var(--bg-sunken);
+}
+.sql-choice.on .sql-label {
+  color: var(--accent);
+}
+/* One glyph per kind, so the list is scannable by shape before it is read —
+   which is what tells a column from a table without reading either. */
+.sql-tag {
+  flex: none;
+  width: 0.9rem;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.sql-tag.table {
+  color: var(--accent);
+}
+.sql-tag.fn {
+  color: var(--ok);
+}
+.sql-label {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.sql-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The whole point of the list, for anybody with two files open. */
+.sql-shared {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--ok);
+}
+
+.query-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 13px;
+  border-top: 1px solid var(--rule);
+  background: var(--bg-raised);
+  border-radius: 0 0 calc(var(--r-md) - 1px) calc(var(--r-md) - 1px);
+}
+.query-tables {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What each table holds, under the box that queries them. */
+.schema-box {
+  flex: none;
+  max-height: 16rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+}
+.schema-join {
+  margin: 0;
+  color: var(--text-dim);
+}
+.schema-join code {
+  color: var(--ok);
+}
+.schema-table {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.schema-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.schema-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.schema-column {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+/* A column two files both have is a column two files can be joined on. Tinted
+   rather than listed separately, so the fact is found where the columns are
+   being read rather than in a second place that has to be looked at. */
+.schema-column.shared {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--rule));
+  color: var(--ok);
+}
+.schema-column i {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.query-foot .micro {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Recipes: a committed chain of SQL steps, and what running one did.
+   Each is a card rather than a table row, because a recipe carries three
+   different kinds of thing — what it is, what it does, and what happened last
+   time it ran — and only the first fits on a line. */
+.recipe {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 13px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+}
+.recipe-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.recipe-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.recipe-caret {
+  color: var(--text-dim);
+  font-size: 11px;
+  width: 0.8em;
+}
+.recipe-flow {
+  font-family: var(--mono);
+  /* Shrinks before the Run button does. The button carries the same path and
+     is the thing being clicked; this is the same information as context. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recipe-note {
+  margin: 0;
+  max-width: var(--measure);
+}
+.recipe-blank {
+  padding: 20px 0;
+  max-width: var(--measure);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.recipe-blank p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.recipe-blank code,
+.recipe-run-foot code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--text);
+}
+
+.recipe-steps {
+  margin: 0;
+  padding: 0 0 0 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.recipe-step-title {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.recipe-sql {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  /* A long SELECT scrolls inside its own box rather than widening the pane. */
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.recipe-run {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+}
+.recipe-run-row {
+  display: grid;
+  grid-template-columns: 1.4em 1fr auto auto auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 12.5px;
+}
+.recipe-run-row.start {
+  color: var(--text-dim);
+}
+.recipe-run-n {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.recipe-run-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recipe-run-rows,
+.recipe-run-delta,
+.recipe-run-ms {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.recipe-run-rows {
+  min-width: 7ch;
+}
+/* The column the report exists for. A step that dropped far more than it
+   should is invisible in the SQL and unmissable here, so it is the one thing
+   on the row that is allowed a colour. */
+.recipe-run-delta {
+  min-width: 8ch;
+  color: var(--text-dim);
+}
+.recipe-run-delta.down {
+  color: var(--warn);
+}
+.recipe-run-delta.up {
+  color: var(--accent);
+}
+.recipe-run-ms {
+  min-width: 7ch;
+  color: var(--text-dim);
+}
+.recipe-run-foot {
+  margin: 8px 0 0;
+}
+
+/* The turn strip: what is happening, for somebody who is not looking at the
+   transcript. One line above the composer, only in the Data pane, only while a
+   turn is running. */
+.turn-strip {
+  /* The shimmer track is drawn on this element's own top edge. */
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 16px;
+  border: none;
+  border-top: 1px solid var(--rule);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.turn-strip:hover {
+  color: var(--text);
+}
+/*
+ * The run pill, in three states.
+ *
+ * Moving, because the line beside it does not have to: a tool that takes forty
+ * seconds leaves the text unchanged for forty seconds, and a still strip is
+ * indistinguishable from a hung one.
+ *
+ * Working and stopping share a shape and differ in colour, which is the motion
+ * spec's rule — a paused run gets "a slow pulse and nothing else", because the
+ * pause itself is the alarm. Waiting is a different shape entirely, and has to
+ * be: nothing is progressing, and a progress cadence would be a lie told
+ * calmly.
+ */
+.turn-dots {
+  flex: none;
+  display: flex;
+  gap: 3px;
+}
+.turn-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: turn-cadence 1.4s var(--ease) infinite;
+}
+.turn-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.turn-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+.turn-strip.stopping .turn-dots i {
+  background: var(--warn);
+}
+/* The indeterminate track, along the strip's own top edge. Nothing here knows
+   how far through a turn is — nothing can — so this says "running" and
+   declines to imply a fraction, which a filling bar would. */
+.turn-strip.working::after,
+.turn-strip.stopping::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background-image: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 30% 100%;
+  background-repeat: no-repeat;
+  animation: row-shimmer 1.8s var(--ease) infinite;
+}
+.turn-strip.stopping::after {
+  background-image: linear-gradient(90deg, transparent, var(--warn), transparent);
+}
+/* Waiting: a slow breath inside an expanding ring. Mint, and slower than
+   anything else in the window — the spec's argument is that this has to be
+   catchable in peripheral vision without ever reading as urgent, because the
+   thing it is asking for is attention and not haste. */
+.turn-wait {
+  position: relative;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.turn-wait::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--ok);
+  border-radius: 50%;
+  animation: turn-ring 2.4s var(--ease) infinite;
+}
+.turn-wait::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  animation: turn-breathe 2.4s ease-in-out infinite;
+}
+@keyframes turn-cadence {
+  0%,
+  20% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 1;
+  }
+  80%,
+  100% {
+    opacity: 0.2;
+  }
+}
+@keyframes turn-ring {
+  from {
+    transform: scale(0.6);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+@keyframes turn-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+}
+.turn-what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Keyed on its own text in `TurnStrip`, so this fires when the turn moves to
+     a different call rather than once when the strip appears. The word slides
+     up into place instead of being swapped under the eye. */
+  animation: word-in var(--reveal) var(--ease);
+}
+@keyframes word-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* What a message is about to carry, said above the box rather than inside it:
+   this is not something the user typed and must not read as though it were. */
+.composer-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.composer-context b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------ reduced motion
+ *
+ * One block, at the bottom, switching off everything above that loops.
+ *
+ * Per animation rather than a blanket `* { animation: none }`, and that is
+ * deliberate: a sweeping rule also kills the one-shot reveals, and a reveal is
+ * not what the preference is about — `prefers-reduced-motion` asks for less
+ * *movement*, not for state changes to become invisible. So the loops stop and
+ * the arrivals lose their travel while keeping their fade.
+ *
+ * The waveform is missing from this list on purpose. It is written by a frame
+ * loop rather than by CSS, so switching it off here would hide the movement
+ * while still paying for it — `Waveform` reads the same preference in script
+ * and never starts the loop. It is the one animation in the app that has to be
+ * honoured twice.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .turn-dots i,
+  .turn-wait::before,
+  .turn-wait::after,
+  .turn-strip.working::after,
+  .turn-strip.stopping::after,
+  .run-row.running.read .run-row-head,
+  .run-row.running.wrote .run-row-head::before,
+  .run-row.running:not(.read):not(.wrote) .run-row-head::after,
+  .banner-dot,
+  .hero-mark {
+    animation: none;
+  }
+
+  /* The still frame each of these holds, rather than whatever the first
+     keyframe happened to be. A dot stuck at 20% opacity would read as
+     disabled, and a gutter stuck at `scaleY(0)` would not be there at all. */
+  .turn-dots i,
+  .turn-wait::after,
+  .banner-dot,
+  .hero-mark {
+    opacity: 1;
+  }
+  .turn-wait::before {
+    opacity: 0.45;
+  }
+  .run-row.running.wrote .run-row-head::before {
+    transform: scaleY(1);
+  }
+
+  /* Arrivals keep the fade and lose the travel. */
+  .turn-what,
+  .run-row.live .run-row-status {
+    animation-name: fade-in;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }

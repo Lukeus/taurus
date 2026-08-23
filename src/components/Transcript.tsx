@@ -2,6 +2,9 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 
 import { ChartCard } from "./ChartCard";
+import { DatasetCard } from "./DatasetCard";
+import { QueryCard } from "./QueryCard";
+import { Waveform, waveFor } from "./Waveform";
 import { FlowCard } from "./FlowCard";
 import { SequenceCard } from "./SequenceCard";
 import { Markdown } from "./Markdown";
@@ -29,6 +32,9 @@ const TOOL_GLYPH: Record<string, string> = {
   run_skill_script: "▷",
   propose_skill: "✦",
   remember: "⚑",
+  load_dataset: "▦",
+  profile_dataset: "▦",
+  query_data: "⌗",
 };
 
 /**
@@ -54,6 +60,9 @@ const TOOL_CLASS: Record<
   fetch_url: "net",
   load_skill: "skill",
   run_skill_script: "skill",
+  load_dataset: "read",
+  profile_dataset: "read",
+  query_data: "read",
   // Its own category rather than a read or a write. Nothing in the workspace
   // moved, but something was kept — and a note is the one step in a turn whose
   // effect is on the *next* conversation, which is worth being able to spot
@@ -101,6 +110,12 @@ export type TranscriptProps = {
   /** Opens a delegation's own conversation. Absent where there is nowhere to
    * open one — inside a delegate's transcript, which cannot delegate further. */
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
+  /** Shows a dataset in the Data pane. Absent where there is no pane to show
+   *  it in, which is a delegate's transcript for the same reason as above. */
+  onOpenDataset?: (name: string) => void;
+  /** Takes a query the model ran to the pane's box and runs it there. Absent
+   *  wherever `onOpenDataset` is, and for the same reason. */
+  onRunQuery?: (sql: string) => void;
   /**
    * Whether to follow new entries to the bottom.
    *
@@ -119,6 +134,8 @@ export function Transcript({
   empty,
   onAnswer,
   onOpenDelegate,
+  onOpenDataset,
+  onRunQuery,
   follow = true,
 }: TranscriptProps) {
   const bottom = useRef<HTMLDivElement>(null);
@@ -134,6 +151,8 @@ export function Transcript({
   // nothing there to answer.
   const answer = useStable(onAnswer);
   const openDelegate = useStable(onOpenDelegate);
+  const openDataset = useStable(onOpenDataset);
+  const runQuery = useStable(onRunQuery);
 
   // Follow the stream, but stop fighting the user the moment they scroll up.
   useEffect(() => {
@@ -198,6 +217,8 @@ export function Transcript({
           stopping={stopping}
           onAnswer={answer}
           onOpenDelegate={openDelegate}
+          onOpenDataset={openDataset}
+          onRunQuery={runQuery}
         />
       ))}
       <div ref={bottom} />
@@ -365,6 +386,8 @@ const TurnView = memo(function TurnView({
   stopping,
   onAnswer,
   onOpenDelegate,
+  onOpenDataset,
+  onRunQuery,
 }: {
   turn: Turn;
   working: boolean;
@@ -372,6 +395,8 @@ const TurnView = memo(function TurnView({
   stopping: boolean;
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
+  onOpenDataset?: (name: string) => void;
+  onRunQuery?: (sql: string) => void;
 }) {
   return (
     <section className={`turn${turn.prompt ? "" : " unprompted"}`}>
@@ -387,13 +412,20 @@ const TurnView = memo(function TurnView({
               entry={item}
               onAnswer={onAnswer}
               onOpenDelegate={onOpenDelegate}
+              onOpenDataset={onOpenDataset}
+              onRunQuery={onRunQuery}
             />
           </div>
         ),
       )}
       {working && (
         <div className="turn-step working" aria-live="polite">
-          {stopping ? "stopping…" : "working…"}
+          {/* The shape of what is running, not a spinner. A spinner says a
+              turn is alive; this says what kind of work it is doing, because
+              the harness already knows and the reader would otherwise have to
+              read the row above to find out. See `Waveform`. */}
+          <Waveform mode={waveFor(stopping ? null : busyWith(turn))} bars={8} />
+          <span>{stopping ? "stopping…" : "working…"}</span>
         </div>
       )}
     </section>
@@ -444,6 +476,21 @@ export function group(entries: Entry[]): (Entry | ToolEntry[])[] {
 }
 
 /**
+ * What category of work a turn is doing right now, or `null` for none.
+ *
+ * The last tool call in the body, if it is still running. Last rather than a
+ * search, because the harness runs one call at a time — anything earlier has
+ * finished, and a turn between calls is a turn thinking, which is what `null`
+ * means here.
+ */
+export function busyWith(turn: Turn): string | null {
+  const last = turn.body[turn.body.length - 1];
+  const step = Array.isArray(last) ? last[last.length - 1] : last;
+  if (!step || step.kind !== "tool" || step.status !== "running") return null;
+  return TOOL_CLASS[step.name] ?? "other";
+}
+
+/**
  * Memoized on the entry itself, which is what stops the cards in a turn being
  * redrawn while the sentence after them is still arriving. A table the model
  * drew four tool calls ago has not changed; recomputing its layout thirty times
@@ -453,10 +500,14 @@ const EntryView = memo(function EntryView({
   entry,
   onAnswer,
   onOpenDelegate,
+  onOpenDataset,
+  onRunQuery,
 }: {
   entry: Entry;
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
+  onOpenDataset?: (name: string) => void;
+  onRunQuery?: (sql: string) => void;
 }) {
   if (entry.kind === "tool" && entry.view) {
     switch (entry.view.type) {
@@ -468,6 +519,10 @@ const EntryView = memo(function EntryView({
         return <SequenceCard view={entry.view} />;
       case "flow":
         return <FlowCard view={entry.view} />;
+      case "dataset":
+        return <DatasetCard view={entry.view} onOpen={onOpenDataset} />;
+      case "query":
+        return <QueryCard view={entry.view} onRun={onRunQuery} />;
       case "questions":
         return (
           <QuestionsCard
@@ -608,7 +663,12 @@ function ToolRow({
   const body = step.status === "running" ? streamed : (step.output ?? streamed);
 
   return (
-    <div className={`run-row ${kind} ${step.status}`}>
+    // `live` marks a call that started and finished in front of the reader,
+    // which is what `endedAt` means — a resumed transcript records what a call
+    // did and not when. It is the difference between a check that draws itself
+    // once as the call lands and forty of them drawing at once when a
+    // conversation is reopened.
+    <div className={`run-row ${kind} ${step.status}${step.endedAt ? " live" : ""}`}>
       <button
         className="run-row-head"
         disabled={!step.output}

@@ -44,6 +44,33 @@ const SHOTS = [
   // switched off — because the panel exists for the ones that are not working,
   // and a frame of four green rows would say nothing about what it is for.
   { name: "mcp", shot: "mcp", theme: "dark" },
+  // A profile rather than a page of rows, and a file with real problems in it:
+  // one column 42% missing, one with too many distinct values to rank. A grid
+  // of clean numbers would be a picture of a spreadsheet.
+  { name: "data", shot: "data", theme: "dark" },
+  // A recipe mid-report rather than sitting still. The delta column is the
+  // whole reason a run is reported per step, and a frame of four rows all
+  // saying "done" would say nothing about what it is for.
+  { name: "recipe", shot: "recipes", theme: "dark" },
+  // What a data turn leaves in the transcript: two references into the pane
+  // and a query that can be taken back out of it. The query card is the point
+  // — it is the one card here that is neither a result nor a pointer but an
+  // offer to ask again.
+  { name: "query", shot: "query", theme: "dark" },
+  // Where that button lands: the same query, asked again at full width, with
+  // the offer to keep it. Captured by pressing the card rather than by opening
+  // the tab, so the image is of the trip and not of the destination.
+  { name: "query-run", shot: "query-run", theme: "dark" },
+  // The box mid-join: the query painted, the schema of both files open under
+  // it, and the completion list showing one table's columns after its alias.
+  // The join marks are why two tables are loaded — a column both files have is
+  // a column they can be joined on, and that is said in both places at once.
+  { name: "query-complete", shot: "query-complete", theme: "dark" },
+  // A turn in flight. A still image cannot show motion, which is exactly why
+  // this is worth taking: it is the only check that the waveform renders where
+  // it should, that the running row wears the treatment its category calls
+  // for, and that none of it has landed on top of something else.
+  { name: "motion", shot: "motion", theme: "dark" },
 ];
 
 const CHROME = [

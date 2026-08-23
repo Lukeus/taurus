@@ -12,16 +12,21 @@ import { Rail, type ProviderHealth } from "./components/Rail";
 import {
   RAIL_WIDTH,
   ResizeHandle,
+  TERMINAL_HEIGHT,
+  useResizableHeight,
   useResizableWidth,
 } from "./components/ResizeHandle";
 import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
 import { Transcript, type TranscriptProps } from "./components/Transcript";
+import type { DataTab } from "./components/DataPane";
 import * as api from "./lib/api";
 import type {
   Attachment,
   CommandSummary,
+  Dataset,
   ModelInfo,
+  OnScreen,
   ProviderConfig,
   ServerStatus,
   Theme,
@@ -29,6 +34,7 @@ import type {
 import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
+import type { Entry } from "./state/store";
 import { pinnedPlan, useStore } from "./state/store";
 
 /*
@@ -73,6 +79,34 @@ const ChangesDrawer = lazy(() =>
 );
 const DelegateTranscript = lazy(() =>
   PANELS.delegate().then((m) => ({ default: m.DelegateTranscript })),
+);
+
+/*
+ * The Data pane, deliberately not in `PANELS` either.
+ *
+ * `PANELS` is warmed at idle because a drawer should open instantly, and every
+ * session has drawers. This is a surface most workspaces never have anything
+ * to put in — the tab does not exist until a dataset is loaded — so paying to
+ * parse it on every launch would be paying for a feature nobody in that
+ * session is using. It loads when the tab is first chosen, and the module map
+ * answers every switch after that.
+ */
+const DataPane = lazy(() =>
+  import("./components/DataPane").then((m) => ({ default: m.DataPane })),
+);
+
+/*
+ * The terminal, deliberately not in `PANELS`.
+ *
+ * Everything above is warmed once the window goes idle, because a drawer is
+ * small and opening one should be instant. This is neither: it carries a whole
+ * terminal emulator, which is the largest thing the frontend can import, and a
+ * session that never opens the dock should never pay to parse it. So it loads
+ * on the first ⌃` and not before — and once loaded it stays, because the module
+ * map answers the second import.
+ */
+const TerminalDock = lazy(() =>
+  import("./components/TerminalDock").then((m) => ({ default: m.TerminalDock })),
 );
 
 /**
@@ -137,9 +171,72 @@ export default function App() {
       resolveProposal: s.resolveProposal,
       resolveAgentProposal: s.resolveAgentProposal,
       decideTrust: s.decideTrust,
+      datasets: s.datasets,
+      refreshDatasets: s.refreshDatasets,
+      forgetDataset: s.forgetDataset,
     })),
   );
   const rail = useResizableWidth({ storageKey: "taurus.railWidth", ...RAIL_WIDTH });
+  const dock = useResizableHeight({
+    storageKey: "taurus.terminalHeight",
+    ...TERMINAL_HEIGHT,
+  });
+  /**
+   * Whether the terminal dock is showing.
+   *
+   * Unmounted rather than hidden when it is not: hiding it would keep a shell
+   * running behind a pane nobody can see, and a laid-out-to-nothing terminal
+   * would still be told it is zero columns wide. Closing it ends the shell, the
+   * same as closing a terminal window anywhere else.
+   */
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  /**
+   * Which surface the centre column is showing.
+   *
+   * A mode rather than a drawer, because the alternative to the conversation
+   * here is not something laid *over* it — it is the other thing this window is
+   * for. The rail and the composer are outside it and never move, so the
+   * conversation is one click away and typing still starts a turn from either
+   * side.
+   *
+   * Falls back to the transcript on its own when the last dataset is forgotten
+   * — see the effect below. A mode with nothing behind it is a blank pane and
+   * a tab that has gone.
+   */
+  const [pane, setPane] = useState<"conversation" | "data">("conversation");
+  /** Which dataset the Data pane has open. Held here rather than in the pane
+   *  so a card in the transcript can choose one — see `DatasetCard`. */
+  const [dataset, setDataset] = useState<string | null>(null);
+  /**
+   * What is in the Data pane's query box.
+   *
+   * Up here rather than in the box, because two things outside the box need
+   * it. The pane is lazily mounted and thrown away when you switch to the
+   * conversation, so half-written SQL would not survive the round trip. And a
+   * message sent from the pane carries it — see `onScreen` below.
+   */
+  const [sql, setSql] = useState("");
+  /** Which of the pane's four views is showing. Up here for the same reason
+   *  `sql` is, and because a card in the transcript picks it — see
+   *  `showQuery`. */
+  const [tab, setTab] = useState<DataTab>("columns");
+  /**
+   * A query the transcript has handed to the pane, waiting to be run.
+   *
+   * An errand with a lifetime of one render: the pane takes it, clears it, and
+   * runs it. Held here rather than in the pane because the pane is unmounted
+   * every time the conversation is shown, and a marker that went with it would
+   * let the same query be run again by merely coming back.
+   */
+  const [pendingQuery, setPendingQuery] = useState<string | null>(null);
+  /**
+   * Something for the composer to say, put there by a button somewhere else.
+   *
+   * A fresh object every time, including for the same text twice: the composer
+   * reacts to it changing, and two identical drafts have to be two events or
+   * the second one does nothing.
+   */
+  const [draft, setDraft] = useState<{ text: string } | null>(null);
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
@@ -170,6 +267,26 @@ export default function App() {
   }, []);
 
   /*
+   * Control-backtick shows and hides the terminal, which is what it does in
+   * every other editor a developer has open at the same time.
+   *
+   * On the window rather than on the dock, because the point of a toggle is
+   * that it works when the thing is not there — and once the dock has focus,
+   * every other key belongs to the shell inside it. Ctrl on all three
+   * platforms, not Cmd: a macOS terminal has always been reached with Control
+   * here, and ⌘` is the system's "next window".
+   */
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "`" || !e.ctrlKey || e.metaKey || e.altKey) return;
+      e.preventDefault();
+      setTerminalOpen((open) => !open);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
+
+  /*
    * Re-asks the questions nothing can push, when the user comes back.
    *
    * Trust is the one that matters: the answer changes when a file appears in a
@@ -183,11 +300,19 @@ export default function App() {
    * at.
    */
   const refresh = store.refresh;
+  const busy = store.busy;
   useEffect(() => {
-    const ask = () => void refresh();
+    const ask = () => {
+      void refresh();
+      // The other thing that changed while the window was not looked at: a
+      // skill or an agent written in an editor. Skipped mid-turn, because a
+      // turn runs against the catalog and roster it started with — and the
+      // turn about to finish refreshes them itself.
+      if (!busy) void api.rescanLibrary().catch(() => {});
+    };
     window.addEventListener("focus", ask);
     return () => window.removeEventListener("focus", ask);
-  }, [refresh]);
+  }, [refresh, busy]);
 
   // Settings are the authority; main.tsx only guessed from the last run. Also
   // where following the OS is honoured — while the preference is `system`, a
@@ -221,6 +346,13 @@ export default function App() {
       .then(setModels)
       .catch(() => setModels("failed"));
   }, [providerId]);
+
+  // The switch disappears with the last dataset, so a window still showing the
+  // Data pane would be left on a surface with no way back to the conversation.
+  // Covers forgetting the last one and switching to a folder that has none.
+  useEffect(() => {
+    if (store.datasets.length === 0) setPane("conversation");
+  }, [store.datasets.length]);
 
   /**
    * Takes the conversation on screen to another model, or opens one there when
@@ -297,6 +429,18 @@ export default function App() {
 
   // The listing entry rather than the session: a title is a fact about the
   // transcript, and a conversation with no entry has none of either yet.
+  /*
+   * How many skills and agents there are, as one value to notice moving.
+   *
+   * The `/` menu is a snapshot of the last scan, and this is what tells it the
+   * scan has been redone: a rescan that found something new emits a status with
+   * a different count, and the composer re-reads the namespace off the back of
+   * it. Counting rather than comparing the lists themselves because the counts
+   * are already on screen — the rail draws both — and a menu that refreshed on
+   * an unchanged catalog would refetch on every status.
+   */
+  const library = `${store.status?.skill_count ?? 0}:${store.status?.agent_count ?? 0}`;
+
   const listed = store.sessions.find((s) => s.id === store.session?.id);
   const title = listed?.title || "New conversation";
 
@@ -314,10 +458,62 @@ export default function App() {
     await api.setTheme(next);
   };
 
+  /** Opens a dataset in the Data pane, from a card in the transcript. */
+  const showDataset = (name: string) => {
+    setDataset(name);
+    setPane("data");
+  };
+
+  /**
+   * Takes a query the model ran to the pane and asks it again there.
+   *
+   * The trip out of the conversation, and the only one that changes what the
+   * pane is doing rather than just what it is looking at. Four things at once
+   * because they are one intention: the SQL in the box, the box on screen, the
+   * pane in front, and the query run — leaving any of them out would put
+   * somebody one click from the thing they clicked for.
+   */
+  const showQuery = (next: string) => {
+    setSql(next);
+    setTab("query");
+    setPane("data");
+    setPendingQuery(next);
+  };
+
+  /**
+   * Puts a sentence in the composer without sending it.
+   *
+   * The trip the other way, and the pane's only route into a turn besides
+   * typing. Nothing is sent: every one of these drafts is the first half of a
+   * question, and the second half is the bit only the person knows.
+   */
+  const ask = (text: string) => setDraft({ text });
+
+  /** Whichever dataset the pane is actually showing — see `DataPane`, which
+   *  falls back to the first rather than being open on nothing. */
+  const showing =
+    store.datasets.find((d) => d.name === dataset) ?? store.datasets[0] ?? null;
+
+  /**
+   * What travels with a message sent from the Data pane.
+   *
+   * `null` from the transcript, which is most messages: a question asked while
+   * reading a conversation is about the conversation, and a paragraph about a
+   * dataset nobody mentioned would be the app talking over the user.
+   *
+   * It reaches the model and not the transcript — the same split a `/command`
+   * expansion makes. See `taurus_host::onscreen`, which explains why and what
+   * it costs. What keeps that from being invisible context is the chip on the
+   * composer: it is on screen, next to the box, while the message is typed.
+   */
+  const onScreen = onScreenFor(pane, showing, sql);
+
+  const forgetDataset = (name: string) => void store.forgetDataset(name);
+
   return (
     <div className="app">
       <Rail
-        width={rail.width}
+        width={rail.size}
         workspace={workspace}
         sessions={store.sessions}
         currentId={store.session?.id}
@@ -339,6 +535,7 @@ export default function App() {
         onAgents={() => setAgentsOpen(true)}
         onMemory={() => setMemoryOpen(true)}
         onMcp={() => setMcpOpen(true)}
+        onTerminal={() => setTerminalOpen((open) => !open)}
         onSettings={() => setSettingsOpen(true)}
       />
 
@@ -416,25 +613,79 @@ export default function App() {
           </select>
         </header>
 
-        <main>
-          <TranscriptPane
-            busy={store.busy}
-            stopping={store.stopping}
-            pending={store.resuming}
-            onAnswer={store.answerQuestions}
-            onOpenDelegate={setDelegate}
-            empty={
-              <FirstRun
-                workspace={workspace}
-                ready={!!store.session}
-                health={health(store.status?.providers.length, providerId, models)}
-                onPickWorkspace={pickWorkspace}
-                onSettings={() => setSettingsOpen(true)}
-              />
-            }
-          />
+        {/* Only once there is something behind it. A workspace that has never
+            loaded a file shows no switch at all, which is the whole of how
+            this surface stays out of the way of everyone not using it — the
+            same rule the composer's `/` hint and the rail's MCP badge follow.
+            Drawn above the pane rather than in the topbar: the topbar names
+            the conversation and the model, and neither of those changes when
+            the centre column does. */}
+        {store.datasets.length > 0 && (
+          <div className="pane-switch" role="tablist" aria-label="View">
+            <button
+              role="tab"
+              aria-selected={pane === "conversation"}
+              className={`seg${pane === "conversation" ? " on" : ""}`}
+              onClick={() => setPane("conversation")}
+            >
+              Conversation
+            </button>
+            <button
+              role="tab"
+              aria-selected={pane === "data"}
+              className={`seg${pane === "data" ? " on" : ""}`}
+              onClick={() => setPane("data")}
+            >
+              Data
+              <span className="count">{store.datasets.length}</span>
+            </button>
+          </div>
+        )}
 
-          {(store.proposals.length > 0 ||
+        <main>
+          {pane === "data" ? (
+            <Suspense fallback={<div className="data-pane" />}>
+              <DataPane
+                datasets={store.datasets}
+                selected={dataset}
+                onSelect={setDataset}
+                onForget={forgetDataset}
+                onRan={() => void store.refreshDatasets()}
+                tab={tab}
+                onTab={setTab}
+                sql={sql}
+                onSql={setSql}
+                pending={pendingQuery}
+                onPendingRun={() => setPendingQuery(null)}
+                onAsk={ask}
+              />
+            </Suspense>
+          ) : (
+            <TranscriptPane
+              busy={store.busy}
+              stopping={store.stopping}
+              pending={store.resuming}
+              onAnswer={store.answerQuestions}
+              onOpenDelegate={setDelegate}
+              onOpenDataset={showDataset}
+              onRunQuery={showQuery}
+              empty={
+                <FirstRun
+                  workspace={workspace}
+                  ready={!!store.session}
+                  health={health(store.status?.providers.length, providerId, models)}
+                  onPickWorkspace={pickWorkspace}
+                  onSettings={() => setSettingsOpen(true)}
+                />
+              }
+            />
+          )}
+
+          {/* Kept out of the Data pane. A proposal is about the conversation
+              that raised it, and answering one from a screen that does not
+              show it would be approving something you cannot read. */}
+          {pane === "conversation" &&
+            (store.proposals.length > 0 ||
             store.agentProposals.length > 0) && (
             <div className="proposals">
               {store.proposals.map((p) => (
@@ -459,6 +710,13 @@ export default function App() {
           )}
         </main>
 
+        {/* Only in the Data pane, and only while something is happening. On
+            the conversation the transcript is already saying all of this, and
+            a strip repeating it would be the app talking twice. */}
+        {pane === "data" && store.busy && (
+          <TurnStrip onOpen={() => setPane("conversation")} />
+        )}
+
         {/* Above the error banner, because it is about the state the whole
             session is running in rather than about something that just went
             wrong. Dismissed per workspace, so switching folders asks again
@@ -475,6 +733,12 @@ export default function App() {
 
         {store.error && (
           <div className="banner error">
+            {/* A slow pulse on a dot, and nothing else. The motion spec is
+                explicit about this one: no shake, no flash — a banner that
+                flinches trains the reader to stop reading banners. The pulse
+                is there so an error that arrives while you are looking
+                somewhere else is catchable out of the corner of an eye. */}
+            <span className="banner-dot" />
             {store.error}
             <div className="spacer" />
             <button onClick={store.dismissError}>Dismiss</button>
@@ -494,9 +758,37 @@ export default function App() {
           vision={store.session?.vision ?? false}
           workspace={workspace}
           onPickWorkspace={pickWorkspace}
+          library={library}
+          onScreen={onScreen}
+          draft={draft}
           onSend={store.send}
           onStop={store.stop}
         />
+
+        {/* Below the composer rather than between it and the transcript: the
+            box you type in belongs to the conversation above it, and a
+            terminal wedged between the two would separate a message from the
+            thread it is being written into. Mounted only while it is showing
+            — see `terminalOpen`. */}
+        {terminalOpen && (
+          <>
+            <ResizeHandle pane={dock} label="Terminal height" />
+            <Suspense fallback={<div className="dock-loading" />}>
+              <div className="dock-slot" style={{ height: dock.size }}>
+                <TerminalDock
+                  // A new folder is a new shell. Keyed rather than handled
+                  // inside, so the old one is torn down by the same path that
+                  // closes the dock instead of a second one that has to agree
+                  // with it.
+                  key={workspace ?? "none"}
+                  workspace={workspace}
+                  theme={theme ?? "system"}
+                  onClose={() => setTerminalOpen(false)}
+                />
+              </div>
+            </Suspense>
+          </>
+        )}
       </div>
 
       {store.permission && (
@@ -743,12 +1035,169 @@ function PinnedPlan() {
   return plan ? <PlanPanel view={plan} /> : null;
 }
 
+/**
+ * What travels with a message, from where it was sent.
+ *
+ * Extracted and exported because the decision is the interesting part and it
+ * is entirely a decision: nothing here renders. The three rules it encodes are
+ * that a message from the transcript carries nothing, that a pane open on
+ * nothing carries nothing, and that an empty query box is left out rather than
+ * sent as an empty string.
+ */
+export function onScreenFor(
+  pane: "conversation" | "data",
+  showing: Dataset | null,
+  sql: string,
+): OnScreen | null {
+  // A question asked while reading a conversation is about the conversation. A
+  // paragraph about a dataset nobody mentioned would be the app talking over
+  // the user.
+  if (pane !== "data" || !showing) return null;
+  const typed = sql.trim();
+  return {
+    dataset: showing.name,
+    path: showing.path,
+    // Omitted rather than empty — the field is optional on the Rust side, and
+    // an empty box is nothing to say rather than something to say nothing.
+    ...(typed ? { sql: typed } : {}),
+  };
+}
+
+/**
+ * What the box says once a draft is put in it.
+ *
+ * Extracted for the same reason `onScreenFor` is: nothing here renders, and
+ * the decision is the whole of it. A draft is offered by a button that has no
+ * idea whether somebody is mid-sentence — the query box and the recipe list
+ * are three inches from the composer, and both are places you might have
+ * started typing before something failed — so it is added to what is there
+ * rather than put in its place. Nothing typed is ever lost to a canned
+ * sentence; the cost is a blank line.
+ */
+export function withDraft(typed: string, draft: string): string {
+  return typed.trim() ? `${typed.trim()}\n\n${draft}` : draft;
+}
+
+/**
+ * What the turn is doing, for somebody who is not looking at the transcript.
+ *
+ * The composer sits under the Data pane as well as under the conversation, so
+ * a message can be sent from a screen that shows none of the answer. Without
+ * this that is typing into a void: the turn runs, tools are called, prose
+ * streams, and the pane looks exactly as it did before.
+ *
+ * One line, and deliberately not a second transcript. It says the last thing
+ * that happened and gets out of the way; reading the answer means going to
+ * where the answer is, which is one click and is what the line is for.
+ */
+export function TurnStrip({ onOpen }: { onOpen: () => void }) {
+  // Subscribed here rather than passed down, the way `PinnedPlan` is. `App`
+  // deliberately does not select `entries` — it would re-render the whole
+  // window on every frame of a streaming turn — and what this needs is one
+  // short string, which zustand compares by value and mostly finds unchanged.
+  const latest = useStore((s) => lastActivity(s.entries));
+  const asking = useStore((s) => isAsking(s.entries));
+  const stopping = useStore((s) => s.stopping);
+  const state = stopping ? "stopping" : asking ? "asking" : "working";
+  return (
+    <button className={`turn-strip ${state}`} onClick={onOpen}>
+      {/*
+       * Three states, three motions, and the difference between them is the
+       * point rather than the decoration.
+       *
+       * Working is the run pill from the motion spec: a three-dot cadence over
+       * a hairline shimmer, which is what indeterminate progress looks like
+       * when there is no percentage to show. Stopping keeps the cadence and
+       * turns peach — the spec's rule for a run that has paused, a slow pulse
+       * and nothing else, because "the pause itself is the alarm".
+       *
+       * Asking is a different thing entirely, and it is why this is not one
+       * animation with a colour swap: nothing is progressing. It draws the
+       * spec's breathing mint ring, which is calm and catchable in peripheral
+       * vision, because the turn is now waiting on somebody who is looking at
+       * another pane.
+       */}
+      {asking ? (
+        <span className="turn-wait" />
+      ) : (
+        <span className="turn-dots">
+          <i />
+          <i />
+          <i />
+        </span>
+      )}
+      {/* Keyed on the text so a new one animates in rather than swapping under
+          the eye. The spec's word-change reveal: 320ms, up four pixels. */}
+      <span className="turn-what" key={latest ?? ""}>
+        {stopping
+          ? "Stopping…"
+          : asking
+            ? "Waiting on your answer"
+            : (latest ?? "Working…")}
+      </span>
+      <div className="spacer" />
+      <span className="micro">
+        {asking ? "Answer in the conversation" : "Show the conversation"}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Whether the turn has stopped and is waiting to be answered.
+ *
+ * A question card is the one thing the strip could never stand in for — it is
+ * a form, and this is one line — and that was written down as a gap: the turn
+ * parks, the strip goes on saying `Ask 2 questions`, and nothing distinguishes
+ * a call that is working from one that has been waiting for a minute. Saying
+ * so is most of the fix; the rest is that the answer is one click away and the
+ * line now says which click.
+ *
+ * Read off the last entry rather than searched for. A parked call is by
+ * definition the newest thing in the transcript — the harness runs one call at
+ * a time and this one is blocking it.
+ */
+export function isAsking(entries: Entry[]): boolean {
+  const last = entries[entries.length - 1];
+  return (
+    last?.kind === "tool" &&
+    last.status === "running" &&
+    last.view?.type === "questions"
+  );
+}
+
+/**
+ * The last thing worth reporting from a turn in flight.
+ *
+ * A running tool beats finished prose, because a tool is what the turn is
+ * doing *now* and the prose is what it was saying before it went and did
+ * something. Prose is cut to its last sentence rather than its first: the
+ * first is a paragraph old by the time anyone reads this.
+ */
+export function lastActivity(entries: Entry[]): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.kind === "tool" && entry.status === "running") return entry.preview;
+    if (entry.kind === "assistant" && entry.text.trim()) {
+      const sentences = entry.text.trim().split(/(?<=[.!?])\s+/);
+      return sentences[sentences.length - 1] ?? null;
+    }
+    // A finished tool is worth showing only while nothing newer has happened,
+    // which is exactly the gap between one call ending and the next beginning.
+    if (entry.kind === "tool") return entry.preview;
+  }
+  return null;
+}
+
 function Composer({
   busy,
   stopping,
   ready,
   vision,
   workspace,
+  library,
+  onScreen,
+  draft,
   onPickWorkspace,
   onSend,
   onStop,
@@ -766,8 +1215,37 @@ function Composer({
    */
   vision: boolean;
   workspace: string | null;
+  /**
+   * A signature of how many skills and agents there are.
+   *
+   * Not shown. It is what the `/` namespace re-reads on: the list below is the
+   * last scan the backend did, and this changing is the only signal that it did
+   * another one. See where `App` builds it.
+   */
+  library: string;
+  /**
+   * What the Data pane is showing, when it is what is on screen.
+   *
+   * Two jobs, and the second is why it is a prop rather than something the
+   * store works out at send time. It travels with the message, and it is drawn
+   * as a chip above the box — because context the user cannot see is behaviour
+   * they cannot explain, and this is the only moment they can see it.
+   */
+  onScreen: OnScreen | null;
+  /**
+   * Something to say, handed over from a button outside the composer.
+   *
+   * An object rather than a string so that clicking the same button twice is
+   * two events. `null` until something offers one, which for most sessions is
+   * never.
+   */
+  draft: { text: string } | null;
   onPickWorkspace: () => void;
-  onSend: (text: string, images: Attachment[]) => void;
+  onSend: (
+    text: string,
+    images: Attachment[],
+    onScreen: OnScreen | null,
+  ) => void;
   onStop: () => void;
 }) {
   const [text, setText] = useState("");
@@ -797,12 +1275,40 @@ function Composer({
     setAttachError(errors.length > 0 ? errors.join(" ") : null);
   };
 
-  // Fetched once the composer is usable, and again whenever a workspace change
-  // could have brought a different library with it.
+  /*
+   * Takes a draft from elsewhere in the window and puts the cursor after it.
+   *
+   * Added to rather than substituted for what is already typed. A draft is
+   * offered by a button that has no idea whether somebody is mid-sentence, and
+   * throwing away a half-written question to make room for a canned one is the
+   * app deciding it knows better. Appending costs a blank line and loses
+   * nothing.
+   *
+   * The cursor goes to the end because that is where the sentence continues:
+   * every one of these drafts ends on the ask, and the next thing typed
+   * qualifies it.
+   */
+  useEffect(() => {
+    if (!draft) return;
+    setText((typed) => withDraft(typed, draft.text));
+    const box_ = box.current;
+    if (!box_) return;
+    box_.focus();
+    // After the value lands, not before — the caret is set on the text that is
+    // in the box now, and React has not written the new one yet.
+    requestAnimationFrame(() => {
+      const end = box_.value.length;
+      box_.setSelectionRange(end, end);
+    });
+  }, [draft]);
+
+  // Fetched once the composer is usable, again whenever a workspace change
+  // could have brought a different library with it, and again whenever a rescan
+  // found a different number of things to offer.
   useEffect(() => {
     if (!ready) return;
     api.listCommands().then(setCommands).catch(() => setCommands([]));
-  }, [ready, workspace]);
+  }, [ready, workspace, library]);
 
   const query = commandQuery(text);
   const shown = query === null ? [] : matches(commands, query);
@@ -819,7 +1325,7 @@ function Composer({
 
   const submit = () => {
     if (!text.trim() || busy) return;
-    onSend(text, images);
+    onSend(text, images, onScreen);
     setText("");
     setImages([]);
     setAttachError(null);
@@ -831,6 +1337,18 @@ function Composer({
 
   return (
     <footer className="composer">
+      {/* Above the box rather than inside it: this is not something you typed
+          and must not read as though it were. It says what the message is
+          about to carry, in the one place you are already looking. */}
+      {onScreen && (
+        <div className="composer-context" title={onScreen.path}>
+          <span className="dataset-mark">▦</span>
+          <span>
+            asking about <b>{onScreen.dataset}</b>
+          </span>
+          {onScreen.sql && <span className="micro">· and the query below</span>}
+        </div>
+      )}
       <div
         className={`composer-box${dragDepth > 0 ? " dropping" : ""}`}
         // The whole box is the target, not the textarea: someone dragging a

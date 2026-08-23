@@ -712,9 +712,17 @@ impl Tool for AskUser {
         // Without this, Stop leaves the turn parked on a question forever: the
         // card is the only thing still running, and cancelling the token is
         // exactly what the user just asked for.
+        //
+        // `biased`, so the token is read before the asker is polled at all.
+        // Unbiased, the branch order is random — and [`Unattended`] answers
+        // `None` on its first poll, so a turn already cancelled would come back
+        // "nobody is available to answer" on roughly half of all piped runs
+        // rather than stopping. Every other cancellable call here is written
+        // this way.
         let answers = tokio::select! {
-            answers = self.asker.ask(id, &input.questions) => answers,
+            biased;
             () = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
+            answers = self.asker.ask(id, &input.questions) => answers,
         };
 
         Ok(match answers {
@@ -1116,6 +1124,21 @@ mod tests {
             result.to_text().contains("Decide each of these yourself"),
             "{result}"
         );
+    }
+
+    /// The case that made the branch order matter rather than merely be
+    /// untidy: `Unattended` answers immediately, so an unbiased `select!` was a
+    /// coin flip between stopping and telling the model to decide for itself —
+    /// on every unattended run, not on some machines.
+    #[tokio::test]
+    async fn a_cancelled_turn_stops_rather_than_answering_for_itself() {
+        let (ctx, _dir) = test_ctx();
+        let tool = AskUser::new(Arc::new(Unattended));
+        ctx.cancel.cancel();
+
+        let error = tool.execute(questions(), &ctx).await.unwrap_err();
+
+        assert!(matches!(error, ToolError::Canceled), "{error}");
     }
 
     #[tokio::test]
