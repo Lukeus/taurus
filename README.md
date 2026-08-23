@@ -126,8 +126,9 @@ to put things back after.
   skipped.
 - [**Working with data**](docs/working-with-it.md#working-with-data) — a CSV
   with a million rows in it is not a file to read. It loads one as a table
-  instead, describes every column from the whole file rather than a sample, and
-  puts the rows on a surface of their own.
+  instead, describes every column from the whole file rather than a sample,
+  answers questions about it in SQL, and puts the rows on a surface of their
+  own.
 
 ![The Data pane: a profile of a 400,000-row file, with the missing values
 marked](docs/screenshots/data.png)

@@ -26,18 +26,24 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::Array;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
-use datafusion::prelude::{CsvReadOptions, JsonReadOptions, ParquetReadOptions, SessionContext};
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::logical_expr::LogicalPlan;
+use datafusion::prelude::{
+    CsvReadOptions, DataFrame, JsonReadOptions, ParquetReadOptions, SessionConfig, SessionContext,
+};
 use futures::StreamExt;
 
 use crate::engine::{
     ColumnHead, ColumnKind, ColumnProfile, DataError, Distinct, Engine, Format, Page, Profile,
-    Schema, Source, ValueCount, MAX_PAGE, TOP_VALUES,
+    QueryResult, Schema, Source, ValueCount, MAX_PAGE, MAX_QUERY_ROWS, TOP_VALUES,
 };
 
 /// Distinct values above which a column has no "most common" worth showing.
@@ -52,6 +58,16 @@ use crate::engine::{
 /// distinct count and an empty `common`, and both the pane and the model's
 /// summary say why. See [`crate::engine::ColumnProfile::common`].
 pub const TOP_VALUES_MAX_DISTINCT: u64 = 1_000;
+
+/// What one query may hold in memory before it is refused.
+///
+/// A ceiling rather than a target. DataFusion spills sorts and joins to disk,
+/// so an honest query over a large file does not come near this; what does is
+/// the accident — a cross join, a `GROUP BY` on a column with a million
+/// distinct values — and without a limit that accident is the whole app being
+/// killed by the operating system rather than one query failing. Failing is
+/// recoverable and says which query did it.
+const QUERY_MEMORY_BYTES: usize = 512 * 1024 * 1024;
 
 /// The name every source is registered under inside its own session.
 ///
@@ -78,6 +94,17 @@ impl DataFusionEngine {
     /// same failure if it is got wrong, which is an answer that looks right.
     async fn open(&self, source: &Source) -> Result<SessionContext, DataError> {
         let ctx = SessionContext::new();
+        self.register(&ctx, TABLE, source).await?;
+        Ok(ctx)
+    }
+
+    /// Registers one file under one name.
+    async fn register(
+        &self,
+        ctx: &SessionContext,
+        table: &str,
+        source: &Source,
+    ) -> Result<(), DataError> {
         let path = source.path.to_str().ok_or_else(|| {
             DataError::Failed(format!("{} is not valid UTF-8", source.path.display()))
         })?;
@@ -93,11 +120,11 @@ impl DataFusionEngine {
                 if source.format == Format::Tsv {
                     options = options.delimiter(b'\t');
                 }
-                ctx.register_csv(TABLE, path, options).await
+                ctx.register_csv(table, path, options).await
             }
             Format::Parquet => {
                 ctx.register_parquet(
-                    TABLE,
+                    table,
                     path,
                     ParquetReadOptions::default().file_extension(&suffix),
                 )
@@ -105,7 +132,7 @@ impl DataFusionEngine {
             }
             Format::Ndjson => {
                 ctx.register_json(
-                    TABLE,
+                    table,
                     path,
                     JsonReadOptions::default().file_extension(&suffix),
                 )
@@ -113,7 +140,35 @@ impl DataFusionEngine {
             }
         };
 
-        registered.map_err(|e| DataError::unreadable(source, e))?;
+        registered.map_err(|e| DataError::unreadable(source, e))
+    }
+
+    /// A session holding every named table a query may reach.
+    ///
+    /// All of them, not just the one being asked about, because the questions
+    /// worth asking span datasets — how many catalogue items were never
+    /// interacted with is a join, and a query tool that could not join would
+    /// answer only the easy half. Registration reads a header or a footer per
+    /// file, so a workspace with a handful of datasets pays milliseconds for
+    /// the ones the query does not touch.
+    ///
+    /// The memory ceiling is set here rather than on the profiling sessions
+    /// above: those run SQL this crate wrote, and this one runs SQL a model
+    /// wrote.
+    async fn session_for(&self, tables: &[(String, Source)]) -> Result<SessionContext, DataError> {
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_limit(QUERY_MEMORY_BYTES, 1.0)
+            .build_arc()
+            .map_err(|e| DataError::Failed(e.to_string()))?;
+        let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
+
+        for (name, source) in tables {
+            // Registered under the dataset's own name, which is what the model
+            // will write and what `load_dataset` told it. Those names are
+            // already reduced to word characters by the catalog, so nothing
+            // here has to quote or sanitize a table name.
+            self.register(&ctx, name, source).await?;
+        }
         Ok(ctx)
     }
 
@@ -127,17 +182,7 @@ impl DataFusionEngine {
             .table(TABLE)
             .await
             .map_err(|e| DataError::unreadable(source, e))?;
-        Ok(table
-            .schema()
-            .fields()
-            .iter()
-            .map(|field| ColumnHead {
-                name: field.name().clone(),
-                kind: kind_of(field.data_type()),
-                type_name: field.data_type().to_string(),
-                nullable: field.is_nullable(),
-            })
-            .collect())
+        Ok(heads_of(&table.schema().as_arrow().clone()))
     }
 }
 
@@ -274,6 +319,227 @@ impl Engine for DataFusionEngine {
             total,
         })
     }
+
+    async fn query(
+        &self,
+        tables: &[(String, Source)],
+        sql: &str,
+        limit: u64,
+    ) -> Result<QueryResult, DataError> {
+        let limit = limit.clamp(1, MAX_QUERY_ROWS);
+        let ctx = self.session_for(tables).await?;
+
+        // Planned before it is run, and refused here rather than after. This is
+        // the whole of the read-only guarantee — see `writes`.
+        let plan = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .map_err(|e| DataError::BadQuery {
+                detail: readable(&e.to_string()),
+            })?;
+        if let Some(kind) = writes(&plan) {
+            return Err(DataError::NotReadOnly { kind });
+        }
+
+        // One past the cap, so a result that filled it exactly can be told from
+        // one that was cut short. Wrapped around the plan rather than appended
+        // to the text: a query with its own LIMIT or ORDER BY keeps meaning
+        // what it said, and nothing is pasted into SQL somebody else wrote.
+        //
+        // Except over an `EXPLAIN`, which is not a relation and cannot be
+        // limited — DataFusion refuses the plan outright. Its output is a
+        // handful of rows by construction, so there is nothing to cap.
+        let explains = matches!(plan, LogicalPlan::Explain(_) | LogicalPlan::Analyze(_));
+        let frame = DataFrame::new(ctx.state(), plan);
+        let frame = if explains {
+            frame
+        } else {
+            frame
+                .limit(0, Some(limit as usize + 1))
+                .map_err(|e| DataError::BadQuery {
+                    detail: readable(&e.to_string()),
+                })?
+        };
+
+        let started = Instant::now();
+        let batches = frame.collect().await.map_err(|e| DataError::BadQuery {
+            detail: readable(&e.to_string()),
+        })?;
+        let took_ms = started.elapsed().as_millis() as u64;
+
+        let columns = batches
+            .first()
+            .map(|batch| heads_of(batch.schema_ref()))
+            .unwrap_or_default();
+
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let formatters = formatters_for(batch)?;
+            for row in 0..batch.num_rows() {
+                rows.push(
+                    batch
+                        .columns()
+                        .iter()
+                        .zip(&formatters)
+                        .map(|(array, format)| {
+                            (!array.is_null(row)).then(|| format.value(row).to_string())
+                        })
+                        .collect(),
+                );
+            }
+        }
+
+        let truncated = rows.len() as u64 > limit;
+        rows.truncate(limit as usize);
+
+        Ok(QueryResult {
+            columns,
+            rows,
+            truncated,
+            took_ms,
+        })
+    }
+}
+
+/// Whether this plan does anything but read, and what it is called if so.
+///
+/// **An exhaustive match, deliberately.** `query_data` is
+/// [`taurus_tools::Effect::Read`], which means it runs with no permission
+/// prompt, so a statement that slipped through here would be an unprompted
+/// write to the user's disk — `COPY … TO 'anywhere.parquet'` is one line of
+/// SQL. A `_ => None` arm would let a future DataFusion release add a writing
+/// variant and have this quietly wave it through. Written out, the same
+/// release fails to compile until somebody classifies it.
+///
+/// The whole tree is walked rather than just the root, because `EXPLAIN
+/// ANALYZE` carries its subject as a child *and runs it*.
+fn writes(plan: &LogicalPlan) -> Option<String> {
+    let mut found = None;
+    let _ = plan.apply(|node| {
+        if let Some(kind) = writes_here(node) {
+            found = Some(kind);
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    found
+}
+
+fn writes_here(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::Ddl(statement) => Some(as_sql(statement.name())),
+        LogicalPlan::Dml(statement) => Some(as_sql(&statement.op.to_string())),
+        LogicalPlan::Copy(_) => Some("COPY".to_string()),
+        // `SET`, `PREPARE`, transaction control. None of them writes a file,
+        // and all of them change the session out from under a tool that is
+        // meant to answer one question and leave nothing behind.
+        LogicalPlan::Statement(statement) => Some(as_sql(statement.name())),
+
+        // Reads. Listed rather than defaulted; see the note above.
+        LogicalPlan::Projection(_)
+        | LogicalPlan::Filter(_)
+        | LogicalPlan::Window(_)
+        | LogicalPlan::Aggregate(_)
+        | LogicalPlan::Sort(_)
+        | LogicalPlan::Join(_)
+        | LogicalPlan::Repartition(_)
+        | LogicalPlan::Union(_)
+        | LogicalPlan::TableScan(_)
+        | LogicalPlan::EmptyRelation(_)
+        | LogicalPlan::Subquery(_)
+        | LogicalPlan::SubqueryAlias(_)
+        | LogicalPlan::Limit(_)
+        | LogicalPlan::Values(_)
+        | LogicalPlan::Explain(_)
+        | LogicalPlan::Analyze(_)
+        | LogicalPlan::Extension(_)
+        | LogicalPlan::Distinct(_)
+        | LogicalPlan::DescribeTable(_)
+        | LogicalPlan::Unnest(_)
+        | LogicalPlan::RecursiveQuery(_) => None,
+    }
+}
+
+/// An engine's name for a statement, as the SQL somebody wrote.
+///
+/// DataFusion calls a `CREATE TABLE … AS SELECT` a `CreateMemoryTable`, which
+/// is accurate about the plan and unhelpful in a refusal — the reader wrote
+/// SQL and should be told about SQL. Derived rather than mapped, so a
+/// statement kind this has never seen still comes out readable instead of
+/// falling through to a name nobody typed.
+fn as_sql(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    let mut previous = ' ';
+    for c in name.chars() {
+        // Only at a camelCase hump. Splitting on every capital would turn a
+        // name that is already SQL — `COPY` — into `C O P Y`.
+        if c.is_uppercase() && (previous.is_lowercase() || previous.is_numeric()) {
+            out.push(' ');
+        }
+        out.extend(c.to_uppercase());
+        previous = c;
+    }
+    out.trim().to_string()
+}
+
+/// An engine error, reduced to one line without losing the useful half.
+///
+/// This was `lines().next()` and that was wrong in a way worth recording. A
+/// DataFusion schema error is two lines, and the *second* one is the part that
+/// helps:
+///
+/// ```text
+/// Schema error: No field named nope.
+/// Valid fields are events.id, events.event, events.price, events.active.
+/// ```
+///
+/// Keeping only the first threw away the column list — from the one message
+/// whose whole job is to put a wrong name one step from a right one, and for
+/// the reader least able to go and look it up. So what is dropped is the
+/// backtrace note DataFusion appends and nothing else; the rest is flowed onto
+/// one line, because this goes into a tool result the model pays for on every
+/// later request of the turn.
+fn readable(message: &str) -> String {
+    message
+        .lines()
+        .take_while(|line| {
+            !line
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("backtrace")
+        })
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Column heads from an Arrow schema.
+fn heads_of(schema: &datafusion::arrow::datatypes::Schema) -> Vec<ColumnHead> {
+    schema
+        .fields()
+        .iter()
+        .map(|field| ColumnHead {
+            name: field.name().clone(),
+            kind: kind_of(field.data_type()),
+            type_name: field.data_type().to_string(),
+            nullable: field.is_nullable(),
+        })
+        .collect()
+}
+
+/// One formatter per column of a batch, where there is no source to blame.
+fn formatters_for(batch: &RecordBatch) -> Result<Vec<ArrayFormatter<'_>>, DataError> {
+    let options = FormatOptions::default().with_null("");
+    batch
+        .columns()
+        .iter()
+        .map(|array| {
+            ArrayFormatter::try_new(array.as_ref(), &options)
+                .map_err(|e| DataError::Failed(e.to_string()))
+        })
+        .collect()
 }
 
 /// `SELECT count(*)`, then four expressions per column.
@@ -802,6 +1068,209 @@ id,event,price,active
             profile.columns.iter().any(|c| c.head.name.contains('"')),
             "{:?}",
             profile.columns
+        );
+    }
+
+    async fn ask(source: &Source, sql: &str) -> Result<QueryResult, DataError> {
+        DataFusionEngine::new()
+            .query(
+                &[("events".to_string(), source.clone())],
+                sql,
+                MAX_QUERY_ROWS,
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_query_answers_with_its_own_columns_and_rows() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+
+        let result = ask(
+            &source,
+            "SELECT event, count(*) AS n FROM events GROUP BY event ORDER BY n DESC, event",
+        )
+        .await
+        .unwrap();
+
+        let names: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["event", "n"]);
+        assert_eq!(result.rows[0][0].as_deref(), Some("view"));
+        assert_eq!(result.rows[0][1].as_deref(), Some("3"));
+        assert!(!result.truncated);
+    }
+
+    /// The reason `query` takes a list. Half the useful questions about a
+    /// dataset are about how it lines up with another one.
+    #[tokio::test]
+    async fn a_query_can_join_two_datasets() {
+        let dir = TempDir::new().unwrap();
+        let events = file(&dir, "events.csv", EVENTS);
+        let items = file(&dir, "items.csv", "id,label\n1,alpha\n2,beta\n3,gamma\n");
+
+        let result = DataFusionEngine::new()
+            .query(
+                &[
+                    ("events".to_string(), events),
+                    ("items".to_string(), items),
+                ],
+                "SELECT i.label, e.event FROM events e JOIN items i ON e.id = i.id ORDER BY i.label",
+                MAX_QUERY_ROWS,
+            )
+            .await
+            .unwrap();
+
+        // Three, not five: the catalogue has ids 1..3 and the events have
+        // 1..5, which is the shape of the question — how much of one side has
+        // no match on the other.
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(result.rows[0][0].as_deref(), Some("alpha"));
+    }
+
+    /// The guarantee the whole tool rests on.
+    ///
+    /// `query_data` is `Effect::Read`, so it runs with no permission prompt.
+    /// Every one of these is a statement that would touch the disk or the
+    /// session, and `COPY … TO` in particular is one line of SQL away from an
+    /// unprompted write anywhere the process can reach.
+    #[tokio::test]
+    async fn nothing_but_a_read_gets_through() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("escaped.parquet");
+
+        let refused = [
+            format!("COPY events TO '{}'", out.display()),
+            format!(
+                "COPY (SELECT * FROM events) TO '{}' STORED AS PARQUET",
+                out.display()
+            ),
+            "CREATE TABLE sneaky AS SELECT * FROM events".to_string(),
+            "CREATE EXTERNAL TABLE t STORED AS CSV LOCATION '/etc/passwd'".to_string(),
+            "DROP TABLE events".to_string(),
+            "INSERT INTO events VALUES (9, 'x', 1.0, true)".to_string(),
+            "SET datafusion.execution.batch_size = 1".to_string(),
+            // The reason the whole tree is walked rather than the root: this
+            // one *runs* what it is explaining.
+            format!("EXPLAIN ANALYZE COPY events TO '{}'", out.display()),
+        ];
+
+        for sql in refused {
+            let error = ask(&source, &sql).await.unwrap_err();
+            assert!(
+                matches!(error, DataError::NotReadOnly { .. }),
+                "{sql} was not refused as a write: {error}"
+            );
+        }
+
+        assert!(!out.exists(), "a refused statement still wrote a file");
+    }
+
+    /// `EXPLAIN` on its own plans and does not run, so it stays allowed — it is
+    /// the thing somebody reaches for when a query is slow.
+    #[tokio::test]
+    async fn explaining_a_select_is_still_a_read() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        assert!(ask(&source, "EXPLAIN SELECT * FROM events").await.is_ok());
+    }
+
+    /// DataFusion can be configured to treat a quoted path in `FROM` as a
+    /// table. It is off unless `enable_url_table` is called, and nothing here
+    /// calls it — which is the only thing standing between a read-only query
+    /// and every file on the machine, so it is worth a test rather than a
+    /// memory of a default.
+    #[tokio::test]
+    async fn a_file_path_is_not_a_table() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let elsewhere = file(&dir, "secret.csv", "a\n1\n");
+
+        let error = ask(
+            &source,
+            &format!("SELECT * FROM '{}'", elsewhere.path.display()),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, DataError::BadQuery { .. }), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_query_that_will_not_plan_says_why_in_one_line() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+
+        let error = ask(&source, "SELECT nope FROM events").await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("nope"), "{message}");
+        // The half that matters, and the half a `lines().next()` threw away:
+        // the columns that *do* exist. This is the message whose whole job is
+        // to put a wrong name one step from a right one.
+        assert!(message.contains("events.price"), "{message}");
+        // Still one line — this goes into a tool result the model pays for.
+        assert_eq!(message.lines().count(), 1, "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_name_that_is_not_a_table_is_a_query_error_not_a_crash() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        assert!(matches!(
+            ask(&source, "SELECT * FROM nosuchtable").await.unwrap_err(),
+            DataError::BadQuery { .. }
+        ));
+    }
+
+    /// A result that filled the cap exactly and one that was cut short look
+    /// identical from outside, and only one of them is the whole answer.
+    #[tokio::test]
+    async fn a_result_says_whether_it_was_cut_short() {
+        let dir = TempDir::new().unwrap();
+        let mut csv = String::from("id\n");
+        for i in 0..(MAX_QUERY_ROWS + 10) {
+            csv.push_str(&format!("{i}\n"));
+        }
+        let source = file(&dir, "events.csv", &csv);
+
+        let all = ask(&source, "SELECT * FROM events").await.unwrap();
+        assert_eq!(all.rows.len() as u64, MAX_QUERY_ROWS);
+        assert!(all.truncated);
+
+        let few = ask(&source, "SELECT * FROM events LIMIT 3").await.unwrap();
+        assert_eq!(few.rows.len(), 3);
+        assert!(!few.truncated, "three rows is the whole answer");
+    }
+
+    /// The cap is applied around the plan, not pasted onto the text, so a
+    /// query that ordered its own rows still gets the ones it asked for.
+    #[tokio::test]
+    async fn the_cap_does_not_disturb_an_order_the_query_asked_for() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let result = ask(&source, "SELECT id FROM events ORDER BY id DESC")
+            .await
+            .unwrap();
+        assert_eq!(result.rows[0][0].as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn a_statement_is_refused_in_the_words_somebody_typed() {
+        // The reader wrote SQL; `CreateMemoryTable` is the plan's name for it.
+        assert_eq!(as_sql("CreateMemoryTable"), "CREATE MEMORY TABLE");
+        assert_eq!(as_sql("DropTable"), "DROP TABLE");
+        assert_eq!(as_sql("SetVariable"), "SET VARIABLE");
+        assert_eq!(as_sql("Insert Into"), "INSERT INTO");
+        assert_eq!(as_sql("COPY"), "COPY");
+    }
+
+    #[test]
+    fn an_error_keeps_its_advice_and_drops_its_backtrace() {
+        let message = readable(
+            "Schema error: No field named nope.\nValid fields are events.id, events.price.\n\nbacktrace: 0: std::backtrace",
+        );
+        assert_eq!(
+            message,
+            "Schema error: No field named nope. Valid fields are events.id, events.price."
         );
     }
 

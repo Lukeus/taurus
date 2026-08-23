@@ -19,6 +19,7 @@
 //! That is also why the column listing has a ceiling and the pane does not. See
 //! [`MAX_LISTED_COLUMNS`].
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -32,10 +33,14 @@ use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolResult};
 
 use crate::catalog::{self, Dataset};
 use crate::df::TOP_VALUES_MAX_DISTINCT;
-use crate::engine::{ColumnProfile, DataError, Distinct, Engine, Format, Profile, Schema, Source};
+use crate::engine::{
+    ColumnProfile, DataError, Distinct, Engine, Format, Profile, QueryResult, Schema, Source,
+    MAX_QUERY_ROWS,
+};
 
 pub const LOAD_DATASET_TOOL: &str = "load_dataset";
 pub const PROFILE_DATASET_TOOL: &str = "profile_dataset";
+pub const QUERY_DATA_TOOL: &str = "query_data";
 
 /// Columns one tool result may name.
 ///
@@ -62,7 +67,12 @@ impl From<DataError> for ToolError {
             | DataError::NoSuchDataset { .. }
             | DataError::NotAFile(_)
             | DataError::BadName { .. }
-            | DataError::NameTaken { .. } => ToolError::InvalidInput(error.to_string()),
+            | DataError::NameTaken { .. }
+            // Both are the model's SQL rather than the harness's problem, and
+            // both are fixable by writing different SQL — which is what
+            // `InvalidInput` tells it to do.
+            | DataError::NotReadOnly { .. }
+            | DataError::BadQuery { .. } => ToolError::InvalidInput(error.to_string()),
             other => ToolError::Failed(other.to_string()),
         }
     }
@@ -241,6 +251,192 @@ impl Tool for ProfileDataset {
 
         Ok(describe_profile(&dataset, &profile).into())
     }
+}
+
+/// Columns one query result may show.
+///
+/// A `SELECT *` over a feature matrix is a result the model asked for and did
+/// not want: thirty rows of forty columns is most of a small context window.
+/// The cap is stated in the output, and it reads as a nudge toward naming the
+/// columns — which is the better query anyway.
+const MAX_RESULT_COLUMNS: usize = 12;
+
+/// How wide one cell may be before it is cut.
+const MAX_CELL: usize = 28;
+
+#[derive(Deserialize, JsonSchema)]
+pub struct QueryDataInput {
+    /// A SELECT query over the loaded datasets. Each one is a table, under the
+    /// name `load_dataset` reported — so `SELECT count(*) FROM events`, and
+    /// joins across two of them work.
+    pub sql: String,
+}
+
+/// Answers one read-only question about the loaded data.
+pub struct QueryData {
+    engine: Arc<dyn Engine>,
+    dir: PathBuf,
+}
+
+impl QueryData {
+    pub fn new(engine: Arc<dyn Engine>, dir: impl Into<PathBuf>) -> Self {
+        Self {
+            engine,
+            dir: dir.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for QueryData {
+    fn name(&self) -> &str {
+        QUERY_DATA_TOOL
+    }
+
+    fn description(&self) -> &str {
+        "Run one read-only SQL query over the loaded datasets and get the answer back. Every \
+         dataset is a table, named as load_dataset named it, so joins across two of them work. \
+         This is how to answer a question the profile does not — how many users bought more than \
+         once, which category has the highest refund rate, whether two files line up on a key. \
+         SELECT only: this cannot create, insert, copy, or drop, and trying is an error rather \
+         than a permission prompt. It answers with a handful of rows, so aggregate rather than \
+         selecting everything — and if the user should *look* at the answer, pass it to \
+         show_table."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        schema_for::<QueryDataInput>()
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
+    fn preview(&self, input: &serde_json::Value) -> String {
+        let sql = input.get("sql").and_then(|s| s.as_str()).unwrap_or("?");
+        format!("Query: {}", one_line(sql))
+    }
+
+    async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let input: QueryDataInput = parse_input(input)?;
+        // Through the shared resolver, so a query run from the pane and one run
+        // by the model see exactly the same tables.
+        let tables = catalog::tables(&self.dir, &ctx.workspace);
+        if tables.is_empty() {
+            return Err(ToolError::InvalidInput(
+                "no datasets are loaded in this workspace, so there is nothing to query. \
+                 load_dataset takes a file path."
+                    .into(),
+            ));
+        }
+        let names: Vec<&str> = tables.iter().map(|(name, _)| name.as_str()).collect();
+
+        // Cancellable, because this is the one tool here that can be told to
+        // do arbitrary work. Dropping the future is what stops it — the whole
+        // execution is async, so a cancelled turn does not leave a scan of a
+        // multi-gigabyte file running behind it.
+        let query = self.engine.query(&tables, &input.sql, MAX_QUERY_ROWS);
+        let result = tokio::select! {
+            result = query => result,
+            () = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
+        };
+
+        match result {
+            Ok(result) => Ok(render_result(&result).into()),
+            // A wrong table name is one line from a right one, the same
+            // courtesy `profile_dataset` gives.
+            Err(error @ DataError::BadQuery { .. }) => Err(ToolError::InvalidInput(format!(
+                "{error} Tables here: {}.",
+                names.join(", ")
+            ))),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+/// A query result, as a table the model reads.
+fn render_result(result: &QueryResult) -> String {
+    if result.columns.is_empty() || result.rows.is_empty() {
+        return format!("No rows. ({} ms)", result.took_ms);
+    }
+
+    let shown = result.columns.len().min(MAX_RESULT_COLUMNS);
+    let widths: Vec<usize> = (0..shown)
+        .map(|i| {
+            let header = result.columns[i].name.chars().count();
+            result
+                .rows
+                .iter()
+                .map(|row| cell_text(row.get(i)).chars().count())
+                .chain(std::iter::once(header))
+                .max()
+                .unwrap_or(header)
+                .min(MAX_CELL)
+        })
+        .collect();
+
+    let mut out = String::new();
+    for (column, width) in result.columns.iter().zip(&widths) {
+        let _ = write!(out, "{:width$}  ", cut(&column.name), width = width);
+    }
+    out.push('\n');
+    for row in &result.rows {
+        for (i, width) in widths.iter().enumerate() {
+            let _ = write!(
+                out,
+                "{:width$}  ",
+                cut(&cell_text(row.get(i))),
+                width = width
+            );
+        }
+        out.push('\n');
+    }
+
+    let _ = write!(
+        out,
+        "\n{} row{}",
+        result.rows.len(),
+        if result.rows.len() == 1 { "" } else { "s" }
+    );
+    if result.truncated {
+        // Stated, because a result that filled the cap and a result that was
+        // the whole answer look identical.
+        let _ = write!(out, " (the first {MAX_QUERY_ROWS}; there are more)");
+    }
+    if result.columns.len() > shown {
+        let _ = write!(
+            out,
+            " · {} more columns not shown — name the ones you want",
+            result.columns.len() - shown
+        );
+    }
+    let _ = write!(out, " · {} ms", result.took_ms);
+    out
+}
+
+/// A cell, with null distinguishable from an empty string.
+fn cell_text(cell: Option<&Option<String>>) -> String {
+    match cell {
+        Some(Some(value)) if value.is_empty() => "(empty)".to_string(),
+        Some(Some(value)) => value.clone(),
+        _ => "(null)".to_string(),
+    }
+}
+
+fn cut(value: &str) -> String {
+    if value.chars().count() <= MAX_CELL {
+        return value.to_string();
+    }
+    format!("{}…", value.chars().take(MAX_CELL - 1).collect::<String>())
+}
+
+/// A query on one line, for the row in the run header.
+fn one_line(sql: &str) -> String {
+    let flat = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= 72 {
+        return flat;
+    }
+    format!("{}…", flat.chars().take(71).collect::<String>())
 }
 
 /// The name a call will produce, from its input alone.
@@ -850,6 +1046,121 @@ mod calls {
         let (load, profile) = tools(&home);
         assert_eq!(load.effect(), Effect::Read);
         assert_eq!(profile.effect(), Effect::Read);
+    }
+
+    fn query(home: &TempDir) -> QueryData {
+        QueryData::new(Arc::new(crate::df::DataFusionEngine::new()), home.path())
+    }
+
+    /// Loads `data/events.csv` and hands back a context and the query tool.
+    async fn loaded() -> (ToolContext, TempDir, TempDir, QueryData) {
+        let (ctx, dir, home) = workspace();
+        let (load, _) = tools(&home);
+        load.execute(serde_json::json!({ "path": "data/events.csv" }), &ctx)
+            .await
+            .unwrap();
+        let tool = query(&home);
+        (ctx, dir, home, tool)
+    }
+
+    #[tokio::test]
+    async fn a_query_comes_back_as_a_table_with_its_cost() {
+        let (ctx, _dir, _home, tool) = loaded().await;
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "sql": "SELECT event, count(*) AS n FROM events GROUP BY event ORDER BY n DESC, event"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = out.to_text();
+        assert!(text.contains("event"), "{text}");
+        assert!(text.contains("view"), "{text}");
+        assert!(text.contains("2 rows"), "{text}");
+        assert!(text.contains("ms"), "{text}");
+    }
+
+    /// The refusal has to point somewhere. A model told only "no" tries the
+    /// same thing in a different dialect.
+    #[tokio::test]
+    async fn a_write_is_refused_and_named_as_the_recipe_it_wants_to_be() {
+        let (ctx, dir, _home, tool) = loaded().await;
+        let out = dir.path().join("escaped.parquet");
+        let error = tool
+            .execute(
+                serde_json::json!({ "sql": format!("COPY events TO '{}'", out.display()) }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ToolError::InvalidInput(_)), "{error}");
+        assert!(error.to_string().contains("recipe"), "{error}");
+        assert!(!out.exists(), "a refused write still wrote a file");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_table_name_is_answered_with_the_right_ones() {
+        let (ctx, _dir, _home, tool) = loaded().await;
+        let error = tool
+            .execute(serde_json::json!({ "sql": "SELECT * FROM event" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Tables here: events"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn querying_an_empty_workspace_says_how_to_get_a_table() {
+        let (ctx, _dir, home) = workspace();
+        let error = query(&home)
+            .execute(serde_json::json!({ "sql": "SELECT 1" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("load_dataset"), "{error}");
+    }
+
+    /// An entry whose file has moved must not take every other query with it.
+    #[tokio::test]
+    async fn a_dataset_whose_file_has_gone_is_skipped_rather_than_fatal() {
+        let (ctx, dir, home) = workspace();
+        let (load, _) = tools(&home);
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("data/other.csv"), "n\n1\n").unwrap();
+        load.execute(serde_json::json!({ "path": "data/events.csv" }), &ctx)
+            .await
+            .unwrap();
+        load.execute(serde_json::json!({ "path": "data/other.csv" }), &ctx)
+            .await
+            .unwrap();
+        std::fs::remove_file(root.join("data/other.csv")).unwrap();
+
+        let out = query(&home)
+            .execute(
+                serde_json::json!({ "sql": "SELECT count(*) AS n FROM events" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.to_text().contains('3'), "{}", out.to_text());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_does_not_run_the_query() {
+        let (ctx, _dir, _home, tool) = loaded().await;
+        ctx.cancel.cancel();
+        let error = tool
+            .execute(serde_json::json!({ "sql": "SELECT * FROM events" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Canceled), "{error}");
+    }
+
+    #[tokio::test]
+    async fn querying_asks_no_permission_either() {
+        let (_ctx, _dir, home) = workspace();
+        assert_eq!(query(&home).effect(), Effect::Read);
     }
 
     #[tokio::test]

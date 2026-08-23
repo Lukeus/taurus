@@ -763,6 +763,7 @@ they find.
 | --- | --- | --- |
 | `load_dataset` | Reads a file's columns and gives it a short name | A question is about the *contents* of a data file |
 | `profile_dataset` | Reads the whole file and describes every column | You have not seen the data and need to know its shape |
+| `query_data` | Runs one read-only SQL query over the loaded datasets | The question is specific, or spans two files |
 
 `.csv`, `.tsv`, `.parquet`, and newline-delimited `.ndjson` / `.jsonl` /
 `.json`. A `.json` file holding a single array is not newline-delimited JSON
@@ -796,6 +797,48 @@ A column with more different values than a top five says anything about gets
 none, and says that rather than going quiet: five arbitrary user ids read like
 a finding. The exact count is still there.
 
+### Asking a question
+
+A profile answers *what is in here*. `query_data` answers everything after
+that, in SQL, over every loaded dataset at once — each is a table under the
+name `load_dataset` gave it, so a join is just a join.
+
+```
+  tool Query: SELECT category, count(*) AS n FROM interactions GROUP BY category ORDER BY n DESC
+    ✓ category     n
+      electronics  67179
+      apparel      67102
+      …
+      6 rows · 34 ms
+```
+
+It answers with thirty rows at most. That is a context limit rather than a
+reading one: a query result is read by the *model*, and every row is paid for
+again on every later request of the turn. So it is a tool for aggregating, and
+a result that hits the cap says so — a query that filled it and a query that
+answered completely look identical otherwise. When the answer is something you
+should *look* at, the model passes it to `show_table`.
+
+**SELECT only, and that is a guarantee rather than a convention.** `query_data`
+is a read tool, so it runs with no permission prompt — which means anything
+that writes must be impossible rather than discouraged. `COPY … TO 'anywhere'`
+is one line of SQL and would otherwise be an unprompted write to any path the
+process can reach. So every query is planned before it is run and refused if
+the plan does anything but read: no `COPY`, no `CREATE`, no `INSERT`, no `DROP`,
+no `SET`. The whole plan tree is checked, not just the top of it, because
+`EXPLAIN ANALYZE` carries its subject underneath and runs it. A plain `EXPLAIN`
+is still allowed, because it plans without executing and it is what you reach
+for when a query is slow.
+
+The refusal names what a write is for:
+
+> that is not a read-only query. `query_data` runs SELECT and nothing else —
+> no COPY. Writing a table is what a recipe does.
+
+Quoted file paths are not tables either. DataFusion can be configured to treat
+`SELECT * FROM '/etc/passwd'` as a read of that file; Taurus never enables it,
+and there is a test that fails if that default ever moves.
+
 ### The Data pane
 
 Neither tool hands rows back to the model. A page of a dataset is the most
@@ -814,10 +857,21 @@ loaded a file shows no switch at all — the same rule the composer's `/` hint a
 the rail's MCP badge follow. Loading the first one makes the tab appear, and
 forgetting the last one takes it away again.
 
-Two views per dataset. **Columns** is the profile: a row per column, with a bar
-on the missing count so a forty-column table can be scanned down rather than
-read. **Rows** is a page of the data itself, a hundred at a time, with the row
-number so a window into a million-row file says where in it you are.
+Three views. **Columns** is the profile: a row per column, with a bar on the
+missing count so a forty-column table can be scanned down rather than read.
+**Rows** is a page of the data itself, a hundred at a time, with the row number
+so a window into a million-row file says where in it you are. **Query** is a
+SQL box over all of them — ⌘↵ runs it — answering into the same grid, with what
+the query cost beside the row count.
+
+The query box is deliberately not checked in the frontend. The refusal above
+lives in one place, where the model's calls go through it too; a second rule
+here would be one more thing to keep in step with the real one.
+
+A cell is drawn exactly as the engine rendered it. Nothing re-formats a number,
+because half the values that look like numbers are not — a zero-padded product
+code, an id, a version — and grouping separators are for the counts the pane
+works out itself.
 
 Nothing is cached. Every profile and every page is read when it is asked for,
 because a dataset entry is a pointer to a file that anything can rewrite — the

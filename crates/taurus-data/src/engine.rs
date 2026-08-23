@@ -299,6 +299,46 @@ pub struct Page {
     pub total: u64,
 }
 
+/// What a query answered with.
+///
+/// Its own type rather than a [`Page`], because the two are different
+/// questions. A page is a window into a known table and says where in it you
+/// are; a query result is however many rows the query produced, and `offset`
+/// and `total` have no meaning for it — a `GROUP BY` over a million rows has a
+/// total of six.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, rename = "DataQueryResult")]
+pub struct QueryResult {
+    pub columns: Vec<ColumnHead>,
+    /// Cells as strings, `None` for null — the same arrangement [`Page`] uses,
+    /// for the same reason.
+    pub rows: Vec<Vec<Option<String>>>,
+    /// Whether [`MAX_QUERY_ROWS`] cut the answer short.
+    ///
+    /// Carried rather than inferred from the row count. A query that returned
+    /// exactly the cap and a query that was truncated at it look identical from
+    /// outside, and only one of them is the whole answer.
+    pub truncated: bool,
+    /// How long the engine took, in milliseconds.
+    ///
+    /// Measured around execution rather than around the whole call, so it is
+    /// the query's cost and not the IPC hop's. Worth showing: iterating on a
+    /// query over a large file is the one place in this feature where somebody
+    /// is waiting on a number they can change.
+    #[ts(type = "number")]
+    pub took_ms: u64,
+}
+
+/// Rows one [`Engine::query`] call may return.
+///
+/// Smaller than [`MAX_PAGE`], and for a different reason. A page is scrolled
+/// by a person and costs nothing but pixels; a query result is read by the
+/// *model*, and every row is context it pays for on every later request of the
+/// turn. Thirty is enough to see the shape of an answer and few enough that a
+/// wrong query costs a paragraph rather than a page. A query that wants more
+/// rows than this wants to be a recipe writing a file.
+pub const MAX_QUERY_ROWS: u64 = 30;
+
 /// Rows one [`Engine::page`] call may return.
 ///
 /// A reading limit, and a smaller one than it looks: the pane pages, so this is
@@ -353,6 +393,18 @@ pub enum DataError {
     #[error("could not write the dataset list at {path}: {detail}")]
     NotSaved { path: String, detail: String },
 
+    #[error(
+        "that is not a read-only query. `query_data` runs SELECT and nothing else — no {kind}. \
+         Writing a table is what a recipe does."
+    )]
+    NotReadOnly {
+        /// What the statement actually was, in the engine's own words.
+        kind: String,
+    },
+
+    #[error("that query will not run: {detail}")]
+    BadQuery { detail: String },
+
     #[error("{0}")]
     Failed(String),
 }
@@ -397,6 +449,26 @@ pub trait Engine: Send + Sync {
 
     /// A window of rows, at most [`MAX_PAGE`] of them.
     async fn page(&self, source: &Source, offset: u64, limit: u64) -> Result<Page, DataError>;
+
+    /// Runs one read-only query over the given tables.
+    ///
+    /// Takes a list rather than a source because the useful questions span
+    /// datasets — how many of the items in the catalogue were never
+    /// interacted with is a join, and a query tool that could not join would
+    /// be answering the easy half. Each entry is the name the SQL calls it by
+    /// and the file behind it.
+    ///
+    /// **Read-only is a guarantee this makes, not a hope.** The tool above it
+    /// is [`taurus_tools::Effect::Read`], which means no permission prompt, so
+    /// an implementation that let `COPY … TO` or `CREATE TABLE` through would
+    /// be an unprompted write. See [`DataError::NotReadOnly`], and the
+    /// implementation's own note on how it is enforced.
+    async fn query(
+        &self,
+        tables: &[(String, Source)],
+        sql: &str,
+        limit: u64,
+    ) -> Result<QueryResult, DataError>;
 }
 
 #[cfg(test)]

@@ -7,7 +7,8 @@
 //! - [`df`] is the implementation, today. Apache DataFusion, embedded.
 //! - [`catalog`] is what a workspace has loaded — a list of pointers, kept in
 //!   the harness's config home rather than in the project.
-//! - [`tool`] is `load_dataset` and `profile_dataset`, which the model calls.
+//! - [`tool`] is `load_dataset`, `profile_dataset`, and `query_data`, which
+//!   the model calls.
 //!
 //! # Why a dataset is a handle and not a view
 //!
@@ -29,19 +30,25 @@
 //!
 //! # What this phase does not do
 //!
-//! It does not write. There is no transform, no recipe, and no derived table,
-//! and their absence is a scope decision rather than an oversight — see the
-//! note on [`engine::Engine`].
+//! It does not write. `query_data` runs SQL, and refuses anything that is not
+//! a read — see [`engine::DataError::NotReadOnly`], which is a guarantee rather
+//! than a hope, because the tool above it asks no permission. There is no
+//! transform that lands anywhere, no recipe, and no derived table; their
+//! absence is a scope decision rather than an oversight, and the note on
+//! [`engine::Engine`] says why the line is drawn where it is.
 
 pub mod catalog;
 pub mod df;
 pub mod engine;
 pub mod tool;
 
-pub use catalog::{data_dir, Dataset};
+pub use catalog::{data_dir, tables, Dataset};
 pub use df::DataFusionEngine;
 pub use engine::{
     ColumnHead, ColumnKind, ColumnProfile, DataError, Distinct, Engine, Format, Page, Profile,
-    Schema, Source, ValueCount, MAX_PAGE,
+    QueryResult, Schema, Source, ValueCount, MAX_PAGE, MAX_QUERY_ROWS,
 };
-pub use tool::{LoadDataset, ProfileDataset, LOAD_DATASET_TOOL, PROFILE_DATASET_TOOL};
+pub use tool::{
+    LoadDataset, ProfileDataset, QueryData, LOAD_DATASET_TOOL, PROFILE_DATASET_TOOL,
+    QUERY_DATA_TOOL,
+};

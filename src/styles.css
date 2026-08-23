@@ -4306,3 +4306,49 @@ button.link:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/*
+ * The query box.
+ *
+ * A textarea rather than an editor. Syntax highlighting SQL means either a
+ * dependency the size of the terminal emulator or a regex that is wrong on the
+ * first string literal containing a keyword — and what makes a query readable
+ * here is monospace and room, both of which are free.
+ */
+.query-box {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.query-sql {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 11px 13px;
+  resize: vertical;
+  min-height: 4.5em;
+}
+.query-sql:focus {
+  outline: none;
+}
+.query-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 13px;
+  border-top: 1px solid var(--rule);
+  background: var(--bg-raised);
+}
+.query-foot .micro {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

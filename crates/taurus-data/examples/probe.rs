@@ -9,6 +9,12 @@
 //! ```sh
 //! cargo run -p taurus-data --example probe -- ~/data/events.parquet
 //! cargo run -p taurus-data --example probe -- ~/data/interactions.csv
+//!
+//! # With a query, which is the other half of what this checks. The table is
+//! # named the way `load_dataset` would name it, so the SQL here is the SQL
+//! # you would type in the pane.
+//! cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+//!   "SELECT category, count(*) AS n FROM interactions GROUP BY 1 ORDER BY n DESC"
 //! ```
 //!
 //! Needs no provider and no model. Run it on something large before touching
@@ -26,6 +32,9 @@
 //!   once at the top of the file and once deep into it. A page a thousand rows
 //!   in that costs more than the first is a `LIMIT` being applied after the
 //!   rows were collected rather than inside the query.
+//! - **query**, when one is given, is the only number here that depends on
+//!   what was asked. It also proves the refusal: hand it a `COPY … TO` and it
+//!   should print the refusal rather than a file.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -36,12 +45,15 @@ use taurus_data::{DataFusionEngine, Distinct, Engine, Source};
 async fn main() {
     let Some(argument) = std::env::args().nth(1) else {
         eprintln!(
-            "usage: cargo run -p taurus-data --example probe -- <file>\n\n\
+            "usage: cargo run -p taurus-data --example probe -- <file> [sql]\n\n\
              Reads a .csv, .tsv, .parquet, .ndjson, .jsonl, or .json file and reports what\n\
-             loading, profiling, and paging it cost. Point it at something large."
+             loading, profiling, and paging it cost. Point it at something large.\n\n\
+             With a second argument, runs it as a query. The table is named the way\n\
+             load_dataset would name it — the file's stem, lowercased."
         );
         std::process::exit(2);
     };
+    let sql = std::env::args().nth(2);
 
     let path = PathBuf::from(&argument)
         .canonicalize()
@@ -133,6 +145,65 @@ async fn main() {
         }
     }
 
+    if let Some(sql) = &sql {
+        // Named the way `load_dataset` would name it, so the SQL that works
+        // here is the SQL that works in the app.
+        let table = taurus_data::catalog::suggest_name(&path);
+        println!("\nquery, over `{table}`:\n  {sql}\n");
+
+        // Not timed from out here: the result carries the engine's own
+        // measurement, taken around execution rather than around the session
+        // setup in front of it.
+        match engine
+            .query(&[(table, source.clone())], sql, taurus_data::MAX_QUERY_ROWS)
+            .await
+        {
+            Ok(result) => {
+                let widths: Vec<usize> = result
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, column)| {
+                        result
+                            .rows
+                            .iter()
+                            .map(|row| shown(row.get(i)).chars().count())
+                            .chain(std::iter::once(column.name.chars().count()))
+                            .max()
+                            .unwrap_or(8)
+                            .min(24)
+                    })
+                    .collect();
+
+                let heads: Vec<String> = result
+                    .columns
+                    .iter()
+                    .zip(&widths)
+                    .map(|(c, w)| format!("{:w$}", cut(&c.name, *w), w = w))
+                    .collect();
+                println!("  {}", heads.join("  "));
+                for row in &result.rows {
+                    let cells: Vec<String> = widths
+                        .iter()
+                        .enumerate()
+                        .map(|(i, w)| format!("{:w$}", cut(&shown(row.get(i)), *w), w = w))
+                        .collect();
+                    println!("  {}", cells.join("  "));
+                }
+                println!(
+                    "\n  {} row{}{} · {} ms",
+                    result.rows.len(),
+                    if result.rows.len() == 1 { "" } else { "s" },
+                    if result.truncated { " (capped)" } else { "" },
+                    result.took_ms
+                );
+            }
+            // Printed rather than panicked, because a refusal is a correct
+            // outcome here and the message is the thing being checked.
+            Err(e) => println!("  refused: {e}"),
+        }
+    }
+
     // Printed last because it is the part a reader checks by eye: the types
     // being right, and the first rows looking like what the file actually
     // holds, is the half no timing can tell you.
@@ -151,6 +222,15 @@ async fn main() {
             })
             .collect();
         println!("  {}", cells.join(" | "));
+    }
+}
+
+/// A cell, with null and the empty string told apart.
+fn shown(cell: Option<&Option<String>>) -> String {
+    match cell {
+        Some(Some(value)) if value.is_empty() => "‹empty›".to_string(),
+        Some(Some(value)) => value.clone(),
+        _ => "‹null›".to_string(),
     }
 }
 

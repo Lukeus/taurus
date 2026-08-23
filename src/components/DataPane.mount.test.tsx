@@ -242,6 +242,154 @@ describe("the rows view", () => {
   });
 });
 
+describe("the query view", () => {
+  /** An empty profile for the tab that renders first, and `answer` for the
+   *  query itself — the pane opens on Columns, so a single mock would feed a
+   *  query result to the profile view. */
+  function answering(answer: () => Promise<unknown>) {
+    invoke.mockImplementation((name: string) =>
+      name === "query_data"
+        ? answer()
+        : Promise.resolve({ rows: 0, engine: "DataFusion", columns: [] }),
+    );
+  }
+
+  async function queryTab(datasets: Dataset[] = [EVENTS]) {
+    const host = await mount(datasets);
+    const tab = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Query",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      tab.click();
+    });
+    return host;
+  }
+
+  const sqlBox = (host: HTMLElement) =>
+    host.querySelector(".query-sql") as HTMLTextAreaElement;
+
+  async function run(host: HTMLElement) {
+    const button = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.startsWith("Run"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      button.click();
+    });
+  }
+
+  it("starts on the selected dataset and names every table that can be joined", async () => {
+    answering(() => Promise.resolve(null));
+    const host = await queryTab([
+      EVENTS,
+      { name: "items", path: "data/items.parquet", format: "parquet" },
+    ]);
+    expect(sqlBox(host).value).toBe("SELECT * FROM events LIMIT 20");
+    // Both, because a query spans them — that is what makes a join possible,
+    // and a hint naming only the selected one would hide it.
+    expect(host.textContent).toContain("tables: events, items");
+  });
+
+  it("draws the answer, with what it cost", async () => {
+    answering(() =>
+      Promise.resolve({
+        columns: [
+          { name: "event", kind: "text", type_name: "Utf8", nullable: false },
+          { name: "n", kind: "number", type_name: "Int64", nullable: false },
+        ],
+        rows: [
+          ["view", "219922"],
+          ["click", "100189"],
+        ],
+        truncated: false,
+        took_ms: 41,
+      }),
+    );
+
+    const host = await queryTab();
+    await run(host);
+
+    expect(invoke).toHaveBeenCalledWith("query_data", {
+      sql: "SELECT * FROM events LIMIT 20",
+    });
+    expect(host.textContent).toContain("2 rows");
+    expect(host.textContent).toContain("41 ms");
+    // Verbatim, not `219,922`. A cell arrives already rendered by the engine,
+    // and re-formatting one would corrupt every value that only looks like a
+    // number — a zero-padded code, an id, a version. Grouping separators are
+    // for the counts the pane computes itself.
+    expect(host.textContent).toContain("219922");
+  });
+
+  // A result that filled the cap and one that is the whole answer look
+  // identical, so the difference has to be said.
+  it("says when the answer was capped", async () => {
+    answering(() =>
+      Promise.resolve({
+        columns: [{ name: "id", kind: "number", type_name: "Int64", nullable: false }],
+        rows: Array.from({ length: 30 }, (_, i) => [String(i)]),
+        truncated: true,
+        took_ms: 12,
+      }),
+    );
+    const host = await queryTab();
+    await run(host);
+    expect(host.textContent).toContain("capped");
+  });
+
+  it("shows the engine's refusal rather than a frontend guess at one", async () => {
+    // The pane deliberately does not check the SQL itself. A second rule here
+    // would be one more thing to keep in step with the real one, and this box
+    // is not where the guarantee lives.
+    answering(() =>
+      Promise.reject(
+        new Error(
+          "that is not a read-only query. `query_data` runs SELECT and nothing else — no COPY.",
+        ),
+      ),
+    );
+    const host = await queryTab();
+    await run(host);
+    expect(host.querySelector(".data-problem")?.textContent).toContain("COPY");
+  });
+
+  it("drops the previous answer when the next query fails", async () => {
+    answering(() =>
+      Promise.resolve({
+        columns: [{ name: "n", kind: "number", type_name: "Int64", nullable: false }],
+        rows: [["7"]],
+        truncated: false,
+        took_ms: 3,
+      }),
+    );
+    const host = await queryTab();
+    await run(host);
+    expect(host.querySelector(".grid-box")).not.toBeNull();
+
+    // Left standing, the old grid reads as the answer to the query that just
+    // failed.
+    answering(() =>
+      Promise.reject(new Error("that query will not run: no column 'nope'")),
+    );
+    await run(host);
+    expect(host.querySelector(".grid-box")).toBeNull();
+    expect(host.textContent).toContain("nope");
+  });
+
+  it("says so when the query matched nothing, rather than drawing an empty table", async () => {
+    answering(() =>
+      Promise.resolve({
+        columns: [{ name: "n", kind: "number", type_name: "Int64", nullable: false }],
+        rows: [],
+        truncated: false,
+        took_ms: 5,
+      }),
+    );
+    const host = await queryTab();
+    await run(host);
+    expect(host.textContent).toContain("matched nothing");
+  });
+});
+
 describe("forgetting a dataset", () => {
   it("asks nothing first, and says the file is untouched", async () => {
     // Unlike deleting a conversation, which arms. Forgetting removes a pointer

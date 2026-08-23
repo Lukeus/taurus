@@ -32,6 +32,7 @@ const TOOL_GLYPH: Record<string, string> = {
   remember: "⚑",
   load_dataset: "▦",
   profile_dataset: "▦",
+  query_data: "⌗",
 };
 
 /**
@@ -59,6 +60,7 @@ const TOOL_CLASS: Record<
   run_skill_script: "skill",
   load_dataset: "read",
   profile_dataset: "read",
+  query_data: "read",
   // Its own category rather than a read or a write. Nothing in the workspace
   // moved, but something was kept — and a note is the one step in a turn whose
   // effect is on the *next* conversation, which is worth being able to spot

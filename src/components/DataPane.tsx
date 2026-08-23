@@ -3,10 +3,12 @@ import { useEffect, useState } from "react";
 import { FORMAT_LABEL } from "./DatasetCard";
 import * as api from "../lib/api";
 import type {
+  DataColumn,
   DataColumnProfile,
   DataDistinct,
   DataPage,
   DataProfile,
+  DataQueryResult,
   Dataset,
 } from "../lib/api";
 
@@ -47,7 +49,7 @@ export function DataPane({
   onSelect: (name: string) => void;
   onForget: (name: string) => void;
 }) {
-  const [tab, setTab] = useState<"columns" | "rows">("columns");
+  const [tab, setTab] = useState<"columns" | "rows" | "query">("columns");
 
   // Falls back to the first, so the pane is never open on nothing while there
   // is something to be open on. A name that no longer exists — a dataset
@@ -124,15 +126,26 @@ export function DataPane({
         >
           Rows
         </button>
+        <button
+          className={`seg${tab === "query" ? " on" : ""}`}
+          onClick={() => setTab("query")}
+        >
+          Query
+        </button>
       </div>
 
-      {/* Keyed on the dataset so switching between two of them starts the new
-          one clean rather than showing the old one's numbers under the new
-          one's name while the read is in flight. */}
-      {tab === "columns" ? (
-        <Columns key={dataset.name} name={dataset.name} />
-      ) : (
-        <Rows key={dataset.name} name={dataset.name} />
+      {/* The first two are keyed on the dataset, so switching between two of
+          them starts clean rather than showing the old one's numbers under the
+          new one's name while the read is in flight.
+
+          Query deliberately is not. A query spans every loaded dataset — that
+          is what makes joins possible — so clicking another chip while writing
+          one is choosing a table to name, not changing the subject, and
+          throwing the half-written SQL away would be the pane disagreeing. */}
+      {tab === "columns" && <Columns key={dataset.name} name={dataset.name} />}
+      {tab === "rows" && <Rows key={dataset.name} name={dataset.name} />}
+      {tab === "query" && (
+        <Query tables={datasets.map((d) => d.name)} start={dataset.name} />
       )}
     </div>
   );
@@ -313,7 +326,6 @@ function Rows({ name }: { name: string }) {
   if (!page) return <p className="data-reading">Reading {name}…</p>;
 
   const last = Math.min(offset + page.rows.length, page.total);
-  const template = `3rem repeat(${page.columns.length}, minmax(7rem, 1fr))`;
 
   return (
     <div className="data-body">
@@ -343,24 +355,156 @@ function Rows({ name }: { name: string }) {
         </button>
       </p>
 
-      <div className="grid-box">
-        <div className="grid-row head" style={{ gridTemplateColumns: template }}>
-          <span className="grid-n">#</span>
-          {page.columns.map((column) => (
-            <span key={column.name} title={column.type_name}>
-              {column.name}
-            </span>
-          ))}
-        </div>
-        {page.rows.map((row, i) => (
-          <div key={i} className="grid-row" style={{ gridTemplateColumns: template }}>
-            <span className="grid-n">{(offset + i + 1).toLocaleString()}</span>
-            {row.map((cell, j) => (
-              <Cell key={j} value={cell} numeric={page.columns[j]?.kind === "number"} />
-            ))}
-          </div>
+      <Grid columns={page.columns} rows={page.rows} from={offset + 1} />
+    </div>
+  );
+}
+
+/**
+ * Columns and rows, drawn.
+ *
+ * Shared by the paged view of a file and the result of a query, because they
+ * are the same picture — and because the one thing that must not differ
+ * between them is how a missing value is drawn.
+ */
+function Grid({
+  columns,
+  rows,
+  from,
+}: {
+  columns: DataColumn[];
+  rows: (string | null)[][];
+  /** What to number the first row. A page counts from its offset in the file;
+   *  a query result counts from one, because it has no file position. */
+  from: number;
+}) {
+  const template = `3rem repeat(${columns.length}, minmax(7rem, 1fr))`;
+  return (
+    <div className="grid-box">
+      <div className="grid-row head" style={{ gridTemplateColumns: template }}>
+        <span className="grid-n">#</span>
+        {columns.map((column, i) => (
+          <span key={`${column.name}-${i}`} title={column.type_name}>
+            {column.name}
+          </span>
         ))}
       </div>
+      {rows.map((row, i) => (
+        <div key={i} className="grid-row" style={{ gridTemplateColumns: template }}>
+          <span className="grid-n">{(from + i).toLocaleString()}</span>
+          {row.map((cell, j) => (
+            <Cell key={j} value={cell} numeric={columns[j]?.kind === "number"} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Ad-hoc SQL over every loaded dataset.
+ *
+ * The pane's answer to the questions a profile cannot reach — how many users
+ * bought more than once, which category refunds most, whether two files agree
+ * on a key. Every dataset is a table under its own name, so a join is just a
+ * join.
+ *
+ * Read-only is not enforced here and must not be: this box takes whatever is
+ * typed into it, and `COPY … TO` is one line of SQL. The refusal lives in the
+ * engine, where the tool the model calls goes through the same gate — see
+ * `taurus_data::Engine::query`. A frontend check would be a second rule to
+ * keep in step with the real one.
+ */
+function Query({ tables, start }: { tables: string[]; start: string }) {
+  // Seeded once, from whichever dataset was selected when the tab was first
+  // opened. Not re-seeded on every chip click: this component is deliberately
+  // unkeyed so that choosing another table to name does not throw away the
+  // query being written.
+  const [sql, setSql] = useState(() => `SELECT * FROM ${start} LIMIT 20`);
+  const [result, setResult] = useState<DataQueryResult | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+
+  const run = async () => {
+    if (!sql.trim() || running) return;
+    setRunning(true);
+    setProblem(null);
+    try {
+      setResult(await api.queryData(sql));
+    } catch (e) {
+      // The previous result is dropped rather than left standing under a new
+      // error, which would read as the answer to the query that just failed.
+      setResult(null);
+      setProblem(String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div className="data-body">
+      <div className="query-box">
+        <textarea
+          className="query-sql"
+          value={sql}
+          spellCheck={false}
+          rows={4}
+          aria-label="SQL"
+          onChange={(e) => setSql(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter is a newline: this is SQL, and a query worth writing is
+            // more than one line. ⌘↵ and ⌃↵ run it, as every SQL client does.
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void run();
+            }
+          }}
+        />
+        <div className="query-foot">
+          <span className="micro">
+            {tables.length === 1
+              ? `table: ${tables[0]}`
+              : `tables: ${tables.join(", ")}`}
+          </span>
+          <div className="spacer" />
+          <span className="micro">⌘↵ run</span>
+          <button
+            className="primary"
+            disabled={running || !sql.trim()}
+            onClick={() => void run()}
+          >
+            {running ? "Running…" : "Run"}
+          </button>
+        </div>
+      </div>
+
+      {problem && <p className="data-problem">{problem}</p>}
+
+      {result && !problem && (
+        <>
+          <p className="data-summary">
+            <b>{result.rows.length.toLocaleString()}</b>{" "}
+            {result.rows.length === 1 ? "row" : "rows"}
+            {/* Said, not left to be inferred. A result that filled the cap and
+                one that is the whole answer look identical. */}
+            {result.truncated && <> · capped — add a LIMIT or aggregate</>}
+            {" · "}
+            {result.took_ms.toLocaleString()} ms
+          </p>
+          {result.rows.length > 0 ? (
+            <Grid columns={result.columns} rows={result.rows} from={1} />
+          ) : (
+            <p className="data-reading">The query matched nothing.</p>
+          )}
+        </>
+      )}
+
+      {!result && !problem && (
+        <p className="data-reading">
+          SELECT only. Anything that writes is refused — that is what a recipe
+          is for.
+        </p>
+      )}
     </div>
   );
 }
@@ -388,6 +532,10 @@ function Cell({ value, numeric }: { value: string | null; numeric: boolean }) {
       </span>
     );
   }
+  // Verbatim. The engine already rendered this cell, and re-formatting it here
+  // would corrupt every value that only looks like a number: a zero-padded
+  // product code, an id, a version string. Grouping separators are for the
+  // counts the pane computes itself, which are real numbers.
   return (
     <span className={`grid-cell${numeric ? " right" : ""}`} title={value}>
       {value}

@@ -24,6 +24,7 @@ import type { DataDistinct } from "../bindings/DataDistinct";
 import type { DataFormat } from "../bindings/DataFormat";
 import type { DataPage } from "../bindings/DataPage";
 import type { DataProfile } from "../bindings/DataProfile";
+import type { DataQueryResult } from "../bindings/DataQueryResult";
 import type { DataValueCount } from "../bindings/DataValueCount";
 import type { Dataset } from "../bindings/Dataset";
 import type { Commit } from "../bindings/Commit";
@@ -106,6 +107,7 @@ export type {
   DataFormat,
   DataPage,
   DataProfile,
+  DataQueryResult,
   DataValueCount,
   Dataset,
   ContentBlock,
@@ -370,6 +372,17 @@ export const datasetProfile = (name: string) =>
  *  whole file gets a page rather than a hang. */
 export const datasetPage = (name: string, offset: number, limit: number) =>
   invoke<DataPage>("dataset_page", { name, offset, limit });
+
+/**
+ * Answers one read-only SQL question over every dataset loaded here.
+ *
+ * Every dataset is a table under its own name, so a query can join two of
+ * them. The engine refuses anything that is not a SELECT, which is what lets
+ * this be an ordinary call rather than one behind a confirmation — the box
+ * this comes from takes arbitrary text.
+ */
+export const queryData = (sql: string) =>
+  invoke<DataQueryResult>("query_data", { sql });
 
 /** Drops a dataset from the list and answers with what is left. The file it
  *  pointed at is not touched. */

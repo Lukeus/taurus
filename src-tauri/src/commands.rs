@@ -24,7 +24,9 @@ use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
-use taurus_data::{Dataset, Page as DataPage, Profile as DataProfile};
+use taurus_data::{
+    Dataset, Page as DataPage, Profile as DataProfile, QueryResult as DataQueryResult,
+};
 
 use taurus_host::trust::TrustStatus;
 use taurus_host::{
@@ -1345,6 +1347,19 @@ pub async fn dataset_page(
     limit: u64,
 ) -> CmdResult<DataPage> {
     state.host.dataset_page(&name, offset, limit).await
+}
+
+/// Answers one read-only SQL question over every dataset loaded here.
+///
+/// The engine refuses anything that is not a read, which is what lets this be
+/// a plain command rather than one behind a confirmation: the box in the pane
+/// takes arbitrary text, and `COPY … TO` is one line of SQL.
+#[tauri::command]
+pub async fn query_data(
+    state: State<'_, Arc<AppState>>,
+    sql: String,
+) -> CmdResult<DataQueryResult> {
+    state.host.query_data(&sql).await
 }
 
 /// Drops a dataset from the list and answers with what is left.

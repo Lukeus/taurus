@@ -359,6 +359,10 @@ impl Host {
             )));
             registry.register(Arc::new(taurus_data::ProfileDataset::new(
                 self.engine.clone(),
+                dir.clone(),
+            )));
+            registry.register(Arc::new(taurus_data::QueryData::new(
+                self.engine.clone(),
                 dir,
             )));
         }
@@ -1884,6 +1888,34 @@ impl Host {
         let dir = self.data_dir_for(&workspace);
         taurus_data::catalog::forget(&dir, name).map_err(|e| e.to_string())?;
         Ok(taurus_data::catalog::load(&dir))
+    }
+
+    /// Answers one read-only query over every dataset loaded here.
+    ///
+    /// Read-only is enforced by the engine rather than by this, and it has to
+    /// be: the pane hands over whatever was typed into a box, so the
+    /// difference between a query and a `COPY … TO` is a refusal one layer
+    /// down. See [`taurus_data::Engine::query`].
+    pub async fn query_data(&self, sql: &str) -> Result<taurus_data::QueryResult, String> {
+        let workspace = self.workspace().await;
+        let tables = taurus_data::tables(&self.data_dir_for(&workspace), &workspace);
+        if tables.is_empty() {
+            return Err(
+                "No datasets are loaded in this workspace, so there is nothing to query.".into(),
+            );
+        }
+        self.engine
+            .query(&tables, sql, taurus_data::MAX_QUERY_ROWS)
+            .await
+            .map_err(|e| match e {
+                // The same courtesy the tool gets: a wrong table name is one
+                // line from a right one.
+                taurus_data::DataError::BadQuery { .. } => {
+                    let names: Vec<&str> = tables.iter().map(|(n, _)| n.as_str()).collect();
+                    format!("{e} Tables here: {}.", names.join(", "))
+                }
+                other => other.to_string(),
+            })
     }
 
     /// Resolves a named dataset to a file this workspace is allowed to read.

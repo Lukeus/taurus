@@ -477,8 +477,25 @@ and they are the minority.
   shows it for the length of the session. The fix is the same — the two files
   the Windows bundle ships beside the executable — and the startup log line
   saying whether they were found is still the only warning available.
+- **A query answers thirty rows, and that is a context limit rather than a
+  reading one.** `query_data` results are read by the model, and every row is
+  paid for again on each later request of the turn — so the tool is shaped for
+  aggregating, and a query that wants a thousand rows wants to be writing a
+  file. The pane pays the same cap even though nothing there is paying for
+  context, which is the honest cost of one guarantee rather than two: the pane
+  and the model go through the same call, and the alternative is a second limit
+  that can be got wrong on its own. A result that hit the cap says so.
+- **A refused query is refused by plan shape, not by intent.** `query_data`
+  plans every statement and rejects it if the plan does anything but read, and
+  the match over plan kinds is written out in full so that a future DataFusion
+  release adding a writing statement fails to compile rather than being waved
+  through. What that does not cover is a read that is merely *expensive*: a
+  cross join over two million-row files is a legal SELECT. There is a 512 MB
+  ceiling per query so one of those fails instead of taking the app with it,
+  and the tool is cancellable, but nothing estimates a query before running it.
 - **Data is read and never written.** `load_dataset` and `profile_dataset`
-  describe a file; nothing here transforms one. There is no cleaning step, no
+  describe a file, and `query_data` asks questions about one; nothing here
+  transforms one. There is no cleaning step, no
   derived column, no join, no export, and no recipe that records a sequence of
   those so it can be run again — which is the thing that would turn this from a
   viewer into a way to *build* a dataset. That is a phase boundary rather than

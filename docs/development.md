@@ -3,7 +3,7 @@
 <sub>[← Taurus AI Shell](../README.md)</sub>
 
 ```bash
-cargo test --workspace     # 1364 tests
+cargo test --workspace     # 1383 tests
 pnpm test                  # transcript reducer, replay, settings, rewind, diffs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -206,12 +206,26 @@ cargo run -p taurus-host --example vision -- llama3.2:latest   # refused, and wh
 # is measured at row 0 and again at the end.
 cargo run -p taurus-data --example probe -- ~/data/interactions.csv
 
+# With a query, which is the other half. The table is named the way
+# `load_dataset` names it, so the SQL here is the SQL you would type in the
+# pane — and handing it a write is how the refusal gets checked against a real
+# file rather than a fixture.
+cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+  "SELECT category, count(*) AS n FROM interactions GROUP BY 1 ORDER BY n DESC"
+cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+  "COPY interactions TO '/tmp/escaped.parquet'"   # must refuse, and write nothing
+
 # The half the probe cannot check: whether a model reaches for these at all.
 # The failure worth catching is a model answering a question about a CSV with
 # `read_file`, which costs a whole context window and answers nothing — so what
 # this proves is the *absence* of a tool call, and no unit test can see that.
 # Ask a plain question, with nothing in it naming a tool.
 taurus run -w ~/data "What is in interactions.csv, and which event type is most common?"
+
+# And one the profile cannot answer, which is what `query_data` is for. The
+# thing to watch is that it writes SQL rather than reaching for a shell and an
+# awk pipeline — the tool description is the only thing steering that.
+taurus run -w ~/data "Which three categories have the highest share of refunds?"
 
 # Index a real workspace and ask it real questions. Proves the second pass is
 # near-free, which is the property the whole design turns on, and prints

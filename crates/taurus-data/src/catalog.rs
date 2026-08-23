@@ -156,6 +156,38 @@ fn save(dir: &Path, all: &[Dataset]) -> Result<(), DataError> {
     std::fs::rename(&temporary, &path).map_err(|e| unsaved(e.to_string()))
 }
 
+/// Every dataset in this workspace, as a table a query may name.
+///
+/// One function rather than one per caller, because there are two — the
+/// `query_data` tool and the pane's command — and they have to agree about
+/// which files a query can see. Two resolvers would eventually differ by one
+/// rule, and the rule they would differ on is a path guard.
+///
+/// Entries are dropped rather than raising when their path will not resolve
+/// or their file has gone. A stale pointer is an ordinary thing to find —
+/// somebody moved a file — and letting one of them fail every query over the
+/// other five would make the list a liability rather than a convenience. What
+/// a query then says is "no such table", with the tables that *are* there
+/// listed beside it.
+///
+/// Resolution goes through the path guard rather than a join, and that is not
+/// ceremony: this file is in the config home, it is hand-editable, and it
+/// survives the workspace being moved — so an entry whose path climbed out of
+/// the tree with `..` would otherwise have a read-only query read anything on
+/// the machine.
+pub fn tables(dir: &Path, workspace: &Path) -> Vec<(String, crate::engine::Source)> {
+    load(dir)
+        .into_iter()
+        .filter_map(|dataset| {
+            let path = taurus_tools::path_guard::resolve(workspace, &dataset.path).ok()?;
+            if !path.is_file() {
+                return None;
+            }
+            Some((dataset.name, crate::engine::Source::at(path).ok()?))
+        })
+        .collect()
+}
+
 /// What a file will be called, from the filename alone.
 ///
 /// Derived rather than invented because the filename is what somebody will say
