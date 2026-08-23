@@ -358,14 +358,22 @@ impl Tool for QueryData {
         }
         let names: Vec<&str> = tables.iter().map(|(name, _)| name.as_str()).collect();
 
-        // Cancellable, because this is the one tool here that can be told to
-        // do arbitrary work. Dropping the future is what stops it — the whole
-        // execution is async, so a cancelled turn does not leave a scan of a
-        // multi-gigabyte file running behind it.
+        // Cancellable, because this is the one read tool here that can be told
+        // to do arbitrary work. Dropping the future is what stops it — the
+        // whole execution is async, so a cancelled turn does not leave a scan
+        // of a multi-gigabyte file running behind it.
+        //
+        // `biased`, so the token is read before the work is polled at all. An
+        // unbiased select picks a branch at random, which means a turn already
+        // cancelled before this call started would still run the query
+        // whenever the dice said so — and over a small file it would win,
+        // which is exactly the case where nobody notices until it is a large
+        // one. Every other cancellable call in the harness is written this way.
         let query = self.engine.query(&tables, &input.sql, MAX_QUERY_ROWS);
         let result = tokio::select! {
-            result = query => result,
+            biased;
             () = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
+            result = query => result,
         };
 
         match result {
@@ -525,12 +533,15 @@ impl Tool for RunRecipe {
             .map(|step| (step.title.clone(), step.sql.clone()))
             .collect();
 
-        // Cancellable for the same reason a query is, and more so: a recipe is
-        // several passes over the same data rather than one.
+        // Cancellable for the same reason a query is, and `biased` for a
+        // stronger one: this writes. A turn cancelled before the call started
+        // must not put a file in the workspace because a random branch order
+        // went the other way.
         let running = self.engine.materialize(&tables, &start, &steps, &output);
         let run = tokio::select! {
-            result = running => result?,
+            biased;
             () = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
+            result = running => result?,
         };
 
         // What comes out is a dataset. It is the thing the next question is
@@ -1669,6 +1680,14 @@ mod calls {
         assert!(out.to_text().contains('3'), "{}", out.to_text());
     }
 
+    /// This asserted a race until the `select!` above it became `biased`, and
+    /// the race was only lost on some machines: an unbiased `select!` picks a
+    /// branch at random, and over a three-row CSV the query is ready on its
+    /// first poll, so whether cancellation wins depends on whether the file
+    /// read yielded. It always did on macOS and never did on CI's Linux, which
+    /// is why this passed locally and failed there. Polling the token first
+    /// makes the answer the same everywhere — and there is no loop here,
+    /// because with `biased` one call is the whole of the proof.
     #[tokio::test]
     async fn a_cancelled_turn_does_not_run_the_query() {
         let (ctx, _dir, _home, tool) = loaded().await;
@@ -1678,6 +1697,20 @@ mod calls {
             .await
             .unwrap_err();
         assert!(matches!(error, ToolError::Canceled), "{error}");
+    }
+
+    /// The same, for the one that writes — where losing that race would leave
+    /// a file in the workspace after the turn was stopped.
+    #[tokio::test]
+    async fn a_cancelled_turn_does_not_run_the_recipe_or_write_its_file() {
+        let (ctx, _dir, _home, tool) = with_recipe(RECIPE).await;
+        ctx.cancel.cancel();
+        let error = tool
+            .execute(serde_json::json!({ "recipe": "clean" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Canceled), "{error}");
+        assert!(!ctx.workspace.join("data/clean.parquet").exists());
     }
 
     #[tokio::test]
