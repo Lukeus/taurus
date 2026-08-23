@@ -56,6 +56,7 @@ import type { Message } from "../bindings/Message";
 import type { MessageKind } from "../bindings/MessageKind";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { Note } from "../bindings/Note";
+import type { OnScreen } from "../bindings/OnScreen";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
 import type { Problem } from "../bindings/Problem";
@@ -145,6 +146,7 @@ export type {
   ModelEntry,
   ModelInfo,
   Note,
+  OnScreen,
   PermissionDecision,
   PermissionRequest,
   Problem,
@@ -249,10 +251,24 @@ export function sendMessage(
   text: string,
   onEvent: (event: UiEvent) => void,
   images: Attachment[] = [],
+  /**
+   * What the Data pane was showing, when the message was sent from it.
+   *
+   * Reaches the model and not the transcript, which is the same split a
+   * `/command` expansion makes — see `taurus_host::onscreen` for why, and for
+   * what it costs a conversation reopened later.
+   */
+  onScreen: OnScreen | null = null,
 ): Promise<void> {
   const channel = new Channel<UiEvent>();
   channel.onmessage = onEvent;
-  return invoke("send_message", { sessionId, text, images, onEvent: channel });
+  return invoke("send_message", {
+    sessionId,
+    text,
+    images,
+    onScreen,
+    onEvent: channel,
+  });
 }
 
 /**

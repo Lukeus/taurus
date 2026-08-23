@@ -504,6 +504,24 @@ and they are the minority.
   committed to the whole file. Adding one as another `-- step:` would skip
   exactly the gate that makes it safe to run.
   See [Recipes](working-with-it.md#recipes).
+- **What the Data pane was showing reaches the model but not the transcript.**
+  A message sent from the pane carries the open dataset and the query box, so
+  "this" has a referent — but it goes onto the prompt, not onto the transcript's
+  copy of what was said. That is the same split a `/command` expansion makes,
+  and it has the same consequence: a conversation reopened a week later shows
+  "which category refunds most?" with no record of which dataset that meant.
+  The chip above the composer is what makes it visible at the time, and the
+  answer beneath usually names the dataset, which is what makes this bearable
+  rather than fine. Fixing it properly means a transcript entry that can carry
+  more than text and images.
+- **The turn strip says what is happening, not what was said.** One line above
+  the composer while a turn runs in the Data pane, showing the running tool or
+  the last sentence of prose. It is not a transcript and cannot be: a table,
+  a chart, or a question card has nowhere to go on one line — and a question
+  card is the case that matters, because the turn is then waiting on an answer
+  you can only give by switching. What the strip shows is the call that is
+  running (`Ask 2 questions`), which is a hint rather than the card. Clicking
+  it is one step; noticing you need to is on you.
 - **Identifier case is Taurus's own dialect choice, and a recipe carries it.**
   DataFusion lowercases an unquoted identifier by default, the way Postgres
   does; Taurus turns that off, so a column reported as `Material` is written as

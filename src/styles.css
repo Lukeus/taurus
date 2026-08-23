@@ -4503,3 +4503,73 @@ button.link:hover {
 .recipe-run-foot {
   margin: 8px 0 0;
 }
+
+/* The turn strip: what is happening, for somebody who is not looking at the
+   transcript. One line above the composer, only in the Data pane, only while a
+   turn is running. */
+.turn-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 16px;
+  border: none;
+  border-top: 1px solid var(--rule);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.turn-strip:hover {
+  color: var(--text);
+}
+.turn-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  /* Moving, because the line under it does not have to. A tool that takes
+     forty seconds leaves the text unchanged for forty seconds, and a still
+     strip is indistinguishable from a hung one. */
+  animation: turn-working 1.6s ease-in-out infinite;
+}
+@keyframes turn-working {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn-dot {
+    animation: none;
+  }
+}
+.turn-what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What a message is about to carry, said above the box rather than inside it:
+   this is not something the user typed and must not read as though it were. */
+.composer-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.composer-context b {
+  color: var(--text);
+  font-weight: 600;
+}

@@ -23,7 +23,9 @@ import * as api from "./lib/api";
 import type {
   Attachment,
   CommandSummary,
+  Dataset,
   ModelInfo,
+  OnScreen,
   ProviderConfig,
   ServerStatus,
   Theme,
@@ -31,6 +33,7 @@ import type {
 import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
+import type { Entry } from "./state/store";
 import { pinnedPlan, useStore } from "./state/store";
 
 /*
@@ -203,6 +206,15 @@ export default function App() {
   /** Which dataset the Data pane has open. Held here rather than in the pane
    *  so a card in the transcript can choose one — see `DatasetCard`. */
   const [dataset, setDataset] = useState<string | null>(null);
+  /**
+   * What is in the Data pane's query box.
+   *
+   * Up here rather than in the box, because two things outside the box need
+   * it. The pane is lazily mounted and thrown away when you switch to the
+   * conversation, so half-written SQL would not survive the round trip. And a
+   * message sent from the pane carries it — see `onScreen` below.
+   */
+  const [sql, setSql] = useState("");
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
@@ -430,6 +442,25 @@ export default function App() {
     setPane("data");
   };
 
+  /** Whichever dataset the pane is actually showing — see `DataPane`, which
+   *  falls back to the first rather than being open on nothing. */
+  const showing =
+    store.datasets.find((d) => d.name === dataset) ?? store.datasets[0] ?? null;
+
+  /**
+   * What travels with a message sent from the Data pane.
+   *
+   * `null` from the transcript, which is most messages: a question asked while
+   * reading a conversation is about the conversation, and a paragraph about a
+   * dataset nobody mentioned would be the app talking over the user.
+   *
+   * It reaches the model and not the transcript — the same split a `/command`
+   * expansion makes. See `taurus_host::onscreen`, which explains why and what
+   * it costs. What keeps that from being invisible context is the chip on the
+   * composer: it is on screen, next to the box, while the message is typed.
+   */
+  const onScreen = onScreenFor(pane, showing, sql);
+
   const forgetDataset = (name: string) => void store.forgetDataset(name);
 
   return (
@@ -573,6 +604,8 @@ export default function App() {
                 onSelect={setDataset}
                 onForget={forgetDataset}
                 onRan={() => void store.refreshDatasets()}
+                sql={sql}
+                onSql={setSql}
               />
             </Suspense>
           ) : (
@@ -624,6 +657,13 @@ export default function App() {
           )}
         </main>
 
+        {/* Only in the Data pane, and only while something is happening. On
+            the conversation the transcript is already saying all of this, and
+            a strip repeating it would be the app talking twice. */}
+        {pane === "data" && store.busy && (
+          <TurnStrip onOpen={() => setPane("conversation")} />
+        )}
+
         {/* Above the error banner, because it is about the state the whole
             session is running in rather than about something that just went
             wrong. Dismissed per workspace, so switching folders asks again
@@ -660,6 +700,7 @@ export default function App() {
           workspace={workspace}
           onPickWorkspace={pickWorkspace}
           library={library}
+          onScreen={onScreen}
           onSend={store.send}
           onStop={store.stop}
         />
@@ -934,6 +975,88 @@ function PinnedPlan() {
   return plan ? <PlanPanel view={plan} /> : null;
 }
 
+/**
+ * What travels with a message, from where it was sent.
+ *
+ * Extracted and exported because the decision is the interesting part and it
+ * is entirely a decision: nothing here renders. The three rules it encodes are
+ * that a message from the transcript carries nothing, that a pane open on
+ * nothing carries nothing, and that an empty query box is left out rather than
+ * sent as an empty string.
+ */
+export function onScreenFor(
+  pane: "conversation" | "data",
+  showing: Dataset | null,
+  sql: string,
+): OnScreen | null {
+  // A question asked while reading a conversation is about the conversation. A
+  // paragraph about a dataset nobody mentioned would be the app talking over
+  // the user.
+  if (pane !== "data" || !showing) return null;
+  const typed = sql.trim();
+  return {
+    dataset: showing.name,
+    path: showing.path,
+    // Omitted rather than empty — the field is optional on the Rust side, and
+    // an empty box is nothing to say rather than something to say nothing.
+    ...(typed ? { sql: typed } : {}),
+  };
+}
+
+/**
+ * What the turn is doing, for somebody who is not looking at the transcript.
+ *
+ * The composer sits under the Data pane as well as under the conversation, so
+ * a message can be sent from a screen that shows none of the answer. Without
+ * this that is typing into a void: the turn runs, tools are called, prose
+ * streams, and the pane looks exactly as it did before.
+ *
+ * One line, and deliberately not a second transcript. It says the last thing
+ * that happened and gets out of the way; reading the answer means going to
+ * where the answer is, which is one click and is what the line is for.
+ */
+export function TurnStrip({ onOpen }: { onOpen: () => void }) {
+  // Subscribed here rather than passed down, the way `PinnedPlan` is. `App`
+  // deliberately does not select `entries` — it would re-render the whole
+  // window on every frame of a streaming turn — and what this needs is one
+  // short string, which zustand compares by value and mostly finds unchanged.
+  const latest = useStore((s) => lastActivity(s.entries));
+  const stopping = useStore((s) => s.stopping);
+  return (
+    <button className="turn-strip" onClick={onOpen}>
+      <span className="turn-dot" />
+      <span className="turn-what">
+        {stopping ? "Stopping…" : latest ?? "Working…"}
+      </span>
+      <div className="spacer" />
+      <span className="micro">Show the conversation</span>
+    </button>
+  );
+}
+
+/**
+ * The last thing worth reporting from a turn in flight.
+ *
+ * A running tool beats finished prose, because a tool is what the turn is
+ * doing *now* and the prose is what it was saying before it went and did
+ * something. Prose is cut to its last sentence rather than its first: the
+ * first is a paragraph old by the time anyone reads this.
+ */
+export function lastActivity(entries: Entry[]): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.kind === "tool" && entry.status === "running") return entry.preview;
+    if (entry.kind === "assistant" && entry.text.trim()) {
+      const sentences = entry.text.trim().split(/(?<=[.!?])\s+/);
+      return sentences[sentences.length - 1] ?? null;
+    }
+    // A finished tool is worth showing only while nothing newer has happened,
+    // which is exactly the gap between one call ending and the next beginning.
+    if (entry.kind === "tool") return entry.preview;
+  }
+  return null;
+}
+
 function Composer({
   busy,
   stopping,
@@ -941,6 +1064,7 @@ function Composer({
   vision,
   workspace,
   library,
+  onScreen,
   onPickWorkspace,
   onSend,
   onStop,
@@ -966,8 +1090,21 @@ function Composer({
    * another one. See where `App` builds it.
    */
   library: string;
+  /**
+   * What the Data pane is showing, when it is what is on screen.
+   *
+   * Two jobs, and the second is why it is a prop rather than something the
+   * store works out at send time. It travels with the message, and it is drawn
+   * as a chip above the box — because context the user cannot see is behaviour
+   * they cannot explain, and this is the only moment they can see it.
+   */
+  onScreen: OnScreen | null;
   onPickWorkspace: () => void;
-  onSend: (text: string, images: Attachment[]) => void;
+  onSend: (
+    text: string,
+    images: Attachment[],
+    onScreen: OnScreen | null,
+  ) => void;
   onStop: () => void;
 }) {
   const [text, setText] = useState("");
@@ -1020,7 +1157,7 @@ function Composer({
 
   const submit = () => {
     if (!text.trim() || busy) return;
-    onSend(text, images);
+    onSend(text, images, onScreen);
     setText("");
     setImages([]);
     setAttachError(null);
@@ -1032,6 +1169,18 @@ function Composer({
 
   return (
     <footer className="composer">
+      {/* Above the box rather than inside it: this is not something you typed
+          and must not read as though it were. It says what the message is
+          about to carry, in the one place you are already looking. */}
+      {onScreen && (
+        <div className="composer-context" title={onScreen.path}>
+          <span className="dataset-mark">▦</span>
+          <span>
+            asking about <b>{onScreen.dataset}</b>
+          </span>
+          {onScreen.sql && <span className="micro">· and the query below</span>}
+        </div>
+      )}
       <div
         className={`composer-box${dragDepth > 0 ? " dropping" : ""}`}
         // The whole box is the target, not the textarea: someone dragging a

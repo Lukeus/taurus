@@ -55,6 +55,7 @@ async function mount(
   datasets: Dataset[] = [EVENTS],
   onForget: (name: string) => void = () => {},
   onRan: () => void = () => {},
+  sql = "SELECT * FROM events LIMIT 20",
 ) {
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -67,6 +68,8 @@ async function mount(
         onSelect={() => {}}
         onForget={onForget}
         onRan={onRan}
+        sql={sql}
+        onSql={() => {}}
       />,
     );
   });

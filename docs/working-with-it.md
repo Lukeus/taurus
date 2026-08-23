@@ -992,6 +992,23 @@ The pane takes the centre column, beside the conversation rather than over it.
 The rail and the box you type in do not move: the conversation is still what
 drives this, because asking is how a dataset gets here in the first place.
 
+**The box works from here, and the message knows what you are looking at.** Ask
+"which category refunds most?" with a dataset open and "this" has a referent —
+the turn carries the dataset's name and path, and whatever is in the query box.
+That is what makes "why does this not work?" answerable about SQL you have not
+run yet. The chip above the composer says what is going with the message, and
+it is there because context you cannot see is behaviour you cannot explain.
+
+It carries the handle and the box, and nothing else. Not the columns — the
+model has `profile_dataset` for those, and a forty-column listing on every
+message is a real cost for something it can ask for. Not the rows, ever. And
+nothing at all from the transcript: a question asked while reading a
+conversation is about the conversation.
+
+While a turn is running, a line above the composer says what it is doing and
+takes you back to the answer. Sending from a screen that shows none of the
+reply would otherwise be typing into a void.
+
 **It does not exist until there is something in it.** A workspace that has never
 loaded a file shows no switch at all — the same rule the composer's `/` hint and
 the rail's MCP badge follow. Loading the first one makes the tab appear, and

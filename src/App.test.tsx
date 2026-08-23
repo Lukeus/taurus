@@ -27,6 +27,7 @@ const state = {
   agentProposals: [],
   datasets: [] as unknown[],
   busy: false,
+  stopping: false,
   error: null,
   init: vi.fn(),
   startSession: vi.fn(),
@@ -55,7 +56,13 @@ vi.mock("./state/store", async (original) => ({
 }));
 
 import type { ProviderConfig } from "./lib/api";
-import App, { currentProvider, offered } from "./App";
+import App, {
+  currentProvider,
+  lastActivity,
+  offered,
+  onScreenFor,
+  TurnStrip,
+} from "./App";
 
 const provider = (id: string): ProviderConfig => ({
   id,
@@ -247,5 +254,129 @@ describe("the provider picker in the header", () => {
 
   it("is absent when there is only one provider to choose from", () => {
     expect(providerSelect(withProviders(["ollama"]))).toBeUndefined();
+  });
+});
+
+/**
+ * The composer sits under the Data pane as well as under the transcript, so a
+ * message can be about a table nobody named. This is what gives "this" a
+ * referent — and what keeps it from arriving where it would be noise.
+ */
+describe("what a message carries from the pane it was sent in", () => {
+  const events = { name: "events", path: "data/events.csv", format: "csv" as const };
+
+  it("carries nothing from the conversation", () => {
+    // A question asked while reading a conversation is about the conversation.
+    expect(onScreenFor("conversation", events, "SELECT 1")).toBeNull();
+  });
+
+  it("carries the dataset and its file from the pane", () => {
+    expect(onScreenFor("data", events, "")).toEqual({
+      dataset: "events",
+      path: "data/events.csv",
+    });
+  });
+
+  /** "Why does this not work?" is a question about the text in the box. */
+  it("carries the query box when there is something in it", () => {
+    expect(onScreenFor("data", events, " SELECT count(*) FROM events ")?.sql).toBe(
+      "SELECT count(*) FROM events",
+    );
+  });
+
+  it("leaves an empty box out rather than sending an empty string", () => {
+    expect(onScreenFor("data", events, "   \n ")).not.toHaveProperty("sql");
+  });
+
+  it("carries nothing when the pane is open on nothing", () => {
+    expect(onScreenFor("data", null, "SELECT 1")).toBeNull();
+  });
+});
+
+describe("what the turn strip says", () => {
+  const tool = (preview: string, status: "running" | "ok") => ({
+    kind: "tool" as const,
+    id: "t1",
+    name: "query_data",
+    preview,
+    status,
+    steps: [],
+  });
+  const said = (text: string) => ({
+    kind: "assistant" as const,
+    id: "a1",
+    text,
+    thinking: "",
+    open: false,
+  });
+
+  it("says nothing it does not know rather than guessing", () => {
+    expect(lastActivity([])).toBeNull();
+  });
+
+  /** A running tool is what the turn is doing *now*; the prose above it is
+   *  what it was saying before it went and did something. */
+  it("prefers a running tool to the prose before it", () => {
+    expect(lastActivity([said("Let me look."), tool("Query: SELECT 1", "running")])).toBe(
+      "Query: SELECT 1",
+    );
+  });
+
+  /** The last sentence, not the first: on one line, the first is a paragraph
+   *  old by the time anyone reads it. */
+  it("takes the last sentence of what was said", () => {
+    expect(lastActivity([said("I read the file. Nothing looks wrong here.")])).toBe(
+      "Nothing looks wrong here.",
+    );
+  });
+
+  it("falls back to a finished tool while nothing newer has happened", () => {
+    expect(lastActivity([tool("Read data/events.csv", "ok")])).toBe(
+      "Read data/events.csv",
+    );
+  });
+
+  it("skips an assistant entry that is still empty", () => {
+    expect(lastActivity([tool("Read a.csv", "ok"), said("   ")])).toBe("Read a.csv");
+  });
+});
+
+describe("the turn strip", () => {
+  const render = (entries: unknown[], stopping = false) => {
+    state.entries = entries as never;
+    state.stopping = stopping;
+    const html = renderToStaticMarkup(<TurnStrip onOpen={() => {}} />);
+    state.entries = [];
+    state.stopping = false;
+    return html;
+  };
+
+  it("shows what is happening, and the way back to where it is being said", () => {
+    const html = render([
+      {
+        kind: "tool",
+        id: "t1",
+        name: "query_data",
+        preview: "Query: SELECT count(*) FROM events",
+        status: "running",
+      },
+    ]);
+    expect(html).toContain("Query: SELECT count(*) FROM events");
+    expect(html).toContain("Show the conversation");
+  });
+
+  /** Stop was pressed and the turn is unwinding. Saying what it was doing
+   *  before that would read as though nothing had been heard. */
+  it("says it is stopping rather than what it was doing", () => {
+    const html = render(
+      [{ kind: "assistant", id: "a1", text: "Reading it now.", thinking: "", open: false }],
+      true,
+    );
+    expect(html).toContain("Stopping…");
+    expect(html).not.toContain("Reading it now.");
+  });
+
+  it("says something rather than nothing before the first event arrives", () => {
+    expect(render([])).toContain("Working…");
   });
 });

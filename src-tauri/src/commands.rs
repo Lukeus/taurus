@@ -29,6 +29,7 @@ use taurus_data::{
     QueryResult as DataQueryResult, Recipe,
 };
 
+use taurus_host::onscreen::OnScreen;
 use taurus_host::trust::TrustStatus;
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
@@ -536,6 +537,10 @@ pub async fn send_message(
     session_id: String,
     text: String,
     images: Option<Vec<Attachment>>,
+    // What the Data pane was showing, when the message was sent from it. It
+    // reaches the model and not the transcript — see `taurus_host::onscreen`,
+    // which explains the split and what it costs.
+    on_screen: Option<OnScreen>,
     on_event: Channel<UiEvent>,
 ) -> CmdResult<()> {
     let entry = state.session(&session_id)?;
@@ -567,6 +572,10 @@ pub async fn send_message(
         Some(Err(e)) => return Err(e.to_string()),
         None => text.clone(),
     };
+    // After the command expansion rather than before it: a `/skill` invocation
+    // is still being sent from a pane, and the procedure it expands to wants
+    // the same subject the user had on screen.
+    let prompt = taurus_host::onscreen::with_context(&prompt, on_screen.as_ref());
 
     // Checked before anything is started, and against this model rather than
     // this provider: on Ollama one model on a server reads images and the next

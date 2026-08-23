@@ -44,6 +44,8 @@ export function DataPane({
   onSelect,
   onForget,
   onRan,
+  sql,
+  onSql,
 }: {
   datasets: Dataset[];
   /** Which dataset is open. Held by the caller so a transcript card can
@@ -53,6 +55,17 @@ export function DataPane({
   onForget: (name: string) => void;
   /** A recipe wrote a file and loaded it, so the dataset list has changed. */
   onRan: () => void;
+  /**
+   * What is in the query box.
+   *
+   * Held by `App` rather than by the box, for two reasons that pull the same
+   * way. It survives switching to the conversation and back, which a lazily
+   * mounted pane's own state does not. And it is what travels with a message
+   * sent from here — "why does this not work?" is a question about the text in
+   * the box, and the model cannot see the box.
+   */
+  sql: string;
+  onSql: (sql: string) => void;
 }) {
   const [tab, setTab] = useState<"columns" | "rows" | "query" | "recipes">(
     "columns",
@@ -158,7 +171,7 @@ export function DataPane({
       {tab === "columns" && <Columns key={dataset.name} name={dataset.name} />}
       {tab === "rows" && <Rows key={dataset.name} name={dataset.name} />}
       {tab === "query" && (
-        <Query tables={datasets.map((d) => d.name)} start={dataset.name} />
+        <Query tables={datasets.map((d) => d.name)} sql={sql} onSql={onSql} />
       )}
       {/* Not scoped to the selected dataset, and not keyed on it. A recipe
           names its own source and can join every other loaded one, so hiding
@@ -433,12 +446,16 @@ function Grid({
  * `taurus_data::Engine::query`. A frontend check would be a second rule to
  * keep in step with the real one.
  */
-function Query({ tables, start }: { tables: string[]; start: string }) {
-  // Seeded once, from whichever dataset was selected when the tab was first
-  // opened. Not re-seeded on every chip click: this component is deliberately
-  // unkeyed so that choosing another table to name does not throw away the
-  // query being written.
-  const [sql, setSql] = useState(() => `SELECT * FROM ${start} LIMIT 20`);
+function Query({
+  tables,
+  sql,
+  onSql,
+}: {
+  tables: string[];
+  /** Held by `App`, not here. See the note where it is declared. */
+  sql: string;
+  onSql: (sql: string) => void;
+}) {
   const [result, setResult] = useState<DataQueryResult | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -468,7 +485,7 @@ function Query({ tables, start }: { tables: string[]; start: string }) {
           spellCheck={false}
           rows={4}
           aria-label="SQL"
-          onChange={(e) => setSql(e.target.value)}
+          onChange={(e) => onSql(e.target.value)}
           onKeyDown={(e) => {
             // Enter is a newline: this is SQL, and a query worth writing is
             // more than one line. ⌘↵ and ⌃↵ run it, as every SQL client does.

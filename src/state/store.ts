@@ -14,6 +14,7 @@ import type {
   AppStatus,
   CreatedSession,
   Message,
+  OnScreen,
   PermissionDecision,
   PermissionRequest,
   SessionMeta,
@@ -199,7 +200,12 @@ interface Store {
    * in the API layer.
    */
   switchModel: (providerId: string, model: string) => Promise<void>;
-  send: (text: string, images?: Attachment[]) => Promise<void>;
+  send: (
+    text: string,
+    images?: Attachment[],
+    /** What the Data pane was showing, when the message came from it. */
+    onScreen?: OnScreen | null,
+  ) => Promise<void>;
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
   /**
@@ -570,7 +576,7 @@ export const useStore = create<Store>((set, get) => ({
     }));
   },
 
-  send: async (text, images = []) => {
+  send: async (text, images = [], onScreen = null) => {
     const { session } = get();
     // Text is still required with an image attached. "What is wrong with this?"
     // is a question; a bare screenshot is a guess about what was wanted.
@@ -602,7 +608,7 @@ export const useStore = create<Store>((set, get) => ({
     });
 
     try {
-      await api.sendMessage(session.id, text, stream.push, images);
+      await api.sendMessage(session.id, text, stream.push, images, onScreen);
     } catch (e) {
       // Before the notice, so it reads after whatever the turn had already
       // streamed rather than in front of it.
