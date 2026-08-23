@@ -477,3 +477,53 @@ and they are the minority.
   shows it for the length of the session. The fix is the same — the two files
   the Windows bundle ships beside the executable — and the startup log line
   saying whether they were found is still the only warning available.
+- **Data is read and never written.** `load_dataset` and `profile_dataset`
+  describe a file; nothing here transforms one. There is no cleaning step, no
+  derived column, no join, no export, and no recipe that records a sequence of
+  those so it can be run again — which is the thing that would turn this from a
+  viewer into a way to *build* a dataset. That is a phase boundary rather than
+  an oversight, and the reason it is drawn here is written into
+  `taurus_data::engine`: a transformation is where an engine's identity leaks,
+  because its SQL dialect becomes the language a recipe is written in and a
+  recipe is a file on disk that outlives the choice of engine. Reading is behind
+  a three-method trait precisely so that call can be made later on evidence.
+  See [Working with data](working-with-it.md#working-with-data).
+- **The list of loaded datasets does not travel with the repository.** It lives
+  in `~/.taurus/data/<workspace>/datasets.json`, beside the transcripts and the
+  search index, not in the project's own `.taurus`. That is what keeps loading a
+  file from being a *write* to the workspace — otherwise looking at a CSV would
+  cost a permission dialog, a diff in the Changes drawer, and a line in the next
+  commit. The cost is that a teammate who clones the repository loads the files
+  again, which is one sentence to the agent. It stops being the right trade the
+  moment an entry carries a recipe, because a recipe is exactly the thing you
+  want committed.
+- **A profile is a full scan every time, and it cannot be cancelled.** Nothing
+  is cached: a dataset entry points at a file anything can rewrite, and a
+  remembered row count is the kind of number that is right for a week and then
+  quietly wrong. So opening the pane on a multi-gigabyte file reads it again,
+  and clicking away leaves that read running to completion rather than stopping
+  it. Caching it properly means invalidating on the file's length and
+  modification time — the same rule the search index already uses — and
+  cancelling means threading a token through the engine trait. Neither is
+  written. What keeps this bearable today is that the scan is the *only*
+  expensive operation: loading reads a header, and paging is flat in the offset.
+- **`.json` means newline-delimited JSON, not a JSON array.** A file holding one
+  big `[ {...}, {...} ]` is refused with a message rather than read, because
+  reading it would mean parsing the whole thing into memory before any of the
+  streaming below it could start — which is the one shape of file this is
+  supposed to protect you from. Converting it is one `jq` line and the agent can
+  run it. There is no Excel reader either, and adding one is a dependency rather
+  than a design question.
+- **A nested column is counted and not described.** A list, a struct, or a map
+  profiles as how many rows have one and nothing else — no distinct count, no
+  range, no common values, because none of those are questions with an answer
+  until the column is flattened. It is kept rather than refused so that one
+  nested column in an export does not cost you the other thirteen. Flattening is
+  a transformation, which is the entry above.
+- **The grid does not sort or filter.** It pages, a hundred rows at a time, in
+  the order the file is in. Sorting a million rows is a query rather than a
+  click — it has to go back to the engine, and the pane would need somewhere to
+  say that it is running one — and filtering is the same thing with a predicate.
+  Both are worth having. The transcript's `show_table` sorts because its rows
+  are already in the browser; these are not, and pretending otherwise would sort
+  the hundred rows on screen and call it sorted.

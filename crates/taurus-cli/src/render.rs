@@ -151,11 +151,14 @@ impl Renderer {
                 self.break_thinking();
                 // A table or a chart *is* the output, so it goes to stdout in
                 // full rather than being announced as a call that happened.
-                // Questions are the exception among the exceptions: the prompt
-                // that follows draws them itself, and printing them twice would
-                // ask everything before asking anything.
+                // Two exceptions among the exceptions. The prompt that follows
+                // draws questions itself, and printing them twice would ask
+                // everything before asking anything. A dataset card points at a
+                // pane that exists only in the app, and the call's own text is
+                // the better answer here — so both keep their ordinary row.
                 match view {
-                    Some(TranscriptView::Questions { .. }) | None => {
+                    Some(TranscriptView::Questions { .. } | TranscriptView::Dataset { .. })
+                    | None => {
                         self.dim(&format!("  {} {}", glyph(name), preview));
                     }
                     Some(view) => {
@@ -346,6 +349,13 @@ fn glyph(tool: &str) -> &'static str {
         "run_skill_script" => "script",
         "propose_skill" => "propose",
         "spawn_subagent" => "delegate",
+        "search_code" => "find",
+        "remember" => "note",
+        // Both reach here, unlike the drawing tools: a dataset card points at a
+        // pane this frontend has not got, so the call keeps its ordinary row
+        // and the tool's own text does the talking.
+        "load_dataset" => "load",
+        "profile_dataset" => "profile",
         // show_table and show_chart never reach here: their view is printed in
         // full instead of announced. `ask_user` does, because the prompt that
         // follows is what draws it.
@@ -426,6 +436,10 @@ mod tests {
             "run_skill_script",
             "propose_skill",
             "spawn_subagent",
+            "search_code",
+            "remember",
+            "load_dataset",
+            "profile_dataset",
         ] {
             assert_ne!(glyph(tool), "tool", "{tool} fell through to the default");
         }

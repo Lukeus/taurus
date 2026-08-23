@@ -3925,3 +3925,384 @@ button.link:hover {
   scrollbar-color: var(--border) transparent;
   background: transparent !important;
 }
+
+/*
+ * The Data pane, and the switch that reaches it.
+ *
+ * The switch is drawn between the topbar and the pane rather than inside the
+ * topbar, because the topbar names the conversation and the model and neither
+ * of those changes when the centre column does. It is also absent entirely
+ * until a dataset is loaded, so most windows never have this row at all — see
+ * `App`, where that condition lives.
+ *
+ * Everything below reuses the surface ladder rather than inventing one: the
+ * pane sits on the window's own ground, the two boxes inside it drop to
+ * `--bg-sunken` the way a table or a block of code does, and the only borders
+ * are the hairlines that mark where a surface ends.
+ */
+
+.pane-switch {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 8px 20px 0;
+}
+
+/* A segmented control. Shared by the pane switch and by Columns/Rows inside
+   the pane, because they are the same gesture at two scales — and a second
+   look for the inner one would read as two unrelated controls. */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 6px 11px;
+}
+.seg:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.seg.on {
+  color: var(--text);
+  background: var(--bg-raised);
+  border-color: var(--rule);
+}
+.seg .count {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.seg.on .count {
+  color: var(--accent);
+}
+
+.data-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 20px 0;
+  gap: 12px;
+}
+.data-pane.empty {
+  justify-content: center;
+}
+
+.data-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.data-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+/* The datasets, as chips rather than a second sidebar — the rail is already
+   one, and a workspace with three datasets does not need a column to hold
+   three names. */
+.data-chip {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  padding: 5px 11px;
+}
+.data-chip:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.data-chip.on {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.data-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40ch;
+}
+
+.data-switch {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+.data-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 14px;
+}
+.data-summary {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.data-summary b {
+  color: var(--text);
+  font-weight: 600;
+}
+.data-reading,
+.data-problem {
+  margin: 0;
+  padding: 20px 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.data-problem {
+  color: var(--danger);
+  max-width: var(--measure);
+}
+
+/* Both boxes scroll inside themselves rather than scrolling the pane. The
+   header rows stay put, which is the whole reason a forty-column profile is
+   readable at row thirty. */
+.profile-box,
+.grid-box {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+}
+
+.profile-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1.4fr) minmax(6rem, 0.8fr) 7rem 6rem minmax(9rem, 1.2fr) minmax(12rem, 2fr);
+  gap: 12px;
+  align-items: center;
+  padding: 7px 12px;
+  font-size: 12.5px;
+}
+.profile-row + .profile-row {
+  border-top: 1px solid var(--rule);
+}
+.profile-row:not(.head):hover {
+  background: var(--bg-hover);
+}
+.profile-row.head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.profile-row .right {
+  text-align: right;
+  justify-self: stretch;
+}
+.profile-name {
+  font-family: var(--mono);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-type,
+.profile-range {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-nulls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+/*
+ * The missing-value bar.
+ *
+ * The one piece of drawing in this table, and it earns its place: a null count
+ * is a number you have to read, while a bar is a column you can scan a
+ * forty-row profile down and stop at the one that is wrong. Peach rather than
+ * the accent — missing data is a signal, not a selection — and floored at a
+ * sliver so a real but tiny share is still visible rather than rounding away
+ * to nothing, which is the case worth catching.
+ */
+.profile-bar {
+  flex: none;
+  width: 34px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.profile-bar span {
+  display: block;
+  height: 100%;
+  background: var(--warn);
+}
+/*
+ * The commonest values, wrapped rather than clipped.
+ *
+ * Clipping was the first attempt and it was wrong in a way worth recording: a
+ * cell reading `add_to_cart 47,743` cut at the column edge renders as
+ * `add_to_cart 4`, which is not a truncated number, it is a different number.
+ * Nothing marks it as cut, and a count is exactly the thing somebody reads off
+ * this column. Wrapping costs a taller row and cannot lie.
+ */
+.profile-common {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.profile-value {
+  white-space: nowrap;
+}
+.profile-value b {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--text-dim);
+}
+.profile-value i {
+  font-style: normal;
+  color: var(--text-faint);
+  opacity: 0.8;
+}
+
+.grid-row {
+  display: grid;
+  gap: 0;
+  align-items: center;
+}
+.grid-row + .grid-row {
+  border-top: 1px solid var(--rule);
+}
+.grid-row:not(.head):hover {
+  background: var(--bg-hover);
+}
+.grid-row.head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.grid-row.head > span {
+  padding: 8px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The row number, so a page of a million-row file says where in it you are
+   without counting down from the top of the screen. */
+.grid-n {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-align: right;
+  padding: 6px 10px;
+}
+.grid-cell {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  padding: 6px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-cell.right {
+  text-align: right;
+  color: var(--text-dim);
+}
+/*
+ * A missing value, and an empty one.
+ *
+ * Drawn as words rather than as blank space, because blank space is what an
+ * empty string already looks like and telling the two apart is most of what
+ * looking at raw rows is for. A column that is 40% null and a column that is
+ * 40% empty string are different problems with different fixes, and a grid
+ * that renders both as nothing hides the distinction the data most needs.
+ */
+.grid-cell.null {
+  font-style: italic;
+  color: var(--text-faint);
+  opacity: 0.7;
+}
+
+/*
+ * The dataset card in the transcript.
+ *
+ * One line tall, and that is the design rather than a constraint. Every other
+ * view card carries its answer — a table has its rows, a chart has its numbers
+ * — and this one carries a name, because the thing it names would be worthless
+ * in a conversation and is worth a great deal in a pane. A turn that loads four
+ * files leaves four of these rather than four screens of somebody's
+ * spreadsheet.
+ */
+.dataset-card {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+}
+.dataset-card.gone {
+  border-style: dashed;
+}
+.dataset-mark {
+  font-size: 15px;
+  color: var(--accent);
+  line-height: 1;
+}
+.dataset-card.gone .dataset-mark {
+  color: var(--text-faint);
+}
+.dataset-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dataset-copy b {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dataset-copy span {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

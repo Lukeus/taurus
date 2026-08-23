@@ -443,7 +443,9 @@ mod tests {
         terminals.resize(&id, 40, 120).expect("a resize must land");
         // Zero columns is what a pane laid out to nothing measures as, and it
         // is a size no terminal can have.
-        terminals.resize(&id, 0, 0).expect("a collapsed pane is clamped");
+        terminals
+            .resize(&id, 0, 0)
+            .expect("a collapsed pane is clamped");
 
         terminals.close(&id);
     }
@@ -516,6 +518,10 @@ mod tests {
         .join();
 
         assert!(poisoned.load(Ordering::SeqCst));
-        assert_eq!(*lock(&held), 7, "a keystroke must survive someone else's panic");
+        assert_eq!(
+            *lock(&held),
+            7,
+            "a keystroke must survive someone else's panic"
+        );
     }
 }

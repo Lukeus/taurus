@@ -153,6 +153,12 @@ pub fn render(view: &TranscriptView, color: bool) -> String {
 
         // Drawn by the prompt that is about to ask them, not here.
         TranscriptView::Questions { .. } => String::new(),
+
+        // A reference to a pane this frontend does not have. The tool's own
+        // text already says what was loaded and how big it is, so the call
+        // falls through to its ordinary row rather than being replaced by a
+        // card that could only repeat the name. See the match in `render.rs`.
+        TranscriptView::Dataset { .. } => String::new(),
     }
 }
 
@@ -511,6 +517,18 @@ fn tint(text: &str, sign: i8, color: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A dataset card points at a pane this frontend has not got, so it draws
+    /// nothing and the call keeps its ordinary row — where the tool's own text
+    /// already says what was loaded and how big it is. Replacing that row with
+    /// a card that could only repeat the name would be strictly less.
+    #[test]
+    fn a_dataset_card_draws_nothing_here() {
+        let view = taurus_tools::view::TranscriptView::Dataset {
+            name: "events".into(),
+        };
+        assert_eq!(render(&view, false), "");
+    }
+
     use super::*;
     use taurus_tools::view::Column;
 

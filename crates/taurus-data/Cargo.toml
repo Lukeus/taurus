@@ -1,0 +1,34 @@
+[package]
+name = "taurus-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Loading and profiling tabular data in a workspace, behind an engine the rest of the harness does not name"
+
+[dependencies]
+taurus-tools.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+
+# Trimmed deliberately, and the trim is part of the argument for this engine
+# over the alternative: `default-features` drags in `compression`, which is
+# `bzip2` and `xz2` — C libraries, on all three platforms, in a workspace whose
+# only other native code is a crypto shim. `sql` is the parser and planner and
+# `parquet` is the reader; CSV and newline-delimited JSON need no feature.
+datafusion = { version = "55", default-features = false, features = ["parquet", "sql"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

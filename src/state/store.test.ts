@@ -9,6 +9,7 @@ import type {
 } from "../lib/api";
 import {
   batchEvents,
+  datasetName,
   entriesFromMessages,
   mergeChanged,
   mergeSession,
@@ -406,6 +407,74 @@ describe("drawn tool results", () => {
     expect(viewFromCall("t1", "show_table", { title: "t", columns: [] })).toBeUndefined();
     expect(viewFromCall("t1", "show_table", "not an object")).toBeUndefined();
     expect(viewFromCall("t1", "read_file", { path: "a.rs" })).toBeUndefined();
+  });
+});
+
+/**
+ * The dataset card is the one view whose payload is *derived* from the call
+ * rather than read out of it, because `load_dataset`'s `name` is optional to
+ * the model. `datasetName` is a deliberate mirror of
+ * `taurus_data::catalog::suggest_name` and `normalize_name` — the Rust draws
+ * the card live, this draws it on reopen, and both have only the call's input.
+ *
+ * These are the cases `catalog.rs`'s own tests cover. If the two drift, a
+ * reopened conversation shows "not loaded" under a dataset that is loaded.
+ */
+describe("naming a dataset the way the backend does", () => {
+  it("takes the filename, lowercased, when the call named nothing", () => {
+    expect(datasetName("data/Events.csv", undefined)).toBe("events");
+    expect(datasetName("user events 2024.parquet", undefined)).toBe(
+      "user_events_2024",
+    );
+  });
+
+  it("strips only the last extension, as `file_stem` does", () => {
+    expect(datasetName("a/b/rows.tar.gz", undefined)).toBe("rows_tar");
+  });
+
+  it("reads a Windows path as well as a POSIX one", () => {
+    expect(datasetName("data\\train\\Events.csv", undefined)).toBe("events");
+  });
+
+  it("falls back rather than producing an empty name", () => {
+    expect(datasetName("---.csv", undefined)).toBe("dataset");
+  });
+
+  it("normalizes a name the call chose", () => {
+    expect(datasetName("whatever.csv", "User Events")).toBe("user_events");
+    expect(datasetName("whatever.csv", "EVENTS")).toBe("events");
+  });
+
+  it("depends on the path and nothing else", () => {
+    // The property the whole arrangement rests on. A version of this that
+    // deduplicated against what was already loaded could not run here at all.
+    expect(datasetName("/one/data.csv", undefined)).toBe(
+      datasetName("/another/place/data.csv", undefined),
+    );
+  });
+});
+
+describe("replaying a dataset card", () => {
+  it("draws one for a load, named the way the call will have named it", () => {
+    expect(viewFromCall("t1", "load_dataset", { path: "data/Events.csv" })).toEqual({
+      type: "dataset",
+      name: "events",
+    });
+    expect(
+      viewFromCall("t1", "load_dataset", { path: "x.csv", name: "Interactions" }),
+    ).toEqual({ type: "dataset", name: "interactions" });
+  });
+
+  it("draws one for a profile straight off the name it was given", () => {
+    expect(viewFromCall("t1", "profile_dataset", { name: "events" })).toEqual({
+      type: "dataset",
+      name: "events",
+    });
+  });
+
+  it("draws nothing for a call it cannot read a target out of", () => {
+    expect(viewFromCall("t1", "load_dataset", { path: 7 })).toBeUndefined();
+    expect(viewFromCall("t1", "profile_dataset", {})).toBeUndefined();
   });
 });
 

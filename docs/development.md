@@ -3,7 +3,7 @@
 <sub>[← Taurus AI Shell](../README.md)</sub>
 
 ```bash
-cargo test --workspace     # 1078 tests
+cargo test --workspace     # 1364 tests
 pnpm test                  # transcript reducer, replay, settings, rewind, diffs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -193,6 +193,25 @@ cargo run -p taurus-host --example turn
 # image still answers confidently, so "it replied" is not evidence.
 cargo run -p taurus-host --example vision -- gemma4:12b
 cargo run -p taurus-host --example vision -- llama3.2:latest   # refused, and why
+
+# Load, profile, and page a real data file, and say what each one cost. Needs
+# no provider. The unit tests read a five-row CSV; what they cannot show is
+# behaviour on a file somebody actually has, which is the only thing that
+# decides whether this is any good. Run it on something large before touching
+# the caps in `df.rs` or the two-pass arrangement in `profile`.
+#
+# Three numbers, and what each one means is in the example's own header:
+# `schema` must stay flat as the file grows, `profile` is a full pass and is
+# allowed to be slow, and `page` must be flat in the *offset* — which is why it
+# is measured at row 0 and again at the end.
+cargo run -p taurus-data --example probe -- ~/data/interactions.csv
+
+# The half the probe cannot check: whether a model reaches for these at all.
+# The failure worth catching is a model answering a question about a CSV with
+# `read_file`, which costs a whole context window and answers nothing — so what
+# this proves is the *absence* of a tool call, and no unit test can see that.
+# Ask a plain question, with nothing in it naming a tool.
+taurus run -w ~/data "What is in interactions.csv, and which event type is most common?"
 
 # Index a real workspace and ask it real questions. Proves the second pass is
 # near-free, which is the property the whole design turns on, and prints

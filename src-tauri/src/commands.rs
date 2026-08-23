@@ -24,6 +24,8 @@ use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
 
+use taurus_data::{Dataset, Page as DataPage, Profile as DataProfile};
+
 use taurus_host::trust::TrustStatus;
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
@@ -124,6 +126,14 @@ pub struct AppStatus {
     /// The roster size, so the rail can carry it beside the skill count. Never
     /// zero: two agents ship with the harness.
     pub agent_count: usize,
+    /// How many datasets are loaded here.
+    ///
+    /// The Data pane does not exist until this is non-zero, which is the whole
+    /// of how that surface stays out of the way of everybody who is not using
+    /// it. A count rather than the list: the tab only needs to know whether
+    /// there is anything behind it, and the pane fetches the rest when it
+    /// opens.
+    pub dataset_count: usize,
     /// Everything that failed to load, each tagged with where it came from so
     /// the UI can show it on the screen that can fix it. Previously this was an
     /// untagged list called `skill_problems`, and a malformed `providers.json`
@@ -152,6 +162,7 @@ pub async fn status_of(state: &AppState) -> AppStatus {
         skill_count: state.host.skill_count().await,
         note_count: state.host.notes().await.len(),
         agent_count: state.host.agents().await.len(),
+        dataset_count: state.host.datasets().await.len(),
         problems: state.host.problems().await,
         tool_names: state.host.tool_names().await,
         mcp_servers: state.host.mcp_statuses().await,
@@ -1302,6 +1313,55 @@ pub async fn list_agents(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Agent
 #[tauri::command]
 pub async fn list_notes(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Note>> {
     Ok(state.host.notes().await)
+}
+
+#[tauri::command]
+pub async fn list_datasets(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Dataset>> {
+    Ok(state.host.datasets().await)
+}
+
+/// Reads a dataset in full and describes every column.
+///
+/// The one command here that can take real time — it is a scan of the whole
+/// file — which is why the pane shows a reading state over it rather than
+/// waiting in silence.
+#[tauri::command]
+pub async fn dataset_profile(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> CmdResult<DataProfile> {
+    state.host.dataset_profile(&name).await
+}
+
+/// A window of a dataset's rows.
+///
+/// `limit` is clamped by the engine rather than trusted, so a frontend asking
+/// for the whole file gets a page and not a hang. See `taurus_data::MAX_PAGE`.
+#[tauri::command]
+pub async fn dataset_page(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    offset: u64,
+    limit: u64,
+) -> CmdResult<DataPage> {
+    state.host.dataset_page(&name, offset, limit).await
+}
+
+/// Drops a dataset from the list and answers with what is left.
+///
+/// The file it pointed at is not touched. Forgetting a dataset is the opposite
+/// of a destructive act — it is the way to correct a mistaken load — so it
+/// arms no confirmation, unlike deleting a conversation.
+#[tauri::command]
+pub async fn forget_dataset(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> CmdResult<Vec<Dataset>> {
+    let left = state.host.forget_dataset(&name).await?;
+    // The tab disappears when the last one goes, so the rest of the window has
+    // to hear about it.
+    emit_status(&state).await;
+    Ok(left)
 }
 
 /// Drops one note and answers with what is left, so the drawer redraws from the

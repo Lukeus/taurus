@@ -106,6 +106,14 @@ pub struct TurnRef<'a> {
 
 pub struct Host {
     workspace: RwLock<PathBuf>,
+    /// What reads tabular files.
+    ///
+    /// One per host rather than one per call, so that the single line naming a
+    /// concrete engine is in `Host::new` and nowhere else. Everything from the
+    /// tools to the commands takes it as `dyn Engine` — see
+    /// [`taurus_data::engine`] for why that is worth the indirection while the
+    /// choice is still open.
+    engine: Arc<dyn taurus_data::Engine>,
     providers: RwLock<Vec<ProviderConfig>>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
@@ -201,6 +209,9 @@ impl Host {
             providers: RwLock::new(providers),
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
+            // The one line in the harness that names a data engine. Everything
+            // downstream holds it as `dyn Engine`.
+            engine: Arc::new(taurus_data::DataFusionEngine::new()),
             catalog: Arc::new(RwLock::new(SkillCatalog::default())),
             instructions: RwLock::new(Vec::new()),
             instructions_seen: RwLock::new(Freshness::default()),
@@ -328,6 +339,28 @@ impl Host {
                 backend.allow_private_hosts,
             )));
             registry.register(Arc::new(taurus_web::WebSearch::new(backend)));
+        }
+
+        // Reading tabular data. Registered unconditionally, unlike the two
+        // blocks above: there is nothing to configure and nothing to be
+        // unreachable, so there is no state in which advertising these costs
+        // the model a turn to discover. What they need is a folder, and every
+        // workspace has one.
+        //
+        // Into the shared registry rather than per turn, for the reason
+        // `search_code` is: a delegate sent to work out what is in an
+        // unfamiliar export is exactly who wants them, and the per-turn set is
+        // the one sub-agents do not get.
+        {
+            let dir = self.data_dir_for(&workspace);
+            registry.register(Arc::new(taurus_data::LoadDataset::new(
+                self.engine.clone(),
+                dir.clone(),
+            )));
+            registry.register(Arc::new(taurus_data::ProfileDataset::new(
+                self.engine.clone(),
+                dir,
+            )));
         }
 
         // Semantic search, when an embedding model is named. Off by default and
@@ -1792,6 +1825,85 @@ impl Host {
         let mut left = memory::forget(&self.workspace.read().await.clone(), id)?;
         left.reverse();
         Ok(left)
+    }
+
+    /// Where a workspace's dataset list lives.
+    ///
+    /// Takes the workspace rather than reading it, because the one caller that
+    /// matters — the registry rebuild — is already holding it and reading it
+    /// again from inside the same lock would deadlock.
+    fn data_dir_for(&self, workspace: &Path) -> PathBuf {
+        taurus_data::data_dir(
+            &config::home_dir(),
+            &crate::sessions::workspace_key(workspace),
+        )
+    }
+
+    /// Every dataset loaded in this workspace, in the order they were loaded.
+    pub async fn datasets(&self) -> Vec<taurus_data::Dataset> {
+        let workspace = self.workspace().await;
+        taurus_data::catalog::load(&self.data_dir_for(&workspace))
+    }
+
+    /// Reads a dataset in full and reports its shape.
+    ///
+    /// Computed on demand rather than cached with the entry. A profile is a
+    /// statement about the file as it is now, and a stored one would be right
+    /// until somebody rewrote the file and wrong silently afterwards — which is
+    /// the failure a profile exists to catch, arriving from the tool meant to
+    /// catch it.
+    pub async fn dataset_profile(&self, name: &str) -> Result<taurus_data::Profile, String> {
+        let (source, _) = self.dataset_source(name).await?;
+        self.engine
+            .profile(&source)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// A window of a dataset's rows.
+    pub async fn dataset_page(
+        &self,
+        name: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<taurus_data::Page, String> {
+        let (source, _) = self.dataset_source(name).await?;
+        self.engine
+            .page(&source, offset, limit)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Drops a dataset from the list, and returns what is left.
+    ///
+    /// The file is untouched. Returning the remainder rather than nothing so a
+    /// pane can redraw from the answer, the same way [`Self::forget_note`]
+    /// does.
+    pub async fn forget_dataset(&self, name: &str) -> Result<Vec<taurus_data::Dataset>, String> {
+        let workspace = self.workspace().await;
+        let dir = self.data_dir_for(&workspace);
+        taurus_data::catalog::forget(&dir, name).map_err(|e| e.to_string())?;
+        Ok(taurus_data::catalog::load(&dir))
+    }
+
+    /// Resolves a named dataset to a file this workspace is allowed to read.
+    ///
+    /// Through the path guard rather than by joining, and that is not
+    /// ceremony. The list is a JSON file in the config home: it is
+    /// hand-editable, it survives a workspace being moved, and an entry whose
+    /// path climbed out of the tree with `..` would otherwise have every
+    /// command here read a file outside the folder the user opened.
+    async fn dataset_source(
+        &self,
+        name: &str,
+    ) -> Result<(taurus_data::Source, taurus_data::Dataset), String> {
+        let workspace = self.workspace().await;
+        let dataset = taurus_data::catalog::find(&self.data_dir_for(&workspace), name)
+            .map_err(|e| e.to_string())?;
+        let path = taurus_tools::path_guard::resolve(&workspace, &dataset.path)
+            .map_err(|e| e.to_string())?;
+        let source = taurus_data::Source::at(path).map_err(|e| e.to_string())?;
+        Ok((source, dataset))
     }
 
     /// Everything that failed to load, tagged with where it came from.

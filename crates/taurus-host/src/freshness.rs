@@ -406,8 +406,16 @@ mod tests {
         let before = Freshness::of_child_dirs([root.as_path()], "SKILL.md");
 
         // What the scan behind this fingerprint actually reads.
-        write(&root, "summarize/SKILL.md", "---\nname: summarize\ndescription: x\n---\n");
-        assert_ne!(before, before.refreshed(), "an edited SKILL.md was not noticed");
+        write(
+            &root,
+            "summarize/SKILL.md",
+            "---\nname: summarize\ndescription: x\n---\n",
+        );
+        assert_ne!(
+            before,
+            before.refreshed(),
+            "an edited SKILL.md was not noticed"
+        );
 
         // And what it does not: a script is read when it is run, not when the
         // catalog is built, so a fingerprint that moved on this would rescan
@@ -426,7 +434,11 @@ mod tests {
 
         std::fs::remove_dir_all(root.join("doomed")).unwrap();
 
-        assert_ne!(before, before.refreshed(), "a deleted skill was not noticed");
+        assert_ne!(
+            before,
+            before.refreshed(),
+            "a deleted skill was not noticed"
+        );
     }
 
     #[test]
@@ -443,5 +455,4 @@ mod tests {
 
         assert_ne!(before, before.refreshed());
     }
-
 }

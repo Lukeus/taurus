@@ -84,6 +84,35 @@ pub enum TranscriptView {
     /// then forgotten, while this is read back to the *model* on every
     /// iteration as well. See [`crate::plan`].
     Plan { steps: Vec<Step> },
+    /// A dataset a call has just loaded or described.
+    ///
+    /// The one view here that is a **reference rather than a payload**, and the
+    /// exception is worth the words.
+    ///
+    /// Everything above carries what it draws, because a saved conversation
+    /// records a call's input and nothing about how it was rendered — so a view
+    /// that *is* its own input is one a reopened conversation can redraw. A
+    /// dataset cannot work that way and should not: it is a million rows in a
+    /// file, and the interesting facts about it are its current row count and
+    /// its current columns, neither of which was known when the call was
+    /// announced and both of which change when somebody rewrites the file. A
+    /// card carrying a snapshot would be a number that is confidently wrong the
+    /// next time the conversation is opened.
+    ///
+    /// So this carries the handle and the frontend looks the rest up as it
+    /// draws. The rule the others follow still holds — the payload is exactly
+    /// the call's input, because the name is derived from the input alone (see
+    /// `taurus_data::catalog::suggest_name`, which is a pure function of the
+    /// path for precisely this reason). What is looked up is the *content*, the
+    /// way a delegation's card carries a session id and reads the transcript
+    /// behind it rather than inlining a second conversation.
+    ///
+    /// A frontend with nowhere to send the reader ignores it and prints the
+    /// call's own text instead; the CLI does exactly that.
+    Dataset {
+        /// Names the dataset, as `load_dataset` derived or was given it.
+        name: String,
+    },
 }
 
 // Doc comments on this struct and its fields are advertised to the model

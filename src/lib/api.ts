@@ -17,6 +17,15 @@ import type { ChangedFiles } from "../bindings/ChangedFiles";
 import type { Checkpoint } from "../bindings/Checkpoint";
 import type { CommandKind } from "../bindings/CommandKind";
 import type { CommandSummary } from "../bindings/CommandSummary";
+import type { DataColumn } from "../bindings/DataColumn";
+import type { DataColumnKind } from "../bindings/DataColumnKind";
+import type { DataColumnProfile } from "../bindings/DataColumnProfile";
+import type { DataDistinct } from "../bindings/DataDistinct";
+import type { DataFormat } from "../bindings/DataFormat";
+import type { DataPage } from "../bindings/DataPage";
+import type { DataProfile } from "../bindings/DataProfile";
+import type { DataValueCount } from "../bindings/DataValueCount";
+import type { Dataset } from "../bindings/Dataset";
 import type { Commit } from "../bindings/Commit";
 import type { ContentBlock } from "../bindings/ContentBlock";
 import type { DiffHunk } from "../bindings/DiffHunk";
@@ -90,6 +99,15 @@ export type {
   CommandKind,
   CommandSummary,
   Commit,
+  DataColumn,
+  DataColumnKind,
+  DataColumnProfile,
+  DataDistinct,
+  DataFormat,
+  DataPage,
+  DataProfile,
+  DataValueCount,
+  Dataset,
   ContentBlock,
   CreatedSession,
   DiffHunk,
@@ -329,6 +347,34 @@ export const listNotes = () => invoke<Note[]>("list_notes");
 /** Drops one note and answers with what is left, so the drawer redraws from
  *  the file rather than from its own guess about what the file now says. */
 export const forgetNote = (id: string) => invoke<Note[]>("forget_note", { id });
+
+/**
+ * The data files loaded in this workspace, in the order they were loaded.
+ *
+ * Pointers, not contents. Everything about what is actually in one is asked
+ * for separately and computed when asked — see `datasetProfile`.
+ */
+export const listDatasets = () => invoke<Dataset[]>("list_datasets");
+
+/**
+ * Reads a dataset in full and describes every column.
+ *
+ * The one call in this file that can take real time: it is a scan of the whole
+ * file, and on a large one that is seconds rather than milliseconds. Callers
+ * show a reading state over it rather than waiting in silence.
+ */
+export const datasetProfile = (name: string) =>
+  invoke<DataProfile>("dataset_profile", { name });
+
+/** A window of a dataset's rows. The backend caps `limit`; asking for the
+ *  whole file gets a page rather than a hang. */
+export const datasetPage = (name: string, offset: number, limit: number) =>
+  invoke<DataPage>("dataset_page", { name, offset, limit });
+
+/** Drops a dataset from the list and answers with what is left. The file it
+ *  pointed at is not touched. */
+export const forgetDataset = (name: string) =>
+  invoke<Dataset[]>("forget_dataset", { name });
 
 export const listSkills = () => invoke<SkillSummary[]>("list_skills");
 

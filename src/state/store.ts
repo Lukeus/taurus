@@ -19,6 +19,7 @@ import type {
   SessionMeta,
   AgentProposal,
   Attachment,
+  Dataset,
   FlowEdge,
   FlowNode,
   FlowStage,
@@ -159,6 +160,20 @@ interface Store {
   permission: PermissionRequest | null;
   proposals: SkillProposal[];
   agentProposals: AgentProposal[];
+  /**
+   * The data files loaded in this workspace.
+   *
+   * Held here rather than fetched per component because two things read it —
+   * the pane, and every dataset card in the transcript — and a card that
+   * fetched for itself would make a conversation with six of them six round
+   * trips that all ask the same question.
+   *
+   * Pointers only. Nothing about what is *in* a dataset is cached anywhere: a
+   * profile is a statement about the file as it is now, and a stored one would
+   * be wrong the moment somebody rewrote the file, silently, from the tool
+   * meant to catch exactly that.
+   */
+  datasets: Dataset[];
   error: string | null;
 
   init: () => Promise<void>;
@@ -246,6 +261,22 @@ interface Store {
   decideTrust: (trusted: boolean) => Promise<void>;
   /** Re-reads the conversation list and this conversation's changed files. */
   reload: () => Promise<void>;
+  /**
+   * Re-reads what datasets this workspace has.
+   *
+   * Never load-bearing: a stale list costs a card that says "not loaded" and
+   * a tab that is one refresh behind, so a failure is logged and swallowed
+   * rather than raised over whatever the user was actually doing.
+   */
+  refreshDatasets: () => Promise<void>;
+  /**
+   * Drops a dataset from the list. The file it pointed at is not touched.
+   *
+   * Answers from the backend's own remaining list rather than filtering the
+   * one in hand, so the pane redraws from what is on disk instead of from a
+   * guess about what is on disk.
+   */
+  forgetDataset: (name: string) => Promise<void>;
   dismissError: () => void;
 }
 
@@ -295,6 +326,7 @@ export const useStore = create<Store>((set, get) => ({
   permission: null,
   proposals: [],
   agentProposals: [],
+  datasets: [],
   error: null,
 
   init: async () => {
@@ -555,12 +587,19 @@ export const useStore = create<Store>((set, get) => ({
     // See `batchEvents`. The changed-file set is folded in the same pass: it
     // arrives on the same ordered stream, and updating it separately would put
     // a second render behind every one of these.
-    const stream = batchEvents((events) =>
+    const stream = batchEvents((events) => {
       set((s) => ({
         entries: events.reduce(reduce, s.entries),
         changed: events.reduce(mergeChanged, s.changed),
-      })),
-    );
+      }));
+      // Conditional, and deliberately so: the note at the end of this function
+      // explains why a turn re-reads nothing on principle. This is not that —
+      // it fires only on the one event that can have changed the answer, and
+      // the card the turn has already drawn is pointing at the dataset it
+      // loaded. Waiting for the turn to end would leave that card reading
+      // "not loaded" for as long as the turn keeps working.
+      if (loadedADataset(events, get().entries)) void get().refreshDatasets();
+    });
 
     try {
       await api.sendMessage(session.id, text, stream.push, images);
@@ -720,13 +759,18 @@ export const useStore = create<Store>((set, get) => ({
     // that decision is made, and the new folder would open on the old one's
     // model. A push is for state nothing is waiting on; this is sequenced.
     const [status, trust] = await Promise.all([api.getStatus(), api.workspaceTrust()]);
-    set({ status, trust });
+    // Emptied rather than left standing: the previous folder's datasets are
+    // not this one's, and a pane drawn from them would name files that are not
+    // here. Refilled by the fetch below.
+    set({ status, trust, datasets: [] });
+    void get().refreshDatasets();
     await get().adoptWorkspace();
   },
 
   refresh: async () => {
     const [status, trust] = await Promise.all([api.getStatus(), api.workspaceTrust()]);
     set({ status, trust });
+    void get().refreshDatasets();
   },
 
   decideTrust: async (trusted) => {
@@ -752,6 +796,22 @@ export const useStore = create<Store>((set, get) => ({
       set({ changed: [...new Set(turns.flatMap((t) => t.files))] });
     } catch (e) {
       console.warn("could not list changed files", e);
+    }
+  },
+
+  refreshDatasets: async () => {
+    try {
+      set({ datasets: await api.listDatasets() });
+    } catch (e) {
+      console.warn("could not list datasets", e);
+    }
+  },
+
+  forgetDataset: async (name) => {
+    try {
+      set({ datasets: await api.forgetDataset(name) });
+    } catch (e) {
+      set({ error: `could not forget ${name}: ${e}` });
     }
   },
 
@@ -1064,9 +1124,86 @@ export function viewFromCall(
         : undefined;
     }
 
+    case "load_dataset":
+      // Derived, not read back, because `name` is optional to the model — see
+      // `datasetName`, which mirrors the Rust the live card is drawn from.
+      return typeof payload.path === "string"
+        ? { type: "dataset", name: datasetName(payload.path, payload.name) }
+        : undefined;
+
+    case "profile_dataset":
+      return typeof payload.name === "string"
+        ? { type: "dataset", name: payload.name }
+        : undefined;
+
     default:
       return undefined;
   }
+}
+
+/**
+ * What `load_dataset` will have called a file.
+ *
+ * A mirror of `taurus_data::catalog::suggest_name` and `normalize_name`, and
+ * the one piece of logic in the app deliberately written twice. The Rust side
+ * draws the card for a conversation happening now, off the tool call's
+ * announcement; this side draws it for a conversation being reopened, off the
+ * call recorded in the transcript. Both have only the call's input to go on,
+ * which is exactly why that derivation is a pure function of the path on the
+ * Rust side.
+ *
+ * `sanitizes_a_name_the_way_the_backend_does` in `store.test.ts` covers the
+ * same cases as `catalog.rs`'s own tests. The cost of the two drifting is a
+ * card that points at a dataset by a name nothing has, which draws as "not
+ * loaded" rather than as anything broken — so this is a correctness worth
+ * pinning with a test rather than a boundary worth redesigning around.
+ */
+export function datasetName(path: string, chosen: unknown): string {
+  if (typeof chosen === "string") {
+    const named = sanitizeName(chosen);
+    // An unusable name is refused by the backend, so there is no dataset for
+    // the card to point at and no card worth drawing.
+    return named;
+  }
+  const file = path.split(/[\\/]/).pop() ?? "";
+  // The last extension only, matching Rust's `file_stem`.
+  const stem = file.includes(".") ? file.slice(0, file.lastIndexOf(".")) : file;
+  const named = sanitizeName(stem);
+  return named === "" ? "dataset" : named;
+}
+
+/** Lowercase, word characters only, no run of underscores longer than one. */
+function sanitizeName(raw: string): string {
+  let out = "";
+  for (const c of raw) {
+    if (/[a-zA-Z0-9]/.test(c)) {
+      out += c.toLowerCase();
+    } else if (!out.endsWith("_")) {
+      out += "_";
+    }
+  }
+  return out.replace(/^_+|_+$/g, "");
+}
+
+/**
+ * Whether a batch of events includes a `load_dataset` call that succeeded.
+ *
+ * The tool name is not on the finish event, only the call id, so it is found
+ * on the entry the announcement opened — which is in `entries` by the time
+ * this runs, because the reduce above has already been applied.
+ */
+function loadedADataset(events: UiEvent[], entries: Entry[]): boolean {
+  return events.some(
+    (event) =>
+      event.type === "tool_call_finished" &&
+      event.ok &&
+      entries.some(
+        (entry) =>
+          entry.kind === "tool" &&
+          entry.id === event.id &&
+          entry.name === "load_dataset",
+      ),
+  );
 }
 
 /** `caption` is optional to the model and nullable across the boundary. */

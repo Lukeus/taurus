@@ -44,6 +44,10 @@ const SHOTS = [
   // switched off — because the panel exists for the ones that are not working,
   // and a frame of four green rows would say nothing about what it is for.
   { name: "mcp", shot: "mcp", theme: "dark" },
+  // A profile rather than a page of rows, and a file with real problems in it:
+  // one column 42% missing, one with too many distinct values to rank. A grid
+  // of clean numbers would be a picture of a spreadsheet.
+  { name: "data", shot: "data", theme: "dark" },
 ];
 
 const CHROME = [

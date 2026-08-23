@@ -124,6 +124,17 @@ to put things back after.
   — results you are meant to *look* at stand on their own beside the prose. When
   a decision is genuinely yours, it asks and waits — and every question can be
   skipped.
+- [**Working with data**](docs/working-with-it.md#working-with-data) — a CSV
+  with a million rows in it is not a file to read. It loads one as a table
+  instead, describes every column from the whole file rather than a sample, and
+  puts the rows on a surface of their own.
+
+![The Data pane: a profile of a 400,000-row file, with the missing values
+marked](docs/screenshots/data.png)
+
+The pane does not exist until a workspace has loaded something. It takes the
+centre column beside the conversation rather than covering it, and the box you
+type in never moves — asking is still how anything gets here.
 
 **[Configuration](docs/configuration.md)** — providers, keys, MCP servers, and
 web search.
@@ -157,6 +168,7 @@ crates/
   taurus-mcp/               MCP client
   taurus-web/               Web search and page fetching
   taurus-index/             Local semantic search: chunking, embedding, ranking
+  taurus-data/              Reading and profiling tabular files, behind one engine trait
   taurus-core/              Session state, the agent loop, sub-agents
   taurus-host/              Config, system prompt, registry assembly
   taurus-cli/               The `taurus` binary

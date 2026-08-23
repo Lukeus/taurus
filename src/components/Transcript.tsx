@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 
 import { ChartCard } from "./ChartCard";
+import { DatasetCard } from "./DatasetCard";
 import { FlowCard } from "./FlowCard";
 import { SequenceCard } from "./SequenceCard";
 import { Markdown } from "./Markdown";
@@ -29,6 +30,8 @@ const TOOL_GLYPH: Record<string, string> = {
   run_skill_script: "▷",
   propose_skill: "✦",
   remember: "⚑",
+  load_dataset: "▦",
+  profile_dataset: "▦",
 };
 
 /**
@@ -54,6 +57,8 @@ const TOOL_CLASS: Record<
   fetch_url: "net",
   load_skill: "skill",
   run_skill_script: "skill",
+  load_dataset: "read",
+  profile_dataset: "read",
   // Its own category rather than a read or a write. Nothing in the workspace
   // moved, but something was kept — and a note is the one step in a turn whose
   // effect is on the *next* conversation, which is worth being able to spot
@@ -101,6 +106,9 @@ export type TranscriptProps = {
   /** Opens a delegation's own conversation. Absent where there is nowhere to
    * open one — inside a delegate's transcript, which cannot delegate further. */
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
+  /** Shows a dataset in the Data pane. Absent where there is no pane to show
+   *  it in, which is a delegate's transcript for the same reason as above. */
+  onOpenDataset?: (name: string) => void;
   /**
    * Whether to follow new entries to the bottom.
    *
@@ -119,6 +127,7 @@ export function Transcript({
   empty,
   onAnswer,
   onOpenDelegate,
+  onOpenDataset,
   follow = true,
 }: TranscriptProps) {
   const bottom = useRef<HTMLDivElement>(null);
@@ -134,6 +143,7 @@ export function Transcript({
   // nothing there to answer.
   const answer = useStable(onAnswer);
   const openDelegate = useStable(onOpenDelegate);
+  const openDataset = useStable(onOpenDataset);
 
   // Follow the stream, but stop fighting the user the moment they scroll up.
   useEffect(() => {
@@ -198,6 +208,7 @@ export function Transcript({
           stopping={stopping}
           onAnswer={answer}
           onOpenDelegate={openDelegate}
+          onOpenDataset={openDataset}
         />
       ))}
       <div ref={bottom} />
@@ -365,6 +376,7 @@ const TurnView = memo(function TurnView({
   stopping,
   onAnswer,
   onOpenDelegate,
+  onOpenDataset,
 }: {
   turn: Turn;
   working: boolean;
@@ -372,6 +384,7 @@ const TurnView = memo(function TurnView({
   stopping: boolean;
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
+  onOpenDataset?: (name: string) => void;
 }) {
   return (
     <section className={`turn${turn.prompt ? "" : " unprompted"}`}>
@@ -387,6 +400,7 @@ const TurnView = memo(function TurnView({
               entry={item}
               onAnswer={onAnswer}
               onOpenDelegate={onOpenDelegate}
+              onOpenDataset={onOpenDataset}
             />
           </div>
         ),
@@ -453,10 +467,12 @@ const EntryView = memo(function EntryView({
   entry,
   onAnswer,
   onOpenDelegate,
+  onOpenDataset,
 }: {
   entry: Entry;
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
+  onOpenDataset?: (name: string) => void;
 }) {
   if (entry.kind === "tool" && entry.view) {
     switch (entry.view.type) {
@@ -468,6 +484,8 @@ const EntryView = memo(function EntryView({
         return <SequenceCard view={entry.view} />;
       case "flow":
         return <FlowCard view={entry.view} />;
+      case "dataset":
+        return <DatasetCard view={entry.view} onOpen={onOpenDataset} />;
       case "questions":
         return (
           <QuestionsCard

@@ -78,6 +78,20 @@ const DelegateTranscript = lazy(() =>
 );
 
 /*
+ * The Data pane, deliberately not in `PANELS` either.
+ *
+ * `PANELS` is warmed at idle because a drawer should open instantly, and every
+ * session has drawers. This is a surface most workspaces never have anything
+ * to put in — the tab does not exist until a dataset is loaded — so paying to
+ * parse it on every launch would be paying for a feature nobody in that
+ * session is using. It loads when the tab is first chosen, and the module map
+ * answers every switch after that.
+ */
+const DataPane = lazy(() =>
+  import("./components/DataPane").then((m) => ({ default: m.DataPane })),
+);
+
+/*
  * The terminal, deliberately not in `PANELS`.
  *
  * Everything above is warmed once the window goes idle, because a drawer is
@@ -153,6 +167,9 @@ export default function App() {
       resolveProposal: s.resolveProposal,
       resolveAgentProposal: s.resolveAgentProposal,
       decideTrust: s.decideTrust,
+      datasets: s.datasets,
+      refreshDatasets: s.refreshDatasets,
+      forgetDataset: s.forgetDataset,
     })),
   );
   const rail = useResizableWidth({ storageKey: "taurus.railWidth", ...RAIL_WIDTH });
@@ -169,6 +186,23 @@ export default function App() {
    * same as closing a terminal window anywhere else.
    */
   const [terminalOpen, setTerminalOpen] = useState(false);
+  /**
+   * Which surface the centre column is showing.
+   *
+   * A mode rather than a drawer, because the alternative to the conversation
+   * here is not something laid *over* it — it is the other thing this window is
+   * for. The rail and the composer are outside it and never move, so the
+   * conversation is one click away and typing still starts a turn from either
+   * side.
+   *
+   * Falls back to the transcript on its own when the last dataset is forgotten
+   * — see the effect below. A mode with nothing behind it is a blank pane and
+   * a tab that has gone.
+   */
+  const [pane, setPane] = useState<"conversation" | "data">("conversation");
+  /** Which dataset the Data pane has open. Held here rather than in the pane
+   *  so a card in the transcript can choose one — see `DatasetCard`. */
+  const [dataset, setDataset] = useState<string | null>(null);
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
@@ -279,6 +313,13 @@ export default function App() {
       .catch(() => setModels("failed"));
   }, [providerId]);
 
+  // The switch disappears with the last dataset, so a window still showing the
+  // Data pane would be left on a surface with no way back to the conversation.
+  // Covers forgetting the last one and switching to a folder that has none.
+  useEffect(() => {
+    if (store.datasets.length === 0) setPane("conversation");
+  }, [store.datasets.length]);
+
   /**
    * Takes the conversation on screen to another model, or opens one there when
    * there is nothing to take.
@@ -383,6 +424,14 @@ export default function App() {
     await api.setTheme(next);
   };
 
+  /** Opens a dataset in the Data pane, from a card in the transcript. */
+  const showDataset = (name: string) => {
+    setDataset(name);
+    setPane("data");
+  };
+
+  const forgetDataset = (name: string) => void store.forgetDataset(name);
+
   return (
     <div className="app">
       <Rail
@@ -486,25 +535,70 @@ export default function App() {
           </select>
         </header>
 
-        <main>
-          <TranscriptPane
-            busy={store.busy}
-            stopping={store.stopping}
-            pending={store.resuming}
-            onAnswer={store.answerQuestions}
-            onOpenDelegate={setDelegate}
-            empty={
-              <FirstRun
-                workspace={workspace}
-                ready={!!store.session}
-                health={health(store.status?.providers.length, providerId, models)}
-                onPickWorkspace={pickWorkspace}
-                onSettings={() => setSettingsOpen(true)}
-              />
-            }
-          />
+        {/* Only once there is something behind it. A workspace that has never
+            loaded a file shows no switch at all, which is the whole of how
+            this surface stays out of the way of everyone not using it — the
+            same rule the composer's `/` hint and the rail's MCP badge follow.
+            Drawn above the pane rather than in the topbar: the topbar names
+            the conversation and the model, and neither of those changes when
+            the centre column does. */}
+        {store.datasets.length > 0 && (
+          <div className="pane-switch" role="tablist" aria-label="View">
+            <button
+              role="tab"
+              aria-selected={pane === "conversation"}
+              className={`seg${pane === "conversation" ? " on" : ""}`}
+              onClick={() => setPane("conversation")}
+            >
+              Conversation
+            </button>
+            <button
+              role="tab"
+              aria-selected={pane === "data"}
+              className={`seg${pane === "data" ? " on" : ""}`}
+              onClick={() => setPane("data")}
+            >
+              Data
+              <span className="count">{store.datasets.length}</span>
+            </button>
+          </div>
+        )}
 
-          {(store.proposals.length > 0 ||
+        <main>
+          {pane === "data" ? (
+            <Suspense fallback={<div className="data-pane" />}>
+              <DataPane
+                datasets={store.datasets}
+                selected={dataset}
+                onSelect={setDataset}
+                onForget={forgetDataset}
+              />
+            </Suspense>
+          ) : (
+            <TranscriptPane
+              busy={store.busy}
+              stopping={store.stopping}
+              pending={store.resuming}
+              onAnswer={store.answerQuestions}
+              onOpenDelegate={setDelegate}
+              onOpenDataset={showDataset}
+              empty={
+                <FirstRun
+                  workspace={workspace}
+                  ready={!!store.session}
+                  health={health(store.status?.providers.length, providerId, models)}
+                  onPickWorkspace={pickWorkspace}
+                  onSettings={() => setSettingsOpen(true)}
+                />
+              }
+            />
+          )}
+
+          {/* Kept out of the Data pane. A proposal is about the conversation
+              that raised it, and answering one from a screen that does not
+              show it would be approving something you cannot read. */}
+          {pane === "conversation" &&
+            (store.proposals.length > 0 ||
             store.agentProposals.length > 0) && (
             <div className="proposals">
               {store.proposals.map((p) => (

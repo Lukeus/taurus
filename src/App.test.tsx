@@ -25,6 +25,7 @@ const state = {
   changed: [],
   proposals: [],
   agentProposals: [],
+  datasets: [] as unknown[],
   busy: false,
   error: null,
   init: vi.fn(),
@@ -35,6 +36,8 @@ const state = {
   reload: vi.fn(),
   send: vi.fn(),
   stop: vi.fn(),
+  refreshDatasets: vi.fn(),
+  forgetDataset: vi.fn(),
   dismissError: vi.fn(),
 };
 // `pinnedPlan` is a pure selector over `entries`, which is empty here — the
@@ -167,12 +170,61 @@ const withProviders = (ids: string[], lastProvider: string | null = null) => {
       skill_synthesis_enabled: true,
     },
     skill_count: 0,
+    dataset_count: 0,
     problems: [],
     tool_names: [],
     mcp_servers: [],
   };
   return renderToStaticMarkup(<App />);
 };
+
+/**
+ * The rule the whole surface rests on: no dataset, no switch.
+ *
+ * This is how the Data pane stays out of the way of everybody not using it —
+ * the same discipline as the composer only announcing `/` when there is
+ * something to run, and the rail's MCP badge staying absent until a status
+ * lands. A tab that was always there would be a permanent advertisement for a
+ * feature most workspaces have nothing to put in.
+ */
+describe("the Data switch", () => {
+  const render = (datasets: unknown[]) => {
+    state.datasets = datasets;
+    state.status = {
+      workspace: "/w",
+      providers: [provider("ollama")],
+      settings: {
+        last_workspace: null,
+        last_provider: null,
+        last_model: null,
+        skill_synthesis_enabled: true,
+      },
+      skill_count: 0,
+      dataset_count: datasets.length,
+      problems: [],
+      tool_names: [],
+      mcp_servers: [],
+    };
+    const html = renderToStaticMarkup(<App />);
+    state.datasets = [];
+    return html;
+  };
+
+  it("is absent in a workspace that has loaded nothing", () => {
+    expect(render([])).not.toContain("pane-switch");
+  });
+
+  it("appears once there is something behind it, and counts it", () => {
+    const html = render([
+      { name: "events", path: "data/events.csv", format: "csv" },
+      { name: "items", path: "data/items.parquet", format: "parquet" },
+    ]);
+    expect(html).toContain("pane-switch");
+    expect(html).toContain("Conversation");
+    expect(html).toContain("Data");
+    expect(html).toContain(">2<");
+  });
+});
 
 const providerSelect = (html: string) =>
   html.match(/<select[^>]*class="provider-select"[\s\S]*?<\/select>/)?.[0];

@@ -368,3 +368,92 @@ export const EVENTS = [
     ...QUESTIONS,
   }),
 ];
+
+/*
+ * A dataset, profiled.
+ *
+ * The numbers are a real run of `cargo run -p taurus-data --example probe` over
+ * a 400,000-row interactions file, not invented ones — which matters for the
+ * two columns the picture is actually of: `rating`, 42% missing, and `user_id`,
+ * with too many distinct values for a top five to mean anything. A frame of
+ * seven clean columns would say nothing about what this pane is for.
+ */
+export const DATASETS = [
+  { name: "interactions", path: "data/interactions.csv", format: "csv" },
+  { name: "items", path: "data/items.parquet", format: "parquet" },
+];
+
+const column = (
+  name: string,
+  type_name: string,
+  kind: string,
+  over: Record<string, unknown> = {},
+) => ({
+  head: { name, kind, type_name, nullable: true },
+  nulls: 0,
+  distinct: { kind: "exact", count: 0 },
+  min: null,
+  max: null,
+  common: [],
+  ...over,
+});
+
+const share = (value: string | null, count: number) => ({ value, count });
+
+export const DATA_PROFILE = {
+  rows: 400_000,
+  engine: "DataFusion",
+  columns: [
+    column("user_id", "Utf8", "text", {
+      distinct: { kind: "exact", count: 49_981 },
+      min: "u1",
+      max: "u9999",
+    }),
+    column("item_id", "Utf8", "text", {
+      distinct: { kind: "exact", count: 9_000 },
+      min: "i1",
+      max: "i8999",
+    }),
+    column("event", "Utf8", "text", {
+      distinct: { kind: "exact", count: 5 },
+      min: "add_to_cart",
+      max: "view",
+      common: [
+        share("view", 219_922),
+        share("click", 100_189),
+        share("add_to_cart", 47_743),
+      ],
+    }),
+    column("category", "Utf8", "text", {
+      distinct: { kind: "exact", count: 6 },
+      min: "apparel",
+      max: "toys",
+      common: [share("electronics", 67_179), share("apparel", 67_102)],
+    }),
+    column("price", "Float64", "number", {
+      nulls: 12_004,
+      distinct: { kind: "exact", count: 138_692 },
+      min: "1.00",
+      max: "1498.99",
+    }),
+    column("rating", "Int64", "number", {
+      nulls: 167_853,
+      distinct: { kind: "exact", count: 5 },
+      min: "1",
+      max: "5",
+      common: [share(null, 167_853), share("4", 46_544), share("1", 46_503)],
+    }),
+    // 336 distinct is under the ceiling, so this one *does* get a top five —
+    // leaving it empty in the fixture drew "too many values to rank" beside a
+    // three-figure count, which is the pane contradicting itself.
+    column("ts", "Timestamp(s)", "temporal", {
+      distinct: { kind: "exact", count: 336 },
+      min: "2024-01-01T10:00:00",
+      max: "2024-12-28T10:00:00",
+      common: [
+        share("2024-04-27T10:00:00", 1_283),
+        share("2024-08-23T10:00:00", 1_278),
+      ],
+    }),
+  ],
+};

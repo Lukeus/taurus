@@ -750,3 +750,90 @@ question numbers its options and reads a line, with Enter alone to skip. Where
 there is no terminal at all — a pipe, a git hook, CI — nothing hangs: the tool
 comes back saying nobody was available, and the model is told to decide and say
 which way it went.
+
+## Working with data
+
+A CSV with a million rows in it is not a file to read. `read_file` on one costs
+a whole context window and answers nothing, and it is the single most expensive
+mistake an agent can make in a folder that has data in it. So two tools treat a
+data file as a table rather than as text, and a surface of its own holds what
+they find.
+
+| Tool | Does | Reach for it when |
+| --- | --- | --- |
+| `load_dataset` | Reads a file's columns and gives it a short name | A question is about the *contents* of a data file |
+| `profile_dataset` | Reads the whole file and describes every column | You have not seen the data and need to know its shape |
+
+`.csv`, `.tsv`, `.parquet`, and newline-delimited `.ndjson` / `.jsonl` /
+`.json`. A `.json` file holding a single array is not newline-delimited JSON
+and says so rather than reading as nothing.
+
+Loading is cheap and profiling is not, and the split is deliberate.
+`load_dataset` reads a header — or a Parquet footer, which carries a row count
+for free — and stops. `profile_dataset` reads every row, because the numbers
+worth having are exact ones: how many rows, how many are missing per column,
+how many different values each column holds, the range of the ordered ones, and
+the commonest values of the rest.
+
+```
+`interactions` — 400,000 rows × 7 columns, from data/interactions.csv, profiled by DataFusion.
+
+  user_id   Utf8           49,981 distinct · no nulls · too many values to top
+  item_id   Utf8            9,000 distinct · no nulls · too many values to top
+  event     Utf8                5 distinct · no nulls · view 55%, click 25%, add_to_cart 12%, …
+  category  Utf8                6 distinct · no nulls · electronics 17%, apparel 17%, …
+  price     Float64       138,692 distinct · 12,004 nulls (3%) · 1.00 … 1498.99
+  rating    Int64               5 distinct · 167,853 nulls (42%) · 1 … 5
+  ts        Timestamp(s)      336 distinct · no nulls · 2024-01-01 … 2024-12-28
+```
+
+Distinct counts are exact rather than estimated. `approx_distinct` would be
+cheaper and cannot answer the question a distinct count is actually asked —
+whether a column is unique — and a profile that takes longer is a cost you can
+see, while one that is quietly approximate is a number you will act on.
+
+A column with more different values than a top five says anything about gets
+none, and says that rather than going quiet: five arbitrary user ids read like
+a finding. The exact count is still there.
+
+### The Data pane
+
+Neither tool hands rows back to the model. A page of a dataset is the most
+expensive and least useful thing that could go in a tool result — a sample it
+will over-generalize from, priced like a document — so what comes back is
+shape, and the rows live on a surface of their own.
+
+![The Data pane, showing a profile and a page of rows](screenshots/data.png)
+
+The pane takes the centre column, beside the conversation rather than over it.
+The rail and the box you type in do not move: the conversation is still what
+drives this, because asking is how a dataset gets here in the first place.
+
+**It does not exist until there is something in it.** A workspace that has never
+loaded a file shows no switch at all — the same rule the composer's `/` hint and
+the rail's MCP badge follow. Loading the first one makes the tab appear, and
+forgetting the last one takes it away again.
+
+Two views per dataset. **Columns** is the profile: a row per column, with a bar
+on the missing count so a forty-column table can be scanned down rather than
+read. **Rows** is a page of the data itself, a hundred at a time, with the row
+number so a window into a million-row file says where in it you are.
+
+Nothing is cached. Every profile and every page is read when it is asked for,
+because a dataset entry is a pointer to a file that anything can rewrite — the
+agent, a script, the terminal three inches below the pane — and a remembered row
+count is exactly the kind of number that is right for a week and then quietly
+wrong.
+
+**A null and an empty string are drawn differently**, as `null` and `empty`
+rather than as two blanks. They are the same nothing on screen otherwise, and
+telling them apart is most of what looking at raw rows is for: a column that is
+40% missing and a column that is 40% blank string are different problems with
+different fixes.
+
+A dataset the conversation loads leaves a small card in the transcript — a name,
+a path, and the way into the pane. It is the one card here that is a reference
+rather than a result, and it looks its dataset up as it draws rather than
+carrying a snapshot, so it says what is true now rather than what was true when
+the call ran. **Forget** removes a dataset from the list and touches no file;
+it is how a mistaken load is corrected, so it asks nothing first.

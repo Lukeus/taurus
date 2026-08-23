@@ -16,6 +16,8 @@ import { createRoot } from "react-dom/client";
 
 import {
   CHECKPOINTS,
+  DATASETS,
+  DATA_PROFILE,
   EVENTS,
   MCP_ENVIRONMENT,
   MCP_SERVERS,
@@ -40,6 +42,8 @@ const ANSWERS: Record<string, unknown> = {
   list_agents: [],
   list_tools: [],
   agent_roster_cost: 0,
+  list_datasets: DATASETS,
+  dataset_profile: DATA_PROFILE,
   list_mcp_servers: MCP_SERVERS,
   mcp_environment: MCP_ENVIRONMENT,
   // Empty, because the turn below is replayed as live events instead. Resume
@@ -101,6 +105,10 @@ requestAnimationFrame(() => {
       // The dialog is state, not a route, so seeding it is all it takes to
       // photograph the moment a write is actually approved.
       ...(shot === "permission" ? { permission: PERMISSION as never } : {}),
+      // Seeded rather than fetched, for the same reason the entries above are:
+      // the list arrives from `refresh`, which the harness never calls, and
+      // the switch this shot presses does not exist until the list is there.
+      ...(shot === "data" ? { datasets: DATASETS as never } : {}),
     });
 
     const transcript = document.querySelector(".transcript");
@@ -114,6 +122,17 @@ requestAnimationFrame(() => {
       // state in `App` rather than in the store — so this presses the button
       // instead of seeding it. That is also the more honest picture: the drawer
       // in the image is one that was opened the way a user opens it.
+      // Pressed rather than seeded, like the MCP drawer below: which pane is
+      // showing is local state in `App`, and the picture is more honest for
+      // being of a tab somebody clicked. The profile it then fetches is
+      // answered from the stub above, well inside Chrome's virtual-time
+      // budget.
+      data: () => {
+        const tab = [...document.querySelectorAll(".pane-switch .seg")].find(
+          (button) => button.textContent?.startsWith("Data"),
+        );
+        (tab as HTMLButtonElement | undefined)?.click();
+      },
       mcp: () => {
         const link = [...document.querySelectorAll(".rail-link")].find(
           (button) => button.textContent?.startsWith("MCP"),
