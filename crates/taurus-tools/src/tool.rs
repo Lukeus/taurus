@@ -90,6 +90,29 @@ impl ToolError {
         }
     }
 
+    /// Whether [`Self::to_model_message`] says anything about the call that
+    /// produced it.
+    ///
+    /// The stall detector counts a repeated failure by the answer the model got
+    /// rather than the arguments it sent, because a model retrying a refusal
+    /// rarely sends byte-identical JSON. That only identifies a call when the
+    /// answer was written about that call. These are the ones that are the same
+    /// sentence whatever was asked for, and reading them as an identity would
+    /// count three different calls the user turned down as one call made three
+    /// times.
+    pub fn describes_the_call(&self) -> bool {
+        match self {
+            // One fixed sentence apiece. `Denied` in particular tells the model
+            // to go and try something else, so counting it as a repeat punishes
+            // the model for doing as it was told.
+            Self::Denied | Self::Canceled => false,
+            // A tool that failed without saying why has said nothing about this
+            // call either, and every other silent failure renders identically.
+            Self::InvalidInput(m) | Self::Rejected(m) | Self::Failed(m) => !m.trim().is_empty(),
+            _ => true,
+        }
+    }
+
     /// Rendered back to the model as an error tool result. Phrased so the model
     /// can act on it rather than just apologize.
     pub fn to_model_message(&self) -> String {
@@ -116,7 +139,14 @@ impl ToolError {
             Self::NotFound(name) => {
                 format!("No tool named '{name}' exists. Use only the tools listed for you.")
             }
-            other => other.to_string(),
+            // A tool can fail with nothing to say — an MCP server that sets
+            // `isError` over an empty body is the case that turns up. Handing
+            // the model a blank error to reason about is worse than admitting
+            // there is no detail to give.
+            other => match other.to_string() {
+                m if m.trim().is_empty() => "The tool failed without reporting why.".into(),
+                m => m,
+            },
         }
     }
 }
@@ -848,5 +878,32 @@ mod tests {
         let step = &schema["properties"]["steps"]["items"];
         assert_eq!(step["properties"]["text"]["type"], "string");
         assert_eq!(step["required"], serde_json::json!(["text"]));
+    }
+
+    #[test]
+    fn an_error_that_would_read_the_same_for_any_call_says_so() {
+        // What the stall detector may treat as a call's identity. A denial is
+        // one sentence about the user's decision, and says nothing about which
+        // call it turned down.
+        assert!(!ToolError::Denied.describes_the_call());
+        assert!(!ToolError::Canceled.describes_the_call());
+        assert!(!ToolError::Failed(String::new()).describes_the_call());
+        assert!(!ToolError::Rejected("  ".into()).describes_the_call());
+
+        assert!(ToolError::Failed("connect timed out to db-1".into()).describes_the_call());
+        assert!(
+            ToolError::Rejected("that plan is already on the board".into()).describes_the_call()
+        );
+        assert!(ToolError::NotFound("nope".into()).describes_the_call());
+    }
+
+    #[test]
+    fn a_tool_that_fails_silently_still_gets_a_sentence() {
+        // An MCP server setting `isError` over an empty body. A blank error
+        // leaves the model nothing to reason about.
+        assert_eq!(
+            ToolError::Failed(String::new()).to_model_message(),
+            "The tool failed without reporting why."
+        );
     }
 }

@@ -105,8 +105,8 @@ pub struct AgentConfig {
     /// real backoffs would put seconds of sleeping into the suite to prove
     /// something that has nothing to do with wall-clock time.
     pub retry_backoff: Duration,
-    /// How many times the model may make a tool call that fails, unchanged,
-    /// with nothing succeeding in between, before the turn is stopped.
+    /// How many times a round of tool calls may reach an outcome it has already
+    /// reached, with nothing succeeding in between, before the turn is stopped.
     ///
     /// The system prompt already tells it not to. This is what makes that true:
     /// left alone, a model on a bad path spends the whole iteration budget
@@ -116,7 +116,10 @@ pub struct AgentConfig {
     /// Counted across rounds rather than consecutively, so alternating between
     /// two dead ends is caught as readily as insisting on one. Anything that
     /// succeeds resets the count, which is what keeps a model working through
-    /// genuinely different candidates from tripping it.
+    /// genuinely different candidates from tripping it — as does a failure that
+    /// says nothing about the call it came from, since a model told "the user
+    /// denied that" three times has been told nothing about the three calls.
+    /// See [`FailedCall::repeats`].
     pub stall_limit: u32,
     /// Whether a trace may carry the conversation itself, not only its shape.
     ///
@@ -271,7 +274,7 @@ pub enum AgentError {
     Provider(#[from] taurus_provider::ProviderError),
     #[error("reached the {0}-iteration limit for one turn")]
     IterationLimit(u32),
-    #[error("the same failing tool call was repeated {0} times with no progress in between")]
+    #[error("the same tool failure came back {0} times with no progress in between")]
     Stalled(u32),
     /// A `user_prompt_submit` hook refused the message.
     ///
@@ -808,17 +811,17 @@ impl Agent {
         let mut total = TokenUsage::default();
         let mut iteration = 0;
         // Every round since the last sign of progress where *everything*
-        // failed, oldest first — each one as the answers it got, not the
-        // arguments it sent; see `all_failed`. Only all-failed rounds are kept:
-        // a round where something succeeded is progress, whatever else went
-        // wrong alongside it, and it empties this.
+        // failed, oldest first — each one as both what it asked and what it was
+        // told, since either can be the thing that repeats; see `FailedCall`.
+        // Only all-failed rounds are kept: a round where something succeeded is
+        // progress, whatever else went wrong alongside it, and it empties this.
         //
         // A list rather than the previous round alone, because a model
         // alternating between two calls that both fail is as stuck as one
         // repeating a single call, and comparing only against the round before
         // would see every round differ from the one before it. Bounded by the
         // iteration ceiling, since anything succeeding clears it.
-        let mut failures: Vec<Vec<(String, String)>> = Vec::new();
+        let mut failures: Vec<Vec<FailedCall>> = Vec::new();
 
         // Whether this turn has changed files without running anything since.
         // See `verify_nudge`.
@@ -1021,7 +1024,10 @@ impl Agent {
                 });
             }
 
-            let mut results = self
+            let RoundResults {
+                blocks: mut results,
+                anonymous,
+            } = self
                 .run_tool_calls(&assistant, &session.model, &ui, pending, spent)
                 .await;
             let delegated = take_spent(spent);
@@ -1089,9 +1095,13 @@ impl Agent {
             // else and came back does not change that.
             let ended = self.ended_by_a_tool(&assistant, &results);
 
-            let repeats = match all_failed(&assistant, &results) {
+            let repeats = match all_failed(&assistant, &results, &anonymous) {
                 Some(calls) => {
-                    let seen = failures.iter().filter(|round| **round == calls).count() + 1;
+                    let seen = failures
+                        .iter()
+                        .filter(|round| same_round(round, &calls))
+                        .count()
+                        + 1;
                     failures.push(calls);
                     seen as u32
                 }
@@ -1111,8 +1121,12 @@ impl Agent {
             self.persist(session).await;
 
             if repeats >= self.config.stall_limit {
+                // "The same failure", not "the same call": what is counted is a
+                // round arriving at an outcome it has already reached, which a
+                // reworded retry of one call does as surely as sending it
+                // twice. See `FailedCall::repeats`.
                 let message = format!(
-                    "Stopped after the same tool call failed {repeats} times with nothing \
+                    "Stopped after the same failure came back {repeats} times with nothing \
                      succeeding in between. Nothing about it will succeed on a further attempt; a \
                      different approach is needed, or the obstacle needs reporting."
                 );
@@ -1491,7 +1505,7 @@ impl Agent {
         ui: &mpsc::Sender<UiEvent>,
         background: &Arc<Pending>,
         spent: &Arc<std::sync::Mutex<Spend>>,
-    ) -> Vec<ContentBlock> {
+    ) -> RoundResults {
         // Once per round rather than per call, and cached by every adapter, so
         // after the first turn this is a map lookup. A window that cannot be
         // had leaves the budget unknown, where every cap is the constant it was
@@ -1530,6 +1544,7 @@ impl Agent {
             .partition(|(_, n, input)| self.runs_concurrently(n, input));
 
         let mut results: Vec<(String, ContentBlock)> = Vec::new();
+        let mut anonymous = std::collections::HashSet::new();
 
         let mut pending: FuturesUnordered<_> = concurrent
             .into_iter()
@@ -1542,13 +1557,21 @@ impl Agent {
             })
             .collect();
         while let Some((id, outcome)) = pending.next().await {
-            results.push((id.clone(), self.report(&id, outcome, ui).await));
+            let (block, describes_the_call) = self.report(&id, outcome, ui).await;
+            if !describes_the_call {
+                anonymous.insert(id.clone());
+            }
+            results.push((id, block));
         }
 
         for (id, name, input) in sequential {
             let ctx = self.context_for(&id, budget, ui, background, spent);
             let outcome = self.execute_one(&name, input, &ctx).await;
-            results.push((id.clone(), self.report(&id, outcome, ui).await));
+            let (block, describes_the_call) = self.report(&id, outcome, ui).await;
+            if !describes_the_call {
+                anonymous.insert(id.clone());
+            }
+            results.push((id, block));
         }
 
         // Restore the model's original call order: some providers reject
@@ -1561,7 +1584,10 @@ impl Agent {
             }
         }
         ordered.extend(results.into_iter().map(|(_, block)| block));
-        ordered
+        RoundResults {
+            blocks: ordered,
+            anonymous,
+        }
     }
 
     /// The nudge a turn that is about to finish still owes, if any, marking it
@@ -1764,12 +1790,16 @@ impl Agent {
         result
     }
 
+    /// Renders one call's outcome for the model, and says whether a failure
+    /// named the call it came from — which is what lets the stall detector tell
+    /// a repeated call from a repeated *kind* of failure. Always true for a
+    /// call that succeeded, which the detector never looks at.
     async fn report(
         &self,
         id: &str,
         outcome: taurus_tools::ToolResult,
         ui: &mpsc::Sender<UiEvent>,
-    ) -> ContentBlock {
+    ) -> (ContentBlock, bool) {
         match outcome {
             Ok(output) => {
                 let _ = ui
@@ -1791,10 +1821,11 @@ impl Agent {
                             .collect(),
                     })
                     .await;
-                ContentBlock::tool_result(id, output)
+                (ContentBlock::tool_result(id, output), true)
             }
             Err(error) => {
                 let message = error.to_model_message();
+                let describes_the_call = error.describes_the_call();
                 debug!(id, %error, "tool call failed");
                 let _ = ui
                     .send(UiEvent::ToolCallFinished {
@@ -1804,7 +1835,7 @@ impl Agent {
                         images: Vec::new(),
                     })
                     .await;
-                ContentBlock::tool_error(id, message)
+                (ContentBlock::tool_error(id, message), describes_the_call)
             }
         }
     }
@@ -2536,50 +2567,103 @@ enum Summarizing {
     Failed,
 }
 
-/// This round's calls, as name and the answer each one got, if every one of
-/// them failed.
+/// One round's tool results, and which of the failures said nothing about the
+/// call that produced them.
+struct RoundResults {
+    blocks: Vec<ContentBlock>,
+    /// Call ids whose error would have read the same whatever was asked for.
+    /// See [`taurus_tools::ToolError::describes_the_call`].
+    anonymous: std::collections::HashSet<String>,
+}
+
+/// One failed call, as both of the things that could identify it.
+#[derive(Debug)]
+struct FailedCall {
+    name: String,
+    /// What the model asked for.
+    args: serde_json::Value,
+    /// What it was told, or `None` when it was told something that would have
+    /// read the same whatever it had asked for. See
+    /// [`taurus_tools::ToolError::describes_the_call`].
+    answer: Option<String>,
+}
+
+impl FailedCall {
+    /// Whether this call is `prior` over again with nothing learned in between.
+    ///
+    /// Either half is enough, and both are needed:
+    ///
+    /// - The same arguments, because an identical call sent twice is a repeat
+    ///   however the answer reads. Some errors carry a detail that moves on
+    ///   every attempt — a request id, a retry-after, a timestamp from a
+    ///   server's own error body — and comparing only answers would see a fresh
+    ///   first offence each round while the model resent exactly one call.
+    /// - The same answer, because a model retrying a refusal rarely sends
+    ///   byte-identical JSON. It reorders a key, rewords a field the tool
+    ///   ignores, adds a space. Comparing only arguments would see progress in
+    ///   every one of those, which is the loop this detector was widened to
+    ///   catch: `update_plan` refused for restating the plan already on the
+    ///   board, retried with a reworded `active_form` until the turn hit the
+    ///   iteration ceiling.
+    fn repeats(&self, prior: &Self) -> bool {
+        if self.name != prior.name {
+            return false;
+        }
+        if self.args == prior.args {
+            return true;
+        }
+        // Both sides must have said something about their own call. Two
+        // anonymous answers matching means only that two calls failed the same
+        // *kind* of way, which is not evidence about either one.
+        matches!((&self.answer, &prior.answer), (Some(a), Some(b)) if a == b)
+    }
+}
+
+/// Whether `calls` is a round that has already happened.
+fn same_round(prior: &[FailedCall], calls: &[FailedCall]) -> bool {
+    prior.len() == calls.len()
+        && calls
+            .iter()
+            .zip(prior)
+            .all(|(call, prior)| call.repeats(prior))
+}
+
+/// This round's calls, as what identifies each one, if every one of them failed.
 ///
 /// `None` when anything succeeded and when there were no calls at all: both are
 /// progress, and neither should count toward a stall. Call ids are deliberately
 /// not part of the identity — the model mints a fresh one each time, so two
 /// genuinely identical calls never share one.
-///
-/// # Why the error and not the arguments
-///
-/// This used to be keyed on the arguments the model sent, and that is the
-/// wrong half of the exchange to watch. What the caller wants to know is
-/// whether the model has been told this answer before and has learned nothing
-/// since — and a model retrying a rejected call rarely sends byte-identical
-/// JSON. It reorders a key, rewords a field the tool ignores, adds a space.
-/// Every one of those is a different `Value`, so the counter reset on every
-/// round and a turn could retry the same refusal until it hit the iteration
-/// ceiling.
-///
-/// The reported case: `update_plan` refused for sending a plan identical to the
-/// one on the board, retried with a reworded `active_form` each time — refused
-/// identically every round, and counted as a first offence every round.
-///
-/// Keying on the answer conflates two different calls that failed the same way,
-/// which is correct rather than a compromise: the model got the same sentence
-/// back both times, and the same sentence twice is the thing being counted.
-fn all_failed(assistant: &Message, results: &[ContentBlock]) -> Option<Vec<(String, String)>> {
-    let failed: std::collections::HashMap<&str, String> = results
+fn all_failed(
+    assistant: &Message,
+    results: &[ContentBlock],
+    anonymous: &std::collections::HashSet<String>,
+) -> Option<Vec<FailedCall>> {
+    let mut failed: std::collections::HashMap<&str, std::borrow::Cow<'_, str>> = results
         .iter()
         .filter_map(|block| match block {
             ContentBlock::ToolResult {
                 tool_use_id,
                 is_error: true,
                 content,
-            } => Some((tool_use_id.as_str(), content.to_text().into_owned())),
+            } => Some((tool_use_id.as_str(), content.to_text())),
             _ => None,
         })
         .collect();
 
-    let mut calls = Vec::new();
-    for (id, name, _input) in assistant.tool_uses() {
-        let answer = failed.get(id)?;
-        calls.push((name.to_string(), answer.clone()));
-    }
+    // Moved out rather than copied, and only on the path that keeps them: a
+    // round where anything succeeded leaves through the `?` below.
+    let calls: Vec<FailedCall> = assistant
+        .tool_uses()
+        .map(|(id, name, input)| {
+            let answer = failed.remove(id)?;
+            Some(FailedCall {
+                name: name.to_string(),
+                args: input.clone(),
+                answer: (!anonymous.contains(id)).then(|| answer.into_owned()),
+            })
+        })
+        .collect::<Option<_>>()?;
     (!calls.is_empty()).then_some(calls)
 }
 
