@@ -875,6 +875,125 @@ async fn alternating_between_two_failing_calls_stops_the_turn() {
     );
 }
 
+/// A harness with `update_plan` wired the way a real turn wires it: the tool in
+/// the registry, the board on the agent, both sharing one `PlanBoard`.
+fn plan_harness(turns: Vec<ScriptedTurn>) -> Harness {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let cancel = CancellationToken::new();
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
+    let tools = ToolContext::new(workspace.clone(), permissions, cancel.clone());
+    let provider = FakeProvider::with_context_length(turns, 128_000);
+
+    let board = taurus_tools::PlanBoard::new();
+    let mut registry = ToolRegistry::with_builtins();
+    registry.register(Arc::new(taurus_tools::builtin::plan::UpdatePlan::new(
+        board.clone(),
+    )));
+
+    Harness {
+        agent: Agent::new(provider.clone(), registry, tools, AgentConfig::default())
+            .with_plan(board),
+        provider,
+        cancel,
+        _dir: dir,
+        workspace,
+    }
+}
+
+fn set_plan(id: &str, active_form: &str) -> ScriptedTurn {
+    ScriptedTurn::tool_call(
+        id,
+        "update_plan",
+        serde_json::json!({ "steps": [
+            { "text": "Verify the project setup", "state": "active", "active_form": active_form },
+            { "text": "Execute implementation phase-by-phase", "state": "todo" },
+        ] }),
+    )
+}
+
+#[tokio::test]
+async fn retrying_a_refusal_with_reworded_arguments_still_stops_the_turn() {
+    /*
+     * The reported loop, end to end.
+     *
+     * `update_plan` refuses a plan identical to the one already on the board,
+     * and a model that reads the refusal as "try again" sends it back with the
+     * one field the tool ignores reworded. Nothing about the exchange has
+     * moved — the same refusal, four times — but every round carried different
+     * JSON, and while the stall detector compared arguments that was four
+     * first offences in a row. The turn ran to its iteration ceiling.
+     *
+     * Counting the *answer* instead is what makes this stop: the model has
+     * been told the same sentence three times and has learned nothing from it.
+     */
+    let h = plan_harness(vec![
+        set_plan("t1", "Verifying the project setup"),
+        set_plan("t2", "Working on the project setup"),
+        set_plan("t3", "Checking the project setup"),
+        set_plan("t4", "Looking at the project setup"),
+        ScriptedTurn::text("never reached"),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "do the thing").await;
+
+    assert!(
+        matches!(outcome, Err(AgentError::Stalled(3))),
+        "the same refusal three times is a stall however the arguments read: {outcome:?}"
+    );
+    assert_eq!(
+        h.provider.request_count().await,
+        4,
+        "the first call sets the plan; the turn stops on the third refusal"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_call_is_not_told_to_retry() {
+    /*
+     * The other half of the same bug, and the more embarrassing one: the
+     * refusal was an `InvalidInput`, and every `InvalidInput` had "Check the
+     * tool's schema and retry" appended to it. So the message ended by telling
+     * the model to do the thing it had just been refused for, and the models
+     * did.
+     */
+    let h = plan_harness(vec![
+        set_plan("t1", "Verifying the project setup"),
+        set_plan("t2", "Verifying the project setup"),
+        ScriptedTurn::text("Right — doing step 1 now."),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "do the thing").await;
+    assert!(
+        outcome.is_ok(),
+        "two rounds is not yet a stall: {outcome:?}"
+    );
+
+    let refusal = session
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .find_map(|b| match b {
+            ContentBlock::ToolResult {
+                is_error: true,
+                content,
+                ..
+            } => Some(content.to_text().into_owned()),
+            _ => None,
+        })
+        .expect("the second call is refused");
+
+    assert!(refusal.contains("already on the board"), "{refusal}");
+    assert!(
+        !refusal.contains("retry"),
+        "a refusal must not end by asking for the call again: {refusal}"
+    );
+}
+
 #[tokio::test]
 async fn anything_succeeding_clears_the_count() {
     // The guard against the widened check ending turns it should not. This

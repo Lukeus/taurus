@@ -466,16 +466,17 @@ impl Agent {
         let mut total = TokenUsage::default();
         let mut iteration = 0;
         // Every round since the last sign of progress where *everything*
-        // failed, oldest first. Only all-failed rounds are kept: a round where
-        // something succeeded is progress, whatever else went wrong alongside
-        // it, and it empties this.
+        // failed, oldest first — each one as the answers it got, not the
+        // arguments it sent; see `all_failed`. Only all-failed rounds are kept:
+        // a round where something succeeded is progress, whatever else went
+        // wrong alongside it, and it empties this.
         //
         // A list rather than the previous round alone, because a model
         // alternating between two calls that both fail is as stuck as one
         // repeating a single call, and comparing only against the round before
         // would see every round differ from the one before it. Bounded by the
         // iteration ceiling, since anything succeeding clears it.
-        let mut failures: Vec<Vec<(String, serde_json::Value)>> = Vec::new();
+        let mut failures: Vec<Vec<(String, String)>> = Vec::new();
 
         // Whether this turn has changed files without running anything since.
         // See `verify_nudge`.
@@ -1235,34 +1236,49 @@ impl Agent {
     }
 }
 
-/// This round's calls, as name and arguments, if every one of them failed.
+/// This round's calls, as name and the answer each one got, if every one of
+/// them failed.
 ///
 /// `None` when anything succeeded and when there were no calls at all: both are
 /// progress, and neither should count toward a stall. Call ids are deliberately
 /// not part of the identity — the model mints a fresh one each time, so two
 /// genuinely identical calls never share one.
-fn all_failed(
-    assistant: &Message,
-    results: &[ContentBlock],
-) -> Option<Vec<(String, serde_json::Value)>> {
-    let failed: std::collections::HashSet<&str> = results
+///
+/// # Why the error and not the arguments
+///
+/// This used to be keyed on the arguments the model sent, and that is the
+/// wrong half of the exchange to watch. What the caller wants to know is
+/// whether the model has been told this answer before and has learned nothing
+/// since — and a model retrying a rejected call rarely sends byte-identical
+/// JSON. It reorders a key, rewords a field the tool ignores, adds a space.
+/// Every one of those is a different `Value`, so the counter reset on every
+/// round and a turn could retry the same refusal until it hit the iteration
+/// ceiling.
+///
+/// The reported case: `update_plan` refused for sending a plan identical to the
+/// one on the board, retried with a reworded `active_form` each time — refused
+/// identically every round, and counted as a first offence every round.
+///
+/// Keying on the answer conflates two different calls that failed the same way,
+/// which is correct rather than a compromise: the model got the same sentence
+/// back both times, and the same sentence twice is the thing being counted.
+fn all_failed(assistant: &Message, results: &[ContentBlock]) -> Option<Vec<(String, String)>> {
+    let failed: std::collections::HashMap<&str, String> = results
         .iter()
         .filter_map(|block| match block {
             ContentBlock::ToolResult {
                 tool_use_id,
                 is_error: true,
-                ..
-            } => Some(tool_use_id.as_str()),
+                content,
+            } => Some((tool_use_id.as_str(), content.to_text().into_owned())),
             _ => None,
         })
         .collect();
 
     let mut calls = Vec::new();
-    for (id, name, input) in assistant.tool_uses() {
-        if !failed.contains(id) {
-            return None;
-        }
-        calls.push((name.to_string(), input.clone()));
+    for (id, name, _input) in assistant.tool_uses() {
+        let answer = failed.get(id)?;
+        calls.push((name.to_string(), answer.clone()));
     }
     (!calls.is_empty()).then_some(calls)
 }

@@ -284,7 +284,12 @@ fn check(steps: &[Step], previous: &[Step], carried: bool) -> Result<(), ToolErr
             .iter()
             .position(|s| s.state != StepState::Done)
             .map(|n| n + 1);
-        return Err(ToolError::InvalidInput(match next {
+        // `Rejected`, not `InvalidInput`: the list is well formed and the call
+        // is refused on its merits, so the advice that follows must not be
+        // "check the schema and retry". It was, in the first version of this,
+        // and models read it exactly as written — the silent success loop
+        // became a loud retry loop of the same length.
+        return Err(ToolError::Rejected(match next {
             Some(n) => format!(
                 "this is the plan already on the board — nothing in it changed, so there was \
                  nothing to update. Call update_plan when a step's state changes, not to restate \
@@ -647,9 +652,13 @@ mod tests {
             .execute(plan(), &ctx)
             .await
             .expect_err("the second one changes nothing");
-        let message = error.to_string();
+        let message = error.to_model_message();
         assert!(message.contains("already on the board"), "{message}");
         assert!(message.contains("step 1"), "{message}");
+        // The whole reason this is `Rejected`: what the model is told next must
+        // not be "retry", because retrying is the loop.
+        assert!(!message.contains("retry"), "{message}");
+        assert!(message.contains("will fail the same way"), "{message}");
         assert!(message.contains("Verify the project setup"), "{message}");
 
         // And the board still holds it. A refused no-op must not blank a plan
