@@ -49,6 +49,19 @@ pub enum ToolError {
     #[error("no such tool: {0}")]
     NotFound(String),
 
+    /// A call that was well formed and is refused on its merits.
+    ///
+    /// The distinction from [`ToolError::InvalidInput`] is entirely about the
+    /// advice that follows it. "Check the tool's schema and retry" is the right
+    /// thing to tell a model that sent a malformed call, and exactly the wrong
+    /// thing to tell one whose call was perfectly formed and asked for
+    /// something that will not happen — there, retrying *is* the failure. The
+    /// reported case: `update_plan` refusing a plan identical to the one
+    /// already on the board, and the model reading the appended "retry" as
+    /// instructions and sending it again.
+    #[error("{0}")]
+    Rejected(String),
+
     #[error("{0}")]
     Failed(String),
 
@@ -65,6 +78,7 @@ impl ToolError {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::InvalidInput(_) => "invalid_input",
+            Self::Rejected(_) => "rejected",
             Self::OutsideWorkspace { .. } => "outside_workspace",
             Self::Denied => "denied",
             Self::NotFound(_) => "not_found",
@@ -80,6 +94,13 @@ impl ToolError {
         match self {
             Self::InvalidInput(m) => {
                 format!("Invalid input: {m}. Check the tool's schema and retry.")
+            }
+            // No "retry", and one sentence saying so. A refusal on the merits
+            // is stable: the same call will be refused the same way for as long
+            // as the thing it asked for stays impossible, and a model told to
+            // try again is a model that will.
+            Self::Rejected(m) => {
+                format!("Refused: {m}. Sending this call again unchanged will fail the same way.")
             }
             Self::OutsideWorkspace { path, root } => format!(
                 "Refused: {path} is outside the workspace ({root}). Only paths under the \
