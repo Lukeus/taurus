@@ -456,9 +456,11 @@ pub enum DataError {
     #[error("could not write the dataset list at {path}: {detail}")]
     NotSaved { path: String, detail: String },
 
+    // No trailing period on these three: they are rendered into a sentence
+    // that supplies one. See `From<DataError> for ToolError`.
     #[error(
         "that is not a read-only query. `query_data` runs SELECT and nothing else — no {kind}. \
-         Writing a table is what a recipe does."
+         Writing a table is what a recipe does"
     )]
     NotReadOnly {
         /// What the statement actually was, in the engine's own words.
@@ -471,7 +473,7 @@ pub enum DataError {
     #[error(
         "step {number} ({title}) is not a read-only query. A recipe's steps are SELECTs — the \
          writing is done by the recipe, to the one file its `output:` names, and a step that \
-         could write elsewhere would go somewhere nobody approved. No {kind}."
+         could write elsewhere would go somewhere nobody approved. No {kind}"
     )]
     StepNotReadOnly {
         /// One-based, as the recipe reads.
@@ -485,7 +487,7 @@ pub enum DataError {
          computed and then thrown away. Every step after the first reads `input`, which is the \
          rows the step before it produced — so a step that totals what the one above it worked \
          out is `SELECT ... FROM input`, not the source table again. If the earlier step is not \
-         wanted, remove it."
+         wanted, remove it"
     )]
     StepIgnoresInput { number: usize, title: String },
 

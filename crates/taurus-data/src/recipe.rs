@@ -305,16 +305,19 @@ fn describe_top(text: &str) -> String {
 }
 
 /// What to say after "no recipe called x".
+///
+/// Ends without a period: `NotFound` is rendered into a sentence that supplies
+/// one. See `From<RecipeError> for ToolError`.
 fn available(all: &[Recipe]) -> String {
     if all.is_empty() {
         return format!(
             "This workspace has none yet. A recipe is a .sql file in {RECIPE_DIR} with \
              `source:` and `output:` in a --- frontmatter block and its steps below, each under a \
-             `-- step: what it does` line."
+             `-- step: what it does` line"
         );
     }
     let names: Vec<&str> = all.iter().map(|r| r.name.as_str()).collect();
-    format!("Recipes here: {}.", names.join(", "))
+    format!("Recipes here: {}", names.join(", "))
 }
 
 /// Whether a string can be a recipe's filename.

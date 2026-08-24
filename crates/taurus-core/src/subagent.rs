@@ -323,18 +323,23 @@ impl Tool for SpawnSubagent {
         let input: SpawnInput = parse_input(input)?;
 
         let Some(definition) = self.definition(&input.agent_type) else {
+            // `Rejected`, not `InvalidInput`. The call is well formed; the name
+            // is just not one of the agents this session loaded, and which
+            // those are is decided at runtime and cannot be in the schema.
+            // Telling the model to go and check the schema sends it to the one
+            // document that does not list them — the message does.
             let known: Vec<&str> = self.agents.iter().map(AgentDefinition::name).collect();
-            return Err(ToolError::InvalidInput(format!(
-                "No sub-agent type '{}'. Available: {}.",
+            return Err(ToolError::Rejected(format!(
+                "no sub-agent type '{}'. Available: {}",
                 input.agent_type,
                 known.join(", ")
             )));
         };
 
         if input.prompt.trim().len() < 15 {
-            return Err(ToolError::InvalidInput(
-                "The task is too vague. The sub-agent shares none of your context, so spell out \
-                 what it should do and what to report back."
+            return Err(ToolError::Rejected(
+                "the task is too vague. The sub-agent shares none of your context, so spell out \
+                 what it should do and what to report back"
                     .into(),
             ));
         }
