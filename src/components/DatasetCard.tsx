@@ -65,7 +65,7 @@ export function DatasetCard({
       <span className="dataset-mark">▦</span>
       <div className="dataset-copy">
         <b>{dataset.name}</b>
-        <span title={dataset.path}>
+        <span data-tip={dataset.path}>
           {dataset.path} · {FORMAT_LABEL[dataset.format]}
         </span>
       </div>

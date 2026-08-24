@@ -184,12 +184,12 @@ export function ChangesDrawer({
                     {(turn.commit || turn.moved_git) && (
                       <div className="card-row">
                         {turn.commit && (
-                          <span className="tag" title="Already in this branch's history">
+                          <span className="tag" data-tip="Already in this branch's history">
                             committed {turn.commit}
                           </span>
                         )}
                         {turn.moved_git && (
-                          <span className="tag warn" title="A rewind puts the files back and not HEAD">
+                          <span className="tag warn" data-tip="A rewind puts the files back and not HEAD">
                             moved git
                           </span>
                         )}
@@ -212,7 +212,7 @@ export function ChangesDrawer({
                           // calls still writing. The backend refuses too; this
                           // just stops the user reaching for it.
                           disabled={busy}
-                          title={
+                          data-tip={
                             busy
                               ? "Wait for the current turn to finish"
                               : "Undo this turn and everything after it"
@@ -410,7 +410,7 @@ export function TurnDetail({
               // Committing under a running turn would capture a tree that is
               // still being written. The backend refuses too.
               disabled={busy || committing || message.trim() === ""}
-              title={
+              data-tip={
                 busy
                   ? "Wait for the current turn to finish"
                   : `Commit this turn's ${plural(turn.files.length, "file")} to ${

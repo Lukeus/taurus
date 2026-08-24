@@ -73,7 +73,7 @@ export function TableCard({ view }: { view: TableView }) {
                       { column: i, descending: true },
                 )
               }
-              title={`Sort by ${column.label}`}
+              data-tip={`Sort by ${column.label}`}
             >
               {column.label}
               {sort?.column === i && (sort.descending ? " ↓" : " ↑")}

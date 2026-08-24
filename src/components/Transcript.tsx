@@ -673,7 +673,7 @@ function ToolRow({
         className="run-row-head"
         disabled={!step.output}
         onClick={() => setOpen(!open)}
-        title={step.output ? "Show what it returned" : undefined}
+        data-tip={step.output ? "Show what it returned" : undefined}
       >
         <span className="glyph">{TOOL_GLYPH[step.name] ?? "●"}</span>
         <span className="run-row-text">{step.preview}</span>

@@ -70,7 +70,7 @@ export function PermissionDialog({
           {request.offer_always && (
             <button
               onClick={() => onDecide("allow_always")}
-              title={request.always_scope}
+              data-tip={request.always_scope}
             >
               {request.always_global_scope ? "Always here" : "Allow always"}
             </button>
@@ -80,7 +80,7 @@ export function PermissionDialog({
           {request.always_global_scope && (
             <button
               onClick={() => onDecide("allow_always_global")}
-              title={request.always_global_scope}
+              data-tip={request.always_global_scope}
             >
               Always everywhere
             </button>

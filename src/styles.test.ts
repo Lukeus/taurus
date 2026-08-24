@@ -171,6 +171,67 @@ describe("the stylesheet", () => {
     );
   });
 
+  it("hangs the whole centre column off one gutter", () => {
+    /*
+     * The bug this exists for: `.topbar`, `.pane-switch` and `.data-pane` had
+     * drifted to 18px and 20px while the transcript, the composer, the plan
+     * panel and a banner all sat at 32px. Nothing failed — each rule was
+     * internally sensible — but the conversation's first sentence, the tab that
+     * opens it and the box you type into started on three different lines, and
+     * switching from Data to Conversation slid the whole column sideways.
+     *
+     * These are the rules that span the centre column edge to edge. Whatever
+     * --gutter is, all of them have to say so by name.
+     */
+    for (const sel of [
+      ".topbar",
+      ".pane-switch",
+      ".data-pane",
+      ".transcript",
+      ".composer",
+      ".proposals",
+      ".banner",
+      ".turn-strip",
+    ]) {
+      const body = block(sel);
+      expect(body, `${sel} has no rule`).toBeDefined();
+      expect(body, `${sel} sets its own horizontal inset instead of --gutter`).toMatch(
+        /(padding|margin)[^;]*var\(--gutter\)/,
+      );
+    }
+  });
+
+  it("keeps every layout distance on the ladder", () => {
+    /*
+     * The file grew up with every integer from 1 to 14 in use as a padding or a
+     * gap, which meant an 11px inset and a 12px one beside it were never a
+     * decision anyone made. The ladder in `:root` is the set of distances this
+     * UI has; a raw value that is not one of them is either a mistake or
+     * something derived from a glyph column, and the derived ones say so with
+     * `calc()` rather than with a number nobody can trace.
+     *
+     * Sub-4px values are exempt: a 1px hairline offset or a 2px nudge under a
+     * tracked label is optical, not structural.
+     */
+    const LADDER = new Set([2, 4, 6, 8, 10, 12, 16, 20, 24, 32]);
+    const strays: string[] = [];
+    for (const [, group, body] of css.matchAll(/^([^\s@}][^{]*)\{([^}]*)\}/gm)) {
+      for (const [, decl] of body.matchAll(
+        /((?:padding|margin|gap|row-gap|column-gap)[a-z-]*:[^;]+);/g,
+      )) {
+        // A derivation names what it is made of, and is checked by the sum.
+        if (decl.includes("calc(")) continue;
+        for (const [, n] of decl.matchAll(/\b(\d+)px/g)) {
+          const px = Number(n);
+          if (px >= 4 && !LADDER.has(px)) {
+            strays.push(`${group.trim().replace(/\s+/g, " ").slice(0, 40)} — ${decl.trim()}`);
+          }
+        }
+      }
+    }
+    expect(strays).toEqual([]);
+  });
+
   it("keeps empty, loading and failed as three different states", () => {
     /*
      * All three used to share `.drawer-empty`, so a drawer whose read failed

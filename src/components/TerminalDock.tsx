@@ -244,7 +244,15 @@ export function TerminalDock({
             Restart
           </button>
         )}
-        <button className="dock-close" onClick={onClose} title="Hide the terminal (⌃`)">
+        {/* The glyph is not a name. `title` used to be doing that job here by
+            accident; a tip is supplementary and a screen reader may skip it,
+            so the label is said outright. */}
+        <button
+          className="dock-close"
+          aria-label="Hide the terminal"
+          onClick={onClose}
+          data-tip="Hide the terminal (⌃`)"
+        >
           ✕
         </button>
       </header>

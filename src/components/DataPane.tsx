@@ -145,7 +145,7 @@ export function DataPane({
               role="tab"
               aria-selected={d.name === dataset.name}
               className={`data-chip${d.name === dataset.name ? " on" : ""}`}
-              title={d.path}
+              data-tip={d.path}
               onClick={() => onSelect(d.name)}
             >
               {d.name}
@@ -155,7 +155,7 @@ export function DataPane({
 
         <div className="spacer" />
 
-        <span className="micro data-source" title={dataset.path}>
+        <span className="micro data-source" data-tip={dataset.path}>
           {dataset.path} · {FORMAT_LABEL[dataset.format]}
         </span>
         {/* Unarmed, unlike deleting a conversation. Forgetting a dataset
@@ -163,7 +163,7 @@ export function DataPane({
             and nothing to confirm — it is how a mistaken load is corrected. */}
         <button
           className="pill"
-          title={`Remove ${dataset.name} from this list. ${dataset.path} is not touched.`}
+          data-tip={`Remove ${dataset.name} from this list. ${dataset.path} is not touched.`}
           onClick={() => onForget(dataset.name)}
         >
           Forget
@@ -295,10 +295,10 @@ function ColumnRow({
   const share = rows === 0 ? 0 : column.nulls / rows;
   return (
     <div className="profile-row">
-      <span className="profile-name" title={column.head.name}>
+      <span className="profile-name" data-tip={column.head.name}>
         {column.head.name}
       </span>
-      <span className="profile-type" title={column.head.type_name}>
+      <span className="profile-type" data-tip={column.head.type_name}>
         {column.head.type_name}
       </span>
 
@@ -322,7 +322,7 @@ function ColumnRow({
 
       <span
         className="profile-range"
-        title={
+        data-tip={
           column.min !== null && column.max !== null
             ? `${column.min} … ${column.max}`
             : undefined
@@ -369,7 +369,7 @@ function distinct(value: DataDistinct) {
   return value.kind === "exact" ? (
     value.count.toLocaleString()
   ) : (
-    <span className="faint" title="A nested column has no single value to compare">
+    <span className="faint" data-tip="A nested column has no single value to compare">
       nested
     </span>
   );
@@ -461,8 +461,16 @@ function Grid({
     <div className="grid-box">
       <div className="grid-row head" style={{ gridTemplateColumns: template }}>
         <span className="grid-n">#</span>
+        {/* A heading takes its column's alignment, or it is not that column's
+            heading: the numbers below sit against the right edge of the track,
+            and a label left in the same track reads as belonging to whatever
+            is to its left. */}
         {columns.map((column, i) => (
-          <span key={`${column.name}-${i}`} title={column.type_name}>
+          <span
+            key={`${column.name}-${i}`}
+            className={column.kind === "number" ? "right" : undefined}
+            data-tip={column.type_name}
+          >
             {column.name}
           </span>
         ))}
@@ -611,7 +619,7 @@ function Query({
             className="pill query-tables"
             aria-expanded={showSchema}
             onClick={() => setShowSchema(!showSchema)}
-            title="What each table has in it"
+            data-tip="What each table has in it"
           >
             <span className="recipe-caret">{showSchema ? "▾" : "▸"}</span>
             {tableLine(schemas, datasets)}
@@ -716,7 +724,7 @@ function Schema({ tables }: { tables: DataTable[] }) {
         <div className="schema-table" key={table.name}>
           <div className="schema-name">
             <b>{table.name}</b>
-            <span className="micro" title={table.path}>
+            <span className="micro" data-tip={table.path}>
               {/* A CSV has no row count until something reads it, and this is
                   the call that refuses to. Saying nothing is better than
                   saying a number the footer did not have. */}
@@ -730,7 +738,7 @@ function Schema({ tables }: { tables: DataTable[] }) {
               <span
                 key={column.name}
                 className={`schema-column${shared.includes(column.name) ? " shared" : ""}`}
-                title={`${column.type_name}${
+                data-tip={`${column.type_name}${
                   shared.includes(column.name) ? " · more than one table has this" : ""
                 }`}
               >
@@ -944,7 +952,7 @@ function RecipeCard({
           className="recipe-name"
           aria-expanded={open}
           onClick={() => setOpen(!open)}
-          title={recipe.path}
+          data-tip={recipe.path}
         >
           <span className="recipe-caret">{open ? "▾" : "▸"}</span>
           <b>{recipe.name}</b>
@@ -962,7 +970,7 @@ function RecipeCard({
         <button
           className="primary"
           disabled={running}
-          title={`Run ${recipe.steps.length} steps over ${recipe.source} and write ${recipe.output}`}
+          data-tip={`Run ${recipe.steps.length} steps over ${recipe.source} and write ${recipe.output}`}
           onClick={() => void go()}
         >
           {running ? "Running…" : `Run → ${recipe.output}`}
@@ -1091,14 +1099,14 @@ function size(bytes: number): string {
 function Cell({ value, numeric }: { value: string | null; numeric: boolean }) {
   if (value === null) {
     return (
-      <span className="grid-cell null" title="No value">
+      <span className="grid-cell null" data-tip="No value">
         null
       </span>
     );
   }
   if (value === "") {
     return (
-      <span className="grid-cell null" title="An empty string, which is not the same as no value">
+      <span className="grid-cell null" data-tip="An empty string, which is not the same as no value">
         empty
       </span>
     );
@@ -1108,7 +1116,7 @@ function Cell({ value, numeric }: { value: string | null; numeric: boolean }) {
   // product code, an id, a version string. Grouping separators are for the
   // counts the pane computes itself, which are real numbers.
   return (
-    <span className={`grid-cell${numeric ? " right" : ""}`} title={value}>
+    <span className={`grid-cell${numeric ? " right" : ""}`} data-tip={value}>
       {value}
     </span>
   );

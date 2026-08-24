@@ -41,7 +41,7 @@ export function Attachments({
             <button
               className="attachment-remove"
               aria-label={`Remove attached image ${i + 1}`}
-              title="Remove"
+              data-tip="Remove"
               onClick={() => onRemove(i)}
             >
               ✕

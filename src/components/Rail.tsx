@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import type { SessionMeta, Theme } from "../lib/api";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
+import { useSections } from "../lib/sections";
 import {
   DelegateIcon,
   DisplayIcon,
@@ -114,6 +115,9 @@ export function Rail({
    */
   const [arming, setArming] = useState<string | null>(null);
 
+  /** Which sections are folded. Outlives the window — see `useSections`. */
+  const sections = useSections();
+
   const today = sessions.filter((s) => isToday(s.updated));
   const earlier = sessions.filter((s) => !isToday(s.updated));
 
@@ -131,7 +135,8 @@ export function Rail({
           // Switching mid-turn would leave the running turn streaming into a
           // transcript nobody is looking at.
           disabled={busy || current}
-          title={session.title || "No turns yet"}
+          data-tip={session.title || "No turns yet"}
+          data-tip-side="right"
           onClick={() => onOpen(session.id)}
         >
           <b>{title}</b>
@@ -146,7 +151,7 @@ export function Rail({
           <>
             <button
               className="rail-delete confirm"
-              title="Erase the transcript and the checkpoints that made its turns undoable"
+              data-tip="Erase the transcript and the checkpoints that made its turns undoable"
               onClick={() => {
                 setArming(null);
                 onDelete(session.id);
@@ -157,7 +162,7 @@ export function Rail({
             <button
               className="rail-delete"
               aria-label="Keep this conversation"
-              title="Keep it"
+              data-tip="Keep it"
               onClick={() => setArming(null)}
             >
               ✕
@@ -171,7 +176,7 @@ export function Rail({
             // them costs the running turn nothing.
             disabled={busy && current}
             aria-label={`Delete ${title}`}
-            title="Delete this conversation"
+            data-tip="Delete this conversation"
             onClick={() => setArming(session.id)}
           >
             <TrashIcon />
@@ -198,11 +203,12 @@ export function Rail({
           // server, neither of which a running turn survives.
           disabled={busy}
           onClick={onPickWorkspace}
-          title={
+          data-tip={
             busy
               ? "Stop the running turn before switching workspace"
               : (workspace ?? "Choose a workspace")
           }
+          data-tip-side="bottom"
         >
           <span className="mark">t</span>
           <span className="rail-workspace-name">
@@ -216,7 +222,17 @@ export function Rail({
       </div>
 
       <div className="rail-pad">
-        <button className="primary rail-new" onClick={onNew} disabled={busy}>
+        <button
+          className="primary rail-new"
+          onClick={onNew}
+          disabled={busy}
+          data-tip={
+            busy
+              ? "Stop the running turn before starting another conversation"
+              : "Start a new conversation in this workspace"
+          }
+          data-tip-side="bottom"
+        >
           New conversation
         </button>
       </div>
@@ -229,77 +245,109 @@ export function Rail({
           </p>
         )}
         {today.length > 0 && (
-          <>
-            <div className="rail-group micro">Today</div>
+          <Section
+            name="today"
+            label="Today"
+            count={today.length}
+            sections={sections}
+            tip="Conversations you have touched today"
+          >
             <div className="rail-list">{today.map(item)}</div>
-          </>
+          </Section>
         )}
         {earlier.length > 0 && (
-          <>
-            <div className="rail-group micro">Earlier</div>
+          <Section
+            name="earlier"
+            label="Earlier"
+            count={earlier.length}
+            sections={sections}
+            tip="Everything older than today"
+          >
             <div className="rail-list">{earlier.map(item)}</div>
-          </>
+          </Section>
         )}
       </div>
 
       <div className="rail-foot">
-        <button className="rail-link accent" onClick={onSkills}>
-          <span className="glyph">
-            <SparkIcon />
-          </span>
-          <b>Skills</b>
-          {skillCount !== null && <span className="count">{skillCount}</span>}
-        </button>
-        <button className="rail-link" onClick={onAgents}>
-          <span className="glyph">
-            <DelegateIcon />
-          </span>
-          <b>Agents</b>
-          {agentCount !== null && <span className="count">{agentCount}</span>}
-        </button>
-        <button
-          className="rail-link"
-          onClick={onMemory}
-          title="What earlier conversations here left for this one"
+        {/* The five panels, behind one fold.
+            Settings, the theme and the provider stay outside it: the first two
+            are how you get out of a state you did not mean to be in, and the
+            third is a status line rather than a place to go. A fold that can
+            hide the way to Settings is a fold that can strand somebody. */}
+        <Section
+          name="tools"
+          label="Tools"
+          sections={sections}
+          tip="Skills, agents, memory, MCP and the terminal"
+          /* What a collapsed section is still obliged to say. A server that is
+             configured and not answering is the one thing in here that is
+             wrong *now*, and folding the section away must not be a way to
+             stop hearing about it. */
+          warn={mcp !== null && mcp.connected < mcp.total ? mcpHint(mcp) : null}
         >
-          <span className="glyph">
-            <BookmarkIcon />
-          </span>
-          <b>Memory</b>
-          {noteCount !== null && noteCount > 0 && (
-            <span className="count">{noteCount}</span>
-          )}
-        </button>
-        <button className="rail-link" onClick={onMcp} title={mcpHint(mcp)}>
-          <span className="glyph">
-            <PlugIcon />
-          </span>
-          <b>MCP</b>
-          {mcp !== null && mcp.total > 0 && (
-            /* Marked when some server is not answering, so a failure is
-               visible from the rail rather than only from inside the panel.
-               A configured server that is not there is the one state this
-               feature keeps being reported for. */
-            <span
-              className={`count${mcp.connected < mcp.total ? " warn" : ""}`}
-            >
-              {mcp.connected < mcp.total
-                ? `${mcp.connected}/${mcp.total}`
-                : mcp.total}
+          <button className="rail-link accent" onClick={onSkills} data-tip={SKILLS_HINT}>
+            <span className="glyph">
+              <SparkIcon />
             </span>
-          )}
-        </button>
+            <b>Skills</b>
+            {skillCount !== null && <span className="count">{skillCount}</span>}
+          </button>
+          <button className="rail-link" onClick={onAgents} data-tip={AGENTS_HINT}>
+            <span className="glyph">
+              <DelegateIcon />
+            </span>
+            <b>Agents</b>
+            {agentCount !== null && <span className="count">{agentCount}</span>}
+          </button>
+          <button
+            className="rail-link"
+            onClick={onMemory}
+            data-tip="What earlier conversations here left for this one"
+          >
+            <span className="glyph">
+              <BookmarkIcon />
+            </span>
+            <b>Memory</b>
+            {noteCount !== null && noteCount > 0 && (
+              <span className="count">{noteCount}</span>
+            )}
+          </button>
+          <button className="rail-link" onClick={onMcp} data-tip={mcpHint(mcp)}>
+            <span className="glyph">
+              <PlugIcon />
+            </span>
+            <b>MCP</b>
+            {mcp !== null && mcp.total > 0 && (
+              /* Marked when some server is not answering, so a failure is
+                 visible from the rail rather than only from inside the panel.
+                 A configured server that is not there is the one state this
+                 feature keeps being reported for. */
+              <span
+                className={`count${mcp.connected < mcp.total ? " warn" : ""}`}
+              >
+                {mcp.connected < mcp.total
+                  ? `${mcp.connected}/${mcp.total}`
+                  : mcp.total}
+              </span>
+            )}
+          </button>
+          <button
+            className="rail-link"
+            onClick={onTerminal}
+            data-tip="A shell in this folder (⌃`)"
+          >
+            <span className="glyph">
+              <TerminalIcon />
+            </span>
+            <b>Terminal</b>
+          </button>
+        </Section>
+
         <button
           className="rail-link"
-          onClick={onTerminal}
-          title="A shell in this folder (⌃`)"
+          onClick={onSettings}
+          data-tip="Providers, models, permissions and everything else"
         >
-          <span className="glyph">
-            <TerminalIcon />
-          </span>
-          <b>Terminal</b>
-        </button>
-        <button className="rail-link" onClick={onSettings}>
           <span className="glyph">
             <SlidersIcon />
           </span>
@@ -311,18 +359,77 @@ export function Rail({
             that can change on its own. */}
         <button
           className="rail-link"
-          title={THEME_HINT[theme]}
+          data-tip={THEME_HINT[theme]}
           onClick={() => onTheme(NEXT_THEME[theme])}
         >
           <span className="glyph">{themeIcon(theme)}</span>
           <b>{THEME_LABEL[theme]}</b>
         </button>
-        <div className="rail-status" title={healthTitle(health)}>
+        <div className="rail-status" data-tip={healthTitle(health)}>
           <span className={`dot ${healthDot(health)}`} />
           <span>{healthLabel(health)}</span>
         </div>
       </div>
     </aside>
+  );
+}
+
+/**
+ * A foldable run of rows, with a label that is also the control.
+ *
+ * The whole header is the button rather than the caret beside it. A caret is
+ * about eleven pixels wide and the row it sits in is two hundred; making the
+ * eleven the target is the difference between a fold people use and one they
+ * find by accident.
+ *
+ * Folded, the children are *not rendered* rather than hidden with CSS. A
+ * `display: none` subtree still holds focusable buttons in some engines and
+ * still answers a screen reader's list of controls, so a folded section would
+ * quietly become a place the Tab key goes and nothing appears to happen.
+ */
+function Section({
+  name,
+  label,
+  count,
+  tip,
+  warn,
+  sections,
+  children,
+}: {
+  /** The key this section is remembered under. */
+  name: string;
+  label: string;
+  /** Shown folded, so the fold says how much is behind it. */
+  count?: number;
+  tip: string;
+  /**
+   * Something wrong inside, which the header has to carry while it is shut.
+   *
+   * The string is the reason, and it becomes the header's tip: a dot that says
+   * "something is wrong" and cannot say what is a dot people learn to ignore.
+   */
+  warn?: string | null;
+  sections: { collapsed: (name: string) => boolean; toggle: (name: string) => void };
+  children: ReactNode;
+}) {
+  const shut = sections.collapsed(name);
+  return (
+    <>
+      <button
+        className={`rail-group micro${shut ? " shut" : ""}`}
+        aria-expanded={!shut}
+        data-tip={warn ?? tip}
+        onClick={() => sections.toggle(name)}
+      >
+        <span className="rail-caret">{shut ? "▸" : "▾"}</span>
+        <b>{label}</b>
+        {/* Only while it is shut. Open, the rows are right there to be counted,
+            and a number beside them is one more thing on a dense surface. */}
+        {shut && count !== undefined && <span className="count">{count}</span>}
+        {shut && warn && <span className="dot warn" />}
+      </button>
+      {!shut && children}
+    </>
   );
 }
 
@@ -367,6 +474,9 @@ function mcpHint(mcp: { total: number; connected: number } | null): string {
     "MCP server",
   )} not connected`;
 }
+
+const SKILLS_HINT = "Reusable instructions Taurus can load into a turn";
+const AGENTS_HINT = "Scoped helpers a turn can delegate work to";
 
 const NEXT_THEME: Record<Theme, Theme> = {
   system: "light",

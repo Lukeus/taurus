@@ -99,7 +99,7 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
           <button
             disabled={busy}
             onClick={() => apply(api.reloadMcp)}
-            title="Restart every server and ask each one what it offers"
+            data-tip="Restart every server and ask each one what it offers"
           >
             {busy ? "Connecting…" : "Reconnect"}
           </button>

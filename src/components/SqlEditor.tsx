@@ -266,7 +266,7 @@ export function SqlEditor({
                     anybody will ever notice that — while writing the join,
                     rather than by opening two profiles side by side. */}
                 {item.shared && (
-                  <span className="sql-shared" title="More than one table has this column">
+                  <span className="sql-shared" data-tip="More than one table has this column">
                     joins
                   </span>
                 )}
