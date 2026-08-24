@@ -123,6 +123,60 @@
   --r-lg: 12px;
   --r-xl: 14px;
 
+  /*
+   * The two gutters, which are what actually make the window look assembled.
+   *
+   * Everything in the centre column that runs the full width of it — the
+   * topbar, the pane switch, the transcript, the data pane, a banner, the plan
+   * panel, the composer — is inset by --gutter, so the conversation's first
+   * sentence, the table under the Data tab and the box you type into all start
+   * on the same vertical line. Before this was named, three of those rules had
+   * drifted to 18px and 20px, and switching from Data to Conversation shifted
+   * the whole column sideways.
+   *
+   * --gutter-rail is the same idea one column left, and it is a *text* edge
+   * rather than a box edge: the rail's rows and links are wider than their
+   * labels because a hover target should be, so their backgrounds start further
+   * out and their inner padding brings the text back to this line. Brand,
+   * workspace path, group label, conversation title, footer link and status
+   * all land on it.
+   */
+  --gutter: 32px;
+  --gutter-rail: 20px;
+
+  /*
+   * The spacing ladder — 2, 4, 6, 8, 10, 12, 16, 20, 24, 32.
+   *
+   * Steps of 2 up to 12, then 4, then 8: fine where a label sits next to an
+   * icon, coarse where one region ends and another begins, because that is
+   * where the difference is legible.
+   *
+   * There are no tokens for these on purpose. A distance is the one thing in
+   * this file that reads better as its own value than as a name for it —
+   * `padding: 8px 12px` says what it does and `var(--sp-4) var(--sp-6)` needs a
+   * lookup — so the ladder is a *constraint* rather than an alias list, and
+   * `styles.test.ts` fails the build over any padding, margin or gap that steps
+   * off it. What it is worth: the file grew up with every integer from 1 to 14
+   * in use, which meant an 11px gap and the 12px gap beside it were never a
+   * decision anyone made. They were two people eyeballing the same distance.
+   *
+   * Below 4px is exempt, where a hairline offset or a 2px nudge under a tracked
+   * label is optical rather than structural.
+   */
+
+  /*
+   * Where a tool row's *text* starts, measured from the card's inner edge: the
+   * row's own inset, its 12px glyph, and the gap between the two.
+   *
+   * Anything that hangs under a row — a command's streaming output, a
+   * delegate's current step, a list of substeps — is indented by this, so it
+   * reads as belonging to what the row says rather than to the icon beside it.
+   * It was three hand-tuned copies of 34px before, which is what the sum
+   * happened to look like and not what it was, so all three sat 2px shy of the
+   * text they were aligning to.
+   */
+  --run-indent: calc(12px + 12px + 12px);
+
   /* The tracking every mono micro-label shares. One value, so a tag, a section
      label and a run header line up as the same kind of thing. */
   --tracking-label: 0.1em;
@@ -325,7 +379,7 @@ button {
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--r);
-  padding: 5px 11px;
+  padding: 6px 12px;
   font-size: 12.5px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
@@ -391,7 +445,10 @@ textarea {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  padding: 6px 9px;
+  /* Vertically the button's inset, so a field and the button beside it are the
+     same height; horizontally narrower, because a button's inset is around a
+     label and a field's is in front of a cursor. */
+  padding: 6px 10px;
   font-size: 13px;
 }
 textarea {
@@ -502,7 +559,7 @@ code {
 /* A pill is a toggle that reads as a filter, not a command. */
 .pill {
   border-radius: 999px;
-  padding: 4px 11px;
+  padding: 4px 12px;
   font-size: 12px;
   color: var(--text-faint);
   border: 1px solid var(--border);
@@ -600,7 +657,7 @@ body.resizing-y * {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 14px;
+  padding: 0 var(--gutter-rail);
   border-bottom: 1px solid var(--rule);
 }
 .rail-brand span {
@@ -612,7 +669,7 @@ body.resizing-y * {
 
 
 .rail-pad {
-  padding: 0 12px 10px;
+  padding: 0 8px 10px;
 }
 /* The header now draws a line the first block would otherwise sit on. */
 .rail-brand + .rail-pad {
@@ -626,7 +683,7 @@ body.resizing-y * {
   gap: 8px;
   background: var(--bg-hover);
   border-radius: var(--r-md);
-  padding: 8px 10px;
+  padding: 8px 12px;
   text-align: left;
 }
 .rail-workspace:hover:not(:disabled) {
@@ -676,7 +733,7 @@ body.resizing-y * {
 
 .rail-new {
   width: 100%;
-  padding: 7px 10px;
+  padding: 8px 10px;
   font-size: 13px;
 }
 
@@ -685,8 +742,72 @@ body.resizing-y * {
   min-height: 0;
   overflow-y: auto;
 }
+/*
+ * A section header, which is also the control that folds it.
+ *
+ * Still a micro-label to read — mono, tracked, faint — because the sections are
+ * furniture and the conversations inside them are the content. What changed
+ * when it became a button is only that it answers a pointer: no border, no
+ * fill, and the same left edge every other line in the rail sits on, so a
+ * column of headers does not read as a column of controls.
+ */
 .rail-group {
-  padding: 14px 18px 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  /*
+   * The caret hangs in the gutter, not in the text column.
+   *
+   * 8px in — which is exactly where the conversation rows below start their
+   * hover rectangles, and where a selected row draws its 2px bar — plus the
+   * caret's 8px box and a 4px gap puts the *label* back on --gutter-rail with
+   * every other line in the rail. Left of that line is where the rail keeps
+   * the marks that are about a row rather than part of it, and a disclosure
+   * triangle is one of those.
+   */
+  padding: 16px var(--gutter-rail) 6px 8px;
+}
+.rail-group:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text-dim);
+}
+.rail-group b {
+  font-weight: inherit;
+}
+/* The count and the warning mark sit at the far end, where the conversation
+   rows keep their trash cans — one right-hand column down the whole rail. */
+.rail-group .count,
+.rail-group .dot {
+  margin-left: auto;
+}
+.rail-group .count {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0;
+}
+/* A count and a warning together would put two things in one slot, so they
+   sit as a pair and only the first one takes the margin. */
+.rail-group .count + .dot {
+  margin-left: 6px;
+}
+.rail-caret {
+  /* Fixed, so the label does not shift sideways as the caret changes glyph. */
+  width: 8px;
+  flex: none;
+  font-size: 8.5px;
+  line-height: 1;
+  color: var(--text-faint);
+}
+/* Shut, the header is the only thing standing for what is inside it, so it
+   stops being furniture and reads at the weight of a row. */
+.rail-group.shut,
+.rail-group.shut .rail-caret {
+  color: var(--text-dim);
 }
 .rail-list {
   padding: 0 8px;
@@ -709,7 +830,7 @@ body.resizing-y * {
   gap: 4px;
   border-radius: var(--r-sm);
   border-left: 2px solid transparent;
-  padding: 7px 6px 7px 10px;
+  padding: 8px 6px 8px 10px;
   min-width: 0;
 }
 .rail-row:hover {
@@ -788,7 +909,7 @@ body.resizing-y * {
   border: none;
   border-radius: var(--r-sm);
   background: transparent;
-  padding: 5px;
+  padding: 6px;
   min-width: 28px;
   min-height: 28px;
   color: var(--text-faint);
@@ -801,14 +922,14 @@ body.resizing-y * {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 .rail-delete.confirm {
-  padding: 3px 8px;
+  padding: 4px 8px;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--danger);
 }
 
 .rail-empty {
-  padding: 4px 18px 0;
+  padding: 4px var(--gutter-rail) 0;
   font-size: 12.5px;
   color: var(--text-faint);
 }
@@ -824,11 +945,11 @@ body.resizing-y * {
 .rail-link {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   border: none;
   background: transparent;
   border-radius: var(--r-sm);
-  padding: 7px 10px;
+  padding: 8px 12px;
   font-size: 13px;
   color: var(--text-dim);
   text-align: left;
@@ -858,8 +979,8 @@ body.resizing-y * {
 .rail-status {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 10px;
+  gap: 8px;
+  padding: 8px 12px;
 }
 .rail-status span {
   font-family: var(--mono);
@@ -894,7 +1015,7 @@ body.resizing-y * {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 18px;
+  padding: 0 var(--gutter);
   border-bottom: 1px solid var(--rule);
 }
 .topbar-title {
@@ -943,7 +1064,7 @@ body.resizing-y * {
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   white-space: nowrap;
   flex: none;
 }
@@ -953,7 +1074,7 @@ body.resizing-y * {
   border-radius: var(--r);
   background: transparent;
   color: var(--text-dim);
-  padding: 5px 9px;
+  padding: 6px 10px;
   font-size: 12.5px;
 }
 /* Narrower, and monospaced: a provider id is a config key the user typed,
@@ -970,12 +1091,12 @@ body.resizing-y * {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 24px 32px 8px;
+  padding: 24px var(--gutter) 8px;
   display: flex;
   flex-direction: column;
   /* Wider than the gap between the steps inside a turn, which is what makes
      one exchange read as one object rather than as a run of siblings. */
-  gap: 34px;
+  gap: 32px;
 }
 /*
  * Entries keep their size; the column scrolls.
@@ -1035,7 +1156,7 @@ body.resizing-y * {
 .transcript.empty {
   justify-content: center;
   align-items: center;
-  padding: 40px;
+  padding: var(--gutter);
 }
 
 /* First run: one thing to say, two things to do. */
@@ -1043,7 +1164,7 @@ body.resizing-y * {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 26px;
+  gap: 24px;
   text-align: center;
 }
 .hero-mark {
@@ -1108,7 +1229,7 @@ body.resizing-y * {
 }
 .hero-actions button {
   border-radius: var(--r-md);
-  padding: 9px 18px;
+  padding: 8px 16px;
   font-size: 13.5px;
 }
 .hero-status {
@@ -1145,7 +1266,7 @@ body.resizing-y * {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   padding-left: var(--gutter);
   /* No cap. The turn is the width of the pane, which is the width of the
      composer below it — see --measure for why that does not make the prose wide
@@ -1297,7 +1418,7 @@ body.resizing-y * {
 /* Scoped rather than a second bare `.proposal-body`, which would be the same
    name declared twice — see the stylesheet test. */
 .proposal .proposal-body {
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 /*
@@ -1313,7 +1434,7 @@ body.resizing-y * {
   font-family: var(--sans);
   font-size: 13.5px;
   line-height: 1.6;
-  padding: 10px 13px;
+  padding: 10px 12px;
 }
 
 /* ---------------------------------------------------------------- tool run */
@@ -1337,7 +1458,7 @@ body.resizing-y * {
   border: none;
   border-radius: 0;
   background: transparent;
-  padding: 9px 13px;
+  padding: 8px 12px;
   text-align: left;
 }
 .run-head:hover:not(:disabled) {
@@ -1379,12 +1500,12 @@ body.resizing-y * {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 12px;
   width: 100%;
   border: none;
   border-radius: 0;
   background: transparent;
-  padding: 7px 13px;
+  padding: 8px 12px;
   text-align: left;
 }
 
@@ -1542,7 +1663,7 @@ body.resizing-y * {
   color: var(--danger);
 }
 .run-row .tool-output {
-  margin: 0 13px 10px;
+  margin: 0 12px 10px;
 }
 
 /* A command's own output, streaming under its row.
@@ -1557,8 +1678,8 @@ body.resizing-y * {
   border: 1px solid var(--rule);
   border-radius: var(--r-sm);
   color: var(--text-dim);
-  margin: 0 13px 10px 34px;
-  padding: 7px 9px;
+  margin: 0 12px 10px var(--run-indent);
+  padding: 8px;
   max-height: 150px;
   overflow: auto;
   white-space: pre-wrap;
@@ -1580,7 +1701,7 @@ body.resizing-y * {
 .run-substeps {
   list-style: none;
   margin: 0 0 6px;
-  padding: 0 13px 0 34px;
+  padding: 0 12px 0 var(--run-indent);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1600,7 +1721,7 @@ body.resizing-y * {
 /* Aligned under the row's text rather than its glyph, so it reads as something
    about that call and not as another step in the run. */
 .run-row-delegate {
-  margin: 0 0 6px 34px;
+  margin: 0 0 6px var(--run-indent);
   padding: 2px 0;
   border: none;
   background: none;
@@ -1702,7 +1823,7 @@ body.resizing-y * {
   padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 13px;
+  gap: 12px;
 }
 
 /* All three take the window. A table with eleven columns or a flow five stages
@@ -1716,7 +1837,7 @@ body.resizing-y * {
 .questions-head {
   display: flex;
   align-items: flex-start;
-  gap: 11px;
+  gap: 12px;
 }
 .view-head h3,
 .questions-head h3 {
@@ -1726,7 +1847,7 @@ body.resizing-y * {
   margin: 0;
 }
 .view-caption {
-  margin: 3px 0 0;
+  margin: 4px 0 0;
   font-size: 13px;
   color: var(--text-dim);
   /* A sentence, inside a card that is as wide as the window. */
@@ -1758,9 +1879,9 @@ body.resizing-y * {
 
 .plan-panel {
   flex: none;
-  /* Flush with the composer box below it, which sets the same 32px gutter. The
+  /* Flush with the composer box below it, which takes the same --gutter. The
      two read as one block against the bottom of the window. */
-  margin: 0 32px 10px;
+  margin: 0 var(--gutter) 10px;
   border: 1px solid var(--rule);
   border-radius: var(--r-xl);
   background: var(--bg-raised);
@@ -1782,8 +1903,8 @@ body.resizing-y * {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 9px 13px;
+  gap: 12px;
+  padding: 8px 12px;
   background: transparent;
   border: none;
   border-radius: var(--r-xl);
@@ -1825,8 +1946,8 @@ body.resizing-y * {
 .plan-body {
   display: flex;
   flex-direction: column;
-  gap: 13px;
-  padding: 0 13px 13px;
+  gap: 12px;
+  padding: 0 12px 12px;
 }
 
 /* The index build in Settings, which borrows the plan's bar rather than
@@ -1835,7 +1956,7 @@ body.resizing-y * {
 .index-actions {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 12px;
 }
 .index-bar {
   width: 100%;
@@ -1877,7 +1998,7 @@ body.resizing-y * {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: start;
-  gap: 11px;
+  gap: 12px;
   padding: 10px;
   border-radius: var(--r);
   font-size: 13.5px;
@@ -1984,7 +2105,7 @@ body.resizing-y * {
 }
 .view-foot {
   border-top: 1px solid var(--rule);
-  padding-top: 11px;
+  padding-top: 12px;
 }
 
 /* ---------------------------------------------------- the sequence diagram */
@@ -2179,7 +2300,8 @@ body.resizing-y * {
   background: var(--bg-hover);
 }
 .table-row.head {
-  padding: 0;
+  /* The same inset the body rows carry, so both grids measure the same box. */
+  padding: 0 12px;
   border-bottom: 1px solid var(--rule);
 }
 
@@ -2192,7 +2314,18 @@ body.resizing-y * {
   background: transparent;
   border: none;
   border-radius: 0;
-  padding: 9px 12px;
+  /*
+   * No horizontal padding, because the row above carries it now.
+   *
+   * Both rows lay their cells out on the same `fr` template, and an `fr` is a
+   * share of what is left after padding — so while the head row was flush to
+   * the box and the body rows were inset 12px each side, the two templates
+   * were computed over widths 24px apart and every column boundary below the
+   * first was in a different place. A right-aligned number and the label
+   * above it drifted further apart the further right they sat, which is exactly what
+   * a numeric column cannot do.
+   */
+  padding: 8px 0;
   text-align: left;
 }
 .table-sort.right {
@@ -2310,8 +2443,8 @@ body.resizing-y * {
 .question {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding-top: 13px;
+  gap: 8px;
+  padding-top: 12px;
   border-top: 1px solid var(--rule);
 }
 .question-prompt {
@@ -2337,7 +2470,17 @@ body.resizing-y * {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding-left: 26px;
+  padding-left: 24px;
+  /*
+   * The same cap the question above them takes, and for a stronger reason: an
+   * option is shorter than a sentence. Left to the card's width a three-word
+   * choice ran the whole window with its hint — "42.1s", "invasive" — pinned
+   * to the far edge, so reading a row meant tracking a thousand pixels of
+   * empty box to find out what the choice cost. The hints still line up as a
+   * column to compare down; the column is just near enough to belong to the
+   * labels beside it.
+   */
+  max-width: var(--measure);
 }
 
 .question-option {
@@ -2416,7 +2559,7 @@ body.resizing-y * {
 
 .questions-record {
   margin: 0;
-  padding: 11px 13px;
+  padding: 12px;
   border-top: 1px solid var(--rule);
   font-family: var(--mono);
   font-size: 11.5px;
@@ -2530,7 +2673,7 @@ body.resizing-y * {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px 7px 13px;
+  padding: 8px 10px 8px 12px;
   border-bottom: 1px solid var(--rule);
 }
 .md-code-lang {
@@ -2543,14 +2686,14 @@ body.resizing-y * {
 }
 .md-copy {
   border: none;
-  padding: 2px 7px;
+  padding: 2px 8px;
   font-size: 11px;
   color: var(--text-faint);
   border-radius: var(--r-sm);
 }
 .md-code pre {
   margin: 0;
-  padding: 12px 14px;
+  padding: 12px;
   /* Long lines scroll inside the block; the transcript itself never does. */
   overflow-x: auto;
 }
@@ -2573,7 +2716,7 @@ body.resizing-y * {
 .markdown th,
 .markdown td {
   border: 1px solid var(--rule);
-  padding: 5px 10px;
+  padding: 6px 10px;
   text-align: left;
 }
 .markdown th {
@@ -2585,13 +2728,13 @@ body.resizing-y * {
 
 .composer {
   flex: none;
-  padding: 0 32px 20px;
+  padding: 0 var(--gutter) 20px;
 }
 .composer-box {
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
   background: var(--bg-raised);
-  padding: 12px 14px 10px;
+  padding: 12px 12px 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2704,7 +2847,7 @@ body.resizing-y * {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 5px 8px;
+  padding: 6px 8px;
   border-radius: var(--r-md);
   background: transparent;
   border: none;
@@ -2793,7 +2936,7 @@ body.resizing-y * {
 }
 
 .banner {
-  padding: 8px 32px;
+  padding: 8px var(--gutter);
   font-size: 13px;
   display: flex;
   gap: 12px;
@@ -2854,14 +2997,14 @@ body.resizing-y * {
 }
 .trust-list {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 16px;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 .trust-commands {
   margin: 2px 0 0;
-  padding-left: 14px;
+  padding-left: 12px;
   list-style: none;
 }
 .trust-commands code {
@@ -2919,7 +3062,7 @@ body.resizing-y * {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: var(--tracking-label);
-  padding: 3px 8px;
+  padding: 4px 8px;
   border-radius: 4px;
   border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
   color: var(--warn);
@@ -2939,7 +3082,7 @@ body.resizing-y * {
   background: var(--bg-sunken);
   border: 1px solid var(--rule);
   border-radius: var(--r);
-  padding: 12px 14px;
+  padding: 12px;
   margin: 16px 0 10px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2951,7 +3094,7 @@ body.resizing-y * {
   color: var(--text-faint);
 }
 .dialog-footnote {
-  margin: 0 0 18px;
+  margin: 0 0 16px;
   font-size: 12.5px;
   color: var(--text-faint);
 }
@@ -2961,7 +3104,7 @@ body.resizing-y * {
   align-items: center;
 }
 .dialog-actions button {
-  padding: 8px 14px;
+  padding: 8px 16px;
   font-size: 13.5px;
 }
 
@@ -2969,7 +3112,7 @@ body.resizing-y * {
 
 .proposals {
   flex: none;
-  padding: 0 32px 12px;
+  padding: 0 var(--gutter) 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -2979,11 +3122,11 @@ body.resizing-y * {
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
   border-radius: var(--r-xl);
   background: var(--bg-raised);
-  padding: 18px;
+  padding: 16px;
 }
 .proposal-head {
   display: flex;
-  gap: 11px;
+  gap: 12px;
 }
 .proposal-head .glyph {
   color: var(--accent);
@@ -3000,19 +3143,19 @@ body.resizing-y * {
 }
 /* The panel is as wide as the composer under it; the line explaining it is not. */
 .proposal-desc {
-  margin: 3px 0 0;
+  margin: 4px 0 0;
   color: var(--text-dim);
   font-size: 13px;
   max-width: var(--measure);
 }
 .proposal-meta {
-  margin: 14px 0;
-  padding: 12px 14px;
+  margin: 16px 0;
+  padding: 12px;
   background: var(--bg-sunken);
   border-radius: var(--r-md);
   display: grid;
   grid-template-columns: 76px 1fr;
-  gap: 8px 14px;
+  gap: 8px 12px;
   font-size: 13px;
 }
 .proposal-meta dt {
@@ -3030,7 +3173,7 @@ body.resizing-y * {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 .proposal-disclosures .pill {
   font-family: var(--mono);
@@ -3057,7 +3200,7 @@ body.resizing-y * {
   flex: none;
   background: var(--bg-raised);
   border-left: 1px solid var(--border);
-  padding: 18px;
+  padding: 16px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -3094,7 +3237,7 @@ body.resizing-y * {
 }
 .drawer-close {
   border: none;
-  padding: 5px 8px;
+  padding: 6px 8px;
   font-size: 13px;
   color: var(--text-faint);
 }
@@ -3134,7 +3277,7 @@ body.resizing-y * {
 }
 .drawer-foot {
   margin-top: auto;
-  padding-top: 14px;
+  padding-top: 16px;
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--text-faint);
@@ -3158,7 +3301,7 @@ body.resizing-y * {
   overflow: hidden;
 }
 .card-body {
-  padding: 12px 13px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -3198,7 +3341,7 @@ body.resizing-y * {
   width: 100%;
   border: 1px dashed var(--border);
   border-radius: var(--r-lg);
-  padding: 11px;
+  padding: 12px;
   font-size: 13px;
   color: var(--text-faint);
   background: transparent;
@@ -3216,7 +3359,7 @@ body.resizing-y * {
  */
 .rewind-plan {
   border-top: 1px solid var(--rule);
-  padding: 12px 13px;
+  padding: 12px;
   background: var(--bg-elevated);
   display: flex;
   flex-direction: column;
@@ -3265,7 +3408,7 @@ body.resizing-y * {
  */
 .turn-detail {
   border-top: 1px solid var(--rule);
-  padding: 12px 13px 2px;
+  padding: 12px 12px 2px;
   background: var(--bg-elevated);
 }
 /* The diff's own bottom margin is the gap between files here. */
@@ -3283,8 +3426,8 @@ body.resizing-y * {
 .commit-turn {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 11px 0 4px;
+  gap: 8px;
+  padding: 12px 0 4px;
   border-top: 1px dashed var(--rule);
 }
 .commit-turn input {
@@ -3302,10 +3445,10 @@ body.resizing-y * {
 
 .section {
   border-top: 1px solid var(--rule);
-  padding-top: 14px;
+  padding-top: 16px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 8px;
 }
 /* A section heading with an action on the right. The heading keeps the
    baseline; the action is quiet until you look for it. */
@@ -3335,7 +3478,7 @@ button.link:hover {
 .section-row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
 }
 .section-row .name {
   font-family: var(--mono);
@@ -3359,15 +3502,15 @@ button.link:hover {
 /* -------------------------------------------------------------- settings */
 
 .settings-provider {
-  padding: 13px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: 12px;
 }
 /* Folded, the card is its header row and nothing else, so the column gap has
    nothing to space and the padding is all that is left. */
 .settings-provider:not(.open) {
-  padding-block: 9px;
+  padding-block: 8px;
 }
 /* The disclosure. Sized to the row rather than to the glyph, so the whole left
    edge of the header is the target — a 6px chevron is a thing you aim at. */
@@ -3401,7 +3544,7 @@ button.link:hover {
 .settings-key {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
 }
 .settings-key input {
   flex: 1;
@@ -3417,7 +3560,7 @@ button.link:hover {
   font-size: 12.5px;
   color: var(--text-faint);
   font-style: italic;
-  padding: 7px 0;
+  padding: 8px 0;
 }
 .settings-key-error {
   font-size: 12px;
@@ -3444,7 +3587,7 @@ button.link:hover {
 .model-row {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 5px 7px;
+  gap: 6px 8px;
   align-items: center;
 }
 .model-row input,
@@ -3453,13 +3596,13 @@ button.link:hover {
   width: 100%;
 }
 .model-remove {
-  padding: 5px 8px;
+  padding: 6px 8px;
   color: var(--text-faint);
 }
 .model-caps {
   grid-column: 1 / -1;
   display: flex;
-  gap: 7px;
+  gap: 8px;
   padding-left: 12px;
   border-left: 1px solid var(--rule);
 }
@@ -3521,7 +3664,7 @@ button.link:hover {
   cursor: pointer;
 }
 .settings-check input {
-  margin-top: 3px;
+  margin-top: 4px;
 }
 .settings-paths {
   margin: 0;
@@ -3560,13 +3703,13 @@ button.link:hover {
    identifiers and the eye should be able to run down a column of them. */
 .tool-chips {
   display: flex;
-  gap: 5px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 .tool-chip {
   font-family: var(--mono);
   font-size: 10px;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 999px;
   background: var(--bg-elevated);
   color: var(--text-faint);
@@ -3579,7 +3722,7 @@ button.link:hover {
   background: transparent;
   border-color: var(--border);
   font-size: 11.5px;
-  padding: 4px 11px;
+  padding: 4px 12px;
 }
 .tool-chip.pick:hover:not(:disabled) {
   border-color: var(--accent);
@@ -3665,7 +3808,7 @@ button.link:hover {
 /* Tinted, because this is the one part of the form nobody has to use: the
    fields below it are the agent, and this is a way of filling them in. */
 .agent-generate {
-  padding: 18px 20px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--rule);
   background: color-mix(in srgb, var(--accent) 5%, transparent);
   display: flex;
@@ -3682,10 +3825,10 @@ button.link:hover {
 }
 
 .agent-fields {
-  padding: 18px 20px;
+  padding: 16px 20px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   overflow-y: auto;
   min-height: 0;
 }
@@ -3696,7 +3839,7 @@ button.link:hover {
 }
 .field-row {
   display: flex;
-  gap: 14px;
+  gap: 16px;
 }
 .field-row .field {
   flex: 1;
@@ -3731,7 +3874,7 @@ button.link:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 20px;
+  padding: 16px 20px;
   border-top: 1px solid var(--rule);
 }
 
@@ -3746,7 +3889,7 @@ button.link:hover {
    the frame — a wall of lines that fits reads as "all of it", which is the one
    impression this view must not give. */
 .diff {
-  margin: 0 0 14px;
+  margin: 0 0 12px;
   border: 1px solid var(--rule);
   border-radius: var(--r);
   background: var(--bg-sunken);
@@ -3878,7 +4021,7 @@ button.link:hover {
 }
 .card-actions button {
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 4px 10px;
 }
 
 /* Opens the tool list. A link rather than a button because it reveals rather
@@ -4141,7 +4284,7 @@ button.link:hover {
   flex: none;
   display: flex;
   gap: 4px;
-  padding: 8px 20px 0;
+  padding: 8px var(--gutter) 0;
 }
 
 /* A segmented control. Shared by the pane switch and by Columns/Rows inside
@@ -4159,7 +4302,7 @@ button.link:hover {
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--r-md);
-  padding: 6px 11px;
+  padding: 6px 12px;
 }
 .seg:hover:not(:disabled) {
   color: var(--text);
@@ -4183,8 +4326,11 @@ button.link:hover {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 14px 20px 0;
-  gap: 12px;
+  padding: 16px var(--gutter) 0;
+  /* Tight, because the three rows above the body are one header and not three
+     sections. What separates that header from the data is the body's own
+     padding, which is the larger of the two gaps. */
+  gap: 8px;
 }
 .data-pane.empty {
   justify-content: center;
@@ -4212,7 +4358,7 @@ button.link:hover {
   background: transparent;
   border: 1px solid var(--rule);
   border-radius: var(--r-md);
-  padding: 5px 11px;
+  padding: 6px 12px;
 }
 .data-chip:hover:not(:disabled) {
   color: var(--text);
@@ -4242,7 +4388,8 @@ button.link:hover {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-bottom: 14px;
+  padding-top: 4px;
+  padding-bottom: 16px;
 }
 .data-summary {
   flex: none;
@@ -4296,9 +4443,9 @@ button.link:hover {
      A type name is a dozen characters; a range over timestamps is two of them
      and a separator, and it was the column that ran out. */
   grid-template-columns: minmax(9rem, 1.3fr) minmax(5.5rem, 0.7fr) 7rem 5.5rem minmax(11rem, 1.5fr) minmax(12rem, 1.9fr);
-  gap: 14px;
+  gap: 12px;
   align-items: center;
-  padding: 7px 12px;
+  padding: 6px 10px;
   font-size: 12.5px;
 }
 .profile-row + .profile-row {
@@ -4358,7 +4505,7 @@ button.link:hover {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 7px;
+  gap: 8px;
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--text-dim);
@@ -4448,6 +4595,9 @@ button.link:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.grid-row.head > span.right {
+  text-align: right;
+}
 /* The row number, so a page of a million-row file says where in it you are
    without counting down from the top of the screen. */
 .grid-n {
@@ -4499,7 +4649,7 @@ button.link:hover {
   flex-direction: row;
   align-items: center;
   gap: 12px;
-  padding: 11px 14px;
+  padding: 12px;
 }
 .dataset-card.gone {
   border-style: dashed;
@@ -4528,7 +4678,7 @@ button.link:hover {
  */
 .query-card {
   gap: 10px;
-  padding: 12px 14px;
+  padding: 12px;
 }
 .query-card-head {
   display: flex;
@@ -4537,7 +4687,7 @@ button.link:hover {
 }
 .query-card-sql {
   margin: 0;
-  padding: 9px 11px;
+  padding: 8px 12px;
   border-radius: var(--r-sm);
   background: var(--bg-sunken);
   font-family: var(--mono);
@@ -4607,7 +4757,7 @@ button.link:hover {
 .sql-ink,
 .sql-input {
   margin: 0;
-  padding: 11px 13px;
+  padding: 12px;
   font-family: var(--mono);
   font-size: 12.5px;
   line-height: 1.55;
@@ -4706,7 +4856,7 @@ button.link:hover {
 .sql-menu {
   position: absolute;
   z-index: 5;
-  margin: 3px 0 0;
+  margin: 4px 0 0;
   padding: 4px;
   list-style: none;
   min-width: 17rem;
@@ -4723,7 +4873,7 @@ button.link:hover {
   align-items: baseline;
   gap: 8px;
   width: 100%;
-  padding: 5px 8px;
+  padding: 6px 8px;
   border: none;
   border-radius: var(--r-sm);
   background: transparent;
@@ -4776,7 +4926,7 @@ button.link:hover {
 /* The whole point of the list, for anybody with two files open. */
 .sql-shared {
   flex: none;
-  padding: 1px 5px;
+  padding: 1px 6px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--ok) 18%, transparent);
   font-size: 10px;
@@ -4789,7 +4939,7 @@ button.link:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px 8px 13px;
+  padding: 8px 10px 8px 12px;
   border-top: 1px solid var(--rule);
   background: var(--bg-raised);
   border-radius: 0 0 calc(var(--r-md) - 1px) calc(var(--r-md) - 1px);
@@ -4797,7 +4947,7 @@ button.link:hover {
 .query-tables {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4812,7 +4962,7 @@ button.link:hover {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 11px 13px;
+  padding: 12px;
   border: 1px solid var(--rule);
   border-radius: var(--r-md);
   background: var(--bg-raised);
@@ -4827,7 +4977,7 @@ button.link:hover {
 .schema-table {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 .schema-name {
   display: flex;
@@ -4845,8 +4995,8 @@ button.link:hover {
 .schema-column {
   display: inline-flex;
   align-items: baseline;
-  gap: 5px;
-  padding: 2px 7px;
+  gap: 6px;
+  padding: 2px 8px;
   border: 1px solid var(--rule);
   border-radius: var(--r-sm);
   background: var(--bg-sunken);
@@ -4881,7 +5031,7 @@ button.link:hover {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 13px;
+  padding: 12px;
   border: 1px solid var(--rule);
   border-radius: var(--r-md);
   background: var(--bg-raised);
@@ -4942,7 +5092,7 @@ button.link:hover {
 
 .recipe-steps {
   margin: 0;
-  padding: 0 0 0 22px;
+  padding: 0 0 0 24px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -4976,7 +5126,7 @@ button.link:hover {
   grid-template-columns: 1.4em 1fr auto auto auto;
   gap: 12px;
   align-items: baseline;
-  padding: 3px 0;
+  padding: 4px 0;
   font-size: 12.5px;
 }
 .recipe-run-row.start {
@@ -5035,7 +5185,7 @@ button.link:hover {
   gap: 10px;
   width: 100%;
   margin: 0;
-  padding: 8px 16px;
+  padding: 8px var(--gutter);
   border: none;
   border-top: 1px solid var(--rule);
   background: var(--bg-raised);
@@ -5064,7 +5214,7 @@ button.link:hover {
 .turn-dots {
   flex: none;
   display: flex;
-  gap: 3px;
+  gap: 4px;
 }
 .turn-dots i {
   width: 4px;
@@ -5200,6 +5350,72 @@ button.link:hover {
   font-weight: 600;
 }
 
+/* ------------------------------------------------------------------ the tip
+ *
+ * One element, positioned by script, painted here.
+ *
+ * Everything about it is chosen so it can be read *over* the thing it explains
+ * without becoming the thing being looked at: --bg-elevated rather than the
+ * accent, one line of the body face at the size of a caption, and the same
+ * hairline every other surface in the app is edged with. A tooltip that has to
+ * be dismissed before you can see the control again is a tooltip that has
+ * misunderstood its job.
+ *
+ * `pointer-events: none` is the load-bearing line. The tip opens next to the
+ * pointer and sometimes under it; without this it would be the element the
+ * pointer is over, the trigger would fire `pointerout`, the tip would close,
+ * the trigger would fire `pointerover`, and the two would flicker at each other
+ * for as long as the pointer sat still.
+ */
+.tip {
+  position: fixed;
+  z-index: 60;
+  max-width: 34ch;
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: var(--lift);
+  pointer-events: none;
+  /* Wraps rather than ellipsising, because the long ones here are sentences
+     explaining why a control is disabled and the end is the half that says so. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  animation: tip-in var(--hover) var(--ease);
+}
+/* Travel toward the control it belongs to, so the movement points at the thing
+   being explained rather than being decoration in its own right. */
+@keyframes tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.tip.bottom {
+  animation-name: tip-in-bottom;
+}
+@keyframes tip-in-bottom {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.tip.left,
+.tip.right {
+  animation-name: fade-in;
+}
+
 /* ------------------------------------------------------------ reduced motion
  *
  * One block, at the bottom, switching off everything above that loops.
@@ -5248,7 +5464,9 @@ button.link:hover {
 
   /* Arrivals keep the fade and lose the travel. */
   .turn-what,
-  .run-row.live .run-row-status {
+  .run-row.live .run-row-status,
+  .tip,
+  .tip.bottom {
     animation-name: fade-in;
   }
 }

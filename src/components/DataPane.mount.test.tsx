@@ -671,7 +671,7 @@ describe("forgetting a dataset", () => {
     const button = [...host.querySelectorAll("button.pill")].find(
       (b) => b.textContent === "Forget",
     ) as HTMLButtonElement;
-    expect(button.title).toContain("is not touched");
+    expect(button.dataset.tip).toContain("is not touched");
 
     await act(async () => {
       button.click();
@@ -757,7 +757,7 @@ describe("the recipes view", () => {
       b.textContent?.startsWith("Run"),
     ) as HTMLButtonElement;
     expect(button.textContent).toContain("data/clean.parquet");
-    expect(button.title).toContain("2 steps over events");
+    expect(button.dataset.tip).toContain("2 steps over events");
   });
 
   it("shows the SQL of each step when the recipe is opened", async () => {

@@ -69,7 +69,7 @@ export function ConversationTitle({
     return (
       <button
         className="topbar-title topbar-rename"
-        title="Rename this conversation"
+        data-tip="Rename this conversation"
         onClick={() => setDraft(title)}
       >
         {title}

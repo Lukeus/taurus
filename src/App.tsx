@@ -18,6 +18,7 @@ import {
 } from "./components/ResizeHandle";
 import { AgentProposalCard } from "./components/AgentProposalCard";
 import { SkillProposalCard } from "./components/SkillProposalCard";
+import { TipLayer } from "./components/Tooltip";
 import { Transcript, type TranscriptProps } from "./components/Transcript";
 import type { DataTab } from "./components/DataPane";
 import * as api from "./lib/api";
@@ -554,7 +555,7 @@ export default function App() {
           {store.session && !store.session.native_tools && (
             <span
               className="tag warn"
-              title="This model has no built-in tool calling; Taurus prompts for it instead."
+              data-tip="This model has no built-in tool calling; Taurus prompts for it instead."
             >
               prompted tools
             </span>
@@ -565,7 +566,7 @@ export default function App() {
           {store.session && (
             <button
               className="chip"
-              title="Files this conversation changed, and the way back"
+              data-tip="Files this conversation changed, and the way back"
               onClick={() => setChangesOpen(true)}
             >
               <span className={`dot${store.changed.length > 0 ? " accent" : ""}`} />
@@ -841,6 +842,12 @@ export default function App() {
         {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
         {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
       </Suspense>
+
+      {/* Last, so it paints over the drawers and dialogs above it without
+          needing a z-index that has to be kept ahead of theirs. One layer for
+          the whole window — every tip in the app is an attribute, and this is
+          the only thing that renders one. */}
+      <TipLayer />
     </div>
   );
 }
@@ -1341,7 +1348,7 @@ function Composer({
           and must not read as though it were. It says what the message is
           about to carry, in the one place you are already looking. */}
       {onScreen && (
-        <div className="composer-context" title={onScreen.path}>
+        <div className="composer-context" data-tip={onScreen.path}>
           <span className="dataset-mark">▦</span>
           <span>
             asking about <b>{onScreen.dataset}</b>
@@ -1444,7 +1451,7 @@ function Composer({
             // the conversation and reconnects every MCP server.
             disabled={busy}
             onClick={onPickWorkspace}
-            title={
+            data-tip={
               busy
                 ? "Stop the running turn before switching workspace"
                 : (workspace ?? "Choose a workspace")

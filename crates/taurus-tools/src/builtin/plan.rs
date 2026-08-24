@@ -102,13 +102,13 @@ impl Tool for UpdatePlan {
         // lock — see [`crate::plan::PlanBoard`]. A check that ran only in
         // `execute` would draw a card the call then rejects, and the card is
         // what the pinned panel shows.
-        check(&input.steps, &self.board.steps()).ok()?;
+        check(&input.steps, &self.board.steps(), self.board.carried()).ok()?;
         Some(TranscriptView::Plan { steps: input.steps })
     }
 
     async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
         let input: UpdatePlanInput = parse_input(input)?;
-        check(&input.steps, &self.board.steps())?;
+        check(&input.steps, &self.board.steps(), self.board.carried())?;
         Ok(self.board.set(input.steps).into())
     }
 }
@@ -120,10 +120,10 @@ impl Tool for UpdatePlan {
 /// not write is worse than a rejected call: the checklist it then reads back
 /// would not be the one it believes it set.
 ///
-/// `previous` is the plan on the board, which the last two rules are about. A
+/// `previous` is the plan on the board, which the last three rules are about. A
 /// whole-list replacement carries no memory, so the only place a step that
 /// silently un-finished itself can be noticed is here, against what it replaced.
-fn check(steps: &[Step], previous: &[Step]) -> Result<(), ToolError> {
+fn check(steps: &[Step], previous: &[Step], carried: bool) -> Result<(), ToolError> {
     if steps.is_empty() {
         return Err(ToolError::InvalidInput(
             "a plan needs at least one step. To finish a plan, send it back with every step \
@@ -242,7 +242,77 @@ fn check(steps: &[Step], previous: &[Step]) -> Result<(), ToolError> {
         )));
     }
 
+    /*
+     * The plan that is already on the board, sent again.
+     *
+     * This is the loop that prompted the rule, and it is worth describing
+     * exactly because it looks like nothing going wrong. A model calls
+     * update_plan with a list it has already set; the call is valid, so it
+     * succeeds; the result says "Plan updated: 0 of 5 steps done. Now working
+     * on: X"; the next iteration's system prompt carries the same reminder, in
+     * front of the same history, and asks the same question. Nothing in the
+     * loop differs, so the model does the same thing again. Observed eight
+     * times in a row on one turn, each one a full request against the whole
+     * prompt, until a context trim happened to perturb it enough to break the
+     * tie.
+     *
+     * Nothing above catches it: every rule up to here is about a list that is
+     * malformed, and this list is perfectly formed. It is the *call* that is
+     * empty, not the plan.
+     *
+     * So it is refused, and the error names the two things that are actually
+     * next — which is the whole point of failing rather than quietly
+     * succeeding. It also has a second effect worth knowing about: a refused
+     * call is a failed round, and the agent loop's stall detector only counts
+     * rounds where everything failed. A no-op that reports success is
+     * invisible to it; a no-op that reports failure is caught after
+     * `stall_limit` of them and the turn is stopped with a reason.
+     *
+     * Compared on text and state alone. `active_form` is left out deliberately:
+     * it is the same step said differently, so a list that differs only there
+     * has not moved either — and if it counted, a model could stay in the loop
+     * by rewording the participle every round.
+     *
+     * A *carried* plan is exempt. Re-sending one unchanged is how a model
+     * takes ownership of a plan an earlier turn left behind, and that changes
+     * something real even though no step moved: `PlanBoard::set` clears the
+     * carried flag, and the reminder stops telling the model this was written
+     * before the message it is answering.
+     */
+    if !carried && same_plan(steps, previous) {
+        let next = steps
+            .iter()
+            .position(|s| s.state != StepState::Done)
+            .map(|n| n + 1);
+        return Err(ToolError::InvalidInput(match next {
+            Some(n) => format!(
+                "this is the plan already on the board — nothing in it changed, so there was \
+                 nothing to update. Call update_plan when a step's state changes, not to restate \
+                 it. Right now the thing to do is step {n}, '{}': go and do it, and call \
+                 update_plan again once it is finished",
+                steps[n - 1].text.trim(),
+            ),
+            None => "this is the plan already on the board, and every step on it is already \
+                     'done'. There is nothing left to update: say what you did and stop"
+                .into(),
+        }));
+    }
+
     Ok(())
+}
+
+/// Whether two lists say the same thing about the same steps.
+///
+/// Trimmed, because the difference between "Add the token type" and the same
+/// with a trailing space is not a plan that moved — and `check` above already
+/// compares step text trimmed, so doing it differently here would let a list
+/// be identical by one rule and not the other.
+fn same_plan(steps: &[Step], previous: &[Step]) -> bool {
+    steps.len() == previous.len()
+        && steps
+            .iter()
+            .zip(previous)
+            .all(|(a, b)| a.state == b.state && a.text.trim() == b.text.trim())
 }
 
 /// A state in the word the model writes it with, for an error message that can
@@ -545,6 +615,173 @@ mod tests {
         ]);
         assert!(tool.view("call-2", &reopened).is_none());
         assert!(tool.execute(reopened, &ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_same_plan_sent_twice_is_refused_and_names_the_step_to_go_and_do() {
+        /*
+         * The loop this rule exists for. Every call is valid, so nothing above
+         * catches it, and a call that succeeds while changing nothing leaves
+         * the next iteration reading exactly what the last one did — which is
+         * a model that does the same thing again. Observed eight times in a
+         * row on one turn.
+         *
+         * The error has to name the step, because "nothing changed" alone
+         * still leaves the model with no idea what to do instead.
+         */
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let plan = || {
+            input(vec![
+                step("Verify the project setup", StepState::Active),
+                step("Add the token type", StepState::Todo),
+            ])
+        };
+
+        tool.execute(plan(), &ctx)
+            .await
+            .expect("the first one sets it");
+
+        let error = tool
+            .execute(plan(), &ctx)
+            .await
+            .expect_err("the second one changes nothing");
+        let message = error.to_string();
+        assert!(message.contains("already on the board"), "{message}");
+        assert!(message.contains("step 1"), "{message}");
+        assert!(message.contains("Verify the project setup"), "{message}");
+
+        // And the board still holds it. A refused no-op must not blank a plan
+        // that was perfectly good.
+        assert_eq!(board.steps().len(), 2);
+        assert_eq!(board.steps()[0].state, StepState::Active);
+    }
+
+    #[tokio::test]
+    async fn restating_a_finished_plan_is_told_to_stop_rather_than_to_do_a_step() {
+        // The same rule at the other end of the list, where there is no step
+        // to name. Telling a model to "go and do step None" would be worse
+        // than saying nothing.
+        let (ctx, _dir) = test_ctx();
+        let tool = UpdatePlan::new(PlanBoard::new());
+        let plan = || input(vec![step("Add the token type", StepState::Done)]);
+
+        tool.execute(plan(), &ctx).await.expect("a finished plan");
+        let error = tool
+            .execute(plan(), &ctx)
+            .await
+            .expect_err("nothing changed");
+        assert!(
+            error.to_string().contains("say what you did and stop"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plan_that_actually_moves_is_not_touched_by_the_rule() {
+        // The shape the rule must never catch: the same steps, one of them
+        // further along. This is what every working turn does.
+        let (ctx, _dir) = test_ctx();
+        let tool = UpdatePlan::new(PlanBoard::new());
+        tool.execute(
+            input(vec![
+                step("One", StepState::Active),
+                step("Two", StepState::Todo),
+            ]),
+            &ctx,
+        )
+        .await
+        .expect("a valid plan");
+
+        tool.execute(
+            input(vec![
+                step("One", StepState::Done),
+                step("Two", StepState::Active),
+            ]),
+            &ctx,
+        )
+        .await
+        .expect("a step finished, which is exactly what to call this for");
+    }
+
+    #[tokio::test]
+    async fn a_carried_plan_may_be_adopted_unchanged() {
+        /*
+         * The exemption. A plan left unfinished by an earlier turn is carried
+         * into this one, and re-sending it as-is is how a model says it is
+         * continuing that work rather than starting something else. Nothing
+         * moves, but the flag does — and with it the sentence in the reminder
+         * telling the model this was written before the message it is now
+         * answering.
+         */
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let plan = || {
+            input(vec![
+                step("Verify the project setup", StepState::Active),
+                step("Add the token type", StepState::Todo),
+            ])
+        };
+        tool.execute(plan(), &ctx).await.expect("a valid plan");
+
+        assert!(board.start_turn(), "an unfinished plan is carried");
+        assert!(board.carried());
+        tool.execute(plan(), &ctx)
+            .await
+            .expect("adopting a carried plan is a change, not a no-op");
+        assert!(!board.carried(), "and it is this turn's plan now");
+
+        // Which is also what closes the exemption: a second identical call in
+        // the same turn is the loop again, and is refused.
+        assert!(tool.execute(plan(), &ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rewording_only_the_active_form_does_not_count_as_progress() {
+        // Left out of the comparison on purpose: it is the same step said
+        // differently, so a list differing only there has not moved — and if
+        // it counted, the loop could be sustained by rewording a participle.
+        let (ctx, _dir) = test_ctx();
+        let tool = UpdatePlan::new(PlanBoard::new());
+        tool.execute(
+            serde_json::json!({ "steps": [
+                { "text": "Verify the setup", "state": "active", "active_form": "Verifying the setup" },
+            ] }),
+            &ctx,
+        )
+        .await
+        .expect("a valid plan");
+
+        let error = tool
+            .execute(
+                serde_json::json!({ "steps": [
+                    { "text": "Verify the setup", "state": "active", "active_form": "Checking the setup" },
+                ] }),
+                &ctx,
+            )
+            .await
+            .expect_err("the plan itself did not move");
+        assert!(
+            error.to_string().contains("already on the board"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repeated_plan_draws_no_card_either() {
+        // `view` runs the same check, so the loop does not leave a row of
+        // identical plan cards down the transcript on the way to being
+        // refused. The screenshot that started this had eight of them.
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let plan = input(vec![step("One", StepState::Active)]);
+        tool.execute(plan.clone(), &ctx)
+            .await
+            .expect("a valid plan");
+        assert!(tool.view("call-2", &plan).is_none());
     }
 
     #[tokio::test]

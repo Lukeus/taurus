@@ -85,7 +85,7 @@ export function MemoryDrawer({
                     {onOpenSession && (
                       <button
                         className="drawer-close"
-                        title="Open the conversation this was written in"
+                        data-tip="Open the conversation this was written in"
                         onClick={() => onOpenSession(note.session)}
                       >
                         where it came from
@@ -93,7 +93,7 @@ export function MemoryDrawer({
                     )}
                     <div className="spacer" />
                     <button
-                      title="Stop carrying this into new conversations"
+                      data-tip="Stop carrying this into new conversations"
                       onClick={() => forget(note.id)}
                     >
                       Forget

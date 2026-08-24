@@ -96,6 +96,16 @@ impl PlanBoard {
         self.board().steps.clone()
     }
 
+    /// Whether the plan on the board was written before this turn began.
+    ///
+    /// Read by the identical-plan rule in [`crate::builtin::plan`], which is
+    /// the one place the difference matters: re-sending a carried plan
+    /// unchanged is how a model adopts it, and that *is* a change even though
+    /// none of the steps moved — see [`PlanBoard::set`], which clears the flag.
+    pub fn carried(&self) -> bool {
+        self.board().carried
+    }
+
     /// Whether a plan is up and something on it is still open.
     ///
     /// The question the agent loop asks when the model stops: a `true` here is

@@ -283,6 +283,18 @@ requestAnimationFrame(() => {
         typeInto(box, JOIN);
         await until(() => document.querySelector(".sql-menu"));
       },
+      // A section folded away, which is the only state of the fold worth a
+      // picture: open, a section looks like the plain list it replaced.
+      //
+      // The tooltip that landed alongside it is deliberately not here. It opens
+      // on hover or focus, and neither survives `--virtual-time-budget` — the
+      // tip is in the document on every run of this and at `opacity: 0` in
+      // every image, because the clock the animation reads does not advance
+      // with the one the timers do. It is checked against a real browser
+      // instead; `Tooltip.tsx` says what that check covers.
+      rail: async () => {
+        (await click(".rail-group", (b) => b.includes("Earlier")))();
+      },
       mcp: () => {
         const link = [...document.querySelectorAll(".rail-link")].find(
           (button) => button.textContent?.startsWith("MCP"),

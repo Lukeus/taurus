@@ -1091,7 +1091,7 @@ function ProviderForm({
             className="dot error"
             role="img"
             aria-label={problems.join(" ")}
-            title={problems.join(" ")}
+            data-tip={problems.join(" ")}
           />
         )}
         <button className="danger" onClick={onRemove}>

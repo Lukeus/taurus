@@ -71,6 +71,9 @@ const SHOTS = [
   // it should, that the running row wears the treatment its category calls
   // for, and that none of it has landed on top of something else.
   { name: "motion", shot: "motion", theme: "dark" },
+  // The rail with a section folded. An open section looks like the plain list
+  // it replaced, so the shut one is the only state that shows the feature.
+  { name: "rail", shot: "rail", theme: "dark" },
 ];
 
 const CHROME = [
