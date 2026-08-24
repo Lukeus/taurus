@@ -463,9 +463,15 @@ an agent, start with a letter, and be followed by a space or nothing.
 
 <kbd>Ctrl</kbd>+<kbd>`</kbd> opens a shell in the bottom of the window, in the
 folder the window is pointed at. It is your own shell — `$SHELL` on macOS and
-Linux, the console Windows names — started the way any other terminal starts
-one, so the rc file you already have is the rc file it reads. Aliases, prompt,
-completions: all of it is there, because none of it is reimplemented here.
+Linux — started the way any other terminal starts one, so the rc file you
+already have is the rc file it reads. Aliases, prompt, completions: all of it is
+there, because none of it is reimplemented here.
+
+On Windows it opens PowerShell, the way Windows Terminal does: PowerShell 7 if
+you have it, the Windows PowerShell that ships in the box if not, and `cmd.exe`
+only where neither is on the PATH. The banner is suppressed, which is the one
+thing Windows Terminal does differently — it has a full screen to spend on
+three lines of copyright and this dock does not.
 
 A real pseudo-terminal underneath, and a real emulator on top, which together
 are what make it a terminal rather than a log with colours in it. `vim` opens.

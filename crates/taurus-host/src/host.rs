@@ -781,7 +781,10 @@ impl Host {
             .canonicalize()
             .map_err(|e| format!("{}: {e}", path.display()))?;
         if !canonical.is_dir() {
-            return Err(format!("{} is not a directory", canonical.display()));
+            return Err(format!(
+                "{} is not a directory",
+                taurus_tools::path_guard::plain(&canonical).display()
+            ));
         }
 
         *self.workspace.write().await = canonical.clone();
@@ -796,7 +799,12 @@ impl Host {
         // Global, and only global: "the workspace I had open" is a fact about
         // the user, and writing it into the workspace it names would be a file
         // that can only ever point at its own directory.
-        let remembered = canonical.display().to_string();
+        // Stored plain. It is read back and canonicalized again on the next
+        // start, so the verbatim form buys nothing and is what a person opening
+        // the settings file would have to read past.
+        let remembered = taurus_tools::path_guard::plain(&canonical)
+            .display()
+            .to_string();
         config::edit_settings(Scope::Global, None, |s| s.last_workspace = Some(remembered));
 
         // Reload re-resolves both layers, so the in-memory settings pick up the

@@ -160,7 +160,11 @@ pub struct AppStatus {
 /// Everything the shell shows about the app as a whole, read now.
 pub async fn status_of(state: &AppState) -> AppStatus {
     AppStatus {
-        workspace: state.host.workspace().await.display().to_string(),
+        // Plain, not verbatim: the rail splits this into components to show
+        // where the window is pointed. See `taurus_tools::path_guard::plain`.
+        workspace: taurus_tools::path_guard::plain(&state.host.workspace().await)
+            .display()
+            .to_string(),
         providers: state.host.providers().await,
         settings: state.host.settings().await,
         skill_count: state.host.skill_count().await,
@@ -255,11 +259,12 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus>
 #[tauri::command]
 pub async fn set_workspace(state: State<'_, Arc<AppState>>, path: String) -> CmdResult<String> {
     let resolved = state.host.set_workspace(&PathBuf::from(path)).await?;
-    info!(workspace = %resolved.display(), "workspace changed");
+    let shown = taurus_tools::path_guard::plain(&resolved);
+    info!(workspace = %shown.display(), "workspace changed");
     // Everything the shell shows about the app belongs to the folder, so all of
     // it has just changed at once.
     emit_status(&state).await;
-    Ok(resolved.display().to_string())
+    Ok(shown.display().to_string())
 }
 
 /// Whether this workspace's own config is being read, and what it holds.

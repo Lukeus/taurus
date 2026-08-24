@@ -140,9 +140,10 @@ impl Terminals {
     ///
     /// Answers with the id everything else here is keyed by. The shell is the
     /// user's own — `$SHELL`, or the password database when that is unset, and
-    /// the console the OS names on Windows — started with no arguments, which
-    /// under a pty is what makes it interactive and so what makes it read the
-    /// rc file it would read in any other terminal.
+    /// on Windows whichever PowerShell is installed; see [`shell`]. It is
+    /// started with no arguments beyond the banner switch, which under a pty is
+    /// what makes it interactive and so what makes it read the rc file it would
+    /// read in any other terminal.
     ///
     /// It is *not* started as a login shell. A login shell would re-read the
     /// profile to rebuild `PATH`, and that has already happened: the app asks
@@ -165,7 +166,11 @@ impl Terminals {
             })
             .map_err(|e| format!("could not open a terminal: {e}"))?;
 
-        let mut builder = CommandBuilder::new_default_prog();
+        let mut builder = shell();
+        // A child process is an edge, so the path crosses it in the plain form
+        // rather than the verbatim one the workspace is canonicalized into. See
+        // `taurus_tools::path_guard::plain`.
+        let cwd = taurus_tools::path_guard::plain(cwd);
         builder.cwd(cwd);
         // The same two answers the tool path gives, for the same reasons: a
         // shell told nothing assumes the most primitive terminal there is, and
@@ -296,6 +301,50 @@ impl Terminals {
     }
 }
 
+/// Windows' shell preference, resolved against whatever `find` can locate.
+///
+/// PowerShell 7 first, then the Windows PowerShell that ships in the box.
+/// `None` means neither is installed and the platform's own answer should
+/// stand, which is `%ComSpec%` and so `cmd.exe`.
+///
+/// Looked up on the PATH rather than at a fixed location: PowerShell 7 installs
+/// somewhere different per architecture and per package manager, and the PATH
+/// being searched is the repaired one the app adopted at startup rather than
+/// whatever a GUI process happened to inherit. See [`taurus_tools::login_path`].
+///
+/// Deliberately not `#[cfg(windows)]` — only its caller is. The order is the
+/// part worth testing and this way the suite can check it on any machine, which
+/// matters here because CI runs tests on Linux only.
+#[cfg(any(windows, test))]
+fn windows_shell(find: impl Fn(&str) -> Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    ["pwsh.exe", "powershell.exe"].into_iter().find_map(find)
+}
+
+/// The shell a new session runs, as a command ready to spawn.
+///
+/// On Windows `portable-pty` would give us `%ComSpec%`, which is `cmd.exe` —
+/// the shell that predates PowerShell and that nobody now chooses on purpose.
+/// Windows Terminal opens PowerShell and so does this, falling back through
+/// [`windows_shell`] to `cmd.exe`, which is always present and so is what makes
+/// the choice total.
+///
+/// `-NoLogo` is the one deviation from what Windows Terminal does. It shows the
+/// copyright banner and can afford to; this pane is a dock a few lines tall,
+/// where three lines of banner is most of the first screen.
+///
+/// Everywhere else this is unchanged: `$SHELL`, and the password database when
+/// that is unset. A login shell is a preference already stated, and there is
+/// nothing for the search above to improve on.
+fn shell() -> CommandBuilder {
+    #[cfg(windows)]
+    if let Some(path) = windows_shell(taurus_tools::login_path::which) {
+        let mut builder = CommandBuilder::new(path);
+        builder.arg("-NoLogo");
+        return builder;
+    }
+    CommandBuilder::new_default_prog()
+}
+
 /// What the read loop hands to the forwarder.
 enum Pump {
     Data(Vec<u8>),
@@ -371,6 +420,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
@@ -448,6 +498,49 @@ mod tests {
             .expect("a collapsed pane is clamped");
 
         terminals.close(&id);
+    }
+
+    #[test]
+    fn windows_prefers_powershell_and_falls_back_to_the_console() {
+        // The order Windows Terminal uses, and the reason this function takes a
+        // lookup: CI runs the suite on Linux, so the only way this is checked
+        // at all is by handing it an answer rather than a machine.
+        let installed = |names: &'static [&str]| {
+            move |program: &str| names.contains(&program).then(|| PathBuf::from(program))
+        };
+
+        assert_eq!(
+            windows_shell(installed(&["pwsh.exe", "powershell.exe", "cmd.exe"])),
+            Some(PathBuf::from("pwsh.exe")),
+            "PowerShell 7 wins wherever it is installed"
+        );
+        assert_eq!(
+            windows_shell(installed(&["powershell.exe", "cmd.exe"])),
+            Some(PathBuf::from("powershell.exe")),
+            "the in-box PowerShell is next, not the console"
+        );
+        assert_eq!(
+            windows_shell(installed(&["cmd.exe"])),
+            None,
+            "with no PowerShell the platform's own answer has to stand"
+        );
+    }
+
+    #[test]
+    fn the_cwd_is_handed_over_in_a_form_a_shell_can_show() {
+        // The workspace is canonicalized when it is chosen, and on Windows that
+        // is the verbatim `\\?\C:\...` form — which `cmd.exe` will not start in
+        // and every other shell prints in the prompt for the whole session.
+        // Trivially true off Windows, and the only guard that exists on it.
+        let canonical = std::env::temp_dir()
+            .canonicalize()
+            .expect("the temp directory must resolve");
+        let handed = taurus_tools::path_guard::plain(&canonical);
+        assert!(
+            !handed.to_string_lossy().starts_with(r"\\?\"),
+            "a verbatim path reached the shell: {}",
+            handed.display()
+        );
     }
 
     #[tokio::test]
