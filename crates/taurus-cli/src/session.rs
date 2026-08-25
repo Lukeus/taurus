@@ -209,6 +209,11 @@ pub async fn repl(
         eprintln!();
     }
 
+    // A command started with `background: true` is a child of this process and
+    // nothing else. Leaving the shell would otherwise leave a dev server
+    // running with no way left to reach it.
+    runtime.host.stop_background();
+
     Ok(ExitCode::SUCCESS)
 }
 

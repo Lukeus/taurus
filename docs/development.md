@@ -208,6 +208,13 @@ cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async boo
 # thread.
 cargo run -p taurus-tools --example sweep -- .
 
+# A command that outlives the call that started it. Needs no provider. It
+# starts one in a throwaway workspace, shows it running while nothing has
+# changed yet, reads it back the moment it exits, and undoes it — proving the
+# pre-image is the file as it stood before the command ran rather than after.
+# Then it stops one that would never have stopped on its own.
+cargo run -p taurus-tools --example background
+
 # Memory, across two conversations: one turn leaves a note, and a second one —
 # a new session, told not to read anything — answers from it. The second half is
 # the check that matters. A note that is written and never carried is a file

@@ -28,6 +28,33 @@ and they are the minority.
   packaged wrongly, everything works except for a window that only a user on
   Windows in an installed build can see. See
   [Running commands](safety.md#running-commands).
+- **A background command is not on screen while it runs.** `run_command` with
+  `background: true` returns a number rather than output, and what the command
+  says arrives when the model checks it. The card for the call that started it
+  is closed by then, so there is nowhere for the lines to go — a waited-for
+  command streams into its own card because the card is still open. What is
+  missing is a surface of its own: the terminal dock already draws live output
+  and could hold a tab per background command, and until it does, the honest
+  description is that the model can see a build the user cannot. The commands
+  are at least enumerable — `check_command` with no id lists every one of them,
+  and what it changed reaches the Changes drawer like anything else. See
+  [Commands that keep running](safety.md#commands-that-keep-running).
+- **A background command has no pseudo-terminal.** `pty: true` and
+  `background: true` together are refused rather than silently doing one of
+  them. The pty path runs a command to completion behind a blocking read, and
+  handing back a handle to one instead means a second implementation of the
+  drain and the stop, per platform. So a dev server that colours its output
+  loses the colour, and a program that refuses to start outside a terminal
+  cannot be backgrounded at all — it has to be run in the foreground, where the
+  timeout applies again.
+- **A command still running when a turn ends is in no turn's changed-file
+  list.** Its pre-image is held from the moment it started and spent when it
+  exits, so nothing is lost — the changes land in whichever turn is running
+  when it finishes. But a rewind offered while a build is still writing cannot
+  include what the build has not written yet, and the list the user reads
+  before deciding says nothing about the command that is about to add to it.
+  Covering it means the changed-file list growing under the reader's eye, which
+  is a UI question rather than a recording one.
 - **A hook can refuse a tool call and cannot approve one.** There is no
   `allow` verdict, so a hook cannot skip a permission prompt the way one in some
   other harnesses can. That rules out the "approve every `git status` for me"

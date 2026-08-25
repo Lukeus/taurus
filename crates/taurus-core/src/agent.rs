@@ -1011,9 +1011,11 @@ impl Agent {
     /// Whether this round ran something that could answer a question about the
     /// project — a build, a test run, a script.
     ///
-    /// Keyed off the same declaration the checkpoint sweep uses, so "the tools
-    /// that run a program" has one definition rather than a list here that
-    /// quietly falls behind the registry.
+    /// Keyed off a declaration on the tool rather than a list of names here,
+    /// which would quietly fall behind the registry. `Tool::checks_work`
+    /// follows the sweep's question by default and parts from it for
+    /// `check_command`, where the run being read finished after the turn that
+    /// started it.
     /// Whether this round ran something and then wrote nothing after it.
     ///
     /// Calls in one message run in the order they appear, so this is a walk
@@ -1036,7 +1038,7 @@ impl Agent {
             let Some(tool) = self.registry.get(name) else {
                 continue;
             };
-            if tool.touches_unpredictably() {
+            if tool.checks_work() {
                 checked = true;
             } else if !tool.touches(input).is_empty() {
                 checked = false;

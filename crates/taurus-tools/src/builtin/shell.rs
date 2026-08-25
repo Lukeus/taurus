@@ -65,6 +65,11 @@ pub struct RunCommandInput {
     /// Text to feed the command's input, followed by end-of-file.
     #[serde(default)]
     pub stdin: Option<String>,
+    /// Start the command and return without waiting for it, so a long build,
+    /// a full test run, or a server can carry on while you work. Read what it
+    /// has said with `check_command`, and end it with `stop_command`.
+    #[serde(default)]
+    pub background: bool,
 }
 
 pub struct RunCommand;
@@ -81,7 +86,10 @@ impl Tool for RunCommand {
          default it runs with no stdin, so prefer flags like -y over expecting a prompt. Set pty \
          to true for a command that behaves differently outside a terminal — git without a pager, \
          npm create, anything that draws a full-screen prompt — and pass stdin to answer prompts \
-         it still asks. Prefer read_file, glob, and grep over cat, find, and grep -r."
+         it still asks. Set background to true for something that takes longer than the timeout \
+         allows or is meant to keep running — a build from cold, a whole test suite, a dev server \
+         — and read it later with check_command. Prefer read_file, glob, and grep over cat, find, \
+         and grep -r."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -105,6 +113,9 @@ impl Tool for RunCommand {
         // The user is approving this exact command line, so show it in full up
         // to a sane width rather than an elided summary.
         let shown: String = command.chars().take(300).collect();
+        if input.get("background").and_then(|b| b.as_bool()) == Some(true) {
+            return format!("Run in the background: {shown}");
+        }
         format!("Run: {shown}")
     }
 
@@ -123,6 +134,10 @@ impl Tool for RunCommand {
         );
 
         let (program, args) = shell_invocation(&input.command);
+
+        if input.background {
+            return start_in_background(&input, program, args, cwd, ctx).await;
+        }
 
         // Set when a terminal was asked for and could not be had, so the result
         // can say so. Running the command anyway is right — the caller wanted
@@ -168,36 +183,8 @@ impl Tool for RunCommand {
             }
         }
 
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .current_dir(&cwd)
-            .stdin(if input.stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // Without this the child outlives a canceled turn and keeps writing.
-        command.kill_on_drop(true);
-        // Taurus has no console of its own, so on Windows starting `cmd` here
-        // would open one — a black window flashing up on every command.
-        crate::spawn::no_console(&mut command);
-
-        let mut child = command
-            .spawn()
-            .map_err(|e| ToolError::Failed(format!("cannot start shell: {e}")))?;
-
-        // Written and closed before the output is drained. A program waiting on
-        // input needs the end-of-file as much as the bytes.
-        if let Some(text) = &input.stdin {
-            if let Some(mut pipe) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let _ = pipe.write_all(text.as_bytes()).await;
-                let _ = pipe.shutdown().await;
-            }
-        }
+        let mut child = spawn_piped(program, args, &cwd, input.stdin.is_some())?;
+        feed_stdin(&mut child, input.stdin.as_deref()).await;
 
         // Drain the pipes concurrently with the wait. A child that fills its
         // stdout buffer blocks forever if nobody is reading, which would turn
@@ -292,6 +279,226 @@ fn report_for(code: Option<i32>, stdout: &str, stderr: Option<&str>) -> String {
         Some(code) => format!("Exit code {code}\n{report}"),
         None => format!("Killed by signal\n{report}"),
     }
+}
+
+/// Starts a child with three pipes, the way both paths want it.
+fn spawn_piped(
+    program: String,
+    args: Vec<String>,
+    cwd: &std::path::Path,
+    stdin: bool,
+) -> Result<tokio::process::Child, ToolError> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Without this the child outlives a canceled turn and keeps writing. A
+    // background command is held by its own task rather than dropped at the
+    // end of the call, so this does not end one early — it is what ends them
+    // all when the runtime goes away.
+    command.kill_on_drop(true);
+    // Taurus has no console of its own, so on Windows starting `cmd` here
+    // would open one — a black window flashing up on every command.
+    crate::spawn::no_console(&mut command);
+    command
+        .spawn()
+        .map_err(|e| ToolError::Failed(format!("cannot start shell: {e}")))
+}
+
+/// Written and closed before the output is drained. A program waiting on input
+/// needs the end-of-file as much as the bytes.
+async fn feed_stdin(child: &mut tokio::process::Child, text: Option<&str>) {
+    let Some(text) = text else {
+        return;
+    };
+    if let Some(mut pipe) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let _ = pipe.write_all(text.as_bytes()).await;
+        let _ = pipe.shutdown().await;
+    }
+}
+
+/// Starts a command that will outlive this call.
+///
+/// The two arguments that only mean something to a command being waited for
+/// are refused rather than ignored: a timeout nothing enforces and a terminal
+/// nothing is watching are both answers to a question the caller asked, and
+/// silently not honoring one is how a model concludes the wrong thing about
+/// what it just started.
+async fn start_in_background(
+    input: &RunCommandInput,
+    program: String,
+    args: Vec<String>,
+    cwd: std::path::PathBuf,
+    ctx: &ToolContext,
+) -> ToolResult {
+    let Some(jobs) = &ctx.jobs else {
+        return Err(ToolError::Rejected(
+            "background commands are not available in this run; run it in the foreground, or \
+             split it into steps that finish inside the timeout"
+                .into(),
+        ));
+    };
+    if input.pty {
+        return Err(ToolError::InvalidInput(
+            "a background command cannot have a pseudo-terminal. Run it in the foreground with \
+             pty, or in the background without it."
+                .into(),
+        ));
+    }
+    if input.timeout_secs.is_some() {
+        return Err(ToolError::InvalidInput(
+            "timeout_secs does not apply to a background command — nothing is waiting for it. \
+             End it with stop_command when you are done with it."
+                .into(),
+        ));
+    }
+    let running = jobs.running();
+    if running >= crate::jobs::MAX_JOBS {
+        return Err(ToolError::Rejected(format!(
+            "{running} commands are already running in the background, which is the limit. Stop \
+             one with stop_command first."
+        )));
+    }
+
+    // Before the command starts, and held by the job until it exits: what it
+    // changes is minutes away and in some later turn, and a pre-image read
+    // then would be of a file the command had already written. See
+    // [`crate::jobs`].
+    let sweep = match &ctx.checkpoints {
+        Some(_) => Some(crate::sweep::Sweep::before(&ctx.workspace, ctx.sweeps.clone()).await),
+        None => None,
+    };
+
+    let mut child = spawn_piped(program, args, &cwd, input.stdin.is_some())?;
+    feed_stdin(&mut child, input.stdin.as_deref()).await;
+    let id = jobs.adopt(input.command.clone(), child, sweep).await;
+
+    Ok(format!(
+        "Started #{id} in the background: {}\nRead what it says with check_command (id {id}), \
+         and end it with stop_command. It keeps running between turns.",
+        input.command.trim()
+    )
+    .into())
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct CheckCommandInput {
+    /// The number `run_command` gave you when it started. Omit to list every
+    /// background command and how each is doing.
+    #[serde(default)]
+    pub id: Option<u32>,
+    /// Wait up to this many seconds for it to finish, returning the moment it
+    /// does. Defaults to not waiting at all. Maximum 120.
+    #[serde(default)]
+    pub wait_secs: Option<u64>,
+}
+
+pub struct CheckCommand;
+
+#[async_trait]
+impl Tool for CheckCommand {
+    fn name(&self) -> &str {
+        "check_command"
+    }
+
+    fn description(&self) -> &str {
+        "Read what a background command has said since you last checked, and whether it is still \
+         running. Output arrives once — what you read here you will not be shown again — and both \
+         of its streams are merged in the order they arrived. Pass wait_secs to wait for it to \
+         finish instead of asking again in a moment. Omit id to see every background command at \
+         once."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        schema_for::<CheckCommandInput>()
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
+    /// The test run this reads is the check on work already written — see
+    /// [`Tool::checks_work`].
+    fn checks_work(&self) -> bool {
+        true
+    }
+
+    fn preview(&self, input: &serde_json::Value) -> String {
+        match input.get("id").and_then(|i| i.as_u64()) {
+            Some(id) => format!("Check background command #{id}"),
+            None => "List background commands".into(),
+        }
+    }
+
+    async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let input: CheckCommandInput = parse_input(input)?;
+        let jobs = jobs_of(ctx)?;
+        let wait =
+            Duration::from_secs(input.wait_secs.unwrap_or(0).min(crate::jobs::MAX_WAIT_SECS));
+        // Cancellation reaches the wait rather than the command: the user
+        // stopping a turn wants the turn back, not the build killed.
+        let report = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
+            report = jobs.check(input.id, wait) => report,
+        };
+        report.map(Into::into).map_err(ToolError::InvalidInput)
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct StopCommandInput {
+    /// The number `run_command` gave you when it started.
+    pub id: u32,
+}
+
+pub struct StopCommand;
+
+#[async_trait]
+impl Tool for StopCommand {
+    fn name(&self) -> &str {
+        "stop_command"
+    }
+
+    fn description(&self) -> &str {
+        "End a background command. Anything it has written that you have not read is lost with \
+         it, so check_command first if the output mattered."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        schema_for::<StopCommandInput>()
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Execute
+    }
+
+    fn preview(&self, input: &serde_json::Value) -> String {
+        match input.get("id").and_then(|i| i.as_u64()) {
+            Some(id) => format!("Stop background command #{id}"),
+            None => "Stop a background command".into(),
+        }
+    }
+
+    async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let input: StopCommandInput = parse_input(input)?;
+        jobs_of(ctx)?
+            .stop(input.id)
+            .await
+            .map(Into::into)
+            .map_err(ToolError::InvalidInput)
+    }
+}
+
+/// The background commands, or the refusal to pretend there are any.
+fn jobs_of(ctx: &ToolContext) -> Result<&Arc<crate::jobs::Jobs>, ToolError> {
+    ctx.jobs.as_ref().ok_or_else(|| {
+        ToolError::Rejected("background commands are not available in this run".into())
+    })
 }
 
 /// Reads a child pipe to end in the background, reporting it as it arrives.

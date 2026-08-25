@@ -157,6 +157,14 @@ pub struct Host {
     /// already made: a hook edited in an editor takes effect on the next
     /// message rather than the next launch.
     hooks_seen: RwLock<Freshness>,
+    /// The commands running in the background.
+    ///
+    /// On the host rather than beside a session because that is what they are:
+    /// a build started in one turn is read in another, and a dev server
+    /// outlives the conversation that started it. Ended when the workspace
+    /// changes, and by the window on its way out — see
+    /// [`taurus_tools::Jobs::stop_all`].
+    jobs: Arc<taurus_tools::Jobs>,
     /// Shared rather than owned so sub-agents can be handed the same registry:
     /// it has no spawn tool, which is what caps delegation depth.
     registry: Arc<RwLock<ToolRegistry>>,
@@ -213,6 +221,7 @@ impl Host {
             // downstream holds it as `dyn Engine`.
             engine: Arc::new(taurus_data::DataFusionEngine::new()),
             catalog: Arc::new(RwLock::new(SkillCatalog::default())),
+            jobs: Arc::new(taurus_tools::Jobs::new()),
             instructions: RwLock::new(Vec::new()),
             instructions_seen: RwLock::new(Freshness::default()),
             agents: Arc::new(RwLock::new(AgentCatalog::default())),
@@ -787,6 +796,11 @@ impl Host {
             ));
         }
 
+        // A background command belongs to the workspace it was started in: its
+        // cwd is about to stop meaning what it meant, and its changes would be
+        // swept against a workspace it never ran in.
+        self.jobs.stop_all();
+
         *self.workspace.write().await = canonical.clone();
         // Rebuilt with this workspace's trust state, so a committed allowlist
         // in a directory the user has not vouched for is not consulted and
@@ -1187,6 +1201,18 @@ impl Host {
         // hooks the parent does. A guard a delegate could route around is not
         // a guard.
         .with_hooks(self.hooks.read().await.clone())
+        // The one thing on the context that is neither per turn nor per call:
+        // a background command is read by the turns after the one that started
+        // it, so a fresh set per turn would lose every one of them.
+        .with_jobs(self.jobs.clone())
+    }
+
+    /// Ends every background command, for a window closing.
+    ///
+    /// Public because the app is what knows the window is going: nothing in
+    /// the OS tidies up a child that outlived the call that spawned it.
+    pub fn stop_background(&self) {
+        self.jobs.stop_all();
     }
 
     pub async fn workspace(&self) -> PathBuf {

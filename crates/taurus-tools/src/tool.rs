@@ -183,6 +183,13 @@ pub struct ToolContext {
     /// sub-agent's commands sweep the same workspace, and reading it a second
     /// time on their behalf would answer the same question twice.
     pub sweeps: Option<Arc<crate::sweep::SweepCache>>,
+    /// The commands running in the background, which belong to the workspace
+    /// rather than to any one turn.
+    ///
+    /// `None` where nothing outlives the call — an example, a test, a tool run
+    /// directly — and there `run_command` refuses to start one rather than
+    /// starting something nobody can read or stop.
+    pub jobs: Option<Arc<crate::jobs::Jobs>>,
     /// Bound to one tool call by the agent loop, so a report lands on the right
     /// card. `None` outside a loop that draws anything — the CLI's piped mode,
     /// examples, tests.
@@ -219,6 +226,7 @@ impl ToolContext {
             cancel,
             checkpoints: None,
             sweeps: None,
+            jobs: None,
             progress: None,
             hooks: None,
             session_id: None,
@@ -247,6 +255,17 @@ impl ToolContext {
     }
 
     /// Makes changes made through this context undoable.
+    /// The background commands this context can start, read, and stop.
+    ///
+    /// Passed in rather than made here: a fresh one per turn would lose every
+    /// command the turn before it started, which is the one thing a background
+    /// command is for.
+    #[must_use]
+    pub fn with_jobs(mut self, jobs: Arc<crate::jobs::Jobs>) -> Self {
+        self.jobs = Some(jobs);
+        self
+    }
+
     pub fn with_checkpoints(mut self, recorder: Arc<crate::checkpoint::TurnRecorder>) -> Self {
         self.checkpoints = Some(recorder);
         // Together, always. Every caller that opens a turn wants both, and one
@@ -361,6 +380,24 @@ pub trait Tool: Send + Sync {
     /// index the entire workspace twice.
     fn touches_unpredictably(&self) -> bool {
         false
+    }
+
+    /// Whether calling this can tell the model whether its own changes work.
+    ///
+    /// Running the project's tests is the case, which is why this follows
+    /// [`Tool::touches_unpredictably`] by default — the tools that run a
+    /// program are the tools that can answer a question about the project.
+    /// `check_command` is the one that has to say so for itself: reading the
+    /// test run it started two turns ago is the same verification arriving
+    /// late, and the harness would otherwise tell a model that has just read
+    /// the results that it has not run anything.
+    ///
+    /// Separate from the sweep's question rather than folded into it, because
+    /// the answers differ: nothing here changes a file, and declaring that it
+    /// might would index the workspace twice around a call that only reads a
+    /// buffer.
+    fn checks_work(&self) -> bool {
+        self.touches_unpredictably()
     }
 
     /// What this call wants drawn in the transcript, instead of a row saying it

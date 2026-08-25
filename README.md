@@ -102,6 +102,10 @@ to put things back after.
 - [**Running commands**](docs/safety.md#running-commands) — a real PTY per
   platform, so a program that checks `isatty` behaves the way it does in a
   terminal.
+- [**Commands that keep running**](docs/safety.md#commands-that-keep-running) —
+  a build from cold, a whole test suite, or a dev server is started and left
+  alone rather than waited for. What it changed is still undoable, from the
+  files as they stood before it ran.
 - [**Rewinding a turn**](docs/safety.md#rewinding-a-turn) — every file a turn
   touched is recorded first, so any turn can be undone.
 - [**Keeping a turn**](docs/safety.md#keeping-a-turn) — read a turn back as a

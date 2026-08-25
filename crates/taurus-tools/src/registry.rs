@@ -31,6 +31,8 @@ impl ToolRegistry {
         registry.register(Arc::new(crate::builtin::search::Glob));
         registry.register(Arc::new(crate::builtin::search::Grep));
         registry.register(Arc::new(crate::builtin::shell::RunCommand));
+        registry.register(Arc::new(crate::builtin::shell::CheckCommand));
+        registry.register(Arc::new(crate::builtin::shell::StopCommand));
         registry
     }
 
@@ -209,6 +211,18 @@ impl ToolRegistry {
             }
         }
 
+        // A background command finishes on its own schedule, so the sweep it
+        // has been holding since it started is spent at the first tool call
+        // after it exits — here, rather than in `check_command`, because a
+        // model that starts a build and never checks it is exactly the case
+        // where the changes would otherwise go unrecorded. See
+        // [`crate::jobs::Jobs::reap`].
+        if let (Some(jobs), Some(recorder)) = (&ctx.jobs, &ctx.checkpoints) {
+            for warning in jobs.reap(&ctx.workspace, recorder).await {
+                annotate(&mut result, &warning);
+            }
+        }
+
         // Nothing left to decide — the call has happened — so a hook here
         // observes and its output becomes a note on the result. A formatter
         // that reports what it reformatted is telling the model something it
@@ -366,6 +380,8 @@ mod tests {
             "glob",
             "grep",
             "run_command",
+            "check_command",
+            "stop_command",
         ] {
             assert!(registry.get(expected).is_some(), "missing {expected}");
         }
@@ -674,6 +690,140 @@ mod tests {
         assert_eq!(store.turns("s1").unwrap()[0].files, vec!["out.txt"]);
         store.rewind("s1", &root, 1, false).unwrap();
         assert!(!root.join("out.txt").exists());
+    }
+
+    /// Long enough that the reap on the starting call cannot have raced it.
+    #[cfg(windows)]
+    const SLOW_WRITE: &str = "ping -n 2 127.0.0.1 > nul & echo rewritten > a.txt";
+    #[cfg(not(windows))]
+    const SLOW_WRITE: &str = "sleep 0.3; echo rewritten > a.txt";
+
+    #[tokio::test]
+    async fn a_background_command_is_undoable_from_before_it_ran() {
+        // The property the job's own sweep exists for: the pre-image is the
+        // file as it stood when the command started, not as it stood when
+        // somebody noticed the command had finished.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        std::fs::write(root.join("a.txt"), "original").unwrap();
+
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx
+            .with_jobs(Arc::new(crate::Jobs::new()))
+            .with_checkpoints(store.begin_turn("s1", &root, "in the background"));
+
+        let registry = ToolRegistry::with_builtins();
+        let started = registry
+            .execute(
+                "run_command",
+                serde_json::json!({"command": SLOW_WRITE, "background": true}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(started.to_text().contains("Started #1"), "{started}");
+
+        let checked = registry
+            .execute(
+                "check_command",
+                serde_json::json!({"id": 1, "wait_secs": 30}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(checked.to_text().contains("finished"), "{checked}");
+
+        assert_eq!(store.turns("s1").unwrap()[0].files, vec!["a.txt"]);
+        store.rewind("s1", &root, 1, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "original"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_background_command_is_recorded_even_if_nobody_checks_it() {
+        // The case the reap in `execute` exists for: a model that starts a
+        // build and never asks about it still leaves the turn undoable.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx
+            .with_jobs(Arc::new(crate::Jobs::new()))
+            .with_checkpoints(store.begin_turn("s1", &root, "and forget about it"));
+
+        let registry = ToolRegistry::with_builtins();
+        registry
+            .execute(
+                "run_command",
+                serde_json::json!({"command": SLOW_WRITE, "background": true}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Any later call reaps it. `list_dir` knows nothing about jobs, which
+        // is the point.
+        let mut files = Vec::new();
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            registry
+                .execute("list_dir", serde_json::json!({}), &ctx)
+                .await
+                .unwrap();
+            files = store
+                .turns("s1")
+                .unwrap()
+                .first()
+                .map(|t| t.files.clone())
+                .unwrap_or_default();
+            if !files.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(files, vec!["a.txt"]);
+    }
+
+    #[tokio::test]
+    async fn a_background_command_refuses_the_arguments_that_would_not_be_honored() {
+        let (ctx, _dir) = test_ctx();
+        let ctx = ctx.with_jobs(Arc::new(crate::Jobs::new()));
+        let registry = ToolRegistry::with_builtins();
+
+        for (extra, wanted) in [
+            (serde_json::json!({"pty": true}), "pseudo-terminal"),
+            (serde_json::json!({"timeout_secs": 30}), "timeout_secs"),
+        ] {
+            let mut input = serde_json::json!({"command": "echo hi", "background": true});
+            for (key, value) in extra.as_object().unwrap() {
+                input[key] = value.clone();
+            }
+            let err = registry
+                .execute("run_command", input, &ctx)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(wanted), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn background_commands_are_refused_where_nothing_could_read_them() {
+        // No jobs on the context, so starting one would leave a process
+        // nobody can see, read, or stop.
+        let (ctx, _dir) = test_ctx();
+        let err = ToolRegistry::with_builtins()
+            .execute(
+                "run_command",
+                serde_json::json!({"command": "echo hi", "background": true}),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not available"), "{err}");
     }
 
     #[tokio::test]
