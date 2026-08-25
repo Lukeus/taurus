@@ -62,6 +62,17 @@ const MAX_PENDING_BYTES: usize = 64 * 1024;
 /// The longest `check_command` will wait for a command to finish.
 pub const MAX_WAIT_SECS: u64 = 120;
 
+/// How long a finished command's output is waited for before it is called
+/// finished anyway.
+///
+/// A child's own children inherit its pipes, so the write end stays open until
+/// the last of them exits — a shell killed while its command runs on, or one
+/// that started something and returned. Waiting for the read to end would mean
+/// a command reported as running for as long as whatever it left behind, which
+/// is not what a stop looks like. Late output is not lost: the drains go on
+/// filling the buffer, and the next check reads it.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
 /// Every background command of one workspace.
 ///
 /// Held by the host rather than by a turn, because outliving the turn is the
@@ -188,10 +199,14 @@ impl Jobs {
             };
             // Before the outcome is published, so "it exited" also means "its
             // output is all here". A check that raced the exit would otherwise
-            // report a finished command and lose its last lines.
-            for drain in drains {
-                let _ = drain.await;
-            }
+            // report a finished command and lose its last lines — but bounded,
+            // for the pipes nobody is going to close. See [`DRAIN_GRACE`].
+            let _ = tokio::time::timeout(DRAIN_GRACE, async {
+                for drain in drains {
+                    let _ = drain.await;
+                }
+            })
+            .await;
             *job.outcome.lock().unwrap() = Some(Outcome {
                 code: status.ok().and_then(|s| s.code()),
                 stopped: stop.is_cancelled(),
@@ -417,10 +432,20 @@ mod tests {
         assert!(report.contains("exited with code 3"), "{report}");
     }
 
+    /// Long enough that nothing here can outrun it, and bounded so a stop that
+    /// leaves the shell's own child behind on Windows does not leave it for
+    /// long. `cmd` has no `sleep`, which is why this is not one string.
+    #[cfg(windows)]
+    const KEEPS_RUNNING: &str = "ping -n 31 127.0.0.1 > nul";
+    #[cfg(not(windows))]
+    const KEEPS_RUNNING: &str = "sleep 30";
+
     #[tokio::test]
     async fn a_command_still_running_says_so_and_stops_on_request() {
         let jobs = Jobs::new();
-        let id = jobs.adopt("sleep 60".into(), sh("sleep 60"), None).await;
+        let id = jobs
+            .adopt(KEEPS_RUNNING.into(), sh(KEEPS_RUNNING), None)
+            .await;
         let report = jobs.check(Some(id), Duration::ZERO).await.unwrap();
         assert!(report.contains("still running"), "{report}");
         assert_eq!(jobs.running(), 1);
@@ -443,6 +468,32 @@ mod tests {
             "waited too long"
         );
         assert!(report.contains("done"), "{report}");
+    }
+
+    /// Unix only for the shape of the command: a shell that starts something
+    /// in the background and returns leaves that child holding the pipes, and
+    /// `cmd` has no equivalent one-liner. What it guards is not
+    /// platform-specific at all — killing a shell on Windows leaves its own
+    /// command holding them the same way.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pipe_nobody_will_close_does_not_hold_the_command_open() {
+        let jobs = Jobs::new();
+        let id = jobs
+            .adopt("leaves one behind".into(), sh("sleep 30 &"), None)
+            .await;
+
+        // The shell is gone in an instant; what it started holds the write end
+        // of both pipes for half a minute.
+        let waited = Instant::now();
+        let report = jobs.check(Some(id), Duration::from_secs(20)).await.unwrap();
+        assert!(
+            waited.elapsed() < Duration::from_secs(10),
+            "waited {:?} for a command that had already exited",
+            waited.elapsed()
+        );
+        assert!(report.contains("finished after"), "{report}");
+        assert_eq!(jobs.running(), 0);
     }
 
     #[tokio::test]
