@@ -371,14 +371,17 @@ and they are the minority.
   a rewind neither restores nor reports it. That is correct — there is nothing
   to put back — but it means a conversation's disk footprint grows in a place
   the **Changes** drawer does not account for.
-- **The first index is slow, and inside a turn it still blocks it.** Embedding
-  this repository takes around 44 seconds. **Settings → Search → Build index
-  now** pays that where you can watch it move and stop it, which is the way to
-  avoid the problem rather than a fix for it: a workspace whose index is built
-  on the first `search_code` still spends a tool call on the whole of it. The
-  turn reports its way through now — a passage count every few per cent, rather
-  than one line and forty-four seconds of silence — but the model still sees
-  only a call that has not returned.
+- **The first index is slow, and a search that arrives early still waits for
+  it.** Embedding this repository takes around 44 seconds. Sending a message
+  starts that in the background, so most of it is usually done before anything
+  searches — but a model that reaches for `search_code` in its first tool call
+  waits for the rest of it inside that call. What is left is genuinely less:
+  the search takes the warm-up over rather than starting again, everything
+  embedded so far is already written down, and the turn watches a passage count
+  move. Closing it the rest of the way means answering from a partial index and
+  saying so, which is a different promise from the one the tool makes now —
+  every search refreshes first, so that a file just written is a file that can
+  be found.
 - **The index does not notice a file that changed without moving.** Length and
   modification time, the same comparison the sweep uses and blind in the same
   place: a rewrite to the same length within one filesystem tick is invisible,

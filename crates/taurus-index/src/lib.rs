@@ -16,6 +16,8 @@
 //!
 //! - [`chunk`] cuts files into overlapping line windows.
 //! - [`build`] walks the workspace and embeds what changed.
+//! - [`inflight`] keeps the three things that can start a refresh from all
+//!   starting one at once.
 //! - [`store`] holds the vectors and searches them.
 //! - [`tool`] is `search_code`, which the model calls.
 //!
@@ -27,11 +29,13 @@
 
 pub mod build;
 pub mod chunk;
+pub mod inflight;
 pub mod store;
 pub mod tool;
 
 pub use build::{refresh, IndexProgress, Refreshed};
 pub use chunk::Chunk;
+pub use inflight::Indexing;
 pub use store::{rerank, search, Entry, Hit, Index, Ranking};
 pub use tool::{SearchCode, SEARCH_CODE_TOOL};
 

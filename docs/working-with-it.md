@@ -340,6 +340,24 @@ second pass:   53.4ms  Index is current: 212 files, nothing to re-read
                2498 passages, 10.1 MB on disk
 ```
 
+**The first pass starts with the message, not with the search.** Forty-four
+seconds is a long time to be inside a tool call, and it used to be spent there:
+the model reached for `search_code` on an unindexed workspace and the turn sat
+on an unreturned call for the whole of it. Sending a message now starts the
+refresh in the background, so the first search lands on an index that has been
+building since — and if it lands early, the tool takes over the refresh and
+finishes it with the progress bar in the transcript rather than starting again.
+Whatever had been embedded is already written down, so taking over costs
+seconds rather than the run. Nothing indexes a repository because you opened it:
+this needs an embedding model configured, which is the same switch that decides
+whether `search_code` exists at all.
+
+The same is what makes **Settings → Search → Build index now** interruptible in
+a useful way. A stopped build keeps everything up to the last write and the next
+one carries on from there — and a file is never written down half embedded,
+because a file is judged current by its first chunk's stamp and an index holding
+half of one would report it as up to date while the rest never arrived.
+
 Three deliberate simplicities:
 
 - **Line windows, not syntax.** Forty lines with ten of overlap, in every

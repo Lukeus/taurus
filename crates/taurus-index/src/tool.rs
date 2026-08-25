@@ -81,6 +81,10 @@ pub struct SearchCode {
     /// Reranking model and the provider serving it. `None` means the cosine
     /// order is the answer.
     rerank: Option<(Arc<dyn Provider>, String)>,
+    /// The refresh already running for this workspace, if the caller keeps
+    /// track of one. `None` where nothing else could be indexing — a test, an
+    /// example, a tool built on its own.
+    indexing: Option<Arc<crate::Indexing>>,
 }
 
 impl SearchCode {
@@ -94,7 +98,21 @@ impl SearchCode {
             model: model.into(),
             dir: dir.into(),
             rerank: None,
+            indexing: None,
         }
+    }
+
+    /// Joins the workspace's one refresh, so a search stops the warm-up rather
+    /// than embedding the same passages beside it.
+    ///
+    /// Taking over rather than waiting: the search has a turn behind it, and
+    /// what it interrupts has already written down everything it embedded, so
+    /// the refresh that follows carries on from there. See
+    /// [`crate::inflight`].
+    #[must_use]
+    pub fn with_indexing(mut self, indexing: Arc<crate::Indexing>) -> Self {
+        self.indexing = Some(indexing);
+        self
     }
 
     /// Adds a second retrieval stage that reorders the shortlist.
@@ -204,7 +222,11 @@ impl Tool for SearchCode {
         // Before the search, not on a timer: a model that just wrote a file and
         // then looked for it has to find it.
         ctx.report("indexing the workspace").await;
-        let (entries, report) = refresh(
+        let ticket = self
+            .indexing
+            .as_ref()
+            .map(|flight| flight.take_over(&ctx.cancel));
+        let refreshed = refresh(
             &index,
             &ctx.workspace,
             &self.provider,
@@ -212,8 +234,11 @@ impl Tool for SearchCode {
             &ctx.cancel,
             Some(&Reporting(ctx)),
         )
-        .await
-        .map_err(ToolError::Failed)?;
+        .await;
+        if let (Some(flight), Some(ticket)) = (&self.indexing, ticket) {
+            flight.finished(ticket);
+        }
+        let (entries, report) = refreshed.map_err(ToolError::Failed)?;
 
         if entries.is_empty() {
             return Ok(format!(
