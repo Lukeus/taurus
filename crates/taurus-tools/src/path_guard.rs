@@ -193,9 +193,17 @@ mod tests {
         // The guarantee the edges rely on: `plain` is only ever subtractive, so
         // calling it on a path that has nothing to lose cannot change what the
         // UI shows or where a child process starts.
+        //
+        // A canonicalized path is not one of those on Windows. `canonicalize`
+        // returns the verbatim form, which is precisely what `plain` is for, so
+        // asserting it comes back unchanged asserts the function does nothing —
+        // true everywhere it has nothing to do, and false on the one platform
+        // it exists for. What has nothing to lose is `plain`'s own output, and
+        // running that through again is what says it stops there.
         let ws = workspace();
         let canonical = ws.path().canonicalize().unwrap();
-        assert_eq!(plain(&canonical), canonical.as_path());
+        let already_plain = plain(&canonical).to_path_buf();
+        assert_eq!(plain(&already_plain), already_plain.as_path());
         assert_eq!(plain(Path::new("relative/bit")), Path::new("relative/bit"));
     }
 
