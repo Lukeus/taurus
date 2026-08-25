@@ -29,6 +29,10 @@ project — do not go looking for it, and do not `cd` anywhere before working.
 - Write paths relative to that root: `cargo test`, `ls src`, `python \
 scripts/build.py`. Do not paste absolute paths into a command.
 - To work in a subdirectory, pass `cwd` rather than putting `cd` in the command.
+- A command that will outlast the timeout, or that is meant to keep running — a \
+build from cold, a whole test suite, a dev server — takes `background: true`. \
+Read what it has said with `check_command`, which can also wait for it to \
+finish. Stop what you started once you have what you needed from it.
 
 # Finishing what you started
 

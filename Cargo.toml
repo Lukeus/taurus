@@ -81,6 +81,11 @@ base64 = "0.23"
 # ConPTY on Windows — so a program that checks `isatty` behaves the way it does
 # in a terminal on all three from the one codebase.
 portable-pty = "0.9"
+# Undoing Windows' `\\?\` canonicalization before a path is shown to anyone or
+# handed to a child process. `std::fs::canonicalize` produces the verbatim form,
+# `cmd.exe` cannot start in one, and every shell prints it in the prompt. Already
+# in the tree as a transitive dependency, and a no-op everywhere but Windows.
+dunce = "1"
 ignore = "0.4"
 globset = "0.4"
 # HTML to Markdown for `fetch_url`. A page arrives as markup and reaches the

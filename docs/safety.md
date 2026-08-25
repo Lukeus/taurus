@@ -189,6 +189,48 @@ has to be native. Neither the CLI nor a development build was ever affected —
 both already have a console — which is why this was only ever visible in the
 installed app. See [`scripts/conpty.mjs`](../scripts/conpty.mjs).
 
+### Commands that keep running
+
+A build from cold, a whole test suite, and a dev server are three things the
+paragraphs above cannot do. The timeout is ten minutes at the outside, and a
+turn spent waiting is a turn spending nothing else — so `run_command` takes a
+third argument, **`background: true`**, which starts the command and comes
+straight back with a number for it. `check_command` reads what it has said
+since the last check, and can wait for it to finish; `stop_command` ends it.
+Eight may run at once.
+
+Output arrives once. Nobody is holding the pipes open on the model's behalf, so
+what a background command writes is drained into a buffer as it arrives and
+handed over whole at the next check — and what is read there is not shown
+again. The buffer holds 64 KB; past that the oldest is dropped and *counted*, so
+a check that arrives too late learns that it did rather than reading a prefix as
+though it were everything. Both streams go into the one buffer in the order they
+arrived, which is what a terminal would have shown; the `[stderr]` split a
+waited-for command gets is not available here.
+
+**What it changed is still recorded, and from before it ran.** The sweep that
+makes a command undoable reads the workspace before it starts and again when it
+finishes ([Rewinding a turn](#rewinding-a-turn)). For a background command those
+are minutes apart and usually in different turns, so the command carries its own
+pre-image from the moment it started and spends it when the process exits. The
+changes land in the turn that was running when it finished, not the one that
+started it — which by then is history — and they land whether or not anybody
+checked: every tool call collects the commands that have finished since the last
+one. A command still running when a turn ends is in no turn's changed-file list
+yet, which is the honest answer, because it has not finished changing them.
+
+**Two arguments are refused rather than ignored.** `pty` has nothing watching
+the terminal it would open, and `timeout_secs` has nothing waiting to enforce
+it. Both are answers to a question the caller asked, and quietly not honoring
+one is how a model concludes the wrong thing about what it just started.
+
+**They end with the workspace and with the window.** Nothing in the operating
+system tidies up a child that outlived the call that spawned it, so switching
+workspaces stops them — its `cwd` is about to stop meaning what it meant — and
+so does closing the window. A `taurus` CLI run ends them when the process does.
+Between turns, and across conversations in the same workspace, they keep
+running: that is what they are for.
+
 **The terminal dock is not on this path at all.** Everything above is about a
 command the *model* asked for: the permission engine sees it, a rule can refuse
 it, and a sweep records what it changed so a rewind can undo it. A command you

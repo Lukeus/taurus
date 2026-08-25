@@ -28,6 +28,33 @@ and they are the minority.
   packaged wrongly, everything works except for a window that only a user on
   Windows in an installed build can see. See
   [Running commands](safety.md#running-commands).
+- **A background command is not on screen while it runs.** `run_command` with
+  `background: true` returns a number rather than output, and what the command
+  says arrives when the model checks it. The card for the call that started it
+  is closed by then, so there is nowhere for the lines to go — a waited-for
+  command streams into its own card because the card is still open. What is
+  missing is a surface of its own: the terminal dock already draws live output
+  and could hold a tab per background command, and until it does, the honest
+  description is that the model can see a build the user cannot. The commands
+  are at least enumerable — `check_command` with no id lists every one of them,
+  and what it changed reaches the Changes drawer like anything else. See
+  [Commands that keep running](safety.md#commands-that-keep-running).
+- **A background command has no pseudo-terminal.** `pty: true` and
+  `background: true` together are refused rather than silently doing one of
+  them. The pty path runs a command to completion behind a blocking read, and
+  handing back a handle to one instead means a second implementation of the
+  drain and the stop, per platform. So a dev server that colours its output
+  loses the colour, and a program that refuses to start outside a terminal
+  cannot be backgrounded at all — it has to be run in the foreground, where the
+  timeout applies again.
+- **A command still running when a turn ends is in no turn's changed-file
+  list.** Its pre-image is held from the moment it started and spent when it
+  exits, so nothing is lost — the changes land in whichever turn is running
+  when it finishes. But a rewind offered while a build is still writing cannot
+  include what the build has not written yet, and the list the user reads
+  before deciding says nothing about the command that is about to add to it.
+  Covering it means the changed-file list growing under the reader's eye, which
+  is a UI question rather than a recording one.
 - **A hook can refuse a tool call and cannot approve one.** There is no
   `allow` verdict, so a hook cannot skip a permission prompt the way one in some
   other harnesses can. That rules out the "approve every `git status` for me"
@@ -344,14 +371,17 @@ and they are the minority.
   a rewind neither restores nor reports it. That is correct — there is nothing
   to put back — but it means a conversation's disk footprint grows in a place
   the **Changes** drawer does not account for.
-- **The first index is slow, and inside a turn it still blocks it.** Embedding
-  this repository takes around 44 seconds. **Settings → Search → Build index
-  now** pays that where you can watch it move and stop it, which is the way to
-  avoid the problem rather than a fix for it: a workspace whose index is built
-  on the first `search_code` still spends a tool call on the whole of it. The
-  turn reports its way through now — a passage count every few per cent, rather
-  than one line and forty-four seconds of silence — but the model still sees
-  only a call that has not returned.
+- **The first index is slow, and a search that arrives early still waits for
+  it.** Embedding this repository takes around 44 seconds. Sending a message
+  starts that in the background, so most of it is usually done before anything
+  searches — but a model that reaches for `search_code` in its first tool call
+  waits for the rest of it inside that call. What is left is genuinely less:
+  the search takes the warm-up over rather than starting again, everything
+  embedded so far is already written down, and the turn watches a passage count
+  move. Closing it the rest of the way means answering from a partial index and
+  saying so, which is a different promise from the one the tool makes now —
+  every search refreshes first, so that a file just written is a file that can
+  be found.
 - **The index does not notice a file that changed without moving.** Length and
   modification time, the same comparison the sweep uses and blind in the same
   place: a rewrite to the same length within one filesystem tick is invisible,

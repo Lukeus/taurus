@@ -149,6 +149,11 @@ pub fn run() {
             if matches!(event, WindowEvent::Destroyed) {
                 if let Some(state) = window.app_handle().try_state::<Arc<state::AppState>>() {
                     state.terminals.close_all();
+                    // The same argument, for the commands the agent left
+                    // running: a background `cargo watch` is no more in this
+                    // process's tree than a shell under a pty is, and the
+                    // window going away is the last chance to end it.
+                    state.host.stop_background();
                 }
             }
         })

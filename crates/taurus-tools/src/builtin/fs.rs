@@ -345,23 +345,165 @@ impl Tool for EditFile {
 /// nothing to name — the permission prompt resolves a path the user has not
 /// approved yet — while `execute` still produces the wording the model reads.
 enum EditProblem {
-    NotFound,
+    NotFound(Miss),
     Ambiguous(usize),
 }
+
+/// What the file can say about why the text was not there.
+///
+/// "Not found, read it again" is true and costs a round trip to act on, and
+/// the reread usually ends in the same call with one space changed. The file
+/// already holds the answer at the moment the match fails, so this works it
+/// out then and puts it in the error.
+enum Miss {
+    /// The file holds text that is nearly `old_string`.
+    Near(NearMiss),
+    /// `new_string` is in the file already, and nothing resembles
+    /// `old_string` — the shape of an edit being made twice.
+    AlreadyApplied,
+    /// Nothing to say beyond that it is not there.
+    Nothing,
+}
+
+/// The stretch of the file that came closest, in the file's own bytes.
+struct NearMiss {
+    /// 1-based, inclusive, as the file's own line numbers.
+    first: usize,
+    last: usize,
+    /// The file's text for those lines, unnumbered so it can be copied
+    /// straight back into `old_string`. Cut at [`MAX_NEAR_MISS_LINES`], in
+    /// which case `shown` is short of `last - first + 1`.
+    text: String,
+    shown: usize,
+    /// Every line of `old_string` matched, once the indentation was set aside.
+    whitespace_only: bool,
+    /// How many places tied for closest. More than one and none of them can be
+    /// pointed at as *the* answer.
+    ties: usize,
+}
+
+/// How much of the file a near miss may quote.
+///
+/// Enough to hold a small function, and short of the point where the error is
+/// itself the reread it exists to save.
+const MAX_NEAR_MISS_LINES: usize = 12;
 
 impl EditProblem {
     fn explain(self, display: &str) -> ToolError {
         ToolError::InvalidInput(match self {
-            Self::NotFound => format!(
+            Self::NotFound(Miss::Nothing) => format!(
                 "old_string was not found in {display}. Read the file again and match its exact \
                  current text, including whitespace."
             ),
+            Self::NotFound(Miss::AlreadyApplied) => format!(
+                "old_string was not found in {display}, but new_string is already there — this \
+                 edit looks like it has been made once already. Read the file before making it \
+                 again."
+            ),
+            Self::NotFound(Miss::Near(near)) => near.explain(display),
             Self::Ambiguous(n) => format!(
                 "old_string appears {n} times in {display}. Include surrounding context to make \
                  it unique, or set replace_all."
             ),
         })
     }
+}
+
+impl NearMiss {
+    fn explain(&self, display: &str) -> String {
+        let (where_, matches, is) = if self.first == self.last {
+            (format!("Line {}", self.first), "matches", "is")
+        } else {
+            (
+                format!("Lines {}-{}", self.first, self.last),
+                "match",
+                "are",
+            )
+        };
+        let how = if self.whitespace_only {
+            format!("{matches} it apart from whitespace")
+        } else {
+            format!("{is} the closest text in the file")
+        };
+        let mut message = format!("old_string was not found in {display}. {where_} {how}");
+        if self.ties > 1 {
+            message.push_str(&format!(
+                ", and {} other places match it equally well, so include more \
+                 surrounding lines to say which one you mean",
+                self.ties - 1
+            ));
+        }
+        message.push_str(". Copy this text exactly:\n\n--- ");
+        message.push_str(display);
+        message.push_str(", as it stands ---\n");
+        message.push_str(&self.text);
+        message.push_str("\n--- end ---");
+        if self.shown < self.last - self.first + 1 {
+            message.push_str(&format!(
+                "\n\n[the first {} of those lines; read {display} from line {} for the rest]",
+                self.shown,
+                self.first + self.shown
+            ));
+        }
+        message
+    }
+}
+
+/// Finds the stretch of `original` that came closest to `old`.
+///
+/// Compared with the indentation set aside, because that is what the misses
+/// are: a model reproducing a line it read correctly and its leading spaces
+/// approximately. The anchor is `old`'s first line with anything on it, and a
+/// candidate's score is how many lines from there keep matching — so a
+/// one-line miss and a twenty-line one are both found, and the twenty-line one
+/// reports where the two stopped agreeing.
+fn near_miss(original: &str, old: &str) -> Option<NearMiss> {
+    let want: Vec<&str> = old.lines().collect();
+    let have: Vec<&str> = original.lines().collect();
+    let (anchor_at, anchor) = want
+        .iter()
+        .enumerate()
+        .find(|(_, l)| !l.trim().is_empty())?;
+
+    let mut best = 0usize;
+    let mut best_start = 0usize;
+    let mut ties = 0usize;
+    for (i, line) in have.iter().enumerate() {
+        if line.trim() != anchor.trim() {
+            continue;
+        }
+        let Some(start) = i.checked_sub(anchor_at) else {
+            continue;
+        };
+        let score = want
+            .iter()
+            .zip(have[start..].iter())
+            .take_while(|(w, h)| w.trim() == h.trim())
+            .count();
+        if score > best {
+            best = score;
+            best_start = start;
+            ties = 1;
+        } else if score == best {
+            ties += 1;
+        }
+    }
+    if best == 0 {
+        return None;
+    }
+
+    // The whole of what `old_string` asked for, so the model sees the lines it
+    // got wrong and not only the ones it got right.
+    let last = (best_start + want.len()).min(have.len());
+    let shown = (last - best_start).min(MAX_NEAR_MISS_LINES);
+    Some(NearMiss {
+        first: best_start + 1,
+        last,
+        text: have[best_start..best_start + shown].join("\n"),
+        shown,
+        whitespace_only: best == want.len(),
+        ties,
+    })
 }
 
 /// Applies an edit and reports how many occurrences it replaced.
@@ -384,7 +526,7 @@ fn apply_edit(original: &str, input: &EditFileInput) -> Result<(String, usize), 
     };
 
     match original.matches(&old).count() {
-        0 => Err(EditProblem::NotFound),
+        0 => Err(EditProblem::NotFound(miss(original, &old, &new))),
         n if n > 1 && !input.replace_all => Err(EditProblem::Ambiguous(n)),
         n => Ok((
             if input.replace_all {
@@ -395,6 +537,22 @@ fn apply_edit(original: &str, input: &EditFileInput) -> Result<(String, usize), 
             n,
         )),
     }
+}
+
+/// What to tell the model when `old_string` is not in the file.
+///
+/// A near miss first: it carries the file's own text, which answers the
+/// already-applied case as well by showing what is there instead. The second
+/// branch is for when nothing resembles `old_string` at all — the shape left
+/// behind when an edit has already replaced it outright.
+fn miss(original: &str, old: &str, new: &str) -> Miss {
+    if let Some(near) = near_miss(original, old) {
+        return Miss::Near(near);
+    }
+    if !new.trim().is_empty() && original.contains(new) {
+        return Miss::AlreadyApplied;
+    }
+    Miss::Nothing
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -800,6 +958,115 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_points_at_text_that_differs_only_in_whitespace() {
+        let (ctx, dir) = test_ctx();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn main() {\n        let x = 1;\n}\n",
+        )
+        .unwrap();
+        let err = EditFile
+            .execute(
+                serde_json::json!({
+                    "path": "a.rs",
+                    // The model's copy has four spaces where the file has eight.
+                    "old_string": "fn main() {\n    let x = 1;\n}",
+                    "new_string": "fn main() {\n    let x = 2;\n}",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Lines 1-3"), "{err}");
+        assert!(err.contains("apart from whitespace"), "{err}");
+        // Quoted unnumbered, so it can go straight back into old_string.
+        assert!(err.contains("\n        let x = 1;\n"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn edit_file_shows_where_a_partial_match_diverges() {
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("a.rs"), "fn main() {\n    let x = 9;\n}\n").unwrap();
+        let err = EditFile
+            .execute(
+                serde_json::json!({
+                    "path": "a.rs",
+                    "old_string": "fn main() {\n    let x = 1;\n}",
+                    "new_string": "fn main() {}",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("closest text in the file"), "{err}");
+        assert!(err.contains("let x = 9;"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn edit_file_says_when_the_edit_looks_already_made() {
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("a.txt"), "after\n").unwrap();
+        let err = EditFile
+            .execute(
+                serde_json::json!({
+                    "path": "a.txt",
+                    "old_string": "before",
+                    "new_string": "after",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("already"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn edit_file_names_the_other_places_that_match_equally_well() {
+        let (ctx, dir) = test_ctx();
+        // Tabs in the file, spaces in the model's copy: not a literal match
+        // anywhere, and an equally good one in three places.
+        std::fs::write(dir.path().join("a.txt"), "\tcall()\n\tcall()\n\tcall()\n").unwrap();
+        let err = EditFile
+            .execute(
+                serde_json::json!({
+                    "path": "a.txt",
+                    "old_string": "    call()",
+                    "new_string": "    call(1)",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2 other places"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn edit_file_caps_how_much_of_the_file_it_quotes() {
+        let (ctx, dir) = test_ctx();
+        let file: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.path().join("a.txt"), file).unwrap();
+        let wanted: String = (1..=40)
+            .map(|i| format!("  line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err = EditFile
+            .execute(
+                serde_json::json!({"path": "a.txt", "old_string": wanted, "new_string": "x"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the first 12 of those lines"), "{err}");
+        assert!(err.contains("from line 13"), "{err}");
+        assert!(!err.contains("line 20"), "{err}");
     }
 
     #[tokio::test]

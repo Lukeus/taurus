@@ -157,6 +157,20 @@ pub struct Host {
     /// already made: a hook edited in an editor takes effect on the next
     /// message rather than the next launch.
     hooks_seen: RwLock<Freshness>,
+    /// The one index refresh that may be running for this workspace.
+    ///
+    /// Held here because all three things that start one pass through this
+    /// struct: the warm-up a turn kicks off, `search_code` when the model
+    /// reaches for it, and **Build index now**. See [`taurus_index::inflight`].
+    indexing: Arc<taurus_index::Indexing>,
+    /// The commands running in the background.
+    ///
+    /// On the host rather than beside a session because that is what they are:
+    /// a build started in one turn is read in another, and a dev server
+    /// outlives the conversation that started it. Ended when the workspace
+    /// changes, and by the window on its way out — see
+    /// [`taurus_tools::Jobs::stop_all`].
+    jobs: Arc<taurus_tools::Jobs>,
     /// Shared rather than owned so sub-agents can be handed the same registry:
     /// it has no spawn tool, which is what caps delegation depth.
     registry: Arc<RwLock<ToolRegistry>>,
@@ -213,6 +227,8 @@ impl Host {
             // downstream holds it as `dyn Engine`.
             engine: Arc::new(taurus_data::DataFusionEngine::new()),
             catalog: Arc::new(RwLock::new(SkillCatalog::default())),
+            jobs: Arc::new(taurus_tools::Jobs::new()),
+            indexing: Arc::new(taurus_index::Indexing::new()),
             instructions: RwLock::new(Vec::new()),
             instructions_seen: RwLock::new(Freshness::default()),
             agents: Arc::new(RwLock::new(AgentCatalog::default())),
@@ -412,6 +428,7 @@ impl Host {
                         // tool works without it, and taking `search_code` away
                         // because its optional half is misconfigured would cost
                         // far more than the reordering was worth.
+                        search = search.with_indexing(self.indexing.clone());
                         match self.rerank_for(&provider).await {
                             Ok(Some((reranker, model))) => {
                                 info!(model = %model, "reranking enabled");
@@ -781,8 +798,20 @@ impl Host {
             .canonicalize()
             .map_err(|e| format!("{}: {e}", path.display()))?;
         if !canonical.is_dir() {
-            return Err(format!("{} is not a directory", canonical.display()));
+            return Err(format!(
+                "{} is not a directory",
+                taurus_tools::path_guard::plain(&canonical).display()
+            ));
         }
+
+        // The index being built is this workspace's, and the next line makes
+        // it the wrong one.
+        self.indexing.stop();
+
+        // A background command belongs to the workspace it was started in: its
+        // cwd is about to stop meaning what it meant, and its changes would be
+        // swept against a workspace it never ran in.
+        self.jobs.stop_all();
 
         *self.workspace.write().await = canonical.clone();
         // Rebuilt with this workspace's trust state, so a committed allowlist
@@ -796,7 +825,12 @@ impl Host {
         // Global, and only global: "the workspace I had open" is a fact about
         // the user, and writing it into the workspace it names would be a file
         // that can only ever point at its own directory.
-        let remembered = canonical.display().to_string();
+        // Stored plain. It is read back and canonicalized again on the next
+        // start, so the verbatim form buys nothing and is what a person opening
+        // the settings file would have to read past.
+        let remembered = taurus_tools::path_guard::plain(&canonical)
+            .display()
+            .to_string();
         config::edit_settings(Scope::Global, None, |s| s.last_workspace = Some(remembered));
 
         // Reload re-resolves both layers, so the in-memory settings pick up the
@@ -971,6 +1005,13 @@ impl Host {
         // Before anything is read out of the host, so the snapshot below and
         // the prompt built further down both see the same, current config.
         self.refresh_for_turn().await;
+
+        // Started here rather than when the workspace opened: nobody's machine
+        // should embed a repository because they looked at it, and a turn is
+        // the point where a search becomes likely. It has the length of the
+        // model's first few tool calls to get ahead, and `search_code` takes
+        // over whatever is left. See [`Self::warm_index`].
+        self.warm_index().await;
 
         // Bound to this session's provider and model, so it is added per turn
         // rather than living in the shared registry. Children get the shared
@@ -1179,6 +1220,18 @@ impl Host {
         // hooks the parent does. A guard a delegate could route around is not
         // a guard.
         .with_hooks(self.hooks.read().await.clone())
+        // The one thing on the context that is neither per turn nor per call:
+        // a background command is read by the turns after the one that started
+        // it, so a fresh set per turn would lose every one of them.
+        .with_jobs(self.jobs.clone())
+    }
+
+    /// Ends every background command, for a window closing.
+    ///
+    /// Public because the app is what knows the window is going: nothing in
+    /// the OS tidies up a child that outlived the call that spawned it.
+    pub fn stop_background(&self) {
+        self.jobs.stop_all();
     }
 
     pub async fn workspace(&self) -> PathBuf {
@@ -1622,9 +1675,76 @@ impl Host {
             &workspace,
         );
 
-        let (_, report) =
-            taurus_index::refresh(&index, &workspace, &provider, &model, &cancel, progress).await?;
+        // Stops the warm-up if one is running, rather than embedding the same
+        // passages beside it while the person watching this progress bar waits.
+        let ticket = self.indexing.take_over(&cancel);
+        let refreshed =
+            taurus_index::refresh(&index, &workspace, &provider, &model, &cancel, progress).await;
+        self.indexing.finished(ticket);
+        let (_, report) = refreshed?;
         Ok(report.summary())
+    }
+
+    /// Starts bringing this workspace's index up to date, without waiting.
+    ///
+    /// The first index of a repository is the better part of a minute, and
+    /// until this existed the only ways to pay it were a Settings button
+    /// somebody had to know about and a `search_code` call that stalled the
+    /// turn it was made in. Started with the turn instead, the model's first
+    /// search lands on an index that has been building since the message was
+    /// sent — and if it lands early, the tool takes the refresh over and
+    /// finishes it with progress in the transcript rather than starting again.
+    ///
+    /// Does nothing without an embedding model, which is the same switch that
+    /// decides whether `search_code` exists at all: nobody's machine embeds a
+    /// repository because they opened it.
+    ///
+    /// Nothing waits on the result. A refresh that fails here is a refresh the
+    /// search would have failed at too, and it says so there, to the reader who
+    /// asked a question — rather than here, to nobody.
+    pub async fn warm_index(&self) {
+        if self.indexing.busy() {
+            return;
+        }
+        let model = self
+            .settings
+            .read()
+            .await
+            .embedding_model
+            .trim()
+            .to_string();
+        if model.is_empty() {
+            return;
+        }
+        let Some(id) = self.embedding_provider_id().await else {
+            return;
+        };
+        let Ok(provider) = self.provider(&id).await else {
+            return;
+        };
+
+        let workspace = self.workspace.read().await.clone();
+        let index = taurus_index::Index::new(
+            taurus_index::index_dir(
+                &config::home_dir(),
+                &crate::sessions::workspace_key(&workspace),
+            ),
+            &workspace,
+        );
+
+        // Registered before the task starts rather than inside it, so two turns
+        // in quick succession cannot both find nothing running.
+        let cancel = CancellationToken::new();
+        let ticket = self.indexing.take_over(&cancel);
+        let indexing = self.indexing.clone();
+        tokio::spawn(async move {
+            match taurus_index::refresh(&index, &workspace, &provider, &model, &cancel, None).await
+            {
+                Ok((_, report)) => tracing::debug!(summary = %report.summary(), "warmed the index"),
+                Err(e) => tracing::debug!(error = %e, "the index warm-up stopped"),
+            }
+            indexing.finished(ticket);
+        });
     }
 
     /// Records the provider and model just used, in both layers.
@@ -2449,6 +2569,35 @@ mod tests {
             Arc::new(NoProposals),
         );
         (host, home)
+    }
+
+    #[tokio::test]
+    async fn nothing_indexes_a_workspace_that_never_asked() {
+        // Semantic search is opt-in by naming an embedding model, and the
+        // warm-up must not be the thing that opts somebody in.
+        let dir = tempfile::TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+
+        host.warm_index().await;
+        assert!(!host.indexing.busy());
+    }
+
+    #[tokio::test]
+    async fn leaving_a_workspace_stops_its_index_build() {
+        // The index being built belongs to the workspace being left, and
+        // finishing it would write the wrong one.
+        let dir = tempfile::TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        host.indexing.take_over(&cancel);
+
+        let next = tempfile::TempDir::new().unwrap();
+        host.set_workspace(next.path()).await.unwrap();
+        assert!(cancel.is_cancelled());
+        assert!(!host.indexing.busy());
     }
 
     /// Registers a dataset the way `load_dataset` does, so the reads below

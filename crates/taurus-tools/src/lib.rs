@@ -5,6 +5,7 @@ pub mod checkpoint;
 pub mod coerce;
 pub mod diff;
 pub mod env;
+pub mod jobs;
 pub mod login_path;
 pub mod path_guard;
 pub mod permission;
@@ -20,6 +21,7 @@ pub use builtin::pty::sideload_status;
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, Rewind, TurnChange, TurnRecorder};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::expand_env;
+pub use jobs::Jobs;
 pub use login_path::Outcome as LoginPath;
 pub use permission::{
     AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,

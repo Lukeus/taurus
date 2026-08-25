@@ -123,6 +123,27 @@ fn lexically_normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// An absolute path in the form a person or a child process should see it.
+///
+/// `canonicalize` on Windows answers with the verbatim `\\?\C:\...` form. That
+/// is the right thing for the filesystem calls this module makes, and the wrong
+/// thing everywhere the path travels afterwards: `cmd.exe` will not start in
+/// one, the shells that will print it in the prompt for the rest of the
+/// session, and the rail renders it as `?/C:/...` because the prefix is not a
+/// path component anyone means.
+///
+/// So the verbatim form stays on the inside, where every comparison is made in
+/// it — [`resolve_within`] re-canonicalizes its own root precisely so both
+/// sides match — and this is applied at the edges and nowhere else: what is
+/// written to config, what is sent to the UI, what is handed to a child.
+///
+/// A no-op off Windows, and on Windows for anything that was never verbatim or
+/// that cannot lose the prefix safely — a true UNC share, a path past the
+/// length the plain form allows.
+pub fn plain(path: &Path) -> &Path {
+    dunce::simplified(path)
+}
+
 /// Path shown in prompts and tool output: relative to the workspace when
 /// possible, so the model and the user see stable, short names.
 ///
@@ -165,6 +186,38 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub/file.txt"), "hi").unwrap();
         dir
+    }
+
+    #[test]
+    fn a_path_that_was_never_verbatim_is_handed_back_untouched() {
+        // The guarantee the edges rely on: `plain` is only ever subtractive, so
+        // calling it on a path that has nothing to lose cannot change what the
+        // UI shows or where a child process starts.
+        //
+        // A canonicalized path is not one of those on Windows. `canonicalize`
+        // returns the verbatim form, which is precisely what `plain` is for, so
+        // asserting it comes back unchanged asserts the function does nothing —
+        // true everywhere it has nothing to do, and false on the one platform
+        // it exists for. What has nothing to lose is `plain`'s own output, and
+        // running that through again is what says it stops there.
+        let ws = workspace();
+        let canonical = ws.path().canonicalize().unwrap();
+        let already_plain = plain(&canonical).to_path_buf();
+        assert_eq!(plain(&already_plain), already_plain.as_path());
+        assert_eq!(plain(Path::new("relative/bit")), Path::new("relative/bit"));
+    }
+
+    /// Windows only, because off it `plain` has nothing to do and the strip
+    /// cannot be observed — `dunce` compiles to a passthrough. CI runs the
+    /// suite on Linux, so this is here for whoever runs it on the platform the
+    /// function exists for.
+    #[cfg(windows)]
+    #[test]
+    fn the_verbatim_prefix_is_dropped() {
+        assert_eq!(
+            plain(Path::new(r"\\?\C:\Users\me\project")),
+            Path::new(r"C:\Users\me\project")
+        );
     }
 
     #[test]

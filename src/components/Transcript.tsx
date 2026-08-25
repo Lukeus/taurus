@@ -56,6 +56,8 @@ const TOOL_CLASS: Record<
   write_file: "wrote",
   edit_file: "wrote",
   run_command: "ran",
+  check_command: "ran",
+  stop_command: "ran",
   web_search: "net",
   fetch_url: "net",
   load_skill: "skill",
@@ -642,7 +644,15 @@ const ToolRun = memo(function ToolRun({
  * collapsed row is the better reading experience, and streaming all of them
  * would turn a transcript into a wall.
  */
-const STREAMS_OUTPUT = new Set(["run_command", "run_skill_script"]);
+const STREAMS_OUTPUT = new Set([
+  "run_command",
+  "run_skill_script",
+  // Not because it streams — a background command's output arrives all at once
+  // when it is read — but because what arrives is a command's output, and
+  // reading it as prose in a collapsed row would be reading a build log as
+  // prose in a collapsed row.
+  "check_command",
+]);
 
 function ToolRow({
   step,

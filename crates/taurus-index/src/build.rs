@@ -23,6 +23,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use taurus_provider::Provider;
 use tokio_util::sync::CancellationToken;
@@ -45,6 +46,22 @@ const BATCH: usize = 16;
 /// progress report — while one line at the start and nothing for forty-four
 /// seconds is what made this feel hung. Twenty is a bar you can watch move.
 const PROGRESS_STEPS: usize = 20;
+
+/// How often a refresh in progress writes down what it has embedded.
+///
+/// A first index is a minute of requests, and until this existed a stop threw
+/// all of it away — so the second attempt cost what the first one had, and the
+/// only way to get an index was to sit through the whole of it uninterrupted.
+/// Written every so often instead, a stop keeps everything up to the last
+/// write and the next refresh carries on from there: the stale chunks of a
+/// file that has not been re-embedded yet are already out of what is written,
+/// so a scan finds it missing and embeds it, which is exactly the resume.
+///
+/// By the clock rather than by a chunk count, because the file holds every
+/// vector in the workspace and grows as it goes: a fixed number of chunks
+/// between writes costs a large repository quadratically, and ten seconds
+/// costs it a fraction of the embedding it is interleaved with.
+const SAVE_EVERY: Duration = Duration::from_secs(10);
 
 /// Where a refresh reports what it is doing while it does it.
 ///
@@ -150,8 +167,23 @@ pub async fn refresh(
     report.chunks = pending.len();
     let total = pending.len();
     let mut done = 0;
+    let mut written = Instant::now();
+    // How much of `keep` belongs to files that are entirely embedded.
+    //
+    // A part-embedded file must never be written down: a file is judged
+    // current by its first chunk's length and modification time, so an index
+    // holding half of one would report it as up to date and the other half
+    // would never arrive. Everything carried over from the last index is whole
+    // by definition, which is where this starts.
+    let mut whole = keep.len();
+    let mut current: Option<&str> = None;
     for batch in pending.chunks(BATCH) {
         if cancel.is_cancelled() {
+            // What is embedded is worth keeping even though the answer is an
+            // error: the caller asked for a refresh and is not getting one,
+            // but the next refresh should not start over.
+            keep.truncate(whole);
+            let _ = write_down(index, model, keep).await;
             return Err("indexing was canceled".into());
         }
         let texts: Vec<String> = batch.iter().map(|(_, _, _, c)| c.text.clone()).collect();
@@ -161,6 +193,12 @@ pub async fn refresh(
             .map_err(|e| e.to_string())?;
 
         for ((path, len, modified, piece), vector) in batch.iter().zip(vectors) {
+            // A new file starting means the one before it is complete, and
+            // everything already in `keep` is safe to write.
+            if current != Some(path.as_str()) {
+                whole = keep.len();
+                current = Some(path.as_str());
+            }
             keep.push(Entry {
                 path: path.clone(),
                 start_line: piece.start_line,
@@ -182,6 +220,16 @@ pub async fn refresh(
                 progress.embedding(done, total).await;
             }
         }
+
+        if written.elapsed() >= SAVE_EVERY && whole > 0 {
+            // Split rather than cloned: these entries carry every vector in the
+            // workspace, and the part-embedded file at the end of them is about
+            // to be finished rather than thrown away.
+            let rest = keep.split_off(whole);
+            keep = write_down(index, model, keep).await?;
+            keep.extend(rest);
+            written = Instant::now();
+        }
     }
 
     // Written only when something moved. A search on an unchanged workspace
@@ -190,18 +238,26 @@ pub async fn refresh(
     // JSON serialized in-line is 20 MB a streaming turn is not being pumped
     // through.
     let keep = if report.embedded > 0 || report.removed > 0 {
-        let index = index.clone();
-        let model = model.to_string();
-        // Handed over and handed back rather than copied: these entries carry
-        // every vector in the workspace, and the caller is about to search them.
-        tokio::task::spawn_blocking(move || index.save(&model, &keep).map(|()| keep))
-            .await
-            .map_err(|e| format!("writing the index failed to run: {e}"))??
+        write_down(index, model, keep).await?
     } else {
         keep
     };
 
     Ok((keep, report))
+}
+
+/// Writes the index and hands the entries back.
+///
+/// Handed over and handed back rather than copied: these entries carry every
+/// vector in the workspace, and the caller is about to go on embedding into
+/// them. The write goes to a blocking thread because 20 MB of JSON serialized
+/// in line is 20 MB a streaming turn is not being pumped through.
+async fn write_down(index: &Index, model: &str, keep: Vec<Entry>) -> Result<Vec<Entry>, String> {
+    let index = index.clone();
+    let model = model.to_string();
+    tokio::task::spawn_blocking(move || index.save(&model, &keep).map(|()| keep))
+        .await
+        .map_err(|e| format!("writing the index failed to run: {e}"))?
 }
 
 /// What one pass over the workspace found, before anything is embedded.
@@ -652,6 +708,146 @@ mod tests {
 
         let result = refresh(&f.index, &f.root, &counting(), "m", &cancel, None).await;
         assert!(result.is_err());
+    }
+
+    /// Cancels the refresh partway through, from inside the embedding call, so
+    /// a stop lands where a real one would — between batches, with work done.
+    struct Stopping {
+        cancel: CancellationToken,
+        after: usize,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for Stopping {
+        fn id(&self) -> &str {
+            "stopping"
+        }
+        async fn models(&self) -> taurus_provider::Result<Vec<ModelInfo>> {
+            Ok(Vec::new())
+        }
+        async fn capabilities(&self, _: &str) -> taurus_provider::Result<Capabilities> {
+            Ok(Capabilities::default())
+        }
+        async fn stream(
+            &self,
+            _: ChatRequest,
+            _: mpsc::Sender<StreamEvent>,
+            _: CancellationToken,
+        ) -> taurus_provider::Result<StopReason> {
+            Ok(StopReason::EndTurn)
+        }
+        async fn embed(
+            &self,
+            _: &str,
+            inputs: &[String],
+        ) -> taurus_provider::Result<Vec<Vec<f32>>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) + 1 >= self.after {
+                self.cancel.cancel();
+            }
+            Ok(inputs
+                .iter()
+                .map(|text| {
+                    let n = text.len() as f32;
+                    vec![n.sin(), n.cos(), 1.0]
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stopped_first_index_keeps_what_it_embedded() {
+        // A first index is a minute of requests, and a stop used to throw all
+        // of it away — so the way to get one was to sit through the whole of
+        // it uninterrupted.
+        let f = fixture();
+        for n in 0..6 {
+            write(&f.root, &format!("src/f{n}.rs"), 120);
+        }
+
+        let cancel = CancellationToken::new();
+        let stopping: Arc<dyn Provider> = Arc::new(Stopping {
+            cancel: cancel.clone(),
+            after: 1,
+            calls: AtomicUsize::new(0),
+        });
+        assert!(refresh(&f.index, &f.root, &stopping, "m", &cancel, None)
+            .await
+            .is_err());
+
+        let kept = f.index.load("m");
+        assert!(!kept.is_empty(), "a stop kept nothing at all");
+
+        // And it resumes rather than starting over.
+        let (entries, resumed) = refresh(
+            &f.index,
+            &f.root,
+            &counting(),
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            resumed.embedded < 6,
+            "everything was embedded again: {} files",
+            resumed.embedded
+        );
+        assert_eq!(resumed.embedded + resumed.unchanged, 6);
+
+        // What it resumed to is what a run that was never stopped produces:
+        // no file is left holding half its chunks.
+        let clean = fixture();
+        for n in 0..6 {
+            write(&clean.root, &format!("src/f{n}.rs"), 120);
+        }
+        let (whole, _) = refresh(
+            &clean.index,
+            &clean.root,
+            &counting(),
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(entries.len(), whole.len());
+    }
+
+    #[tokio::test]
+    async fn a_stop_never_writes_down_half_a_file() {
+        // The failure this guards: a file is judged current by its first
+        // chunk's stamp, so an index holding half of one reports it as up to
+        // date and the rest never arrives.
+        // Big enough to span several batches, so the stop lands inside it.
+        let f = fixture();
+        write(&f.root, "src/one.rs", 3000);
+
+        let cancel = CancellationToken::new();
+        let stopping: Arc<dyn Provider> = Arc::new(Stopping {
+            cancel: cancel.clone(),
+            after: 1,
+            calls: AtomicUsize::new(0),
+        });
+        let _ = refresh(&f.index, &f.root, &stopping, "m", &cancel, None).await;
+
+        assert!(
+            f.index.load("m").is_empty(),
+            "part of a file was written down as though it were all of it"
+        );
+
+        let (_, resumed) = refresh(
+            &f.index,
+            &f.root,
+            &counting(),
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.embedded, 1, "the half-indexed file was skipped");
     }
 
     /// Collects what a refresh reported, so the cadence can be asserted on.

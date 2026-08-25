@@ -44,7 +44,7 @@ pub const CODER: &str = "coder";
 /// is deliberately absent for that reason: it appears only once a workspace has
 /// been indexed, and an agent whose advertised reach depends on that is one
 /// whose behaviour changes without anything in this file changing.
-const CODER_TOOLS: [&str; 8] = [
+const CODER_TOOLS: [&str; 10] = [
     "read_file",
     "write_file",
     "edit_file",
@@ -52,6 +52,11 @@ const CODER_TOOLS: [&str; 8] = [
     "glob",
     "grep",
     "run_command",
+    // With `run_command` and not without it. A delegate that can start a
+    // command in the background and cannot read or stop it leaves a process
+    // running for a conversation that has ended.
+    "check_command",
+    "stop_command",
     "load_skill",
 ];
 
