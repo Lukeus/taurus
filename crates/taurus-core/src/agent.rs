@@ -538,6 +538,10 @@ impl Agent {
             let (assistant, usage, stop) = self.stream_once(session, &ui).await?;
             total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
             total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+            // Before the answer is pushed: what the provider counted is what
+            // was sent, and the estimate it is paired with has to be of the
+            // same messages. See `Session::record_request`.
+            session.record_request(usage.input_tokens);
             session.add_usage(usage);
 
             let has_tools = assistant.has_tool_use();
@@ -1161,7 +1165,14 @@ impl Agent {
             return summarizing;
         };
         let budget = (caps.context_length as f32 * self.config.compaction_threshold) as u32;
-        if session.estimated_tokens() < budget {
+        // The messages are the part of the prompt that can be shrunk, and they
+        // used to be the whole of what was measured — so the system prompt, the
+        // tool schemas, and the plan rode along uncounted, and the threshold
+        // was quietly paying for them. It cannot: what they cost is a fact
+        // about how much configuration a workspace has, and the headroom is a
+        // fraction of a window.
+        let overhead = self.request_overhead(session);
+        if session.estimated_tokens().saturating_add(overhead) < budget {
             return summarizing;
         }
 
@@ -1192,7 +1203,7 @@ impl Agent {
         }
         // Free and cannot fail, so it runs however the summarizing went: what
         // one round trims is what the next round does not have to hold.
-        if session.estimated_tokens() < budget {
+        if session.estimated_tokens().saturating_add(overhead) < budget {
             return summarizing;
         }
 
@@ -1242,6 +1253,30 @@ impl Agent {
             })
             .await;
         Summarizing::Allowed
+    }
+
+    /// What the next request will carry besides its messages.
+    ///
+    /// Measured wherever a request has already been answered, because the
+    /// provider counted the real thing — its own tokenizer, its own envelope,
+    /// the tools as it renders them — and no estimate here can do better than
+    /// that. Estimated only for the first request of a session, from the two
+    /// things that make up nearly all of it.
+    fn request_overhead(&self, session: &Session) -> u32 {
+        session.measured_overhead().unwrap_or_else(|| {
+            let system = crate::session::estimate_tokens(&self.config.system_prompt);
+            let tools: u32 = self
+                .registry
+                .definitions()
+                .iter()
+                .map(|tool| {
+                    crate::session::estimate_tokens(&tool.name)
+                        + crate::session::estimate_tokens(&tool.description)
+                        + crate::session::estimate_tokens(&tool.input_schema.to_string())
+                })
+                .sum();
+            system.saturating_add(tools)
+        })
     }
 
     /// The older half of the conversation, in one paragraph, or why not.

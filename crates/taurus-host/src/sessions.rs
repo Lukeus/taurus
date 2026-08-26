@@ -635,6 +635,11 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
                 .unwrap_or(header.model),
             messages,
             usage,
+            // Not carried across a reopen. The transcript keeps a running
+            // total rather than what any one request cost, so there is nothing
+            // here to restore it from — and the first request of the resumed
+            // conversation measures it again anyway.
+            last_request: None,
         },
         switches,
         path,

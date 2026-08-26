@@ -257,6 +257,11 @@ impl Provider for FakeProvider {
         tx: mpsc::Sender<StreamEvent>,
         cancel: CancellationToken,
     ) -> Result<StopReason> {
+        // Counted before the request is filed, because what a backend charges
+        // for is the whole thing it was sent — the system prompt and every
+        // tool schema included, which is the half a session cannot see by
+        // looking at its own messages.
+        let counted = count_request(&request);
         let served = {
             let mut seen = self.seen.lock().await;
             seen.push(request);
@@ -286,6 +291,36 @@ impl Provider for FakeProvider {
         if let Some(error) = turn.failure {
             return Err(error);
         }
+        let _ = tx
+            .send(StreamEvent::Usage {
+                usage: taurus_provider::TokenUsage {
+                    input_tokens: counted,
+                    output_tokens: 1,
+                    ..Default::default()
+                },
+            })
+            .await;
         Ok(turn.stop)
     }
+}
+
+/// What a real backend would charge for this request.
+///
+/// The same four-characters-a-token rule the harness estimates with, over
+/// everything the request actually carries. A fake that reported only the
+/// messages would agree with the estimate by construction, and the one thing
+/// worth testing here is what happens when the two differ.
+fn count_request(request: &ChatRequest) -> u32 {
+    let system = request.system.as_deref().unwrap_or("").len();
+    let tools: usize = request
+        .tools
+        .iter()
+        .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
+        .sum();
+    let messages: u32 = request
+        .messages
+        .iter()
+        .map(crate::session::estimate_message)
+        .sum();
+    messages.saturating_add(((system + tools) / 4) as u32)
 }

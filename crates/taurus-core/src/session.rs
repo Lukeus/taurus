@@ -13,6 +13,37 @@ pub struct Session {
     pub messages: Vec<Message>,
     /// Cumulative across the session, for the UI's token counter.
     pub usage: TokenUsage,
+    /// What the last request really cost, beside what was estimated for it.
+    ///
+    /// Kept because it is the only exact number in this file. See
+    /// [`Measured`].
+    #[serde(default)]
+    pub last_request: Option<Measured>,
+}
+
+/// A request's real size, beside the estimate for the messages that were in it.
+///
+/// The difference between the two is everything the budget cannot see by
+/// looking at the conversation: the system prompt, every tool's schema, the
+/// plan appended to the end of the request, the envelope the provider wraps it
+/// all in, and the gap between four-characters-a-token and what the model's
+/// own tokenizer makes of the same text.
+///
+/// That difference used to be unmeasured, and the compaction threshold was
+/// absorbing it — which works while it is small relative to the window and
+/// stops working exactly where it matters: the overhead is a fact about how
+/// much configuration a workspace has, and the headroom is a fraction of a
+/// window, so on a small one they cross.
+///
+/// The pair is kept rather than the difference, so a reading can be checked
+/// against what it was a reading *of*.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Measured {
+    /// The whole prompt as the provider counted it, cache hits included.
+    pub input_tokens: u32,
+    /// What [`Session::estimated_tokens`] said about the messages alone at the
+    /// moment that request was sent.
+    pub estimated_messages: u32,
 }
 
 impl Session {
@@ -22,6 +53,7 @@ impl Session {
             model: model.into(),
             messages: Vec::new(),
             usage: TokenUsage::default(),
+            last_request: None,
         }
     }
 
@@ -32,6 +64,45 @@ impl Session {
     pub fn add_usage(&mut self, usage: TokenUsage) {
         self.usage.input_tokens = self.usage.input_tokens.saturating_add(usage.input_tokens);
         self.usage.output_tokens = self.usage.output_tokens.saturating_add(usage.output_tokens);
+    }
+
+    /// Records what a request cost, against what was in it.
+    ///
+    /// Called with the messages still exactly as they were sent — before the
+    /// answer is pushed — because the estimate has to be of the same thing the
+    /// provider counted.
+    ///
+    /// A report of zero is not a measurement. Every backend here reports usage
+    /// on a completed stream, but a cancelled one, a gateway that strips the
+    /// field, and a prompted-tools fallback can all leave it empty, and taking
+    /// that at face value would say the entire prompt cost nothing.
+    pub fn record_request(&mut self, input_tokens: u32) {
+        if input_tokens == 0 {
+            return;
+        }
+        self.last_request = Some(Measured {
+            input_tokens,
+            estimated_messages: self.estimated_tokens(),
+        });
+    }
+
+    /// What a request carries beyond its messages, as last measured.
+    ///
+    /// `None` until a request has been answered — on the first one there is
+    /// nothing to have measured, and the caller estimates it instead.
+    pub fn measured_overhead(&self) -> Option<u32> {
+        self.last_request
+            .map(|m| m.input_tokens.saturating_sub(m.estimated_messages))
+    }
+
+    /// What the next request will cost, as closely as this can be known.
+    ///
+    /// `fallback_overhead` is used only until the first answer arrives; after
+    /// that the measurement replaces it, which is also what makes this correct
+    /// on a provider whose tokenizer disagrees with four-characters-a-token.
+    pub fn estimated_prompt_tokens(&self, fallback_overhead: u32) -> u32 {
+        self.estimated_tokens()
+            .saturating_add(self.measured_overhead().unwrap_or(fallback_overhead))
     }
 
     /// Rough token count for the whole history.

@@ -469,7 +469,11 @@ async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
             compaction_threshold: 0.8,
             ..Default::default()
         },
-        1000,
+        // Big enough to hold the tool schemas and still have a budget left to
+        // be over and then under. The nine built-in tools are around 1,650
+        // tokens of every request before a single message is added, and those
+        // count now — a window that cannot fit them has no room to trim into.
+        8_000,
     );
 
     // The same file read four times over. Only the last answer is current, so
@@ -488,7 +492,7 @@ async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
             Role::User,
             vec![ContentBlock::tool_result(
                 format!("t{i}"),
-                "fn main() {}\n".repeat(160),
+                "fn main() {}\n".repeat(600),
             )],
         ));
     }
@@ -524,6 +528,116 @@ async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
     };
     let trimmed = trimmed.to_text();
     assert!(trimmed.contains("called again later"), "{trimmed}");
+}
+
+#[tokio::test]
+async fn the_budget_counts_what_the_messages_cannot_see() {
+    // A conversation well under the window, and a system prompt that is not.
+    // Measured by its messages alone this session has room to spare; measured
+    // as a request it is over, and the request is what the provider has to fit.
+    let h = harness_with(
+        vec![ScriptedTurn::text("SUMMARY"), ScriptedTurn::text("Done.")],
+        Box::new(AllowAll),
+        AgentConfig {
+            keep_recent_messages: 2,
+            compaction_threshold: 0.8,
+            // ~2,500 tokens of standing instructions, which is an ordinary
+            // AGENTS.md plus a skills catalog.
+            system_prompt: "x".repeat(10_000),
+            ..Default::default()
+        },
+        5_000,
+    );
+
+    let mut session = Session::new("fake");
+    for i in 0..6 {
+        session.push(Message::user(format!("message {i} {}", "y".repeat(200))));
+    }
+    // Under budget on its own: 0.8 * 5,000 = 4,000.
+    assert!(
+        session.estimated_tokens() < 4_000,
+        "the fixture is over budget on messages alone, which is not the case \
+         under test: {}",
+        session.estimated_tokens()
+    );
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "the prompt was over the window and nothing was compacted: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn what_a_request_really_cost_replaces_the_estimate() {
+    // The provider counts the whole prompt and reports it. That number is the
+    // only exact one available, and it is what the next budget works from.
+    let h = harness(vec![
+        ScriptedTurn::text("First."),
+        ScriptedTurn::text("Second."),
+    ]);
+
+    let mut session = Session::new("fake");
+    assert!(
+        session.measured_overhead().is_none(),
+        "nothing measured yet"
+    );
+
+    let (outcome, _) = run(&h, &mut session, "hello").await;
+    assert!(outcome.is_ok());
+
+    // The fake charges for the system prompt and every tool schema, so the
+    // overhead it reports is what the messages could never have shown.
+    let overhead = session
+        .measured_overhead()
+        .expect("a request was answered, so its cost is known");
+    assert!(
+        overhead > 1_000,
+        "the built-in tool schemas alone are around 1,650 tokens; got {overhead}"
+    );
+
+    let measured = session.last_request.expect("a measurement");
+    assert_eq!(
+        measured.input_tokens,
+        h.provider
+            .last_request()
+            .await
+            .map(|r| {
+                let system = r.system.as_deref().unwrap_or("").len();
+                let tools: usize = r
+                    .tools
+                    .iter()
+                    .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
+                    .sum();
+                r.messages
+                    .iter()
+                    .map(taurus_core::session::estimate_message)
+                    .sum::<u32>()
+                    + ((system + tools) / 4) as u32
+            })
+            .unwrap(),
+        "the measurement is not of the request that was sent"
+    );
+
+    // And it is the whole prompt, not the messages: the two differ by the
+    // overhead, which is the entire point of keeping it.
+    assert!(measured.input_tokens > measured.estimated_messages);
+}
+
+#[tokio::test]
+async fn a_backend_that_reports_nothing_leaves_the_estimate_alone() {
+    // Zero is not a measurement. Taking it at face value would say the whole
+    // prompt cost nothing and turn compaction off for the rest of the session.
+    let mut session = Session::new("fake");
+    session.push(Message::user("something"));
+    session.record_request(0);
+    assert!(session.measured_overhead().is_none());
+
+    session.record_request(900);
+    assert_eq!(session.estimated_prompt_tokens(50), 900);
 }
 
 #[tokio::test]
