@@ -584,6 +584,14 @@ always says it is partial — a window that does not announce itself is
 indistinguishable from a short file, and a model that thinks it read the whole
 thing will act on what is missing.
 
+There is a second cap, 256 KB, and it is on the *answer* rather than on the
+file. A window is taken around the offset it was asked for, so a line near the
+end of a ten-megabyte log opens as cheaply as a line near the start; only a
+window too large to return is cut, and it says where to pick it up. The
+distinction matters because the two used to be the same thing: a read always
+began at the first byte, so a file past the cap had a tail nothing could reach,
+and a model handed a line number by `grep` had no way to go and look at it.
+
 **Old tool output shrinks before anything is summarized.** Tool results are most
 of what a working session holds, and every byte is re-sent on each iteration of
 the turn. When history crosses the compaction threshold, two cheap rules run

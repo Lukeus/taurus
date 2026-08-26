@@ -200,6 +200,80 @@ has to be native. Neither the CLI nor a development build was ever affected —
 both already have a console — which is why this was only ever visible in the
 installed app. See [`scripts/conpty.mjs`](../scripts/conpty.mjs).
 
+### Output too big to hand over
+
+A waited-for command's output is capped at 64 KB per stream. Past that the head
+and the tail are kept and the middle is dropped — the tail as well as the head,
+because a compiler's verdict and a test runner's count are the last thing they
+print, and a cut that kept only the beginning would take exactly the line worth
+reading.
+
+**A test run keeps its failures and counts its passes.** A suite is the output
+an agent runs into most, and the worst possible shape for a byte count:
+thousands of lines saying nothing happened, around the handful saying something
+did. Cutting the middle out of one takes the failures and keeps the passes. So
+the lines that say a test passed are replaced by `[… 404 passing tests not shown
+…]` and everything else survives as it arrived — the compiler's warnings, the
+`failures:` block with its panics, the counts at the end, the tests that were
+ignored. On this project's own `cargo test -p taurus-tools --lib`, 30,784 bytes
+become 312.
+
+**A warning already shown in full is not shown again.** A Rust diagnostic is a
+headline, a location, the source it is about and a suggestion — eight lines for
+one warning, and a rename that touches two hundred call sites prints those eight
+lines two hundred times. A repeat keeps its headline and its location and loses
+the rest to `[… body not repeated; the first is above …]`, so every warning
+still appears and still says where it is. Errors are never touched: they are
+what the command was run to find out, there are rarely many, and an abbreviated
+one is worth less than no abbreviation. Measured against a real `cargo clippy`
+run, this takes off 45%.
+
+Grouping warnings by lint name would be better and the output does not allow
+it. clippy names its lint in a `help:` line every time; rustc names its own in a
+`#[warn(...)]` note it prints only on the first occurrence, so half the warnings
+in a build carry nothing to group by. The headline is what every block has, so
+the headline is what is matched.
+
+Which filter applies is decided by reading the output rather than by parsing
+the command line. `cargo test` behind a pipeline, a binary in `target/debug/deps`
+run directly, and a log being `cat`ed are the same output and none of them says
+"cargo test" anywhere worth matching; libtest announces itself with `running 404
+tests`, and nothing outside that announcement is touched.
+
+**Repetition is collapsed before any of that happens**, so that usually the cut
+does not. A stream over 16 KB that says the same thing three or more times in a
+row keeps one copy and a sentence: `[… the line above repeated 3999 more times
+…]`. A dev server retrying a connection four thousand times is a hundred
+kilobytes that a reader would call one line, and a byte count has no way to tell
+the difference. Nothing is paraphrased — a line either survives as itself or is
+replaced by a sentence saying exactly what stood there, which is what lets a
+model tell a shortened stream from an untrustworthy one. Under 16 KB nothing is
+touched at all, which is almost every command an agent runs.
+
+**What was dropped is still somewhere.** The whole stream is written to
+`~/.taurus/output/<workspace-key>/`, and the gap in what the model reads names
+the file and says how to open it. That is the difference between a cut and a
+loss: without the path, the only way back to the middle of a four-minute build
+is to run the build again — minutes, and a second set of side effects, to look
+at something that already happened.
+
+The size of the log does not decide whether it can be read. `read_file` takes
+its window around the offset it is given rather than from the first byte, so
+line 40,000 of a ten-megabyte build opens for what the window costs. See
+[The context window](working-with-it.md#the-context-window).
+
+It goes in the config home rather than the project for the reason transcripts
+and checkpoints do: a build log holds the contents of the files it compiled, and
+kept in the repository it is a thing somebody commits by accident. The directory
+is readable and nothing more — it is added to the same read-only list that lets
+a skill open its own bundled files, so the model may read a stream back and
+still cannot write anywhere outside the workspace. Twenty streams are kept per
+workspace and the oldest go as new ones arrive.
+
+Where there is nowhere to write — a piped CLI run, a tool called directly — the
+gap says how much it dropped and nothing more. A copy that cannot be made is not
+a reason to fail a command that ran.
+
 ### Commands that keep running
 
 A build from cold, a whole test suite, and a dev server are three things the

@@ -12,6 +12,7 @@
 //! real pseudo-terminal instead, and `stdin` hands it the answers up front,
 //! which is what turns "behaves correctly" into "completes". See [`super::pty`].
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +32,14 @@ use crate::tool::{
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 600;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// How many cut streams one workspace keeps on disk.
+///
+/// Enough that a model can still reach back several turns for the middle of a
+/// build it was shown the ends of; few enough that a directory of logs never
+/// grows into something somebody has to go and notice. Trimmed on the way to
+/// writing one, which is the only moment this code runs at all.
+const KEPT_SPILLS: usize = 20;
 
 /// How long output may pool before it reaches the screen.
 ///
@@ -162,7 +171,9 @@ impl Tool for RunCommand {
                 Ok(output) => {
                     return Ok(report_for(
                         output.exit_code,
-                        &truncate(&output.text),
+                        // One stream, so it is named for what it is rather
+                        // than for a half of the pair it does not have.
+                        &for_the_model(&output.text, "output", ctx),
                         // A terminal has one stream, so there is no stderr to
                         // label. Saying so keeps the model from reading its
                         // absence as the command having written nothing to it.
@@ -220,8 +231,8 @@ impl Tool for RunCommand {
         };
 
         let code = status.code();
-        let stdout = truncate(&drain_stdout.await);
-        let stderr = truncate(&drain_stderr.await);
+        let stdout = for_the_model(&drain_stdout.await, "stdout", ctx);
+        let stderr = for_the_model(&drain_stderr.await, "stderr", ctx);
         let mut report = report_for(code, &stdout, Some(&stderr));
 
         // Said in the result rather than only in a log, because the model is
@@ -598,21 +609,124 @@ fn shell_invocation(command: &str) -> (String, Vec<String>) {
     ("/bin/sh".into(), vec!["-c".into(), command.to_string()])
 }
 
-fn truncate(text: &str) -> String {
-    if text.len() <= MAX_OUTPUT_BYTES {
-        return text.to_string();
+/// What the model reads of one stream, and where the rest of it went.
+///
+/// Three things in order. Repetition is collapsed first, because a stream
+/// that says the same thing forty times is long for a reason a byte count
+/// cannot see — and doing it here often means the cut below never fires.
+/// What is left is cut if it is still too long, keeping the tail as well as
+/// the head: errors and summaries live at the end. And the stream is written
+/// out **as it arrived**, repeats and all, so that the gap is something the
+/// model can go and read rather than something it has to run the command
+/// again to see.
+///
+/// The file holds the original rather than the shortened version on purpose.
+/// A collapsed run says how many lines stood there and what they said, so
+/// nothing is lost by reading it — but the file is the record of what the
+/// command actually printed, and a record that had been edited first would be
+/// a worse thing to keep.
+fn for_the_model(raw: &str, stream: &str, ctx: &ToolContext) -> String {
+    let condensed = super::condense::condense(raw);
+    let shown = condensed.as_deref().unwrap_or(raw);
+    if shown.len() <= MAX_OUTPUT_BYTES {
+        return shown.to_string();
     }
-    // Keep the tail as well as the head: errors and summaries live at the end.
     let head_len = MAX_OUTPUT_BYTES * 2 / 3;
-    let head = floor_boundary(text, head_len);
-    let tail_start = text.len() - (MAX_OUTPUT_BYTES - head_len);
-    let tail = ceil_boundary(text, tail_start);
+    let head = floor_boundary(shown, head_len);
+    let tail_start = shown.len() - (MAX_OUTPUT_BYTES - head_len);
+    let tail = ceil_boundary(shown, tail_start);
     format!(
-        "{}\n\n[… {} bytes omitted …]\n\n{}",
-        &text[..head],
-        text.len() - MAX_OUTPUT_BYTES,
-        &text[tail..]
+        "{}\n\n[… {} …]\n\n{}",
+        &shown[..head],
+        elision(shown.len() - MAX_OUTPUT_BYTES, raw, stream, ctx),
+        &shown[tail..]
     )
+}
+
+/// The sentence in the gap: how much went, and where it still is.
+///
+/// The path is the whole point of it. Without one the only route back to the
+/// middle of a long build is to run the build again — minutes, and a second
+/// set of side effects, to look at something that already happened.
+fn elision(omitted: usize, raw: &str, stream: &str, ctx: &ToolContext) -> String {
+    let Some(path) = spill(raw, stream, ctx) else {
+        return format!("{omitted} bytes omitted");
+    };
+    // `read_file` at any size: it windows around the offset it is given
+    // rather than reading a prefix, so the middle of a large log is a call
+    // away and not a search away.
+    format!(
+        "{omitted} bytes omitted; this stream was written out whole to {} — read_file it \
+         to see them",
+        path.display()
+    )
+}
+
+/// Writes a stream out whole and says where it went.
+///
+/// `None` when there is nowhere to put it, or the write failed, and both are
+/// silent on purpose. The command ran. Losing the copy costs the model a
+/// second look at the middle, and turning that into a failed tool call would
+/// throw away the result along with it.
+fn spill(text: &str, stream: &str, ctx: &ToolContext) -> Option<PathBuf> {
+    let dir = ctx.command_output.as_ref()?;
+    std::fs::create_dir_all(dir).ok()?;
+    // Before the write rather than after, so the directory is at its bound
+    // once this one lands rather than one over it until the next command runs.
+    prune(dir, KEPT_SPILLS.saturating_sub(1));
+    let path = dir.join(format!(
+        "{}-{}-{}.txt",
+        slug(ctx.session_id.as_deref().unwrap_or("session")),
+        slug(ctx.call_id.as_deref().unwrap_or("command")),
+        stream
+    ));
+    std::fs::write(&path, text).ok()?;
+    // Canonicalized because this is about to be handed back as a path to read,
+    // and the guard that decides whether it may be read canonicalizes both
+    // sides before comparing them.
+    path.canonicalize().ok()
+}
+
+/// Keeps the newest `keep` files in a directory and deletes the rest.
+///
+/// Every failure here is ignored. This is tidying, and a directory that
+/// cannot be tidied is not a reason to fail the command whose output was
+/// about to go into it.
+fn prune(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            Some((meta.modified().ok()?, entry.path()))
+        })
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    // Newest first, so what survives is the head of the list.
+    files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    for (_, path) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// A session or call id as a filename component.
+///
+/// Both are ids this process was handed rather than ids it chose — a
+/// provider names the call — so nothing guarantees they are made of
+/// characters a path may contain.
+fn slug(id: &str) -> String {
+    let cleaned: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    cleaned.trim_matches('-').chars().take(64).collect()
 }
 
 fn floor_boundary(s: &str, mut i: usize) -> usize {
@@ -633,6 +747,7 @@ fn ceil_boundary(s: &str, mut i: usize) -> usize {
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
+    use tempfile::TempDir;
 
     /// Unix-only: these assert on shell behavior that `cmd.exe` does not share,
     /// and the pty path itself is covered per-platform in [`super::pty`].
@@ -980,10 +1095,224 @@ mod tests {
 
     #[test]
     fn truncation_keeps_both_ends() {
+        let (ctx, _dir) = test_ctx();
         let text = format!("HEAD{}TAIL", "x".repeat(MAX_OUTPUT_BYTES * 2));
-        let out = truncate(&text);
+        let out = for_the_model(&text, "stdout", &ctx);
         assert!(out.starts_with("HEAD"));
         assert!(out.ends_with("TAIL"));
         assert!(out.contains("bytes omitted"));
+    }
+
+    /// Without somewhere to write it, a cut says what it always said. Every
+    /// caller that runs a tool outside a session is in this case.
+    #[test]
+    fn with_nowhere_to_write_a_cut_only_says_how_much_it_dropped() {
+        let (ctx, _dir) = test_ctx();
+        let text = "x".repeat(MAX_OUTPUT_BYTES * 2);
+        let out = for_the_model(&text, "stdout", &ctx);
+        assert!(out.contains("bytes omitted"), "{out}");
+        assert!(!out.contains("read_file"), "{out}");
+    }
+
+    #[test]
+    fn a_cut_stream_is_written_out_whole_and_named_in_the_gap() {
+        let (mut ctx, _dir) = test_ctx();
+        let spills = TempDir::new().unwrap();
+        ctx.command_output = Some(spills.path().to_path_buf());
+        ctx.session_id = Some("session-1".into());
+        ctx.call_id = Some("toolu_01".into());
+
+        let text = format!("HEAD{}TAIL", "x".repeat(MAX_OUTPUT_BYTES * 2));
+        let out = for_the_model(&text, "stdout", &ctx);
+
+        let path = spilled_path(&out).expect("the gap names a file");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            text,
+            "the file is the whole stream, not the part that was shown"
+        );
+        // The middle is the point: it is what the cut took and the only thing
+        // that could not be read any other way.
+        assert!(out.contains("read_file"), "{out}");
+    }
+
+    /// The assertion the whole feature rests on. The file is outside the
+    /// workspace, so a path the read guard refuses is a path the model is
+    /// told to open and cannot.
+    #[test]
+    fn the_path_in_the_gap_is_one_the_read_guard_allows() {
+        let (mut ctx, _dir) = test_ctx();
+        let spills = TempDir::new().unwrap();
+        let dir = spills.path().canonicalize().unwrap();
+        ctx.command_output = Some(dir.clone());
+        ctx.readable_roots.push(dir);
+
+        let text = "x".repeat(MAX_OUTPUT_BYTES * 2);
+        let out = for_the_model(&text, "stdout", &ctx);
+        let path = spilled_path(&out).expect("the gap names a file");
+
+        ctx.resolve_read(&path.to_string_lossy())
+            .expect("read_file must be able to open what the gap points at");
+    }
+
+    #[test]
+    fn only_the_newest_spills_are_kept() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..KEPT_SPILLS + 5 {
+            let path = dir.path().join(format!("{i}.txt"));
+            let file = std::fs::File::create(&path).unwrap();
+            // Stamped rather than written in order: twenty-five writes can
+            // land inside one tick of the filesystem's clock, and their order
+            // is the whole thing under test.
+            file.set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + i as u64),
+            )
+            .unwrap();
+        }
+        prune(dir.path(), KEPT_SPILLS);
+
+        let mut left: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), KEPT_SPILLS);
+        assert!(!left.contains(&"0.txt".to_string()), "{left:?}");
+        assert!(
+            left.contains(&format!("{}.txt", KEPT_SPILLS + 4)),
+            "{left:?}"
+        );
+    }
+
+    /// An id a provider chose, not one this process did.
+    #[test]
+    fn an_id_with_path_separators_in_it_cannot_escape_the_directory() {
+        assert_eq!(slug("../../etc/passwd"), "etc-passwd");
+        assert_eq!(slug("toolu_01AbC"), "toolu-01AbC");
+    }
+
+    /// The whole loop, through the two real tools rather than the helpers: a
+    /// command prints more than fits, and the path in the gap opens.
+    #[tokio::test]
+    async fn a_command_that_prints_too_much_can_be_read_back_through_read_file() {
+        if cfg!(windows) {
+            return;
+        }
+        let (mut ctx, _dir) = test_ctx();
+        let spills = TempDir::new().unwrap();
+        let dir = spills.path().canonicalize().unwrap();
+        ctx.command_output = Some(dir.clone());
+        ctx.readable_roots.push(dir);
+
+        // Numbered, so a line found in the file can be shown not to be in the
+        // report — the middle is the part that only the file has.
+        let out = RunCommand
+            .execute(
+                // Past the 64 KB cut and inside read_file's 256 KB reach,
+                // which is the case where the gap says to read the file.
+                serde_json::json!({"command": "seq 1 6000 | sed 's/$/ padding padding/'"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let out = out.to_text();
+
+        let path = spilled_path(&out).expect("the gap names a file");
+        let read = crate::builtin::fs::ReadFile
+            .execute(
+                serde_json::json!({"path": path.to_string_lossy(), "offset": 3_000, "limit": 1}),
+                &ctx,
+            )
+            .await
+            .expect("the path in the gap has to open");
+        let read = read.to_text();
+
+        assert!(read.contains("3000 padding"), "{read}");
+        assert!(
+            !out.contains("3000 padding"),
+            "the middle is what the cut took; if it is still in the report this proves nothing"
+        );
+    }
+
+    /// A build log is routinely megabytes. `read_file` windows around the
+    /// offset it is given, so the size of the file is not what decides whether
+    /// the model can reach into it.
+    #[tokio::test]
+    async fn a_spill_far_larger_than_one_read_is_still_read_files_to_open() {
+        let (mut ctx, _dir) = test_ctx();
+        let spills = TempDir::new().unwrap();
+        let dir = spills.path().canonicalize().unwrap();
+        ctx.command_output = Some(dir.clone());
+        ctx.readable_roots.push(dir);
+
+        // Numbered lines well past what one read answers with, so the line
+        // asked for below is only reachable if the window followed the offset.
+        let text: String = (1..=60_000).map(|i| format!("line {i}\n")).collect();
+        assert!(text.len() > 600 * 1024, "the fixture has to be large");
+        let out = for_the_model(&text, "stdout", &ctx);
+
+        assert!(out.contains("read_file it"), "{out}");
+        let path = spilled_path(&out).expect("the gap names a file");
+        assert_eq!(std::fs::read_to_string(&path).unwrap().len(), text.len());
+
+        let read = crate::builtin::fs::ReadFile
+            .execute(
+                serde_json::json!({"path": path.to_string_lossy(), "offset": 55_000, "limit": 1}),
+                &ctx,
+            )
+            .await
+            .expect("a spill this size still opens");
+        assert!(read.to_text().contains("line 55000"), "{}", read.to_text());
+    }
+
+    /// A dev server saying the same thing four thousand times is the case a
+    /// byte count reads as "a lot of output" and a reader reads as one line.
+    #[tokio::test]
+    async fn a_command_that_repeats_itself_comes_back_collapsed() {
+        if cfg!(windows) {
+            return;
+        }
+        let (ctx, _dir) = test_ctx();
+        let out = RunCommand
+            .execute(
+                serde_json::json!({
+                    "command": "for i in $(seq 1 4000); do echo 'WARN  connection retried'; done",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = out.to_text();
+
+        assert!(text.contains("WARN  connection retried"), "{text}");
+        assert!(text.contains("repeated 3999 more times"), "{text}");
+        // The saving is the point: 4000 lines went in and the model reads two.
+        assert!(text.len() < 200, "{} bytes: {text}", text.len());
+    }
+
+    /// Nothing is collapsed under the threshold, so the ordinary command still
+    /// reads exactly as it did.
+    #[tokio::test]
+    async fn a_short_command_that_repeats_itself_is_left_alone() {
+        if cfg!(windows) {
+            return;
+        }
+        let (ctx, _dir) = test_ctx();
+        let out = RunCommand
+            .execute(
+                serde_json::json!({"command": "for i in 1 2 3 4 5; do echo same; done"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.to_text().trim(), "same\nsame\nsame\nsame\nsame");
+    }
+
+    /// Pulls the path back out of the sentence in the gap.
+    fn spilled_path(report: &str) -> Option<PathBuf> {
+        let (_, rest) = report.split_once("written out whole to ")?;
+        let (path, _) = rest.split_once(" — read_file")?;
+        Some(PathBuf::from(path))
     }
 }
