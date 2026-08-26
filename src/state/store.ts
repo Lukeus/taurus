@@ -136,6 +136,16 @@ interface Store {
    * header, listed turn by turn in the Changes drawer.
    */
   changed: string[];
+  /**
+   * How full the model's context is, as the next request would fill it.
+   *
+   * `null` until a turn has run: before that there is nothing measured and a
+   * number would be a guess about a guess. Carries the window as well as the
+   * usage because on an OpenAI-compatible backend the window cannot be asked
+   * for and may be the built-in assumption — which is worth seeing, since it
+   * is the one number here a person can correct.
+   */
+  context: { used: number; window: number } | null;
   busy: boolean;
   /**
    * Set between pressing Stop and the turn actually unwinding.
@@ -326,6 +336,7 @@ export const useStore = create<Store>((set, get) => ({
   sessions: [],
   entries: [],
   changed: [],
+  context: null,
   busy: false,
   stopping: false,
   resuming: false,
@@ -442,6 +453,7 @@ export const useStore = create<Store>((set, get) => ({
       session,
       entries: [],
       changed: [],
+      context: null,
       error: null,
       proposals: [],
       agentProposals: [],
@@ -477,6 +489,7 @@ export const useStore = create<Store>((set, get) => ({
         session,
         entries: entriesFromMessages(messages, switches),
         changed: [],
+        context: null,
         error: null,
         proposals: [],
         agentProposals: [],
@@ -507,6 +520,7 @@ export const useStore = create<Store>((set, get) => ({
       session: null,
       entries: [],
       changed: [],
+      context: null,
       proposals: [],
       agentProposals: [],
     });
@@ -597,6 +611,7 @@ export const useStore = create<Store>((set, get) => ({
       set((s) => ({
         entries: events.reduce(reduce, s.entries),
         changed: events.reduce(mergeChanged, s.changed),
+        context: events.reduce(mergeContext, s.context),
       }));
       // Conditional, and deliberately so: the note at the end of this function
       // explains why a turn re-reads nothing on principle. This is not that —
@@ -749,6 +764,7 @@ export const useStore = create<Store>((set, get) => ({
       sessions: [],
       entries: [],
       changed: [],
+      context: null,
       permission: null,
       proposals: [],
       agentProposals: [],
@@ -1569,6 +1585,18 @@ export function mergeSession(
  * every frame of a turn, and a fresh array each time would redraw it a few
  * dozen times a second to say the same number.
  */
+/** The latest context reading, or what was already known. */
+export function mergeContext(
+  context: Store["context"],
+  event: UiEvent,
+): Store["context"] {
+  if (event.type !== "context_used") return context;
+  if (context?.used === event.used && context.window === event.window) {
+    return context;
+  }
+  return { used: event.used, window: event.window };
+}
+
 export function mergeChanged(changed: string[], event: UiEvent): string[] {
   if (event.type !== "files_changed") return changed;
   const merged = new Set([...changed, ...event.paths]);
@@ -1700,6 +1728,9 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
     case "iteration_started":
     case "turn_finished":
     case "files_changed":
+    // Not a thing that happened *in* the conversation: it is the state of the
+    // window, drawn above the composer by `mergeContext`.
+    case "context_used":
       return entries;
   }
 }

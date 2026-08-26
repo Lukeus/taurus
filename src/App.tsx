@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { Attachments } from "./components/Attachments";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
+import { ContextMeter } from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { TrustBanner } from "./components/TrustBanner";
@@ -1344,6 +1345,10 @@ function Composer({
 
   return (
     <footer className="composer">
+      {/* The same argument as the dataset line below, applied to the window the
+          message is about to go into: above the box, where you are already
+          looking, and silent until there is something worth saying. */}
+      <ContextMeter />
       {/* Above the box rather than inside it: this is not something you typed
           and must not read as though it were. It says what the message is
           about to carry, in the one place you are already looking. */}

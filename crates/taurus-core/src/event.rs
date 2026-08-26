@@ -126,6 +126,28 @@ pub enum UiEvent {
     Compacted {
         messages_removed: usize,
     },
+    /// How full the model's context is, as the next request would fill it.
+    ///
+    /// Sent before every request rather than after, because the number that
+    /// matters is what the next one will carry — and because the moment worth
+    /// seeing it is while a turn is running, not once it has stopped.
+    ///
+    /// This exists because there was nothing. A turn's usage was reported at
+    /// the end and the desktop app dropped it on the floor, so a conversation
+    /// approaching its ceiling looked exactly like one that was not, right up
+    /// until the harness began summarizing for reasons nobody could see. The
+    /// window is carried beside the number for the same reason: an
+    /// OpenAI-compatible backend cannot be asked how much it holds, so the
+    /// figure being counted against may be a guess, and a guess on screen is
+    /// one somebody can correct.
+    ContextUsed {
+        /// Every message, the system prompt, the tool schemas, and the
+        /// envelope around them — measured where a request has been answered,
+        /// estimated before that.
+        used: u32,
+        /// What the model can hold.
+        window: u32,
+    },
     TurnFinished {
         stop_reason: StopReason,
         usage: TokenUsage,

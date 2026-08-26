@@ -531,6 +531,48 @@ async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
 }
 
 #[tokio::test]
+async fn every_request_says_how_full_the_window_is() {
+    // There was nothing. A turn's usage was reported at the end and the app
+    // dropped it, so a conversation approaching its ceiling looked exactly
+    // like one that was not — until the harness started summarizing for
+    // reasons nobody could see.
+    let h = harness_with(
+        vec![
+            ScriptedTurn::tool_call("t1", "list_dir", serde_json::json!({})),
+            ScriptedTurn::text("Done."),
+        ],
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        20_000,
+    );
+
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "hello").await;
+    assert!(outcome.is_ok());
+
+    let readings: Vec<(u32, u32)> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::ContextUsed { used, window } => Some((*used, *window)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(readings.len(), 2, "one before each request: {readings:?}");
+    for (_, window) in &readings {
+        assert_eq!(*window, 20_000, "the window is carried with the reading");
+    }
+    // A near-empty conversation still costs the tool schemas, which is exactly
+    // what a reading taken off the messages would have missed.
+    assert!(
+        readings[0].0 > 1_000,
+        "the reading left out everything but the messages: {:?}",
+        readings[0]
+    );
+    assert!(readings[1].0 > readings[0].0, "{readings:?}");
+}
+
+#[tokio::test]
 async fn the_budget_counts_what_the_messages_cannot_see() {
     // A conversation well under the window, and a system prompt that is not.
     // Measured by its messages alone this session has room to spare; measured

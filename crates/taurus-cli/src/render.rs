@@ -264,6 +264,10 @@ impl Renderer {
                 self.warn(&format!("  error: {message}"));
             }
 
+            // Not drawn per iteration: this arrives before every request, and
+            // a line each would be most of a transcript. The CLI reports the
+            // turn's usage when it ends, which is the moment it can be read.
+            UiEvent::ContextUsed { .. } => {}
             UiEvent::IterationStarted { .. } => {}
 
             UiEvent::TurnFinished { usage, .. } => {

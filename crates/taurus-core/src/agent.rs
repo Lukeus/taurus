@@ -1172,7 +1172,14 @@ impl Agent {
         // about how much configuration a workspace has, and the headroom is a
         // fraction of a window.
         let overhead = self.request_overhead(session);
-        if session.estimated_tokens().saturating_add(overhead) < budget {
+        let used = session.estimated_tokens().saturating_add(overhead);
+        let _ = ui
+            .send(UiEvent::ContextUsed {
+                used,
+                window: caps.context_length,
+            })
+            .await;
+        if used < budget {
             return summarizing;
         }
 

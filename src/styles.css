@@ -5337,6 +5337,42 @@ button.link:hover {
 
 /* What a message is about to carry, said above the box rather than inside it:
    this is not something the user typed and must not read as though it were. */
+/* How full the window is, above the box. Deliberately the quietest thing in
+   the composer: it is standing information, not an event, and it only appears
+   at all once it is worth reading. */
+.context-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 6px;
+}
+.context-bar {
+  flex: 0 0 64px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--rule);
+  overflow: hidden;
+}
+.context-fill {
+  display: block;
+  height: 100%;
+  background: var(--text-faint);
+  transition: width 240ms var(--ease);
+}
+/* Past the point where the harness starts summarizing on its own, which is
+   the one state here somebody might want to act on. */
+.context-meter.full .context-fill {
+  background: var(--accent);
+}
+.context-meter.full .micro {
+  color: var(--text-dim);
+}
+@media (prefers-reduced-motion: reduce) {
+  .context-fill {
+    transition: none;
+  }
+}
+
 .composer-context {
   display: flex;
   align-items: center;
