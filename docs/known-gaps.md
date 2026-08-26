@@ -55,6 +55,19 @@ and they are the minority.
   before deciding says nothing about the command that is about to add to it.
   Covering it means the changed-file list growing under the reader's eye, which
   is a UI question rather than a recording one.
+- **What a message costs is still estimated, at four characters a token.** The
+  fixed part of a request is measured — a response reports the whole prompt's
+  size, and the difference from the estimate for the same messages is the
+  system prompt, the tools, and the envelope, exact. What is not measured is
+  the drift *inside* the messages: a tokenizer that makes 3.2 characters of a
+  token out of minified JSON leaves the estimate low by a fifth on a
+  conversation full of it, and the overhead cannot absorb that because it
+  grows with the messages rather than sitting beside them. Closing it means
+  either a tokenizer per model in the harness — the thing that would have to
+  be kept in step with every backend forever — or a count-tokens round trip
+  before each request, which is the cost the estimate exists to avoid. The
+  threshold is what covers it, and the meter above the composer is what makes
+  being wrong visible.
 - **A hook can refuse a tool call and cannot approve one.** There is no
   `allow` verdict, so a hook cannot skip a permission prompt the way one in some
   other harnesses can. That rules out the "approve every `git status` for me"
