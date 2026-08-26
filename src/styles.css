@@ -3284,6 +3284,333 @@ body.resizing-y * {
   line-height: 1.6;
 }
 
+/* --------------------------------------------------------------- palette */
+
+/*
+ * One box over the whole app.
+ *
+ * Near the top rather than centred: the list grows downward as you type, and a
+ * panel centred on its empty height would walk up the screen with every
+ * keystroke. Fixed top, fixed maximum height, and the list scrolls inside.
+ */
+.palette-scrim {
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.palette {
+  display: flex;
+  flex-direction: column;
+  width: min(680px, 92vw);
+  max-height: 64vh;
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  box-shadow: var(--lift);
+  overflow: hidden;
+}
+.palette:focus {
+  outline: none;
+}
+
+.palette-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.palette-input {
+  flex: 1;
+  border: none;
+  background: none;
+  padding: 12px 0;
+  font-size: 15px;
+  color: var(--text);
+}
+.palette-input:focus {
+  outline: none;
+}
+.palette-input::placeholder {
+  color: var(--text-faint);
+}
+/* A toggle, not a button that does something — so it wears its state rather
+   than a label that changes. */
+.palette-scope {
+  flex: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.palette-scope.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.palette-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+.palette-group {
+  padding: 8px 8px 4px;
+  font-size: 10px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.palette-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 13.5px;
+  color: var(--text);
+}
+/* The highlight is the same whether it was moved by the keyboard or by the
+   pointer — two different "this one" marks on screen at once is a question
+   about which of them Enter belongs to. */
+.palette-row.on {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.palette-row.blocked {
+  color: var(--text-faint);
+  cursor: default;
+}
+.palette-label {
+  flex: none;
+  white-space: nowrap;
+}
+.palette-row mark {
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+}
+.palette-row.on mark {
+  color: var(--text);
+}
+/* The excerpt takes what is left and gives it up first: the label is what the
+   row *is*, and truncating that to keep a snippet would be the wrong way
+   round. */
+.palette-excerpt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.palette-excerpt mark {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: var(--text);
+  border-radius: 2px;
+}
+.palette-why,
+.palette-when,
+.palette-key {
+  margin-left: auto;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.palette-key {
+  font-family: var(--mono);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+}
+.palette-empty,
+.palette-searching {
+  margin: 0;
+  padding: 12px 8px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.palette-foot {
+  display: flex;
+  gap: 16px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--rule);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.palette-foot kbd {
+  font-family: var(--mono);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+  margin-right: 2px;
+}
+
+/* Where a search jump landed.
+
+   A rule down the side and a wash behind it, and nothing that moves — see the
+   note on motion in the stylesheet's tail: this is on screen only after a jump
+   and never in a screenshot, but a mark that animates is a mark that has to be
+   waited for, and this one is meant to be found already there. It is taken off
+   on a timer by `App`. */
+.turn.found {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+  border-radius: var(--r-sm);
+}
+
+/* ----------------------------------------------------------------- usage */
+
+/*
+ * The context account.
+ *
+ * Two halves that are different kinds of fact — what this conversation spent,
+ * and what every request costs before it starts — so they are separated by a
+ * heading rather than run together into one table. The numbers are read, never
+ * compared across rows by eye, which is why they are right-aligned in a mono
+ * face and the shares get a bar.
+ */
+.usage {
+  --usage-gap: 16px;
+}
+
+/* Which of the two accounts is on screen. The buttons are `.seg`, the same
+   segmented control the pane switch and the Data pane are drawn with, because
+   this is the same gesture — choose one of these views — and a second look for
+   it would read as an unrelated control.
+
+   `flex: none` for the reason `.pane-switch` and `.data-switch` have it: the
+   drawer is a column flex container, and a strip that can shrink does, all the
+   way to a hairline, as soon as what is under it overflows. */
+.usage-scope {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+.usage-totals,
+.usage-fixed {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0 0 var(--usage-gap);
+}
+.usage-total-row {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  padding: 8px 12px;
+}
+.usage-total-row dt {
+  font-size: 10.5px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.usage-total-row dd {
+  margin: 3px 0 2px;
+  font-family: var(--mono);
+  font-size: 15px;
+  color: var(--text);
+}
+.usage-total-row .micro {
+  margin: 0;
+}
+
+.usage-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: var(--usage-gap) 0 4px;
+  font-size: 12px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.usage-total {
+  margin-left: auto;
+  font-family: var(--mono);
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-dim);
+}
+.usage-explain {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.usage-table th,
+.usage-table td {
+  padding: 4px 6px;
+  text-align: left;
+  border-bottom: 1px solid var(--rule);
+}
+.usage-table thead th {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.usage-table tbody th {
+  font-weight: 400;
+}
+.usage-table .num {
+  text-align: right;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.usage-name {
+  font-family: var(--mono);
+  color: var(--text);
+}
+.usage-failed {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--danger);
+}
+.usage-rest th {
+  color: var(--text-faint);
+}
+
+/* The share, as a bar behind its own number rather than in a column of its
+   own: it is a property of the line being read, and a separate column of bars
+   is one more thing to line up by eye. */
+.usage-share {
+  position: relative;
+  display: inline-block;
+  min-width: 3.4em;
+  padding: 1px 4px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+}
+.usage-share::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--share);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.usage-note {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
 .card-list {
   list-style: none;
   margin: 0;
@@ -3981,8 +4308,33 @@ button.link:hover {
   padding-right: 10px;
   color: var(--text);
 }
+/* Opacity rather than a colour, now that the text inside carries its own.
+   Setting `color` here would win over nothing — every run has a class — and
+   the point of dimming context was never the particular grey: it was that the
+   changed lines should be the ones your eye lands on. */
 .diff-line.context .diff-text {
-  color: var(--text-dim);
+  opacity: 0.68;
+}
+
+/* The characters that actually differ, inside a line that was replaced.
+
+   A background rather than a colour, because the colour is already spoken
+   for — that is the syntax underneath, and overriding it here would trade one
+   fact for another instead of adding one. Mixed from the line's own tint so
+   the mark reads as "more of this line", and underlined as well, since the
+   line already sits on a tinted band and a second tint on top of a first is
+   exactly the difference a projector loses. */
+.diff-line.added .ink-changed {
+  background: color-mix(in srgb, var(--ok) 26%, transparent);
+}
+.diff-line.removed .ink-changed {
+  background: color-mix(in srgb, var(--danger) 26%, transparent);
+}
+.ink-changed {
+  border-radius: 2px;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
 .diff-note {
@@ -4263,6 +4615,125 @@ button.link:hover {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
   background: transparent !important;
+}
+
+/*
+ * The tabs, and the background commands behind them.
+ *
+ * Absent entirely until there is a second thing to show: a window that has
+ * never run a background command has the bar it always had, with the word
+ * Terminal where the strip would be. The tabs take that word's place rather
+ * than sitting in a row of their own, because the dock is dragged short more
+ * often than it is dragged tall and a second strip is most of a short one.
+ *
+ * The selected tab drops to the pane's own ground so it reads as continuous
+ * with what is under it, which is the whole grammar a tab has.
+ */
+.dock-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  /* Nine at most — see MAX_JOBS — so this is a squeeze, not a list. A bar is
+     too short to give a scrollbar a row of its own. */
+  scrollbar-width: none;
+}
+.dock-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.dock-tab:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.dock-tab.on {
+  color: var(--text);
+  background: var(--bg-sunken);
+  border-color: var(--rule);
+}
+.dock-tab-num {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.dock-tab.running .dock-tab-num {
+  color: var(--accent);
+}
+.dock-tab.failed .dock-tab-num {
+  color: var(--danger);
+}
+/* The character beside the colour — see `mark` in `lib/jobs`. */
+.dock-tab-mark {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.dock-tab.failed .dock-tab-mark {
+  color: var(--danger);
+}
+
+.job-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.job-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.job-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-status.running {
+  color: var(--accent);
+}
+.job-status.failed {
+  color: var(--danger);
+}
+
+/*
+ * Where a background command's output goes.
+ *
+ * Text rather than an emulator, because there is no pseudo-terminal behind one
+ * of these and so nothing addressing a screen by coordinate — see `JobScreen`.
+ * Wrapped rather than scrolled sideways: a compiler error is a long line, and
+ * a log you have to scroll horizontally to read is one nobody reads.
+ */
+.job-out {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 12px 12px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 /*
@@ -4824,27 +5295,37 @@ button.link:hover {
   white-space: pre;
 }
 
+/* ------------------------------------------------------------------- ink */
+
 /* Five colours and two greys, out of the palette the rest of the app is in —
    so both themes get this for free. Keywords are the shape of the statement,
    literals are the values in it, and a quoted identifier is deliberately the
    same colour as a bare one: `"Material"` is the same column as `Material`,
    only spelled defensively, and the difference that matters is between it and
-   `'Material'`, which is a string. */
-.sql-keyword {
+   `'Material'`, which is a string.
+
+   Stated once and worn by everything the app colours — the query box, a
+   fenced block in the transcript, and both sides of a diff. One palette
+   because they are read in the same window minutes apart, and a `SELECT` that
+   is one colour in the editor and another in the transcript is two things a
+   reader has to learn instead of one. See `src/lib/ink.ts` for what decides
+   which class a run gets. */
+.ink-keyword {
   color: var(--accent);
 }
-.sql-fn {
+.ink-fn {
   color: var(--ok);
 }
-.sql-string,
-.sql-number {
+.ink-string,
+.ink-number {
   color: var(--warn);
 }
-.sql-quoted,
-.sql-plain {
+.ink-quoted,
+.ink-plain,
+.ink-punct {
   color: var(--text);
 }
-.sql-comment {
+.ink-comment {
   color: var(--text-faint);
   font-style: italic;
 }
@@ -5340,11 +5821,28 @@ button.link:hover {
 /* How full the window is, above the box. Deliberately the quietest thing in
    the composer: it is standing information, not an event, and it only appears
    at all once it is worth reading. */
+/* A button that has to keep looking like a reading. The app's button rules
+   give it a border, a background and a centred label, none of which belong on
+   a line of status text — so they come back off, and what is left that says
+   "press me" is the cursor and the hover. */
 .context-meter {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 4px 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: var(--r-sm);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.context-meter:hover .micro {
+  color: var(--text);
+}
+.context-meter:hover .context-fill {
+  background: var(--accent);
 }
 .context-bar {
   flex: 0 0 64px;

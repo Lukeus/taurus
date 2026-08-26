@@ -159,7 +159,7 @@ export function SqlEditor({
 
       <pre className="sql-ink" aria-hidden ref={ghost}>
         {painted.map((run, i) => (
-          <span key={i} className={`sql-${run.kind}`}>
+          <span key={i} className={`ink-${run.kind}`}>
             {run.text}
           </span>
         ))}

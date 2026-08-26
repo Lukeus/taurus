@@ -71,9 +71,24 @@ const SHOTS = [
   // it should, that the running row wears the treatment its category calls
   // for, and that none of it has landed on top of something else.
   { name: "motion", shot: "motion", theme: "dark" },
+  // One box over the whole window, mid-search. One word that reaches all three
+  // groups, which is the only way to photograph the ordering: a panel matched
+  // by name, a conversation matched by its title, and — underneath, because it
+  // arrives last and must not push the others down — two matched by what was
+  // said in them, with the word marked in the line it was on.
+  { name: "palette", shot: "palette", theme: "dark" },
+  // Where the context went. A conversation whose reads are 82% of its tool
+  // spend, three calls that repeated an earlier one exactly, and the fixed
+  // cost of every request below it — which is the half that is not in the
+  // transcript at all.
+  { name: "context", shot: "context", theme: "dark" },
   // The rail with a section folded. An open section looks like the plain list
   // it replaced, so the shut one is the only state that shows the feature.
   { name: "rail", shot: "rail", theme: "dark" },
+  // A background command, on screen while it is still the model's to read.
+  // The tab strip is the whole feature — a test run that failed, a dev server
+  // that will not finish on its own, and the shell they sit beside.
+  { name: "background", shot: "background", theme: "dark" },
 ];
 
 const CHROME = [

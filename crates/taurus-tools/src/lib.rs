@@ -21,7 +21,7 @@ pub use builtin::pty::sideload_status;
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, Rewind, TurnChange, TurnRecorder};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::expand_env;
-pub use jobs::Jobs;
+pub use jobs::{BackgroundJob, JobOutput, Jobs};
 pub use login_path::Outcome as LoginPath;
 pub use permission::{
     AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,

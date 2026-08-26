@@ -119,7 +119,7 @@ describe("the painted layer", () => {
     const host = mount("SELECT event FROM events");
     const painted = host.querySelector(".sql-ink") as HTMLElement;
     expect(
-      [...painted.querySelectorAll(".sql-keyword")].map((e) => e.textContent),
+      [...painted.querySelectorAll(".ink-keyword")].map((e) => e.textContent),
     ).toEqual(["SELECT", "FROM"]);
   });
 });

@@ -24,8 +24,14 @@ const WORTH_SAYING = 0.5;
  * Subscribed here rather than in `App`, for the reason the transcript is: this
  * moves before every request, and the topbar and the rail have no business
  * redrawing that often to say the same thing.
+ *
+ * It is a button, and that is the whole shape of the feature: this says how
+ * much, and one click away is what it went on. A number that makes you ask a
+ * question should be the thing you press to answer it. The rail carries the
+ * same panel, because this hides itself below half a window — and "what will a
+ * request cost before I start" is a question worth asking exactly then.
  */
-export function ContextMeter() {
+export function ContextMeter({ onOpen }: { onOpen: () => void }) {
   const context = useStore((s) => s.context);
   if (!context || context.window === 0) return null;
 
@@ -36,9 +42,11 @@ export function ContextMeter() {
   const summarizing = fraction >= COMPACTS_AT;
 
   return (
-    <div
+    <button
+      type="button"
       className={`context-meter${summarizing ? " full" : ""}`}
-      data-tip={`${context.used.toLocaleString()} of ${context.window.toLocaleString()} tokens, the system prompt and tool definitions included`}
+      onClick={onOpen}
+      data-tip={`${context.used.toLocaleString()} of ${context.window.toLocaleString()} tokens, the system prompt and tool definitions included. Opens the account.`}
     >
       <span className="context-bar">
         {/* Width, not a transform: the bar is a few pixels tall and a scaled
@@ -49,7 +57,7 @@ export function ContextMeter() {
         context {percent}% of {short(context.window)}
         {summarizing && " · older turns are being summarized"}
       </span>
-    </div>
+    </button>
   );
 }
 

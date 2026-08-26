@@ -1,4 +1,8 @@
-import type { FileDiff } from "../lib/api";
+import { useMemo } from "react";
+
+import type { DiffLine, FileDiff } from "../lib/api";
+import { grammarFor, mark, paint } from "../lib/ink";
+import { pairs, refine } from "../lib/intraline";
 
 /**
  * A change to one file, drawn as a diff.
@@ -13,6 +17,14 @@ import type { FileDiff } from "../lib/api";
  * but it is the one that fails on a projector, in a screenshot, and for a
  * reader who cannot distinguish red from green — and this is not a view where
  * the fallback can be "look more carefully".
+ *
+ * Two things narrow the read further, and both address the same complaint: a
+ * line diff tells you a line was replaced and leaves finding the difference to
+ * you. The text is coloured by the file's own language, so a change to a
+ * string does not have to be told apart from a change to a name by reading
+ * both. And where a removal and an addition are the same line before and
+ * after, the part that actually differs is marked inside them — see
+ * `intraline.ts`, which includes the cases where it declines to guess.
  */
 export function DiffView({ diff }: { diff: FileDiff }) {
   const empty = diff.added === 0 && diff.removed === 0;
@@ -37,24 +49,7 @@ export function DiffView({ diff }: { diff: FileDiff }) {
       ) : (
         <div className="diff-body" role="table" aria-label={`Changes to ${diff.path}`}>
           {diff.hunks.map((hunk, h) => (
-            <div className="diff-hunk" key={h}>
-              {hunk.lines.map((line, i) => (
-                <div className={`diff-line ${line.kind}`} key={i} role="row">
-                  {/* Numbers are the file's own, so one read off this dialog
-                      means the same thing as one read off `read_file`. */}
-                  <span className="diff-num" aria-hidden="true">
-                    {line.old_line ?? ""}
-                  </span>
-                  <span className="diff-num" aria-hidden="true">
-                    {line.new_line ?? ""}
-                  </span>
-                  <span className="diff-gutter" aria-hidden="true">
-                    {GUTTER[line.kind]}
-                  </span>
-                  <span className="diff-text">{line.text || " "}</span>
-                </div>
-              ))}
-            </div>
+            <Hunk key={h} lines={hunk.lines} grammar={grammarFor(diff.path)} />
           ))}
         </div>
       )}
@@ -87,3 +82,64 @@ const GUTTER: Record<string, string> = {
   removed: "-",
   context: " ",
 };
+
+/**
+ * One run of lines, painted and marked together.
+ *
+ * Together because neither answer is a property of a line on its own: which
+ * characters changed is a fact about a *pair* of lines, and the pairing is
+ * read off the run's shape. Doing it a hunk at a time is also what keeps the
+ * work proportional to what is on screen — the Changes drawer draws a diff per
+ * file, and the permission dialog draws one while a turn waits on it.
+ */
+function Hunk({ lines, grammar }: { lines: DiffLine[]; grammar: string | null }) {
+  const painted = useMemo(() => {
+    const paired = pairs(lines.map((line) => line.kind));
+    const spans = new Map<number, { from: number; to: number }>();
+    for (const [i, j] of paired) {
+      // Once per pair rather than once per line. The map records the pairing
+      // from both directions, and refining the same two lines a second time
+      // would give the same answer at twice the price.
+      if (lines[i].kind !== "removed") continue;
+      const found = refine(lines[i].text, lines[j].text);
+      if (!found) continue;
+      spans.set(i, { from: found.oldFrom, to: found.oldTo });
+      spans.set(j, { from: found.newFrom, to: found.newTo });
+    }
+    return lines.map((line, i) => mark(paint(line.text, grammar), spans.get(i) ?? null));
+  }, [lines, grammar]);
+
+  return (
+    <div className="diff-hunk">
+      {lines.map((line, i) => (
+        <div className={`diff-line ${line.kind}`} key={i} role="row">
+          {/* Numbers are the file's own, so one read off this dialog
+              means the same thing as one read off `read_file`. */}
+          <span className="diff-num" aria-hidden="true">
+            {line.old_line ?? ""}
+          </span>
+          <span className="diff-num" aria-hidden="true">
+            {line.new_line ?? ""}
+          </span>
+          <span className="diff-gutter" aria-hidden="true">
+            {GUTTER[line.kind]}
+          </span>
+          {/* A blank line still has to fill its row, or the grid closes it up
+              and the numbers stop lining up with the file. */}
+          <span className="diff-text">
+            {line.text
+              ? painted[i].map((run, r) => (
+                  <span
+                    key={r}
+                    className={`ink-${run.kind}${run.changed ? " ink-changed" : ""}`}
+                  >
+                    {run.text}
+                  </span>
+                ))
+              : " "}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}

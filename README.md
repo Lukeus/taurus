@@ -115,6 +115,10 @@ to put things back after.
 
 - [**Sessions**](docs/working-with-it.md#sessions) — transcripts on disk, per
   workspace, replayable.
+- [**Finding a conversation**](docs/working-with-it.md#finding-a-conversation) —
+  ⌘K opens one box over the window: every panel and verb by name, conversations
+  by title, and the transcripts themselves by what was said in them. A hit
+  opens the conversation *at* it.
 - [**Planning a long task**](docs/working-with-it.md#planning-a-long-task) — a
   plan it pins and keeps current, rather than one it announces once and forgets.
 - [**Showing it a picture**](docs/working-with-it.md#showing-it-a-picture) —
@@ -124,10 +128,17 @@ to put things back after.
 - [**When a turn stops**](docs/working-with-it.md#when-a-turn-stops), and
   [**the context window**](docs/working-with-it.md#the-context-window) — what
   ends a turn, and what it costs.
+  The meter above the composer says how much; pressing it says *on what* — a
+  row per tool, the calls that repeated an earlier one exactly, and what every
+  request pays before the conversation starts.
 - [**Tables, charts, and questions**](docs/working-with-it.md#tables-charts-and-questions)
   — results you are meant to *look* at stand on their own beside the prose. When
   a decision is genuinely yours, it asks and waits — and every question can be
   skipped.
+- [**Code is coloured, and so is a diff**](docs/working-with-it.md#code-is-coloured-and-so-is-a-diff)
+  — a fenced block by its fence, a diff by the file's own extension, one
+  palette for both and for the query box. And where one line was rewritten
+  into another, the characters that actually differ are marked inside it.
 - [**Motion that says what it is doing**](docs/working-with-it.md#motion) — a
   turn in flight draws a waveform whose shape comes from the kind of work
   running, and a running row wears a scan, a write gutter, or an indeterminate

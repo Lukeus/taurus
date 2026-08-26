@@ -37,13 +37,75 @@ const request = (patch: Partial<PermissionRequest> = {}): PermissionRequest => (
   ...patch,
 });
 
+/**
+ * The rendered text, with the markup taken back off.
+ *
+ * A diff line is no longer one text node: it is one span per run of syntax,
+ * and another wherever the intra-line mark starts and stops. That is the
+ * feature, and it means `toContain("let x = 1;")` against the raw markup now
+ * asks whether the line happens to have been cut — which is a question about
+ * the tokenizer, not about whether the line is on screen. So these read the
+ * text the way a person does.
+ */
+const shown = (html: string) =>
+  html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+
 describe("diff view", () => {
   it("shows both sides of a replaced line", () => {
     // The whole feature: the byte count says a file is about to be replaced
     // and nothing about what with.
     const html = renderToStaticMarkup(<DiffView diff={diff()} />);
-    expect(html).toContain("let x = 1;");
-    expect(html).toContain("let x = 2;");
+    expect(shown(html)).toContain("let x = 1;");
+    expect(shown(html)).toContain("let x = 2;");
+  });
+
+  it("colours the text by the language the file is in", () => {
+    // The path is the only thing that says what the file is, and it is already
+    // on the dialog. A change to a string should not have to be told apart
+    // from a change to a name by reading both.
+    const html = renderToStaticMarkup(<DiffView diff={diff()} />);
+    expect(html).toContain('class="ink-keyword"');
+    // And a file whose extension names no language still renders its text.
+    const plain = renderToStaticMarkup(<DiffView diff={diff({ path: "NOTES" })} />);
+    expect(shown(plain)).toContain("let x = 1;");
+    expect(plain).not.toContain("ink-keyword");
+  });
+
+  it("marks the characters that actually differ inside a replaced line", () => {
+    const html = renderToStaticMarkup(<DiffView diff={diff()} />);
+    // `1` and `2`, and nothing else on those lines — the two sides share
+    // everything up to the digit.
+    const marked = [...html.matchAll(/ink-changed">([^<]*)</g)].map((m) => m[1]);
+    expect(marked).toEqual(["1", "2"]);
+  });
+
+  it("marks nothing when a removal and an addition are not one line rewritten", () => {
+    // Two removals answered by one addition: lines went as well as changed,
+    // and pairing them by position would mark the difference between lines
+    // that have nothing to do with each other.
+    const html = renderToStaticMarkup(
+      <DiffView
+        diff={diff({
+          hunks: [
+            {
+              lines: [
+                { kind: "removed", text: "    let x = 1;", old_line: 2, new_line: null },
+                { kind: "removed", text: "    let y = 2;", old_line: 3, new_line: null },
+                { kind: "added", text: "    let x = 3;", old_line: null, new_line: 2 },
+              ],
+            },
+          ],
+        })}
+      />,
+    );
+    expect(html).not.toContain("ink-changed");
+    expect(shown(html)).toContain("let y = 2;");
   });
 
   it("marks each side with a character, not only a colour", () => {
@@ -100,7 +162,7 @@ describe("permission dialog", () => {
     const html = renderToStaticMarkup(
       <PermissionDialog request={request()} onDecide={() => {}} />,
     );
-    expect(html).toContain("let x = 2;");
+    expect(shown(html)).toContain("let x = 2;");
     // The one-line preview stays: it names the tool and the size, which the
     // diff does not.
     expect(html).toContain("Write src/widget.rs (2140 bytes)");

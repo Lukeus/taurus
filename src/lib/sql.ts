@@ -14,18 +14,13 @@
 
 import type { DataTable } from "./api";
 
-/** What a run of characters is, for the one purpose of tinting it. */
-export type InkKind =
-  | "keyword"
-  | "fn"
-  | "string"
-  | "quoted"
-  | "number"
-  | "comment"
-  | "punct"
-  | "plain";
+import { scanWith, words, type Grammar, type Ink, type InkKind } from "./ink";
 
-export type Ink = { text: string; kind: InkKind };
+// The colours and the scanner are shared with every other language the app
+// draws — see `ink.ts` for why one walk serves all of them. What stays here is
+// the vocabulary, because the completion menu is built out of the same two
+// sets and a second copy of them is a copy that can disagree.
+export type { Ink, InkKind };
 
 /*
  * The words, split by what they do rather than by what the standard calls
@@ -34,32 +29,47 @@ export type Ink = { text: string; kind: InkKind };
  * Two colours is what a reader can use; the eight categories a grammar
  * distinguishes are eight colours nobody can tell apart.
  */
-const KEYWORDS = new Set(
-  `select from where group by having order limit offset as join inner left right
+const KEYWORDS = words(`select from where group by having order limit offset as join inner left right
    full outer cross on using union all except intersect distinct case when then
    else end and or not in is null like ilike between exists asc desc with
    recursive over partition rows range unbounded preceding following current row
-   cast filter nulls first last values`.split(/\s+/),
-);
+   cast filter nulls first last values`);
 
-const FUNCTIONS = new Set(
-  `count sum avg min max median stddev variance array_agg string_agg
+const FUNCTIONS = words(`count sum avg min max median stddev variance array_agg string_agg
    coalesce nullif greatest least abs ceil floor round trunc sign power sqrt
    exp ln log mod random
    length lower upper trim ltrim rtrim substr substring replace concat
    split_part starts_with regexp_match regexp_replace left right lpad rpad
    date_trunc date_part extract now to_timestamp to_date make_date age
    row_number rank dense_rank lag lead first_value last_value ntile
-   unnest struct arrow_cast try_cast`.split(/\s+/),
-);
+   unnest struct arrow_cast try_cast`);
 
 /** Types a `CAST` names, tinted as keywords so a cast reads as one thing. */
-const TYPES = new Set(
-  `int integer bigint smallint tinyint float double decimal numeric real
-   varchar text string char boolean bool date timestamp time interval bytea`.split(
-    /\s+/,
-  ),
-);
+const TYPES = words(`int integer bigint smallint tinyint float double decimal numeric real
+   varchar text string char boolean bool date timestamp time interval bytea`);
+
+/**
+ * SQL as the scanner needs to be told about it.
+ *
+ * Two facts here are this dialect's alone. A double quote names a column
+ * rather than holding text, which is the distinction the query box exists to
+ * make visible — `"Material"` is the column and `'Material'` is the word. And
+ * a literal with no closing quote runs to the end of the input rather than
+ * ending at the newline, because in a box someone is typing in, an unfinished
+ * string is the normal state of an unfinished query.
+ */
+const SQL: Grammar = {
+  line: ["--"],
+  block: [["/*", "*/"]],
+  quotes: [
+    { delim: "'", kind: "string", escape: "double", spans: true },
+    { delim: '"', kind: "quoted", escape: "double", spans: true },
+  ],
+  keywords: KEYWORDS,
+  types: TYPES,
+  calls: FUNCTIONS,
+  fold: true,
+};
 
 /**
  * Splits SQL into runs to tint.
@@ -70,96 +80,7 @@ const TYPES = new Set(
  * tests hold that property directly rather than checking colours.
  */
 export function ink(sql: string): Ink[] {
-  const out: Ink[] = [];
-  let i = 0;
-
-  const push = (text: string, kind: InkKind) => {
-    // Runs of the same kind are merged, which keeps the painted DOM to a few
-    // spans per line instead of one per character of whitespace.
-    const last = out[out.length - 1];
-    if (last && last.kind === kind) last.text += text;
-    else out.push({ text, kind });
-  };
-
-  while (i < sql.length) {
-    const c = sql[i];
-
-    if (c === "-" && sql[i + 1] === "-") {
-      const end = sql.indexOf("\n", i);
-      const stop = end === -1 ? sql.length : end;
-      push(sql.slice(i, stop), "comment");
-      i = stop;
-      continue;
-    }
-
-    if (c === "/" && sql[i + 1] === "*") {
-      const end = sql.indexOf("*/", i + 2);
-      const stop = end === -1 ? sql.length : end + 2;
-      push(sql.slice(i, stop), "comment");
-      i = stop;
-      continue;
-    }
-
-    // A doubled quote inside a literal is an escaped one, which is why this
-    // walks rather than looking for the next quote. Unterminated runs to the
-    // end of the input on purpose: the string is being typed.
-    if (c === "'" || c === '"') {
-      let j = i + 1;
-      while (j < sql.length) {
-        if (sql[j] === c) {
-          if (sql[j + 1] === c) j += 2;
-          else {
-            j += 1;
-            break;
-          }
-        } else {
-          j += 1;
-        }
-      }
-      push(sql.slice(i, j), c === "'" ? "string" : "quoted");
-      i = j;
-      continue;
-    }
-
-    if (/[0-9]/.test(c)) {
-      let j = i;
-      while (j < sql.length && /[0-9._]/.test(sql[j])) j += 1;
-      push(sql.slice(i, j), "number");
-      i = j;
-      continue;
-    }
-
-    if (/[A-Za-z_]/.test(c)) {
-      let j = i;
-      while (j < sql.length && /[A-Za-z0-9_$]/.test(sql[j])) j += 1;
-      const word = sql.slice(i, j);
-      const lower = word.toLowerCase();
-      push(
-        word,
-        KEYWORDS.has(lower) || TYPES.has(lower)
-          ? "keyword"
-          : // Only when it is actually being called. `count` is a keyword-ish
-            // word and also a perfectly ordinary column name, and tinting the
-            // column would be saying something false about it.
-            FUNCTIONS.has(lower) && sql.slice(j).trimStart().startsWith("(")
-            ? "fn"
-            : "plain",
-      );
-      i = j;
-      continue;
-    }
-
-    if (/[(),;.*=<>+\-/%|]/.test(c)) {
-      push(c, "punct");
-      i += 1;
-      continue;
-    }
-
-    push(c, "plain");
-    i += 1;
-  }
-
-  return out;
+  return scanWith(sql, SQL);
 }
 
 /** One thing the box offers to finish the word with. */

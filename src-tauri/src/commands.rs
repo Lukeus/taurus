@@ -22,7 +22,7 @@ use taurus_mcp::ServerStatus;
 use taurus_provider::{ChatRequest, Message, ModelInfo, StreamAccumulator};
 use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
-use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
+use taurus_tools::{AllowedRule, Answer, BackgroundJob, JobOutput, PermissionDecision, Scope};
 
 use taurus_data::{
     Dataset, Materialized as DataRun, Page as DataPage, Profile as DataProfile,
@@ -30,7 +30,9 @@ use taurus_data::{
 };
 
 use taurus_host::onscreen::OnScreen;
+use taurus_host::search::{self, SearchResults};
 use taurus_host::trust::TrustStatus;
+use taurus_host::usage::{self, UsageReport};
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
     McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus, Rewind,
@@ -2132,6 +2134,81 @@ pub async fn repo_status(state: State<'_, Arc<AppState>>) -> CmdResult<RepoStatu
     Ok(state.host.repo_status().await)
 }
 
+/// Conversations mentioning `query`, newest first.
+///
+/// `everywhere` searches every workspace rather than the open one — the
+/// question "where did I do that", asked when you no longer remember which
+/// project it was.
+///
+/// Off the runtime: this reads every transcript in the workspace, and it is
+/// called while somebody is typing. What keeps that affordable is in
+/// [`taurus_host::search`] — a conversation that does not mention the query is
+/// one file read and nothing parsed.
+#[tauri::command]
+pub async fn search_sessions(
+    state: State<'_, Arc<AppState>>,
+    query: String,
+    everywhere: bool,
+) -> CmdResult<SearchResults> {
+    let workspace = if everywhere {
+        None
+    } else {
+        Some(state.host.workspace().await)
+    };
+    off_runtime(move || Ok(search::search(workspace.as_deref(), &query))).await
+}
+
+/// Where the context window actually went.
+///
+/// `session_id` names one conversation; `None` accounts for every saved
+/// conversation in the open workspace. Both answers come from
+/// [`taurus_host::usage`] rather than from anything here — the CLI prints the
+/// same report, and a tool's cost that differed between the two would be a
+/// number nobody could act on.
+///
+/// The fixed half — the system prompt and every advertised tool schema — is
+/// read off the *live* host rather than out of the transcript, so what it
+/// reports is what the next request will cost rather than what an earlier one
+/// did. That is also why it is worth asking for in a workspace with no history
+/// at all.
+#[tauri::command]
+pub async fn usage_report(
+    state: State<'_, Arc<AppState>>,
+    session_id: Option<String>,
+) -> CmdResult<UsageReport> {
+    let fixed = usage::Fixed::new(
+        &state.host.system_prompt().await,
+        state.host.tool_definitions().await,
+    );
+
+    // A conversation that is open answers from memory. Reading its transcript
+    // instead would report it as it was last written down, which is behind
+    // whatever is on screen — and this panel is most often opened mid-turn, to
+    // find out what just filled the window.
+    if let Some(id) = &session_id {
+        if let Ok(entry) = state.session(id) {
+            let session = entry.session.lock().await;
+            return Ok(usage::of_session(&session, &fixed));
+        }
+    }
+
+    let workspace = match &session_id {
+        Some(id) => session_workspace(&state, id).await,
+        None => state.host.workspace().await,
+    };
+    // Reading forty transcripts off disk is not something to do on the
+    // runtime, and the workspace-wide view is exactly when there are forty.
+    off_runtime(move || {
+        usage::report(
+            &workspace,
+            session_id.as_deref(),
+            session_id.is_none(),
+            &fixed,
+        )
+    })
+    .await
+}
+
 /// Commits exactly the files one turn changed.
 ///
 /// The turn is named rather than the paths, so the frontend cannot ask for a
@@ -2190,6 +2267,56 @@ pub async fn commit_turn(
         "committed a turn"
     );
     Ok(commit)
+}
+
+/* ----------------------------------------------------------- background */
+
+/// One look at the background commands, for the dock that draws them.
+///
+/// One round trip rather than two, because the pane asks on a timer and the
+/// two halves are read together every time: which commands there are, and what
+/// the one on screen has said since the last look.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct Background {
+    pub jobs: Vec<BackgroundJob>,
+    /// Absent when the pane is watching nothing, and when the command it is
+    /// watching is no longer there — a workspace change forgets them, and a
+    /// pane mid-poll finds out from this rather than from an error.
+    #[ts(optional)]
+    pub output: Option<JobOutput>,
+}
+
+/// The background commands, and the output of the one being watched.
+///
+/// `cursor` is `0` for a first look, and otherwise the one the last answer
+/// carried. It is the pane's own place in the stream: `check_command` keeps a
+/// separate one, so neither reader takes lines from the other. See
+/// [`taurus_tools::Jobs`].
+#[tauri::command]
+pub async fn background(
+    state: State<'_, Arc<AppState>>,
+    watching: Option<u32>,
+    cursor: usize,
+) -> CmdResult<Background> {
+    let jobs = state.host.jobs();
+    // An id that is not in the list is not an error here. The pane polls, and
+    // a command can go between the tick that drew the tab and the tick that
+    // reads it.
+    let output = watching.and_then(|id| state.host.job_output(id, cursor).ok());
+    Ok(Background { jobs, output })
+}
+
+/// Ends one background command from the window.
+///
+/// The same stop `stop_command` gives the model, so a build the user ends and
+/// a build the model ends leave the same trace: the job reports itself
+/// stopped, and what it changed is swept into the running turn.
+#[tauri::command]
+pub async fn background_stop(state: State<'_, Arc<AppState>>, id: u32) -> CmdResult<String> {
+    let stopped = state.host.stop_job(id).await?;
+    info!(job = id, "stopped a background command from the window");
+    Ok(stopped)
 }
 
 /* ------------------------------------------------------------- terminal */

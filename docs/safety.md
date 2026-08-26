@@ -25,6 +25,17 @@ costs a read that was going to happen anyway.
 ![The permission dialog showing a diff of the change a write would
 make](screenshots/permission-diff.png)
 
+Two things narrow that read further, since a line diff on its own tells you a
+line was replaced and leaves finding the difference to you. The text is
+coloured by the file's own language, and where a removal is answered by exactly
+one addition — the same line before and after — the characters that actually
+differ are marked inside them. Above, `MAX_ITERATIONS` and
+`self.config.max_iterations` carry the mark; the line below them was added
+rather than rewritten and answers nothing, so nothing in it is marked. See
+[Code is coloured, and so is a diff](working-with-it.md#code-is-coloured-and-so-is-a-diff)
+for the two cases where it declines to guess. The `+` and `−` in the gutter
+stay the primary signal either way.
+
 The diff `edit_file` shows is computed by running the replacement the call will
 run, through the same function. A dialog that shows one change while the tool
 makes another is worse than showing none, because it is what the user believed
@@ -199,14 +210,19 @@ straight back with a number for it. `check_command` reads what it has said
 since the last check, and can wait for it to finish; `stop_command` ends it.
 Eight may run at once.
 
-Output arrives once. Nobody is holding the pipes open on the model's behalf, so
-what a background command writes is drained into a buffer as it arrives and
-handed over whole at the next check — and what is read there is not shown
-again. The buffer holds 64 KB; past that the oldest is dropped and *counted*, so
-a check that arrives too late learns that it did rather than reading a prefix as
-though it were everything. Both streams go into the one buffer in the order they
-arrived, which is what a terminal would have shown; the `[stderr]` split a
-waited-for command gets is not available here.
+Output arrives once *per reader*. Nobody is holding the pipes open on the
+model's behalf, so what a background command writes is drained into a buffer as
+it arrives, and a check reads whatever has landed since the last one. The buffer
+holds 256 KB and one check hands over at most 64 KB of it; past either, the
+oldest is dropped and *counted*, so a check that arrives too late learns that it
+did rather than reading a prefix as though it were everything. Both streams go
+into the one buffer in the order they arrived, which is what a terminal would
+have shown; the `[stderr]` split a waited-for command gets is not available here.
+
+The window is the second reader, and it keeps its own place in that buffer — see
+[Terminal](capabilities.md#terminal). Neither takes lines from the other: a tab
+drawing a build does not empty what the next `check_command` was going to read,
+and a check does not blank the pane.
 
 **What it changed is still recorded, and from before it ran.** The sweep that
 makes a command undoable reads the workspace before it starts and again when it
@@ -227,7 +243,10 @@ one is how a model concludes the wrong thing about what it just started.
 **They end with the workspace and with the window.** Nothing in the operating
 system tidies up a child that outlived the call that spawned it, so switching
 workspaces stops them — its `cwd` is about to stop meaning what it meant — and
-so does closing the window. A `taurus` CLI run ends them when the process does.
+so does closing the window. Switching also *forgets* them: the roster and the
+dock's tabs would otherwise name commands that ran somewhere the window is no
+longer pointed, and each one is still holding a picture of the old folder to
+sweep against. A `taurus` CLI run ends them when the process does.
 Between turns, and across conversations in the same workspace, they keep
 running: that is what they are for.
 

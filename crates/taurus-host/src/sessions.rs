@@ -1022,6 +1022,37 @@ fn usable_as_filename(id: &str) -> bool {
     !id.is_empty() && !id.contains(['/', '\\', '.'])
 }
 
+/// Whether a transcript's bytes hold `needle` anywhere at all.
+///
+/// The prefilter in front of [`load`], and the reason searching a workspace is
+/// cheap: a conversation that does not mention the query is one file read and
+/// nothing else — no records parsed, no messages built. Only a file that
+/// answers yes is worth rebuilding to find out *where*.
+///
+/// `needle` must already be lowercase, and must be a string JSON writes
+/// unchanged. Both are the caller's business — see [`crate::search`], which is
+/// where the reasoning about escaping lives. This is here rather than there
+/// because it reads a transcript file, and this module is the one that knows
+/// where transcripts are and what they are called.
+///
+/// A file that cannot be read answers `true`, so an unreadable transcript is
+/// passed on to `load` to fail there rather than being silently reported as
+/// not matching.
+pub fn mentions(id: &str, needle: &str) -> bool {
+    let Some(path) = find(id) else {
+        return true;
+    };
+    match std::fs::read(&path) {
+        // Lossy rather than strict: a transcript is JSON and so is valid UTF-8
+        // by construction, and a corrupt byte in one is not a reason to stop
+        // searching the other thirty-nine.
+        Ok(bytes) => String::from_utf8_lossy(&bytes)
+            .to_lowercase()
+            .contains(needle),
+        Err(_) => true,
+    }
+}
+
 /// Locates a transcript by id across every workspace.
 fn find(id: &str) -> Option<PathBuf> {
     if !usable_as_filename(id) {

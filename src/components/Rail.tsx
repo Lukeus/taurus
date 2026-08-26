@@ -6,6 +6,7 @@ import { useSections } from "../lib/sections";
 import {
   DelegateIcon,
   DisplayIcon,
+  GaugeIcon,
   Logo,
   MoonIcon,
   PlugIcon,
@@ -46,6 +47,7 @@ export function Rail({
   agentCount,
   noteCount,
   mcp,
+  jobsRunning,
   health,
   theme,
   onPickWorkspace,
@@ -56,6 +58,7 @@ export function Rail({
   onSkills,
   onAgents,
   onMemory,
+  onUsage,
   onMcp,
   onTerminal,
   onSettings,
@@ -88,6 +91,14 @@ export function Rail({
    * the whole thing this row exists to make visible.
    */
   mcp: { total: number; connected: number } | null;
+  /**
+   * How many background commands are running right now.
+   *
+   * On this row because it is the way into the dock, and because the dock is
+   * where they are: a build the model started while the pane was shut is one
+   * nothing else on screen would mention. Zero draws nothing at all.
+   */
+  jobsRunning: number;
   health: ProviderHealth;
   /** The preference, not the resolved palette — the row names what was chosen. */
   theme: Theme;
@@ -99,6 +110,11 @@ export function Rail({
   onSkills: () => void;
   onAgents: () => void;
   onMemory: () => void;
+  /** Opens the context account. Reached from here as well as from the meter
+   *  above the composer, because the meter hides itself while the window is
+   *  less than half full — and "what does a request cost before I start" is a
+   *  question worth asking exactly then. */
+  onUsage: () => void;
   onMcp: () => void;
   /** Shows or hides the terminal dock. The dock says which it is; this row
    *  only has to be the way to reach it. */
@@ -312,6 +328,16 @@ export function Rail({
               <span className="count">{noteCount}</span>
             )}
           </button>
+          <button
+            className="rail-link"
+            onClick={onUsage}
+            data-tip="What has filled the context window, and what every request costs before it starts"
+          >
+            <span className="glyph">
+              <GaugeIcon />
+            </span>
+            <b>Context</b>
+          </button>
           <button className="rail-link" onClick={onMcp} data-tip={mcpHint(mcp)}>
             <span className="glyph">
               <PlugIcon />
@@ -334,12 +360,17 @@ export function Rail({
           <button
             className="rail-link"
             onClick={onTerminal}
-            data-tip="A shell in this folder (⌃`)"
+            data-tip={
+              jobsRunning > 0
+                ? `${plural(jobsRunning, "command")} running in the background`
+                : "A shell in this folder (⌃`)"
+            }
           >
             <span className="glyph">
               <TerminalIcon />
             </span>
             <b>Terminal</b>
+            {jobsRunning > 0 && <span className="count">{jobsRunning}</span>}
           </button>
         </Section>
 

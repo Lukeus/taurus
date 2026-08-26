@@ -1,8 +1,9 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
+import { grammarFor, paint } from "../lib/ink";
 import { CopyButton } from "./CopyButton";
 
 /**
@@ -149,9 +150,44 @@ function Code({
         <CopyButton className="md-copy" text={body.replace(/\n$/, "")} />
       </div>
       <pre>
-        <code className={className}>{children}</code>
+        <Painted source={body} language={language} className={className} />
       </pre>
     </div>
+  );
+}
+
+/**
+ * A fenced block, coloured if the language is one the scanner knows.
+ *
+ * The text is what goes on the page either way — an unknown language comes
+ * back as a single plain run, which renders as exactly the `<code>` that was
+ * here before. That is why there is no branch on whether colouring worked:
+ * there is nothing to fall back to, because the fallback is the same code
+ * path with one run in it.
+ *
+ * Memoized on the two things that decide the answer. This runs inside a
+ * transcript that re-renders on every streamed token, and re-scanning every
+ * finished block in the conversation to draw one new character is the kind of
+ * cost that does not show up until the conversation is long.
+ */
+function Painted({
+  source,
+  language,
+  className,
+}: {
+  source: string;
+  language: string | undefined;
+  className?: string;
+}) {
+  const runs = useMemo(() => paint(source, grammarFor(language)), [source, language]);
+  return (
+    <code className={className}>
+      {runs.map((run, i) => (
+        <span key={i} className={`ink-${run.kind}`}>
+          {run.text}
+        </span>
+      ))}
+    </code>
   );
 }
 

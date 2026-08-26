@@ -312,18 +312,24 @@ export const PERMISSION = {
   diff: {
     path: "crates/taurus-core/src/agent.rs",
     created: false,
-    added: 3,
-    removed: 2,
+    added: 2,
+    removed: 1,
     elided: 0,
+    // One line rewritten and one line added, which is what an edit usually is
+    // — and the two halves of the diff view in one hunk. The rewritten pair is
+    // a removal answered by exactly one addition, so the characters that
+    // differ are marked inside them; the `compact_if_needed` line is an
+    // addition answering nothing, so it is not paired and nothing in it is
+    // marked. An earlier version of this fixture had the *same* line on both
+    // sides, which no diff produces.
     hunks: [
       {
         lines: [
           { kind: "context", text: "    let mut usage = TokenUsage::default();", old_line: 411, new_line: 411 },
           { kind: "context", text: "", old_line: 412, new_line: 412 },
           { kind: "removed", text: "    for round in 0..MAX_ITERATIONS {", old_line: 413, new_line: null },
-          { kind: "removed", text: "        let request = self.build_request();", old_line: 414, new_line: null },
           { kind: "added", text: "    for round in 0..self.config.max_iterations {", old_line: null, new_line: 413 },
-          { kind: "added", text: "        let request = self.build_request();", old_line: null, new_line: 414 },
+          { kind: "context", text: "        let request = self.build_request();", old_line: 414, new_line: 414 },
           { kind: "added", text: "        self.compact_if_needed(&mut usage).await;", old_line: null, new_line: 415 },
           { kind: "context", text: "        let (tx, rx) = mpsc::channel(64);", old_line: 415, new_line: 416 },
         ],
@@ -652,3 +658,143 @@ export const RECIPE_RUN = {
   bytes: 233_472,
   took_ms: 848,
 };
+
+/**
+ * What a transcript search finds.
+ *
+ * Two conversations rather than one, and neither of them the one that is open:
+ * the group exists to reach the conversations the rail is *not* showing you,
+ * and a single hit in the session already on screen would be a picture of the
+ * feature not being needed. The excerpts hold real sentences with the match
+ * inside them rather than at an edge, because where the mark lands is the one
+ * thing this image checks that no test can.
+ */
+export const SEARCH_HITS = {
+  sessions: [
+    {
+      session: SESSIONS[2],
+      hits: 4,
+      matches: [
+        {
+          message: 6,
+          role: "assistant",
+          excerpt:
+            "…an OpenAI-compatible endpoint cannot be asked how much a model holds, so the context length has to be written down.",
+          from: 78,
+          to: 85,
+        },
+      ],
+    },
+    {
+      session: SESSIONS[1],
+      hits: 1,
+      matches: [
+        {
+          message: 2,
+          role: "user",
+          excerpt: "which crate decides the context length for a turn?",
+          from: 24,
+          to: 31,
+        },
+      ],
+    },
+  ],
+  more: 0,
+};
+
+/**
+ * A conversation's account, for the Context panel.
+ *
+ * `read_file` dominating is not an invention — it is what the real command
+ * reports on almost every working session, and it is the finding the panel
+ * exists to hand you. The repeated calls and the failure are here for the same
+ * reason the MCP shot shows a broken server: a frame in which nothing is worth
+ * acting on is a picture of a panel with no purpose.
+ */
+export const USAGE = {
+  sessions: 1,
+  turns: 6,
+  messages: 41,
+  reported_in: 312_151,
+  reported_out: 3_385,
+  cached_in: 214_000,
+  history: 39_612,
+  tools: [
+    { name: "read_file", calls: 11, tokens: 34_954, failures: 0, share: 82 },
+    { name: "search_code", calls: 4, tokens: 4_120, failures: 0, share: 9 },
+    { name: "run_command", calls: 6, tokens: 2_180, failures: 1, share: 5 },
+    { name: "grep", calls: 9, tokens: 1_040, failures: 0, share: 2 },
+    { name: "list_dir", calls: 12, tokens: 604, failures: 0, share: 1 },
+  ],
+  repeats: 3,
+  repeat_tokens: 9_400,
+  system_prompt: 1_383,
+  schemas: [
+    { name: "propose_agent", tokens: 501 },
+    { name: "draft_mcp_server", tokens: 439 },
+    { name: "propose_skill", tokens: 439 },
+    { name: "run_command", tokens: 429 },
+    { name: "run_recipe", tokens: 404 },
+    { name: "search_code", tokens: 318 },
+    { name: "edit_file", tokens: 296 },
+    { name: "grep", tokens: 271 },
+  ],
+};
+
+/**
+ * Two commands running in the background, and what one of them has printed.
+ *
+ * A failing test run rather than a clean one, for the reason the MCP shot
+ * shows a server that is not answering: this pane exists because the model can
+ * watch a build the user cannot, and a frame of green output would say nothing
+ * about why anybody would look at it.
+ *
+ * The dev server beside it is the other half of what these are for — a command
+ * that will not finish on its own, and that a `check_command` between turns is
+ * the wrong way to keep an eye on.
+ */
+export const BACKGROUND_JOBS = [
+  {
+    id: 1,
+    command: "cargo test --workspace",
+    running: false,
+    stopped: false,
+    code: 101,
+    ran_for: 96,
+    status: "exited with code 101 after 1m36s",
+  },
+  {
+    id: 2,
+    command: "pnpm dev --host",
+    running: true,
+    stopped: false,
+    ran_for: 214,
+    status: "still running after 3m34s",
+  },
+];
+
+/** What the failing run said. The tab this is under is the one on screen. */
+export const BACKGROUND_OUTPUT = `   Compiling taurus-tools v0.2.0
+   Compiling taurus-host v0.2.0
+    Finished \`test\` profile [unoptimized + debuginfo] target(s) in 41.02s
+     Running unittests src/lib.rs
+
+running 383 tests
+test jobs::tests::the_window_reads_a_command_without_taking_it_from_the_model ... ok
+test jobs::tests::a_window_cursor_only_asks_for_what_it_has_not_seen ... ok
+test sweep::tests::a_rename_is_one_change_and_not_two ... FAILED
+
+failures:
+
+---- sweep::tests::a_rename_is_one_change_and_not_two stdout ----
+thread 'sweep::tests::a_rename_is_one_change_and_not_two' panicked at
+crates/taurus-tools/src/sweep.rs:1204:9:
+assertion \`left == right\` failed: the rename was recorded as a delete and a create
+  left: 2
+ right: 1
+
+failures:
+    sweep::tests::a_rename_is_one_change_and_not_two
+
+test result: FAILED. 382 passed; 1 failed; 0 ignored; 0 measured
+`;

@@ -44,6 +44,11 @@ use serde::{Deserialize, Serialize};
 /// Bumped when an entry's shape changes incompatibly, or when the meaning of a
 /// vector does. An index written by a newer Taurus is discarded and rebuilt
 /// rather than half-read — unlike a checkpoint, nothing is lost by rebuilding.
+///
+/// Still 1. Structure-snapped chunks and embedded headings were built, would
+/// have had to move this, and were measured retrieving worse than the line
+/// windows they replaced — see `examples/retrieval.rs` and the entry in
+/// `docs/known-gaps.md`.
 const FORMAT_VERSION: u32 = 1;
 
 /// Most files one workspace may index.
