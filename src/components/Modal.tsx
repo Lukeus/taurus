@@ -27,10 +27,21 @@ export function Modal({
   onClose,
   /** For the two that layer over an already-open drawer. */
   className = "scrim",
+  /**
+   * A control to land on instead of the panel.
+   *
+   * The default is deliberate and stays the default — see below. This is for
+   * the one shape where it is wrong: a panel whose whole purpose is a text box,
+   * where landing on the container means the first thing typed goes nowhere.
+   * A stray Enter in a search box does nothing, which is exactly why that panel
+   * can afford what a permission prompt cannot.
+   */
+  initialFocus,
   children,
 }: {
   onClose?: () => void;
   className?: string;
+  initialFocus?: { current: HTMLElement | null };
   children: ReactNode;
 }) {
   const scrim = useRef<HTMLDivElement>(null);
@@ -47,10 +58,16 @@ export function Modal({
     if (!panel.hasAttribute("tabindex")) panel.tabIndex = -1;
     // The container rather than the first control: landing on a button means
     // a stray Enter has already pressed it, which on the permission prompt is
-    // a grant nobody chose.
-    panel.focus({ preventScroll: true });
+    // a grant nobody chose. `initialFocus` is the exception, and it wins here
+    // rather than in the caller because a child effect runs before its
+    // parent's — a caller focusing its own input would have it taken away
+    // again a moment later, which is the bug this parameter exists to avoid.
+    (initialFocus?.current ?? panel).focus({ preventScroll: true });
 
     return () => opener?.focus?.({ preventScroll: true });
+    // Read once, on open. A ref that filled in later would not re-run this,
+    // and should not: focus belongs to the user by then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

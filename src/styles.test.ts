@@ -63,6 +63,24 @@ describe("the stylesheet", () => {
     return px === undefined ? undefined : Number(px);
   }
 
+  it("gives every kind the scanner can produce a colour", () => {
+    // The scanner and the stylesheet are the two halves of one decision, and
+    // they are in different files and different languages. A kind added to
+    // `InkKind` with no rule here is invisible in the worst way: the run
+    // renders, inherits whatever it is sitting in, and looks like a colour
+    // somebody chose. Read out of the type rather than restated, so the list
+    // cannot be half-updated.
+    const source = readFileSync(new URL("./lib/ink.ts", import.meta.url), "utf8");
+    const declared = source
+      .slice(source.indexOf("export type InkKind ="), source.indexOf("export type Ink ="))
+      .match(/"([a-z]+)"/g)
+      ?.map((quoted) => quoted.replaceAll('"', ""));
+    expect(declared?.length).toBeGreaterThan(0);
+    for (const kind of declared ?? []) {
+      expect(css, kind).toMatch(new RegExp(`\\.ink-${kind}[,\\s{]`));
+    }
+  });
+
   it("offsets the focus ring far enough off a control to read as a ring", () => {
     /*
      * At the 1px this shipped with, a ring in --accent sitting off a button

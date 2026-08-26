@@ -271,6 +271,8 @@ pub fn run() {
             commands::rewind_to,
             commands::turn_changes,
             commands::repo_status,
+            commands::usage_report,
+            commands::search_sessions,
             commands::commit_turn,
             commands::terminal_open,
             commands::terminal_write,

@@ -14,13 +14,15 @@ import { useStore } from "../state/store";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
-const mount = () => {
+const into = (onOpen: () => void = () => {}) => {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  act(() => root.render(<ContextMeter />));
-  return host.innerHTML;
+  act(() => root.render(<ContextMeter onOpen={onOpen} />));
+  return host;
 };
+
+const mount = (onOpen: () => void = () => {}) => into(onOpen).innerHTML;
 
 /** Puts a reading in the store the way a running turn does. */
 const reading = (used: number, window: number | null) =>
@@ -76,5 +78,18 @@ describe("ContextMeter", () => {
     // the last one taken can be of a request the model then answered into.
     reading(200_000, 128_000);
     expect(mount()).toContain("width: 100%");
+  });
+
+  it("opens the account when it is pressed", () => {
+    // The shape of the feature: this says how much, and the panel it opens
+    // says what it went on. A reading that makes you ask a question should be
+    // the thing you press to answer it.
+    reading(90_000, 128_000);
+    const opened = vi.fn();
+    const host = into(opened);
+    const meter = host.querySelector(".context-meter") as HTMLButtonElement;
+    expect(meter.tagName).toBe("BUTTON");
+    act(() => meter.click());
+    expect(opened).toHaveBeenCalledOnce();
   });
 });

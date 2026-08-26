@@ -84,6 +84,10 @@ async function open() {
   return {
     host,
     html: () => host.innerHTML,
+    // A diff line is one span per run of syntax now, and another wherever the
+    // intra-line mark starts and stops. Anything asking whether a line of code
+    // is on screen has to read it the way a person does.
+    text: () => host.textContent ?? "",
     /** Clicks the first button whose visible text matches. */
     click: async (text: string) => {
       const button = [...host.querySelectorAll("button")].find((b) =>
@@ -138,8 +142,8 @@ describe("reading a turn", () => {
     const ui = await open();
     await ui.click("View changes");
 
-    expect(ui.html()).toContain("let old = 1;");
-    expect(ui.html()).toContain("let new = 2;");
+    expect(ui.text()).toContain("let old = 1;");
+    expect(ui.text()).toContain("let new = 2;");
     ui.unmount();
   });
 

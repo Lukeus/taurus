@@ -6,6 +6,7 @@ import { useSections } from "../lib/sections";
 import {
   DelegateIcon,
   DisplayIcon,
+  GaugeIcon,
   Logo,
   MoonIcon,
   PlugIcon,
@@ -56,6 +57,7 @@ export function Rail({
   onSkills,
   onAgents,
   onMemory,
+  onUsage,
   onMcp,
   onTerminal,
   onSettings,
@@ -99,6 +101,11 @@ export function Rail({
   onSkills: () => void;
   onAgents: () => void;
   onMemory: () => void;
+  /** Opens the context account. Reached from here as well as from the meter
+   *  above the composer, because the meter hides itself while the window is
+   *  less than half full — and "what does a request cost before I start" is a
+   *  question worth asking exactly then. */
+  onUsage: () => void;
   onMcp: () => void;
   /** Shows or hides the terminal dock. The dock says which it is; this row
    *  only has to be the way to reach it. */
@@ -311,6 +318,16 @@ export function Rail({
             {noteCount !== null && noteCount > 0 && (
               <span className="count">{noteCount}</span>
             )}
+          </button>
+          <button
+            className="rail-link"
+            onClick={onUsage}
+            data-tip="What has filled the context window, and what every request costs before it starts"
+          >
+            <span className="glyph">
+              <GaugeIcon />
+            </span>
+            <b>Context</b>
           </button>
           <button className="rail-link" onClick={onMcp} data-tip={mcpHint(mcp)}>
             <span className="glyph">

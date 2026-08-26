@@ -26,18 +26,19 @@ afterEach(() => {
   cleanup = [];
 });
 
-function mount(entries: Entry[]) {
+function mount(entries: Entry[], find: string | null = null) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   const answered: { id: string; answers: Answer[] }[] = [];
   const opened: { session: string; agent: string }[] = [];
-  const render = (next: Entry[]) =>
+  const render = (next: Entry[], nextFind: string | null = find) =>
     root.render(
       <Transcript
         entries={next}
         busy={false}
         empty={null}
+        find={nextFind}
         onAnswer={(id, answers) => {
           answered.push({ id, answers });
         }}
@@ -58,7 +59,9 @@ function mount(entries: Entry[]) {
       act(() => {
         (element as HTMLElement).click();
       }),
-    rerender: (next: Entry[]) => act(() => render(next)),
+    rerender: (next: Entry[], nextFind?: string | null) =>
+      act(() => render(next, nextFind === undefined ? find : nextFind)),
+    found: () => [...host.querySelectorAll(".turn.found")],
   };
 }
 
@@ -450,5 +453,70 @@ describe("a conversation that has only just started", () => {
 
     expect(host.querySelector(".transcript.empty")).toBeNull();
     expect(host.textContent).toContain("the first question");
+  });
+});
+
+describe("landing on a search hit", () => {
+  const said = (id: string, text: string): Entry => ({ kind: "user", id, text });
+  const answered = (id: string, text: string): Entry => ({
+    kind: "assistant",
+    id,
+    text,
+    thinking: "",
+    open: false,
+  });
+
+  it("marks nothing when there is nothing to find", () => {
+    const ui = mount([said("u1", "fix the trust banner")]);
+    expect(ui.found()).toHaveLength(0);
+  });
+
+  it("marks the turn that holds the text", () => {
+    const ui = mount(
+      [said("u1", "add a chart"), answered("a1", "done"), said("u2", "fix the trust banner")],
+      "trust banner",
+    );
+    const marked = ui.found();
+    expect(marked).toHaveLength(1);
+    expect(marked[0].textContent).toContain("fix the trust banner");
+  });
+
+  it("marks the first turn that holds it, not every one", () => {
+    // One mark, because there is one place the search sent you. A page of
+    // marks is a page with no answer on it.
+    const ui = mount(
+      [said("u1", "widget"), answered("a1", "widget"), said("u2", "widget")],
+      "widget",
+    );
+    expect(ui.found()).toHaveLength(1);
+  });
+
+  it("finds what the model said as well as what was asked", () => {
+    const ui = mount(
+      [said("u1", "why"), answered("a1", "because the freshness check ran")],
+      "freshness",
+    );
+    expect(ui.found()[0].textContent).toContain("freshness");
+  });
+
+  it("ignores case, the way the search that sent it here did", () => {
+    const ui = mount([said("u1", "The Trust Banner")], "trust banner");
+    expect(ui.found()).toHaveLength(1);
+  });
+
+  it("marks nothing when the text is not in this conversation", () => {
+    // A conversation that has since been compacted is the honest case: the
+    // hit was in the transcript and is no longer on screen, and marking the
+    // nearest thing instead would point at the wrong turn.
+    const ui = mount([said("u1", "add a chart")], "trust banner");
+    expect(ui.found()).toHaveLength(0);
+  });
+
+  it("takes the mark off again when the caller withdraws it", () => {
+    const entries = [said("u1", "fix the trust banner")];
+    const ui = mount(entries, "trust banner");
+    expect(ui.found()).toHaveLength(1);
+    ui.rerender(entries, null);
+    expect(ui.found()).toHaveLength(0);
   });
 });

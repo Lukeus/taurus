@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 
 import { ChartCard } from "./ChartCard";
@@ -126,6 +126,17 @@ export type TranscriptProps = {
    * opening it at the last line is opening it at the end of the book.
    */
   follow?: boolean;
+  /**
+   * Text to jump to, from a search that named this conversation.
+   *
+   * The turn that first holds it is marked and scrolled to. Matched here
+   * rather than by message index, because the index the search reports is into
+   * the *transcript* and what is on screen is turns — a turn folds a prompt,
+   * an answer and a run of tool calls into one card, and the two do not count
+   * the same things. Looking for the text again is both simpler and right for
+   * a conversation that has since been compacted.
+   */
+  find?: string | null;
 };
 
 export function Transcript({
@@ -139,6 +150,7 @@ export function Transcript({
   onOpenDataset,
   onRunQuery,
   follow = true,
+  find = null,
 }: TranscriptProps) {
   const bottom = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -194,6 +206,11 @@ export function Transcript({
   // being empty, would take the component down with it.
   const conversation = useStableTurns(entries);
 
+  // Which turn a search jump landed on, or -1. Recomputed rather than held:
+  // the conversation is still streaming while this is on screen, and a stored
+  // index would point at the wrong turn the moment one arrives.
+  const found = useMemo(() => turnHolding(conversation, find), [conversation, find]);
+
   if (entries.length === 0) {
     return (
       <div className="transcript empty" ref={container}>
@@ -215,6 +232,7 @@ export function Transcript({
           // Only ever the last one: the thing still being worked on is the
           // question most recently asked, and the marker belongs on its rail
           // rather than floating under the conversation as a whole.
+          found={i === found}
           working={busy && i === conversation.length - 1}
           stopping={stopping}
           onAnswer={answer}
@@ -382,8 +400,31 @@ function unchanged(a: Turn, b: Turn): boolean {
  * replaced, was the question pinned to the right margin and its answer to the
  * left, sharing no edge and connected by nothing.
  */
+/**
+ * The first turn whose prose holds `find`, or -1.
+ *
+ * Prose only, which is what the search matched — a tool call's arguments are
+ * not what anybody typed, and scrolling to a turn because a file it read
+ * happened to contain the word would land nowhere near the reason it matched.
+ */
+function turnHolding(conversation: Turn[], find: string | null): number {
+  const needle = find?.trim().toLowerCase();
+  if (!needle) return -1;
+  const holds = (text: string) => text.toLowerCase().includes(needle);
+  return conversation.findIndex(
+    (turn) =>
+      (turn.prompt ? holds(turn.prompt.text) : false) ||
+      turn.body.some((item) =>
+        Array.isArray(item)
+          ? false
+          : (item.kind === "user" || item.kind === "assistant") && holds(item.text),
+      ),
+  );
+}
+
 const TurnView = memo(function TurnView({
   turn,
+  found,
   working,
   stopping,
   onAnswer,
@@ -392,6 +433,8 @@ const TurnView = memo(function TurnView({
   onRunQuery,
 }: {
   turn: Turn;
+  /** Landed on by a search. Marked, and scrolled to when it becomes true. */
+  found: boolean;
   working: boolean;
   /** Cancelling. Only ever read when `working`. */
   stopping: boolean;
@@ -400,8 +443,21 @@ const TurnView = memo(function TurnView({
   onOpenDataset?: (name: string) => void;
   onRunQuery?: (sql: string) => void;
 }) {
+  const self = useRef<HTMLElement>(null);
+
+  // On the turn rather than on the transcript, because the turn is the thing
+  // that knows when it became the answer. `center` and not `nearest`: this is
+  // an arrival rather than a step through a list, and a match that lands
+  // against the top edge reads as the top of the conversation.
+  useEffect(() => {
+    if (found) self.current?.scrollIntoView({ block: "center" });
+  }, [found]);
+
   return (
-    <section className={`turn${turn.prompt ? "" : " unprompted"}`}>
+    <section
+      ref={self}
+      className={`turn${turn.prompt ? "" : " unprompted"}${found ? " found" : ""}`}
+    >
       {turn.prompt && <Prompt entry={turn.prompt} />}
       {turn.body.map((item) =>
         Array.isArray(item) ? (

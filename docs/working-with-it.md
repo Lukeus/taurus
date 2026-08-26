@@ -101,6 +101,65 @@ A transcript written before that field existed simply has no branch, which is
 why it defaults rather than being required: an upgrade must not make every
 existing conversation unlistable.
 
+## Finding a conversation
+
+The rail lists this workspace's conversations, today's and then everything
+earlier, which answers "which of these was I in this morning" and nothing else.
+Once there are sixty of them the question is usually "which one was that", and
+the answer is somewhere in the transcript rather than in the title.
+
+**⌘K** — Ctrl+K away from a Mac — opens one box over the whole window. Type,
+and three kinds of answer appear under it:
+
+- **Do** and **Panels** — every drawer, and the handful of verbs that are not
+  in one. Matched on the name and on the words you would reach for instead:
+  `undo` finds Changes, `tokens` finds Context.
+- **Conversations** — matched on title, out of the list the rail is already
+  holding. No disk, so it answers before the second keystroke lands.
+- **In conversations** — the transcripts themselves, with the line the hit is
+  on and the words that matched marked in it.
+
+The groups stay in that order rather than being interleaved by score. The first
+two are instant and the third takes as long as reading the files takes, and a
+row that was under the cursor and then moved because a slower answer outranked
+it is a row you have already pressed Enter on.
+
+Pick a conversation found by content and it opens **at the hit** — the turn
+holding it is marked and scrolled to, rather than the conversation opening at
+the bottom the way resuming one normally does. The mark comes off after a few
+seconds, or as soon as you ask something.
+
+`everywhere` widens it past this workspace, which is the other question: not
+"which conversation was that" but "which *project* was that in".
+
+![The command palette over the app, showing a panel matched by name, a
+conversation matched by title, and two matched by what was said in
+them](screenshots/palette.png)
+
+### What it searches
+
+Prose. What you typed and what the model wrote back — not tool calls, and not
+their results. That is the whole difference between this and a `grep` of your
+home directory: tool results are file contents and build logs, so including
+them would match nearly every conversation for nearly every query and rank them
+by nothing. A reasoning model's thinking is left out for a related reason — it
+mentions everything the model considered, including what it went on to reject,
+and a hit inside one is not evidence the conversation was about that.
+
+The match is literal and case-insensitive. There is no regex and no index:
+every transcript in scope is read on every search. What makes that affordable
+is that a transcript is JSONL, so a file whose bytes do not hold the query
+cannot hold it once parsed — a conversation that does not match is one file
+read and nothing else. Sixty conversations is about a tenth of a second, which
+is why the search is debounced rather than run per keystroke, and why it fills
+in underneath answers that are already on screen.
+
+See it on your own history:
+
+```bash
+cargo run -p taurus-host --example search -- "the thing you said"
+```
+
 ## Planning a long task
 
 A frontier model keeps a six-step task in its head. A 9B model does not — and
@@ -557,6 +616,40 @@ these five are exactly the ones a sub-agent never gets. They are
 and `ask_user`, which address the person watching this conversation; and
 `update_plan`, whose checklist belongs to the turn that wrote it.
 
+**And when it fills anyway, you can find out what filled it.** The meter says
+how much; pressing it says on what. The Context panel — also in the rail, since
+the meter hides itself below half a window — accounts for a conversation or for
+every conversation in the workspace: turns and messages, what the provider
+actually billed and how much of it came from cache, what the transcript holds
+now, and then a row per tool with its calls, its tokens, and its share of them.
+
+Two numbers on it are the ones worth acting on. **Repeated calls** — same tool,
+same input, twice — are pure waste and are the only thing here that a differently
+worded question would have avoided. And **sent again with every request**, which
+is the system prompt plus every advertised tool schema: it is not in the
+transcript, it goes out on each iteration of every turn whether or not anything
+is called, and it is why a conversation worth a thousand tokens can bill twenty.
+The heaviest schemas are named, which is how you decide what to put in
+`disabled_tools`.
+
+That half is read off the live configuration rather than out of a transcript,
+so it describes the *next* request — which makes it worth opening in a workspace
+where nothing has run yet, and the panel says so rather than showing an empty
+frame.
+
+Everything here except the billed row is estimated at four characters a token;
+the provider reports one number for a whole request and never says which part
+of the prompt was whose. The same account prints in the terminal:
+
+![The Context panel: what the tools cost, the calls that repeated an earlier
+one, and what every request pays before the conversation
+starts](screenshots/context.png)
+
+```bash
+taurus usage              # the most recent conversation here
+taurus usage --all        # every conversation in this workspace
+```
+
 **Semantic search is off until a model is named.** `search_code` needs
 something to embed with, so it is not registered until one is set — under
 **Settings → Search**, or in `settings.json`, which is the same field:
@@ -698,6 +791,39 @@ The trade-off is that CLI prose appears a line at a time rather than a token at
 a time, since a line has to be complete before it can be styled. The
 alternative — redrawing the current line with cursor escapes — corrupts output
 as soon as a line wraps.
+
+### Code is coloured, and so is a diff
+
+A fenced block in the app is coloured by the language on the fence, and every
+diff — the one on a permission prompt and the same one read back later in the
+Changes drawer — is coloured by the file's own extension. One palette does all
+of it, the query box included, so a `SELECT` is the same colour wherever you
+read it.
+
+What paints it is a scanner rather than a parser, deliberately, and the same
+one for every language: what differs between them is a short list of facts —
+how a comment opens, which delimiters quote a string, which words are the
+vocabulary — so those are data and the walk over the characters is not. It
+knows Rust, TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML, and
+TOML. Anything else keeps its label and renders plain, which is what it did
+before, and is a better answer than colouring it wrongly.
+
+A diff does one thing more. Where a removed line and an added line are the same
+line before and after, **the characters that actually differ are marked inside
+them** — so a rename in a sixty-character line reads as the one word that
+moved rather than as a whole line struck out and a whole line put back. It is
+a trim rather than a match: the common words at each end come off and the
+middle is the change. Two cases get no mark rather than a guess. A line
+rewritten end to end has no common trim worth the name, and marking almost all
+of it would look like a finding while saying nothing. And where a run of
+removals is answered by a run of additions of a *different* length, lines were
+inserted or deleted as well as changed — pairing them by position would mark
+the difference between lines that have nothing to do with each other,
+confidently and wrongly.
+
+The `+` and `−` in the gutter stay the primary signal either way. Colour is the
+fast read and the one that fails on a projector, in a screenshot, and for a
+reader who cannot tell red from green.
 
 ## Tables, charts, diagrams, and questions
 

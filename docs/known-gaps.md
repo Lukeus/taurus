@@ -725,3 +725,77 @@ and they are the minority.
   Both are worth having. The transcript's `show_table` sorts because its rows
   are already in the browser; these are not, and pretending otherwise would sort
   the hundred rows on screen and call it sorted.
+- **Searching a conversation reads every transcript, every time.** There is no
+  index. What makes that affordable is the shape of the file rather than any
+  structure kept beside it: a transcript is JSONL, so one whose bytes do not
+  hold the query cannot hold it once parsed, and a conversation that does not
+  match costs one read and nothing else. Measured on sixty-one real
+  conversations across every workspace, a whole-history search is about 110ms —
+  which is why the palette debounces rather than searching per keystroke, and
+  why its two local groups answer first and this one fills in underneath. It
+  grows linearly with how much you have said. Building an index means deciding
+  when to rebuild it, and a stale index that quietly stops finding last
+  Tuesday is worse than a search that takes a tenth of a second. See
+  [Finding a conversation](working-with-it.md#finding-a-conversation).
+- **The search is literal, and it does not read tool calls.** No regex, no
+  fuzzy matching, no stemming: `banner` does not find `banners`. And it reads
+  prose only — what you typed and what the model wrote back, not a tool's
+  arguments and not its results. That last one is a decision rather than an
+  omission, and it is what makes the results usable: tool results are file
+  contents and build logs, so including them would match nearly every
+  conversation for nearly every query. The cost is real, though — a thing that
+  only ever appeared in a file the agent read is not findable here, and `grep`
+  over `~/.taurus/sessions` is the honest answer for that.
+- **A search hit is found again by text, not by position.** The search reports
+  which message matched, and the app throws that away and looks for the words
+  again in what is on screen. The two do not count the same things — a turn
+  folds a prompt, an answer and a run of tool calls into one card — and looking
+  again is both simpler and right for a conversation that has been compacted
+  since. What it costs is the case where the hit was summarized away: the
+  conversation opens, nothing is marked, and nothing says why. It also marks
+  the *first* turn holding the words rather than the one the search found, which
+  differ when a conversation says the same thing twice.
+- **Colouring code is a scanner, not a parser.** One walk serves every
+  language, parameterized by how a comment opens, which delimiters quote a
+  string, and which words are the vocabulary. That is enough to be right about
+  ordinary code and it is not enough to be right about all of it: a construct
+  it misreads is coloured wrongly rather than reported, because there is
+  nothing here that could report it. The languages it knows are Rust,
+  TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML, and TOML.
+  Everything else — HTML and CSS included, which are common in a fenced block
+  and whose syntax is not word-shaped — renders plain with its label intact,
+  which is what every block did before this existed. Growing the list is a
+  `Grammar` each; growing it to *markup* is a second scanner, and a
+  word-oriented one turned loose on HTML produces confident nonsense.
+- **An intra-line diff mark is a trim, not a diff.** The common words at each
+  end of a replaced line come off and whatever is left in the middle is marked,
+  which is one region per line by construction. A line with two separate small
+  edits in it is therefore marked from the first to the last, including the
+  unchanged text between them. Two cases decline outright rather than guess: a
+  line rewritten end to end, where marking almost all of it would look like a
+  finding, and a run of removals answered by a run of additions of a different
+  length, where pairing by position would mark the difference between unrelated
+  lines. In all three the line-level `+` and `−` are still exactly right, which
+  is why declining is affordable.
+- **What a tool cost in the Context panel is apportioned, not measured.** The
+  provider reports one number for a whole request and never says which part of
+  the prompt was whose, so every figure there except the billed row is the
+  harness's own four-characters-a-token estimate — the same estimate the
+  compaction threshold runs on, and limited the same way. It is accurate enough
+  to rank tools against each other, which is what the panel is for, and it is
+  not a bill. The two numbers that are exact are what the provider reported in
+  and out. See [The context window](working-with-it.md#the-context-window).
+- **The panel accounts for tokens, not money.** No provider's prices are in
+  here and none are fetched, so nothing multiplies the billed tokens by a rate.
+  Adding it means a price table per provider per model that somebody has to
+  keep current, and a table that is six months stale reporting dollars to two
+  decimal places is worse than no dollars at all.
+- **There are four keyboard shortcuts.** ⌘K and ⌘⇧P open the palette, ⌘N starts
+  a conversation, ⌘, opens Settings, and ⌃` shows the terminal. That is the
+  whole list, and it is short on purpose: every one of them is also a row in
+  the palette wearing the key it answers to, so the palette is the discovery
+  surface and adding a fifth shortcut is cheap in a way adding the first was
+  not. What is not here is user-defined bindings — a keymap file means a
+  conflict resolver, a way to see what is bound, and a way to find out why a
+  key did nothing.
+

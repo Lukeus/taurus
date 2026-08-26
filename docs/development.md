@@ -148,11 +148,26 @@ of the box's auto-sizing or of where the list lands would be asserting numbers
 the browser never produces. The mount tests prove the list has the right rows
 in it; the PNG is what proves it is in the right place.
 
-Both of those scenes type into a React-controlled textarea, which needs the
-value written through `HTMLTextAreaElement.prototype`'s own setter before the
-`input` event — React keeps a tracker on the node and silently drops an event
-whose value it believes it already has. `typeInto` in `scripts/screenshots/`
-does it; the mount tests do the same thing for the same reason.
+`palette` is the only check that a keyboard shortcut is bound at all. It opens
+the box by dispatching the chord on `window` rather than by pressing anything,
+which is the half no unit test can reach: jsdom can prove `isChord` agrees with
+the label a row wears, and only a browser can prove the listener is on the
+window to hear it. It sends the modifier `APPLE` says this machine uses — the
+same constant the label is drawn from — because sending the other one would be
+correctly refused, and the shot would then fail for the one reason that is not
+a regression.
+
+`permission-diff` earns its place twice over now. Besides the dialog, it is the
+only picture of a diff that has been coloured and marked: its hunk is one line
+rewritten and one line added, so the same image shows the intra-line mark on
+the pair that was rewritten and *no* mark on the addition that answers nothing.
+
+Those scenes type into a React-controlled text box, which needs the value
+written through the element's own prototype setter before the `input` event —
+React keeps a tracker on the node and silently drops an event whose value it
+believes it already has. `typeInto` in `scripts/screenshots/` does it, taking
+the prototype off the element because the query box is a `<textarea>` and the
+palette is an `<input>`; the mount tests do the same thing for the same reason.
 
 `motion` is the odd one: a still image of a set of animations, which sounds
 useless and is not. It cannot show that anything moves, and that is not what it
@@ -207,6 +222,16 @@ cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async boo
 # handful of readers a sweep gets slower, and by eight it is slower than one
 # thread.
 cargo run -p taurus-tools --example sweep -- .
+
+# What searching your real transcripts costs, and what it finds. Needs no
+# provider. It reads `~/.taurus/sessions` and writes nothing. Two numbers, and
+# the gap between them is the point: a query that matches nothing pays only the
+# prefilter — every file read, none parsed — and a query that hits pays to
+# rebuild what matched. If those are close on a large history the prefilter in
+# `sessions::mentions` is not working, and the palette will feel a word behind
+# the typing. It prints each hit with the mark the palette would draw, so a
+# wrong offset shows up here rather than only in the window.
+cargo run -p taurus-host --example search -- "something you said"
 
 # A command that outlives the call that started it. Needs no provider. It
 # starts one in a throwaway workspace, shows it running while nothing has

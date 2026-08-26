@@ -15,6 +15,10 @@ const render = (text: string) =>
 const renderStreaming = (text: string) =>
   renderToStaticMarkup(<Markdown text={text} streaming />);
 
+/** The rendered text, with the markup taken back off. See the note below. */
+const shown = (html: string) =>
+  html.replace(/<[^>]*>/g, "").replace(/&quot;/g, '"').replace(/&#x27;/g, "'");
+
 describe("markdown rendering", () => {
   it("renders emphasis rather than showing the asterisks", () => {
     const html = render("Done. **README.md** is updated.");
@@ -39,7 +43,11 @@ describe("markdown rendering", () => {
     expect(html).toContain('class="md-code"');
     expect(html).toContain("rust");
     expect(html).toContain("copy");
-    expect(html).toContain("fn main() {}");
+    // Read as text: the body is now one span per run of syntax, so asking the
+    // markup whether it holds the line uninterrupted asks about the tokenizer
+    // rather than about what is on the page. That `rust` was coloured at all
+    // is `ink.test.ts`'s business.
+    expect(shown(html)).toContain("fn main() {}");
   });
 
   it("renders GFM tables", () => {
@@ -96,7 +104,7 @@ describe("markdown rendering", () => {
     it("renders an unterminated code fence as a code block", () => {
       const html = renderStreaming("```rust\nfn main(");
       expect(html).toContain('class="md-code"');
-      expect(html).toContain("fn main(");
+      expect(shown(html)).toContain("fn main(");
     });
 
     it("leaves an unterminated emphasis marker as text", () => {

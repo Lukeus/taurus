@@ -1,6 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
+
+import { chord, isChord } from "./lib/keys";
+import type { Action } from "./lib/palette";
 
 import { Attachments } from "./components/Attachments";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
@@ -61,6 +64,8 @@ const PANELS = {
   agents: () => import("./components/AgentsDrawer"),
   mcp: () => import("./components/McpDrawer"),
   memory: () => import("./components/MemoryDrawer"),
+  usage: () => import("./components/UsagePanel"),
+  palette: () => import("./components/CommandPalette"),
   changes: () => import("./components/ChangesDrawer"),
   delegate: () => import("./components/DelegateTranscript"),
 };
@@ -75,6 +80,10 @@ const AgentsDrawer = lazy(() =>
 const McpDrawer = lazy(() => PANELS.mcp().then((m) => ({ default: m.McpDrawer })));
 const MemoryDrawer = lazy(() =>
   PANELS.memory().then((m) => ({ default: m.MemoryDrawer })),
+);
+const UsagePanel = lazy(() => PANELS.usage().then((m) => ({ default: m.UsagePanel })));
+const CommandPalette = lazy(() =>
+  PANELS.palette().then((m) => ({ default: m.CommandPalette })),
 );
 const ChangesDrawer = lazy(() =>
   PANELS.changes().then((m) => ({ default: m.ChangesDrawer })),
@@ -244,6 +253,17 @@ export default function App() {
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  /**
+   * Text a search jump is looking for in the open conversation.
+   *
+   * Held here rather than in the palette, which is closed by the time the
+   * conversation it named has finished loading. Cleared on a timer because a
+   * mark that never goes away stops meaning "here" and starts being part of
+   * the page — and cleared on the next message for the same reason.
+   */
+  const [find, setFind] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
   /**
@@ -283,6 +303,44 @@ export default function App() {
       if (e.key !== "`" || !e.ctrlKey || e.metaKey || e.altKey) return;
       e.preventDefault();
       setTerminalOpen((open) => !open);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
+
+  /*
+   * The shortcuts that reach the whole window.
+   *
+   * Deliberately few. Every one of them is also a row in the palette, wearing
+   * the key it answers to — which is how anybody finds out it exists, and why
+   * adding a seventh is cheap in a way that adding the first was not.
+   *
+   * ⌘K opens the palette, and ⌘⇧P is the same door for anybody arriving from
+   * an editor that spells it that way. The rest are the two verbs worth
+   * reaching without it: a new conversation and settings, both of which
+   * every application on the platform binds to these keys already.
+   *
+   * On the window, like the terminal toggle above, and for the same reason:
+   * the point of a shortcut is that it works wherever you happen to be. The
+   * one place it must not is inside a text box that has a use for the key —
+   * which none of these do.
+   */
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (isChord(e, "k") || (isChord(e, "p") && e.shiftKey)) {
+        e.preventDefault();
+        setPaletteOpen(true);
+      } else if (isChord(e, "n") && !e.shiftKey) {
+        e.preventDefault();
+        // Through the ref, not the closure. This effect is registered once,
+        // and `App` re-renders on every streamed token — a dependency on a
+        // handler rebuilt each render would add and remove a window listener
+        // thirty times a second for the life of a turn.
+        start.current();
+      } else if (isChord(e, ",")) {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
@@ -421,6 +479,24 @@ export default function App() {
     if (typeof chosen === "string") await store.setWorkspace(chosen);
   };
 
+  /*
+   * Takes the search mark back off after a while.
+   *
+   * A mark that never goes away stops meaning "here" and becomes part of the
+   * page — and the next thing to happen in a conversation you have just jumped
+   * into is usually reading it, not searching it again. Eight seconds is long
+   * enough to find the place and short enough that it is gone before it is
+   * furniture.
+   */
+  useEffect(() => {
+    if (!find) return;
+    const timer = setTimeout(() => setFind(null), 8000);
+    return () => clearTimeout(timer);
+  }, [find]);
+
+  /** The latest `newConversation`, for the window shortcut. See the effect. */
+  const start = useRef(() => {});
+
   const newConversation = () => {
     const model =
       store.session?.model ?? provider?.default_model ?? available[0]?.id;
@@ -428,6 +504,7 @@ export default function App() {
     // Nothing to start a conversation with yet; the place to fix that is here.
     setSettingsOpen(true);
   };
+  start.current = newConversation;
 
   // The listing entry rather than the session: a title is a fact about the
   // transcript, and a conversation with no entry has none of either yet.
@@ -442,6 +519,135 @@ export default function App() {
    * an unchanged catalog would refetch on every status.
    */
   const library = `${store.status?.skill_count ?? 0}:${store.status?.agent_count ?? 0}`;
+
+  /**
+   * Everything the palette can do.
+   *
+   * One list, and it is the only place any of these is written down as a
+   * *thing you can do* rather than as a button somewhere. That is what makes
+   * it worth building: a drawer reachable only from a row in the rail is
+   * discoverable by scanning the rail, and this makes the same drawer
+   * reachable by naming it — including by a name it does not wear, which is
+   * what `keywords` is for.
+   *
+   * `unavailable` rather than filtering: a command that disappears when it
+   * cannot run teaches that it does not exist, and one that says why teaches
+   * what it needs.
+   */
+  const actions = useMemo<Action[]>(
+    () => [
+      {
+        id: "new",
+        label: "New conversation",
+        group: "Do",
+        keywords: "start chat session",
+        shortcut: chord("N"),
+        run: newConversation,
+      },
+      {
+        id: "stop",
+        label: "Stop this turn",
+        group: "Do",
+        keywords: "cancel interrupt halt",
+        unavailable: store.busy ? undefined : "Nothing is running",
+        run: store.stop,
+      },
+      {
+        id: "workspace",
+        label: "Open another folder",
+        group: "Do",
+        keywords: "workspace project directory switch",
+        run: pickWorkspace,
+      },
+      {
+        id: "terminal",
+        label: "Terminal",
+        group: "Panels",
+        keywords: "shell console command line",
+        shortcut: "Ctrl+`",
+        run: () => setTerminalOpen((open) => !open),
+      },
+      {
+        id: "changes",
+        label: "Changes",
+        group: "Panels",
+        keywords: "diff undo rewind revert commit git",
+        unavailable: store.session ? undefined : "No conversation open",
+        run: () => setChangesOpen(true),
+      },
+      {
+        id: "context",
+        label: "Context",
+        group: "Panels",
+        keywords: "usage tokens cost window budget spent",
+        run: () => setUsageOpen(true),
+      },
+      {
+        id: "skills",
+        label: "Skills",
+        group: "Panels",
+        keywords: "procedures library",
+        run: () => setSkillsOpen(true),
+      },
+      {
+        id: "agents",
+        label: "Agents",
+        group: "Panels",
+        keywords: "sub-agents delegates",
+        run: () => setAgentsOpen(true),
+      },
+      {
+        id: "memory",
+        label: "Memory",
+        group: "Panels",
+        keywords: "notes remembered",
+        run: () => setMemoryOpen(true),
+      },
+      {
+        id: "mcp",
+        label: "MCP servers",
+        group: "Panels",
+        keywords: "tools servers connections",
+        run: () => setMcpOpen(true),
+      },
+      {
+        id: "settings",
+        label: "Settings",
+        group: "Panels",
+        keywords: "providers keys model preferences",
+        shortcut: chord(","),
+        run: () => setSettingsOpen(true),
+      },
+      ...(["dark", "light", "system"] as const).map((next) => ({
+        id: `theme-${next}`,
+        label: `Theme: ${next}`,
+        group: "Panels",
+        keywords: "appearance colour color",
+        // The one already in force is offered and does nothing rather than
+        // being left out, so the list of three does not change shape
+        // depending on which is on.
+        unavailable: theme === next ? "Already in use" : undefined,
+        run: () => void chooseTheme(next),
+      })),
+    ],
+    // Rebuilt when what they can do changes, not when the conversation moves:
+    // `newConversation`, `pickWorkspace` and `chooseTheme` close over values
+    // that are stable for as long as the palette is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [store.busy, store.session, theme],
+  );
+
+  /**
+   * Opens a conversation a search named, and marks what it was found for.
+   *
+   * Resuming is asynchronous and the mark is not: `find` is set first so the
+   * transcript is already looking for it as the entries arrive, rather than
+   * scrolling to the bottom and then jumping.
+   */
+  const openFound = (id: string, text: string | null) => {
+    setFind(text);
+    if (id !== store.session?.id) void store.resume(id);
+  };
 
   const listed = store.sessions.find((s) => s.id === store.session?.id);
   const title = listed?.title || "New conversation";
@@ -536,6 +742,7 @@ export default function App() {
         onSkills={() => setSkillsOpen(true)}
         onAgents={() => setAgentsOpen(true)}
         onMemory={() => setMemoryOpen(true)}
+        onUsage={() => setUsageOpen(true)}
         onMcp={() => setMcpOpen(true)}
         onTerminal={() => setTerminalOpen((open) => !open)}
         onSettings={() => setSettingsOpen(true)}
@@ -671,6 +878,7 @@ export default function App() {
               onOpenDelegate={setDelegate}
               onOpenDataset={showDataset}
               onRunQuery={showQuery}
+              find={find}
               empty={
                 <FirstRun
                   workspace={workspace}
@@ -763,8 +971,14 @@ export default function App() {
           library={library}
           onScreen={onScreen}
           draft={draft}
-          onSend={store.send}
+          // Also the moment the mark stops being what you are looking at:
+          // asking something is the end of having been sent here.
+          onSend={(...args) => {
+            setFind(null);
+            return store.send(...args);
+          }}
           onStop={store.stop}
+          onUsage={() => setUsageOpen(true)}
         />
 
         {/* Below the composer rather than between it and the transcript: the
@@ -807,6 +1021,22 @@ export default function App() {
           see `warmPanels` — and a flash of skeleton for a frame that usually
           does not happen reads worse than the drawer simply appearing. */}
       <Suspense fallback={null}>
+        {paletteOpen && (
+          <CommandPalette
+            actions={actions}
+            sessions={store.sessions}
+            onOpenSession={openFound}
+            onClose={() => setPaletteOpen(false)}
+          />
+        )}
+
+        {usageOpen && (
+          <UsagePanel
+            sessionId={store.session?.id ?? null}
+            onClose={() => setUsageOpen(false)}
+          />
+        )}
+
         {memoryOpen && (
           <MemoryDrawer
             onClose={() => setMemoryOpen(false)}
@@ -1209,6 +1439,7 @@ function Composer({
   onPickWorkspace,
   onSend,
   onStop,
+  onUsage,
 }: {
   busy: boolean;
   /** Pressed Stop, and the turn has not finished unwinding yet. */
@@ -1255,6 +1486,10 @@ function Composer({
     onScreen: OnScreen | null,
   ) => void;
   onStop: () => void;
+  /** Opens the context account. The meter this sits behind says how full the
+   *  window is; this is where "of what" is answered, and one click apart is
+   *  the right distance between the two. */
+  onUsage: () => void;
 }) {
   const [text, setText] = useState("");
   const [commands, setCommands] = useState<CommandSummary[]>([]);
@@ -1348,7 +1583,7 @@ function Composer({
       {/* The same argument as the dataset line below, applied to the window the
           message is about to go into: above the box, where you are already
           looking, and silent until there is something worth saying. */}
-      <ContextMeter />
+      <ContextMeter onOpen={onUsage} />
       {/* Above the box rather than inside it: this is not something you typed
           and must not read as though it were. It says what the message is
           about to carry, in the one place you are already looking. */}

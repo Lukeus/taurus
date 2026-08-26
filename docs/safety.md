@@ -25,6 +25,17 @@ costs a read that was going to happen anyway.
 ![The permission dialog showing a diff of the change a write would
 make](screenshots/permission-diff.png)
 
+Two things narrow that read further, since a line diff on its own tells you a
+line was replaced and leaves finding the difference to you. The text is
+coloured by the file's own language, and where a removal is answered by exactly
+one addition — the same line before and after — the characters that actually
+differ are marked inside them. Above, `MAX_ITERATIONS` and
+`self.config.max_iterations` carry the mark; the line below them was added
+rather than rewritten and answers nothing, so nothing in it is marked. See
+[Code is coloured, and so is a diff](working-with-it.md#code-is-coloured-and-so-is-a-diff)
+for the two cases where it declines to guess. The `+` and `−` in the gutter
+stay the primary signal either way.
+
 The diff `edit_file` shows is computed by running the replacement the call will
 run, through the same function. A dialog that shows one change while the tool
 makes another is worse than showing none, because it is what the user believed

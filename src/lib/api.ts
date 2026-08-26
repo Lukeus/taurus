@@ -40,6 +40,12 @@ import type { DiffHunk } from "../bindings/DiffHunk";
 import type { DiffLine } from "../bindings/DiffLine";
 import type { DiffLineKind } from "../bindings/DiffLineKind";
 import type { FileDiff } from "../bindings/FileDiff";
+import type { SchemaCost } from "../bindings/SchemaCost";
+import type { SearchResults } from "../bindings/SearchResults";
+import type { SessionHit } from "../bindings/SessionHit";
+import type { TranscriptMatch } from "../bindings/TranscriptMatch";
+import type { ToolUsage } from "../bindings/ToolUsage";
+import type { UsageReport } from "../bindings/UsageReport";
 import type { FlowEdge } from "../bindings/FlowEdge";
 import type { FlowNode } from "../bindings/FlowNode";
 import type { FlowStage } from "../bindings/FlowStage";
@@ -131,6 +137,12 @@ export type {
   DiffLine,
   DiffLineKind,
   FileDiff,
+  SchemaCost,
+  SearchResults,
+  SessionHit,
+  TranscriptMatch,
+  ToolUsage,
+  UsageReport,
   FlowEdge,
   FlowNode,
   FlowStage,
@@ -379,6 +391,34 @@ export const listNotes = () => invoke<Note[]>("list_notes");
 /** Drops one note and answers with what is left, so the drawer redraws from
  *  the file rather than from its own guess about what the file now says. */
 export const forgetNote = (id: string) => invoke<Note[]>("forget_note", { id });
+
+/**
+ * Where the context window went — for one conversation, or for all of them.
+ *
+ * `null` accounts for every saved conversation in the workspace. A live
+ * conversation is read from memory rather than from its transcript, so the
+ * answer includes the turn that is still running.
+ *
+ * Not cached here. The whole point of the panel is what the window holds *now*,
+ * and a figure held over from when the drawer was last opened is the one thing
+ * it must not show.
+ */
+export const usageReport = (sessionId: string | null) =>
+  invoke<UsageReport>("usage_report", { sessionId });
+
+/**
+ * Conversations mentioning `query`, newest first.
+ *
+ * Prose only — what was typed and what the model wrote back, not tool calls
+ * and not their results. Searching those would match nearly every conversation
+ * for nearly every query: they are file contents and build logs. See
+ * `taurus_host::search`.
+ *
+ * `everywhere` reaches past the open workspace, which is the question "where
+ * did I do that" rather than "which conversation was that".
+ */
+export const searchSessions = (query: string, everywhere: boolean) =>
+  invoke<SearchResults>("search_sessions", { query, everywhere });
 
 /**
  * The data files loaded in this workspace, in the order they were loaded.

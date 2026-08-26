@@ -39,6 +39,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       onSkills={() => {}}
       onAgents={() => {}}
       onMemory={() => {}}
+      onUsage={() => {}}
       onMcp={() => {}}
         onTerminal={() => {}}
       onSettings={() => {}}

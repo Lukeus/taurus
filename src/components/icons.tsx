@@ -241,6 +241,34 @@ export function TerminalIcon({ size }: { size?: number }) {
   );
 }
 
+/**
+ * A dial with a needle: how full something is.
+ *
+ * The same shape as the meter above the composer, which is the point — the
+ * rail row and the meter open the same panel, and one of them is the only one
+ * on screen at any given moment.
+ */
+export function GaugeIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path
+        d="M2.4 11.5a6 6 0 1 1 11.2 0"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        fill="none"
+      />
+      <path
+        d="M8 11.2 10.9 6.6"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <circle cx="8" cy="11.4" r="1.1" fill="currentColor" />
+    </Icon>
+  );
+}
+
 export function SlidersIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>

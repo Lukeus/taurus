@@ -30,7 +30,9 @@ use taurus_data::{
 };
 
 use taurus_host::onscreen::OnScreen;
+use taurus_host::search::{self, SearchResults};
 use taurus_host::trust::TrustStatus;
+use taurus_host::usage::{self, UsageReport};
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
     McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus, Rewind,
@@ -2130,6 +2132,81 @@ pub async fn turn_changes(
 #[tauri::command]
 pub async fn repo_status(state: State<'_, Arc<AppState>>) -> CmdResult<RepoStatus> {
     Ok(state.host.repo_status().await)
+}
+
+/// Conversations mentioning `query`, newest first.
+///
+/// `everywhere` searches every workspace rather than the open one — the
+/// question "where did I do that", asked when you no longer remember which
+/// project it was.
+///
+/// Off the runtime: this reads every transcript in the workspace, and it is
+/// called while somebody is typing. What keeps that affordable is in
+/// [`taurus_host::search`] — a conversation that does not mention the query is
+/// one file read and nothing parsed.
+#[tauri::command]
+pub async fn search_sessions(
+    state: State<'_, Arc<AppState>>,
+    query: String,
+    everywhere: bool,
+) -> CmdResult<SearchResults> {
+    let workspace = if everywhere {
+        None
+    } else {
+        Some(state.host.workspace().await)
+    };
+    off_runtime(move || Ok(search::search(workspace.as_deref(), &query))).await
+}
+
+/// Where the context window actually went.
+///
+/// `session_id` names one conversation; `None` accounts for every saved
+/// conversation in the open workspace. Both answers come from
+/// [`taurus_host::usage`] rather than from anything here — the CLI prints the
+/// same report, and a tool's cost that differed between the two would be a
+/// number nobody could act on.
+///
+/// The fixed half — the system prompt and every advertised tool schema — is
+/// read off the *live* host rather than out of the transcript, so what it
+/// reports is what the next request will cost rather than what an earlier one
+/// did. That is also why it is worth asking for in a workspace with no history
+/// at all.
+#[tauri::command]
+pub async fn usage_report(
+    state: State<'_, Arc<AppState>>,
+    session_id: Option<String>,
+) -> CmdResult<UsageReport> {
+    let fixed = usage::Fixed::new(
+        &state.host.system_prompt().await,
+        state.host.tool_definitions().await,
+    );
+
+    // A conversation that is open answers from memory. Reading its transcript
+    // instead would report it as it was last written down, which is behind
+    // whatever is on screen — and this panel is most often opened mid-turn, to
+    // find out what just filled the window.
+    if let Some(id) = &session_id {
+        if let Ok(entry) = state.session(id) {
+            let session = entry.session.lock().await;
+            return Ok(usage::of_session(&session, &fixed));
+        }
+    }
+
+    let workspace = match &session_id {
+        Some(id) => session_workspace(&state, id).await,
+        None => state.host.workspace().await,
+    };
+    // Reading forty transcripts off disk is not something to do on the
+    // runtime, and the workspace-wide view is exactly when there are forty.
+    off_runtime(move || {
+        usage::report(
+            &workspace,
+            session_id.as_deref(),
+            session_id.is_none(),
+            &fixed,
+        )
+    })
+    .await
 }
 
 /// Commits exactly the files one turn changed.

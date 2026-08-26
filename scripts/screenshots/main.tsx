@@ -14,6 +14,8 @@
  */
 import { createRoot } from "react-dom/client";
 
+import { APPLE } from "../../src/lib/keys";
+
 import {
   CHECKPOINTS,
   DATASETS,
@@ -31,8 +33,10 @@ import {
   PROMPT,
   RECIPES,
   RECIPE_RUN,
+  SEARCH_HITS,
   SESSIONS,
   STATUS,
+  USAGE,
 } from "./fixtures";
 
 /** Which part of the conversation to frame. See `capture.mjs` for the set. */
@@ -85,21 +89,23 @@ const JOIN = `SELECT i.category, count(*) AS n
  GROUP BY i.`;
 
 /**
- * Types into a React-controlled textarea.
+ * Types into a React-controlled text box, `<textarea>` or `<input>`.
  *
  * Setting `.value` alone is swallowed: React keeps a tracker on the node and
  * skips an event whose value it believes it already has. Going through the
  * prototype's setter writes past the tracker, which is what makes the `input`
- * that follows look like a keystroke.
+ * that follows look like a keystroke. Which prototype comes off the element,
+ * because the two do not share the property and the query box and the palette
+ * are one of each.
  */
-function typeInto(area: HTMLTextAreaElement, text: string) {
+function typeInto(box: HTMLTextAreaElement | HTMLInputElement, text: string) {
   const write = Object.getOwnPropertyDescriptor(
-    HTMLTextAreaElement.prototype,
+    Object.getPrototypeOf(box),
     "value",
   )!.set!;
-  write.call(area, text);
-  area.setSelectionRange(text.length, text.length);
-  area.dispatchEvent(new Event("input", { bubbles: true }));
+  write.call(box, text);
+  box.setSelectionRange(text.length, text.length);
+  box.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 const ANSWERS: Record<string, unknown> = {
@@ -119,6 +125,8 @@ const ANSWERS: Record<string, unknown> = {
   query_data: DATA_QUERY,
   dataset_tables: DATA_TABLES,
   list_mcp_servers: MCP_SERVERS,
+  search_sessions: SEARCH_HITS,
+  usage_report: USAGE,
   mcp_environment: MCP_ENVIRONMENT,
   // Empty, because the turn below is replayed as live events instead. Resume
   // still runs — it is what binds the window to a session and fills the rail.
@@ -294,6 +302,41 @@ requestAnimationFrame(() => {
       // instead; `Tooltip.tsx` says what that check covers.
       rail: async () => {
         (await click(".rail-group", (b) => b.includes("Earlier")))();
+      },
+      // The palette, mid-search. Opened with the key rather than by pressing
+      // anything, which makes this the one check that the shortcut is bound at
+      // all — jsdom can prove `isChord` agrees with the label, and nothing but
+      // a real browser can prove the listener is on the window.
+      //
+      // Typed rather than seeded, because what this is a picture of is the
+      // three groups arriving at different speeds: two of them are already
+      // there when the third lands underneath.
+      palette: async () => {
+        // The modifier the app is actually listening for on this machine,
+        // taken from the same constant the row's label is drawn from. Sending
+        // the other one would be refused — which is correct, and would make
+        // this shot fail for the one reason that is not a regression.
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "k",
+            metaKey: APPLE,
+            ctrlKey: !APPLE,
+            bubbles: true,
+          }),
+        );
+        const box = (await until(() =>
+          document.querySelector(".palette-input"),
+        )) as HTMLInputElement;
+        typeInto(box, "context");
+        await until(() => document.querySelector(".palette-excerpt"));
+      },
+      // The context account, opened the way the rail opens it. The meter above
+      // the composer opens the same panel and is the more likely route, but it
+      // hides itself below half a window — and a shot that had to fill the
+      // window first would be a picture of a full context rather than of this.
+      context: async () => {
+        (await click(".rail-link", (b) => b.startsWith("Context")))();
+        await until(() => document.querySelector(".usage-table"));
       },
       mcp: () => {
         const link = [...document.querySelectorAll(".rail-link")].find(
