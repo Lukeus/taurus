@@ -584,20 +584,21 @@ async fn the_budget_counts_what_the_messages_cannot_see() {
             keep_recent_messages: 2,
             compaction_threshold: 0.8,
             // ~2,500 tokens of standing instructions, which is an ordinary
-            // AGENTS.md plus a skills catalog.
+            // AGENTS.md plus a skills catalog. With the tool schemas beside it
+            // the request carries about 4,150 tokens before a message is added.
             system_prompt: "x".repeat(10_000),
             ..Default::default()
         },
-        5_000,
+        20_000,
     );
 
     let mut session = Session::new("fake");
-    for i in 0..6 {
-        session.push(Message::user(format!("message {i} {}", "y".repeat(200))));
+    for i in 0..12 {
+        session.push(Message::user(format!("message {i} {}", "y".repeat(4_400))));
     }
-    // Under budget on its own: 0.8 * 5,000 = 4,000.
+    // Under budget on its own: 0.8 * 20,000 = 16,000.
     assert!(
-        session.estimated_tokens() < 4_000,
+        session.estimated_tokens() < 16_000,
         "the fixture is over budget on messages alone, which is not the case \
          under test: {}",
         session.estimated_tokens()
@@ -683,6 +684,93 @@ async fn a_backend_that_reports_nothing_leaves_the_estimate_alone() {
 }
 
 #[tokio::test]
+async fn a_window_too_small_for_the_prompt_says_so_rather_than_summarizing_at_it() {
+    // Nothing here is a message, so no amount of summarizing changes it. This
+    // used to be a turn that summarized on every iteration and never got under
+    // budget, saying nothing about why.
+    let h = harness_with(
+        vec![ScriptedTurn::text("Done.")],
+        Box::new(AllowAll),
+        AgentConfig {
+            keep_recent_messages: 2,
+            compaction_threshold: 0.8,
+            ..Default::default()
+        },
+        // The built-in tool schemas alone are around 1,650 tokens.
+        2_000,
+    );
+
+    let mut session = Session::new("fake");
+    session.push(Message::user("hello"));
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let said: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Error { message } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(said.len(), 1, "said once, or not at all: {said:?}");
+    assert!(said[0].contains("tool definitions"), "{}", said[0]);
+    assert!(said[0].contains("Summarizing cannot help"), "{}", said[0]);
+    assert_eq!(
+        h.provider.request_count().await,
+        1,
+        "a summarizer was asked to solve something it cannot"
+    );
+}
+
+#[tokio::test]
+async fn a_tail_too_large_to_summarize_around_says_so_once() {
+    // One enormous recent result — a whole file, a long build log — and the
+    // messages that could be summarized are not the problem.
+    let h = harness_with(
+        vec![
+            ScriptedTurn::tool_call("t1", "list_dir", serde_json::json!({})),
+            ScriptedTurn::text("Done."),
+        ],
+        Box::new(AllowAll),
+        AgentConfig {
+            keep_recent_messages: 2,
+            compaction_threshold: 0.8,
+            ..Default::default()
+        },
+        20_000,
+    );
+
+    let mut session = Session::new("fake");
+    for i in 0..4 {
+        session.push(Message::user(format!("old {i}")));
+    }
+    session.push(Message::user("x".repeat(60_000)));
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let said: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Error { message } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        said.len(),
+        1,
+        "said once per turn, not per iteration: {said:?}"
+    );
+    assert!(said[0].contains("most recent messages"), "{}", said[0]);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "it summarized anyway"
+    );
+}
+
+#[tokio::test]
 async fn a_summarizer_that_fails_is_not_asked_again_this_turn() {
     // The session stays over budget for the whole turn, so every iteration
     // reaches the compaction check. One broken summarizer request used to
@@ -705,14 +793,17 @@ async fn a_summarizer_that_fails_is_not_asked_again_this_turn() {
             compaction_threshold: 0.8,
             ..Default::default()
         },
-        1000,
+        // The built-in tool schemas are about 1,650 tokens of every request,
+        // so a window that small has no usable room at all — which the harness
+        // now says out loud instead of summarizing at it.
+        8_000,
     );
 
     let mut session = Session::new("fake");
     for i in 0..20 {
         session.push(Message::user(format!(
             "old message {i} {}",
-            "x".repeat(300)
+            "x".repeat(1_200)
         )));
     }
 
@@ -771,14 +862,17 @@ async fn history_is_compacted_when_it_outgrows_the_context_window() {
             compaction_threshold: 0.8,
             ..Default::default()
         },
-        1000,
+        // The built-in tool schemas are about 1,650 tokens of every request,
+        // so a window that small has no usable room at all — which the harness
+        // now says out loud instead of summarizing at it.
+        8_000,
     );
 
     let mut session = Session::new("fake");
     for i in 0..20 {
         session.push(Message::user(format!(
             "old message {i} {}",
-            "x".repeat(300)
+            "x".repeat(1_200)
         )));
     }
     let before = session.messages.len();

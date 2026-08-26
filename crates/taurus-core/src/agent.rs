@@ -1183,6 +1183,34 @@ impl Agent {
             return summarizing;
         }
 
+        // Before anything is trimmed or summarized, because neither touches
+        // this: if what a request carries besides its messages already fills
+        // the window, an empty conversation would not fit either. Nothing else
+        // in the harness would ever have said so — the turn simply summarized
+        // on every iteration and failed anyway.
+        if overhead >= budget {
+            if summarizing == Summarizing::Failed {
+                return summarizing;
+            }
+            warn!(
+                overhead,
+                budget, "the prompt's fixed part does not fit the window"
+            );
+            let _ = ui
+                .send(UiEvent::Error {
+                    message: format!(
+                        "The system prompt and tool definitions come to about {overhead} tokens, \
+                         which is already more than this model's usable context ({budget} of a \
+                         {} window). Summarizing cannot help — nothing here is a message. Use a \
+                         model with a larger window, give this provider's model its real \
+                         `context_length` if it has one, or turn off some tools.",
+                        caps.context_length
+                    ),
+                })
+                .await;
+            return Summarizing::Failed;
+        }
+
         // Only a read-only tool answers the same question twice: a repeat of
         // anything else is the model watching the world change, and the two
         // results are both worth keeping. An unregistered name — an MCP server
@@ -1193,8 +1221,15 @@ impl Agent {
                 .get(name)
                 .is_some_and(|tool| tool.effect() == Effect::Read)
         };
-        let trimmed =
-            session.trim_tool_results(self.config.keep_recent_messages, &repeats_supersede);
+        // The same boundary the summarizer will use, so the two passes cannot
+        // disagree about which messages are the recent ones.
+        let keep_tokens = budget / 2;
+        let (_, kept) = split_for_compaction(
+            &session.messages,
+            self.config.keep_recent_messages,
+            keep_tokens,
+        );
+        let trimmed = session.trim_tool_results(kept, &repeats_supersede);
         if !trimmed.is_empty() {
             info!(
                 results = trimmed.results,
@@ -1218,10 +1253,41 @@ impl Agent {
             return summarizing;
         }
 
-        let (drop_count, _) =
-            split_for_compaction(&session.messages, self.config.keep_recent_messages);
+        let (drop_count, kept) = split_for_compaction(
+            &session.messages,
+            self.config.keep_recent_messages,
+            keep_tokens,
+        );
         if drop_count == 0 {
             return summarizing;
+        }
+
+        // Summarizing replaces the head with a paragraph; it cannot touch the
+        // tail. If the tail alone will not fit, the request will not fit
+        // however good the summary is — so say so once rather than spending a
+        // request per iteration proving it.
+        let tail: u32 = session.messages[drop_count..]
+            .iter()
+            .map(crate::session::estimate_message)
+            .sum();
+        if tail.saturating_add(overhead) >= budget {
+            warn!(
+                tail,
+                overhead, budget, "what cannot be summarized is already over budget"
+            );
+            let _ = ui
+                .send(UiEvent::Error {
+                    message: format!(
+                        "The {kept} most recent messages come to about {tail} tokens on their \
+                         own, which with the system prompt and tools leaves no room in this \
+                         model's window. Summarizing the earlier ones cannot make room — \
+                         something recent is very large, a whole file or a long command's \
+                         output. A model with a bigger window, or a smaller read, is what gets \
+                         past this."
+                    ),
+                })
+                .await;
+            return Summarizing::Failed;
         }
 
         info!(drop_count, "compacting session history");
