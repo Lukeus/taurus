@@ -1205,25 +1205,31 @@ impl Host {
     }
 
     pub async fn tool_context(&self, cancel: CancellationToken) -> ToolContext {
-        ToolContext::new(
-            self.workspace.read().await.clone(),
-            self.permissions.read().await.clone(),
-            cancel,
-        )
-        // Read-only, and only the skills actually loaded. A skill's procedure
-        // points at its own bundled files, and the ones under the home
-        // directory are outside the workspace the guard confines everything
-        // else to.
-        .with_readable_roots(self.catalog.read().await.dirs())
-        // Carried on the context rather than looked up per call, so a clone —
-        // which is how a sub-agent gets its context — goes through the same
-        // hooks the parent does. A guard a delegate could route around is not
-        // a guard.
-        .with_hooks(self.hooks.read().await.clone())
-        // The one thing on the context that is neither per turn nor per call:
-        // a background command is read by the turns after the one that started
-        // it, so a fresh set per turn would lose every one of them.
-        .with_jobs(self.jobs.clone())
+        let workspace = self.workspace.read().await.clone();
+        // Where a command whose output had to be cut writes the whole of it.
+        // Out of the project, keyed by workspace, beside the transcripts and
+        // checkpoints it is the third kind of.
+        let command_output = crate::sessions::output_dir(&workspace);
+        // Read-only, and only what the session actually reaches for: the
+        // skills it loaded, whose procedures point at their own bundled files
+        // under the home directory, and the place a cut command's output was
+        // written. Both are outside the workspace the guard otherwise confines
+        // everything to, and neither widens what may be written.
+        let mut readable = self.catalog.read().await.dirs();
+        readable.push(command_output.clone());
+        ToolContext::new(workspace, self.permissions.read().await.clone(), cancel)
+            .with_readable_roots(readable)
+            .with_command_output(command_output)
+            // Carried on the context rather than looked up per call, so a
+            // clone — which is how a sub-agent gets its context — goes through
+            // the same hooks the parent does. A guard a delegate could route
+            // around is not a guard.
+            .with_hooks(self.hooks.read().await.clone())
+            // The one thing on the context that is neither per turn nor per
+            // call: a background command is read by the turns after the one
+            // that started it, so a fresh set per turn would lose every one of
+            // them.
+            .with_jobs(self.jobs.clone())
     }
 
     /// Ends every background command, for a window closing.
@@ -4831,6 +4837,45 @@ Say hello.",
         );
         // And the global layer still works.
         assert!(!host.providers().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_cut_commands_output_goes_outside_the_project_and_stays_readable() {
+        // The same rule checkpoints follow, for the same reason: what a build
+        // printed is the project's contents, and a directory of logs inside
+        // the repository is a directory somebody commits. But this one has a
+        // second half — the model is handed the path and told to read it, so
+        // somewhere unreadable would be worse than not writing it at all.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.set_workspace(&workspace).await.unwrap();
+
+        let ctx = host.tool_context(CancellationToken::new()).await;
+        let output = ctx.command_output.clone().expect("a place to write it");
+
+        assert!(
+            !output.starts_with(&workspace),
+            "a cut command's output must not be written into the project: {}",
+            output.display()
+        );
+        assert!(
+            ctx.readable_roots.contains(&output),
+            "the model is told to read this path, so the guard has to allow it"
+        );
+
+        // And end to end: a file there resolves through the read guard, which
+        // is the only thing that makes the path in the gap worth printing.
+        std::fs::create_dir_all(&output).unwrap();
+        let spilled = output.join("s1-c1-stdout.txt");
+        std::fs::write(&spilled, "the middle of a long build").unwrap();
+        let resolved = ctx
+            .resolve_read(&spilled.canonicalize().unwrap().to_string_lossy())
+            .expect("read_file must be able to open a spilled stream");
+        assert_eq!(
+            std::fs::read_to_string(resolved).unwrap(),
+            "the middle of a long build"
+        );
     }
 
     #[tokio::test]

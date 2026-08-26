@@ -160,10 +160,12 @@ pub struct ToolContext {
     pub workspace: PathBuf,
     /// Directories read-only tools may reach into besides the workspace.
     ///
-    /// In practice the loaded skills' own directories, so a procedure that says
-    /// "see references/REFERENCE.md" can be followed when the skill lives under
-    /// the home directory. Reads only — nothing here widens what may be
-    /// written, and the workspace remains the only place this agent changes.
+    /// In practice two things: the loaded skills' own directories, so a
+    /// procedure that says "see references/REFERENCE.md" can be followed when
+    /// the skill lives under the home directory, and [`Self::command_output`],
+    /// so a stream this harness wrote out whole can be read back. Reads only —
+    /// nothing here widens what may be written, and the workspace remains the
+    /// only place this agent changes.
     pub readable_roots: Vec<PathBuf>,
     pub permissions: Arc<PermissionEngine>,
     pub cancel: CancellationToken,
@@ -190,6 +192,18 @@ pub struct ToolContext {
     /// directly — and there `run_command` refuses to start one rather than
     /// starting something nobody can read or stop.
     pub jobs: Option<Arc<crate::jobs::Jobs>>,
+    /// Where a command's output is written whole when what the model is shown
+    /// had to be cut short.
+    ///
+    /// Outside the workspace, for the reason every other record is: a build log
+    /// holds the project's contents, and keeping it in the project is how it
+    /// gets committed. It is in [`Self::readable_roots`] instead, which is what
+    /// lets `read_file` open it and nothing widen what may be written.
+    ///
+    /// `None` wherever nothing outlives the call — an example, a test, a tool
+    /// run directly — and there a cut says only how much it dropped, which is
+    /// what it said before this existed.
+    pub command_output: Option<PathBuf>,
     /// Bound to one tool call by the agent loop, so a report lands on the right
     /// card. `None` outside a loop that draws anything — the CLI's piped mode,
     /// examples, tests.
@@ -227,6 +241,7 @@ impl ToolContext {
             checkpoints: None,
             sweeps: None,
             jobs: None,
+            command_output: None,
             progress: None,
             hooks: None,
             session_id: None,
@@ -263,6 +278,18 @@ impl ToolContext {
     #[must_use]
     pub fn with_jobs(mut self, jobs: Arc<crate::jobs::Jobs>) -> Self {
         self.jobs = Some(jobs);
+        self
+    }
+
+    /// Says where a cut command's whole output may be kept.
+    ///
+    /// The caller passes the directory rather than the harness deriving one,
+    /// because where a workspace's records live is the host's arrangement and
+    /// this crate knows nothing about config homes. See
+    /// [`ToolContext::command_output`].
+    #[must_use]
+    pub fn with_command_output(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.command_output = Some(dir.into());
         self
     }
 

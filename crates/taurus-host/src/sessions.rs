@@ -86,6 +86,23 @@ pub fn checkpoints_dir(workspace: &Path) -> PathBuf {
         .join(workspace_key(workspace))
 }
 
+/// Where one workspace's spilled command output lives.
+///
+/// Beside transcripts and checkpoints, keyed the same way and for the same
+/// reason: what a command printed is as much the contents of the project as a
+/// file read is, and a directory of build logs kept inside the repository is a
+/// directory somebody commits by accident.
+///
+/// Separate from checkpoints rather than under them because the lifetimes do
+/// not match. A checkpoint is kept so a turn can be undone months later; a
+/// spilled stream is kept so the next few turns can read the middle of a build
+/// they were shown the ends of, and it is pruned on that scale.
+pub fn output_dir(workspace: &Path) -> PathBuf {
+    crate::config::home_dir()
+        .join("output")
+        .join(workspace_key(workspace))
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

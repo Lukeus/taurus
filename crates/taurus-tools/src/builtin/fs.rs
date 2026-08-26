@@ -10,6 +10,13 @@ use crate::diff::FileDiff;
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
 
 /// Guards against a single read blowing the model's context window.
+///
+/// A bound on what one call *answers with*, not on how far into a file it
+/// may look. Those were the same thing while a read always started at the
+/// first byte, and a file past this size had a tail nothing could reach: the
+/// model could be handed a line number and have no way to go to it. The
+/// window is taken around the offset instead, so the cap costs a large file
+/// more calls and never costs it a region.
 const MAX_READ_BYTES: usize = 256 * 1024;
 
 /// Lines returned when the caller does not ask for a range.
@@ -86,65 +93,57 @@ impl Tool for ReadFile {
             .await
             .map_err(|e| ToolError::Failed(format!("cannot read {}: {e}", ctx.display(&path))))?;
 
-        let truncated = bytes.len() > MAX_READ_BYTES;
-        let slice = if truncated {
-            // Cut on a char boundary so the output stays valid UTF-8.
-            let mut end = MAX_READ_BYTES;
-            while end > 0 && !bytes.is_char_boundary_at(end) {
-                end -= 1;
-            }
-            &bytes[..end]
-        } else {
-            &bytes[..]
-        };
-
-        let text = String::from_utf8_lossy(slice);
-        if text.is_empty() {
+        if bytes.is_empty() {
             return Ok(format!("{} is empty.", ctx.display(&path)).into());
         }
 
-        let lines: Vec<&str> = text.lines().collect();
         let start = input.offset.unwrap_or(1).max(1) - 1;
         let limit = input.limit.unwrap_or(DEFAULT_READ_LINES).max(1);
+        // Located in the bytes rather than by decoding the file: only the
+        // window is turned into text, so a read near the end of something
+        // large costs the window instead of the file.
+        let (window, total) = line_window(&bytes, start, limit);
 
         // An offset past the end is a mistake worth naming, not an empty
         // result: the model asked for a region that does not exist and needs
-        // the file's actual length to correct itself. On a truncated read that
-        // length is unknown — `lines` is only the readable prefix — and
-        // reporting it as the file's length would send the model off to correct
-        // an offset against a number that is not the file's.
-        if start >= lines.len() {
-            return Err(ToolError::InvalidInput(if truncated {
-                format!(
-                    "{} is larger than the {} KB read limit; offset {} is past its readable first \
-                     {} lines, and how many more there are is not knowable this way — use grep to \
-                     locate what you need",
-                    ctx.display(&path),
-                    MAX_READ_BYTES / 1024,
-                    start + 1,
-                    lines.len()
-                )
-            } else {
-                format!(
-                    "{} has {} lines; offset {} is past the end",
-                    ctx.display(&path),
-                    lines.len(),
-                    start + 1
-                )
-            }));
-        }
-        let end = start.saturating_add(limit).min(lines.len());
+        // the file's length to correct itself. That length is now always
+        // known, because finding the window counts every line on the way.
+        let Some((from, to)) = window else {
+            return Err(ToolError::InvalidInput(format!(
+                "{} has {} lines; offset {} is past the end",
+                ctx.display(&path),
+                total,
+                start + 1
+            )));
+        };
 
-        let window = &lines[start..end];
-        let mut out =
-            String::with_capacity(window.iter().map(|l| l.len()).sum::<usize>() + window.len() * 8);
-        for (i, line) in window.iter().enumerate() {
+        let text = String::from_utf8_lossy(&bytes[from..to]);
+        let mut out = String::with_capacity((to - from) + (to - from) / 8);
+        let mut shown = 0usize;
+        let mut clipped = false;
+        for line in text.lines() {
+            if out.len() + line.len() + LINE_NUMBER_WIDTH > MAX_READ_BYTES {
+                if shown == 0 {
+                    // One line longer than the whole budget — a minified
+                    // bundle, a JSON log written without newlines. Cutting it
+                    // beats returning nothing, which would read as an empty
+                    // file rather than as a line that did not fit.
+                    let cut = floor_char_boundary(line, MAX_READ_BYTES);
+                    out.push_str(&format!("{:>5}\t{}\n", start + 1, &line[..cut]));
+                    shown = 1;
+                }
+                clipped = true;
+                break;
+            }
             // Numbered by absolute position, not by position in the window, so
             // a line number from a windowed read still means what it says.
-            out.push_str(&format!("{:>5}\t{line}\n", start + i + 1));
+            out.push_str(&format!("{:>5}\t{line}\n", start + shown + 1));
+            shown += 1;
         }
-        if truncated || start > 0 || end < lines.len() {
-            out.push_str(&range_note(start + 1, end, lines.len(), truncated));
+
+        let last = start + shown;
+        if clipped || start > 0 || last < total {
+            out.push_str(&range_note(start + 1, last, total, clipped));
         }
         Ok(out.into())
     }
@@ -155,12 +154,11 @@ impl Tool for ReadFile {
 /// Stated every time the answer is partial, because a window that does not say
 /// it is a window is indistinguishable from a short file, and a model that
 /// believes it has read the whole thing will act on what is missing.
-fn range_note(first: usize, last: usize, available: usize, truncated: bool) -> String {
+fn range_note(first: usize, last: usize, available: usize, clipped: bool) -> String {
     let mut note = format!("\n[showing lines {first}-{last} of {available}");
-    if truncated {
+    if clipped {
         note.push_str(&format!(
-            " readable; the file is larger than the {} KB read limit, so the rest is not \
-             reachable this way — use grep to locate it",
+            "; the window stopped early because a single read answers with at most {} KB",
             MAX_READ_BYTES / 1024
         ));
     }
@@ -171,15 +169,60 @@ fn range_note(first: usize, last: usize, available: usize, truncated: bool) -> S
     note
 }
 
-/// `str::is_char_boundary` for a byte slice we are about to lossy-decode.
-trait CharBoundary {
-    fn is_char_boundary_at(&self, index: usize) -> bool;
+/// Room left for the number and tab each line is rendered with.
+const LINE_NUMBER_WIDTH: usize = 8;
+
+/// The byte range of `limit` lines starting at line `start`, and how many
+/// lines the whole thing has.
+///
+/// `None` when `start` is past the end. Counting to the end regardless is what
+/// lets an offset past it be answered with the file's real length rather than
+/// with whatever a prefix happened to hold.
+///
+/// Lines are counted the way [`str::lines`] splits them, so a number from here
+/// means the same thing as a number from a grep hit: on `\n`, with a final
+/// line needing no terminator and a trailing one adding no empty line.
+fn line_window(bytes: &[u8], start: usize, limit: usize) -> (Option<(usize, usize)>, usize) {
+    let wanted_end = start.saturating_add(limit);
+    let mut total = 0usize;
+    let mut from: Option<usize> = None;
+    let mut to: Option<usize> = None;
+    let mut line_start = 0usize;
+
+    for (i, byte) in bytes.iter().enumerate() {
+        if *byte != b'\n' {
+            continue;
+        }
+        if total == start {
+            from = Some(line_start);
+        }
+        if total == wanted_end {
+            to = Some(line_start);
+        }
+        total += 1;
+        line_start = i + 1;
+    }
+    // A last line that the file did not terminate.
+    if line_start < bytes.len() {
+        if total == start {
+            from = Some(line_start);
+        }
+        if total == wanted_end {
+            to = Some(line_start);
+        }
+        total += 1;
+    }
+
+    (from.map(|f| (f, to.unwrap_or(bytes.len()))), total)
 }
 
-impl CharBoundary for Vec<u8> {
-    fn is_char_boundary_at(&self, index: usize) -> bool {
-        index >= self.len() || (self[index] & 0xC0) != 0x80
+/// The largest index at or below `at` that `str` may be split on.
+fn floor_char_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
     }
+    at
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -809,29 +852,94 @@ mod tests {
         assert!(err.to_string().contains("has 5 lines"), "{err}");
     }
 
-    /// Past the read limit the line count is the prefix's, not the file's, and
-    /// stating it as the file's would have the model correct its offset against
-    /// a number that belongs to nothing.
+    /// The reason the window follows the offset. This file is comfortably past
+    /// the 256 KB a read answers with, and the region asked for is past it
+    /// too — which used to be unreachable, so a model handed a line number
+    /// from a grep hit had no way to go and look at it.
     #[tokio::test]
-    async fn an_offset_past_a_truncated_read_does_not_claim_to_know_the_length() {
+    async fn a_region_past_the_read_limit_opens_at_the_offset_it_was_given() {
         let (ctx, dir) = test_ctx();
-        // Comfortably past the 256 KB limit at ~9 bytes a line.
+        lines_file(dir.path(), "big.txt", 40_000);
+        let out = ReadFile
+            .execute(
+                serde_json::json!({"path": "big.txt", "offset": 39_000, "limit": 2}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = out.to_text();
+        assert!(text.contains("39000\tline 39000"), "{text}");
+        assert!(text.contains("39001\tline 39001"), "{text}");
+        assert!(
+            text.contains("showing lines 39000-39001 of 40000"),
+            "{text}"
+        );
+    }
+
+    /// And the length in that sentence is the file's, which it now always is:
+    /// finding the window counts every line on the way past it.
+    #[tokio::test]
+    async fn an_offset_past_a_large_file_reports_its_real_length() {
+        let (ctx, dir) = test_ctx();
         lines_file(dir.path(), "big.txt", 40_000);
         let err = ReadFile
             .execute(
-                serde_json::json!({"path": "big.txt", "offset": 39_000}),
+                serde_json::json!({"path": "big.txt", "offset": 50_000}),
                 &ctx,
             )
             .await
             .unwrap_err();
         let message = err.to_string();
+        assert!(message.contains("has 40000 lines"), "{message}");
+        // The old wording sent the model to grep because the tail was out of
+        // reach. It is not, so nothing here should say so.
+        assert!(!message.contains("grep"), "{message}");
+    }
+
+    /// The cap did not go away, it moved: it bounds the answer rather than the
+    /// file, so a window too large to return stops early and says where to
+    /// pick it up.
+    #[tokio::test]
+    async fn a_window_larger_than_one_read_stops_early_and_says_how_to_continue() {
+        let (ctx, dir) = test_ctx();
+        lines_file(dir.path(), "big.txt", 40_000);
+        let out = ReadFile
+            .execute(
+                serde_json::json!({"path": "big.txt", "offset": 1, "limit": 40_000}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = out.to_text();
+        assert!(text.len() <= MAX_READ_BYTES + 200, "{} bytes", text.len());
+        assert!(text.contains("the window stopped early"), "{text}");
+        assert!(text.contains("read again with offset"), "{text}");
+    }
+
+    /// A minified bundle is one line and no window can be smaller. Returning
+    /// nothing would read as an empty file rather than as a line that did not
+    /// fit.
+    #[tokio::test]
+    async fn a_single_line_too_long_to_return_comes_back_cut_rather_than_empty() {
+        let (ctx, dir) = test_ctx();
+        let body = format!("{}\nsecond line\n", "x".repeat(MAX_READ_BYTES * 2));
+        std::fs::write(dir.path().join("min.js"), body).unwrap();
+        let out = ReadFile
+            .execute(serde_json::json!({"path": "min.js"}), &ctx)
+            .await
+            .unwrap();
+        let text = out.to_text();
+        assert!(text.starts_with("    1\txxx"), "{}", &text[..40]);
         assert!(
-            message.contains("larger than the 256 KB read limit"),
-            "{message}"
+            text.contains("showing lines 1-1 of 2"),
+            "{}",
+            &text[text.len() - 200..]
         );
-        assert!(!message.contains("has 40000 lines"), "{message}");
-        assert!(message.contains("readable first"), "{message}");
-        assert!(message.contains("grep"), "{message}");
+        assert!(
+            text.contains("the window stopped early"),
+            "{}",
+            &text[text.len() - 200..]
+        );
     }
 
     #[tokio::test]

@@ -198,6 +198,55 @@ and they are the minority.
   is closed the same way: by reading every file on every message, which is what
   the check exists to avoid. See
   [Instructions](capabilities.md#instructions).
+- **Warnings are matched by their headline, which is not the same as by their
+  lint.** Two hundred sites of one clippy lint print the same headline and
+  collapse to one body; two hundred `unused variable` warnings name a different
+  variable each time, so each is its own headline and none of them collapse.
+  That is the weaker half of the same feature, and it is a limit of the text
+  rather than of the code: rustc prints the `#[warn(...)]` note that would name
+  the lint only on a lint's first occurrence. What would close it is
+  `--message-format=json`, which the model would have to have asked for — and
+  rewriting a command line to add a flag is a different thing from shortening
+  its output, with a different failure mode: the command that ran would no
+  longer be the command that was approved. See
+  [Output too big to hand over](safety.md#output-too-big-to-hand-over).
+- **The test filter knows libtest and nothing else.** It recognizes the format
+  `cargo test` prints, which covers a Rust workspace and a directly-run test
+  binary. `cargo nextest`, `jest`, `pytest` and `go test` all announce
+  themselves differently, so their output is collapsed only where it repeats
+  itself, which for a passing suite is not at all. Each is a small filter of
+  its own beside the existing one; what stops them being written today is that
+  none of them can be checked against real output from this machine, and a
+  pattern nobody has run against the thing it matches is a guess. See
+  [Output too big to hand over](safety.md#output-too-big-to-hand-over).
+- **Only repetition that is literally consecutive is collapsed.** A command
+  over 16 KB that prints the same line three or more times in a row keeps one
+  copy and a count, which is most of what a chatty build or a retrying server
+  produces. It is not most of what a *server* produces: two messages
+  alternating — a retry and the timestamped line after it — are never
+  adjacent, so nothing collapses and the stream is as long as it was. Closing
+  that means matching lines that are merely similar, which is a different kind
+  of claim: a count of identical lines is a fact, and a count of lines that
+  looked alike is a judgement the model cannot check. The other half is that
+  none of this applies to `check_command`. A background command's readers keep
+  byte cursors into a shared buffer, and shortening the text those cursors
+  count would move the model's place and the window's apart. See
+  [Output too big to hand over](safety.md#output-too-big-to-hand-over).
+- **A cut command's output can be swept away while the transcript still points
+  at it.** When a stream runs past 64 KB the whole of it is written to
+  `~/.taurus/output/<workspace-key>/` and the gap in the result names the file,
+  so the middle of a long build is a `read_file` away rather than a re-run. But
+  twenty streams are kept per workspace and the oldest go as new ones arrive, so
+  a message from earlier in a long session can name a file that a later command
+  has since displaced — and reopening a saved conversation weeks later will
+  usually find nothing there at all. The model is told the file is missing
+  rather than shown the wrong one, which is the important half. Closing the rest
+  means either keeping build logs indefinitely, or pruning against the
+  transcripts that reference them, which is a second index of the kind
+  [Sessions](../crates/taurus-host/src/sessions.rs) deliberately does not keep.
+  Size is not the other half of it: `read_file` windows around the offset it is
+  given, so a spilled stream opens at any line however large the file. See
+  [Output too big to hand over](safety.md#output-too-big-to-hand-over).
 - **A diff is shown for `write_file` and `edit_file` and nothing else.** A
   command line has no before-and-after to compute, which is exactly why
   `run_command` is swept afterwards rather than predicted. So the most
