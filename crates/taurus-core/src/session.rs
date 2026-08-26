@@ -13,6 +13,37 @@ pub struct Session {
     pub messages: Vec<Message>,
     /// Cumulative across the session, for the UI's token counter.
     pub usage: TokenUsage,
+    /// What the last request really cost, beside what was estimated for it.
+    ///
+    /// Kept because it is the only exact number in this file. See
+    /// [`Measured`].
+    #[serde(default)]
+    pub last_request: Option<Measured>,
+}
+
+/// A request's real size, beside the estimate for the messages that were in it.
+///
+/// The difference between the two is everything the budget cannot see by
+/// looking at the conversation: the system prompt, every tool's schema, the
+/// plan appended to the end of the request, the envelope the provider wraps it
+/// all in, and the gap between four-characters-a-token and what the model's
+/// own tokenizer makes of the same text.
+///
+/// That difference used to be unmeasured, and the compaction threshold was
+/// absorbing it — which works while it is small relative to the window and
+/// stops working exactly where it matters: the overhead is a fact about how
+/// much configuration a workspace has, and the headroom is a fraction of a
+/// window, so on a small one they cross.
+///
+/// The pair is kept rather than the difference, so a reading can be checked
+/// against what it was a reading *of*.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Measured {
+    /// The whole prompt as the provider counted it, cache hits included.
+    pub input_tokens: u32,
+    /// What [`Session::estimated_tokens`] said about the messages alone at the
+    /// moment that request was sent.
+    pub estimated_messages: u32,
 }
 
 impl Session {
@@ -22,6 +53,7 @@ impl Session {
             model: model.into(),
             messages: Vec::new(),
             usage: TokenUsage::default(),
+            last_request: None,
         }
     }
 
@@ -32,6 +64,45 @@ impl Session {
     pub fn add_usage(&mut self, usage: TokenUsage) {
         self.usage.input_tokens = self.usage.input_tokens.saturating_add(usage.input_tokens);
         self.usage.output_tokens = self.usage.output_tokens.saturating_add(usage.output_tokens);
+    }
+
+    /// Records what a request cost, against what was in it.
+    ///
+    /// Called with the messages still exactly as they were sent — before the
+    /// answer is pushed — because the estimate has to be of the same thing the
+    /// provider counted.
+    ///
+    /// A report of zero is not a measurement. Every backend here reports usage
+    /// on a completed stream, but a cancelled one, a gateway that strips the
+    /// field, and a prompted-tools fallback can all leave it empty, and taking
+    /// that at face value would say the entire prompt cost nothing.
+    pub fn record_request(&mut self, input_tokens: u32) {
+        if input_tokens == 0 {
+            return;
+        }
+        self.last_request = Some(Measured {
+            input_tokens,
+            estimated_messages: self.estimated_tokens(),
+        });
+    }
+
+    /// What a request carries beyond its messages, as last measured.
+    ///
+    /// `None` until a request has been answered — on the first one there is
+    /// nothing to have measured, and the caller estimates it instead.
+    pub fn measured_overhead(&self) -> Option<u32> {
+        self.last_request
+            .map(|m| m.input_tokens.saturating_sub(m.estimated_messages))
+    }
+
+    /// What the next request will cost, as closely as this can be known.
+    ///
+    /// `fallback_overhead` is used only until the first answer arrives; after
+    /// that the measurement replaces it, which is also what makes this correct
+    /// on a provider whose tokenizer disagrees with four-characters-a-token.
+    pub fn estimated_prompt_tokens(&self, fallback_overhead: u32) -> u32 {
+        self.estimated_tokens()
+            .saturating_add(self.measured_overhead().unwrap_or(fallback_overhead))
     }
 
     /// Rough token count for the whole history.
@@ -353,17 +424,54 @@ pub fn estimate_message(message: &Message) -> u32 {
 /// The tail is kept whole, and never split between an assistant's tool call
 /// and the result that answers it: a dangling tool result confuses every
 /// provider and a dangling tool call makes some of them error outright.
-pub fn split_for_compaction(messages: &[Message], keep_recent: usize) -> (usize, usize) {
-    if messages.len() <= keep_recent {
+pub fn split_for_compaction(
+    messages: &[Message],
+    keep_recent: usize,
+    keep_tokens: u32,
+) -> (usize, usize) {
+    let kept = tail_within(messages, keep_recent, keep_tokens);
+    if messages.len() <= kept {
         return (0, messages.len());
     }
-    let mut boundary = messages.len() - keep_recent;
+    let mut boundary = messages.len() - kept;
 
     // Walk forward off any tool result whose call would be left behind.
     while boundary < messages.len() && starts_with_tool_result(&messages[boundary]) {
         boundary += 1;
     }
     (boundary, messages.len() - boundary)
+}
+
+/// The fewest recent messages the model is left with, whatever they cost.
+///
+/// Below this the tail stops being context and starts being a fragment: one
+/// exchange is the call the model just made and the answer it got, and taking
+/// that away to save room would leave it summarizing its way around the thing
+/// it is in the middle of.
+const MIN_KEEP: usize = 2;
+
+/// How many of the most recent messages to keep verbatim.
+///
+/// A count alone cannot promise progress. Eight recent messages can be eight
+/// large tool results — a shape that got likelier when a search grew the
+/// option to bring context back with it — and a tail bigger than the budget
+/// means compaction summarizes the head, achieves nothing, and is asked for
+/// again on the next iteration, and the one after that.
+///
+/// So the count is a ceiling and the tokens are the real bound, with a floor
+/// under both: whichever of the three binds first wins.
+fn tail_within(messages: &[Message], keep_recent: usize, keep_tokens: u32) -> usize {
+    let mut kept = 0usize;
+    let mut spent = 0u32;
+    for message in messages.iter().rev().take(keep_recent) {
+        let cost = estimate_message(message);
+        if kept >= MIN_KEEP && spent.saturating_add(cost) > keep_tokens {
+            break;
+        }
+        spent = spent.saturating_add(cost);
+        kept += 1;
+    }
+    kept
 }
 
 fn starts_with_tool_result(message: &Message) -> bool {
@@ -707,9 +815,40 @@ mod tests {
     }
 
     #[test]
+    fn a_tail_of_large_messages_is_cut_short_by_its_cost() {
+        // Eight recent messages can be eight large tool results, and a tail
+        // bigger than the budget means compaction summarizes the head,
+        // achieves nothing, and is asked again on the next iteration.
+        let messages: Vec<Message> = (0..8)
+            .map(|i| Message::user(format!("{i}{}", "x".repeat(4_000))))
+            .collect();
+
+        // A thousand tokens buys one of these, and the floor buys the second.
+        let (dropped, kept) = split_for_compaction(&messages, 8, 1_000);
+        assert_eq!(kept, MIN_KEEP);
+        assert_eq!(dropped, messages.len() - MIN_KEEP);
+
+        // Given room, the count is what binds.
+        let (_, roomy) = split_for_compaction(&messages, 8, u32::MAX);
+        assert_eq!(roomy, 8);
+    }
+
+    #[test]
+    fn the_tail_never_falls_below_one_exchange() {
+        // Below this the tail stops being context and starts being a fragment.
+        let messages = vec![
+            Message::user("a"),
+            Message::assistant("b"),
+            Message::user(format!("huge {}", "x".repeat(100_000))),
+        ];
+        let (_, kept) = split_for_compaction(&messages, 8, 10);
+        assert_eq!(kept, MIN_KEEP);
+    }
+
+    #[test]
     fn nothing_is_dropped_when_history_is_short() {
         let messages = vec![Message::user("a"), Message::assistant("b")];
-        assert_eq!(split_for_compaction(&messages, 6), (0, 2));
+        assert_eq!(split_for_compaction(&messages, 6, u32::MAX), (0, 2));
     }
 
     #[test]
@@ -721,7 +860,7 @@ mod tests {
             tool_result(),
             Message::assistant("done"),
         ];
-        let (dropped, kept) = split_for_compaction(&messages, 2);
+        let (dropped, kept) = split_for_compaction(&messages, 2, u32::MAX);
         assert_eq!(dropped + kept, messages.len());
         assert!(
             !starts_with_tool_result(&messages[dropped]),
@@ -738,7 +877,7 @@ mod tests {
             tool_result(),
             Message::assistant("done"),
         ];
-        let (dropped, _) = split_for_compaction(&messages, 3);
+        let (dropped, _) = split_for_compaction(&messages, 3, u32::MAX);
         assert!(!starts_with_tool_result(&messages[dropped]));
     }
 }

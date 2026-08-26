@@ -12,6 +12,7 @@ import {
   datasetName,
   entriesFromMessages,
   mergeChanged,
+  mergeContext,
   mergeSession,
   pinnedPlan,
   reduce,
@@ -1211,6 +1212,48 @@ describe("live file changes", () => {
     // The changed set is the state of the workspace, not something that
     // happened in the conversation.
     expect(run(changed("a.rs"))).toEqual([]);
+  });
+});
+
+describe("mergeContext", () => {
+  const used = (used: number, window: number): UiEvent => ({
+    type: "context_used",
+    used,
+    window,
+  });
+
+  it("takes the latest reading", () => {
+    expect(mergeContext(null, used(1_000, 8_000))).toEqual({
+      used: 1_000,
+      window: 8_000,
+    });
+    expect(mergeContext({ used: 1_000, window: 8_000 }, used(2_000, 8_000))).toEqual(
+      { used: 2_000, window: 8_000 },
+    );
+  });
+
+  it("hands back the same object when nothing moved", () => {
+    // Identity, not equality: this arrives before every request, and a fresh
+    // object would redraw the composer to say the same percentage.
+    const before = { used: 1_000, window: 8_000 };
+    expect(mergeContext(before, used(1_000, 8_000))).toBe(before);
+    expect(mergeContext(before, { type: "iteration_started", iteration: 2 })).toBe(
+      before,
+    );
+  });
+
+  it("notices a window that changed under it", () => {
+    // Switching model mid-conversation is the case: the same number of tokens
+    // against a different ceiling is a different answer.
+    const before = { used: 100_000, window: 128_000 };
+    expect(mergeContext(before, used(100_000, 32_000))).toEqual({
+      used: 100_000,
+      window: 32_000,
+    });
+  });
+
+  it("leaves the transcript alone", () => {
+    expect(run(used(1_000, 8_000))).toEqual([]);
   });
 });
 

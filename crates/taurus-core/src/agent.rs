@@ -538,6 +538,10 @@ impl Agent {
             let (assistant, usage, stop) = self.stream_once(session, &ui).await?;
             total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
             total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+            // Before the answer is pushed: what the provider counted is what
+            // was sent, and the estimate it is paired with has to be of the
+            // same messages. See `Session::record_request`.
+            session.record_request(usage.input_tokens);
             session.add_usage(usage);
 
             let has_tools = assistant.has_tool_use();
@@ -1161,8 +1165,50 @@ impl Agent {
             return summarizing;
         };
         let budget = (caps.context_length as f32 * self.config.compaction_threshold) as u32;
-        if session.estimated_tokens() < budget {
+        // The messages are the part of the prompt that can be shrunk, and they
+        // used to be the whole of what was measured — so the system prompt, the
+        // tool schemas, and the plan rode along uncounted, and the threshold
+        // was quietly paying for them. It cannot: what they cost is a fact
+        // about how much configuration a workspace has, and the headroom is a
+        // fraction of a window.
+        let overhead = self.request_overhead(session);
+        let used = session.estimated_tokens().saturating_add(overhead);
+        let _ = ui
+            .send(UiEvent::ContextUsed {
+                used,
+                window: caps.context_length,
+            })
+            .await;
+        if used < budget {
             return summarizing;
+        }
+
+        // Before anything is trimmed or summarized, because neither touches
+        // this: if what a request carries besides its messages already fills
+        // the window, an empty conversation would not fit either. Nothing else
+        // in the harness would ever have said so — the turn simply summarized
+        // on every iteration and failed anyway.
+        if overhead >= budget {
+            if summarizing == Summarizing::Failed {
+                return summarizing;
+            }
+            warn!(
+                overhead,
+                budget, "the prompt's fixed part does not fit the window"
+            );
+            let _ = ui
+                .send(UiEvent::Error {
+                    message: format!(
+                        "The system prompt and tool definitions come to about {overhead} tokens, \
+                         which is already more than this model's usable context ({budget} of a \
+                         {} window). Summarizing cannot help — nothing here is a message. Use a \
+                         model with a larger window, give this provider's model its real \
+                         `context_length` if it has one, or turn off some tools.",
+                        caps.context_length
+                    ),
+                })
+                .await;
+            return Summarizing::Failed;
         }
 
         // Only a read-only tool answers the same question twice: a repeat of
@@ -1175,8 +1221,15 @@ impl Agent {
                 .get(name)
                 .is_some_and(|tool| tool.effect() == Effect::Read)
         };
-        let trimmed =
-            session.trim_tool_results(self.config.keep_recent_messages, &repeats_supersede);
+        // The same boundary the summarizer will use, so the two passes cannot
+        // disagree about which messages are the recent ones.
+        let keep_tokens = budget / 2;
+        let (_, kept) = split_for_compaction(
+            &session.messages,
+            self.config.keep_recent_messages,
+            keep_tokens,
+        );
+        let trimmed = session.trim_tool_results(kept, &repeats_supersede);
         if !trimmed.is_empty() {
             info!(
                 results = trimmed.results,
@@ -1192,7 +1245,7 @@ impl Agent {
         }
         // Free and cannot fail, so it runs however the summarizing went: what
         // one round trims is what the next round does not have to hold.
-        if session.estimated_tokens() < budget {
+        if session.estimated_tokens().saturating_add(overhead) < budget {
             return summarizing;
         }
 
@@ -1200,10 +1253,41 @@ impl Agent {
             return summarizing;
         }
 
-        let (drop_count, _) =
-            split_for_compaction(&session.messages, self.config.keep_recent_messages);
+        let (drop_count, kept) = split_for_compaction(
+            &session.messages,
+            self.config.keep_recent_messages,
+            keep_tokens,
+        );
         if drop_count == 0 {
             return summarizing;
+        }
+
+        // Summarizing replaces the head with a paragraph; it cannot touch the
+        // tail. If the tail alone will not fit, the request will not fit
+        // however good the summary is — so say so once rather than spending a
+        // request per iteration proving it.
+        let tail: u32 = session.messages[drop_count..]
+            .iter()
+            .map(crate::session::estimate_message)
+            .sum();
+        if tail.saturating_add(overhead) >= budget {
+            warn!(
+                tail,
+                overhead, budget, "what cannot be summarized is already over budget"
+            );
+            let _ = ui
+                .send(UiEvent::Error {
+                    message: format!(
+                        "The {kept} most recent messages come to about {tail} tokens on their \
+                         own, which with the system prompt and tools leaves no room in this \
+                         model's window. Summarizing the earlier ones cannot make room — \
+                         something recent is very large, a whole file or a long command's \
+                         output. A model with a bigger window, or a smaller read, is what gets \
+                         past this."
+                    ),
+                })
+                .await;
+            return Summarizing::Failed;
         }
 
         info!(drop_count, "compacting session history");
@@ -1242,6 +1326,30 @@ impl Agent {
             })
             .await;
         Summarizing::Allowed
+    }
+
+    /// What the next request will carry besides its messages.
+    ///
+    /// Measured wherever a request has already been answered, because the
+    /// provider counted the real thing — its own tokenizer, its own envelope,
+    /// the tools as it renders them — and no estimate here can do better than
+    /// that. Estimated only for the first request of a session, from the two
+    /// things that make up nearly all of it.
+    fn request_overhead(&self, session: &Session) -> u32 {
+        session.measured_overhead().unwrap_or_else(|| {
+            let system = crate::session::estimate_tokens(&self.config.system_prompt);
+            let tools: u32 = self
+                .registry
+                .definitions()
+                .iter()
+                .map(|tool| {
+                    crate::session::estimate_tokens(&tool.name)
+                        + crate::session::estimate_tokens(&tool.description)
+                        + crate::session::estimate_tokens(&tool.input_schema.to_string())
+                })
+                .sum();
+            system.saturating_add(tools)
+        })
     }
 
     /// The older half of the conversation, in one paragraph, or why not.

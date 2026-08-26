@@ -473,7 +473,43 @@ files inside an ignored directory reads as having changed nothing.
 ## The context window
 
 A local 8k model runs out of room in a way a hosted 200k one does not, so the
-budget is managed rather than hoped for. Three things do the work.
+budget is managed rather than hoped for. Three things do the work — and one
+thing decides when they run.
+
+**The budget is measured against the whole request, and learns what one really
+costs.** The messages are the part that can be shrunk, and they used to be the
+whole of what was counted — so the system prompt, every tool's schema, and the
+plan appended to each request rode along uncounted, and the threshold was
+quietly paying for them. It cannot: what those cost is a fact about how much
+configuration a workspace has, while the headroom is a fraction of a window, and
+on a small one they cross. The nine built-in tools are about 1,650 tokens before
+a message is added.
+
+So the first request of a session estimates them, and every request after that
+is measured. A response reports the size of the whole prompt as the backend
+counted it — its tokenizer, its envelope, its rendering of the tools, cache hits
+included — and the difference between that number and the estimate for the same
+messages is the overhead, exact and self-correcting per provider. A report of
+zero is ignored rather than believed, because a cancelled stream and a gateway
+that strips the field would otherwise say the entire prompt cost nothing.
+
+**It is on screen while it fills.** Above the box, from half a window on: what
+fraction is used, and what it is a fraction *of*. That second number is the one
+worth having. An OpenAI-compatible endpoint cannot be asked how much a model
+holds — `/v1/models` answers with ids and nothing else — so the figure being
+counted against may be the built-in 128,000 assumption rather than the truth,
+and a conversation that fills implausibly fast is a misconfiguration nobody can
+recognize unless it is written down somewhere. Set `context_length` for the
+model in [`providers.json`](configuration.md#azure-openai-and-gateways-in-front-of-it) and the meter starts
+telling the truth.
+
+**And it either makes room or says why it cannot.** The tail kept verbatim is
+bounded by tokens as well as by message count, because eight recent messages can
+be eight large tool results and a tail bigger than the budget means summarizing
+achieves nothing — over and over, once per iteration. Where no boundary helps,
+it says so once: the recent messages are too large on their own, or the system
+prompt and tool schemas fill the window by themselves, which is a model too
+small for this agent rather than a conversation that grew.
 
 **Reads come back a window at a time.** `read_file` returns 2000 lines by
 default and takes `offset` and `limit` for the rest. Line numbers stay absolute,

@@ -103,6 +103,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     println!("  [retrying {attempt}/{of}] {reason}");
                 }
+                // The window as it stood before each request. Printed rather
+                // than ignored: this example exists to show what a turn does,
+                // and how much room it has left is part of that.
+                UiEvent::ContextUsed { used, window } => {
+                    println!("  [context {used}/{window}]")
+                }
                 UiEvent::Error { message } => println!("  [error] {message}"),
                 UiEvent::TurnFinished { stop_reason, usage } => {
                     println!(
