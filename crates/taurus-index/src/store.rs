@@ -45,14 +45,11 @@ use serde::{Deserialize, Serialize};
 /// vector does. An index written by a newer Taurus is discarded and rebuilt
 /// rather than half-read — unlike a checkpoint, nothing is lost by rebuilding.
 ///
-/// 2: chunks are cut at structure rather than on a line count, and what is
-/// embedded is the passage rather than the body — the file's path and the
-/// definitions the chunk sits inside go into the vector too. Neither changes an
-/// entry's *shape*, which is exactly why this had to move: an index is judged
-/// current per file by length and modification time, so a workspace whose files
-/// nobody had touched would have kept every vector it already had, built from
-/// passages that no longer exist.
-const FORMAT_VERSION: u32 = 2;
+/// Still 1. Structure-snapped chunks and embedded headings were built, would
+/// have had to move this, and were measured retrieving worse than the line
+/// windows they replaced — see `examples/retrieval.rs` and the entry in
+/// `docs/known-gaps.md`.
+const FORMAT_VERSION: u32 = 1;
 
 /// Most files one workspace may index.
 ///

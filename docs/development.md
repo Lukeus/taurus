@@ -223,6 +223,16 @@ cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async boo
 # thread.
 cargo run -p taurus-tools --example sweep -- .
 
+# How well the index answers a question, as a number rather than by eye.
+# Needs Ollama and an embedding model; reads the workspace and writes nothing.
+# Fifteen questions phrased the way somebody asks them, each with the file that
+# answers it, reported as the rank that file came back at. Run it, change
+# something about chunking or ranking, run it again. It is the gate that
+# `rerank_model` has been waiting for since it shipped, and it is what showed
+# that structure-aware chunking retrieved worse than the line windows it would
+# have replaced — see `docs/known-gaps.md`.
+cargo run -p taurus-index --example retrieval -- . nomic-embed-text
+
 # What searching your real transcripts costs, and what it finds. Needs no
 # provider. It reads `~/.taurus/sessions` and writes nothing. Two numbers, and
 # the gap between them is the point: a query that matches nothing pays only the

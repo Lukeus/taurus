@@ -420,12 +420,19 @@ half of one would report it as up to date while the rest never arrived.
 Three deliberate simplicities:
 
 - **Line windows, not syntax.** Forty lines with ten of overlap, in every
-  language. A parser per language would cut at function boundaries and produce
-  better chunks — and would need a grammar for everything in the workspace,
-  would silently fall back on the ones it lacked, and would go wrong quietly on
-  a file it half understood. The overlap is what stops a seam being a blind
-  spot: a function split across a boundary is otherwise half in each chunk and
-  whole in neither.
+  language. The overlap is what stops a seam being a blind spot: a function
+  split across a boundary is otherwise half in each chunk and whole in neither.
+
+  This one was argued from first principles and is now argued from a number.
+  Cutting at structure instead — snapping each cut to the nearest line that
+  starts a new top-level thing, which needs no grammar and works off
+  indentation — was built and measured against this on fifteen questions, and
+  it retrieved *worse*: MRR 0.60 against 0.67, and the answering file first for
+  40% of questions rather than 53%. Embedding a heading with each chunk, so a
+  window from the middle of a long `impl` carries the signature above it, was
+  worse again at 0.57. Neither shipped. See
+  [Known gaps](known-gaps.md) for what that does and does not settle, and
+  `cargo run -p taurus-index --example retrieval` to re-run it.
 - **A loop over every vector, not an ANN index.** Twenty thousand vectors of 768
   dimensions is fifteen million multiply-adds — under a millisecond, and dwarfed
   by the round trip to embed the query. An approximate structure would buy

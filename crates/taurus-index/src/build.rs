@@ -186,12 +186,9 @@ pub async fn refresh(
             let _ = write_down(index, model, keep).await;
             return Err("indexing was canceled".into());
         }
-        // The passage rather than the body: a window of code says what it does
-        // and not what it is, so what goes into the vector is the file it came
-        // from and the definitions it sits inside as well. See `chunk`.
         let texts: Vec<String> = batch
             .iter()
-            .map(|(path, _, _, piece)| piece.passage(path))
+            .map(|(_, _, _, piece)| piece.text.clone())
             .collect();
         let vectors = provider
             .embed(model, &texts)

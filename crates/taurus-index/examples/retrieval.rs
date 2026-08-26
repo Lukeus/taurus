@@ -1,5 +1,4 @@
-//! Does cutting at structure actually retrieve better than cutting on a line
-//! count?
+//! How well does the index actually answer a question?
 //!
 //! ```sh
 //! ollama pull nomic-embed-text
@@ -9,34 +8,52 @@
 //! `probe` next door prints hits for a reader to judge by eye, which is the
 //! right check for "is this any good at all" and no check at all for "is this
 //! better than what it replaced". This answers the second question with a
-//! number, because the alternative is shipping a change to how every vector in
-//! the index is built on the strength of it sounding sensible — and this
-//! repository has already been caught doing that once. `rerank_model` is empty
-//! by default for exactly this reason: the plan that added reranking gated it
-//! on beating cosine, and nobody ran the gate.
+//! number: run it, change something, run it again.
 //!
-//! # What it compares
-//!
-//! Three variants, so the two halves of the change can be told apart:
-//!
-//! - **lines** — forty-line windows with ten lines of overlap, embedding the
-//!   body and nothing else. What the index did before.
-//! - **structure** — cuts snapped to where a top-level thing starts, still
-//!   embedding the body alone. What snapping is worth on its own.
-//! - **structure+heading** — the same cuts, embedding the file's path and the
-//!   definitions the chunk sits inside as well. What ships.
+//! It exists because this repository has already shipped one retrieval change
+//! without that check. `rerank_model` is empty by default because the plan that
+//! added reranking gated it on beating cosine, and nobody ran the gate — which
+//! is still true, and is now one command away from not being.
 //!
 //! # What it measures
 //!
-//! Questions phrased the way somebody asks them, each with the file that
-//! actually answers it. For each, the rank of that file in the results — so
-//! **MRR** is how far down the list the answer usually is, and **hit@1** is how
-//! often it is simply first. Both are reported per variant, and every query's
-//! rank is printed, because a mean that moved is worth nothing next to knowing
+//! Fifteen questions phrased the way somebody asks them, each with the file
+//! that actually answers it. For each, the rank of that file in the results —
+//! so **MRR** is how far down the list the answer usually is, and **hit@1** is
+//! how often it is simply first. Every question's rank is printed as well as
+//! the means, because a mean that moved is worth nothing next to knowing
 //! *which* question got better.
 //!
-//! The queries name no file and no identifier. Anything grep could have found
+//! The questions name no file and no identifier. Anything grep could have found
 //! is not a test of this.
+//!
+//! # What it is not
+//!
+//! Fifteen questions, one repository, one embedding model. That is enough to
+//! catch a change that makes retrieval worse — the numbers are deterministic,
+//! so a difference between two runs is a real difference — and it is not enough
+//! to conclude much about a change that leaves them alone. It says nothing at
+//! all about a workspace in another language.
+//!
+//! Answers are matched as a path prefix, so a question whose work is spread
+//! across a directory can name the directory. Where the answer is genuinely in
+//! two files, this scores the one a reader would open first, which is a
+//! judgement and is why the questions are here to be argued with.
+//!
+//! # Compare within a run, not across two
+//!
+//! The corpus is the working tree, so the score moves when the tree does — and
+//! it moves by more than you would guess. Editing a doc page between two runs
+//! was measured shifting MRR by 0.03, which is the size of the differences this
+//! is for detecting.
+//!
+//! So a comparison has to score both things against the same corpus. The
+//! cleanest way is what the structure-chunking experiment did: read the files
+//! once, chunk them every way under test in one process, and report the ranks
+//! side by side. Stashing a change, running this, unstashing and running it
+//! again gives two numbers that differ partly because of the change and partly
+//! because the tree was not the same — including because the change itself is
+//! in it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -106,115 +123,10 @@ const QUERIES: &[(&str, &str)] = &[
     ),
 ];
 
-/// How the corpus was cut, and what went into each vector.
-#[derive(Clone, Copy, PartialEq)]
-enum Variant {
-    Lines,
-    Structure,
-    StructureWithOverlap,
-    StructureWithHeading,
-}
-
-impl Variant {
-    fn name(self) -> &'static str {
-        match self {
-            Variant::Lines => "lines",
-            Variant::Structure => "structure",
-            Variant::StructureWithOverlap => "structure+overlap",
-            Variant::StructureWithHeading => "structure+heading",
-        }
-    }
-}
-
-/// Every variant, in the order they are reported.
-const VARIANTS: [Variant; 4] = [
-    Variant::Lines,
-    Variant::Structure,
-    Variant::StructureWithOverlap,
-    Variant::StructureWithHeading,
-];
-
 /// One embedded passage of one file.
 struct Passage {
     path: String,
     vector: Vec<f32>,
-}
-
-/*
- * The chunker as it stood before this change, kept here rather than behind a
- * flag in `chunk.rs`.
- *
- * A production module carrying two ways to do its job so a test can compare
- * them is a module with a setting nobody sets, and the setting outlives the
- * comparison. This is a copy of code that no longer exists, in the one place
- * that has any use for it, and it is allowed to go stale the moment the
- * comparison stops being interesting.
- */
-const OLD_CHUNK_LINES: usize = 40;
-const OLD_OVERLAP_LINES: usize = 10;
-const OLD_MAX_LINE_CHARS: usize = 500;
-const OLD_MIN_CHUNK_CHARS: usize = 40;
-
-fn split_by_lines(contents: &str) -> Vec<String> {
-    let lines: Vec<&str> = contents.lines().collect();
-    if lines.is_empty() {
-        return Vec::new();
-    }
-    let stride = OLD_CHUNK_LINES.saturating_sub(OLD_OVERLAP_LINES).max(1);
-    let mut chunks = Vec::new();
-    let mut start = 0;
-    while start < lines.len() {
-        let end = (start + OLD_CHUNK_LINES).min(lines.len());
-        let text = lines[start..end]
-            .iter()
-            .map(|line| {
-                if line.chars().count() <= OLD_MAX_LINE_CHARS {
-                    line.to_string()
-                } else {
-                    line.chars().take(OLD_MAX_LINE_CHARS).collect::<String>() + " …"
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if text.chars().filter(|c| !c.is_whitespace()).count() >= OLD_MIN_CHUNK_CHARS {
-            chunks.push(text);
-        }
-        if end == lines.len() {
-            break;
-        }
-        start += stride;
-    }
-    chunks
-}
-
-fn texts_for(variant: Variant, path: &str, contents: &str) -> Vec<String> {
-    match variant {
-        Variant::Lines => split_by_lines(contents),
-        Variant::Structure => chunk::split(contents)
-            .into_iter()
-            .map(|piece| piece.text)
-            .collect(),
-        // Snapped cuts, but every chunk still reaches back over the one before
-        // it. The confound this exists to remove: snapping drops the overlap,
-        // which drops the passage count by about a seventh, and a corpus with
-        // fewer passages in it gives every file fewer chances to be the best
-        // match for anything. Without this variant a loss to `lines` cannot be
-        // told apart from a loss to *having fewer vectors*.
-        Variant::StructureWithOverlap => {
-            let lines: Vec<&str> = contents.lines().collect();
-            chunk::split(contents)
-                .iter()
-                .map(|piece| {
-                    let from = piece.start_line.saturating_sub(1 + OLD_OVERLAP_LINES);
-                    lines[from..piece.end_line].join("\n")
-                })
-                .collect()
-        }
-        Variant::StructureWithHeading => chunk::split(contents)
-            .iter()
-            .map(|piece| piece.passage(path))
-            .collect(),
-    }
 }
 
 #[tokio::main]
@@ -259,39 +171,32 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("could not embed the queries: {e}"));
 
-    let mut ranks: HashMap<&str, Vec<Option<usize>>> = HashMap::new();
+    let started = Instant::now();
+    let passages = embed_corpus(&sources, &provider, &model).await;
+    println!(
+        "{} passages, embedded in {:.1?}\n",
+        passages.len(),
+        started.elapsed()
+    );
 
-    for variant in VARIANTS {
-        let started = Instant::now();
-        let passages = embed_corpus(&sources, variant, &provider, &model).await;
-        println!(
-            "{:<18} {:>6} passages  {:>8.1?}",
-            variant.name(),
-            passages.len(),
-            started.elapsed()
-        );
-
-        let found = query_vectors
-            .iter()
-            .zip(QUERIES)
-            .map(|(vector, (_, expected))| rank_of(&passages, vector, expected))
-            .collect();
-        ranks.insert(variant.name(), found);
-    }
+    let ranks: Vec<Option<usize>> = query_vectors
+        .iter()
+        .zip(QUERIES)
+        .map(|(vector, (_, expected))| rank_of(&passages, vector, expected))
+        .collect();
 
     report(&ranks);
 }
 
 async fn embed_corpus(
     sources: &[(String, String)],
-    variant: Variant,
     provider: &Arc<dyn Provider>,
     model: &str,
 ) -> Vec<Passage> {
     let mut pending: Vec<(String, String)> = Vec::new();
     for (path, contents) in sources {
-        for text in texts_for(variant, path, contents) {
-            pending.push((path.clone(), text));
+        for piece in chunk::split(contents) {
+            pending.push((path.clone(), piece.text));
         }
     }
 
@@ -337,49 +242,36 @@ fn rank_of(passages: &[Passage], query: &[f32], expected: &str) -> Option<usize>
         .map(|at| at + 1)
 }
 
-fn report(ranks: &HashMap<&str, Vec<Option<usize>>>) {
-    println!("\nrank of the answering file, per question\n");
-    print!("{:<50}", "");
-    for variant in VARIANTS {
-        print!("{:>19}", variant.name());
-    }
-    println!();
-    for (index, (question, _)) in QUERIES.iter().enumerate() {
-        print!("{:<50}", truncate(question, 48));
-        for variant in VARIANTS {
-            // A miss is distinguished from a bad rank rather than folded into
-            // one: a file that is nowhere in the results is a different
-            // failure from one that is ninth, and averaging them together
-            // hides which happened.
-            match ranks[variant.name()][index] {
-                Some(rank) => print!("{rank:>19}"),
-                None => print!("{:>19}", "—"),
-            }
-        }
-        println!();
+fn report(ranks: &[Option<usize>]) {
+    println!("rank of the answering file, per question\n");
+    for (index, (question, expected)) in QUERIES.iter().enumerate() {
+        // A miss is distinguished from a bad rank rather than folded into one:
+        // a file that is nowhere in the results is a different failure from one
+        // that is ninth, and averaging them together hides which happened.
+        let rank = match ranks[index] {
+            Some(rank) => format!("{rank}"),
+            None => "—".to_string(),
+        };
+        println!("{rank:>5}  {:<52}  {expected}", truncate(question, 50));
     }
 
-    println!("\n{:<20} {:>6} {:>8} {:>8}", "", "MRR", "hit@1", "hit@5");
-    for name in VARIANTS.map(|v| v.name()) {
-        let found = &ranks[name];
-        let mrr: f64 = found
-            .iter()
-            .map(|rank| rank.map_or(0.0, |r| 1.0 / r as f64))
-            .sum::<f64>()
-            / found.len() as f64;
-        let at = |k: usize| {
-            found.iter().filter(|r| r.is_some_and(|r| r <= k)).count() as f64 / found.len() as f64
-        };
-        println!(
-            "{name:<20} {mrr:>6.3} {:>7.0}% {:>7.0}%",
-            at(1) * 100.0,
-            at(5) * 100.0
-        );
-    }
+    let mrr: f64 = ranks
+        .iter()
+        .map(|rank| rank.map_or(0.0, |r| 1.0 / r as f64))
+        .sum::<f64>()
+        / ranks.len() as f64;
+    let at = |k: usize| {
+        ranks.iter().filter(|r| r.is_some_and(|r| r <= k)).count() as f64 / ranks.len() as f64
+    };
+
     println!(
-        "\n{} questions. Higher is better everywhere; MRR is the one to watch,\n\
-         because hit@1 moves in whole questions.",
+        "\nMRR {mrr:.3}   hit@1 {:.0}%   hit@5 {:.0}%   over {} questions",
+        at(1) * 100.0,
+        at(5) * 100.0,
         QUERIES.len()
+    );
+    println!(
+        "Higher is better everywhere. MRR is the one to watch: hit@1 moves in\n         whole questions, so it is coarse at this sample size."
     );
 }
 

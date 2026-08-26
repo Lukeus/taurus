@@ -798,4 +798,43 @@ and they are the minority.
   not. What is not here is user-defined bindings — a keymap file means a
   conflict resolver, a way to see what is bound, and a way to find out why a
   key did nothing.
+- **Chunking for the index is a line window, and structure-aware chunking was
+  tried and lost.** Forty lines with ten of overlap, in every language. The
+  obvious improvement is to cut where a definition starts, and the obvious
+  objection — a grammar per language, a silent fallback for the ones you lack,
+  and confident nonsense on a file half understood — turns out not to apply to
+  reading *layout*: a non-blank line at zero indent, after a blank line or after
+  the close of what came before, starts a new top-level thing in every language
+  a person writes by hand, and snapping a cut to the nearest one within twelve
+  lines needs no grammar and has no second code path.
+
+  It was built that way, and measured. On this repository, fifteen questions,
+  `nomic-embed-text`: line windows scored MRR 0.668 and put the answering file
+  first 53% of the time; structure-snapped cuts scored 0.598 and 40%; adding an
+  embedded heading — the file's path and the definitions the chunk sits inside —
+  scored 0.565 and 40%. Restoring the overlap that snapping drops recovered
+  nothing (0.577), which rules out the obvious confound. The numbers are
+  deterministic and reproduced exactly across runs.
+
+  So it is not shipped, and `git show` on the commit before the one that
+  reverted it is the implementation if anybody wants to try again. What the
+  measurement does **not** settle: fifteen questions is a small sample, one
+  embedding model is one embedding model, and the corpus is Rust and TypeScript
+  — a model that reads code structurally, or a workspace in a language where
+  indentation carries more, could land differently. One thing it did not isolate
+  is that snapping produces 13% fewer passages (4025 against 4610), and a corpus
+  with more passages in it gives every file more chances to be the best match
+  for something; the overlap control lengthened chunks rather than adding them,
+  so that axis is untested. `cargo run -p taurus-index --example retrieval` is
+  the gate, and re-running it is the whole cost of arguing with any of this —
+  though it has to be run the way that comparison was, scoring both things
+  against one corpus in one process. The corpus is the working tree, and
+  editing a doc page between two runs was measured moving MRR by 0.03, which is
+  the size of the differences it exists to detect.
+- **Reranking is still off by default, and still ungated.** `rerank_model` is
+  empty because the plan that added it said to beat cosine before defaulting it
+  on, and that comparison has never been run. It now has somewhere to be run:
+  the retrieval harness above scores whatever the index currently does, so the
+  gate is one command with the setting on and one with it off. Until somebody
+  does that, an empty default is the honest state rather than a forgotten one.
 
