@@ -28,7 +28,7 @@ and they are the minority.
   packaged wrongly, everything works except for a window that only a user on
   Windows in an installed build can see. See
   [Running commands](safety.md#running-commands).
-- **A background command's tab is polled, not pushed.** The dock now holds one
+- **A background command's tab is polled, not pushed.** The dock holds one
   per command — see [Terminal](capabilities.md#terminal) — and it asks four
   times a second while a tab is on screen rather than being told when a line
   arrives. That is a decision and not a stub: the alternative is a subscription
@@ -143,7 +143,7 @@ and they are the minority.
   means snapshotting the object store, which is its own feature and not one this
   opens. What has been closed is *when you hear about it*: the sweep writes the
   fact into the checkpoint log, and the rewind plan repeats it beside the file
-  list, so the warning now arrives at the moment you reach for undo rather than
+  list, so the warning arrives at the moment you reach for undo rather than
   only at the moment the command ran. Staging is still unreported — see
   [Rewinding a turn](safety.md#rewinding-a-turn) for why the index is deliberately not
   watched.
@@ -154,7 +154,7 @@ and they are the minority.
   rewrites a file to the same length within the same tick would slip through.
   Closing it means reading every file twice per command.
 
-  The commands after the first in a turn now reuse what the previous one read,
+  The commands after the first in a turn reuse what the previous one read,
   keyed on that same length and modification time, so a workspace is read once
   per turn rather than once per command. That is the same comparison and so the
   same blind spot, but it reaches one case further. Where a sweep on its own
@@ -251,9 +251,9 @@ and they are the minority.
   command line has no before-and-after to compute, which is exactly why
   `run_command` is swept afterwards rather than predicted. So the most
   consequential writes in a session — the ones a script made — are still
-  approved on the command line alone. They are at least *readable* afterwards
-  now: the **Changes** drawer diffs what the sweep recorded, so a `sed -i` across
-  a dozen files can be inspected line by line once it has happened. That is
+  approved on the command line alone. They are at least *readable* afterwards:
+  the **Changes** drawer diffs what the sweep recorded, so a `sed -i` across a
+  dozen files can be inspected line by line once it has happened. That is
   review after the fact, not before it.
 - **A turn's diff attributes a hand edit to the wrong turn.** What a turn
   changed is computed as its own pre-image against the next recorded pre-image
@@ -262,7 +262,7 @@ and they are the minority.
   diff. Closing it means post-images, which is a second copy of every file
   written per turn to attribute a case the rewind already warns about in the
   same words. See [Keeping a turn](safety.md#keeping-a-turn).
-- **Committing a turn still does not offer to squash.** The checkpoint log now
+- **Committing a turn still does not offer to squash.** The checkpoint log
   records which turns are in `HEAD`, so committing turn 5 while turn 4 is
   uncommitted says so first — and says something sharper when the two share a
   file, because `git commit -- <paths>` takes what those paths hold now and
@@ -275,9 +275,9 @@ and they are the minority.
   you committed restores the files and leaves the commit in place, so the tree
   no longer matches it. That is still true and is not going to change — it is
   your tree, and there are good reasons to want the files back regardless. What
-  has changed is that the rewind plan now names the commit and what to do about
-  it (`git revert`, `git reset`) before you press anything, rather than letting
-  you find out afterwards. The one thing it will not do is refuse: a rewind that
+  the rewind plan does do is name the commit and what to do about it (`git
+  revert`, `git reset`) before you press anything, rather than letting you find
+  out afterwards. The one thing it will not do is refuse: a rewind that
   second-guessed you would be a worse tool than one that tells you.
 - **Nothing makes a model write a note either.** `remember` is offered and the
   prompt says when to reach for it, and that is the end of the harness's
@@ -335,8 +335,8 @@ and they are the minority.
   rather than hung, but its reasoning and prose stay inside the child. That part
   is deliberate: the parent asked for a conclusion, and a second conversation
   inlined into the transcript is what delegation exists to avoid. What is *not*
-  deliberate is having nowhere to read it afterwards, and that is now fixed —
-  every delegate keeps its own transcript beside its parent's, written as it
+  deliberate is having nowhere to read it afterwards, and that part is covered
+  — every delegate keeps its own transcript beside its parent's, written as it
   runs, and the delegation card opens it in a drawer while the call is still
   running or long after it finished. `taurus sessions --agents <ID>` lists them
   for the CLI, which prints where they are rather than rendering one: a
@@ -347,7 +347,7 @@ and they are the minority.
   open one. The files are still there, and `--agents` still lists them.
 - **A custom agent's roster is frozen for the turn, on purpose.** The set of
   sub-agents is snapshotted when a turn starts, so an agent file saved mid-turn
-  is not visible until the next one. That is now the whole of it: the
+  is not visible until the next one. That is the whole of it: the
   directories are checked at every turn boundary and rescanned when anything in
   them moved, so a new agent is available on the next message rather than after
   a reload or a trip to the drawer. The remaining freeze is the feature — a turn
@@ -402,15 +402,15 @@ and they are the minority.
   `tools:` is a scope, not a sandbox. A per-agent permission policy would be a
   second thing to keep in step with the first, and is not there.
 - **Stall detection needs an exact repeat.** Alternating between two dead ends
-  is now caught, but the calls have to match argument for argument. A model
+  is caught, but the calls have to match argument for argument. A model
   asking the same unanswerable question in three slightly different ways —
   reading a missing file by three spellings of its path — is making no more
   progress than one asking it identically, and nothing here notices. Judging
   that would mean deciding when two calls are *near* enough to be the same
   mistake, which is a guess the iteration ceiling makes unnecessary. See
   [When a turn stops](working-with-it.md#when-a-turn-stops).
-- **The *model* still cannot produce an image.** A tool can hand one back now,
-  but the model itself reads pictures and cannot draw or edit one, so a turn
+- **The *model* still cannot produce an image.** A tool can hand one back, but
+  the model itself reads pictures and cannot draw or edit one, so a turn
   best answered with a diagram answers in prose or reaches for `show_chart`.
   Closing that means image *generation*, which only some backends offer and none
   of them the same way.
@@ -451,7 +451,7 @@ and they are the minority.
   the search takes the warm-up over rather than starting again, everything
   embedded so far is already written down, and the turn watches a passage count
   move. Closing it the rest of the way means answering from a partial index and
-  saying so, which is a different promise from the one the tool makes now —
+  saying so, which is a different promise from the one the tool makes —
   every search refreshes first, so that a file just written is a file that can
   be found.
 - **The index does not notice a file that changed without moving.** Length and
@@ -512,7 +512,7 @@ and they are the minority.
   that renders its content client-side comes back near-empty. Closing this
   means shipping a browser engine, so it is a limit rather than a to-do.
 - **`fetch_url`'s address check does not survive a proxy.** Loopback and
-  private-network addresses are refused, and the check now runs inside the
+  private-network addresses are refused, and the check runs inside the
   client that connects, so a name cannot answer publicly for the check and
   privately for the connection. An HTTP proxy resolves the name at its end
   though, so a request routed through one reaches a destination Taurus never
@@ -620,7 +620,7 @@ and they are the minority.
   the composer while a turn runs in the Data pane, showing the running tool or
   the last sentence of prose. It is not a transcript and cannot be: a table or
   a chart has nowhere to go on one line. The question card — which was the case
-  that mattered, because the turn parks and only you can unpark it — is now
+  that mattered, because the turn parks and only you can unpark it — is
   called out rather than left to be inferred: the strip switches to a breathing
   mint ring and says *Waiting on your answer*. What is still true is that the
   answer itself has to be given in the conversation, and the strip cannot show
@@ -642,8 +642,8 @@ and they are the minority.
 - **A query card stands alone, so a query-heavy turn is a stack of cards.** Any
   tool call that draws a view is excluded from the folded run header — that is
   what stops a table being filed under "6 steps · 11s" behind a disclosure
-  triangle. `query_data` now draws one, so a turn that asks six questions
-  leaves six cards where it used to leave one row of six. Each is small and
+  triangle. `query_data` draws one, so a turn that asks six questions leaves
+  six cards rather than one row of six. Each is small and
   each is useful; six in a column is still more transcript than the turn is
   worth. The fix is a fold that can hold cards, which is a change to how a run
   is drawn rather than to this tool.
@@ -708,7 +708,7 @@ and they are the minority.
   but it does mean a recipe written here is *stricter* than the same SQL pasted
   into a database client, where `SELECT MATERIAL` against a lowercase column
   would have worked. Nothing warns about that when a recipe is copied out.
-- **A recipe's SQL is DataFusion's SQL, and that is now committed to your
+- **A recipe's SQL is DataFusion's SQL, and that goes into your
   repository.** The engine sits behind a trait so the rest of the harness does
   not name it, but a recipe is a file with SQL text in it, so swapping engines
   would mean every recipe anybody wrote is a file in a dialect nothing reads.
@@ -822,10 +822,10 @@ and they are the minority.
   nothing here that could report it. The languages it knows are Rust,
   TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML, and TOML.
   Everything else — HTML and CSS included, which are common in a fenced block
-  and whose syntax is not word-shaped — renders plain with its label intact,
-  which is what every block did before this existed. Growing the list is a
-  `Grammar` each; growing it to *markup* is a second scanner, and a
-  word-oriented one turned loose on HTML produces confident nonsense.
+  and whose syntax is not word-shaped — renders plain with its label intact.
+  Growing the list is a `Grammar` each; growing it to *markup* is a second
+  scanner, and a word-oriented one turned loose on HTML produces confident
+  nonsense.
 - **An intra-line diff mark is a trim, not a diff.** The common words at each
   end of a replaced line come off and whatever is left in the middle is marked,
   which is one region per line by construction. A line with two separate small
@@ -892,7 +892,7 @@ and they are the minority.
   the size of the differences it exists to detect.
 - **Reranking is still off by default, and still ungated.** `rerank_model` is
   empty because the plan that added it said to beat cosine before defaulting it
-  on, and that comparison has never been run. It now has somewhere to be run:
+  on, and that comparison has never been run. It has somewhere to be run:
   the retrieval harness above scores whatever the index currently does, so the
   gate is one command with the setting on and one with it off. Until somebody
   does that, an empty default is the honest state rather than a forgotten one.
