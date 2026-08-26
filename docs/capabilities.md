@@ -489,11 +489,11 @@ test's output](screenshots/background.png)
 A background command gets a tab beside the shell. `run_command` with
 `background: true` hands the model a number and goes on printing into a buffer
 between turns — and the card for the call that started it is closed by the time
-anything arrives, so until now a build the model could read was one you could
-not see. The tab strip appears when there is a background command to show and is
-absent otherwise; the rail's **Terminal** row wears a count while any of them
-are running, which is what makes a build started behind a closed dock something
-you find out about.
+anything arrives, so a build the model can read would otherwise be one you
+cannot see. The tab strip appears when there is a background command to show
+and is absent otherwise; the rail's **Terminal** row wears a count while any of
+them are running, which is what makes a build started behind a closed dock
+something you find out about.
 
 Each tab carries the command, how it is doing in the same words `check_command`
 gives the model, and a **Stop** while it is still going. A finished one is

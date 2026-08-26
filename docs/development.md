@@ -93,7 +93,7 @@ pnpm tauri icon app-icon.svg     # regenerates src-tauri/icons/
 
 Both halves of that matter. `src-tauri/icons/` held a flat purple square for
 long enough to ship in a release, which nothing caught because no test can look
-at a picture — so the mark and the icon are now one file apart rather than two
+at a picture — so the mark and the icon are one file apart rather than two
 unrelated drawings. The mobile output the generator also writes is deleted;
 there is no Android or iOS project here to consume it.
 
@@ -157,7 +157,7 @@ same constant the label is drawn from — because sending the other one would be
 correctly refused, and the shot would then fail for the one reason that is not
 a regression.
 
-`permission-diff` earns its place twice over now. Besides the dialog, it is the
+`permission-diff` earns its place twice over. Besides the dialog, it is the
 only picture of a diff that has been coloured and marked: its hunk is one line
 rewritten and one line added, so the same image shows the intra-line mark on
 the pair that was rewritten and *no* mark on the addition that answers nothing.
@@ -206,8 +206,8 @@ cargo run -p taurus-skills --example synthesis -- qwen3.6:27b
 cargo run -p taurus-agents --example delegate -- qwen3.6:27b
 
 # MCP: repair the PATH the way the app does, connect, list tools, call one
-# through the registry. Reports entries that would not parse, so a typo does not
-# pass in silence now that it no longer takes its neighbours down with it.
+# through the registry. Reports entries that would not parse, so a typo is named
+# rather than passing in silence or taking its neighbours down with it.
 cargo run -p taurus-mcp --example probe -- path/to/mcp.json
 
 # Web: one real search, then fetch the first result it returns.

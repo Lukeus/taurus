@@ -6,16 +6,14 @@ frontends over one shared core: a Tauri v2 desktop app and a `taurus` CLI.
 macOS, Windows, and Linux from one codebase.
 
 It reads and edits files in a workspace, runs commands, searches the web,
-connects to MCP servers, delegates to sub-agents, reads screenshots you paste in,
-leaves itself notes so the next conversation in a workspace does not start from
-nothing,
-and finds code by what it does rather than what it is called — and writes down
-procedures it works out as reusable **skills**, which you approve before they are
-kept. It
-reads the `AGENTS.md` and `CLAUDE.md` you already have rather than asking for a
-seventh copy. Every file it edits is recorded first, so any turn can be
-**rewound** — or read back as a diff and **committed on its own** — and every
-write is shown as a diff before you approve it.
+connects to MCP servers, delegates to sub-agents, reads screenshots you paste
+in, leaves itself notes so the next conversation in a workspace does not start
+from nothing, and finds code by what it does rather than what it is called — and
+writes down procedures it works out as reusable **skills**, which you approve
+before they are kept. It reads the `AGENTS.md` and `CLAUDE.md` you already have
+rather than asking for a seventh copy. Every file it edits is recorded first, so
+any turn can be **rewound** — or read back as a diff and **committed on its
+own** — and every write is shown as a diff before you approve it.
 
 ![The Taurus desktop app: a conversation, a folded run of tool calls, and a
 table the model drew](docs/screenshots/app-dark.png)
@@ -65,6 +63,81 @@ taurus rewind --to last                         # undo what the last turn wrote
 
 Both share `~/.taurus` — same providers, same skills, same permission
 allowlist. Approve a tool once in the app and your scripted runs inherit it.
+
+## What is different about it
+
+Most of the list further down exists in some form in every agent harness. These
+are the parts that do not, each with the limit that comes with it — the same
+limits are written out in full in [Known gaps](docs/known-gaps.md).
+
+**It is built for the model on your own machine, not only the one in a
+datacentre.** An 8k context window is the size every decision here is shaped
+around. A fifty-skill library costs one line each in the prompt and loads a
+procedure only when it is needed. The plan is rebuilt at the *tail* of every
+request rather than in the system prompt, so a moved checkbox invalidates one
+line of prompt cache instead of the tools and the whole conversation — 75
+seconds against 194 on the same three-step task. Tool schemas are slimmed on the
+way out, old tool results shrink before anything is summarized, and a model with
+no tool-calling API at all still calls tools, through prompted parsing the core
+cannot distinguish from the native path. What this does not do is make a small
+model a large one; it makes one affordable to actually run an agent on. See
+[the context window](docs/working-with-it.md#the-context-window).
+
+**One core, two frontends, one state directory.** The desktop app and the
+`taurus` CLI are the same agent — `Host::build_agent` is the single place a
+session is assembled, and a frontend contains no agent logic, only how a
+permission prompt is asked. So a tool approved in the app is approved for a
+scripted run, a conversation started in one is resumable in the other, and the
+agent loop is testable against a scripted provider with no GUI anywhere near it.
+They are not identical surfaces: reading a turn back as a diff and committing it
+are the app's, and the terminal dock is desktop-only on purpose. See
+[How it is put together](#how-it-is-put-together).
+
+**Undo covers what a command did, not only what a tool declared.** `edit_file`
+can say which file it is about to change; a command line cannot. So the
+workspace is read before every command and again when it finishes, and the
+difference is the answer — `sed -i` across a dozen files, a `rm` that took the
+wrong directory, a script the model wrote and ran, all of it comes back, from
+the files as they stood before it ran. No git required, and it works for a
+command left running in the background across turns. The same log read forwards
+is a diff of any turn, and the offer to commit that turn on its own. The two
+things it cannot restore say so before you press anything: `.git`'s own state,
+and anything under a directory an ignore rule excludes. See
+[Rewinding a turn](docs/safety.md#rewinding-a-turn).
+
+**It reads the configuration you already have, and never writes back to it.**
+`AGENTS.md`, `CLAUDE.md`, `.github/copilot-instructions.md` and Copilot's
+scoped `*.instructions.md`; skills from `.claude/skills`, `.copilot/skills` and
+`.github/skills`; sub-agents from Claude's and Copilot's own directories; MCP
+servers in the `mcpServers` format Claude Desktop uses. A borrowed file is read
+and never rewritten — retuning a Copilot agent saves a Taurus-owned copy beside
+it and shadows the original, because that file is committed, Copilot is still
+reading it, and it carries keys Taurus has never heard of. The honest limit is
+that borrowing is not emulation: an `applyTo` glob becomes a sentence in the
+prompt, because a brief here is assembled once per turn rather than attached
+when a matching file is touched. See
+[Instructions](docs/capabilities.md#instructions).
+
+**A repository you just cloned does not get to configure your agent.** A
+workspace's `.taurus` starts processes, names the endpoint your conversation is
+sent to, and can carry standing permission grants — and all of it arrives with
+`git clone`. So an untrusted workspace contributes *no* config at all, one rule
+in one direction, and you are asked only when the folder actually holds
+something, with the MCP command lines named rather than counted. What that is
+not is a sandbox: it decides whether a project may configure Taurus, not what
+running that project's build script does. See
+[Trusting a workspace](docs/safety.md#trusting-a-workspace).
+
+**A data file is a surface, not a wall of text in the context window.** A CSV
+with a million rows in it is the most expensive mistake an agent can make with
+`read_file`. Instead it is loaded as a table, profiled from every row rather
+than a sample, and asked questions in SQL that is planned and refused if it does
+anything but read — with the rows on a pane of their own and never in a tool
+result. A transformation worth keeping becomes a recipe: SQL committed with the
+code, re-runnable on next month's export, reporting what each step did to the
+row count. The commitment that comes with it is the dialect — a recipe is
+DataFusion's SQL in a file in your repository. See
+[Working with data](docs/working-with-it.md#working-with-data).
 
 ## What it does
 
@@ -131,10 +204,10 @@ to put things back after.
   The meter above the composer says how much; pressing it says *on what* — a
   row per tool, the calls that repeated an earlier one exactly, and what every
   request pays before the conversation starts.
-- [**Tables, charts, and questions**](docs/working-with-it.md#tables-charts-and-questions)
-  — results you are meant to *look* at stand on their own beside the prose. When
-  a decision is genuinely yours, it asks and waits — and every question can be
-  skipped.
+- [**Tables, charts, diagrams, and questions**](docs/working-with-it.md#tables-charts-diagrams-and-questions)
+  — results you are meant to *look* at stand on their own beside the prose, a
+  sequence or flow diagram included. When a decision is genuinely yours, it asks
+  and waits — and every question can be skipped.
 - [**Code is coloured, and so is a diff**](docs/working-with-it.md#code-is-coloured-and-so-is-a-diff)
   — a fenced block by its fence, a diff by the file's own extension, one
   palette for both and for the query box. And where one line was rewritten

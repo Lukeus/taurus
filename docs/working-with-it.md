@@ -191,20 +191,20 @@ every step 'done' first, and then say what you did and stop.
 The same list is drawn in the transcript, so the user is reading what the model
 is reading.
 
-**Why the end, and not the system prompt.** It used to hang off the end of the
-system prompt, which reads like the end of something and is in fact the very
-beginning of a request — ahead of the tool schemas and every message in the
-conversation. A backend serving a prompt reuses the longest identical prefix of
-one it has already processed, and `update_plan` is called at the start and the
-end of every step, so a plan sitting up there threw away the tools and the whole
-conversation each time a checkbox moved. On one local 30B, a 9,550-token prompt
-costs 16ms to repeat unchanged and 10,933ms to repeat with a single line of the
-plan edited; the same three-step task ran in 75 seconds with the plan at the end
-and 194 seconds with it at the front. On Anthropic it is the same fact with a
-price on it — the cache breakpoint sits on the system field and covers the tools
+**Why the end, and not the system prompt.** The end of the system prompt reads
+like the end of something and is in fact the very beginning of a request —
+ahead of the tool schemas and every message in the conversation. A backend
+serving a prompt reuses the longest identical prefix of one it has already
+processed, and `update_plan` is called at the start and the end of every step,
+so a plan sitting up there throws away the tools and the whole conversation each
+time a checkbox moves. On one local 30B, a 9,550-token prompt costs 16ms to
+repeat unchanged and 10,933ms to repeat with a single line of the plan edited;
+the same three-step task ran in 75 seconds with the plan at the end and 194
+seconds with it at the front. On Anthropic it is the same fact with a price on
+it — the cache breakpoint sits on the system field and covers the tools
 rendered before it, so a moved plan misses both. At the tail the plan
-invalidates only itself, and it is nearer the model's attention than it was
-before rather than further away.
+invalidates only itself, and it sits nearer the model's attention rather than
+further from it.
 
 Three properties do the work, and each one is a test:
 
@@ -276,15 +276,15 @@ has been undone.
 **Whether a model reaches for it is the model's own judgement.** On a five-step
 mechanical task, both `qwen3.6:27b` and `qwen3.5:9b` did the work correctly and
 never called it; asked to plan, the 27B kept the list accurate through every
-step. The prompt now says when to plan and when to update, which is the whole of
+step. The prompt says when to plan and when to update, which is the whole of
 what the harness can do about it. See [Known gaps](known-gaps.md).
 
 ## Showing it a picture
 
-Every provider adapter here could always *send* an image — `ContentBlock::Image`
+Every provider adapter here *sends* an image without loss — `ContentBlock::Image`
 maps onto Ollama's `images` array, OpenAI's `image_url`, Anthropic's `source`,
-and Gemini's `inline_data` without loss. What none of them had was a way for one
-to arrive. Now paste or drop one into the composer:
+and Gemini's `inline_data`. Getting one in is the composer's half: paste or drop
+it there.
 
 ```
 ┌──────────────────────────────────────────┐
@@ -322,9 +322,9 @@ beside the question that asked about it.
 
 ### A tool can hand one back
 
-The other direction, and the newer one. A tool's answer is a list of blocks
-rather than a string, so a tool that took a screenshot, rendered a chart, or
-rasterized a page of a PDF can return the picture itself:
+The other direction. A tool's answer is a list of blocks rather than a string,
+so a tool that took a screenshot, rendered a chart, or rasterized a page of a
+PDF can return the picture itself:
 
 ```
 mcp__playwright__screenshot  https://example.com
@@ -339,10 +339,9 @@ rather than guessed. Text that happens to look like JSON stays text — a
 changed shape depending on the file it was pointed at would be worse than one
 that never structured anything.
 
-**MCP servers get this for free and were the reason for it.** A server that
-screenshots a page used to have its whole answer flattened to the literal words
-`[image: image/png]`, because the normalized types had nowhere to put a picture
-inside a result. That is now the picture.
+**MCP servers get this for free and are the reason for it.** A screenshot from
+one arrives as a picture rather than as the literal words `[image: image/png]`,
+which is all a result type with nowhere to put an image can say.
 
 **Only Anthropic carries an image inside the result.** OpenAI's `role: "tool"`
 message, Gemini's `functionResponse`, and Ollama's tool message are all text, so
@@ -400,16 +399,16 @@ second pass:   53.4ms  Index is current: 212 files, nothing to re-read
 ```
 
 **The first pass starts with the message, not with the search.** Forty-four
-seconds is a long time to be inside a tool call, and it used to be spent there:
-the model reached for `search_code` on an unindexed workspace and the turn sat
-on an unreturned call for the whole of it. Sending a message now starts the
-refresh in the background, so the first search lands on an index that has been
-building since — and if it lands early, the tool takes over the refresh and
-finishes it with the progress bar in the transcript rather than starting again.
-Whatever had been embedded is already written down, so taking over costs
-seconds rather than the run. Nothing indexes a repository because you opened it:
-this needs an embedding model configured, which is the same switch that decides
-whether `search_code` exists at all.
+seconds is a long time to be inside a tool call, and that is where it would
+otherwise be spent: the model reaches for `search_code` on an unindexed
+workspace and the turn sits on an unreturned call for the whole of it. Sending a
+message starts the refresh in the background instead, so the first search lands
+on an index that has been building since — and if it lands early, the tool
+takes over the refresh and finishes it with the progress bar in the transcript
+rather than starting again. Whatever had been embedded is already written down,
+so taking over costs seconds rather than the run. Nothing indexes a repository
+because you opened it: this needs an embedding model configured, which is the
+same switch that decides whether `search_code` exists at all.
 
 The same is what makes **Settings → Search → Build index now** interruptible in
 a useful way. A stopped build keeps everything up to the last write and the next
@@ -423,12 +422,12 @@ Three deliberate simplicities:
   language. The overlap is what stops a seam being a blind spot: a function
   split across a boundary is otherwise half in each chunk and whole in neither.
 
-  This one was argued from first principles and is now argued from a number.
-  Cutting at structure instead — snapping each cut to the nearest line that
-  starts a new top-level thing, which needs no grammar and works off
-  indentation — was built and measured against this on fifteen questions, and
-  it retrieved *worse*: MRR 0.60 against 0.67, and the answering file first for
-  40% of questions rather than 53%. Embedding a heading with each chunk, so a
+  That is argued from a number rather than only from first principles. Cutting
+  at structure instead — snapping each cut to the nearest line that starts a
+  new top-level thing, which needs no grammar and works off indentation — was
+  built and measured against this on fifteen questions, and it retrieved
+  *worse*: MRR 0.60 against 0.67, and the answering file first for 40% of
+  questions rather than 53%. Embedding a heading with each chunk, so a
   window from the middle of a long `impl` carries the signature above it, was
   worse again at 0.57. Neither shipped. See
   [Known gaps](known-gaps.md) for what that does and does not settle, and
@@ -517,15 +516,15 @@ message run in the order they appear, so a round that ran the tests and then
 edited still owes a check, exactly as if the edit had come in a round of its
 own.
 
-The word doing the work there is *since*. It used to be enough for a round to
-have written anything at all for the debt to stand, on the reasoning that a
-command which wrote was doing work rather than asking a question. That cannot
-see the case where the thing that wrote *was* the check: a test runner leaves a
-`.coverage` beside the code, and a file an ignore rule excludes is one the sweep
-looks past on purpose, so the run counted as work and the model was told it had
-not run anything since — one line after running the tests and reporting them
-passing. One command is still ambiguous and always will be: a `make` that builds
-and formats, or a test run that updates its own snapshots, clears the debt now.
+The word doing the work there is *since*. Counting any round that wrote
+anything at all as leaving the debt standing — on the reasoning that a command
+which wrote was doing work rather than asking a question — cannot see the case
+where the thing that wrote *was* the check: a test runner leaves a `.coverage`
+beside the code, and a file an ignore rule excludes is one the sweep looks past
+on purpose, so the run reads as work and the model is told it has not run
+anything since, one line after running the tests and reporting them passing.
+One command is still ambiguous and always will be: a `make` that builds and
+formats, or a test run that updates its own snapshots, clears the debt.
 Nothing in a shell command distinguishes those from a test runner writing a
 stamp, and a nudge that fires wrongly costs a round trip and says something
 false, while one that stays quiet leaves a backstop unused.
@@ -543,13 +542,12 @@ budget is managed rather than hoped for. Three things do the work — and one
 thing decides when they run.
 
 **The budget is measured against the whole request, and learns what one really
-costs.** The messages are the part that can be shrunk, and they used to be the
-whole of what was counted — so the system prompt, every tool's schema, and the
-plan appended to each request rode along uncounted, and the threshold was
-quietly paying for them. It cannot: what those cost is a fact about how much
-configuration a workspace has, while the headroom is a fraction of a window, and
-on a small one they cross. The nine built-in tools are about 1,650 tokens before
-a message is added.
+costs.** The messages are the part that can be shrunk, and counting only those
+lets the system prompt, every tool's schema, and the plan appended to each
+request ride along unmeasured, with the threshold quietly paying for them. It
+cannot: what those cost is a fact about how much configuration a workspace has,
+while the headroom is a fraction of a window, and on a small one they cross.
+The nine built-in tools are about 1,650 tokens before a message is added.
 
 So the first request of a session estimates them, and every request after that
 is measured. A response reports the size of the whole prompt as the backend
@@ -588,9 +586,9 @@ There is a second cap, 256 KB, and it is on the *answer* rather than on the
 file. A window is taken around the offset it was asked for, so a line near the
 end of a ten-megabyte log opens as cheaply as a line near the start; only a
 window too large to return is cut, and it says where to pick it up. The
-distinction matters because the two used to be the same thing: a read always
-began at the first byte, so a file past the cap had a tail nothing could reach,
-and a model handed a line number by `grep` had no way to go and look at it.
+distinction matters because collapsing the two — a read that always begins at
+the first byte — leaves a file past the cap with a tail nothing can reach, and a
+model handed a line number by `grep` with no way to go and look at it.
 
 **Old tool output shrinks before anything is summarized.** Tool results are most
 of what a working session holds, and every byte is re-sent on each iteration of
@@ -820,8 +818,8 @@ one for every language: what differs between them is a short list of facts —
 how a comment opens, which delimiters quote a string, which words are the
 vocabulary — so those are data and the walk over the characters is not. It
 knows Rust, TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML, and
-TOML. Anything else keeps its label and renders plain, which is what it did
-before, and is a better answer than colouring it wrongly.
+TOML. Anything else keeps its label and renders plain, which is a better answer
+than colouring it wrongly.
 
 A diff does one thing more. Where a removed line and an added line are the same
 line before and after, **the characters that actually differ are marked inside

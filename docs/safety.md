@@ -191,13 +191,13 @@ the terminal never arrived.
 **On Windows the pty is a ConPTY, and a ConPTY is a real console host.** Taken
 from the system, that host shows a window when the process asking for it has
 none — and a release build of the desktop app has none, so every `pty: true`
-command used to open a console window for as long as it ran. The bundle now
-ships Microsoft's redistributable ConPTY beside the executable, whose host is
+command would open a console window for as long as it ran. The bundle ships
+Microsoft's redistributable ConPTY beside the executable, whose host is
 headless, and `portable-pty` prefers it over the system's. It costs 2.2 MB in
 the Windows installer: the console host for x64 and a second one for ARM64,
 because an x64 build runs on ARM64 Windows under emulation and the host there
-has to be native. Neither the CLI nor a development build was ever affected —
-both already have a console — which is why this was only ever visible in the
+has to be native. Neither the CLI nor a development build is affected — both
+already have a console — which is why this is only ever visible in the
 installed app. See [`scripts/conpty.mjs`](../scripts/conpty.mjs).
 
 ### Output too big to hand over

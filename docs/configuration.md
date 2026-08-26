@@ -210,11 +210,10 @@ history of whoever typed it.
 **An environment variable wins over a stored key.** Exporting one is an
 explicit act, usually in CI or a container where no keychain exists at all, and
 a stored key silently beating it would make headless runs unpredictable. So
-`api_key_env` remains what it was, and is now optional — name a variable and it
-takes precedence, leave it unset and the stored key is used. `taurus key
-status` and the Settings field both say which one is in effect, because
-"I stored a key and it isn't being used" is otherwise a 401 that explains
-nothing:
+`api_key_env` is optional — name a variable and it takes precedence, leave it
+unset and the stored key is used. `taurus key status` and the Settings field
+both say which one is in effect, because "I stored a key and it isn't being
+used" is otherwise a 401 that explains nothing:
 
 ```
 $ taurus key status
@@ -306,8 +305,8 @@ named by its full path never needed it.
 Other things the panel will tell you rather than leave you to find:
 
 - A server that will not parse is reported **by name, with the key that is
-  wrong**, and its neighbours still load. One typo used to discard every server
-  in the file.
+  wrong**, and its neighbours still load, rather than one typo discarding every
+  server in the file.
 - A server switched off is listed as `off` rather than disappearing.
 - A server that never answers is given up on after 60 seconds, so one hung
   program cannot stall the reload the others are waiting for.
@@ -590,10 +589,9 @@ and so would their results.
 from. On `api.anthropic.com` the route is fixed — the key rides `x-api-key` and
 the endpoints sit under `/v1` — and neither field below needs a value.
 
-A gateway in front of it changes both, and used to be unusable for that reason:
-the header was a constant and the `/v1` was hardcoded into the URL, so a
-correctly configured Azure APIM route answered 401 or 404 depending on which it
-tripped over first. Both are settings now.
+A gateway in front of it changes both, so both are settings rather than
+constants. A fixed header and a hardcoded `/v1` answer a correctly configured
+Azure APIM route with a 401 or a 404, depending on which it trips over first.
 
 ```jsonc
 {
@@ -701,7 +699,7 @@ Two other fields matter more here than elsewhere:
   neither a context window, tool support, nor the ability to read an image —
   told the provider-wide 128000 above, an 8k model compacts tens of thousands
   of tokens too late. Anything left unset inherits the provider's own value, so
-  a bare id means exactly what it did before these existed.
+  a bare id means exactly what it means with no overrides at all.
 
   **Unset anywhere, a context window here is 128,000.** That is a guess, and it
   is the one number on this page that cannot be probed: `/v1/models` answers
