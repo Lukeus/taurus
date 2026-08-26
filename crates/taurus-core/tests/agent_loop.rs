@@ -527,6 +527,80 @@ async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
 }
 
 #[tokio::test]
+async fn a_summarizer_that_fails_is_not_asked_again_this_turn() {
+    // The session stays over budget for the whole turn, so every iteration
+    // reaches the compaction check. One broken summarizer request used to
+    // become one per iteration — up to `max_iterations` of them — and with the
+    // reason swallowed, a gateway answering with a 404 looked from the outside
+    // like the context quietly filling up.
+    let h = harness_with(
+        vec![
+            // Consumed by the summarizer, which fails.
+            ScriptedTurn::permanent_failure(),
+            // The turn carries on: a tool call, then an answer. The second
+            // iteration reaches the compaction check with the session still
+            // over budget.
+            ScriptedTurn::tool_call("t1", "list_dir", serde_json::json!({})),
+            ScriptedTurn::text("Carrying on."),
+        ],
+        Box::new(AllowAll),
+        AgentConfig {
+            keep_recent_messages: 2,
+            compaction_threshold: 0.8,
+            ..Default::default()
+        },
+        1000,
+    );
+
+    let mut session = Session::new("fake");
+    for i in 0..20 {
+        session.push(Message::user(format!(
+            "old message {i} {}",
+            "x".repeat(300)
+        )));
+    }
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let summarizer_requests = h
+        .provider
+        .seen
+        .lock()
+        .await
+        .iter()
+        .filter(|r| {
+            r.system
+                .as_deref()
+                .is_some_and(|s| s.starts_with("Summarize the conversation"))
+        })
+        .count();
+    assert_eq!(
+        summarizer_requests, 1,
+        "the summarizer was asked again after failing"
+    );
+
+    // And the reason reaches the reader, once, in the provider's own words.
+    let said: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Error { message } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("could not be summarized"), "{}", said[0]);
+    assert!(said[0].contains("invalid api key"), "{}", said[0]);
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "nothing was summarized, so nothing was compacted"
+    );
+}
+
+#[tokio::test]
 async fn history_is_compacted_when_it_outgrows_the_context_window() {
     let h = harness_with(
         vec![

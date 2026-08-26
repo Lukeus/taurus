@@ -486,6 +486,12 @@ impl Agent {
             None => 0,
         };
         let mut unverified = false;
+        // A summarization that failed will fail again on the next iteration for
+        // the same reason — the provider, the model, or the shape of the
+        // request — and a session over budget asks on every one of them. One
+        // broken request used to become `max_iterations` of them, which is what
+        // made a single 404 look like a storm.
+        let mut summarizing = Summarizing::Allowed;
         let mut nudged = false;
         // Tracked separately from `nudged`: they answer different questions and
         // a turn can earn both. See `PLAN_NUDGE`.
@@ -526,7 +532,7 @@ impl Agent {
                 return Err(AgentError::IterationLimit(self.config.max_iterations));
             }
 
-            self.compact_if_needed(session, &ui).await;
+            summarizing = self.compact_if_needed(session, &ui, summarizing).await;
             let _ = ui.send(UiEvent::IterationStarted { iteration }).await;
 
             let (assistant, usage, stop) = self.stream_once(session, &ui).await?;
@@ -1145,13 +1151,18 @@ impl Agent {
     ///
     /// A failed summarization is not fatal: the turn proceeds uncompacted and
     /// the provider reports the overflow if there is one.
-    async fn compact_if_needed(&self, session: &mut Session, ui: &mpsc::Sender<UiEvent>) {
+    async fn compact_if_needed(
+        &self,
+        session: &mut Session,
+        ui: &mpsc::Sender<UiEvent>,
+        summarizing: Summarizing,
+    ) -> Summarizing {
         let Ok(caps) = self.provider.capabilities(&session.model).await else {
-            return;
+            return summarizing;
         };
         let budget = (caps.context_length as f32 * self.config.compaction_threshold) as u32;
         if session.estimated_tokens() < budget {
-            return;
+            return summarizing;
         }
 
         // Only a read-only tool answers the same question twice: a repeat of
@@ -1179,21 +1190,43 @@ impl Agent {
                 })
                 .await;
         }
+        // Free and cannot fail, so it runs however the summarizing went: what
+        // one round trims is what the next round does not have to hold.
         if session.estimated_tokens() < budget {
-            return;
+            return summarizing;
+        }
+
+        if summarizing == Summarizing::Failed {
+            return summarizing;
         }
 
         let (drop_count, _) =
             split_for_compaction(&session.messages, self.config.keep_recent_messages);
         if drop_count == 0 {
-            return;
+            return summarizing;
         }
 
         info!(drop_count, "compacting session history");
         let older: Vec<Message> = session.messages[..drop_count].to_vec();
-        let Some(summary) = self.summarize(&session.model, older).await else {
-            warn!("compaction failed; continuing with full history");
-            return;
+        let summary = match self.summarize(&session.model, older).await {
+            Ok(summary) => summary,
+            Err(reason) => {
+                warn!(%reason, "compaction failed; continuing with full history");
+                // Said out loud, and with the provider's own words in it. This
+                // used to be a log line nobody reads, so a gateway answering
+                // the summarizer with a 404 looked like the context quietly
+                // filling up — the one symptom, and none of the cause.
+                let _ = ui
+                    .send(UiEvent::Error {
+                        message: format!(
+                            "The earlier conversation could not be summarized, so this turn \
+                             carries its full history and may not fit: {reason}. Not tried again \
+                             this turn."
+                        ),
+                    })
+                    .await;
+                return Summarizing::Failed;
+            }
         };
 
         let mut rest = session.messages.split_off(drop_count);
@@ -1208,9 +1241,15 @@ impl Agent {
                 messages_removed: drop_count,
             })
             .await;
+        Summarizing::Allowed
     }
 
-    async fn summarize(&self, model: &str, messages: Vec<Message>) -> Option<String> {
+    /// The older half of the conversation, in one paragraph, or why not.
+    ///
+    /// The reason comes back rather than being dropped because it is the only
+    /// account of a request the user never sees listed: the summarizer's turn
+    /// is not in the transcript, so a failure here has no other way to be read.
+    async fn summarize(&self, model: &str, messages: Vec<Message>) -> Result<String, String> {
         let mut request = ChatRequest::new(model, messages);
         request.system = Some(
             "Summarize the conversation so far for your own future reference. Preserve: the \
@@ -1231,11 +1270,28 @@ impl Agent {
         while let Some(event) = rx.recv().await {
             acc.push(event);
         }
-        handle.await.ok()?.ok()?;
+        match handle.await {
+            Err(e) => return Err(format!("the request could not be run: {e}")),
+            Ok(Err(e)) => return Err(e.to_string()),
+            Ok(Ok(_)) => {}
+        }
 
         let text = acc.finish().0.text();
-        (!text.trim().is_empty()).then_some(text)
+        if text.trim().is_empty() {
+            return Err("the model returned an empty summary".into());
+        }
+        Ok(text)
     }
+}
+
+/// Whether summarizing the older history is still worth attempting this turn.
+///
+/// Trimming tool output is free and runs regardless; this governs only the half
+/// that costs a request. See the note at its declaration in [`Agent::run`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Summarizing {
+    Allowed,
+    Failed,
 }
 
 /// This round's calls, as name and the answer each one got, if every one of

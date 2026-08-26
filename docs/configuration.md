@@ -703,6 +703,16 @@ Two other fields matter more here than elsewhere:
   of tokens too late. Anything left unset inherits the provider's own value, so
   a bare id means exactly what it did before these existed.
 
+  **Unset anywhere, a context window here is 128,000.** That is a guess, and it
+  is the one number on this page that cannot be probed: `/v1/models` answers
+  with ids and nothing else, whatever is behind it. It goes wrong in both
+  directions and neither says so. Too high, and history is truncated from the
+  front by a server that never reports it. Too low — a model with a larger
+  window than the guess — and the harness compacts a conversation that had room
+  to spare, over and over, so a session appears to fill up in a few turns and
+  the summarizer runs on almost every one of them. If a model's window is not
+  128k, say so here.
+
   A workspace layer *replaces* this list rather than adding to it. Appending
   could not express dropping a model, and a workspace that names models is
   saying which ones it wants.
