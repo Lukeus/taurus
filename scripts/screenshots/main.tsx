@@ -17,6 +17,8 @@ import { createRoot } from "react-dom/client";
 import { APPLE } from "../../src/lib/keys";
 
 import {
+  BACKGROUND_JOBS,
+  BACKGROUND_OUTPUT,
   CHECKPOINTS,
   DATASETS,
   DATA_EVENTS,
@@ -128,6 +130,10 @@ const ANSWERS: Record<string, unknown> = {
   search_sessions: SEARCH_HITS,
   usage_report: USAGE,
   mcp_environment: MCP_ENVIRONMENT,
+  // The dock's shell. Nothing is ever written back down the channel, so the
+  // Terminal tab is an empty emulator — which is the right picture, because
+  // the shot is of the tab beside it.
+  terminal_open: "shell-1",
   // Empty, because the turn below is replayed as live events instead. Resume
   // still runs — it is what binds the window to a session and fills the rail.
   resume_session: {
@@ -141,10 +147,27 @@ const ANSWERS: Record<string, unknown> = {
 };
 
 window.__TAURI_INTERNALS__ = {
-  invoke: async (cmd: string) => {
+  invoke: async (cmd: string, args?: Record<string, unknown>) => {
     // The event plugin's listen/unlisten. Nothing is ever emitted here — a
     // permission prompt or a proposal card would be a different screenshot.
     if (cmd.startsWith("plugin:event|")) return 0;
+    // The one answer that has to read what it was asked. A background command
+    // is polled with a cursor, and the pane appends whatever comes back — so a
+    // stub that handed over the same log every quarter second would draw it
+    // again every quarter second. Honouring the cursor is not extra fidelity
+    // here; it is the feature the shot is of.
+    if (cmd === "background") {
+      const first = !args?.cursor;
+      return {
+        jobs: BACKGROUND_JOBS,
+        output: {
+          id: 1,
+          text: first ? BACKGROUND_OUTPUT : "",
+          missed: 0,
+          cursor: BACKGROUND_OUTPUT.length,
+        },
+      };
+    }
     if (cmd in ANSWERS) return ANSWERS[cmd];
     // Anything else is a command a screenshot does not need. Answering null
     // rather than throwing keeps one unmodelled call from blanking the window.
@@ -337,6 +360,22 @@ requestAnimationFrame(() => {
       context: async () => {
         (await click(".rail-link", (b) => b.startsWith("Context")))();
         await until(() => document.querySelector(".usage-table"));
+      },
+      // The dock, on the tab of a test run that failed. Opened and switched
+      // to the way anybody does it, because which tab is showing is state in
+      // `App` and a seeded one would not prove the strip is reachable.
+      //
+      // The command that failed rather than the dev server beside it: the
+      // whole reason this pane exists is that the model could read this and
+      // the user could not.
+      background: async () => {
+        (await click(".rail-link", (b) => b.startsWith("Terminal")))();
+        (await click(".dock-tab", (b) => b.includes("cargo test")))();
+        await until(() =>
+          document.querySelector(".job-out")?.textContent?.includes("FAILED")
+            ? true
+            : null,
+        );
       },
       mcp: () => {
         const link = [...document.querySelectorAll(".rail-link")].find(

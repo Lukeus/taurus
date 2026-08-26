@@ -22,7 +22,7 @@ use taurus_mcp::ServerStatus;
 use taurus_provider::{ChatRequest, Message, ModelInfo, StreamAccumulator};
 use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
-use taurus_tools::{AllowedRule, Answer, PermissionDecision, Scope};
+use taurus_tools::{AllowedRule, Answer, BackgroundJob, JobOutput, PermissionDecision, Scope};
 
 use taurus_data::{
     Dataset, Materialized as DataRun, Page as DataPage, Profile as DataProfile,
@@ -2267,6 +2267,56 @@ pub async fn commit_turn(
         "committed a turn"
     );
     Ok(commit)
+}
+
+/* ----------------------------------------------------------- background */
+
+/// One look at the background commands, for the dock that draws them.
+///
+/// One round trip rather than two, because the pane asks on a timer and the
+/// two halves are read together every time: which commands there are, and what
+/// the one on screen has said since the last look.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct Background {
+    pub jobs: Vec<BackgroundJob>,
+    /// Absent when the pane is watching nothing, and when the command it is
+    /// watching is no longer there — a workspace change forgets them, and a
+    /// pane mid-poll finds out from this rather than from an error.
+    #[ts(optional)]
+    pub output: Option<JobOutput>,
+}
+
+/// The background commands, and the output of the one being watched.
+///
+/// `cursor` is `0` for a first look, and otherwise the one the last answer
+/// carried. It is the pane's own place in the stream: `check_command` keeps a
+/// separate one, so neither reader takes lines from the other. See
+/// [`taurus_tools::Jobs`].
+#[tauri::command]
+pub async fn background(
+    state: State<'_, Arc<AppState>>,
+    watching: Option<u32>,
+    cursor: usize,
+) -> CmdResult<Background> {
+    let jobs = state.host.jobs();
+    // An id that is not in the list is not an error here. The pane polls, and
+    // a command can go between the tick that drew the tab and the tick that
+    // reads it.
+    let output = watching.and_then(|id| state.host.job_output(id, cursor).ok());
+    Ok(Background { jobs, output })
+}
+
+/// Ends one background command from the window.
+///
+/// The same stop `stop_command` gives the model, so a build the user ends and
+/// a build the model ends leave the same trace: the job reports itself
+/// stopped, and what it changed is swept into the running turn.
+#[tauri::command]
+pub async fn background_stop(state: State<'_, Arc<AppState>>, id: u32) -> CmdResult<String> {
+    let stopped = state.host.stop_job(id).await?;
+    info!(job = id, "stopped a background command from the window");
+    Ok(stopped)
 }
 
 /* ------------------------------------------------------------- terminal */

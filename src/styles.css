@@ -4618,6 +4618,125 @@ button.link:hover {
 }
 
 /*
+ * The tabs, and the background commands behind them.
+ *
+ * Absent entirely until there is a second thing to show: a window that has
+ * never run a background command has the bar it always had, with the word
+ * Terminal where the strip would be. The tabs take that word's place rather
+ * than sitting in a row of their own, because the dock is dragged short more
+ * often than it is dragged tall and a second strip is most of a short one.
+ *
+ * The selected tab drops to the pane's own ground so it reads as continuous
+ * with what is under it, which is the whole grammar a tab has.
+ */
+.dock-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  /* Nine at most — see MAX_JOBS — so this is a squeeze, not a list. A bar is
+     too short to give a scrollbar a row of its own. */
+  scrollbar-width: none;
+}
+.dock-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.dock-tab:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.dock-tab.on {
+  color: var(--text);
+  background: var(--bg-sunken);
+  border-color: var(--rule);
+}
+.dock-tab-num {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.dock-tab.running .dock-tab-num {
+  color: var(--accent);
+}
+.dock-tab.failed .dock-tab-num {
+  color: var(--danger);
+}
+/* The character beside the colour — see `mark` in `lib/jobs`. */
+.dock-tab-mark {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.dock-tab.failed .dock-tab-mark {
+  color: var(--danger);
+}
+
+.job-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.job-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.job-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-status.running {
+  color: var(--accent);
+}
+.job-status.failed {
+  color: var(--danger);
+}
+
+/*
+ * Where a background command's output goes.
+ *
+ * Text rather than an emulator, because there is no pseudo-terminal behind one
+ * of these and so nothing addressing a screen by coordinate — see `JobScreen`.
+ * Wrapped rather than scrolled sideways: a compiler error is a long line, and
+ * a log you have to scroll horizontally to read is one nobody reads.
+ */
+.job-out {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 12px 12px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/*
  * The Data pane, and the switch that reaches it.
  *
  * The switch is drawn between the topbar and the pane rather than inside the

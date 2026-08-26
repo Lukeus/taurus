@@ -13,6 +13,9 @@ import type { AllowedRule } from "../bindings/AllowedRule";
 import type { Answer } from "../bindings/Answer";
 import type { AppStatus } from "../bindings/AppStatus";
 import type { Attachment } from "../bindings/Attachment";
+import type { Background } from "../bindings/Background";
+import type { BackgroundJob } from "../bindings/BackgroundJob";
+import type { JobOutput } from "../bindings/JobOutput";
 import type { ChangedFiles } from "../bindings/ChangedFiles";
 import type { Checkpoint } from "../bindings/Checkpoint";
 import type { CommandKind } from "../bindings/CommandKind";
@@ -109,6 +112,8 @@ export type {
   Answer,
   AppStatus,
   Attachment,
+  Background,
+  BackgroundJob,
   ChangedFiles,
   Checkpoint,
   CommandKind,
@@ -148,6 +153,7 @@ export type {
   FlowStage,
   IndexProgress,
   Instructions,
+  JobOutput,
   KeyStatus,
   McpEnvironment,
   McpServerDraft,
@@ -805,6 +811,29 @@ export const commitTurn = (sessionId: string, turn: number, message: string) =>
  * own boundary anyway.
  */
 export const rescanLibrary = () => invoke<void>("rescan_library");
+
+/* ------------------------------------------------------------- background */
+
+/**
+ * One look at the commands running in the background.
+ *
+ * Polled rather than pushed, and that is a decision rather than a shortcut. The
+ * alternative is a subscription per job with a lifetime to get right at both
+ * ends — and the thing being subscribed to is a buffer that is the record
+ * anyway, so a missed message would cost nothing a later read does not repair.
+ * A tab that is not on screen asks for nothing; a tab that is asks four times a
+ * second, which for text nobody types into is well under what anyone can see.
+ *
+ * `cursor` is the pane's own place in the output — `0` for a first look, and
+ * otherwise whatever the last answer carried. `check_command` keeps a separate
+ * one, so the model and the window never take lines from each other.
+ */
+export const background = (watching: number | null, cursor: number) =>
+  invoke<Background>("background", { watching, cursor });
+
+/** Ends one background command, the same way `stop_command` does for the model. */
+export const stopBackground = (id: number) =>
+  invoke<string>("background_stop", { id });
 
 /* --------------------------------------------------------------- terminal */
 

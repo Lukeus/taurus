@@ -4,9 +4,10 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
 import * as api from "../lib/api";
-import type { Theme } from "../lib/api";
+import type { BackgroundJob, Theme } from "../lib/api";
 import { basename } from "../lib/format";
 import { bytes, fade } from "../lib/terminal";
+import { DockTabs, JobScreen } from "./JobScreen";
 
 /**
  * The terminal dock: a real shell, in the window the agent works in.
@@ -21,10 +22,23 @@ import { bytes, fade } from "../lib/terminal";
  *
  * Loaded lazily by `App`, with the rest of the panels. It is the largest module
  * in the frontend after Settings and most sessions never open it.
+ *
+ * # The other tabs
+ *
+ * A background command gets one each — see `JobScreen`, which is a separate
+ * module so that drawing one does not mean loading an emulator. The shell tab
+ * is not torn down when another is selected, only hidden: it is a live session
+ * whose scrollback is the only record of it, and unmounting it would end the
+ * shell.
  */
 export function TerminalDock({
   workspace,
   theme,
+  jobs,
+  watching,
+  output,
+  onWatch,
+  onStop,
   onClose,
 }: {
   /**
@@ -38,6 +52,21 @@ export function TerminalDock({
   workspace: string | null;
   /** Only to re-theme on a change; the colours themselves are read from CSS. */
   theme: Theme;
+  /**
+   * The background commands, polled by `App`.
+   *
+   * Polled up there rather than here because the count outlives this
+   * component: the dock is unmounted when it is hidden, and a build that
+   * starts while it is closed is exactly the one worth a badge on the way in.
+   */
+  jobs: BackgroundJob[];
+  /** Which tab is on screen. `null` is the shell. */
+  watching: number | null;
+  /** Everything the watched command has said, gaps marked. Also `App`'s, for
+   *  the same reason: it is collected by the poll that fetches it. */
+  output: string;
+  onWatch: (id: number | null) => void;
+  onStop: (id: number) => Promise<unknown>;
   onClose: () => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -63,6 +92,18 @@ export function TerminalDock({
    */
   const opened = useRef<Set<string>>(new Set());
   const [problem, setProblem] = useState<string | null>(null);
+  /**
+   * Why a Stop did not take, and which command it did not take on.
+   *
+   * Its own state rather than `problem`, which belongs to the shell: the two
+   * fail at different things and a message from one shown over the other
+   * describes the wrong process. Carrying the number is the same argument one
+   * tab further in — a failure left standing over the next tab is a sentence
+   * about a command that is not the one on screen.
+   */
+  const [stopFailed, setStopFailed] = useState<{ id: number; why: string } | null>(
+    null,
+  );
   const [ended, setEnded] = useState<number | null | "gone">(null);
   /**
    * Bumped to start over.
@@ -212,17 +253,32 @@ export function TerminalDock({
     if (term.current) term.current.options.theme = palette();
   }, [theme]);
 
+  // A tab whose command has gone — a workspace change forgets them — leaves
+  // the pane pointed at nothing. Falling back to the shell rather than drawing
+  // an empty frame, because the shell is the tab that is always there.
+  const shown = jobs.find((job) => job.id === watching) ?? null;
+  const onShell = shown === null;
+
   return (
     <section
       className="dock"
       aria-label="Terminal"
-      // Clicks anywhere in the chrome put the caret back where typing goes.
-      onMouseDown={() => term.current?.focus()}
+      // Clicks anywhere in the chrome put the caret back where typing goes —
+      // but only on the tab that has anywhere for it to go.
+      onMouseDown={() => onShell && term.current?.focus()}
     >
       <header className="dock-bar">
-        <span className="dock-title">Terminal</span>
-        {workspace && <span className="dock-where">{basename(workspace)}</span>}
-        {ended !== null && (
+        {jobs.length > 0 ? (
+          <DockTabs jobs={jobs} watching={shown?.id ?? null} onWatch={onWatch} />
+        ) : (
+          <span className="dock-title">Terminal</span>
+        )}
+        {/* The folder is the shell's own, so it is said beside the shell and
+            not beside a command that may have been started somewhere else. */}
+        {onShell && workspace && (
+          <span className="dock-where">{basename(workspace)}</span>
+        )}
+        {onShell && ended !== null && (
           <span className="dock-ended">
             {ended === "gone"
               ? "shell ended"
@@ -232,7 +288,7 @@ export function TerminalDock({
           </span>
         )}
         <div className="spacer" />
-        {ended !== null && (
+        {onShell && ended !== null && (
           <button
             className="pill"
             onClick={() => {
@@ -256,8 +312,24 @@ export function TerminalDock({
           ✕
         </button>
       </header>
-      {problem && <p className="dock-problem">{problem}</p>}
-      <div className="dock-screen" ref={host} />
+      {onShell && problem && <p className="dock-problem">{problem}</p>}
+      {/* Hidden rather than unmounted: this is a live shell, and the emulator
+          holding it is also the only copy of its scrollback. */}
+      <div className="dock-screen" ref={host} hidden={!onShell} />
+      {shown && (
+        <JobScreen
+          key={shown.id}
+          job={shown}
+          text={output}
+          problem={stopFailed?.id === shown.id ? stopFailed.why : null}
+          onStop={() => {
+            setStopFailed(null);
+            void onStop(shown.id).catch((e) =>
+              setStopFailed({ id: shown.id, why: String(e) }),
+            );
+          }}
+        />
+      )}
     </section>
   );
 }

@@ -278,6 +278,8 @@ pub fn run() {
             commands::terminal_write,
             commands::terminal_resize,
             commands::terminal_close,
+            commands::background,
+            commands::background_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Taurus");

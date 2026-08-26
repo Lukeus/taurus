@@ -28,17 +28,27 @@ and they are the minority.
   packaged wrongly, everything works except for a window that only a user on
   Windows in an installed build can see. See
   [Running commands](safety.md#running-commands).
-- **A background command is not on screen while it runs.** `run_command` with
-  `background: true` returns a number rather than output, and what the command
-  says arrives when the model checks it. The card for the call that started it
-  is closed by then, so there is nowhere for the lines to go — a waited-for
-  command streams into its own card because the card is still open. What is
-  missing is a surface of its own: the terminal dock already draws live output
-  and could hold a tab per background command, and until it does, the honest
-  description is that the model can see a build the user cannot. The commands
-  are at least enumerable — `check_command` with no id lists every one of them,
-  and what it changed reaches the Changes drawer like anything else. See
-  [Commands that keep running](safety.md#commands-that-keep-running).
+- **A background command's tab is polled, not pushed.** The dock now holds one
+  per command — see [Terminal](capabilities.md#terminal) — and it asks four
+  times a second while a tab is on screen rather than being told when a line
+  arrives. That is a decision and not a stub: the alternative is a subscription
+  per job with a lifetime to get right at both ends, over a buffer that is the
+  record anyway, where a missed message would cost nothing a later read does not
+  repair. What it does cost is a quarter second of latency on a line, and one
+  IPC call every two seconds while any command is still running. A window with
+  nothing running makes none.
+- **What a background command printed is capped at 256 KB.** The buffer is the
+  whole record: it is what the tab draws from as well as what `check_command`
+  reads, so a build that printed more than that has lost its beginning from both
+  — said in the pane where the gap is, rather than skipped over. A long test run
+  is comfortably inside it; `cargo build -vv` on a cold cache is not. Raising it
+  is a number, and the reason it is not higher is that this is held per command
+  for as long as the workspace is open, times eight.
+- **A background command's tab cannot be typed into.** It is text and not a
+  terminal, which follows from the gap below: there is no pseudo-terminal behind
+  one of these, so there is nothing to type into and nothing drawing a screen. A
+  program that stops to ask a question cannot be answered, and the only thing to
+  do with it is stop it.
 - **A background command has no pseudo-terminal.** `pty: true` and
   `background: true` together are refused rather than silently doing one of
   them. The pty path runs a command to completion behind a blocking read, and

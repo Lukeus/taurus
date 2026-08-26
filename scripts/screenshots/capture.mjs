@@ -85,6 +85,10 @@ const SHOTS = [
   // The rail with a section folded. An open section looks like the plain list
   // it replaced, so the shut one is the only state that shows the feature.
   { name: "rail", shot: "rail", theme: "dark" },
+  // A background command, on screen while it is still the model's to read.
+  // The tab strip is the whole feature — a test run that failed, a dev server
+  // that will not finish on its own, and the shell they sit beside.
+  { name: "background", shot: "background", theme: "dark" },
 ];
 
 const CHROME = [

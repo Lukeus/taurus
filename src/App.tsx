@@ -28,6 +28,7 @@ import type { DataTab } from "./components/DataPane";
 import * as api from "./lib/api";
 import type {
   Attachment,
+  BackgroundJob,
   CommandSummary,
   Dataset,
   ModelInfo,
@@ -38,6 +39,7 @@ import type {
 } from "./lib/api";
 import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
+import { extend } from "./lib/jobs";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
 import type { Entry } from "./state/store";
 import { pinnedPlan, useStore } from "./state/store";
@@ -201,6 +203,29 @@ export default function App() {
    * same as closing a terminal window anywhere else.
    */
   const [terminalOpen, setTerminalOpen] = useState(false);
+  /**
+   * The commands running in the background, and the output of the one on
+   * screen.
+   *
+   * Here rather than in the dock because the dock is unmounted when it is
+   * hidden, and the case worth catching is exactly the one where it is: a
+   * model that starts a build while the pane is closed. The rail wears the
+   * count, and the dock draws the tabs when it opens.
+   *
+   * `watching` is a job number, or null for the shell's own tab.
+   */
+  const [jobs, setJobs] = useState<BackgroundJob[]>([]);
+  const [watching, setWatching] = useState<number | null>(null);
+  const [jobOutput, setJobOutput] = useState("");
+  /**
+   * The pane's place in the watched command's output.
+   *
+   * A ref because nothing re-renders when it moves — it is an argument to the
+   * next poll and not a thing on screen. `check_command` keeps its own, so
+   * neither reader empties the buffer for the other; see
+   * `crates/taurus-tools/src/jobs.rs`.
+   */
+  const jobCursor = useRef(0);
   /**
    * Which surface the centre column is showing.
    *
@@ -373,6 +398,74 @@ export default function App() {
     window.addEventListener("focus", ask);
     return () => window.removeEventListener("focus", ask);
   }, [refresh, busy]);
+
+  // A new tab is a new stream. Cleared before the poll below re-reads it, so
+  // the pane never shows one command's lines under another's heading — the two
+  // effects run in the order they are written.
+  useEffect(() => {
+    jobCursor.current = 0;
+    setJobOutput("");
+  }, [watching]);
+
+  /**
+   * Watches the background commands.
+   *
+   * Here rather than in the dock because the dock is unmounted while it is
+   * hidden — which is exactly when a model starting a forty-minute build is
+   * worth noticing.
+   *
+   * It stops on its own. Nothing can start a background command except a tool
+   * call, so an idle window with nothing running polls not slowly but not at
+   * all: the loop ends, and a turn beginning re-runs this effect. What it costs
+   * while it does run is a lock and a list — see `Jobs::list`.
+   */
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const tick = async () => {
+      let running = false;
+      try {
+        // Nothing is watched while the dock is shut, so a closed window asks
+        // only for the roster and never for a quarter megabyte of build log.
+        const seen = await api.background(
+          terminalOpen ? watching : null,
+          jobCursor.current,
+        );
+        if (!live) return;
+        setJobs(seen.jobs);
+        running = seen.jobs.some((job) => job.running);
+        // The command this tab was for is gone — a workspace change forgets
+        // them. Back to the shell, which is the tab that is always there.
+        if (watching !== null && !seen.jobs.some((job) => job.id === watching)) {
+          setWatching(null);
+        }
+        const arrived = seen.output;
+        if (arrived) {
+          jobCursor.current = arrived.cursor;
+          if (arrived.text || arrived.missed > 0) {
+            setJobOutput((held) => extend(held, arrived));
+          }
+        }
+      } catch {
+        // The window is on its way out, or the host is between workspaces.
+        // The next tick asks again, and there is nothing here worth a message.
+      }
+      if (!live) return;
+      if (!busy && !running && !terminalOpen) return;
+      // Fast enough to read a build by while it is on screen, and idle enough
+      // to be free when it is not. Text nobody types into does not need the
+      // keystroke latency the shell beside it does.
+      const every = terminalOpen ? (watching === null ? 1000 : 250) : 2000;
+      timer = setTimeout(() => void tick(), every);
+    };
+
+    void tick();
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [busy, terminalOpen, watching]);
 
   // Settings are the authority; main.tsx only guessed from the last run. Also
   // where following the OS is honoured — while the preference is `system`, a
@@ -744,6 +837,7 @@ export default function App() {
         onMemory={() => setMemoryOpen(true)}
         onUsage={() => setUsageOpen(true)}
         onMcp={() => setMcpOpen(true)}
+        jobsRunning={jobs.filter((job) => job.running).length}
         onTerminal={() => setTerminalOpen((open) => !open)}
         onSettings={() => setSettingsOpen(true)}
       />
@@ -999,6 +1093,11 @@ export default function App() {
                   key={workspace ?? "none"}
                   workspace={workspace}
                   theme={theme ?? "system"}
+                  jobs={jobs}
+                  watching={watching}
+                  output={jobOutput}
+                  onWatch={setWatching}
+                  onStop={api.stopBackground}
                   onClose={() => setTerminalOpen(false)}
                 />
               </div>

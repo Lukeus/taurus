@@ -13,12 +13,21 @@
 //! # Its output
 //!
 //! Nobody is holding the pipes open on the model's behalf, so the output is
-//! drained into a buffer as it arrives and handed over whole at the next
-//! check. The buffer is [`MAX_PENDING_BYTES`], and past that the oldest is
-//! dropped and counted — a check that arrives late learns that it did, rather
-//! than reading a prefix as though it were everything. Both streams go into
-//! the one buffer in the order they arrived: a background command is watched
-//! rather than parsed, and that is the order a terminal would have shown.
+//! drained into a buffer as it arrives. The buffer is [`MAX_PENDING_BYTES`],
+//! and past that the oldest is dropped. Both streams go into the one buffer in
+//! the order they arrived: a background command is watched rather than parsed,
+//! and that is the order a terminal would have shown.
+//!
+//! What a reader gets out of it is decided by a cursor rather than by emptying
+//! it. The buffer counts every byte that ever went in, so a place in the
+//! stream is a single number: [`Jobs::check`] keeps the model's, and the
+//! window keeps its own. That is the difference between two readers and two
+//! readers taking lines from each other — this used to drain on read, and a
+//! pane drawing a build would have emptied the buffer the next
+//! `check_command` was going to read, losing output the model would never
+//! learn had existed. A cursor older than the buffer is told how many bytes
+//! are gone between it and the oldest still held, which is what the drop count
+//! used to say and now says it per reader.
 //!
 //! # What it changed
 //!
@@ -40,10 +49,12 @@ use std::time::{Duration, Instant};
 
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+use ts_rs::TS;
 
 use crate::checkpoint::TurnRecorder;
 use crate::sweep::Sweep;
@@ -56,8 +67,24 @@ use crate::sweep::Sweep;
 /// that needs scrolling is one nobody stops.
 pub const MAX_JOBS: usize = 8;
 
-/// Output held for one job between checks.
-const MAX_PENDING_BYTES: usize = 64 * 1024;
+/// How much of one command's output is kept.
+///
+/// The whole record the window has: a job's tab is drawn from this and from
+/// nothing else, so what falls off the front is gone from the pane as well as
+/// from the next check. A shell's scrollback lives in its own emulator and can
+/// afford to be long; this is held in the host for every job at once, so the
+/// worst case is this times [`MAX_JOBS`].
+const MAX_PENDING_BYTES: usize = 256 * 1024;
+
+/// The most one `check_command` will hand back.
+///
+/// A different number from [`MAX_PENDING_BYTES`] because the readers are
+/// different. What the window shows costs a scrollbar; what the model reads
+/// costs context, and a check that has not run for a while should not answer
+/// with a quarter of a megabyte of build log. Past this it gets the newest and
+/// is told how much it skipped — the same sentence a cursor that fell off the
+/// buffer gets, because it is the same fact.
+const MAX_CHECK_BYTES: usize = 64 * 1024;
 
 /// The longest `check_command` will wait for a command to finish.
 pub const MAX_WAIT_SECS: u64 = 120;
@@ -72,6 +99,49 @@ pub const MAX_WAIT_SECS: u64 = 120;
 /// is not what a stop looks like. Late output is not lost: the drains go on
 /// filling the buffer, and the next check reads it.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// One background command, as a surface that draws it needs it.
+///
+/// `status` is the sentence; the flags beside it are for a row that wants to
+/// colour a failure differently from a stop. Nothing here is derived twice —
+/// see [`say`].
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BackgroundJob {
+    pub id: u32,
+    /// The command line as it was given, which is the only name a job has.
+    pub command: String,
+    pub running: bool,
+    /// Ended by a stop rather than by finishing. A stopped command has no
+    /// meaningful code, and reading one as a failure is the mistake this
+    /// prevents.
+    pub stopped: bool,
+    /// `None` while it runs, and after a signal killed it.
+    #[ts(optional)]
+    pub code: Option<i32>,
+    /// Seconds so far, or seconds it took.
+    ///
+    /// `u32` rather than `u64` because it crosses to the window, where a
+    /// 64-bit integer arrives as a `bigint` that no arithmetic beside it can
+    /// use. A command running for longer than a hundred and thirty years is
+    /// not the case this loses.
+    pub ran_for: u32,
+    pub status: String,
+}
+
+/// A reader's next helping of one command's output.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct JobOutput {
+    pub id: u32,
+    pub text: String,
+    /// Bytes between the cursor asked for and the oldest still here. Said
+    /// rather than skipped over, so a pane that fell behind does not read a
+    /// suffix as though it were the whole run.
+    pub missed: usize,
+    /// The cursor to ask with next time.
+    pub cursor: usize,
+}
 
 /// Every background command of one workspace.
 ///
@@ -91,7 +161,7 @@ struct Job {
     id: u32,
     command: String,
     started: Instant,
-    pending: Mutex<Pending>,
+    output: Mutex<Output>,
     /// `None` while it is running.
     outcome: Mutex<Option<Outcome>>,
     finished: Notify,
@@ -110,30 +180,69 @@ struct Outcome {
     ran_for: Duration,
 }
 
-/// Output that has arrived and not yet been read.
+/// What a command has said, and where each reader has got to.
 #[derive(Default)]
-struct Pending {
-    text: String,
-    /// Bytes dropped off the front to stay under the cap.
-    dropped: usize,
+struct Output {
+    tail: Tail,
+    /// How far `check_command` has read.
+    ///
+    /// The window keeps its own, passed in and handed back, because neither
+    /// reader may move the other's. See the module note.
+    read: usize,
 }
 
-impl Pending {
+/// The end of a command's output, and a count of all of it.
+///
+/// A ring in effect rather than in structure: the last [`MAX_PENDING_BYTES`]
+/// are kept, and `written` counts every byte that ever arrived — so `text`
+/// holds the stream from `written - text.len()` onwards, and a reader is one
+/// number in that space.
+#[derive(Default)]
+struct Tail {
+    text: String,
+    /// Every byte ever pushed, including the ones no longer here.
+    written: usize,
+}
+
+impl Tail {
     fn push(&mut self, chunk: &str) {
         self.text.push_str(chunk);
+        self.written += chunk.len();
         if self.text.len() > MAX_PENDING_BYTES {
             let over = self.text.len() - MAX_PENDING_BYTES;
             let cut = ceil_boundary(&self.text, over);
-            self.dropped += cut;
             self.text.drain(..cut);
         }
     }
 
-    fn take(&mut self) -> (String, usize) {
-        (
-            std::mem::take(&mut self.text),
-            std::mem::replace(&mut self.dropped, 0),
-        )
+    /// The oldest byte still here.
+    fn held_from(&self) -> usize {
+        self.written - self.text.len()
+    }
+
+    /// The bytes after `cursor` — at most `limit` of them — and how many
+    /// between the two are gone.
+    ///
+    /// Output goes missing two ways and this counts both as one number,
+    /// because they are the same fact to whoever asked: it fell off the front
+    /// before this reader got to it, or there is more of it than this reader
+    /// is willing to be handed at once.
+    fn since(&self, cursor: usize, limit: usize) -> (&str, usize) {
+        let held_from = self.held_from();
+        let dropped = held_from.saturating_sub(cursor);
+        // A cursor is handed out and handed back, so the clamp and the
+        // rounding are for a caller that made one up — and an invented offset
+        // slicing a string is the one way this answers with a panic.
+        let from = ceil_boundary(
+            &self.text,
+            cursor.saturating_sub(held_from).min(self.text.len()),
+        );
+        let text = &self.text[from..];
+        if text.len() <= limit {
+            return (text, dropped);
+        }
+        let cut = ceil_boundary(text, text.len() - limit);
+        (&text[cut..], dropped + cut)
     }
 }
 
@@ -175,7 +284,7 @@ impl Jobs {
             id,
             command,
             started: Instant::now(),
-            pending: Mutex::new(Pending::default()),
+            output: Mutex::new(Output::default()),
             outcome: Mutex::new(None),
             finished: Notify::new(),
             stop: CancellationToken::new(),
@@ -236,11 +345,20 @@ impl Jobs {
             }
         }
 
-        let (text, dropped) = job.pending.lock().unwrap().take();
+        // The model's cursor moves; the window's is its own and untouched.
+        let (text, missed) = {
+            let mut output = job.output.lock().unwrap();
+            let read = {
+                let (text, missed) = output.tail.since(output.read, MAX_CHECK_BYTES);
+                (text.to_string(), missed)
+            };
+            output.read = output.tail.written;
+            read
+        };
         let mut report = format!("#{} {} — {}", job.id, job.command, job.status());
-        if dropped > 0 {
+        if missed > 0 {
             report.push_str(&format!(
-                "\n[{dropped} bytes of earlier output dropped; check more often to keep up]"
+                "\n[{missed} bytes of earlier output dropped; check more often to keep up]"
             ));
         }
         report.push('\n');
@@ -304,6 +422,24 @@ impl Jobs {
         }
     }
 
+    /// Ends everything and forgets it, for a workspace being left.
+    ///
+    /// [`stop_all`](Self::stop_all) on its own leaves the roster standing,
+    /// which is right for a window on its way out and wrong for a window that
+    /// is staying and looking somewhere else. Two things go with the folder:
+    /// the roster the model and the dock read, which would otherwise name
+    /// commands that ran somewhere the window is no longer pointed, and the
+    /// pre-image each job is holding — [`reap`](Self::reap) sweeps against
+    /// *this* workspace, so a leftover job would compare a folder against a
+    /// picture of a different one.
+    ///
+    /// The children still die: the task that reaps each one holds its own
+    /// handle, so dropping the map here does not orphan a process.
+    pub fn forget_all(&self) {
+        self.stop_all();
+        self.jobs.lock().unwrap().clear();
+    }
+
     /// A line per command, for a model that has lost track of the numbers.
     pub fn roster(&self) -> String {
         let jobs = self.all();
@@ -314,6 +450,39 @@ impl Jobs {
             .map(|job| format!("#{} {} — {}", job.id, job.command, job.status()))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Every background command, for a surface that draws them.
+    ///
+    /// The window's half of [`roster`](Self::roster), which says the same
+    /// things in a sentence for a model that has lost track of the numbers.
+    pub fn list(&self) -> Vec<BackgroundJob> {
+        self.all().iter().map(|job| job.view()).collect()
+    }
+
+    /// What one command has said after `cursor`, leaving the model's place in
+    /// it where it was.
+    ///
+    /// `0` asks for everything still held, which is what a pane opened onto a
+    /// command already running wants. The cursor to ask with next time comes
+    /// back with the text.
+    pub fn read(&self, id: u32, cursor: usize) -> Result<JobOutput, String> {
+        let job = self.get(id)?;
+        let output = job.output.lock().unwrap();
+        let (text, missed) = output.tail.since(cursor, MAX_PENDING_BYTES);
+        Ok(JobOutput {
+            id,
+            // The pane is a log, not a screen: a background command has no
+            // pty, so almost nothing colours its output, and what does would
+            // arrive as literal escape bytes in a block of text. Stripped for
+            // this reader only — `check_command` gets what the command
+            // actually wrote, which is what it has always got. A progress bar
+            // that redrew its own line becomes one line per redraw, which is
+            // the right shape for something scrolled rather than watched.
+            text: crate::builtin::pty::strip_ansi(text),
+            missed,
+            cursor: output.tail.written,
+        })
     }
 
     fn get(&self, id: u32) -> Result<Arc<Job>, String> {
@@ -329,24 +498,52 @@ impl Jobs {
 
 impl Job {
     fn status(&self) -> String {
-        match &*self.outcome.lock().unwrap() {
-            None => format!("still running after {}", took(self.started.elapsed())),
-            Some(outcome) if outcome.stopped => {
-                format!("stopped after {}", took(outcome.ran_for))
-            }
-            Some(Outcome {
-                code: Some(0),
-                ran_for,
-                ..
-            }) => format!("finished after {}", took(*ran_for)),
-            Some(Outcome {
-                code: Some(code),
-                ran_for,
-                ..
-            }) => format!("exited with code {code} after {}", took(*ran_for)),
-            Some(Outcome { ran_for, .. }) => {
-                format!("killed by a signal after {}", took(*ran_for))
-            }
+        say(&self.outcome.lock().unwrap(), self.started)
+    }
+
+    fn view(&self) -> BackgroundJob {
+        // One lock for all of it: a job read field by field could report
+        // itself running with an exit code, which is a state it never was in.
+        let outcome = self.outcome.lock().unwrap();
+        BackgroundJob {
+            id: self.id,
+            command: self.command.clone(),
+            running: outcome.is_none(),
+            stopped: outcome.as_ref().is_some_and(|o| o.stopped),
+            code: outcome.as_ref().and_then(|o| o.code),
+            ran_for: outcome
+                .as_ref()
+                .map_or_else(|| self.started.elapsed(), |o| o.ran_for)
+                .as_secs()
+                .min(u32::MAX as u64) as u32,
+            status: say(&outcome, self.started),
+        }
+    }
+}
+
+/// How a command is doing, in the one sentence both surfaces are given.
+///
+/// Said once so the window and `check_command` cannot describe the same
+/// command differently — the flags beside it on [`BackgroundJob`] are for
+/// styling a row, not for rewording this.
+fn say(outcome: &Option<Outcome>, started: Instant) -> String {
+    match outcome {
+        None => format!("still running after {}", took(started.elapsed())),
+        Some(outcome) if outcome.stopped => {
+            format!("stopped after {}", took(outcome.ran_for))
+        }
+        Some(Outcome {
+            code: Some(0),
+            ran_for,
+            ..
+        }) => format!("finished after {}", took(*ran_for)),
+        Some(Outcome {
+            code: Some(code),
+            ran_for,
+            ..
+        }) => format!("exited with code {code} after {}", took(*ran_for)),
+        Some(Outcome { ran_for, .. }) => {
+            format!("killed by a signal after {}", took(*ran_for))
         }
     }
 }
@@ -372,7 +569,7 @@ where
                 Ok(_) => {}
             }
             let text = String::from_utf8_lossy(&buf).into_owned();
-            job.pending.lock().unwrap().push(&text);
+            job.output.lock().unwrap().tail.push(&text);
         }
     })
 }
@@ -515,23 +712,120 @@ mod tests {
             .contains("No commands"));
     }
 
+    #[tokio::test]
+    async fn the_window_reads_a_command_without_taking_it_from_the_model() {
+        // The whole reason this file has cursors. A pane drawing a build used
+        // to be a pane emptying the buffer `check_command` was going to read.
+        let jobs = Jobs::new();
+        let id = jobs.adopt("echo hi".into(), sh("echo hi"), None).await;
+        let _ = jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
+
+        let seen = jobs.read(id, 0).unwrap();
+        assert!(seen.text.contains("hi"), "{seen:?}");
+        assert_eq!(seen.missed, 0);
+
+        // And the reverse: the window having read it does not make the next
+        // check say there was nothing.
+        let again = jobs.read(id, 0).unwrap();
+        assert_eq!(again.text, seen.text);
+    }
+
+    #[tokio::test]
+    async fn a_window_cursor_only_asks_for_what_it_has_not_seen() {
+        let jobs = Jobs::new();
+        let id = jobs
+            .adopt("echo one; echo two".into(), sh("echo one; echo two"), None)
+            .await;
+        jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
+
+        let first = jobs.read(id, 0).unwrap();
+        assert!(first.text.contains("one"), "{first:?}");
+        let next = jobs.read(id, first.cursor).unwrap();
+        assert_eq!(next.text, "");
+        assert_eq!(next.cursor, first.cursor);
+    }
+
+    #[tokio::test]
+    async fn a_job_lists_itself_as_running_and_then_as_finished() {
+        let jobs = Jobs::new();
+        let id = jobs.adopt("exit 3".into(), sh("exit 3"), None).await;
+        jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
+
+        let listed = jobs.list();
+        assert_eq!(listed.len(), 1);
+        let job = &listed[0];
+        assert_eq!(job.id, id);
+        assert_eq!(job.command, "exit 3");
+        assert!(!job.running);
+        assert!(!job.stopped);
+        assert_eq!(job.code, Some(3));
+        // The sentence is the one `check_command` was given, not a second
+        // wording of it.
+        assert!(job.status.contains("exited with code 3"), "{job:?}");
+    }
+
+    #[tokio::test]
+    async fn reading_a_number_that_is_not_there_says_which_ones_are() {
+        let jobs = Jobs::new();
+        jobs.adopt("echo hi".into(), sh("echo hi"), None).await;
+        let err = jobs.read(99, 0).unwrap_err();
+        assert!(err.contains("no background command"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_window_is_given_text_rather_than_escape_bytes() {
+        // No pty means most commands do not colour at all, but the ones told
+        // to anyway would otherwise draw their escapes into the pane. The
+        // model's copy is untouched.
+        let jobs = Jobs::new();
+        let coloured = "printf '\\033[32mgreen\\033[0m\\n'";
+        let id = jobs.adopt(coloured.into(), sh(coloured), None).await;
+        jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
+        let seen = jobs.read(id, 0).unwrap();
+        assert_eq!(seen.text.trim(), "green", "{seen:?}");
+    }
+
     #[test]
-    fn pending_output_drops_the_oldest_and_counts_it() {
-        let mut pending = Pending::default();
-        pending.push(&"a".repeat(MAX_PENDING_BYTES));
-        pending.push("bbbb");
-        let (text, dropped) = pending.take();
-        assert_eq!(dropped, 4);
+    fn output_past_the_buffer_drops_the_oldest() {
+        let mut tail = Tail::default();
+        tail.push(&"a".repeat(MAX_PENDING_BYTES));
+        tail.push("bbbb");
+        let (text, missed) = tail.since(0, MAX_PENDING_BYTES);
+        assert_eq!(missed, 4);
         assert_eq!(text.len(), MAX_PENDING_BYTES);
         assert!(text.ends_with("bbbb"));
     }
 
     #[test]
     fn dropping_output_does_not_split_a_character() {
-        let mut pending = Pending::default();
-        pending.push(&"é".repeat(MAX_PENDING_BYTES / 2));
-        pending.push("x");
-        let (text, _) = pending.take();
+        let mut tail = Tail::default();
+        tail.push(&"é".repeat(MAX_PENDING_BYTES));
+        tail.push("x");
+        let (text, _) = tail.since(0, MAX_PENDING_BYTES);
         assert!(text.ends_with('x'));
+    }
+
+    #[test]
+    fn a_reader_that_asks_for_less_is_given_the_newest_of_it() {
+        // What keeps a check from answering with a quarter megabyte of build
+        // log: the model gets the end, and is told what it skipped.
+        let mut tail = Tail::default();
+        tail.push(&"a".repeat(100));
+        tail.push("end");
+        let (text, missed) = tail.since(0, 3);
+        assert_eq!(text, "end");
+        assert_eq!(missed, 100);
+    }
+
+    #[test]
+    fn a_cursor_from_nowhere_is_answered_rather_than_panicked_on() {
+        // Nothing hands one out, but it crosses a process boundary to get
+        // here, and slicing a string at an invented offset is the one way this
+        // could answer with a crash.
+        let mut tail = Tail::default();
+        tail.push("héllo");
+        assert_eq!(tail.since(9_000, MAX_PENDING_BYTES).0, "");
+        // Inside a multi-byte character: rounded up rather than split.
+        assert_eq!(tail.since(2, MAX_PENDING_BYTES).0, "llo");
     }
 }

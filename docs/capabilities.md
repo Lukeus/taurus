@@ -480,6 +480,42 @@ printing a hundred of them. Resizing the pane tells the shell its new geometry,
 so a full-screen program reflows with it rather than drawing to the size it
 started at.
 
+### The commands the model started
+
+![The terminal dock with three tabs — the shell, a `cargo test --workspace`
+that exited 101, and a `pnpm dev --host` still running — showing the failing
+test's output](screenshots/background.png)
+
+A background command gets a tab beside the shell. `run_command` with
+`background: true` hands the model a number and goes on printing into a buffer
+between turns — and the card for the call that started it is closed by the time
+anything arrives, so until now a build the model could read was one you could
+not see. The tab strip appears when there is a background command to show and is
+absent otherwise; the rail's **Terminal** row wears a count while any of them
+are running, which is what makes a build started behind a closed dock something
+you find out about.
+
+Each tab carries the command, how it is doing in the same words `check_command`
+gives the model, and a **Stop** while it is still going. A finished one is
+marked as well as coloured — `✓` clean, `✗` a non-zero exit, `–` stopped — so
+the strip reads on a projector and to someone who cannot tell the two colours
+apart.
+
+These tabs are read-only, and that is what they are rather than a limitation
+half-built: a background command runs with pipes and no pseudo-terminal, so
+there is nothing to type into and nothing addressing a screen by coordinate.
+What it printed is text, wrapped rather than scrolled sideways, and escape
+sequences from a command that colours anyway are taken off on the way in. The
+pane follows the output down until you scroll up, and picks the tail back up
+when you scroll to the bottom.
+
+The pane and the model read the same buffer and keep separate places in it, so
+opening a tab does not take lines out of the model's next `check_command` and a
+check does not blank the tab — see
+[Commands that keep running](safety.md#commands-that-keep-running). What the
+buffer has forgotten is gone from both, and the pane says where, in a bracketed
+line where the gap actually is rather than in a note off to one side.
+
 The dock is desktop-only, and deliberately so: `taurus` on the command line is
 already in a terminal, and a second one inside it would be a worse version of
 the one it is running in.
@@ -489,8 +525,8 @@ else — and so does closing the app, which is the part worth stating, because a
 shell started under a pty is not in the app's process tree in any way the
 operating system would clean up on its own.
 
-What it is **not**, yet: it is not wired to the conversation. The agent does not
-read what you type there, what you run is not checkpointed the way the agent's
-own commands are, and commands are a scrollback rather than the blocks a
+What it is **not**, yet: the shell is not wired to the conversation. The agent
+does not read what you type there, what you run is not checkpointed the way the
+agent's own commands are, and commands are a scrollback rather than the blocks a
 Warp-style terminal groups them into. Each of those is written down in
 [Known gaps](known-gaps.md).

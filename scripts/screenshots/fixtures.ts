@@ -741,3 +741,60 @@ export const USAGE = {
   ],
 };
 
+/**
+ * Two commands running in the background, and what one of them has printed.
+ *
+ * A failing test run rather than a clean one, for the reason the MCP shot
+ * shows a server that is not answering: this pane exists because the model can
+ * watch a build the user cannot, and a frame of green output would say nothing
+ * about why anybody would look at it.
+ *
+ * The dev server beside it is the other half of what these are for — a command
+ * that will not finish on its own, and that a `check_command` between turns is
+ * the wrong way to keep an eye on.
+ */
+export const BACKGROUND_JOBS = [
+  {
+    id: 1,
+    command: "cargo test --workspace",
+    running: false,
+    stopped: false,
+    code: 101,
+    ran_for: 96,
+    status: "exited with code 101 after 1m36s",
+  },
+  {
+    id: 2,
+    command: "pnpm dev --host",
+    running: true,
+    stopped: false,
+    ran_for: 214,
+    status: "still running after 3m34s",
+  },
+];
+
+/** What the failing run said. The tab this is under is the one on screen. */
+export const BACKGROUND_OUTPUT = `   Compiling taurus-tools v0.2.0
+   Compiling taurus-host v0.2.0
+    Finished \`test\` profile [unoptimized + debuginfo] target(s) in 41.02s
+     Running unittests src/lib.rs
+
+running 383 tests
+test jobs::tests::the_window_reads_a_command_without_taking_it_from_the_model ... ok
+test jobs::tests::a_window_cursor_only_asks_for_what_it_has_not_seen ... ok
+test sweep::tests::a_rename_is_one_change_and_not_two ... FAILED
+
+failures:
+
+---- sweep::tests::a_rename_is_one_change_and_not_two stdout ----
+thread 'sweep::tests::a_rename_is_one_change_and_not_two' panicked at
+crates/taurus-tools/src/sweep.rs:1204:9:
+assertion \`left == right\` failed: the rename was recorded as a delete and a create
+  left: 2
+ right: 1
+
+failures:
+    sweep::tests::a_rename_is_one_change_and_not_two
+
+test result: FAILED. 382 passed; 1 failed; 0 ignored; 0 measured
+`;

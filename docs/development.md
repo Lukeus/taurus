@@ -247,7 +247,12 @@ cargo run -p taurus-host --example search -- "something you said"
 # starts one in a throwaway workspace, shows it running while nothing has
 # changed yet, reads it back the moment it exits, and undoes it — proving the
 # pre-image is the file as it stood before the command ran rather than after.
-# Then it stops one that would never have stopped on its own.
+# Then it stops one that would never have stopped on its own. Last, the part
+# the unit tests can only assert one moment of: a chatty command read by the
+# window on a timer *while it runs*, and then read in full by `check_command`
+# afterwards. Every line has to appear in both. If one is missing from the
+# second, the two cursors have collapsed into one and a pane drawing a build is
+# emptying the buffer the model was going to read.
 cargo run -p taurus-tools --example background
 
 # Memory, across two conversations: one turn leaves a note, and a second one —

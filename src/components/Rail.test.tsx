@@ -29,6 +29,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       agentCount={3}
       noteCount={2}
       mcp={{ total: 2, connected: 2 }}
+      jobsRunning={0}
       health={{ state: "connected", id: "ollama", models: 4 }}
       theme="dark"
       onPickWorkspace={() => {}}

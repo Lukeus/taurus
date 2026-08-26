@@ -811,7 +811,7 @@ impl Host {
         // A background command belongs to the workspace it was started in: its
         // cwd is about to stop meaning what it meant, and its changes would be
         // swept against a workspace it never ran in.
-        self.jobs.stop_all();
+        self.jobs.forget_all();
 
         *self.workspace.write().await = canonical.clone();
         // Rebuilt with this workspace's trust state, so a committed allowlist
@@ -1232,6 +1232,25 @@ impl Host {
     /// the OS tidies up a child that outlived the call that spawned it.
     pub fn stop_background(&self) {
         self.jobs.stop_all();
+    }
+
+    /// Every background command, for the window that draws them.
+    ///
+    /// The model reaches these through `check_command`; this is the other
+    /// reader, and the two do not move each other's place in the output. See
+    /// [`taurus_tools::Jobs`].
+    pub fn jobs(&self) -> Vec<taurus_tools::BackgroundJob> {
+        self.jobs.list()
+    }
+
+    /// What one background command has said after `cursor`.
+    pub fn job_output(&self, id: u32, cursor: usize) -> Result<taurus_tools::JobOutput, String> {
+        self.jobs.read(id, cursor)
+    }
+
+    /// Ends one background command, and waits for it to actually be gone.
+    pub async fn stop_job(&self, id: u32) -> Result<String, String> {
+        self.jobs.stop(id).await
     }
 
     pub async fn workspace(&self) -> PathBuf {
