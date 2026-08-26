@@ -186,7 +186,13 @@ pub async fn refresh(
             let _ = write_down(index, model, keep).await;
             return Err("indexing was canceled".into());
         }
-        let texts: Vec<String> = batch.iter().map(|(_, _, _, c)| c.text.clone()).collect();
+        // The passage rather than the body: a window of code says what it does
+        // and not what it is, so what goes into the vector is the file it came
+        // from and the definitions it sits inside as well. See `chunk`.
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|(path, _, _, piece)| piece.passage(path))
+            .collect();
         let vectors = provider
             .embed(model, &texts)
             .await
@@ -353,7 +359,13 @@ fn scan(
 }
 
 /// Every indexable file, as `(workspace-relative, absolute)`.
-fn walk(workspace: &Path) -> (Vec<(String, std::path::PathBuf)>, Option<String>) {
+/// Every file this index would cover, workspace-relative, with a caveat when
+/// the walk was cut short.
+///
+/// Public so a live check can chunk the same corpus this does without
+/// reimplementing the ignore rules — a comparison run against a slightly
+/// different set of files is a comparison of the file lists.
+pub fn walk(workspace: &Path) -> (Vec<(String, std::path::PathBuf)>, Option<String>) {
     let mut files = Vec::new();
     let mut truncated = false;
 
