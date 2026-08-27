@@ -25,13 +25,27 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::warn;
 
+use crate::budget::OutputBudget;
 use crate::tool::{
     parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 600;
-const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+/// What one command's output may take of the model's context window.
+///
+/// A share rather than a size: 64 KB is about sixteen thousand tokens, which
+/// is twice what an 8k local model can hold and under two percent of a
+/// million-token one. At [`OutputBudget::ANCHOR_WINDOW`] the share below comes
+/// to the 64 KB this was before, so the model these numbers were chosen
+/// against sees no change.
+const OUTPUT_SHARE: f32 = 0.08;
+/// Below this a cut stops bounding output and starts destroying it: a model
+/// shown three lines of a build log has learned nothing and runs it again.
+const MIN_OUTPUT_BYTES: usize = 4 * 1024;
+/// Past this a single command's output is a different problem than a budget,
+/// however much room the window has.
+const MAX_OUTPUT_BYTES: usize = 512 * 1024;
 
 /// How many cut streams one workspace keeps on disk.
 ///
@@ -626,21 +640,27 @@ fn shell_invocation(command: &str) -> (String, Vec<String>) {
 /// command actually printed, and a record that had been edited first would be
 /// a worse thing to keep.
 fn for_the_model(raw: &str, stream: &str, ctx: &ToolContext) -> String {
-    let condensed = super::condense::condense(raw);
+    let condensed = super::condense::condense(raw, ctx.budget);
     let shown = condensed.as_deref().unwrap_or(raw);
-    if shown.len() <= MAX_OUTPUT_BYTES {
+    let cap = output_cap(ctx.budget);
+    if shown.len() <= cap {
         return shown.to_string();
     }
-    let head_len = MAX_OUTPUT_BYTES * 2 / 3;
+    let head_len = cap * 2 / 3;
     let head = floor_boundary(shown, head_len);
-    let tail_start = shown.len() - (MAX_OUTPUT_BYTES - head_len);
+    let tail_start = shown.len() - (cap - head_len);
     let tail = ceil_boundary(shown, tail_start);
     format!(
         "{}\n\n[… {} …]\n\n{}",
         &shown[..head],
-        elision(shown.len() - MAX_OUTPUT_BYTES, raw, stream, ctx),
+        elision(shown.len() - cap, raw, stream, ctx),
         &shown[tail..]
     )
+}
+
+/// What one command's output may take, for the model this turn is on.
+fn output_cap(budget: OutputBudget) -> usize {
+    budget.bytes(OUTPUT_SHARE, MIN_OUTPUT_BYTES, MAX_OUTPUT_BYTES)
 }
 
 /// The sentence in the gap: how much went, and where it still is.
@@ -1093,10 +1113,43 @@ mod tests {
         assert!(matches!(err, ToolError::OutsideWorkspace { .. }));
     }
 
+    /// The cut is sized to the model, not to this file.
+    ///
+    /// 64 KB of output is about sixteen thousand tokens: twice what an 8k local
+    /// model can hold, and under two percent of a million-token one. One number
+    /// could not be right for both.
+    #[test]
+    fn the_cut_is_sized_to_the_window_that_has_to_hold_it() {
+        let (ctx, _dir) = test_ctx();
+        let small = ctx.clone().with_budget(OutputBudget::for_window(8_192));
+        let large = ctx.clone().with_budget(OutputBudget::for_window(1_000_000));
+        let text = "x".repeat(output_cap(large.budget) * 2);
+
+        let cut_small = for_the_model(&text, "stdout", &small);
+        let cut_large = for_the_model(&text, "stdout", &large);
+
+        assert!(
+            cut_small.len() < cut_large.len(),
+            "an 8k model was handed as much as a 1M one: {} vs {}",
+            cut_small.len(),
+            cut_large.len()
+        );
+        // What a small window is handed has to actually fit in it, which the
+        // constant this replaced did not: 64 KB is two 8k windows.
+        assert!(
+            cut_small.len() / 4 < 8_192 / 2,
+            "{} bytes is still more than half an 8k window",
+            cut_small.len()
+        );
+        // And both still say that something went.
+        assert!(cut_small.contains("bytes omitted"), "{cut_small}");
+        assert!(cut_large.contains("bytes omitted"), "{cut_large}");
+    }
+
     #[test]
     fn truncation_keeps_both_ends() {
         let (ctx, _dir) = test_ctx();
-        let text = format!("HEAD{}TAIL", "x".repeat(MAX_OUTPUT_BYTES * 2));
+        let text = format!("HEAD{}TAIL", "x".repeat(output_cap(ctx.budget) * 2));
         let out = for_the_model(&text, "stdout", &ctx);
         assert!(out.starts_with("HEAD"));
         assert!(out.ends_with("TAIL"));
@@ -1108,7 +1161,7 @@ mod tests {
     #[test]
     fn with_nowhere_to_write_a_cut_only_says_how_much_it_dropped() {
         let (ctx, _dir) = test_ctx();
-        let text = "x".repeat(MAX_OUTPUT_BYTES * 2);
+        let text = "x".repeat(output_cap(ctx.budget) * 2);
         let out = for_the_model(&text, "stdout", &ctx);
         assert!(out.contains("bytes omitted"), "{out}");
         assert!(!out.contains("read_file"), "{out}");
@@ -1122,7 +1175,7 @@ mod tests {
         ctx.session_id = Some("session-1".into());
         ctx.call_id = Some("toolu_01".into());
 
-        let text = format!("HEAD{}TAIL", "x".repeat(MAX_OUTPUT_BYTES * 2));
+        let text = format!("HEAD{}TAIL", "x".repeat(output_cap(ctx.budget) * 2));
         let out = for_the_model(&text, "stdout", &ctx);
 
         let path = spilled_path(&out).expect("the gap names a file");
@@ -1147,7 +1200,7 @@ mod tests {
         ctx.command_output = Some(dir.clone());
         ctx.readable_roots.push(dir);
 
-        let text = "x".repeat(MAX_OUTPUT_BYTES * 2);
+        let text = "x".repeat(output_cap(ctx.budget) * 2);
         let out = for_the_model(&text, "stdout", &ctx);
         let path = spilled_path(&out).expect("the gap names a file");
 

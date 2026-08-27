@@ -28,7 +28,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use taurus_provider::Provider;
 use taurus_tools::tool::{parse_input, schema_for};
-use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolResult};
+use taurus_tools::{Effect, OutputBudget, Tool, ToolContext, ToolError, ToolResult};
 use tracing::warn;
 
 use crate::build::refresh;
@@ -36,12 +36,22 @@ use crate::store::{search, Index};
 
 pub const SEARCH_CODE_TOOL: &str = "search_code";
 
-/// Results one call may return.
+/// Results one call may return, as a share of what has to hold them.
 ///
 /// Small because each carries an excerpt, and because a ranked list past about
 /// five stops being a ranking — the sixth result is not evidence, it is the
-/// model reading whatever came back.
-const MAX_RESULTS: usize = 5;
+/// model reading whatever came back. That is an argument about ranking and it
+/// does not scale without limit, which is what the ceiling here says: a wider
+/// window buys a few more excerpts, not a different tool.
+///
+/// At [`OutputBudget::ANCHOR_WINDOW`] the share is the five this was, against
+/// an excerpt costing [`MAX_EXCERPT_LINES`] lines of about forty bytes.
+const RESULT_SHARE: f32 = 0.006;
+const EXCERPT_BYTES: usize = MAX_EXCERPT_LINES * 40;
+/// Below three a ranked list is not a list.
+const MIN_RESULTS: usize = 3;
+/// Past this the answer is a reading assignment rather than a ranking.
+const MAX_RESULTS: usize = 24;
 
 /// Passages the cosine pass hands to the reranker, when one is configured.
 ///
@@ -139,10 +149,15 @@ impl SearchCode {
     /// mean an optional stage could take `search_code` away entirely — and it
     /// would do it at the exact moment the model was mid-turn and least able to
     /// recover.
-    async fn reranked(&self, query: &str, hits: Vec<crate::store::Hit>) -> Vec<crate::store::Hit> {
+    async fn reranked(
+        &self,
+        query: &str,
+        hits: Vec<crate::store::Hit>,
+        keep: usize,
+    ) -> Vec<crate::store::Hit> {
         let Some((provider, model)) = &self.rerank else {
             let mut hits = hits;
-            hits.truncate(MAX_RESULTS);
+            hits.truncate(keep);
             return hits;
         };
 
@@ -151,7 +166,7 @@ impl SearchCode {
         // else would rank a passage on evidence the model never sees.
         let documents: Vec<String> = hits.iter().map(|h| h.text.clone()).collect();
         match provider.rerank(model, query, &documents).await {
-            Ok(scores) => crate::store::rerank(hits, &scores, MAX_RESULTS),
+            Ok(scores) => crate::store::rerank(hits, &scores, keep),
             Err(e) => {
                 warn!(
                     error = %e,
@@ -159,19 +174,24 @@ impl SearchCode {
                     "reranking failed; falling back to similarity order"
                 );
                 let mut hits = hits;
-                hits.truncate(MAX_RESULTS);
+                hits.truncate(keep);
                 hits
             }
         }
     }
 
     /// How many passages the cosine pass should hand on.
-    fn candidates(&self) -> usize {
+    fn candidates(&self, keep: usize) -> usize {
         if self.rerank.is_some() {
-            RERANK_CANDIDATES
+            RERANK_CANDIDATES.max(keep)
         } else {
-            MAX_RESULTS
+            keep
         }
+    }
+
+    /// How many results this model's window has room for.
+    fn keep(budget: OutputBudget) -> usize {
+        budget.count(RESULT_SHARE, EXCERPT_BYTES, MIN_RESULTS, MAX_RESULTS)
     }
 }
 
@@ -258,7 +278,8 @@ impl Tool for SearchCode {
             .next()
             .ok_or_else(|| ToolError::Failed("the backend returned no embedding".into()))?;
 
-        let hits = search(&entries, &vector, self.candidates(), &ctx.workspace);
+        let keep = Self::keep(ctx.budget);
+        let hits = search(&entries, &vector, self.candidates(keep), &ctx.workspace);
         if hits.is_empty() {
             return Ok(format!(
                 "No match for '{query}' in {} indexed passages. Try describing it differently, or \
@@ -271,7 +292,7 @@ impl Tool for SearchCode {
         if self.rerank.is_some() {
             ctx.report("ranking the results").await;
         }
-        let hits = self.reranked(query, hits).await;
+        let hits = self.reranked(query, hits, keep).await;
 
         Ok(render(query, &hits, ctx.workspace.as_path()).into())
     }

@@ -202,7 +202,9 @@ installed app. See [`scripts/conpty.mjs`](../scripts/conpty.mjs).
 
 ### Output too big to hand over
 
-A waited-for command's output is capped at 64 KB per stream. Past that the head
+A waited-for command's output is capped at a share of the model's context
+window — 64 KB per stream on a 200,000-token model, 4 KB on an 8k local one,
+320 KB on a million-token one. Past that the head
 and the tail are kept and the middle is dropped — the tail as well as the head,
 because a compiler's verdict and a test runner's count are the last thing they
 print, and a cut that kept only the beginning would take exactly the line worth
@@ -241,14 +243,15 @@ run directly, and a log being `cat`ed are the same output and none of them says
 tests`, and nothing outside that announcement is touched.
 
 **Repetition is collapsed before any of that happens**, so that usually the cut
-does not. A stream over 16 KB that says the same thing three or more times in a
-row keeps one copy and a sentence: `[… the line above repeated 3999 more times
+does not. A stream large enough to be worth the pass — 16 KB on a 200,000-token
+model, and a share of the window like every other cap here — that says the same
+thing three or more times in a row keeps one copy and a sentence: `[… the line above repeated 3999 more times
 …]`. A dev server retrying a connection four thousand times is a hundred
 kilobytes that a reader would call one line, and a byte count has no way to tell
 the difference. Nothing is paraphrased — a line either survives as itself or is
 replaced by a sentence saying exactly what stood there, which is what lets a
-model tell a shortened stream from an untrustworthy one. Under 16 KB nothing is
-touched at all, which is almost every command an agent runs.
+model tell a shortened stream from an untrustworthy one. Under that size nothing
+is touched at all, which is almost every command an agent runs.
 
 **What was dropped is still somewhere.** The whole stream is written to
 `~/.taurus/output/<workspace-key>/`, and the gap in what the model reads names

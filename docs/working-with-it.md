@@ -567,6 +567,20 @@ recognize unless it is written down somewhere. Set `context_length` for the
 model in [`providers.json`](configuration.md#azure-openai-and-gateways-in-front-of-it) and the meter starts
 telling the truth.
 
+**What is held back is the answer, not a fraction.** The budget is the window
+less what the reply needs, because the thing that has to fit beside the history
+is the reply and its size is a fact about the request rather than about the
+window. A flat fraction gets this wrong at both ends. Eighty percent of an 8k
+window leaves 1,600 tokens for a reply capped at 32,000 — the history fits and
+then the answer does not — while eighty percent of a million leaves 200,000
+tokens of history unusable to protect an answer that will never come near
+needing them. So the reserve is `max_tokens` where a turn sets one and 32,000
+where it does not, held between a twentieth of the window and a quarter of it: a
+local model cannot give up 32,000 tokens it does not have, and on a large window
+a twentieth is the margin between four-characters-a-token and a real tokenizer.
+A 200,000-token model gets 168,000 tokens of history where a flat threshold gave
+160,000; a million-token model gets 950,000 where it gave 800,000.
+
 **And it either makes room or says why it cannot.** The tail kept verbatim is
 bounded by tokens as well as by message count, because eight recent messages can
 be eight large tool results and a tail bigger than the budget means summarizing
@@ -576,19 +590,36 @@ prompt and tool schemas fill the window by themselves, which is a model too
 small for this agent rather than a conversation that grew.
 
 **Reads come back a window at a time.** `read_file` returns 2000 lines by
-default and takes `offset` and `limit` for the rest. Line numbers stay absolute,
-so a number from a windowed read still means what it says, and a partial answer
-always says it is partial — a window that does not announce itself is
-indistinguishable from a short file, and a model that thinks it read the whole
-thing will act on what is missing.
+default on a 200,000-token model and takes `offset` and `limit` for the rest.
+Line numbers stay absolute, so a number from a windowed read still means what it
+says, and a partial answer always says it is partial — a window that does not
+announce itself is indistinguishable from a short file, and a model that thinks
+it read the whole thing will act on what is missing.
 
-There is a second cap, 256 KB, and it is on the *answer* rather than on the
-file. A window is taken around the offset it was asked for, so a line near the
-end of a ten-megabyte log opens as cheaply as a line near the start; only a
-window too large to return is cut, and it says where to pick it up. The
-distinction matters because collapsing the two — a read that always begins at
-the first byte — leaves a file past the cap with a tail nothing can reach, and a
-model handed a line number by `grep` with no way to go and look at it.
+There is a second cap, 256 KB on the same model, and it is on the *answer*
+rather than on the file. A window is taken around the offset it was asked for,
+so a line near the end of a ten-megabyte log opens as cheaply as a line near the
+start; only a window too large to return is cut, and it says where to pick it
+up. The distinction matters because collapsing the two — a read that always
+begins at the first byte — leaves a file past the cap with a tail nothing can
+reach, and a model handed a line number by `grep` with no way to go and look at
+it.
+
+**Every one of those caps is a share of the window, not a number.** The sizes
+above are what a 200,000-token model gets, because that is the size they were
+originally chosen against — and one size cannot be right twice. 64 KB of command
+output is about sixteen thousand tokens: twice what an 8k local model holds, so
+the answer overflows the request that carries it, and under two percent of a
+million-token window, where the model pages back through output it could have
+been handed at once. So each one is anchored at 200,000 and moves with the model
+the turn is on. An 8k model reads 200 lines of a file and 4 KB of a build log; a
+million-token model reads 10,000 lines and 320 KB. Where the window is not
+knowable — an OpenAI-compatible endpoint that never declared one, a tool run
+outside a session — every cap is exactly what it is at the anchor, so nothing
+that cannot ask a model how big it is gets a different answer than it would
+have. Floors and ceilings sit on either side: below the floor a cap stops
+bounding output and starts destroying it, and above the ceiling a single tool
+result is a different problem than a budget.
 
 **Old tool output shrinks before anything is summarized.** Tool results are most
 of what a working session holds, and every byte is re-sent on each iteration of

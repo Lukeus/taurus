@@ -7,9 +7,21 @@ use ignore::WalkBuilder;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::budget::OutputBudget;
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
 
-const MAX_RESULTS: usize = 200;
+/// What a search may return, as a share of what has to hold it.
+///
+/// Anchored so [`OutputBudget::ANCHOR_WINDOW`] still gets the 200 this was,
+/// against a matched line costing about eighty bytes with its path on the
+/// front.
+const RESULT_SHARE: f32 = 0.02;
+const RESULT_BYTES: usize = 80;
+/// Fewer than this and a search stops being able to answer the question it was
+/// asked, whatever it is competing for room with.
+const MIN_RESULTS: usize = 40;
+/// More than this and the answer is a listing, which is a different tool.
+const MAX_RESULTS: usize = 1_000;
 /// Files above this size are almost always minified bundles or binaries.
 const MAX_GREP_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// The most context [`Grep`] will put around a match.
@@ -22,7 +34,9 @@ const MAX_CONTEXT: usize = 10;
 /// A match cost one line before context existed, so the match cap was the
 /// whole budget. With ten lines each side, two hundred matches is four
 /// thousand lines, which is most of a small model's window spent on a search.
-const MAX_GREP_OUTPUT_BYTES: usize = 64 * 1024;
+const GREP_OUTPUT_SHARE: f32 = 0.08;
+const MIN_GREP_OUTPUT_BYTES: usize = 4 * 1024;
+const MAX_GREP_OUTPUT_BYTES: usize = 512 * 1024;
 
 /// The traversal both search tools use.
 ///
@@ -89,11 +103,12 @@ impl Tool for Glob {
             .map_err(|e| ToolError::InvalidInput(format!("bad glob pattern: {e}")))?
             .compile_matcher();
 
+        let cap = result_cap(ctx);
         let ctx = ctx.clone();
         let hits = tokio::task::spawn_blocking(move || {
             let mut hits = Vec::new();
             for entry in walker(&root).flatten() {
-                if hits.len() >= MAX_RESULTS {
+                if hits.len() >= cap {
                     break;
                 }
                 if entry.file_type().is_some_and(|t| t.is_file()) {
@@ -108,7 +123,7 @@ impl Tool for Glob {
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;
 
-        Ok(format_hits(hits, "files").into())
+        Ok(format_hits(hits, "files", cap).into())
     }
 }
 
@@ -174,7 +189,9 @@ impl Tool for Grep {
         let include = compile_glob(input.include.as_deref(), "include")?;
         let exclude = compile_glob(input.exclude.as_deref(), "exclude")?;
         let context = input.context.unwrap_or(0).min(MAX_CONTEXT);
-        let limit = input.limit.unwrap_or(MAX_RESULTS).clamp(1, MAX_RESULTS);
+        let cap = result_cap(ctx);
+        let limit = input.limit.unwrap_or(cap).clamp(1, cap);
+        let budget = ctx.budget;
         let files_only = input.files_only;
 
         let ctx = ctx.clone();
@@ -229,7 +246,7 @@ impl Tool for Grep {
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;
 
-        Ok(render(files, capped, files_only, limit).into())
+        Ok(render(files, capped, files_only, limit, budget).into())
     }
 }
 
@@ -311,7 +328,18 @@ fn matches_in(
 /// filesystem's. Sorting the formatted strings instead — which is what this
 /// used to do — orders `foo.rs:100` before `foo.rs:9`, so a file's own matches
 /// arrived shuffled.
-fn render(mut files: Vec<FileMatches>, capped: bool, files_only: bool, limit: usize) -> String {
+fn render(
+    mut files: Vec<FileMatches>,
+    capped: bool,
+    files_only: bool,
+    limit: usize,
+    budget: OutputBudget,
+) -> String {
+    let output_cap = budget.bytes(
+        GREP_OUTPUT_SHARE,
+        MIN_GREP_OUTPUT_BYTES,
+        MAX_GREP_OUTPUT_BYTES,
+    );
     if files.is_empty() {
         return "No matches found.".to_string();
     }
@@ -346,7 +374,7 @@ fn render(mut files: Vec<FileMatches>, capped: bool, files_only: bool, limit: us
                 file.path, row.line, separator, row.text
             ));
             previous = Some(row.line);
-            if out.len() >= MAX_GREP_OUTPUT_BYTES {
+            if out.len() >= output_cap {
                 truncated = true;
                 break 'files;
             }
@@ -358,7 +386,7 @@ fn render(mut files: Vec<FileMatches>, capped: bool, files_only: bool, limit: us
     if truncated {
         out.push_str(&format!(
             "\n\n[stopped at {} KB of output; search for less, or with less context]",
-            MAX_GREP_OUTPUT_BYTES / 1024
+            output_cap / 1024
         ));
     } else if capped {
         out.push_str(&cap_note(limit));
@@ -399,16 +427,22 @@ fn compile_glob(
         .transpose()
 }
 
-fn format_hits(mut hits: Vec<String>, noun: &str) -> String {
+/// How many results this model's window has room for.
+fn result_cap(ctx: &ToolContext) -> usize {
+    ctx.budget
+        .count(RESULT_SHARE, RESULT_BYTES, MIN_RESULTS, MAX_RESULTS)
+}
+
+fn format_hits(mut hits: Vec<String>, noun: &str, cap: usize) -> String {
     if hits.is_empty() {
         return format!("No {noun} found.");
     }
-    let capped = hits.len() >= MAX_RESULTS;
+    let capped = hits.len() >= cap;
     hits.sort();
     let mut out = hits.join("\n");
     if capped {
         out.push_str(&format!(
-            "\n\n[stopped at {MAX_RESULTS} {noun}; narrow the search to see the rest]"
+            "\n\n[stopped at {cap} {noun}; narrow the search to see the rest]"
         ));
     }
     out
