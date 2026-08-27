@@ -133,7 +133,7 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
     let Some(endpoint) = endpoint else {
         tracing_subscriber::registry()
             .with(fmt_layer(filter))
-            .with(sink::Recorder::new(traces.clone()))
+            .with(sink::layer(traces.clone()))
             .init();
         return Guard {
             provider: None,
@@ -146,7 +146,7 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
             let tracer = provider.tracer("taurus");
             tracing_subscriber::registry()
                 .with(fmt_layer(filter))
-                .with(sink::Recorder::new(traces.clone()))
+                .with(sink::layer(traces.clone()))
                 // Only the harness's own spans are exported. Without this the
                 // trace fills with reqwest, hyper, and rustls internals — every
                 // one of them a real span and none of them the thing anybody
@@ -154,10 +154,7 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
                 .with(
                     tracing_opentelemetry::layer()
                         .with_tracer(tracer)
-                        .with_filter(
-                            tracing_subscriber::filter::Targets::new()
-                                .with_target("taurus::gen_ai", tracing::Level::INFO),
-                        ),
+                        .with_filter(sink::harness_only()),
                 )
                 .init();
             tracing::info!(%endpoint, "exporting traces");
@@ -174,7 +171,7 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
             // concluding the harness is broken.
             tracing_subscriber::registry()
                 .with(fmt_layer(filter))
-                .with(sink::Recorder::new(traces.clone()))
+                .with(sink::layer(traces.clone()))
                 .init();
             tracing::error!(
                 %endpoint,

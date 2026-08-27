@@ -32,14 +32,43 @@ use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
 /// The target every span this keeps is emitted on.
-///
-/// The same one the exporter filters to, and for the same reason: without it
-/// the ring fills with reqwest, hyper, and rustls internals — every one of them
-/// a real span, and none of them the thing anybody opened the panel to look at.
-/// Checked here rather than with a `Targets` filter so that what is kept is
-/// decided in one visible place, next to the code that decides what is kept
-/// *about* it.
 const TARGET: &str = "taurus::gen_ai";
+
+/// The harness's own spans, and nothing else in the process.
+///
+/// Both layers this crate installs wear it, and it is one function rather than
+/// two copies because the two must not drift: the panel and the collector are
+/// meant to be showing the same thing.
+///
+/// It is a real per-layer filter and not just a check inside the layer, and the
+/// difference is the whole process rather than this crate. A layer with no
+/// filter declares interest in *everything*, and `tracing` takes the union
+/// across layers to decide what a callsite costs — so an unfiltered layer here
+/// raises the global maximum level to `TRACE` and switches on every
+/// trace-level callsite in every dependency. That is reqwest, hyper, h2 and
+/// rustls, on the path every streamed token travels: their arguments get
+/// formatted and their spans get allocated in the registry, and then thrown
+/// away because no layer wanted them. Checking the target inside `on_new_span`
+/// is too late — by then the cost has been paid.
+///
+/// `INFO` because that is the level the vocabulary opens its spans at. A lower
+/// bound here would let the same trace-level callsites back in.
+pub fn harness_only() -> tracing_subscriber::filter::Targets {
+    tracing_subscriber::filter::Targets::new().with_target(TARGET, tracing::Level::INFO)
+}
+
+/// The recorder, filtered the way it has to be installed.
+///
+/// The only way this crate hands one out to a subscriber. [`Recorder`] itself
+/// is public for tests that build a registry of their own, where the filter is
+/// beside the point; on the real path forgetting it is expensive and silent,
+/// so there is nothing to forget.
+pub fn layer<S>(traces: Traces) -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    Recorder::new(traces).with_filter(harness_only())
+}
 
 /// Writes every finished harness span into a [`Traces`] ring.
 pub struct Recorder {
@@ -124,6 +153,11 @@ where
 /// kept — a new span added later has to be named here deliberately, which is
 /// the right amount of friction for something that decides what a dashboard
 /// counts.
+///
+/// The target is checked again here, after [`harness_only`] has already done
+/// it. Not redundancy for its own sake: [`Recorder`] is public and a test can
+/// build a registry without the filter, and this is what keeps such a
+/// subscriber from filling the ring with a library's spans.
 fn kind_of(metadata: &Metadata<'_>) -> Option<SpanKind> {
     if metadata.target() != TARGET {
         return None;
