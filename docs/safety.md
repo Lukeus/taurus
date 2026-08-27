@@ -517,6 +517,15 @@ turn: which model, how many tokens in and out, how long each call took, which
 tools ran, and which failed. That is a description of the work. It is not the
 work.
 
+One thing is kept without a collector, and it is worth being exact about.
+Those same spans go into a bounded ring in memory so the app's Traces panel can
+draw them, and that ring is a ring: no endpoint, no file, no lifetime past the
+process. It holds what the panel shows — a model name, a tool name, durations
+and token counts — and the two message fields are not among the columns it has,
+so `otlp_capture_content` cannot put the conversation into it even when it is
+on. Nothing about it leaves the machine, and quitting the app is how you clear
+it if **Clear** is not to hand.
+
 The conversation is a separate setting, `otlp_capture_content`, and it is off.
 Turning it on puts `gen_ai.input.messages` and `gen_ai.output.messages` on every
 completion span — which is the file the model read, the command it ran, the

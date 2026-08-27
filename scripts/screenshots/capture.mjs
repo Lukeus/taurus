@@ -82,6 +82,11 @@ const SHOTS = [
   // cost of every request below it — which is the half that is not in the
   // transcript at all.
   { name: "context", shot: "context", theme: "dark" },
+  // Where the time went, with a turn's waterfall open. The turn chosen has a
+  // shape worth photographing: a four-second command, a tool call that failed,
+  // and a `spawn` with a delegate's whole turn indented underneath it. A frame
+  // of even bars would be a picture of the styling.
+  { name: "traces", shot: "traces", theme: "dark" },
   // The rail with a section folded. An open section looks like the plain list
   // it replaced, so the shut one is the only state that shows the feature.
   { name: "rail", shot: "rail", theme: "dark" },

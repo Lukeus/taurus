@@ -6436,6 +6436,7 @@ dependencies = [
  "taurus-provider-ollama",
  "taurus-provider-openai",
  "taurus-skills",
+ "taurus-telemetry",
  "taurus-tools",
  "taurus-web",
  "tempfile",
@@ -6443,6 +6444,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "ts-rs",
  "uuid",
 ]

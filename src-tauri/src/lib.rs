@@ -92,8 +92,14 @@ pub fn run() {
     let settings = taurus_host::config::load_settings(None);
     // Held for the life of the process. Dropping it flushes whatever is
     // buffered — which is why it is bound rather than discarded.
-    let _telemetry =
+    let telemetry =
         taurus_telemetry::install(filter, "taurus-app", Some(settings.otlp_endpoint.as_str()));
+    // The local half, which exists whether or not an endpoint was configured:
+    // a bounded ring of finished spans in this process that nothing sends
+    // anywhere. It is what the trace panel draws. Taken here because this is
+    // where the subscriber was installed, and a subscriber can only be
+    // installed once.
+    let traces = telemetry.traces();
 
     // Before the builder, and so before anything is spawned: an app started from
     // the Dock inherits launchd's PATH, which is four system directories and
@@ -160,7 +166,7 @@ pub fn run() {
         .setup(|app| {
             paint_window(app);
 
-            let state = Arc::new(state::AppState::new(app.handle().clone()));
+            let state = Arc::new(state::AppState::new(app.handle().clone(), traces));
             app.manage(state.clone());
 
             // Skill discovery touches the filesystem; do it off the setup path
@@ -272,6 +278,8 @@ pub fn run() {
             commands::turn_changes,
             commands::repo_status,
             commands::usage_report,
+            commands::trace_report,
+            commands::clear_traces,
             commands::search_sessions,
             commands::commit_turn,
             commands::terminal_open,

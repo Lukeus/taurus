@@ -39,6 +39,7 @@ import {
   SESSIONS,
   STATUS,
   USAGE,
+  TRACES,
 } from "./fixtures";
 
 /** Which part of the conversation to frame. See `capture.mjs` for the set. */
@@ -129,6 +130,7 @@ const ANSWERS: Record<string, unknown> = {
   list_mcp_servers: MCP_SERVERS,
   search_sessions: SEARCH_HITS,
   usage_report: USAGE,
+  trace_report: TRACES,
   mcp_environment: MCP_ENVIRONMENT,
   // The dock's shell. Nothing is ever written back down the channel, so the
   // Terminal tab is an empty emulator — which is the right picture, because
@@ -360,6 +362,15 @@ requestAnimationFrame(() => {
       context: async () => {
         (await click(".rail-link", (b) => b.startsWith("Context")))();
         await until(() => document.querySelector(".usage-table"));
+      },
+      // Where the time went, with the top turn's waterfall open. Expanded by
+      // pressing the row rather than seeded open, because one turn at a time
+      // is state inside the panel — and a shot of the collapsed list would be
+      // a picture of three rows rather than of the feature underneath them.
+      traces: async () => {
+        (await click(".rail-link", (b) => b.startsWith("Traces")))();
+        (await click(".trace-turn", () => true))();
+        await until(() => document.querySelector(".trace-step"));
       },
       // The dock, on the tab of a test run that failed. Opened and switched
       // to the way anybody does it, because which tab is showing is state in

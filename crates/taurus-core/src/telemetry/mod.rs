@@ -16,6 +16,11 @@
 //! it. So `taurus-core` gains a vocabulary and not a dependency on
 //! OpenTelemetry, and a build with no telemetry configured carries none of it.
 //!
+//! What *is* always subscribed is [`store`], a bounded ring of finished spans
+//! in this process that nothing sends anywhere — the local read the app's
+//! trace panel draws. It holds the buffer and the record; the layer that fills
+//! it lives in `taurus-telemetry`, beside the subscriber machinery it needs.
+//!
 //! # Why the field list is a macro
 //!
 //! `tracing` bakes a span's field set into static metadata at the callsite. A
@@ -42,6 +47,10 @@
 
 use taurus_provider::{StopReason, TokenUsage};
 use tracing::Span;
+
+pub mod store;
+
+pub use store::{SpanKind, SpanRecord, Traces};
 
 /// Whether spans may carry the conversation itself.
 ///
@@ -151,6 +160,14 @@ pub fn turn_span(provider: &str, model: &str, conversation: &str) -> Span {
         gen_ai.conversation.id = conversation,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
+        // The same three optional counts a `chat` span carries. Declared here
+        // because [`record_usage`] is called on *this* span too, with the same
+        // `TokenUsage` — and a field a span did not declare is dropped without
+        // a word. Without these a turn reported its cache figures as simply
+        // absent, which reads on a dashboard as a backend that has no cache.
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_creation.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning_tokens = tracing::field::Empty,
         gen_ai.response.finish_reasons = tracing::field::Empty,
         error.type = tracing::field::Empty,
     )
@@ -265,6 +282,27 @@ mod tests {
             let _span = chat_span("ollama", "qwen3", "s1");
         });
         assert_eq!(declared, CHAT_SPAN_FIELDS);
+    }
+
+    #[test]
+    fn a_turn_declares_every_field_record_usage_writes() {
+        // `record_usage` is called on a turn span as well as a chat one, with
+        // the same `TokenUsage`. Recording a field the callsite never declared
+        // is a silent no-op, so a turn span missing one of these does not fail
+        // anywhere — it just quietly has no cache figures, which is the state
+        // this test was written for.
+        let declared = fields_of(|| {
+            let _span = turn_span("ollama", "qwen3", "s1");
+        });
+        for field in [
+            "gen_ai.usage.input_tokens",
+            "gen_ai.usage.output_tokens",
+            "gen_ai.usage.cache_read.input_tokens",
+            "gen_ai.usage.cache_creation.input_tokens",
+            "gen_ai.usage.reasoning_tokens",
+        ] {
+            assert!(declared.iter().any(|f| f == field), "missing {field}");
+        }
     }
 
     #[test]

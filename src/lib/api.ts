@@ -97,6 +97,12 @@ import type { TerminalEvent } from "../bindings/TerminalEvent";
 import type { Theme } from "../bindings/Theme";
 import type { ToolOutput } from "../bindings/ToolOutput";
 import type { ToolResultBlock } from "../bindings/ToolResultBlock";
+import type { ModelLatency } from "../bindings/ModelLatency";
+import type { SpanKind } from "../bindings/SpanKind";
+import type { ToolLatency } from "../bindings/ToolLatency";
+import type { TraceReport } from "../bindings/TraceReport";
+import type { TraceStep } from "../bindings/TraceStep";
+import type { TurnTrace } from "../bindings/TurnTrace";
 import type { TranscriptView } from "../bindings/TranscriptView";
 import type { PendingConfig } from "../bindings/PendingConfig";
 import type { TrustStatus } from "../bindings/TrustStatus";
@@ -104,6 +110,12 @@ import type { TurnChange } from "../bindings/TurnChange";
 import type { UiEvent } from "../bindings/UiEvent";
 
 export type {
+  ModelLatency,
+  SpanKind,
+  ToolLatency,
+  TraceReport,
+  TraceStep,
+  TurnTrace,
   AgentProposal,
   AgentSaveTarget,
   AgentSummary,
@@ -411,6 +423,21 @@ export const forgetNote = (id: string) => invoke<Note[]>("forget_note", { id });
  */
 export const usageReport = (sessionId: string | null) =>
   invoke<UsageReport>("usage_report", { sessionId });
+
+/**
+ * Where a turn's time went, from the spans this process has finished.
+ *
+ * `sessionId` names one conversation; `null` reports on everything the window
+ * has run since it launched — which, unlike the usage account, includes
+ * conversations that have since been closed, because the source is a ring in
+ * memory rather than a file on disk.
+ */
+export const traceReport = (sessionId: string | null) =>
+  invoke<TraceReport>("trace_report", { sessionId });
+
+/** Forgets every span recorded so far, so the next reading is of what happens
+ *  next. An OTLP collector, if one is configured, keeps what it already got. */
+export const clearTraces = () => invoke<void>("clear_traces");
 
 /**
  * Conversations mentioning `query`, newest first.

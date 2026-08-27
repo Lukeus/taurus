@@ -11,6 +11,7 @@ import {
   MoonIcon,
   PlugIcon,
   SlidersIcon,
+  WaterfallIcon,
   BookmarkIcon,
   SparkIcon,
   SunIcon,
@@ -59,6 +60,7 @@ export function Rail({
   onAgents,
   onMemory,
   onUsage,
+  onTraces,
   onMcp,
   onTerminal,
   onSettings,
@@ -115,6 +117,11 @@ export function Rail({
    *  less than half full — and "what does a request cost before I start" is a
    *  question worth asking exactly then. */
   onUsage: () => void;
+  /** Opens the trace panel. Beside the context account because the two are the
+   *  same question asked about different currencies — one about tokens, one
+   *  about seconds — and somebody who has just found a turn expensive is a
+   *  step away from wondering why it was also slow. */
+  onTraces: () => void;
   onMcp: () => void;
   /** Shows or hides the terminal dock. The dock says which it is; this row
    *  only has to be the way to reach it. */
@@ -285,7 +292,7 @@ export function Rail({
       </div>
 
       <div className="rail-foot">
-        {/* The five panels, behind one fold.
+        {/* The six panels, behind one fold.
             Settings, the theme and the provider stay outside it: the first two
             are how you get out of a state you did not mean to be in, and the
             third is a status line rather than a place to go. A fold that can
@@ -337,6 +344,16 @@ export function Rail({
               <GaugeIcon />
             </span>
             <b>Context</b>
+          </button>
+          <button
+            className="rail-link"
+            onClick={onTraces}
+            data-tip="Where each turn's time went — model calls, tools, and everything in between"
+          >
+            <span className="glyph">
+              <WaterfallIcon />
+            </span>
+            <b>Traces</b>
           </button>
           <button className="rail-link" onClick={onMcp} data-tip={mcpHint(mcp)}>
             <span className="glyph">

@@ -3611,6 +3611,185 @@ body.resizing-y * {
   color: var(--text-dim);
 }
 
+/* ---------------------------------------------------------------- traces */
+
+/*
+ * Where the time went.
+ *
+ * A sibling of the context account and drawn with its furniture — the same
+ * number tables, the same scope tabs, the same totals — because the two are
+ * the same gesture at the same depth in the same drawer. What is new here is
+ * the only thing that could not be borrowed: a timeline, which needs bars that
+ * are placed rather than stacked.
+ *
+ * Two colours and no more. A model call and everything else is the one split
+ * this panel makes, and a palette with a hue per span kind would turn a
+ * waterfall into something to decode instead of something to read.
+ */
+.traces {
+  --trace-chat: var(--accent);
+  --trace-other: color-mix(in srgb, var(--text-faint) 55%, transparent);
+}
+
+/* The headline split, and the same bar again per turn at a third of the
+   height. One rule for both: they are the same fact at two scales, and two
+   rules would eventually disagree about where the boundary sits. */
+.trace-split {
+  margin: 0 0 var(--usage-gap);
+}
+.trace-split-bar {
+  display: block;
+  height: 10px;
+  border-radius: var(--r-sm);
+  /* A hard stop rather than a gradient: this is a boundary between two
+     measured quantities, and a blend would put a soft edge on a number. */
+  background: linear-gradient(
+    to right,
+    var(--trace-chat) 0 var(--model),
+    var(--trace-other) var(--model) 100%
+  );
+}
+.trace-split-bar.mini {
+  height: 4px;
+  border-radius: 2px;
+}
+.trace-split-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.trace-key {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 2px;
+}
+.trace-key.chat {
+  background: var(--trace-chat);
+}
+.trace-key.other {
+  background: var(--trace-other);
+}
+
+.trace-turns {
+  list-style: none;
+  margin: 0 0 var(--usage-gap);
+  padding: 0;
+}
+.trace-turn-row {
+  border-bottom: 1px solid var(--rule);
+}
+.trace-turn {
+  display: grid;
+  grid-template-columns: auto 1fr minmax(60px, 20%) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 4px;
+  background: none;
+  border: 0;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+.trace-turn:hover {
+  background: var(--bg-row);
+}
+.trace-when,
+.trace-turn-ms {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.trace-turn-name {
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The waterfall. A row per span, indented by how deep it sat — which is the
+   only thing that tells a delegate's work apart from the turn's own. */
+.trace-flow {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 10px;
+}
+.trace-step {
+  display: grid;
+  grid-template-columns: minmax(70px, 22%) 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 0;
+}
+.trace-step-name {
+  overflow: hidden;
+  padding-left: calc((var(--depth) - 1) * 12px);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-step-ms {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+/* The track is what makes the bars comparable: every one of them is placed
+   against the same width, which is the turn. Without it each row would scale
+   to its own content and the picture would say nothing. */
+.trace-track {
+  position: relative;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--bg-row);
+}
+.trace-bar {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: var(--offset);
+  width: var(--width);
+  min-width: 2px;
+  border-radius: 2px;
+  background: var(--trace-other);
+}
+.trace-bar.chat {
+  background: var(--trace-chat);
+}
+.trace-bar.failed {
+  background: var(--danger);
+}
+.trace-empty {
+  margin: 0;
+  padding: 0 4px 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* An aside on a table row: cached share, or that a tool contains a delegate.
+   Dimmer than the name it follows, because it qualifies the row rather than
+   naming it. */
+.trace-aside {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.trace-foot-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: var(--usage-gap);
+}
+
 .card-list {
   list-style: none;
   margin: 0;

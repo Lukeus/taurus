@@ -269,6 +269,39 @@ export function GaugeIcon({ size }: { size?: number }) {
   );
 }
 
+/**
+ * Three bars of unequal length, stacked and offset.
+ *
+ * A waterfall, which is what the panel behind it draws — deliberately not a
+ * stopwatch or a clock face. Those say "time", and the question this row opens
+ * is not what time it is but where the time went, which is a shape.
+ */
+export function WaterfallIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="2" y="3.2" width="9" height="2.4" rx="1.2" fill="currentColor" />
+      <rect
+        x="4.5"
+        y="6.8"
+        width="9.5"
+        height="2.4"
+        rx="1.2"
+        fill="currentColor"
+        opacity="0.72"
+      />
+      <rect
+        x="3"
+        y="10.4"
+        width="5.5"
+        height="2.4"
+        rx="1.2"
+        fill="currentColor"
+        opacity="0.5"
+      />
+    </Icon>
+  );
+}
+
 export function SlidersIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>
