@@ -283,8 +283,7 @@ mod tests {
     /// called once in a process, and these are several tests.
     fn recorded(open: impl FnOnce()) -> Vec<SpanRecord> {
         let traces = Traces::new();
-        let subscriber =
-            tracing_subscriber::registry().with(Recorder::new(traces.clone()));
+        let subscriber = tracing_subscriber::registry().with(Recorder::new(traces.clone()));
         with_default(subscriber, open);
         traces.snapshot().records
     }
@@ -427,7 +426,9 @@ mod tests {
         let find = |conversation: &str| {
             records
                 .iter()
-                .find(|r| r.kind == SpanKind::Turn && r.conversation.as_deref() == Some(conversation))
+                .find(|r| {
+                    r.kind == SpanKind::Turn && r.conversation.as_deref() == Some(conversation)
+                })
                 .expect("recorded")
         };
         let outer = find("s1");

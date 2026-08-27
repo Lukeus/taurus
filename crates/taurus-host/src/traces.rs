@@ -444,7 +444,12 @@ fn descendants<'a>(
     root: &SpanRecord,
     children: &'a HashMap<u64, Vec<&'a SpanRecord>>,
 ) -> impl Iterator<Item = &'a SpanRecord> {
-    let mut stack: Vec<&SpanRecord> = children.get(&root.seq).into_iter().flatten().copied().collect();
+    let mut stack: Vec<&SpanRecord> = children
+        .get(&root.seq)
+        .into_iter()
+        .flatten()
+        .copied()
+        .collect();
     std::iter::from_fn(move || {
         let next = stack.pop()?;
         stack.extend(children.get(&next.seq).into_iter().flatten().copied());
@@ -516,11 +521,14 @@ fn tools(kept: &[&SpanRecord], children: &HashMap<u64, Vec<&SpanRecord>>) -> Vec
 
     // Shares of this table's own total, settled after the rows are known. See
     // the module docs: this denominator is not the turn's, on purpose.
+    //
+    // A zero total is a real state and not a guard against one: every tool
+    // call that ran finished inside a millisecond, which is what a turn of
+    // `list_dir` and `grep` looks like. Nothing has a share of nothing, so
+    // every row keeps the zero it was built with.
     let total: u64 = tools.iter().map(|t| t.total_ms).sum();
-    if total > 0 {
-        for tool in &mut tools {
-            tool.share = (tool.total_ms * 100 / total) as u32;
-        }
+    for tool in &mut tools {
+        tool.share = (tool.total_ms * 100).checked_div(total).unwrap_or(0) as u32;
     }
     tools.sort_by(|a, b| b.total_ms.cmp(&a.total_ms).then(a.name.cmp(&b.name)));
     tools
@@ -685,6 +693,22 @@ mod tests {
         // oldest thing there — the most likely to be half-remembered.
         let traces = ring(vec![under(999, turn(1, "s1", 1_000, 100))]);
         assert_eq!(report(&traces, None).turns, 1);
+    }
+
+    #[test]
+    fn tools_that_all_finished_inside_a_millisecond_have_no_share_of_anything() {
+        // A real state rather than an impossible one: a turn of `list_dir` and
+        // `grep` on a warm cache measures zero throughout, and the shares have
+        // no denominator to be taken against.
+        let traces = ring(vec![
+            under(1, span(2, SpanKind::Tool, "list_dir", 1_000, 0)),
+            under(1, span(3, SpanKind::Tool, "grep", 1_000, 0)),
+            turn(1, "s1", 1_000, 2),
+        ]);
+
+        let tools = report(&traces, None).tools;
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().all(|t| t.share == 0));
     }
 
     #[test]
