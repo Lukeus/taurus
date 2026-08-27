@@ -23,13 +23,23 @@
 //! place worth matching. libtest announces itself — `running 404 tests` — and
 //! that announcement is both easier to recognize and harder to be wrong about.
 
+use crate::budget::OutputBudget;
+
 /// Below this a stream is handed over exactly as it arrived.
 ///
 /// Almost every command an agent runs is under it, and for those the model
 /// should see what a terminal would have shown rather than something this file
 /// had an opinion about. The threshold exists so that the opinion is only
-/// applied where the alternative is losing output to the cut.
-const CONDENSE_BYTES: usize = 16 * 1024;
+/// applied where the alternative is losing output to the cut — which is why it
+/// is a share of the window rather than a size. Where the cut comes sooner
+/// there is more worth collapsing before it, and where it comes later there is
+/// less. At [`OutputBudget::ANCHOR_WINDOW`] the share is the 16 KB it was.
+const CONDENSE_SHARE: f32 = 0.02;
+/// A stream small enough that collapsing it could only lose the shape of what
+/// a terminal showed.
+const MIN_CONDENSE_BYTES: usize = 2 * 1024;
+/// Past this there is nothing to gain by looking harder before cutting.
+const MAX_CONDENSE_BYTES: usize = 128 * 1024;
 
 /// How many lines a collapse must replace before it is worth making.
 ///
@@ -43,8 +53,8 @@ const RUN_THRESHOLD: usize = 3;
 /// `None` rather than a copy so the caller can hand the original along
 /// untouched, and so "nothing was collapsed" and "something was" stay
 /// distinguishable at the call site.
-pub(super) fn condense(text: &str) -> Option<String> {
-    if text.len() <= CONDENSE_BYTES {
+pub(super) fn condense(text: &str, budget: OutputBudget) -> Option<String> {
+    if text.len() <= budget.bytes(CONDENSE_SHARE, MIN_CONDENSE_BYTES, MAX_CONDENSE_BYTES) {
         return None;
     }
     // In order, each over what the last one left. They do not overlap: a
@@ -319,10 +329,10 @@ mod tests {
 
     /// Padding that puts a fixture over the threshold without itself repeating.
     fn over_threshold() -> String {
-        let padding: String = (0..CONDENSE_BYTES / 8)
+        let padding: String = (0..MAX_CONDENSE_BYTES / 8)
             .map(|i| format!("distinct line {i} of padding\n"))
             .collect();
-        assert!(padding.len() > CONDENSE_BYTES);
+        assert!(padding.len() > MAX_CONDENSE_BYTES);
         padding
     }
 
@@ -364,7 +374,8 @@ mod tests {
     #[test]
     fn a_test_run_keeps_its_failure_and_counts_its_passes() {
         let text = test_run(2_000);
-        let out = condense(&text).expect("a run this size is worth collapsing");
+        let out =
+            condense(&text, OutputBudget::unknown()).expect("a run this size is worth collapsing");
 
         assert!(out.contains("[… 2000 passing tests not shown …]"), "{out}");
         assert!(!out.contains("case_1500"), "a pass should not survive");
@@ -381,7 +392,7 @@ mod tests {
     #[test]
     fn everything_that_is_not_a_pass_survives_byte_for_byte() {
         let text = test_run(2_000);
-        let out = condense(&text).unwrap();
+        let out = condense(&text, OutputBudget::unknown()).unwrap();
 
         for kept in [
             "warning: unused variable: `x`",
@@ -406,7 +417,10 @@ mod tests {
         for i in 0..500 {
             text.push_str(&format!("test some::module::case_{i} ... ok\n"));
         }
-        assert!(condense(&text).is_none(), "nothing announced a test run");
+        assert!(
+            condense(&text, OutputBudget::unknown()).is_none(),
+            "nothing announced a test run"
+        );
     }
 
     /// Two passes are not worth a sentence saying there were two passes.
@@ -416,7 +430,7 @@ mod tests {
             "{}running 2 tests\ntest a ... ok\ntest b ... ok\n",
             over_threshold()
         );
-        assert!(condense(&text).is_none(), "{text}");
+        assert!(condense(&text, OutputBudget::unknown()).is_none(), "{text}");
     }
 
     /// The result line closes the block, so what follows it is ordinary output
@@ -428,7 +442,7 @@ mod tests {
              test result: ok. 3 passed;\ntest d ... ok\ntest e ... ok\ntest f ... ok\n",
             over_threshold()
         );
-        let out = condense(&text).unwrap();
+        let out = condense(&text, OutputBudget::unknown()).unwrap();
         assert!(out.contains("[… 3 passing tests not shown …]"), "{out}");
         // The three after the result line announced no run of their own.
         assert!(
@@ -445,7 +459,7 @@ mod tests {
             text.push_str(&format!("test case_{i} ... ok\n"));
         }
         text.push_str("test the_skipped_one ... ignored\n");
-        let out = condense(&text).unwrap();
+        let out = condense(&text, OutputBudget::unknown()).unwrap();
         assert!(out.contains("test the_skipped_one ... ignored"), "{out}");
     }
 
@@ -471,7 +485,8 @@ mod tests {
         let padding = over_threshold();
         let warnings: String = (1..=40).map(warning_at).collect();
         let text = format!("{padding}{warnings}");
-        let out = condense(&text).expect("forty of the same warning is worth shortening");
+        let out = condense(&text, OutputBudget::unknown())
+            .expect("forty of the same warning is worth shortening");
 
         // The first one is intact, suggestion and all.
         assert!(out.contains("#needless_range_loop"), "{out}");
@@ -503,7 +518,7 @@ mod tests {
         let one = "error[E0308]: mismatched types\n \
                    --> src/lib.rs:1:1\n  |\n  = note: expected `u8`, found `i32`\n\n";
         let text = format!("{}{}", over_threshold(), one.repeat(30));
-        let out = condense(&text).unwrap_or_else(|| text.clone());
+        let out = condense(&text, OutputBudget::unknown()).unwrap_or_else(|| text.clone());
         assert!(!out.contains("body not repeated"), "{out}");
         assert_eq!(out.matches("expected `u8`, found `i32`").count(), 30);
     }
@@ -514,7 +529,7 @@ mod tests {
     fn a_warning_with_no_location_is_left_whole() {
         let summary = "warning: `warny` (lib) generated 27 warnings\n";
         let text = format!("{}{}", over_threshold(), summary.repeat(20));
-        let out = condense(&text).unwrap();
+        let out = condense(&text, OutputBudget::unknown()).unwrap();
         assert!(!out.contains("body not repeated"), "{out}");
         // It is an identical line, so the general filter has it instead.
         assert!(out.contains("repeated 19 more times"), "{out}");
@@ -538,13 +553,14 @@ mod tests {
     #[test]
     fn a_short_stream_is_left_alone() {
         let text = "same\n".repeat(50);
-        assert!(condense(&text).is_none());
+        assert!(condense(&text, OutputBudget::unknown()).is_none());
     }
 
     #[test]
     fn a_run_becomes_one_line_and_a_count() {
         let text = format!("{}before\n{}after\n", over_threshold(), "same\n".repeat(40));
-        let out = condense(&text).expect("a run this long is worth collapsing");
+        let out =
+            condense(&text, OutputBudget::unknown()).expect("a run this long is worth collapsing");
 
         assert!(out.contains("before\nsame\n[… the line above repeated 39 more times …]\nafter\n"));
         // The line itself survives as itself. Nothing here paraphrases.
@@ -554,14 +570,17 @@ mod tests {
 
     #[test]
     fn a_stream_that_never_repeats_is_handed_back_untouched() {
-        assert!(condense(&over_threshold()).is_none());
+        assert!(condense(&over_threshold(), OutputBudget::unknown()).is_none());
     }
 
     /// Collapsing a pair costs a line to save a line.
     #[test]
     fn a_pair_is_not_a_run() {
         let text = format!("{}twice\ntwice\nend\n", over_threshold());
-        assert!(condense(&text).is_none(), "a pair should be left alone");
+        assert!(
+            condense(&text, OutputBudget::unknown()).is_none(),
+            "a pair should be left alone"
+        );
     }
 
     #[test]
@@ -572,7 +591,7 @@ mod tests {
             "a\n".repeat(5),
             "a\n".repeat(7)
         );
-        let out = condense(&text).unwrap();
+        let out = condense(&text, OutputBudget::unknown()).unwrap();
         assert!(out.contains("repeated 4 more times"), "{out}");
         assert!(out.contains("repeated 6 more times"), "{out}");
     }
@@ -582,7 +601,7 @@ mod tests {
     #[test]
     fn a_run_that_ends_the_stream_is_still_collapsed() {
         let text = format!("{}{}", over_threshold(), "tail\n".repeat(9));
-        let out = condense(&text).unwrap();
+        let out = condense(&text, OutputBudget::unknown()).unwrap();
         assert!(
             out.ends_with("tail\n[… the line above repeated 8 more times …]\n"),
             "{out}"
@@ -594,7 +613,7 @@ mod tests {
     #[test]
     fn a_run_with_no_final_newline_still_gets_its_own_line() {
         let text = format!("{}{}unterminated", over_threshold(), "x\n".repeat(4));
-        let out = condense(&text).unwrap();
+        let out = condense(&text, OutputBudget::unknown()).unwrap();
         assert!(out.ends_with("unterminated"), "{out}");
         assert!(
             out.contains("x\n[… the line above repeated 3 more times …]\n"),
@@ -610,7 +629,7 @@ mod tests {
             over_threshold(),
             "r\n".repeat(4)
         );
-        let out = condense(&text).unwrap();
+        let out = condense(&text, OutputBudget::unknown()).unwrap();
         assert!(out.contains("kept\r\nalso kept\r\n"), "{out}");
     }
 }

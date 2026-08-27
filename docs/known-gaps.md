@@ -220,8 +220,9 @@ and they are the minority.
   pattern nobody has run against the thing it matches is a guess. See
   [Output too big to hand over](safety.md#output-too-big-to-hand-over).
 - **Only repetition that is literally consecutive is collapsed.** A command
-  over 16 KB that prints the same line three or more times in a row keeps one
-  copy and a count, which is most of what a chatty build or a retrying server
+  large enough to be worth the pass — 16 KB on a 200,000-token model, and a
+  share of the window on any other — that prints the same line three or more
+  times in a row keeps one copy and a count, which is most of what a chatty build or a retrying server
   produces. It is not most of what a *server* produces: two messages
   alternating — a retry and the timestamped line after it — are never
   adjacent, so nothing collapses and the stream is as long as it was. Closing
@@ -233,7 +234,8 @@ and they are the minority.
   count would move the model's place and the window's apart. See
   [Output too big to hand over](safety.md#output-too-big-to-hand-over).
 - **A cut command's output can be swept away while the transcript still points
-  at it.** When a stream runs past 64 KB the whole of it is written to
+  at it.** When a stream runs past what the model's window has room for the
+  whole of it is written to
   `~/.taurus/output/<workspace-key>/` and the gap in the result names the file,
   so the middle of a long build is a `read_file` away rather than a re-run. But
   twenty streams are kept per workspace and the oldest go as new ones arrive, so

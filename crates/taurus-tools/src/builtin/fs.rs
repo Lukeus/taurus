@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::budget::OutputBudget;
 use crate::diff::FileDiff;
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
 
@@ -17,7 +18,12 @@ use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError,
 /// model could be handed a line number and have no way to go to it. The
 /// window is taken around the offset instead, so the cap costs a large file
 /// more calls and never costs it a region.
-const MAX_READ_BYTES: usize = 256 * 1024;
+const READ_SHARE: f32 = 0.32;
+/// Below this a read stops being able to answer with a region of a file.
+const MIN_READ_BYTES: usize = 8 * 1024;
+/// The size this cap was before it was a share, and still the most any single
+/// read answers with however much room the window has.
+const MAX_READ_BYTES: usize = 2 * 1024 * 1024;
 
 /// Lines returned when the caller does not ask for a range.
 ///
@@ -25,7 +31,32 @@ const MAX_READ_BYTES: usize = 256 * 1024;
 /// window, and it stays there for every later iteration of that turn. Returning
 /// a window by default makes the common case — a long file the model needs one
 /// region of — cost what the region costs rather than what the file costs.
-const DEFAULT_READ_LINES: usize = 2000;
+///
+/// How large that window should be is a fact about the model, not about files,
+/// so it is a share of the window against a source line costing about forty
+/// bytes. At [`OutputBudget::ANCHOR_WINDOW`] it is the 2000 lines it was.
+const READ_LINES_SHARE: f32 = 0.10;
+const LINE_BYTES: usize = 40;
+/// Fewer lines than this and a default read cannot show a function with its
+/// imports, which is the thing it is for.
+const MIN_READ_LINES: usize = 200;
+/// More than this and the model asked for a file rather than a region, and
+/// should say so with an explicit `limit`.
+const MAX_READ_LINES: usize = 10_000;
+
+/// How many lines an unqualified `read_file` answers with.
+///
+/// A function rather than a constant because the number is a fact about the
+/// model, and the caller that has to know it in a test is the same caller that
+/// has to know it here.
+fn default_read_lines(budget: OutputBudget) -> usize {
+    budget.count(READ_LINES_SHARE, LINE_BYTES, MIN_READ_LINES, MAX_READ_LINES)
+}
+
+/// The most one `read_file` call answers with, whatever range it was asked for.
+fn read_answer_cap(budget: OutputBudget) -> usize {
+    budget.bytes(READ_SHARE, MIN_READ_BYTES, MAX_READ_BYTES)
+}
 
 /// The `path` argument, for the tools whose whole effect is on one file.
 ///
@@ -98,7 +129,8 @@ impl Tool for ReadFile {
         }
 
         let start = input.offset.unwrap_or(1).max(1) - 1;
-        let limit = input.limit.unwrap_or(DEFAULT_READ_LINES).max(1);
+        let limit = input.limit.unwrap_or(default_read_lines(ctx.budget)).max(1);
+        let answer_cap = read_answer_cap(ctx.budget);
         // Located in the bytes rather than by decoding the file: only the
         // window is turned into text, so a read near the end of something
         // large costs the window instead of the file.
@@ -122,13 +154,13 @@ impl Tool for ReadFile {
         let mut shown = 0usize;
         let mut clipped = false;
         for line in text.lines() {
-            if out.len() + line.len() + LINE_NUMBER_WIDTH > MAX_READ_BYTES {
+            if out.len() + line.len() + LINE_NUMBER_WIDTH > answer_cap {
                 if shown == 0 {
                     // One line longer than the whole budget — a minified
                     // bundle, a JSON log written without newlines. Cutting it
                     // beats returning nothing, which would read as an empty
                     // file rather than as a line that did not fit.
-                    let cut = floor_char_boundary(line, MAX_READ_BYTES);
+                    let cut = floor_char_boundary(line, answer_cap);
                     out.push_str(&format!("{:>5}\t{}\n", start + 1, &line[..cut]));
                     shown = 1;
                 }
@@ -143,7 +175,7 @@ impl Tool for ReadFile {
 
         let last = start + shown;
         if clipped || start > 0 || last < total {
-            out.push_str(&range_note(start + 1, last, total, clipped));
+            out.push_str(&range_note(start + 1, last, total, clipped, answer_cap));
         }
         Ok(out.into())
     }
@@ -154,12 +186,18 @@ impl Tool for ReadFile {
 /// Stated every time the answer is partial, because a window that does not say
 /// it is a window is indistinguishable from a short file, and a model that
 /// believes it has read the whole thing will act on what is missing.
-fn range_note(first: usize, last: usize, available: usize, clipped: bool) -> String {
+fn range_note(
+    first: usize,
+    last: usize,
+    available: usize,
+    clipped: bool,
+    answer_cap: usize,
+) -> String {
     let mut note = format!("\n[showing lines {first}-{last} of {available}");
     if clipped {
         note.push_str(&format!(
             "; the window stopped early because a single read answers with at most {} KB",
-            MAX_READ_BYTES / 1024
+            answer_cap / 1024
         ));
     }
     if last < available {
@@ -782,26 +820,76 @@ mod tests {
         assert!(!out.to_text().contains("showing lines"), "{out}");
     }
 
+    /// The window the answer has to fit in is the model's, not this file's.
+    ///
+    /// Both directions matter. The 2000 lines this returned unconditionally is
+    /// about 20,000 tokens — more than an 8k local model holds at all, so the
+    /// answer could not be obeyed and survive the request carrying it — and two
+    /// percent of a million-token window, where the model pages through a file
+    /// it could have been handed.
+    #[tokio::test]
+    async fn the_default_window_follows_the_model_it_has_to_fit() {
+        let (ctx, dir) = test_ctx();
+        lines_file(dir.path(), "big.txt", 12_000);
+
+        let small = ReadFile
+            .execute(
+                serde_json::json!({"path": "big.txt"}),
+                &ctx.clone().with_budget(OutputBudget::for_window(8_192)),
+            )
+            .await
+            .unwrap();
+        let large = ReadFile
+            .execute(
+                serde_json::json!({"path": "big.txt"}),
+                &ctx.clone().with_budget(OutputBudget::for_window(1_000_000)),
+            )
+            .await
+            .unwrap();
+
+        let lines = |out: &taurus_provider::ToolOutput| out.to_text().lines().count();
+        assert!(
+            lines(&small) < lines(&large),
+            "a small window got as much as a large one: {} vs {}",
+            lines(&small),
+            lines(&large)
+        );
+        // Both still say what they left out, which is the property no window
+        // size is allowed to cost.
+        assert!(
+            small.to_text().contains("read again with offset"),
+            "{small}"
+        );
+        assert!(
+            large.to_text().contains("read again with offset"),
+            "{large}"
+        );
+        // And a tiny window is still handed something worth having.
+        assert!(
+            lines(&small) >= MIN_READ_LINES,
+            "{} lines is below the floor",
+            lines(&small)
+        );
+    }
+
     #[tokio::test]
     async fn a_long_file_stops_at_the_default_window_and_says_how_to_continue() {
         let (ctx, dir) = test_ctx();
-        lines_file(dir.path(), "big.txt", DEFAULT_READ_LINES + 50);
+        let default_lines = default_read_lines(OutputBudget::unknown());
+        lines_file(dir.path(), "big.txt", default_lines + 50);
         let out = ReadFile
             .execute(serde_json::json!({"path": "big.txt"}), &ctx)
             .await
             .unwrap();
-        assert!(out.to_text().contains(&format!(
-            "{:>5}\tline {}",
-            DEFAULT_READ_LINES, DEFAULT_READ_LINES
-        )));
+        assert!(out
+            .to_text()
+            .contains(&format!("{:>5}\tline {}", default_lines, default_lines)));
         assert!(!out
             .to_text()
-            .contains(&format!("line {}", DEFAULT_READ_LINES + 1)));
+            .contains(&format!("line {}", default_lines + 1)));
         assert!(
-            out.to_text().contains(&format!(
-                "read again with offset {}",
-                DEFAULT_READ_LINES + 1
-            )),
+            out.to_text()
+                .contains(&format!("read again with offset {}", default_lines + 1)),
             "{out}"
         );
     }
@@ -911,7 +999,8 @@ mod tests {
             .await
             .unwrap();
         let text = out.to_text();
-        assert!(text.len() <= MAX_READ_BYTES + 200, "{} bytes", text.len());
+        let cap = read_answer_cap(OutputBudget::unknown());
+        assert!(text.len() <= cap + 200, "{} bytes", text.len());
         assert!(text.contains("the window stopped early"), "{text}");
         assert!(text.contains("read again with offset"), "{text}");
     }
@@ -922,7 +1011,10 @@ mod tests {
     #[tokio::test]
     async fn a_single_line_too_long_to_return_comes_back_cut_rather_than_empty() {
         let (ctx, dir) = test_ctx();
-        let body = format!("{}\nsecond line\n", "x".repeat(MAX_READ_BYTES * 2));
+        let body = format!(
+            "{}\nsecond line\n",
+            "x".repeat(read_answer_cap(OutputBudget::unknown()) * 2)
+        );
         std::fs::write(dir.path().join("min.js"), body).unwrap();
         let out = ReadFile
             .execute(serde_json::json!({"path": "min.js"}), &ctx)

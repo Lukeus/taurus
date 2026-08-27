@@ -1,5 +1,6 @@
 //! Tools the agent can call, and the permission gate in front of them.
 
+pub mod budget;
 pub mod builtin;
 pub mod checkpoint;
 pub mod coerce;
@@ -17,6 +18,7 @@ pub mod sweep;
 pub mod tool;
 pub mod view;
 
+pub use budget::OutputBudget;
 pub use builtin::pty::sideload_status;
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, Rewind, TurnChange, TurnRecorder};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};

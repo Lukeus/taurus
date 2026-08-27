@@ -466,7 +466,6 @@ async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
         Box::new(AllowAll),
         AgentConfig {
             keep_recent_messages: 2,
-            compaction_threshold: 0.8,
             ..Default::default()
         },
         // Big enough to hold the tool schemas and still have a budget left to
@@ -582,7 +581,6 @@ async fn the_budget_counts_what_the_messages_cannot_see() {
         Box::new(AllowAll),
         AgentConfig {
             keep_recent_messages: 2,
-            compaction_threshold: 0.8,
             // ~2,500 tokens of standing instructions, which is an ordinary
             // AGENTS.md plus a skills catalog. With the tool schemas beside it
             // the request carries about 4,150 tokens before a message is added.
@@ -693,7 +691,6 @@ async fn a_window_too_small_for_the_prompt_says_so_rather_than_summarizing_at_it
         Box::new(AllowAll),
         AgentConfig {
             keep_recent_messages: 2,
-            compaction_threshold: 0.8,
             ..Default::default()
         },
         // The built-in tool schemas alone are around 1,650 tokens.
@@ -734,7 +731,6 @@ async fn a_tail_too_large_to_summarize_around_says_so_once() {
         Box::new(AllowAll),
         AgentConfig {
             keep_recent_messages: 2,
-            compaction_threshold: 0.8,
             ..Default::default()
         },
         20_000,
@@ -790,7 +786,6 @@ async fn a_summarizer_that_fails_is_not_asked_again_this_turn() {
         Box::new(AllowAll),
         AgentConfig {
             keep_recent_messages: 2,
-            compaction_threshold: 0.8,
             ..Default::default()
         },
         // The built-in tool schemas are about 1,650 tokens of every request,
@@ -847,6 +842,51 @@ async fn a_summarizer_that_fails_is_not_asked_again_this_turn() {
     );
 }
 
+/// The room a large window buys is room the budget actually spends.
+///
+/// A flat fraction could not do this. Eighty percent of 400,000 is 320,000, so
+/// a history of 340,000 tokens was summarized — throwing away detail to protect
+/// 80,000 tokens of headroom for a reply capped at 32,000. What is held back is
+/// the reply now, so this conversation simply fits.
+#[tokio::test]
+async fn a_large_window_holds_history_a_flat_fraction_would_have_summarized() {
+    let h = harness_with(
+        // One turn only. A second would mean the summarizer ran.
+        vec![ScriptedTurn::text("Carrying on.")],
+        Box::new(AllowAll),
+        AgentConfig {
+            keep_recent_messages: 2,
+            ..Default::default()
+        },
+        400_000,
+    );
+
+    // ~340,000 tokens: over the 320,000 a flat 0.8 would have allowed, under
+    // the 368,000 left once the reply's 32,000 is set aside.
+    let mut session = Session::new("fake");
+    for i in 0..400 {
+        session.push(Message::user(format!(
+            "old message {i} {}",
+            "x".repeat(3_400)
+        )));
+    }
+    let before = session.messages.len();
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert_eq!(
+        session.messages.len(),
+        before + 2,
+        "history was compacted: only the prompt and the answer should have been added"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "a conversation that fits was summarized anyway"
+    );
+}
+
 #[tokio::test]
 async fn history_is_compacted_when_it_outgrows_the_context_window() {
     let h = harness_with(
@@ -859,7 +899,6 @@ async fn history_is_compacted_when_it_outgrows_the_context_window() {
         Box::new(AllowAll),
         AgentConfig {
             keep_recent_messages: 2,
-            compaction_threshold: 0.8,
             ..Default::default()
         },
         // The built-in tool schemas are about 1,650 tokens of every request,

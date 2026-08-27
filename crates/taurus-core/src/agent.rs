@@ -14,7 +14,9 @@ use taurus_provider::{
     ChatRequest, ContentBlock, Message, Provider, Role, StopReason, StreamAccumulator, StreamEvent,
     TokenUsage,
 };
-use taurus_tools::{Effect, PlanBoard, ToolContext, ToolError, ToolProgress, ToolRegistry};
+use taurus_tools::{
+    Effect, OutputBudget, PlanBoard, ToolContext, ToolError, ToolProgress, ToolRegistry,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn, Instrument};
 
@@ -71,8 +73,6 @@ pub struct AgentConfig {
     pub max_iterations: u32,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
-    /// Fraction of the context window at which history gets summarized.
-    pub compaction_threshold: f32,
     /// Messages kept verbatim when compacting.
     pub keep_recent_messages: usize,
     /// Tools the model may call. Empty means every registered tool.
@@ -150,6 +150,31 @@ Your plan still has steps that are not marked done. If you finished them, call \
 update_plan now with the whole list and every finished step marked 'done'. If \
 you have stopped without finishing them, say why in one line and stop.";
 
+/// Tokens held back for the answer when the caller names no `max_tokens`.
+///
+/// Sized for a turn that thinks before it replies, because the reserve has to
+/// cover both: a model with thinking on can spend more tokens reasoning than
+/// the reply itself comes to.
+const DEFAULT_REPLY_RESERVE: u32 = 32_000;
+
+/// The least of a window that is held back, whatever the reply is capped at.
+///
+/// The estimate the budget is kept in is four-characters-a-token, and the
+/// difference between that and a real tokenizer grows with the conversation.
+/// Most of it is absorbed by [`Session::measured_overhead`], which is measured
+/// against what the provider actually counted — but "most" is not "all", and on
+/// a large window a few percent is tens of thousands of tokens.
+const MIN_RESERVE_SHARE: f32 = 0.05;
+
+/// The most of a window that is held back for the answer.
+///
+/// A small local model cannot give up 32,000 tokens to a reply — it does not
+/// have them — and a reserve larger than the window would leave no budget at
+/// all, so every turn would summarize and fail anyway. A quarter is the point
+/// past which holding room back costs more history than the answer it protects
+/// could be worth.
+const MAX_RESERVE_SHARE: f32 = 0.25;
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -157,7 +182,6 @@ impl Default for AgentConfig {
             max_iterations: 25,
             temperature: None,
             max_tokens: None,
-            compaction_threshold: 0.8,
             keep_recent_messages: 8,
             allowed_tools: Vec::new(),
             max_transient_retries: 3,
@@ -603,7 +627,7 @@ impl Agent {
                 });
             }
 
-            let results = self.run_tool_calls(&assistant, &ui).await;
+            let results = self.run_tool_calls(&assistant, &session.model, &ui).await;
 
             // Did this round change anything, and did it check anything?
             //
@@ -952,8 +976,20 @@ impl Agent {
     async fn run_tool_calls(
         &self,
         assistant: &Message,
+        model: &str,
         ui: &mpsc::Sender<UiEvent>,
     ) -> Vec<ContentBlock> {
+        // Once per round rather than per call, and cached by every adapter, so
+        // after the first turn this is a map lookup. A window that cannot be
+        // had leaves the budget unknown, where every cap is the constant it was
+        // before any of this — a failed lookup must not silently shrink what
+        // tools may answer with.
+        let budget = self
+            .provider
+            .capabilities(model)
+            .await
+            .map(|caps| OutputBudget::for_window(caps.context_length))
+            .unwrap_or_else(|_| OutputBudget::unknown());
         let calls: Vec<(String, String, serde_json::Value)> = assistant
             .tool_uses()
             .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
@@ -988,7 +1024,7 @@ impl Agent {
         let mut pending: FuturesUnordered<_> = concurrent
             .into_iter()
             .map(|(id, name, input)| {
-                let ctx = self.context_for(&id, ui);
+                let ctx = self.context_for(&id, budget, ui);
                 async move {
                     let outcome = self.execute_one(&name, input, &ctx).await;
                     (id, outcome)
@@ -1000,7 +1036,7 @@ impl Agent {
         }
 
         for (id, name, input) in sequential {
-            let ctx = self.context_for(&id, ui);
+            let ctx = self.context_for(&id, budget, ui);
             let outcome = self.execute_one(&name, input, &ctx).await;
             results.push((id.clone(), self.report(&id, outcome, ui).await));
         }
@@ -1059,7 +1095,12 @@ impl Agent {
 
     /// This turn's tool context, bound to one call so anything it reports lands
     /// on that call's card rather than loose in the transcript.
-    fn context_for(&self, id: &str, ui: &mpsc::Sender<UiEvent>) -> ToolContext {
+    fn context_for(
+        &self,
+        id: &str,
+        budget: OutputBudget,
+        ui: &mpsc::Sender<UiEvent>,
+    ) -> ToolContext {
         self.tools
             .clone()
             .with_progress(Arc::new(CallProgress {
@@ -1067,6 +1108,7 @@ impl Agent {
                 ui: ui.clone(),
             }))
             .with_call_id(id)
+            .with_budget(budget)
     }
 
     async fn execute_one(
@@ -1142,6 +1184,22 @@ impl Agent {
         }
     }
 
+    /// What this turn holds back for the model's answer.
+    ///
+    /// A reserve rather than a fraction of the window used, because what has to
+    /// fit beside the history is the reply, and the reply's size is a fact
+    /// about the request rather than a fact about the window. A flat fraction
+    /// gets this wrong at both ends: eighty percent of an 8k window leaves
+    /// 1,600 tokens for a reply that is capped at 32,000, and eighty percent of
+    /// a million leaves 200,000 tokens of history unusable to protect an answer
+    /// that will not come close to needing them.
+    fn reply_reserve(&self, window: u32) -> u32 {
+        let wanted = self.config.max_tokens.unwrap_or(DEFAULT_REPLY_RESERVE);
+        let floor = (window as f32 * MIN_RESERVE_SHARE) as u32;
+        let ceiling = (window as f32 * MAX_RESERVE_SHARE) as u32;
+        wanted.clamp(floor.min(ceiling), ceiling)
+    }
+
     /// Makes room in the context window when it fills up.
     ///
     /// Local models often have 8k windows, so this is load-bearing rather than
@@ -1164,7 +1222,9 @@ impl Agent {
         let Ok(caps) = self.provider.capabilities(&session.model).await else {
             return summarizing;
         };
-        let budget = (caps.context_length as f32 * self.config.compaction_threshold) as u32;
+        let budget = caps
+            .context_length
+            .saturating_sub(self.reply_reserve(caps.context_length));
         // The messages are the part of the prompt that can be shrunk, and they
         // used to be the whole of what was measured — so the system prompt, the
         // tool schemas, and the plan rode along uncounted, and the threshold

@@ -516,8 +516,8 @@ So `context_length` here is a **ceiling**, not a declaration:
 [{ "id": "ollama", "base_url": "http://localhost:11434", "context_length": 65536 }]
 ```
 
-Left unset it is 32,768, which after compaction is a working history of roughly
-26,000 tokens. Set it higher on a machine with room to spare, lower on one
+Left unset it is 32,768, which after the reply's reserve is a working history of
+roughly 24,500 tokens. Set it higher on a machine with room to spare, lower on one
 without. A model trained for less than the ceiling keeps its own smaller window
 either way: this only ever takes the smaller of the two, because asking for more
 window than a model has is not a larger window, it is an error.

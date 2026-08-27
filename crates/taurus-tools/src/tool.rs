@@ -9,6 +9,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
+use crate::budget::OutputBudget;
 use crate::diff::FileDiff;
 use crate::permission::PermissionEngine;
 
@@ -225,6 +226,19 @@ pub struct ToolContext {
     /// so the wait for their answer has to be registered under the same one.
     /// `None` wherever the caller runs a tool outside the agent loop.
     pub call_id: Option<String>,
+    /// How much of the model's context window one answer may take.
+    ///
+    /// Set by the agent loop from the window the provider reports for the model
+    /// this turn is on, so a tool sizes its answer to the thing that has to
+    /// hold it. [`OutputBudget::unknown`] everywhere the window is not
+    /// knowable — a tool run directly, an example, a test — and there every cap
+    /// is the constant it was before this existed.
+    ///
+    /// A plain value rather than something shared, because a sub-agent can be
+    /// on a different model than the turn that spawned it: it inherits this by
+    /// cloning the context and then its own loop replaces it with its own
+    /// model's window on the first call it makes.
+    pub budget: OutputBudget,
 }
 
 impl ToolContext {
@@ -246,7 +260,15 @@ impl ToolContext {
             hooks: None,
             session_id: None,
             call_id: None,
+            budget: OutputBudget::unknown(),
         }
+    }
+
+    /// Sizes this context's answers to a model's context window.
+    #[must_use]
+    pub fn with_budget(mut self, budget: OutputBudget) -> Self {
+        self.budget = budget;
+        self
     }
 
     /// Attaches the configured hooks.
