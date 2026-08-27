@@ -742,6 +742,113 @@ export const USAGE = {
 };
 
 /**
+ * A turn worth asking about: eleven seconds, and most of it not the model.
+ *
+ * The shot is of the waterfall, so the turn on top has to have a shape — a
+ * fast first model call, a `run_command` that took four seconds on its own,
+ * and a `spawn` with a delegate's whole turn inside it. A frame of five even
+ * bars would photograph the styling and say nothing about the feature.
+ *
+ * One tool call failed, because that is the row somebody is looking for, and
+ * the timestamps are fixed so a rerun of the screenshots produces the same
+ * image rather than one that differs by the minute it was taken.
+ */
+const TRACE_AT = new Date(2026, 0, 2, 14, 32, 6).getTime();
+
+const TRACE_STEPS = [
+  { kind: "chat", name: "qwen3.6:27b", offset_ms: 20, duration_ms: 1_180, depth: 1, error: null, output_tokens: 96 },
+  { kind: "tool", name: "search_code", offset_ms: 1_240, duration_ms: 310, depth: 1, error: null, output_tokens: null },
+  { kind: "chat", name: "qwen3.6:27b", offset_ms: 1_580, duration_ms: 940, depth: 1, error: null, output_tokens: 61 },
+  { kind: "tool", name: "run_command", offset_ms: 2_540, duration_ms: 4_120, depth: 1, error: null, output_tokens: null },
+  { kind: "tool", name: "read_file", offset_ms: 6_700, duration_ms: 90, depth: 1, error: "not_found", output_tokens: null },
+  { kind: "tool", name: "spawn", offset_ms: 6_820, duration_ms: 3_400, depth: 1, error: null, output_tokens: null },
+  { kind: "chat", name: "qwen3.6:27b", offset_ms: 6_900, duration_ms: 2_100, depth: 2, error: null, output_tokens: 210 },
+  { kind: "tool", name: "read_file", offset_ms: 9_060, duration_ms: 140, depth: 2, error: null, output_tokens: null },
+  { kind: "chat", name: "qwen3.6:27b", offset_ms: 10_260, duration_ms: 760, depth: 1, error: null, output_tokens: 88 },
+];
+
+export const TRACES = {
+  turns: 6,
+  spans: 47,
+  dropped: 0,
+  since: TRACE_AT - 640_000,
+  total_ms: 41_200,
+  model_ms: 17_900,
+  other_ms: 23_300,
+  median_turn_ms: 6_400,
+  slowest_turn_ms: 11_020,
+  failures: 1,
+  models: [
+    {
+      name: "qwen3.6:27b",
+      provider: "ollama",
+      calls: 14,
+      median_ms: 1_180,
+      slowest_ms: 3_260,
+      input_tokens: 312_151,
+      output_tokens: 3_385,
+      cached_tokens: 214_000,
+      failures: 0,
+      output_per_second: 41,
+    },
+  ],
+  tools: [
+    { name: "spawn", calls: 1, failures: 0, median_ms: 3_400, slowest_ms: 3_400, total_ms: 3_400, share: 41, nested: true },
+    { name: "run_command", calls: 6, failures: 1, median_ms: 640, slowest_ms: 4_120, total_ms: 3_010, share: 36, nested: false },
+    { name: "search_code", calls: 4, failures: 0, median_ms: 310, slowest_ms: 520, total_ms: 1_240, share: 15, nested: false },
+    { name: "read_file", calls: 11, failures: 1, median_ms: 40, slowest_ms: 140, total_ms: 520, share: 6, nested: false },
+    { name: "grep", calls: 9, failures: 0, median_ms: 12, slowest_ms: 38, total_ms: 108, share: 1, nested: false },
+  ],
+  recent: [
+    {
+      seq: 91,
+      conversation: "s1",
+      model: "qwen3.6:27b",
+      provider: "ollama",
+      started: TRACE_AT,
+      duration_ms: 11_020,
+      model_ms: 5_060,
+      other_ms: 5_960,
+      input_tokens: 61_400,
+      output_tokens: 455,
+      finish: "stop",
+      error: null,
+      steps: TRACE_STEPS,
+    },
+    {
+      seq: 78,
+      conversation: "s1",
+      model: "qwen3.6:27b",
+      provider: "ollama",
+      started: TRACE_AT - 96_000,
+      duration_ms: 6_400,
+      model_ms: 4_100,
+      other_ms: 2_300,
+      input_tokens: 48_200,
+      output_tokens: 310,
+      finish: "stop",
+      error: null,
+      steps: [],
+    },
+    {
+      seq: 64,
+      conversation: "s1",
+      model: "qwen3.6:27b",
+      provider: "ollama",
+      started: TRACE_AT - 240_000,
+      duration_ms: 3_180,
+      model_ms: 2_900,
+      other_ms: 280,
+      input_tokens: 21_800,
+      output_tokens: 140,
+      finish: "stop",
+      error: null,
+      steps: [],
+    },
+  ],
+};
+
+/**
  * Two commands running in the background, and what one of them has printed.
  *
  * A failing test run rather than a clean one, for the reason the MCP shot

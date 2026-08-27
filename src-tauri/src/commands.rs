@@ -31,6 +31,7 @@ use taurus_data::{
 
 use taurus_host::onscreen::OnScreen;
 use taurus_host::search::{self, SearchResults};
+use taurus_host::traces::{self, TraceReport};
 use taurus_host::trust::TrustStatus;
 use taurus_host::usage::{self, UsageReport};
 use taurus_host::{
@@ -2207,6 +2208,38 @@ pub async fn usage_report(
         )
     })
     .await
+}
+
+/// Where a turn's time actually went.
+///
+/// `session_id` names one conversation; `None` reports on everything this
+/// window has run, which is the "is it always like this" view — and, unlike
+/// the usage account, it can answer about conversations that have since been
+/// closed, because the source is a ring in this process rather than a file on
+/// disk.
+///
+/// Nothing is read off disk at all, so this stays on the runtime: the whole of
+/// it is arithmetic over a bounded buffer that is already in memory. That is
+/// also the honest limit of this panel — it describes what *this run of the
+/// app* has done, and it forgets on quit. Durable history is what an OTLP
+/// endpoint is for, and both can be on at once.
+#[tauri::command]
+pub async fn trace_report(
+    state: State<'_, Arc<AppState>>,
+    session_id: Option<String>,
+) -> CmdResult<TraceReport> {
+    Ok(traces::report(&state.traces, session_id.as_deref()))
+}
+
+/// Forgets every span recorded so far.
+///
+/// For somebody about to measure one specific thing, who wants the next
+/// reading to be of it rather than of it plus the morning. Nothing else is
+/// affected: an exporter, if one is configured, has already sent what it sent.
+#[tauri::command]
+pub async fn clear_traces(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
+    state.traces.clear();
+    Ok(())
 }
 
 /// Commits exactly the files one turn changed.

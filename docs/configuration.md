@@ -452,6 +452,14 @@ delegated twice reads as a tree instead of a flat list you reassemble by
 timestamp, and the question it answers — *why did that take ninety seconds* — is
 one no log line has ever answered well.
 
+There is a local half that needs none of this. The same spans are kept in a
+bounded ring in memory whether or not an endpoint is set, and the app's
+**Traces** panel draws them — see [Where the time
+went](working-with-it.md#where-the-time-went). It goes nowhere, holds no
+message content, and is gone when you quit, which is the trade: it answers
+*why was that turn slow* at the moment you are asking, and a collector is what
+keeps the answer past today. Both can be on at once.
+
 `OTEL_EXPORTER_OTLP_ENDPOINT` overrides the setting, because that is the
 variable every other instrumented program reads and tracing one run should not
 mean editing a file:

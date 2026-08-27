@@ -20,6 +20,16 @@
 //! needs a second switch, deliberately awkward, and is off by default — see
 //! [`taurus_core::telemetry::Capture`].
 //!
+//! # The one thing that is kept locally
+//!
+//! Everything above is about export, which is off until somebody configures
+//! it. Alongside it this crate keeps the last few hundred finished spans in a
+//! ring in memory — [`sink`] — because "why did that turn take ninety seconds"
+//! is a question asked *at the moment it happens*, by somebody who has not set
+//! up a collector and should not have to before they can see an answer. That
+//! ring goes nowhere: no endpoint, no file, gone when the process is. It is
+//! what the app's trace panel draws.
+//!
 //! # Why OTLP rather than a format of our own
 //!
 //! Because the interesting question — *why did that turn take ninety seconds*
@@ -36,9 +46,12 @@ use opentelemetry::KeyValue;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
+use taurus_core::telemetry::Traces;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
+
+pub mod sink;
 
 /// The environment variable OpenTelemetry itself defines.
 ///
@@ -62,11 +75,27 @@ const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 /// task and exited immediately would otherwise send nothing at all, and the
 /// trace of a short turn is exactly the one somebody is watching for when they
 /// first set this up.
-pub struct Guard(Option<SdkTracerProvider>);
+pub struct Guard {
+    provider: Option<SdkTracerProvider>,
+    traces: Traces,
+}
+
+impl Guard {
+    /// The spans this process has finished, for whoever draws them.
+    ///
+    /// A handle onto the same ring the recorder writes into, not a copy — see
+    /// [`taurus_core::telemetry::store`]. Available whether or not an endpoint
+    /// was configured, which is the point: the local read is what somebody has
+    /// on the machine in front of them, and a collector is what they set up
+    /// afterwards if they want history.
+    pub fn traces(&self) -> Traces {
+        self.traces.clone()
+    }
+}
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        let Some(provider) = self.0.take() else {
+        let Some(provider) = self.provider.take() else {
             return;
         };
         if let Err(e) = provider.shutdown_with_timeout(FLUSH_TIMEOUT) {
@@ -87,7 +116,14 @@ impl Drop for Guard {
 /// `configured` is what settings said; the environment variable wins if it is
 /// set. Neither present means no exporter is built at all — not one pointed at
 /// nowhere — so the cost of leaving this alone is a branch taken once.
+///
+/// The *local* recorder is installed either way. It is a bounded ring in this
+/// process that nothing sends anywhere — see [`sink`] — and it is what the
+/// app's own trace panel reads. Making that conditional on an endpoint would
+/// mean the first person to ask "why was that slow" is told to go and stand up
+/// a collector and then do it again.
 pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Guard {
+    let traces = Traces::new();
     let endpoint = std::env::var(ENDPOINT_ENV)
         .ok()
         .filter(|e| !e.trim().is_empty())
@@ -97,8 +133,12 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
     let Some(endpoint) = endpoint else {
         tracing_subscriber::registry()
             .with(fmt_layer(filter))
+            .with(sink::Recorder::new(traces.clone()))
             .init();
-        return Guard(None);
+        return Guard {
+            provider: None,
+            traces,
+        };
     };
 
     match provider(&endpoint, service) {
@@ -106,6 +146,7 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
             let tracer = provider.tracer("taurus");
             tracing_subscriber::registry()
                 .with(fmt_layer(filter))
+                .with(sink::Recorder::new(traces.clone()))
                 // Only the harness's own spans are exported. Without this the
                 // trace fills with reqwest, hyper, and rustls internals — every
                 // one of them a real span and none of them the thing anybody
@@ -120,22 +161,30 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
                 )
                 .init();
             tracing::info!(%endpoint, "exporting traces");
-            Guard(Some(provider))
+            Guard {
+                provider: Some(provider),
+                traces,
+            }
         }
         Err(e) => {
-            // Logging still works, and the turn still runs. A misconfigured
-            // collector is not a reason to refuse to start — but it is a reason
-            // to say so once, loudly, because the alternative is somebody
-            // watching an empty dashboard and concluding the harness is broken.
+            // Logging still works, the turn still runs, and the local panel
+            // still fills. A misconfigured collector is not a reason to refuse
+            // to start — but it is a reason to say so once, loudly, because the
+            // alternative is somebody watching an empty dashboard and
+            // concluding the harness is broken.
             tracing_subscriber::registry()
                 .with(fmt_layer(filter))
+                .with(sink::Recorder::new(traces.clone()))
                 .init();
             tracing::error!(
                 %endpoint,
                 error = %e,
                 "traces will not be exported; everything else is unaffected"
             );
-            Guard(None)
+            Guard {
+                provider: None,
+                traces,
+            }
         }
     }
 }

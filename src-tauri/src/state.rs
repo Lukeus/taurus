@@ -14,6 +14,7 @@ use tokio::sync::{oneshot, watch, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use taurus_agents::proposal::AgentProposal;
+use taurus_core::telemetry::Traces;
 use taurus_core::Session;
 use taurus_host::{Host, PermissionPromptFactory, SessionLog, Switch};
 use taurus_skills::proposal::SkillProposal;
@@ -97,6 +98,17 @@ pub struct AppState {
     /// them up. See [`Terminals::close_all`], and the call to it as the window
     /// goes away.
     pub terminals: Arc<Terminals>,
+    /// The spans this process has finished, for the trace panel.
+    ///
+    /// A handle onto the ring the subscriber's recorder writes into, taken from
+    /// the telemetry guard in `run` — not a second buffer. It has to come from
+    /// there because the subscriber is installed before the window exists, and
+    /// it can only be installed once.
+    ///
+    /// Process-wide rather than per session, which is what makes the panel's
+    /// second tab possible: "is it always like this" is a question about the
+    /// machine, and every conversation this window has run is the sample.
+    pub traces: Traces,
     /// Cancels a **Build index** started from Settings.
     ///
     /// One, not one per session: the index belongs to the workspace rather than
@@ -129,7 +141,7 @@ pub struct AppState {
 const FIRST_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl AppState {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(app: AppHandle, traces: Traces) -> Self {
         let pending_permissions: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>> =
             Arc::new(DashMap::new());
         let pending_questions: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>> =
@@ -160,6 +172,7 @@ impl AppState {
             pending_proposals,
             pending_agent_proposals,
             terminals: Arc::new(Terminals::default()),
+            traces,
             index_build: Mutex::new(CancellationToken::new()),
             loaded: watch::channel(false).0,
         }

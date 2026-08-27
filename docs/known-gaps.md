@@ -487,6 +487,14 @@ and they are the minority.
   the number is not read as a cosine — but there is no way to make one backend's
   0.82 mean the same thing as another's, and there is no threshold below which a
   result is known to be worthless.
+- **The Traces panel covers one run of the app, and nothing else.** The spans
+  it draws live in a ring in that process: quitting forgets them, a `taurus
+  run` in the terminal is a different process and never appears in the window,
+  and once the ring is full the oldest go. It says how many it has forgotten
+  rather than describing a shorter period than it appears to, but "everything
+  since launch" is the widest question it can answer. Anything longer than a
+  session is what an OTLP endpoint is for, and the two are not alternatives —
+  the same spans go to both.
 - **Traces go out over HTTP, and only over HTTP.** OTLP has a gRPC transport
   too and this speaks the `http/protobuf` one alone. Every collector worth
   naming accepts it, so this is a smaller gap than it sounds — but a setup

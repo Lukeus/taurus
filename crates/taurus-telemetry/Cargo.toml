@@ -7,6 +7,9 @@ license.workspace = true
 description = "Optional OTLP export of the Taurus agent harness's traces"
 
 [dependencies]
+# Not for the exporter's sake: the harness's span vocabulary lives there, and
+# so does the ring the local recorder writes into. See `sink`.
+taurus-core.workspace = true
 opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"
 # The blocking HTTP client, not the async one. The batch processor exports from
@@ -24,7 +27,6 @@ tracing-opentelemetry = "0.33"
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-taurus-core.workspace = true
 taurus-provider.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 

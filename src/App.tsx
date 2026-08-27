@@ -67,6 +67,7 @@ const PANELS = {
   mcp: () => import("./components/McpDrawer"),
   memory: () => import("./components/MemoryDrawer"),
   usage: () => import("./components/UsagePanel"),
+  traces: () => import("./components/TracePanel"),
   palette: () => import("./components/CommandPalette"),
   changes: () => import("./components/ChangesDrawer"),
   delegate: () => import("./components/DelegateTranscript"),
@@ -84,6 +85,7 @@ const MemoryDrawer = lazy(() =>
   PANELS.memory().then((m) => ({ default: m.MemoryDrawer })),
 );
 const UsagePanel = lazy(() => PANELS.usage().then((m) => ({ default: m.UsagePanel })));
+const TracePanel = lazy(() => PANELS.traces().then((m) => ({ default: m.TracePanel })));
 const CommandPalette = lazy(() =>
   PANELS.palette().then((m) => ({ default: m.CommandPalette })),
 );
@@ -279,6 +281,7 @@ export default function App() {
   const [mcpOpen, setMcpOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
+  const [tracesOpen, setTracesOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   /**
    * Text a search jump is looking for in the open conversation.
@@ -676,6 +679,14 @@ export default function App() {
         run: () => setUsageOpen(true),
       },
       {
+        id: "traces",
+        label: "Traces",
+        group: "Panels",
+        keywords:
+          "telemetry otel opentelemetry latency slow timing duration spans waterfall performance",
+        run: () => setTracesOpen(true),
+      },
+      {
         id: "skills",
         label: "Skills",
         group: "Panels",
@@ -836,6 +847,7 @@ export default function App() {
         onAgents={() => setAgentsOpen(true)}
         onMemory={() => setMemoryOpen(true)}
         onUsage={() => setUsageOpen(true)}
+        onTraces={() => setTracesOpen(true)}
         onMcp={() => setMcpOpen(true)}
         jobsRunning={jobs.filter((job) => job.running).length}
         onTerminal={() => setTerminalOpen((open) => !open)}
@@ -1133,6 +1145,13 @@ export default function App() {
           <UsagePanel
             sessionId={store.session?.id ?? null}
             onClose={() => setUsageOpen(false)}
+          />
+        )}
+
+        {tracesOpen && (
+          <TracePanel
+            sessionId={store.session?.id ?? null}
+            onClose={() => setTracesOpen(false)}
           />
         )}
 

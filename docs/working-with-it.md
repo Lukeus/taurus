@@ -784,6 +784,61 @@ out of the transcript rather than tracked beside it, for the reason the
 transcript format already gives: a second copy of the truth can disagree with
 it.
 
+## Where the time went
+
+The Context panel answers what a turn cost in tokens. **Traces**, beside it in
+the rail, answers the other question — why it took as long as it did — and that
+one is not in the transcript at all, because a transcript records what was said
+and not how long any of it took.
+
+The source is OpenTelemetry. Taurus opens a span around every turn, every
+request to the model, and every tool call, named the way the GenAI semantic
+conventions name them; [Tracing a turn](configuration.md#tracing-a-turn) is
+about sending those to a collector. This panel reads the same spans without
+one: the last few hundred finished spans stay in a ring in memory, which goes
+nowhere, holds no message content, and is gone when you quit.
+
+![Traces: a turn broken into its model calls and tool calls, with a delegate's
+work indented underneath the spawn that asked for
+it](screenshots/traces.png)
+
+The headline splits a turn's wall time into **model time** and **everything
+else** — tools doing their own work, the harness between steps, and waiting.
+That is the only split that is safe to make. Model calls never nest inside one
+another, so summing them is exact; tool calls do nest, because a `spawn` holds
+a delegate's entire turn, and adding that tool's four seconds to the four
+seconds that ran inside it would produce a turn that spent 180% of itself. The
+tool table underneath has its own denominator for the same reason, and the row
+that contains a delegate says so.
+
+Press a turn to open its waterfall: one bar per span, placed against the turn's
+own start, indented by how deep it sat. The indent is the part worth watching —
+it is what tells a sub-agent's model call apart from the turn's own, and a
+delegated turn reads as a tree rather than a list you reassemble by timestamp.
+
+Two figures are reported per model and per tool, and neither is a percentile:
+the **median** call and the **slowest** one. A local ring holds tens or
+hundreds of calls, not the millions a p95 would need to mean anything, and both
+of these are real calls that really happened — the second usually being the one
+you opened the panel to find.
+
+Scope is the conversation or everything since the app launched. The second is
+the wider sample, and unlike the usage account it can still answer about
+conversations you have since closed, because the ring outlives them. A
+delegate's work counts as part of the conversation that asked for it, not of
+the session the sub-agent was given — otherwise narrowing to one conversation
+would leave the `spawn` on screen with its contents removed. **Clear** empties
+the ring, for when you want the next reading to be of the next thing you do
+rather than of it plus the morning.
+
+The limits are worth knowing before you rely on it. It covers this run of the
+app, not this machine and not this week; a `taurus run` in the terminal is a
+different process and does not appear here; and once the ring is full the panel
+says how many spans it has already forgotten rather than quietly describing a
+shorter period than it appears to. Durable history across days and machines is
+what an OTLP endpoint is for, and both can be on at once — the same spans go to
+both places.
+
 ## Output formatting
 
 Models answer in markdown, so both frontends render it.

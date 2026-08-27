@@ -53,6 +53,12 @@ keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] 
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+# For one integration test, and only that: the seam between the spans the
+# harness emits and the report drawn from them runs through the recorder in
+# that crate, and neither side's unit tests cross it. See `tests/spans.rs`.
+taurus-telemetry.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
