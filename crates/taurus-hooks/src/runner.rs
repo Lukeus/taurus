@@ -538,15 +538,30 @@ fn own_group(command: &mut tokio::process::Command) {
 /// Duplicated from `taurus_tools::spawn` for the reason [`no_console`] below
 /// is: this crate sits under that one, and a few small functions are a smaller
 /// cost than the dependency edge.
-fn kill_command(pid: u32, windows: bool) -> (&'static str, Vec<String>) {
-    if windows {
+///
+/// The `--` is not decoration: without it procps reads `-123` as a second
+/// signal option rather than a pid and signals its own group instead, which
+/// leaves the runaway tree alive and kills the caller. See
+/// `taurus_tools::spawn::kill_command` for the measurement.
+///
+/// `None` for a pid that does not name a tree. Negating the pid is what asks
+/// for the group, so the arithmetic has to hold: `-0` is this process's own
+/// group, `-1` is every process the user owns, and anything past `i32::MAX`
+/// wraps into one of those two — `kill -KILL -4294967295` on Linux SIGKILLs
+/// the session, measured. See `taurus_tools::spawn::kill_command`.
+fn kill_command(pid: u32, windows: bool) -> Option<(&'static str, Vec<String>)> {
+    if !(2..=i32::MAX as u32).contains(&pid) {
+        return None;
+    }
+    Some(if windows {
         (
             "taskkill",
             vec!["/T".into(), "/F".into(), "/PID".into(), pid.to_string()],
         )
     } else {
-        ("kill", vec!["-KILL".into(), format!("-{pid}")])
-    }
+        // `--` is load-bearing. See above.
+        ("kill", vec!["-KILL".into(), "--".into(), format!("-{pid}")])
+    })
 }
 
 /// Ends a hook and everything it started.
@@ -564,7 +579,9 @@ async fn kill_tree(leader: Option<u32>) {
     let Some(pid) = leader else {
         return;
     };
-    let (program, args) = kill_command(pid, cfg!(windows));
+    let Some((program, args)) = kill_command(pid, cfg!(windows)) else {
+        return;
+    };
     let mut command = tokio::process::Command::new(program);
     command
         .args(args)
@@ -600,7 +617,10 @@ pub fn relative<'a>(workspace: &Path, path: &'a Path) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{HookEvent, Match};
+    use crate::config::HookEvent;
+    // Only the matching tests use it, and those are Unix-only.
+    #[cfg(unix)]
+    use crate::config::Match;
 
     /// A hook that is a shell one-liner, written to a file so it can be run.
     #[cfg(unix)]
@@ -825,7 +845,7 @@ mod tests {
                 dir,
                 "outer",
                 &format!(
-                    "sh -c 'echo x > \"{}\"; sleep 2; echo alive > \"{}\"' &\nsleep 30",
+                    "sh -c 'echo x > \"{}\"; sleep 8; echo alive > \"{}\"' &\nsleep 30",
                     started.display(),
                     alive.display()
                 ),
@@ -841,7 +861,7 @@ mod tests {
             std::fs::write(
                 &inner,
                 format!(
-                    "@echo off\r\necho x> \"{}\"\r\nping -n 3 127.0.0.1 >NUL\r\necho alive> \"{}\"\r\n",
+                    "@echo off\r\necho x> \"{}\"\r\nping -n 9 127.0.0.1 >NUL\r\necho alive> \"{}\"\r\n",
                     started.display(),
                     alive.display()
                 ),
@@ -885,23 +905,32 @@ mod tests {
 
         let mut slow = hook(&command, HookEvent::PreToolUse);
         slow.args = args;
-        slow.timeout_seconds = 1;
+        // Two seconds rather than one, and the extra second is not for the
+        // hook: it is for the runner. Two shells and a `start` have to get the
+        // grandchild up *before* the timeout fires, or the timeout kills a
+        // tree that has not grown yet and the assertion below is proving
+        // nothing. On Windows that is `cmd` starting `cmd`, cold.
+        slow.timeout_seconds = 2;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
 
         let outcome = runner
             .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
             .await;
         assert!(outcome.is_denied());
-        // The one-second timeout is long enough that the grandchild is always
-        // up by the time it fires, but asserted rather than assumed: a test
-        // that stopped something before it had started would pass against the
-        // bug it was written for, which is how the sibling test in
-        // `taurus_tools::jobs` first passed.
+        // Asserted rather than assumed: a test that stopped something before it
+        // had started would pass against the bug it was written for, which is
+        // how the sibling test in `taurus_tools::jobs` first passed.
         assert!(started.exists(), "the grandchild never started");
 
         // Comfortably past when the grandchild would have written, had it
         // lived. Polled rather than slept in one go so a failure is quick.
-        for _ in 0..80 {
+        //
+        // The grandchild waits eight seconds and this watches for twelve, and
+        // both numbers are margin rather than taste. `taskkill` is a *process*
+        // — starting it on a cold Windows runner costs a good part of a second
+        // on its own, and at two seconds the kill was landing after the marker
+        // had already been written. Measured: this test, and only on Windows.
+        for _ in 0..240 {
             assert!(
                 !alive.exists(),
                 "the hook's own child outlived the timeout and kept working"
@@ -918,11 +947,14 @@ mod tests {
         // simply reaches nothing.
         assert_eq!(
             kill_command(4321, false),
-            ("kill", vec!["-KILL".to_string(), "-4321".to_string()])
+            Some((
+                "kill",
+                vec!["-KILL".to_string(), "--".to_string(), "-4321".to_string()]
+            ))
         );
         assert_eq!(
             kill_command(4321, true),
-            (
+            Some((
                 "taskkill",
                 vec![
                     "/T".to_string(),
@@ -930,8 +962,17 @@ mod tests {
                     "/PID".to_string(),
                     "4321".to_string()
                 ]
-            )
+            ))
         );
+
+        // Asserted rather than exercised: `-0` is this process's own group and
+        // `-1` is every process the user owns, so a test that proved the guard
+        // by calling it would be the outage.
+        for platform in [false, true] {
+            assert!(kill_command(0, platform).is_none());
+            assert!(kill_command(1, platform).is_none());
+            assert!(kill_command(u32::MAX, platform).is_none());
+        }
     }
 
     #[test]

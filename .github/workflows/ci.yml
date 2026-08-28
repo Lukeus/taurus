@@ -19,6 +19,13 @@ jobs:
   workflows:
     name: Lint workflows
     runs-on: ubuntu-22.04
+    # Every job here is bounded, because the default is six hours and a test
+    # that hangs is a thing that happens: `kill -KILL -<pid>` with a pid out of
+    # range means "every process this user owns" on Linux, so a bad argument
+    # killed the runner agent from inside the test run and the job sat there
+    # with no output until somebody cancelled it. Each ceiling below is roughly
+    # double what the step costs when it is working.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       # Pinned. Unpinned, a new actionlint release turns unrelated pull requests
@@ -32,6 +39,7 @@ jobs:
   check:
     name: Lint and test
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -77,6 +85,9 @@ jobs:
       matrix:
         os: [macos-14, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
+    # Generous, because Windows is the slow one and it is slow honestly: a cold
+    # release build of the app is six minutes there on its own.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

@@ -86,15 +86,53 @@ pub fn own_group(command: &mut tokio::process::Command) -> &mut tokio::process::
 /// [`own_group`] had to put the child in one. Windows has no such thing to
 /// signal: `taskkill /T` walks the parent-child tree instead, which is also why
 /// it has to run while the parent is still alive.
-pub fn kill_command(pid: u32, windows: bool) -> (&'static str, Vec<String>) {
-    if windows {
+///
+/// # Why the `--`
+///
+/// Because without it, on Linux, this kills the wrong thing. `kill -KILL -123`
+/// reads to procps as two signal options and no pid, and what it does then is
+/// signal *its own process group* — so the runaway tree lives and the caller
+/// dies. Measured on Ubuntu with procps-ng 3.3.17: eleven of twelve process
+/// groups survived, each time with the `kill` itself dead of the signal it had
+/// been asked to send. The one that lived through it had a single-digit pgid,
+/// which is the sort of luck a developer machine has and a CI runner does not.
+///
+/// `--` ends option parsing, so what follows is a pid whatever it looks like.
+/// Twelve of twelve, and unchanged on macOS, where the bare form worked.
+///
+/// # Why a pid can be refused
+///
+/// `None` for a pid that does not name a tree, and this is the one guard in
+/// this module that is not tidiness. Negating the pid is what asks for the
+/// group, so the arithmetic has to hold: `-0` is `0`, which on Unix means
+/// *this process's own group*, and `-1` means **every process the user owns**.
+/// Anything above `i32::MAX` gets there by truncation — `u32::MAX` arrives at
+/// `kill(2)` as `-1`, because procps parses the argument into a `pid_t` and
+/// wraps.
+///
+/// Measured, not reasoned about: `kill -KILL -4294967295` on Ubuntu SIGKILLs
+/// the whole session, uninvolved processes included. That is what took out
+/// three CI runs — the job did not fail, it stopped existing, so it hung with
+/// no logs until it was cancelled by hand. macOS never showed it: BSD `kill`
+/// rejects the out-of-range pid and does nothing.
+///
+/// So the range is checked here, in the one place that spells the command,
+/// rather than at each caller.
+pub fn kill_command(pid: u32, windows: bool) -> Option<(&'static str, Vec<String>)> {
+    // 0 is this group, 1 is init and reads as "everything", and past `i32::MAX`
+    // the negation wraps into one of those two.
+    if !(2..=i32::MAX as u32).contains(&pid) {
+        return None;
+    }
+    Some(if windows {
         (
             "taskkill",
             vec!["/T".into(), "/F".into(), "/PID".into(), pid.to_string()],
         )
     } else {
-        ("kill", vec!["-KILL".into(), format!("-{pid}")])
-    }
+        // `--` is load-bearing. See above.
+        ("kill", vec!["-KILL".into(), "--".into(), format!("-{pid}")])
+    })
 }
 
 /// Ends `leader` and everything it started.
@@ -127,7 +165,12 @@ pub async fn kill_tree(leader: Option<u32>) {
     let Some(pid) = leader else {
         return;
     };
-    let (program, args) = kill_command(pid, cfg!(windows));
+    // A pid that does not name a tree is not signalled at all, rather than
+    // signalled and hoped about. See [`kill_command`] for what the arithmetic
+    // turns those into.
+    let Some((program, args)) = kill_command(pid, cfg!(windows)) else {
+        return;
+    };
     let mut command = tokio::process::Command::new(program);
     command
         .args(args)
@@ -155,25 +198,55 @@ mod tests {
          * that runs, succeeds, and kills nothing, which looks exactly like a
          * tree that had already exited.
          */
-        let (program, args) = kill_command(4321, false);
+        let (program, args) = kill_command(4321, false).expect("an ordinary pid");
         assert_eq!(program, "kill");
         // Negative pid is the process group, which is the whole reason the
-        // child was given one.
-        assert_eq!(args, ["-KILL", "-4321"]);
+        // child was given one — and `--` is what stops procps from reading it
+        // as a signal and killing this process's group instead.
+        assert_eq!(args, ["-KILL", "--", "-4321"]);
 
-        let (program, args) = kill_command(4321, true);
+        let (program, args) = kill_command(4321, true).expect("an ordinary pid");
         assert_eq!(program, "taskkill");
         // `/T` is the tree, `/F` is force. Without `/T` this kills the shell
         // and leaves exactly what the bug left behind.
         assert_eq!(args, ["/T", "/F", "/PID", "4321"]);
     }
 
+    #[test]
+    fn a_pid_that_would_negate_into_something_larger_is_refused() {
+        /*
+         * Checked here and never run, and the distinction matters more than
+         * usual: this test cannot assert by calling `kill_tree`, because the
+         * assertion would be the bug. `kill -KILL -4294967295` on Linux
+         * truncates to `kill(-1, SIGKILL)` — every process the user owns —
+         * and it is what killed three CI runners from inside a test that was
+         * written to prove killing something already gone is quiet.
+         *
+         * So the guard is asserted on the spelling, which is pure, and the
+         * only pids that ever reach a real `kill` are ones this accepted.
+         */
+        for platform in [false, true] {
+            // This process's own group.
+            assert!(kill_command(0, platform).is_none());
+            // `-1`: everything.
+            assert!(kill_command(1, platform).is_none());
+            // Wraps to `-1` in a `pid_t`.
+            assert!(kill_command(u32::MAX, platform).is_none());
+            assert!(kill_command(i32::MAX as u32 + 1, platform).is_none());
+
+            // And the ends of the range that is real.
+            assert!(kill_command(2, platform).is_some());
+            assert!(kill_command(i32::MAX as u32, platform).is_some());
+        }
+    }
+
     #[tokio::test]
     async fn killing_a_tree_that_is_already_gone_is_quiet() {
         // The ordinary case on every successful command: by the time anything
-        // asks, there is nothing left to kill.
+        // asks, there is nothing left to kill. A pid is deliberately not
+        // invented for this — see the test above for why an out-of-range one
+        // must never be handed to a real `kill`.
         kill_tree(None).await;
-        kill_tree(Some(u32::MAX)).await;
     }
 
     #[test]

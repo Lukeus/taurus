@@ -937,10 +937,16 @@ and they are the minority.
   is Stopped, are both usually a shell — so killing the child alone reached
   `/bin/sh` or `cmd.exe` and left the linter, the build or the watcher running,
   while the app reported the thing as stopped. Now the tree goes: a process
-  group and `kill -KILL -<pgid>` on Unix, `taskkill /T /F` on Windows, both
+  group and `kill -KILL -- -<pgid>` on Unix, `taskkill /T /F` on Windows, both
   tested against a real process tree on both platforms in CI. What it costs is
   a fork on the way past, and only on a path where something has already hung
-  or been stopped by hand. What it is not is airtight on Windows: `taskkill /T`
+  or been stopped by hand. The `--` and the range check on the pid are both
+  scars: without the first, procps reads `-123` as a signal rather than a pid
+  and signals *the caller's* group, so eleven of twelve kills on Ubuntu left
+  the tree running and killed Taurus instead; without the second, a pid past
+  `i32::MAX` negates to `-1`, which on Linux means every process the user owns
+  — it took out three CI runners from inside a test written to prove the
+  opposite. What it is not is airtight on Windows: `taskkill /T`
   walks parent-child links, so a process whose parent died before the kill is
   out of its reach, where a Job Object would still catch it. Closing that last
   gap means `windows-sys` and an `unsafe` block, and `unsafe_code` is

@@ -154,10 +154,29 @@ pub fn plain(path: &Path) -> &Path {
 /// platform-specific for no gain, and would collide with JSON escaping on the
 /// way through.
 pub fn display(root: &Path, path: &Path) -> String {
+    /*
+     * Both sides through `plain` first, and this is the one call that is not
+     * cosmetic.
+     *
+     * A path that strips down to a workspace-relative one never had a prefix
+     * to lose, so on the common path this changes nothing. A path that does
+     * not — a file under a readable root, on another drive — falls through to
+     * `path.display()`, and on Windows that is the verbatim `\\?\C:\...`
+     * form `canonicalize` answers with. Forward-slashing it produces
+     * `//?/C:/...`, which is not merely ugly: `\\?\` is a prefix only when it
+     * is spelled with backslashes, so `std::path` reads that string as having
+     * a root and no prefix — not an absolute path — and every consumer that
+     * asks is told the wrong thing. It is what the model reads and writes back
+     * into the next call, what a dataset's catalogue entry is keyed by, and
+     * what an engine is handed as a table path.
+     *
+     * So the prefix comes off here, at the edge, which is what `plain` is for.
+     */
+    let path = plain(path);
     let shown = root
         .canonicalize()
         .ok()
-        .and_then(|r| path.strip_prefix(r).ok())
+        .and_then(|r| path.strip_prefix(plain(&r)).ok())
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| path.display().to_string());
     with_forward_slashes(&shown, std::path::MAIN_SEPARATOR)
@@ -217,6 +236,37 @@ mod tests {
         assert_eq!(
             plain(Path::new(r"\\?\C:\Users\me\project")),
             Path::new(r"C:\Users\me\project")
+        );
+    }
+
+    /// Windows only, for the same reason as the test above: off it there is no
+    /// prefix to leak, and `dunce` compiles to a passthrough.
+    ///
+    /// The failure it guards is quiet. A file under a readable root does not
+    /// strip down to a workspace-relative name, so it falls through to the
+    /// absolute form — verbatim, from `canonicalize` — and forward-slashing
+    /// that gives `//?/C:/...`. `\\?\` is a prefix only in backslashes, so
+    /// `std::path` then reads the result as rooted-but-prefixless: not
+    /// absolute, not resolvable, and handed straight to the model as the name
+    /// of a dataset it is meant to be able to ask about again.
+    #[cfg(windows)]
+    #[test]
+    fn a_path_outside_the_workspace_is_shown_in_a_form_that_resolves_again() {
+        let ws = workspace();
+        let other = workspace();
+        let target = other.path().join("sub/file.txt").canonicalize().unwrap();
+
+        let shown = display(ws.path(), &target);
+        assert!(
+            !shown.starts_with("//"),
+            "a verbatim prefix reached the outside as {shown}"
+        );
+        // The round trip is the point: what is shown has to be something the
+        // next call can hand back.
+        let allowed = vec![other.path().to_path_buf()];
+        assert!(
+            resolve_within(ws.path(), &allowed, &shown).is_ok(),
+            "{shown}"
         );
     }
 

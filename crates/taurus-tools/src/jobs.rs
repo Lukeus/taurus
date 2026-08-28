@@ -641,7 +641,7 @@ mod tests {
             std::fs::write(
                 &inner,
                 format!(
-                    "@echo off\r\necho x> \"{}\"\r\nping -n 3 127.0.0.1 >NUL\r\necho alive> \"{}\"\r\n",
+                    "@echo off\r\necho x> \"{}\"\r\nping -n 9 127.0.0.1 >NUL\r\necho alive> \"{}\"\r\n",
                     started.display(),
                     alive.display()
                 ),
@@ -653,7 +653,7 @@ mod tests {
             )
         } else {
             format!(
-                "sh -c 'echo x > \"{}\"; sleep 2; echo alive > \"{}\"' & sleep 30",
+                "sh -c 'echo x > \"{}\"; sleep 8; echo alive > \"{}\"' & sleep 30",
                 started.display(),
                 alive.display()
             )
@@ -702,7 +702,12 @@ mod tests {
 
         // Comfortably past when the grandchild would have written, had it
         // lived. Polled rather than slept in one go so a failure is quick.
-        for _ in 0..80 {
+        //
+        // Eight seconds of grandchild against twelve of watching, for the reason
+        // the sibling test in `taurus_hooks` carries the same numbers:
+        // `taskkill` is a process, and starting one on a cold Windows runner
+        // eats most of a two-second margin before it has signalled anything.
+        for _ in 0..240 {
             assert!(
                 !alive.exists(),
                 "the command's own child outlived Stop and kept working"
