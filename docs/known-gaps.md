@@ -906,4 +906,40 @@ and they are the minority.
   the retrieval harness above scores whatever the index currently does, so the
   gate is one command with the setting on and one with it off. Until somebody
   does that, an empty default is the honest state rather than a forgotten one.
-
+- **A theme sets fourteen colours, three typefaces, a wordmark and a corner
+  radius, and nothing else.** Not a stub — the ceiling is the point. Everything
+  below the top of `src/styles.css` speaks in roles, so those fourteen values
+  move the whole window; letting a theme restate a *rule* instead would let it
+  break a layout in a way only its author could reproduce, and "the app is
+  broken" would be a report nobody could tie back to a colour picker. The
+  spacing ladder is deliberately not exposed for the same reason: it is a
+  constraint the stylesheet's own tests enforce, and a theme that could redefine
+  it could make the app look like nobody measured anything. What that costs is
+  real — a theme cannot change a font size, a weight, a shadow, or the width of
+  the rail.
+- **A theme cannot bring a typeface with it.** `fonts` names families, and they
+  have to be installed on the machine already: the window's CSP allows no remote
+  stylesheet, so there is nothing to point a `@font-face` at. Bundling a font
+  file inside a theme would mean reading arbitrary binaries out of a config
+  directory and injecting them as `data:` URIs, which is a wider hole than the
+  feature is worth. A theme naming a font nobody has degrades to the stack the
+  app ships rather than failing, so this is quiet rather than broken — and quiet
+  is its own problem: nothing on screen says the font was not found.
+- **Themes are read fresh on every status, and only the active one carries its
+  logo.** The picker's full scan happens when the picker opens. That split
+  exists because a resolved theme carries its logo inlined as base64, and the
+  status is pushed after anything that moves a number on screen — so a scan on
+  that path would re-encode every logo on the machine several times a turn. The
+  cost is that a *different* theme's problems, in a file you are not using, are
+  not reported until you open Settings › Appearance.
+- **A hook's timeout kills the hook, not its grandchildren.** `timeout_seconds`
+  is enforced by killing the program the hook names — the whole of it, including
+  the wait for a hook that never reads the payload off its stdin. What it does
+  not reach is anything that program started and left running: a hook whose
+  script backgrounds a job and returns has put that job outside what a timeout
+  can undo. Covering it means a process group per hook — `setsid` and `killpg`
+  on Unix, a Job Object on Windows — which is the same gap every other child
+  process in the harness has, since `kill_on_drop` is what the terminal and the
+  skill scripts use too. What it costs today: a hook that leaks a background
+  process leaks one per call, and nothing in the app will say so. The direct
+  case, which is the one people write, is covered and tested.

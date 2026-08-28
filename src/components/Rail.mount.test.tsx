@@ -43,6 +43,7 @@ const mount = (props: Partial<Parameters<typeof Rail>[0]> = {}) => {
       jobsRunning={0}
         health={{ state: "connected", id: "ollama", models: 4 }}
         theme="dark"
+        brand={null}
         onPickWorkspace={() => {}}
         onNew={() => {}}
         onOpen={() => {}}
@@ -72,6 +73,51 @@ const press = (host: HTMLElement, selector: string, index = 0) => {
 afterEach(() => {
   document.body.innerHTML = "";
   vi.restoreAllMocks();
+});
+
+describe("a fold that is shut", () => {
+  /** Collapses `name` the way a previous session would have left it. */
+  const shut = (name: string) =>
+    localStorage.setItem("taurus.railSections", JSON.stringify([name]));
+
+  afterEach(() => localStorage.clear());
+
+  it("still says a command is running behind it", () => {
+    // Folding a section is a way to stop looking at it, not a way to stop
+    // being told something in it is still going. A build the model started
+    // while this was shut is the job nothing else on screen would mention.
+    shut("connections");
+    const host = mount({ jobsRunning: 2 });
+    const header = host.querySelector(".rail-group.shut")!;
+    expect(header.textContent).toContain("Connections");
+    expect(header.querySelector(".count.live")?.textContent).toBe("2");
+  });
+
+  it("still marks a server that is not answering", () => {
+    shut("connections");
+    const host = mount({ mcp: { total: 3, connected: 1 } });
+    const header = host.querySelector(".rail-group.shut")!;
+    expect(header.querySelector(".dot.warn")).not.toBeNull();
+    // And says which, because a mark that cannot say what is wrong is a mark
+    // people learn to ignore.
+    expect(header.getAttribute("data-tip")).toContain("not connected");
+  });
+
+  it("draws nothing at all when there is nothing happening", () => {
+    shut("connections");
+    const host = mount({ jobsRunning: 0, mcp: { total: 2, connected: 2 } });
+    const header = host.querySelector(".rail-group.shut")!;
+    expect(header.querySelector(".count.live")).toBeNull();
+    expect(header.querySelector(".dot.warn")).toBeNull();
+  });
+
+  it("does not leave the rows it hid reachable by keyboard", () => {
+    // `display: none` still answers a screen reader and still takes Tab in
+    // some engines, so the children are not rendered rather than hidden.
+    shut("agent");
+    const host = mount();
+    expect(host.textContent).not.toContain("Skills");
+  });
 });
 
 describe("deleting a conversation", () => {

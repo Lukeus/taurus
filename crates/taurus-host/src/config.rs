@@ -985,6 +985,18 @@ pub struct Settings {
     /// than state stranded in the webview's local storage.
     #[serde(default)]
     pub theme: Theme,
+    /// The custom theme painting over that palette, by the name of its file
+    /// under `themes/`. Empty is the built-in one.
+    ///
+    /// Separate from [`Settings::theme`] rather than a fourth variant of it,
+    /// because the two answer different questions and are changed at very
+    /// different rates. `theme` is light, dark, or follow the system — a
+    /// choice somebody revisits at dusk. This is whose colours those are, and
+    /// it is set once. Folding them together would mean picking a brand
+    /// quietly throws away "follow the system", which is both the default and
+    /// the only one of the three that can change on its own.
+    #[serde(default)]
+    pub theme_id: String,
     /// Model used to embed the workspace for `search_code`, on the same
     /// provider the conversation is using. Empty means no semantic search.
     ///
@@ -1103,6 +1115,7 @@ impl Default for Settings {
             agent_synthesis_enabled: true,
             disabled_tools: Vec::new(),
             theme: Theme::System,
+            theme_id: String::new(),
             embedding_model: String::new(),
             embedding_provider: String::new(),
             rerank_model: String::new(),
@@ -1134,6 +1147,11 @@ pub struct StoredSettings {
     pub disabled_tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<Theme>,
+    /// See [`Settings::theme_id`]. Per-layer like the rest, which is what lets
+    /// a repository carry its own branding in `.taurus/settings.json` beside
+    /// the theme file in `.taurus/themes/` that it names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_id: Option<String>,
     /// See [`Settings::embedding_model`]. Per-layer like everything else here,
     /// so one project can index with a different model — or not at all —
     /// without touching the global setting.
@@ -1180,6 +1198,7 @@ impl StoredSettings {
         // global entry impossible to undo for one project.
         self.disabled_tools = other.disabled_tools.or(self.disabled_tools.take());
         self.theme = other.theme.or(self.theme);
+        self.theme_id = other.theme_id.or(self.theme_id.take());
         self.embedding_model = other.embedding_model.or(self.embedding_model.take());
         self.embedding_provider = other.embedding_provider.or(self.embedding_provider.take());
         self.rerank_model = other.rerank_model.or(self.rerank_model.take());
@@ -1203,6 +1222,7 @@ impl StoredSettings {
                 .unwrap_or(defaults.agent_synthesis_enabled),
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
             theme: self.theme.unwrap_or(defaults.theme),
+            theme_id: self.theme_id.unwrap_or(defaults.theme_id),
             embedding_model: self.embedding_model.unwrap_or(defaults.embedding_model),
             embedding_provider: self
                 .embedding_provider

@@ -23,7 +23,8 @@ file every other project reads.
 | `providers.json` | Backends, including the header a key is sent in. Never the key itself — that lives in the OS keychain or an env var. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Values may name env vars. The **MCP** panel reads and writes it; **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `search.json` | Web search backends and which one is active. Never the key itself — that lives in the OS keychain or an env var, as with providers. | A different backend for this project, or field overrides on an inherited one. |
-| `settings.json` | Last workspace, the two synthesis toggles, theme, fallback model, `max_iterations`. | The provider and model this project was last worked in, and a step limit for turns here. |
+| `settings.json` | Last workspace, the two synthesis toggles, theme and theme id, fallback model, `max_iterations`. | The provider and model this project was last worked in, and a step limit for turns here. |
+| `themes/` | Custom palettes, typefaces, wordmarks and corner radii. See [Themes](#themes). | Themes that travel with the project, so a repository can brand the app for everyone who opens it. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
@@ -172,7 +173,14 @@ because nobody knows. On `post_tool_use` and `stop` there is nothing left to
 stop, so a failure there is reported and the turn continues.
 
 `timeout_seconds` defaults to 30. A hook runs inside a turn, so a hook that
-hangs is a turn that hangs.
+hangs is a turn that hangs — and a hook that reaches its limit is killed and
+counted as a refusal, on the events that can still refuse. The limit covers the
+whole of it, including the payload being handed to a hook that never reads its
+stdin.
+
+What the kill reaches is the program the hook names, not anything that program
+started in the background. A hook that backgrounds a long job and returns is
+outside what a timeout can undo — see [Known gaps](known-gaps.md).
 
 Seeing what will run, and why something is not:
 
@@ -339,6 +347,138 @@ goes, and the model is told to explain what each one is rather than guess at it.
 A key the model typed would live in the transcript, and in every copy of it, for
 as long as the conversation is kept. The block is rendered through the same type
 the loader reads, so what comes back is what will parse.
+
+## Themes
+
+The window ships two palettes and follows your system between them. A **theme**
+is the third thing: whose colours, typefaces and wordmark those palettes wear.
+It is a file in `~/.taurus/themes/`, and Settings › Appearance is an editor over
+that file rather than the only way to write one.
+
+![Settings, Appearance](screenshots/appearance.png)
+
+The reason a theme is so small a file is that `src/styles.css` names its raw
+values exactly once and speaks in *roles* everywhere else — a panel is
+`--bg-raised`, a hairline is `--rule`, the lead accent is `--accent`. Fourteen
+colours at the top move six thousand lines below them. So a theme supplies
+fourteen colours, three typefaces, a wordmark and a corner radius, and nothing
+else. There is no stylesheet, no selector and no length that is not one of those:
+a theme that could restate a rule could break a layout in a way only its author
+could reproduce.
+
+### The file
+
+Everything is optional. The common case is wanting a different accent, and it
+costs four lines:
+
+```json
+{
+  "name": "Midnight",
+  "dark": { "accent": "#b48cff", "accent-hover": "#c9aaff" }
+}
+```
+
+Anything left out falls through to the palette the app ships, which is also what
+keeps a theme written today working after the app adds a token tomorrow. A fuller
+one:
+
+```json
+{
+  "name": "Acme",
+  "dark": {
+    "ink": "#07090d",
+    "surface-1": "#10141c",
+    "surface-2": "#182131",
+    "surface-hover": "#141a26",
+    "line": "#26314a",
+    "text": "#eef2f6",
+    "text-dim": "#9aa6bb",
+    "text-faint": "#7c8b9c",
+    "accent": "#b48cff",
+    "accent-hover": "#c9aaff",
+    "on-accent": "#07090d",
+    "ok": "#a3ffb0",
+    "warn": "#ffbb7c",
+    "danger": "#ff9a9a"
+  },
+  "light": { "accent": "#6b3fd4", "on-accent": "#ffffff" },
+  "fonts": { "display": "IBM Plex Sans", "body": "Inter", "mono": "JetBrains Mono" },
+  "brand": { "wordmark": "acme", "logo": "acme.svg" },
+  "shape": { "radius": 0.4, "gutter": 28, "rail-gutter": 18 }
+}
+```
+
+| Key | What it is |
+| --- | --- |
+| `name` | What the picker calls it. Falls back to the file name. |
+| `dark`, `light` | The fourteen colours, by the names in the table below. Hex only — `#rgb`, `#rrggbb` or `#rrggbbaa`. |
+| `fonts` | `display`, `body`, `mono`. A family name, not a stack: the fallbacks after it stay the app's, so naming a font you do not have degrades rather than breaks. It has to be **installed on the machine** — the window loads no remote stylesheets, so a theme cannot bring a typeface with it. |
+| `brand.wordmark` | The word beside the mark. An empty string is a real answer and means a mark on its own; leaving the key out keeps `taurus`. |
+| `brand.logo` | An SVG, PNG, JPEG or WebP up to 256KB. A bare name is read from the folder the theme file is in, so a logo committed beside it travels with it. |
+| `shape.radius` | Multiplier on the corner-radius ladder, 0 to 3. `0` is square, `1` is as shipped. |
+| `shape.gutter`, `shape.rail-gutter` | The two column insets, in px, up to 96. |
+
+The colour names are the *jobs*, not the colours. The design system names its
+accents after what they happen to be — cyan, peach, mint — which is fine for a
+system with one palette and absurd in a file whose whole point is that the accent
+might be violet.
+
+| Name | Where it is |
+| --- | --- |
+| `ink` | The window itself, and the native ground behind the webview. |
+| `surface-1` | A panel raised off it — the rail, a drawer, a card. |
+| `surface-2` | A panel raised off that, and the active state of a row. |
+| `surface-hover` | The step between, so a hover reads as on the way to a selection rather than as one. |
+| `line` | The one hairline weight. |
+| `text`, `text-dim`, `text-faint` | Three weights, brightest first. The faint one carries the 10px mono micro-labels. |
+| `accent`, `accent-hover` | The lead colour. |
+| `on-accent` | What stays legible on top of it — a filled button's label. |
+| `ok`, `warn`, `danger` | The three signals. |
+
+### Dark, light, or both
+
+`dark` and `light` are separate palettes rather than one palette with a base,
+because "follow the system" is a preference people keep and a theme that could
+not honour it would be a theme that quietly takes it away. Fill in both and the
+System/Light/Dark choice keeps working underneath your brand.
+
+Fill in only one and you have said something — *this brand is dark* — so
+selecting it pins the mode, and the three pills say why instead of sitting there
+appearing to do nothing. A theme that only changes the typeface and the wordmark
+names neither palette and is as good in daylight as at night.
+
+### Contrast
+
+The editor measures every pair the app actually puts on screen — body text on
+each of the three surfaces, the faint labels, the accent, the label on a filled
+button, the three signals — and names the ones that come out below 4.5:1, in
+words that say where each is rather than which two tokens it is between.
+
+It warns rather than refuses. The floors are WCAG's and they are the right
+default, but this is your machine and your screen, and a checker that would not
+let you save a 4.2:1 would be enforcing a taste. What it will not do is let it
+happen silently, which is the state a branding feature arrives in if nobody
+builds this.
+
+### Where a theme can live
+
+Both config layers, like everything else here. `~/.taurus/themes/` is yours;
+`.taurus/themes/` inside a workspace travels with the repository, which is how a
+project brands the app for everyone who opens it. A workspace theme shadows a
+global one of the same name, the same precedence skills and providers already
+use, and it is [trust-gated](#trusting-a-workspace) — a cloned repository's
+themes are not read until you have said the folder's config may be, because a
+theme names a file path for its logo.
+
+Editing a theme saves it back to the layer it came from, so a theme a repository
+ships stays in the repository rather than being forked into your home directory
+where the project can never see it again.
+
+A file that will not parse costs itself and nothing else: the rest still load,
+and what was wrong with it is reported in Settings › Appearance, naming the file,
+the key and what to put there. Same for a colour that is not a colour, a logo
+that is not there, or a size past its maximum — the theme paints the part of
+itself that works.
 
 ## Web search
 

@@ -37,6 +37,9 @@ pub enum ProblemSource {
     /// `hooks.json` — an entry that will not load, or a toggle with nothing to
     /// toggle.
     Hooks,
+    /// A file under `themes/` that will not load, or names a colour, a size or
+    /// a logo the app cannot use.
+    Themes,
 }
 
 impl ProblemSource {
@@ -52,6 +55,7 @@ impl ProblemSource {
             // what a disabled tool changes.
             // The drawer that lists what the agent knows and can reach, which
             // is where a brief that is not arriving belongs.
+            Self::Themes => "Settings › Appearance",
             Self::Mcp | Self::Skills | Self::Tools | Self::Instructions | Self::Hooks => "Skills",
         }
     }
@@ -67,6 +71,7 @@ impl ProblemSource {
             Self::Tools => "tools",
             Self::Instructions => "instructions",
             Self::Hooks => "hooks",
+            Self::Themes => "themes",
         }
     }
 }

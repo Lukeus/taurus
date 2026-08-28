@@ -35,9 +35,9 @@ use taurus_host::traces::{self, TraceReport};
 use taurus_host::trust::TrustStatus;
 use taurus_host::usage::{self, UsageReport};
 use taurus_host::{
-    sessions, Attachment, BackendKind, Checkpoint, Commit, Host, KeyStatus, McpServerDraft,
-    McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus, Rewind,
-    SessionLog, SessionMeta, Settings, Switch, Theme, TurnChange, TurnRef,
+    sessions, Attachment, BackendKind, Checkpoint, Commit, CustomTheme, Host, KeyStatus,
+    McpServerDraft, McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus,
+    Rewind, SessionLog, SessionMeta, Settings, Switch, Theme, ThemeFile, TurnChange, TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -148,6 +148,17 @@ pub struct AppStatus {
     pub problems: Vec<Problem>,
     pub tool_names: Vec<String>,
     pub mcp_servers: Vec<ServerStatus>,
+    /// The custom theme in force, already read and checked, or `None` for the
+    /// built-in palette.
+    ///
+    /// The resolved theme rather than its id, because the window has to be
+    /// able to paint it on the first frame it has settings for — a rail that
+    /// renders in the shipped cyan and then repaints in somebody's brand a
+    /// round trip later is the flash this avoids. Only the *active* one is
+    /// here: a theme carries its logo inlined, and the picker's full list is
+    /// fetched when the picker opens rather than pushed with every status.
+    #[ts(optional)]
+    pub theme: Option<CustomTheme>,
     /// The branch checked out in this workspace, when there is one.
     ///
     /// A snapshot taken with the rest of the status, which is enough for what
@@ -177,6 +188,7 @@ pub async fn status_of(state: &AppState) -> AppStatus {
         problems: state.host.problems().await,
         tool_names: state.host.tool_names().await,
         mcp_servers: state.host.mcp_statuses().await,
+        theme: state.host.active_theme().await,
         branch: state.host.branch().await,
     }
 }
@@ -1911,6 +1923,79 @@ pub async fn set_theme(state: State<'_, Arc<AppState>>, theme: Theme) -> CmdResu
     // The settings file stays the authority on which theme is in force, and
     // this is how the window is told what it now says.
     emit_status(&state).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_theme_id(state: State<'_, Arc<AppState>>, id: String) -> CmdResult<()> {
+    state.host.set_theme_id(id).await;
+    emit_status(&state).await;
+    Ok(())
+}
+
+/// Every custom theme on the machine, for the picker.
+///
+/// Its own command rather than a field on the status, because each theme
+/// carries its logo inlined and the status is pushed after anything that moves
+/// a number on screen. The picker asks once, when it opens.
+#[tauri::command]
+pub async fn list_themes(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<CustomTheme>> {
+    let themes = state.host.themes().await;
+    // The scan records what would not load, and that is a thing the Settings
+    // screen shows — so the window has to be told the problem list changed.
+    emit_status(&state).await;
+    Ok(themes)
+}
+
+#[tauri::command]
+pub async fn save_theme(
+    state: State<'_, Arc<AppState>>,
+    scope: Scope,
+    id: String,
+    theme: ThemeFile,
+) -> CmdResult<String> {
+    let path = state.host.save_theme(scope, &id, &theme).await?;
+    emit_status(&state).await;
+    Ok(path)
+}
+
+#[tauri::command]
+pub async fn delete_theme(
+    state: State<'_, Arc<AppState>>,
+    scope: Scope,
+    id: String,
+) -> CmdResult<()> {
+    state.host.delete_theme(scope, &id).await?;
+    emit_status(&state).await;
+    Ok(())
+}
+
+/// Creates a layer's themes directory and returns it, so the UI can offer to
+/// open the folder on a machine that has never had one.
+#[tauri::command]
+pub async fn themes_dir(state: State<'_, Arc<AppState>>, scope: Scope) -> CmdResult<String> {
+    state.host.themes_dir(scope).await
+}
+
+/// Repaints the native window behind the webview.
+///
+/// The stylesheet cannot reach this: it is the platform's own ground, what
+/// shows for the frame before the document paints and in whatever the webview
+/// does not cover. `paint_window` sets it at launch from the settings file, and
+/// this is what moves it when a theme is picked while the app is running.
+///
+/// The colour comes from the frontend rather than being re-derived here,
+/// because the frontend is the only place that knows the *resolved* answer — a
+/// theme that names no ink inherits the stylesheet's, and the stylesheet is not
+/// something Rust can read.
+#[tauri::command]
+pub fn set_window_background(window: tauri::WebviewWindow, color: String) -> CmdResult<()> {
+    if let Some(parsed) = crate::parse_color(&color) {
+        let _ = window.set_background_color(Some(parsed));
+    }
+    // A colour that will not parse costs a mismatched edge, which is not worth
+    // failing a theme change over — the same call this sits beside has already
+    // repainted everything the user can actually see.
     Ok(())
 }
 

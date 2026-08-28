@@ -48,6 +48,7 @@ use crate::problem::{self, Problem, ProblemSource};
 use crate::prompt;
 use crate::secrets;
 use crate::sessions::SubagentLogs;
+use crate::theme::{self, CustomTheme};
 
 /// How many sub-agents may run at once. Low on purpose: each is a full model
 /// stream, and local hardware serves them all from the same GPU.
@@ -1540,6 +1541,90 @@ impl Host {
         config::edit_settings(Scope::Global, None, |s| s.theme = Some(theme));
         let workspace = self.workspace.read().await.clone();
         *self.settings.write().await = config::load_settings(Some(&workspace));
+    }
+
+    /// Picks the custom theme painting over that palette, or none of them.
+    ///
+    /// Global for the same reason [`Host::set_theme`] is: which brand the
+    /// window wears is a property of the person looking at it. A repository
+    /// can still ship one and name it in its own `settings.json` by hand —
+    /// that is a layer, and a hand-edited layer is a different thing from a
+    /// click in the app quietly writing into somebody's project.
+    pub async fn set_theme_id(&self, id: String) {
+        config::edit_settings(Scope::Global, None, |s| s.theme_id = Some(id));
+        let workspace = self.workspace.read().await.clone();
+        *self.settings.write().await = config::load_settings(Some(&workspace));
+    }
+
+    /// The custom theme in force, if there is one.
+    ///
+    /// This is what rides on every status the window is pushed, so it reads
+    /// the one file rather than the directory — see [`theme::load_theme`]. Its
+    /// problems are recorded on the way past, which is what makes a theme that
+    /// was deleted out from under the setting say so instead of the app just
+    /// quietly losing its brand.
+    pub async fn active_theme(&self) -> Option<CustomTheme> {
+        let id = self.settings.read().await.theme_id.clone();
+        let workspace = self.workspace.read().await.clone();
+        let (theme, problems) = theme::load_theme(Some(&workspace), &id);
+        self.replace_problems(
+            ProblemSource::Themes,
+            Problem::tag(ProblemSource::Themes, problems),
+        )
+        .await;
+        theme
+    }
+
+    /// Every custom theme both layers offer, and what is wrong with the rest.
+    ///
+    /// Re-read on every call rather than cached. A theme is a file people edit
+    /// in another window — that is the point of it being a file — so a picker
+    /// showing the set as it was at startup is a picker that cannot show the
+    /// feature working. It is a directory listing and a handful of small JSON
+    /// files; the cache would cost more to invalidate correctly than the read
+    /// costs to repeat.
+    pub async fn themes(&self) -> Vec<CustomTheme> {
+        let workspace = self.workspace.read().await.clone();
+        let (themes, problems) = theme::load_themes(Some(&workspace));
+        self.replace_problems(
+            ProblemSource::Themes,
+            Problem::tag(ProblemSource::Themes, problems),
+        )
+        .await;
+        themes
+    }
+
+    /// Writes a theme into a layer and returns where it landed.
+    pub async fn save_theme(
+        &self,
+        scope: Scope,
+        id: &str,
+        file: &theme::ThemeFile,
+    ) -> Result<String, String> {
+        let workspace = self.workspace.read().await.clone();
+        theme::save_theme(scope, Some(&workspace), id, file).map(|p| p.display().to_string())
+    }
+
+    /// Removes a theme file.
+    ///
+    /// The setting is cleared alongside it when it was the one in force, so
+    /// deleting the theme you are looking at puts the window back on the
+    /// built-in palette rather than leaving `theme_id` naming a file that is
+    /// no longer there.
+    pub async fn delete_theme(&self, scope: Scope, id: &str) -> Result<(), String> {
+        let workspace = self.workspace.read().await.clone();
+        theme::delete_theme(scope, Some(&workspace), id)?;
+        if self.settings.read().await.theme_id == id {
+            self.set_theme_id(String::new()).await;
+        }
+        Ok(())
+    }
+
+    /// Creates a layer's themes directory and returns it, for the row that
+    /// offers to open the folder.
+    pub async fn themes_dir(&self, scope: Scope) -> Result<String, String> {
+        let workspace = self.workspace.read().await.clone();
+        theme::ensure_themes_dir(scope, Some(&workspace)).map(|p| p.display().to_string())
     }
 
     /// Which provider serves the embedding model.

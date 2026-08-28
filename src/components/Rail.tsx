@@ -51,6 +51,7 @@ export function Rail({
   jobsRunning,
   health,
   theme,
+  brand,
   onPickWorkspace,
   onNew,
   onOpen,
@@ -104,6 +105,17 @@ export function Rail({
   health: ProviderHealth;
   /** The preference, not the resolved palette — the row names what was chosen. */
   theme: Theme;
+  /**
+   * The mark and the word in the top-left corner, when a custom theme has
+   * replaced them.
+   *
+   * Null is the app's own, which is the overwhelmingly common case and is why
+   * this is a prop rather than something the rail reads for itself. An empty
+   * `wordmark` is a real answer and means a mark on its own — the two are
+   * distinguished because "no opinion" and "deliberately nothing" produce
+   * different corners.
+   */
+  brand: { name: string; wordmark: string | null; logo: string | null } | null;
   onPickWorkspace: () => void;
   onNew: () => void;
   onOpen: (sessionId: string) => void;
@@ -215,8 +227,17 @@ export function Rail({
           carries the wordmark at the one height that lines its rule up with
           the topbar's across the fold. */}
       <div className="rail-brand">
-        <Logo />
-        <span>taurus</span>
+        {brand?.logo ? (
+          /* A theme's own mark, inlined as a data URI by the loader. Sized by
+             the stylesheet rather than by the file, because a logo that came
+             out 200px tall would take the traffic lights with it. */
+          <img className="rail-logo" src={brand.logo} alt="" aria-hidden="true" />
+        ) : (
+          <Logo />
+        )}
+        {/* Null is "no opinion" and falls back to the app's name; empty string
+            is a decision, and means a mark standing on its own. */}
+        {brand?.wordmark !== "" && <span>{brand?.wordmark ?? "taurus"}</span>}
       </div>
 
       <div className="rail-pad">
@@ -292,21 +313,30 @@ export function Rail({
       </div>
 
       <div className="rail-foot">
-        {/* The six panels, behind one fold.
-            Settings, the theme and the provider stay outside it: the first two
-            are how you get out of a state you did not mean to be in, and the
-            third is a status line rather than a place to go. A fold that can
-            hide the way to Settings is a fold that can strand somebody. */}
+        {/*
+            The seven panels, in three folds rather than one.
+
+            They were behind a single fold called "Tools", and the label had
+            stopped predicting what was inside it: skills, agents and memory
+            are what the model can do here and what it already knows; MCP and
+            the terminal are the things outside this window that it talks to;
+            context and traces are the same question asked about a turn that
+            has already happened — one in tokens, one in seconds. Three names
+            that each describe their contents is what makes a shut fold safe
+            to leave shut, which is the whole point of a fold in a rail this
+            dense.
+
+            Settings, the theme and the provider stay outside all three: the
+            first two are how you get out of a state you did not mean to be
+            in, and the third is a status line rather than a place to go. A
+            fold that can hide the way to Settings is a fold that can strand
+            somebody.
+        */}
         <Section
-          name="tools"
-          label="Tools"
+          name="agent"
+          label="Agent"
           sections={sections}
-          tip="Skills, agents, memory, MCP and the terminal"
-          /* What a collapsed section is still obliged to say. A server that is
-             configured and not answering is the one thing in here that is
-             wrong *now*, and folding the section away must not be a way to
-             stop hearing about it. */
-          warn={mcp !== null && mcp.connected < mcp.total ? mcpHint(mcp) : null}
+          tip="What the model can do in this workspace, and what it already knows"
         >
           <button className="rail-link accent" onClick={onSkills} data-tip={SKILLS_HINT}>
             <span className="glyph">
@@ -335,26 +365,25 @@ export function Rail({
               <span className="count">{noteCount}</span>
             )}
           </button>
-          <button
-            className="rail-link"
-            onClick={onUsage}
-            data-tip="What has filled the context window, and what every request costs before it starts"
-          >
-            <span className="glyph">
-              <GaugeIcon />
-            </span>
-            <b>Context</b>
-          </button>
-          <button
-            className="rail-link"
-            onClick={onTraces}
-            data-tip="Where each turn's time went — model calls, tools, and everything in between"
-          >
-            <span className="glyph">
-              <WaterfallIcon />
-            </span>
-            <b>Traces</b>
-          </button>
+        </Section>
+
+        <Section
+          name="connections"
+          label="Connections"
+          sections={sections}
+          tip={connectionsHint(mcp, jobsRunning)}
+          /* What a collapsed section is still obliged to say. A server that is
+             configured and not answering is the one thing in here that is
+             wrong *now*, and folding the section away must not be a way to
+             stop hearing about it. */
+          warn={mcp !== null && mcp.connected < mcp.total ? mcpHint(mcp) : null}
+          /* And a command still running is the one thing in here that is
+             happening now. Folding a section is a way to stop looking at it,
+             not a way to stop being told that something in it is still going
+             — a build the model started while this was shut is exactly the
+             job nothing else on screen would mention. */
+          live={jobsRunning}
+        >
           <button className="rail-link" onClick={onMcp} data-tip={mcpHint(mcp)}>
             <span className="glyph">
               <PlugIcon />
@@ -387,7 +416,35 @@ export function Rail({
               <TerminalIcon />
             </span>
             <b>Terminal</b>
-            {jobsRunning > 0 && <span className="count">{jobsRunning}</span>}
+            {jobsRunning > 0 && <span className="count live">{jobsRunning}</span>}
+          </button>
+        </Section>
+
+        <Section
+          name="activity"
+          label="Activity"
+          sections={sections}
+          tip="What the turns so far have cost — tokens on one side, seconds on the other"
+        >
+          <button
+            className="rail-link"
+            onClick={onUsage}
+            data-tip="What has filled the context window, and what every request costs before it starts"
+          >
+            <span className="glyph">
+              <GaugeIcon />
+            </span>
+            <b>Context</b>
+          </button>
+          <button
+            className="rail-link"
+            onClick={onTraces}
+            data-tip="Where each turn's time went — model calls, tools, and everything in between"
+          >
+            <span className="glyph">
+              <WaterfallIcon />
+            </span>
+            <b>Traces</b>
           </button>
         </Section>
 
@@ -441,6 +498,7 @@ function Section({
   count,
   tip,
   warn,
+  live,
   sections,
   children,
 }: {
@@ -457,6 +515,16 @@ function Section({
    * "something is wrong" and cannot say what is a dot people learn to ignore.
    */
   warn?: string | null;
+  /**
+   * How many things inside are happening right now.
+   *
+   * A separate channel from `warn` because it is a separate kind of fact: a
+   * warning is something that is wrong and will stay wrong until somebody
+   * acts, while this is something that is *working* and will stop on its own.
+   * Painting both as the same dot would teach that the dot means "look here",
+   * which is exactly the reading that makes a real warning easy to miss.
+   */
+  live?: number;
   sections: { collapsed: (name: string) => boolean; toggle: (name: string) => void };
   children: ReactNode;
 }) {
@@ -474,6 +542,9 @@ function Section({
         {/* Only while it is shut. Open, the rows are right there to be counted,
             and a number beside them is one more thing on a dense surface. */}
         {shut && count !== undefined && <span className="count">{count}</span>}
+        {shut && live !== undefined && live > 0 && (
+          <span className="count live">{live}</span>
+        )}
         {shut && warn && <span className="dot warn" />}
       </button>
       {!shut && children}
@@ -521,6 +592,27 @@ function mcpHint(mcp: { total: number; connected: number } | null): string {
     mcp.total,
     "MCP server",
   )} not connected`;
+}
+
+/**
+ * What the Connections fold says on hover.
+ *
+ * Built rather than fixed, because the two rows behind it are the two in the
+ * rail with live state: a server that is not answering and a command that is
+ * still running. Shut, this string is the only thing standing for both.
+ */
+function connectionsHint(
+  mcp: { total: number; connected: number } | null,
+  jobsRunning: number,
+): string {
+  const running =
+    jobsRunning > 0 ? `${plural(jobsRunning, "command")} running` : null;
+  const servers =
+    mcp === null || mcp.total === 0 ? null : mcpHint(mcp).replace(/^\w/, (c) => c.toLowerCase());
+  const parts = [servers, running].filter((p): p is string => p !== null);
+  return parts.length === 0
+    ? "External tool servers and a shell in this folder"
+    : `Tool servers and the terminal — ${parts.join(", ")}`;
 }
 
 const SKILLS_HINT = "Reusable instructions Taurus can load into a turn";
