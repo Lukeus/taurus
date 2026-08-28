@@ -953,6 +953,10 @@ mod tests {
             .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
             .await;
         let took = began.elapsed();
+        // The moment that matters: what the kill left standing, read before
+        // anything has had time to exit on its own. The tree at *failure* time
+        // cannot tell a process that was spared from one that finished.
+        let after_the_kill = tree();
 
         /*
          * The *timeout* has to be what ended this, not merely something.
@@ -985,7 +989,10 @@ mod tests {
         for _ in 0..240 {
             assert!(
                 !alive.exists(),
-                "the hook's own child outlived the timeout and kept working\n{}",
+                "the hook's own child outlived the timeout and kept working\
+                 \n== a moment after the kill ==\n{after_the_kill}\
+                 \n== now, {:?} in ==\n{}",
+                began.elapsed(),
                 tree()
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
