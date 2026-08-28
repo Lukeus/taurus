@@ -884,6 +884,41 @@ mod tests {
         }
     }
 
+    /// The tree as the OS sees it, for a failure message.
+    ///
+    /// "Something outlived the timeout" is not a report anybody can act on
+    /// from a CI log they cannot attach a debugger to — which of the three
+    /// processes survived says immediately whether the kill missed the tree,
+    /// missed a level of it, or never ran. Parent ids included, because on
+    /// Windows the parent link *is* the mechanism.
+    fn tree() -> String {
+        let (program, args): (&str, Vec<&str>) = if cfg!(windows) {
+            (
+                "powershell",
+                vec![
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process | \
+                     Where-Object { $_.Name -match 'cmd|ping' } | \
+                     Select-Object ProcessId,ParentProcessId,CommandLine | \
+                     Format-Table -AutoSize | Out-String -Width 300",
+                ],
+            )
+        } else {
+            ("ps", vec!["-eo", "pid,ppid,pgid,command"])
+        };
+        let out = std::process::Command::new(program).args(args).output();
+        match out {
+            Ok(out) => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .take(40)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(e) => format!("(could not list processes: {e})"),
+        }
+    }
+
     #[tokio::test]
     async fn a_timeout_reaches_what_the_hook_started_and_not_only_the_hook() {
         /*
@@ -933,7 +968,8 @@ mod tests {
         for _ in 0..240 {
             assert!(
                 !alive.exists(),
-                "the hook's own child outlived the timeout and kept working"
+                "the hook's own child outlived the timeout and kept working\n{}",
+                tree()
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
