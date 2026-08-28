@@ -948,10 +948,27 @@ mod tests {
         slow.timeout_seconds = 2;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
 
+        let began = std::time::Instant::now();
         let outcome = runner
             .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
             .await;
-        assert!(outcome.is_denied());
+        let took = began.elapsed();
+
+        /*
+         * The *timeout* has to be what ended this, not merely something.
+         *
+         * `is_denied` alone was too weak to carry the test: a hook that fell
+         * over on its own is denied too, and a shell that exited early would
+         * have satisfied it while killing nothing — leaving the survivor below
+         * to be blamed on the tree kill. So the reason is read, and the clock
+         * is checked against it.
+         */
+        let reason = outcome.denied.clone().unwrap_or_default();
+        assert!(
+            reason.contains("did not finish within"),
+            "ended for some other reason than its timeout: {reason:?} after {took:?}\n{}",
+            tree()
+        );
         // Asserted rather than assumed: a test that stopped something before it
         // had started would pass against the bug it was written for, which is
         // how the sibling test in `taurus_tools::jobs` first passed.
