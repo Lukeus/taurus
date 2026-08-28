@@ -932,24 +932,26 @@ and they are the minority.
   that path would re-encode every logo on the machine several times a turn. The
   cost is that a *different* theme's problems, in a file you are not using, are
   not reported until you open Settings › Appearance.
-- **Ending a child reaches its whole tree on Unix, and only the child on
-  Windows.** A hook that hits its timeout, and a background command that is
-  Stopped, are both usually a shell — so killing the child alone reached
-  `/bin/sh` and left the linter, the build or the watcher running, while the
-  app reported the thing as stopped. On Unix both now start in a process group
-  of their own and the group is signalled, which is what makes the report true;
-  both are tested against a real process tree. Windows has no equivalent here:
-  it needs a Job Object per child and a `windows-sys` dependency the workspace
-  does not carry, and it is not something this machine can test — so on Windows
-  a hook's timeout and the Stop button still reach the shell and not what it
-  ran. What it costs there: one leaked process tree per hung hook or stopped
-  command, and nothing on screen to say so.
-- **Two other children are still killed one process at a time, on every
-  platform.** A *foreground* `run_command` is left in the parent's process
-  group on purpose — a terminal's own Ctrl-C then reaches the whole tree
-  without anything in this code having to run first, which is worth more than a
-  group would be — so its timeout kills the shell alone. And a skill's script
-  (`taurus_skills::tools`) uses `kill_on_drop` with no group at all. Both are
-  the same one-line change as above wherever a group is wanted; neither has
-  been made, because neither has the safety argument the hook timeout does —
-  a hook is a guard whose whole promise is that it stopped something.
+- **Ending a child reaches its whole tree, by running the tool each platform
+  ships for it.** A hook that hits its timeout, and a background command that
+  is Stopped, are both usually a shell — so killing the child alone reached
+  `/bin/sh` or `cmd.exe` and left the linter, the build or the watcher running,
+  while the app reported the thing as stopped. Now the tree goes: a process
+  group and `kill -KILL -<pgid>` on Unix, `taskkill /T /F` on Windows, both
+  tested against a real process tree on both platforms in CI. What it costs is
+  a fork on the way past, and only on a path where something has already hung
+  or been stopped by hand. What it is not is airtight on Windows: `taskkill /T`
+  walks parent-child links, so a process whose parent died before the kill is
+  out of its reach, where a Job Object would still catch it. Closing that last
+  gap means `windows-sys` and an `unsafe` block, and `unsafe_code` is
+  `forbid` across this workspace — a policy worth more than the remaining
+  sliver, given the kill now runs while the parent is deliberately still alive.
+- **Two other children are still killed one process at a time.** A *foreground*
+  `run_command` is left in the parent's process group on purpose — a terminal's
+  own Ctrl-C then reaches the whole tree without anything in this code having
+  to run first, which is worth more than a group would be — so its timeout
+  kills the shell alone. And a skill's script (`taurus_skills::tools`) uses
+  `kill_on_drop` with no tree kill at all. Both are the same small change as
+  above wherever it is wanted; neither has been made, because neither has the
+  safety argument the hook timeout does — a hook is a guard whose whole promise
+  is that it stopped something.

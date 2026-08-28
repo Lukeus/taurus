@@ -178,10 +178,11 @@ counted as a refusal, on the events that can still refuse. The limit covers the
 whole of it, including the payload being handed to a hook that never reads its
 stdin.
 
-On Unix the kill reaches the whole tree: a hook runs in a process group of its
-own, so a script that calls a linter takes the linter with it. On Windows it
-reaches the program the hook names and not what that program started — see
-[Known gaps](known-gaps.md).
+The kill reaches the whole tree, not just the program the hook names: a script
+that calls a linter takes the linter with it. On Unix the hook runs in a process
+group of its own and the group is signalled; on Windows the tree is ended with
+`taskkill /T`, which walks down from the hook and so cannot reach a process
+whose own parent died first — see [Known gaps](known-gaps.md).
 
 Seeing what will run, and why something is not:
 

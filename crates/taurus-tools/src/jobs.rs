@@ -301,12 +301,14 @@ impl Jobs {
             let status = tokio::select! {
                 biased;
                 _ = stop.cancelled() => {
-                    // The group before the leader. A background command is a
-                    // shell, and killing the shell alone leaves whatever it
-                    // ran — the build, the watcher — still going, while this
-                    // reports the command as stopped. See
-                    // `crate::spawn::kill_group`.
-                    crate::spawn::kill_group(child.id()).await;
+                    // The tree before the leader, and that order is load
+                    // bearing: on Windows the tree is found by walking down
+                    // from the parent, so a parent already reaped has no tree
+                    // left to walk. A background command is a shell, and
+                    // killing the shell alone leaves whatever it ran — the
+                    // build, the watcher — still going, while this reports the
+                    // command as stopped. See `crate::spawn::kill_tree`.
+                    crate::spawn::kill_tree(child.id()).await;
                     let _ = child.start_kill();
                     child.wait().await
                 }
@@ -612,69 +614,101 @@ mod tests {
         command.spawn().unwrap()
     }
 
-    /// How many processes match `pattern` right now.
-    #[cfg(unix)]
-    fn matching(pattern: &str) -> usize {
-        let out = std::process::Command::new("pgrep")
-            .args(["-f", pattern])
-            .output()
-            .expect("pgrep");
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .count()
+    /// A command that leaves a grandchild behind, as one shell line.
+    ///
+    /// The grandchild says when it has started, waits, and then says it is
+    /// still alive. Both halves matter. Without the first, a test can stop the
+    /// job before the shell has even spawned the grandchild — and then nothing
+    /// survives whatever the code does, so the test passes against the bug it
+    /// was written for. That is exactly how the first version of this passed.
+    ///
+    /// Two spellings because the shells have nothing in common here, and this
+    /// is the one test that has to run on both: ending a tree is a process
+    /// group on Unix and `taskkill /T` on Windows, and neither code path is
+    /// exercised by the other platform's. Detected by files rather than by
+    /// listing processes — `pgrep` is not on Windows, `tasklist` cannot filter
+    /// on a command line, and a marker that never appears is the same evidence
+    /// either way.
+    fn leaves_a_grandchild(
+        dir: &std::path::Path,
+        started: &std::path::Path,
+        alive: &std::path::Path,
+    ) -> String {
+        if cfg!(windows) {
+            // A second file rather than a quoted command inside `start`, since
+            // batch quoting is where a test like this goes to die.
+            let inner = dir.join("inner.bat");
+            std::fs::write(
+                &inner,
+                format!(
+                    "@echo off\r\necho x> \"{}\"\r\nping -n 3 127.0.0.1 >NUL\r\necho alive> \"{}\"\r\n",
+                    started.display(),
+                    alive.display()
+                ),
+            )
+            .unwrap();
+            format!(
+                "start \"\" /B cmd /C \"{}\" & ping -n 31 127.0.0.1 >NUL",
+                inner.display()
+            )
+        } else {
+            format!(
+                "sh -c 'echo x > \"{}\"; sleep 2; echo alive > \"{}\"' & sleep 30",
+                started.display(),
+                alive.display()
+            )
+        }
     }
 
-    #[cfg(unix)]
+    /// Waits for `path` to appear, and says whether it did.
+    async fn appears(path: &std::path::Path) -> bool {
+        for _ in 0..100 {
+            if path.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
     #[tokio::test]
     async fn stopping_a_command_ends_what_it_started_and_not_only_the_shell() {
         /*
-         * A background command is `sh -c "..."`, so the child is the shell and
+         * A background command is a shell, so the child is `sh` or `cmd` and
          * the work is its child. `start_kill` reaches the shell alone — which
          * meant Stop ended the shell, left the build running, and reported the
          * command as stopped. This method's own doc says it waits for it to
          * actually be gone, and it did not.
          *
-         * The marker is a sleep of an unusual length, so nothing else on the
-         * machine can be mistaken for it.
+         * Asserted by a marker the grandchild writes after Stop has already
+         * returned. If the tree was ended it never appears; if only the shell
+         * was, it does.
          */
-        const MARKER: &str = "31849";
-        let jobs = Jobs::new();
-        let id = jobs
-            .adopt(
-                format!("sleep {MARKER}"),
-                sh(&format!("echo started; sleep {MARKER}")),
-                None,
-            )
-            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let alive = dir.path().join("alive");
+        let line = leaves_a_grandchild(dir.path(), &started, &alive);
 
-        // Started, before there is anything to assert about stopping it.
-        let mut running = 0;
-        for _ in 0..100 {
-            running = matching(&format!("sleep {MARKER}"));
-            if running > 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(running > 0, "the command never started");
+        let jobs = Jobs::new();
+        let id = jobs.adopt(line.clone(), sh(&line), None).await;
+
+        // Not before the grandchild exists. Stopping first kills the shell
+        // before it has spawned anything, and then nothing survives however
+        // broken the code is — which is how the first version of this test
+        // passed against the bug it was written for.
+        assert!(appears(&started).await, "the grandchild never started");
 
         jobs.stop(id).await.unwrap();
 
-        let mut left = usize::MAX;
-        for _ in 0..100 {
-            left = matching(&format!("sleep {MARKER}"));
-            if left == 0 {
-                break;
-            }
+        // Comfortably past when the grandchild would have written, had it
+        // lived. Polled rather than slept in one go so a failure is quick.
+        for _ in 0..80 {
+            assert!(
+                !alive.exists(),
+                "the command's own child outlived Stop and kept working"
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        // Tidied either way, so a failure does not strand a process for the
-        // next run to trip over.
-        let _ = std::process::Command::new("pkill")
-            .args(["-f", &format!("sleep {MARKER}")])
-            .output();
-        assert_eq!(left, 0, "the command's own child outlived Stop");
     }
 
     #[tokio::test]

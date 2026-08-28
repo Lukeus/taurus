@@ -100,11 +100,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Platform-specific behavior lives in these three: process spawning and
-      # path handling in tools, interpreter resolution in skills, and the
-      # Windows launcher shim in mcp. Run their tests on every OS even though
-      # the rest ran on Linux only.
-      - run: cargo test -p taurus-tools -p taurus-skills -p taurus-mcp
+      # Platform-specific behavior lives in these four: process spawning and
+      # path handling in tools, interpreter resolution in skills, the Windows
+      # launcher shim in mcp, and — since hooks run programs and have to be
+      # able to stop them again — ending a process tree, which is a process
+      # group on Unix and `taskkill /T` on Windows. Run their tests on every OS
+      # even though the rest ran on Linux only.
+      - run: cargo test -p taurus-tools -p taurus-skills -p taurus-mcp -p taurus-hooks
 
       # Through the same script a contributor runs, in the default shell of each
       # OS. Pinning this step to bash was what kept a Windows-only break in the

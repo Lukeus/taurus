@@ -432,14 +432,30 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
         tokio::join!(feed, child.wait_with_output()).1
     };
 
-    let output = match tokio::time::timeout(timeout, run).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Verdict::Denied(format!("could not be run: {e}")),
-        Err(_) => {
-            // `kill_on_drop` has already taken the hook itself; this reaches
-            // whatever the hook was running, which for a shell script is the
-            // part that was doing the work.
-            kill_group(group).await;
+    /*
+     * A `select!` rather than `timeout`, and the difference is the one thing
+     * on this path that is not obvious.
+     *
+     * `timeout(..).await` consumes the future it was given, so the child — and
+     * with it `kill_on_drop` — is already gone by the time the timed-out arm
+     * runs. On Unix that costs nothing, because a process group outlives its
+     * leader and can still be signalled. On Windows there is no group to
+     * signal: `taskkill /T` finds a tree by walking down from the parent, and
+     * a parent that has already been reaped has no tree left to walk.
+     *
+     * `select!` drops the losing future *after* the winning arm's body, so
+     * inside the arm below the hook is still alive and still has its children.
+     */
+    let output = tokio::select! {
+        // So a hook that finishes exactly on the deadline is finished rather
+        // than killed.
+        biased;
+        result = run => match result {
+            Ok(output) => output,
+            Err(e) => return Verdict::Denied(format!("could not be run: {e}")),
+        },
+        _ = tokio::time::sleep(timeout) => {
+            kill_tree(group).await;
             return Verdict::Denied(format!(
                 "did not finish within {}s and was stopped",
                 hook.timeout_seconds
@@ -511,31 +527,52 @@ fn own_group(command: &mut tokio::process::Command) {
     let _ = command;
 }
 
-/// Ends every process in the group a hook leads.
+/// The command that ends a process tree, per platform.
 ///
-/// Runs `kill`, which is POSIX and takes a negative pid to mean the group.
-/// Signalling a group is not something `std` can express, and the two ways to
-/// reach it from Rust are an `unsafe` libc call — forbidden workspace-wide,
-/// and not worth weakening for one line — or a platform-only crate for a
-/// single function. A fork on a path where a hook has already hung is the
-/// cheaper trade.
+/// Taking the platform as an argument rather than reading `cfg!`, so the tests
+/// can check both spellings from whichever machine is running them. Windows
+/// code is otherwise never compiled on the machines this is developed on, and
+/// a wrong argument to a kill is invisible even on Windows: the call succeeds
+/// and kills nothing, which looks exactly like a tree that had already exited.
+///
+/// Duplicated from `taurus_tools::spawn` for the reason [`no_console`] below
+/// is: this crate sits under that one, and a few small functions are a smaller
+/// cost than the dependency edge.
+fn kill_command(pid: u32, windows: bool) -> (&'static str, Vec<String>) {
+    if windows {
+        (
+            "taskkill",
+            vec!["/T".into(), "/F".into(), "/PID".into(), pid.to_string()],
+        )
+    } else {
+        ("kill", vec!["-KILL".into(), format!("-{pid}")])
+    }
+}
+
+/// Ends a hook and everything it started.
+///
+/// Neither platform's mechanism is reachable from `std` — a process group
+/// signal on Unix, a Job Object on Windows — and both alternatives are an
+/// `unsafe` call this workspace forbids or a platform-only crate for a single
+/// function. So it runs the tool each platform ships for exactly this, on a
+/// path where a hook has already hung.
 ///
 /// Best-effort, and never the only kill: `kill_on_drop` still ends the hook
-/// itself, so a machine with no `kill` binary is left where it was rather than
-/// worse off. Off Unix this does nothing at all — see `docs/known-gaps.md`.
-async fn kill_group(leader: Option<u32>) {
-    #[cfg(unix)]
-    if let Some(pid) = leader {
-        let mut command = tokio::process::Command::new("kill");
-        command
-            .args(["-KILL", &format!("-{pid}")])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let _ = command.status().await;
-    }
-    #[cfg(not(unix))]
-    let _ = leader;
+/// itself, so a machine missing the tool is left where it was rather than
+/// worse off.
+async fn kill_tree(leader: Option<u32>) {
+    let Some(pid) = leader else {
+        return;
+    };
+    let (program, args) = kill_command(pid, cfg!(windows));
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    no_console(&mut command);
+    let _ = command.status().await;
 }
 
 /// `CREATE_NO_WINDOW`, so a hook does not flash a console on Windows.
@@ -767,23 +804,87 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    /// A hook that leaves a grandchild behind, as command and args.
+    ///
+    /// It starts something that writes `marker` after a couple of seconds and
+    /// then sits there itself, so the grandchild is what a timeout has to
+    /// reach past the hook to kill.
+    ///
+    /// Two spellings because the shells have nothing in common here, and this
+    /// is the one test that has to run on both: ending a tree is a process
+    /// group on Unix and `taskkill /T` on Windows, and neither code path is
+    /// exercised by the other platform's.
+    ///
+    /// Detected by a file rather than by listing processes. `pgrep` is not on
+    /// Windows, `tasklist` cannot filter on a command line, and a marker that
+    /// never appears is the same evidence on both.
+    fn leaves_a_grandchild(dir: &Path, started: &Path, alive: &Path) -> (String, Vec<String>) {
+        #[cfg(unix)]
+        {
+            let path = script(
+                dir,
+                "outer",
+                &format!(
+                    "sh -c 'echo x > \"{}\"; sleep 2; echo alive > \"{}\"' &\nsleep 30",
+                    started.display(),
+                    alive.display()
+                ),
+            );
+            (path, vec![])
+        }
+        #[cfg(windows)]
+        {
+            // Two files rather than one, because the alternative is a `start`
+            // whose argument is a quoted command containing quoted paths, and
+            // batch quoting is where this test would go to die.
+            let inner = dir.join("inner.bat");
+            std::fs::write(
+                &inner,
+                format!(
+                    "@echo off\r\necho x> \"{}\"\r\nping -n 3 127.0.0.1 >NUL\r\necho alive> \"{}\"\r\n",
+                    started.display(),
+                    alive.display()
+                ),
+            )
+            .unwrap();
+            let outer = dir.join("outer.bat");
+            std::fs::write(
+                &outer,
+                format!(
+                    "@echo off\r\nstart \"\" /B cmd /C \"{}\"\r\nping -n 31 127.0.0.1 >NUL\r\n",
+                    inner.display()
+                ),
+            )
+            .unwrap();
+            // `CreateProcess` cannot run a .bat, so the hook names the shell.
+            (
+                "cmd".to_string(),
+                vec!["/C".to_string(), outer.display().to_string()],
+            )
+        }
+    }
+
     #[tokio::test]
     async fn a_timeout_reaches_what_the_hook_started_and_not_only_the_hook() {
         /*
-         * A hook is nearly always a shell script, so the child is `/bin/sh`
-         * and the work is *its* child. Killing the child alone left that work
-         * running while the turn reported the hook as stopped — measured in
-         * every shape a script can be written in, including `echo x; sleep n`,
-         * which is the plainest one there is.
+         * A hook is nearly always a script, so the child is a shell and the
+         * work is *its* child. Killing the child alone left that work running
+         * while the turn reported the hook as stopped — measured in every
+         * shape a script can be written in, including `echo x; sleep n`, which
+         * is the plainest one there is.
          *
-         * The marker is what makes this assertable: a sleep of an unusual
-         * length that nothing else on the machine would be running.
+         * Asserted by a marker the grandchild writes after the hook is already
+         * dead. If the tree was killed it never appears; if only the hook was,
+         * it does. Proving that absence is what the wait below is for, and it
+         * is why this is one of the slower tests here.
          */
-        const MARKER: &str = "31847";
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "slow", &format!("echo started\nsleep {MARKER}"));
-        let mut slow = hook(&path, HookEvent::PreToolUse);
+        let started = dir.path().join("started");
+        let alive = dir.path().join("alive");
+        let (command, args) = leaves_a_grandchild(dir.path(), &started, &alive);
+
+        let mut slow = hook(&command, HookEvent::PreToolUse);
+        slow.args = args;
         slow.timeout_seconds = 1;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
 
@@ -791,32 +892,46 @@ mod tests {
             .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
             .await;
         assert!(outcome.is_denied());
+        // The one-second timeout is long enough that the grandchild is always
+        // up by the time it fires, but asserted rather than assumed: a test
+        // that stopped something before it had started would pass against the
+        // bug it was written for, which is how the sibling test in
+        // `taurus_tools::jobs` first passed.
+        assert!(started.exists(), "the grandchild never started");
 
-        let survivors = || {
-            let out = std::process::Command::new("pgrep")
-                .args(["-f", &format!("sleep {MARKER}")])
-                .output()
-                .expect("pgrep");
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .count()
-        };
-
-        let mut left = usize::MAX;
-        for _ in 0..100 {
-            left = survivors();
-            if left == 0 {
-                break;
-            }
+        // Comfortably past when the grandchild would have written, had it
+        // lived. Polled rather than slept in one go so a failure is quick.
+        for _ in 0..80 {
+            assert!(
+                !alive.exists(),
+                "the hook's own child outlived the timeout and kept working"
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        // Tidied either way, so a failure here does not leave the machine with
-        // a stray process for the next run to trip over.
-        let _ = std::process::Command::new("pkill")
-            .args(["-f", &format!("sleep {MARKER}")])
-            .output();
-        assert_eq!(left, 0, "the hook's own child outlived the timeout");
+    }
+
+    #[test]
+    fn the_kill_is_spelled_the_way_each_platform_spells_it() {
+        // Both arms from whichever machine is running this, because neither is
+        // compiled on the other one — and a wrong argument here is invisible
+        // even on the platform it is wrong for: the kill still succeeds and
+        // simply reaches nothing.
+        assert_eq!(
+            kill_command(4321, false),
+            ("kill", vec!["-KILL".to_string(), "-4321".to_string()])
+        );
+        assert_eq!(
+            kill_command(4321, true),
+            (
+                "taskkill",
+                vec![
+                    "/T".to_string(),
+                    "/F".to_string(),
+                    "/PID".to_string(),
+                    "4321".to_string()
+                ]
+            )
+        );
     }
 
     #[test]
