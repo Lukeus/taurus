@@ -22,6 +22,11 @@ tracing.workspace = true
 # for why they exist at all and why they are not in the workspace.
 tempfile = "3"
 ts-rs.workspace = true
+# Paths are handed to DataFusion as `file://` URLs, never as paths — see
+# `df::table_url` for why that is not a style choice. Already in the tree under
+# both datafusion and object_store; naming it here is what makes it ours to
+# call.
+url = "2"
 
 # Trimmed deliberately, and the trim is part of the argument for this engine
 # over the alternative: `default-features` drags in `compression`, which is
