@@ -51,6 +51,73 @@ pub fn no_console(command: &mut tokio::process::Command) -> &mut tokio::process:
     command
 }
 
+/// Puts a child in a process group of its own.
+///
+/// `0` means "a new group, led by this child", and everything the child starts
+/// inherits it. That is the whole point: without a group there is nothing to
+/// signal but the child itself, and for a `sh -c "..."` the child is the shell
+/// rather than the program somebody actually wanted stopped. Measured before
+/// this existed — a hook whose script ran `sleep 47` left the `sleep` running
+/// after the shell was killed, in every shape a script can be written in.
+///
+/// Only for children something will later end deliberately. A command left in
+/// the parent's group is one a terminal's Ctrl-C reaches by itself, which is
+/// worth more than a group for anything running in the foreground of a CLI.
+///
+/// A no-op off Unix, where the equivalent is a Job Object and a dependency
+/// this workspace does not have. See `docs/known-gaps.md`.
+pub fn own_group(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+}
+
+/// Ends every process in the group `leader` heads.
+///
+/// Paired with [`own_group`], and only meaningful for a child given one. Safe
+/// to call for a child that has already exited: the group is gone, the signal
+/// finds nothing, and nothing here reports it.
+///
+/// `SIGKILL` rather than `SIGTERM`. Every path that calls this is one where
+/// something has already been asked to stop and has not — a timeout that
+/// elapsed, a Stop that was pressed — so the polite signal has in effect been
+/// sent and ignored already.
+///
+/// # Why this shells out
+///
+/// Signalling a process group is `kill(-pgid, …)`, and there is no way to say
+/// that in `std`. The two ways to reach it from Rust are an `unsafe` call into
+/// libc, which this workspace forbids outright and does not weaken for one
+/// line, or a crate wrapping the same call — a platform-only dependency for a
+/// single function, which is the trade [`no_console`] above already declines
+/// for a single constant.
+///
+/// So it runs `kill`, which is POSIX, is on every machine this branch compiles
+/// for, and takes a negative pid to mean the group. It costs a fork, and it
+/// costs one only on a path where something has already hung or been stopped
+/// by hand — never in the ordinary life of a command.
+///
+/// Best-effort by design, and deliberately *not* the only kill: every caller
+/// still ends the child itself through `start_kill` or `kill_on_drop`. This
+/// reaches what the child started, so a machine without a `kill` binary is
+/// left exactly where it was before this existed rather than worse off.
+pub async fn kill_group(leader: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = leader {
+        let mut command = tokio::process::Command::new("kill");
+        command.args(["-KILL", &format!("-{pid}")]);
+        command.stdin(std::process::Stdio::null());
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::null());
+        // Awaited rather than detached, so the helper is reaped here instead of
+        // becoming something the runtime has to tidy up later. It is a signal
+        // and an exit; it does not outlive this call by anything measurable.
+        let _ = command.status().await;
+    }
+    #[cfg(not(unix))]
+    let _ = leader;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

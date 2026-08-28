@@ -383,6 +383,9 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
     if let Some(tool) = &payload.tool {
         command.env("TAURUS_TOOL", tool);
     }
+    // So the timeout below can reach what the hook started, and not only the
+    // hook. See `own_group`.
+    own_group(&mut command);
     no_console(&mut command);
 
     let mut child = match command.spawn() {
@@ -395,6 +398,9 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
     };
 
     let stdin = child.stdin.take();
+    // Read before the child is moved into the future below, because the
+    // timeout branch needs it after that future has been dropped.
+    let group = child.id();
     let timeout = Duration::from_secs(hook.timeout_seconds);
 
     /*
@@ -430,10 +436,14 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => return Verdict::Denied(format!("could not be run: {e}")),
         Err(_) => {
+            // `kill_on_drop` has already taken the hook itself; this reaches
+            // whatever the hook was running, which for a shell script is the
+            // part that was doing the work.
+            kill_group(group).await;
             return Verdict::Denied(format!(
                 "did not finish within {}s and was stopped",
                 hook.timeout_seconds
-            ))
+            ));
         }
     };
 
@@ -482,6 +492,50 @@ pub fn environment(payload: &HookPayload) -> BTreeMap<&'static str, String> {
         env.insert("TAURUS_TOOL", tool.clone());
     }
     env
+}
+
+/// Puts a hook in a process group of its own, so what it starts stops with it.
+///
+/// Duplicated from `taurus_tools::spawn` for the reason [`no_console`] below
+/// is: this crate sits under that one, and two small functions are a smaller
+/// cost than the dependency edge.
+///
+/// Without this the timeout reached the hook and nothing the hook ran. A hook
+/// is usually a shell script, so the child is `/bin/sh` and the work is its
+/// child — measured, every shape of script leaked the program it called,
+/// including the plainest one there is.
+fn own_group(command: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+/// Ends every process in the group a hook leads.
+///
+/// Runs `kill`, which is POSIX and takes a negative pid to mean the group.
+/// Signalling a group is not something `std` can express, and the two ways to
+/// reach it from Rust are an `unsafe` libc call — forbidden workspace-wide,
+/// and not worth weakening for one line — or a platform-only crate for a
+/// single function. A fork on a path where a hook has already hung is the
+/// cheaper trade.
+///
+/// Best-effort, and never the only kill: `kill_on_drop` still ends the hook
+/// itself, so a machine with no `kill` binary is left where it was rather than
+/// worse off. Off Unix this does nothing at all — see `docs/known-gaps.md`.
+async fn kill_group(leader: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = leader {
+        let mut command = tokio::process::Command::new("kill");
+        command
+            .args(["-KILL", &format!("-{pid}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = command.status().await;
+    }
+    #[cfg(not(unix))]
+    let _ = leader;
 }
 
 /// `CREATE_NO_WINDOW`, so a hook does not flash a console on Windows.
@@ -711,6 +765,58 @@ mod tests {
             took < Duration::from_secs(5),
             "the 1s timeout took {took:?}, so stdin blocked outside it"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timeout_reaches_what_the_hook_started_and_not_only_the_hook() {
+        /*
+         * A hook is nearly always a shell script, so the child is `/bin/sh`
+         * and the work is *its* child. Killing the child alone left that work
+         * running while the turn reported the hook as stopped — measured in
+         * every shape a script can be written in, including `echo x; sleep n`,
+         * which is the plainest one there is.
+         *
+         * The marker is what makes this assertable: a sleep of an unusual
+         * length that nothing else on the machine would be running.
+         */
+        const MARKER: &str = "31847";
+        let dir = tempfile::tempdir().unwrap();
+        let path = script(dir.path(), "slow", &format!("echo started\nsleep {MARKER}"));
+        let mut slow = hook(&path, HookEvent::PreToolUse);
+        slow.timeout_seconds = 1;
+        let runner = HookRunner::new(vec![("slow".into(), slow)]);
+
+        let outcome = runner
+            .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
+            .await;
+        assert!(outcome.is_denied());
+
+        let survivors = || {
+            let out = std::process::Command::new("pgrep")
+                .args(["-f", &format!("sleep {MARKER}")])
+                .output()
+                .expect("pgrep");
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+        };
+
+        let mut left = usize::MAX;
+        for _ in 0..100 {
+            left = survivors();
+            if left == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // Tidied either way, so a failure here does not leave the machine with
+        // a stray process for the next run to trip over.
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", &format!("sleep {MARKER}")])
+            .output();
+        assert_eq!(left, 0, "the hook's own child outlived the timeout");
     }
 
     #[test]

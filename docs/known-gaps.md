@@ -932,14 +932,24 @@ and they are the minority.
   that path would re-encode every logo on the machine several times a turn. The
   cost is that a *different* theme's problems, in a file you are not using, are
   not reported until you open Settings › Appearance.
-- **A hook's timeout kills the hook, not its grandchildren.** `timeout_seconds`
-  is enforced by killing the program the hook names — the whole of it, including
-  the wait for a hook that never reads the payload off its stdin. What it does
-  not reach is anything that program started and left running: a hook whose
-  script backgrounds a job and returns has put that job outside what a timeout
-  can undo. Covering it means a process group per hook — `setsid` and `killpg`
-  on Unix, a Job Object on Windows — which is the same gap every other child
-  process in the harness has, since `kill_on_drop` is what the terminal and the
-  skill scripts use too. What it costs today: a hook that leaks a background
-  process leaks one per call, and nothing in the app will say so. The direct
-  case, which is the one people write, is covered and tested.
+- **Ending a child reaches its whole tree on Unix, and only the child on
+  Windows.** A hook that hits its timeout, and a background command that is
+  Stopped, are both usually a shell — so killing the child alone reached
+  `/bin/sh` and left the linter, the build or the watcher running, while the
+  app reported the thing as stopped. On Unix both now start in a process group
+  of their own and the group is signalled, which is what makes the report true;
+  both are tested against a real process tree. Windows has no equivalent here:
+  it needs a Job Object per child and a `windows-sys` dependency the workspace
+  does not carry, and it is not something this machine can test — so on Windows
+  a hook's timeout and the Stop button still reach the shell and not what it
+  ran. What it costs there: one leaked process tree per hung hook or stopped
+  command, and nothing on screen to say so.
+- **Two other children are still killed one process at a time, on every
+  platform.** A *foreground* `run_command` is left in the parent's process
+  group on purpose — a terminal's own Ctrl-C then reaches the whole tree
+  without anything in this code having to run first, which is worth more than a
+  group would be — so its timeout kills the shell alone. And a skill's script
+  (`taurus_skills::tools`) uses `kill_on_drop` with no group at all. Both are
+  the same one-line change as above wherever a group is wanted; neither has
+  been made, because neither has the safety argument the hook timeout does —
+  a hook is a guard whose whole promise is that it stopped something.

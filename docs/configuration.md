@@ -178,9 +178,10 @@ counted as a refusal, on the events that can still refuse. The limit covers the
 whole of it, including the payload being handed to a hook that never reads its
 stdin.
 
-What the kill reaches is the program the hook names, not anything that program
-started in the background. A hook that backgrounds a long job and returns is
-outside what a timeout can undo — see [Known gaps](known-gaps.md).
+On Unix the kill reaches the whole tree: a hook runs in a process group of its
+own, so a script that calls a linter takes the linter with it. On Windows it
+reaches the program the hook names and not what that program started — see
+[Known gaps](known-gaps.md).
 
 Seeing what will run, and why something is not:
 

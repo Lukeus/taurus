@@ -301,6 +301,12 @@ impl Jobs {
             let status = tokio::select! {
                 biased;
                 _ = stop.cancelled() => {
+                    // The group before the leader. A background command is a
+                    // shell, and killing the shell alone leaves whatever it
+                    // ran — the build, the watcher — still going, while this
+                    // reports the command as stopped. See
+                    // `crate::spawn::kill_group`.
+                    crate::spawn::kill_group(child.id()).await;
                     let _ = child.start_kill();
                     child.wait().await
                 }
@@ -593,14 +599,82 @@ mod tests {
         } else {
             ("sh", vec!["-c".to_string(), command.to_string()])
         };
-        tokio::process::Command::new(program)
+        let mut command = tokio::process::Command::new(program);
+        command
             .args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap()
+            .kill_on_drop(true);
+        // The same group the real background path gives a command, so what is
+        // exercised here is what actually runs. See `shell::spawn_piped`.
+        crate::spawn::own_group(&mut command);
+        command.spawn().unwrap()
+    }
+
+    /// How many processes match `pattern` right now.
+    #[cfg(unix)]
+    fn matching(pattern: &str) -> usize {
+        let out = std::process::Command::new("pgrep")
+            .args(["-f", pattern])
+            .output()
+            .expect("pgrep");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopping_a_command_ends_what_it_started_and_not_only_the_shell() {
+        /*
+         * A background command is `sh -c "..."`, so the child is the shell and
+         * the work is its child. `start_kill` reaches the shell alone — which
+         * meant Stop ended the shell, left the build running, and reported the
+         * command as stopped. This method's own doc says it waits for it to
+         * actually be gone, and it did not.
+         *
+         * The marker is a sleep of an unusual length, so nothing else on the
+         * machine can be mistaken for it.
+         */
+        const MARKER: &str = "31849";
+        let jobs = Jobs::new();
+        let id = jobs
+            .adopt(
+                format!("sleep {MARKER}"),
+                sh(&format!("echo started; sleep {MARKER}")),
+                None,
+            )
+            .await;
+
+        // Started, before there is anything to assert about stopping it.
+        let mut running = 0;
+        for _ in 0..100 {
+            running = matching(&format!("sleep {MARKER}"));
+            if running > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(running > 0, "the command never started");
+
+        jobs.stop(id).await.unwrap();
+
+        let mut left = usize::MAX;
+        for _ in 0..100 {
+            left = matching(&format!("sleep {MARKER}"));
+            if left == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // Tidied either way, so a failure does not strand a process for the
+        // next run to trip over.
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", &format!("sleep {MARKER}")])
+            .output();
+        assert_eq!(left, 0, "the command's own child outlived Stop");
     }
 
     #[tokio::test]
