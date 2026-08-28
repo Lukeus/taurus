@@ -125,9 +125,14 @@ pub fn kill_command(pid: u32, windows: bool) -> Option<(&'static str, Vec<String
         return None;
     }
     Some(if windows {
+        // Target first, then the switches. That is the order `taskkill`'s own
+        // grammar documents — `{/PID pid | /IM name} [/T] [/F]` — and with
+        // `/T` ahead of `/PID` it killed the named process and walked no tree
+        // at all: measured on a runner, all three children left standing with
+        // their parent links intact.
         (
             "taskkill",
-            vec!["/T".into(), "/F".into(), "/PID".into(), pid.to_string()],
+            vec!["/PID".into(), pid.to_string(), "/T".into(), "/F".into()],
         )
     } else {
         // `--` is load-bearing. See above.
@@ -162,27 +167,61 @@ pub fn kill_command(pid: u32, windows: bool) -> Option<(&'static str, Vec<String
 /// reaches what the child started, so a machine missing the tool is left where
 /// it was rather than worse off.
 pub async fn kill_tree(leader: Option<u32>) {
+    if let Err(trouble) = try_kill_tree(leader).await {
+        // A tree kill that quietly fails looks exactly like one that had
+        // nothing to do, which is how a `/T` that walked nothing survived
+        // three rounds of CI.
+        tracing::warn!("{trouble}");
+    }
+}
+
+/// [`kill_tree`], with what went wrong if anything did.
+async fn try_kill_tree(leader: Option<u32>) -> Result<(), String> {
     let Some(pid) = leader else {
-        return;
+        return Ok(());
     };
     // A pid that does not name a tree is not signalled at all, rather than
     // signalled and hoped about. See [`kill_command`] for what the arithmetic
     // turns those into.
     let Some((program, args)) = kill_command(pid, cfg!(windows)) else {
-        return;
+        return Err(format!(
+            "{pid} does not name a process tree, so nothing was signalled"
+        ));
     };
     let mut command = tokio::process::Command::new(program);
     command
-        .args(args)
+        .args(&args)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        // Captured rather than discarded. Both tools report what they could
+        // not do on their own output, and it is the only account of a kill
+        // that ran and reached nothing.
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     // So the helper does not flash a console of its own on Windows, which is
     // the very thing this module exists for.
     no_console(&mut command);
     // Awaited rather than detached, so it is reaped here instead of becoming
     // something the runtime has to tidy up later. It is a signal and an exit.
-    let _ = command.status().await;
+    let out = command
+        .output()
+        .await
+        .map_err(|e| format!("could not run {program}: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    // A tree that had already exited is the ordinary case and reports itself
+    // here as a failure, so the message says what was asked rather than
+    // claiming something is wrong.
+    let said = [&out.stderr, &out.stdout]
+        .into_iter()
+        .map(|s| String::from_utf8_lossy(s).trim().to_string())
+        .find(|s| !s.is_empty())
+        .unwrap_or_else(|| "and said nothing".into());
+    Err(format!(
+        "{program} {} exited {:?}: {said}",
+        args.join(" "),
+        out.status.code()
+    ))
 }
 
 #[cfg(test)]
@@ -207,9 +246,9 @@ mod tests {
 
         let (program, args) = kill_command(4321, true).expect("an ordinary pid");
         assert_eq!(program, "taskkill");
-        // `/T` is the tree, `/F` is force. Without `/T` this kills the shell
-        // and leaves exactly what the bug left behind.
-        assert_eq!(args, ["/T", "/F", "/PID", "4321"]);
+        // `/T` is the tree and `/F` is force, and both come *after* the target:
+        // ahead of `/PID` the tree walk silently does not happen.
+        assert_eq!(args, ["/PID", "4321", "/T", "/F"]);
     }
 
     #[test]

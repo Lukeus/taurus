@@ -940,13 +940,19 @@ and they are the minority.
   group and `kill -KILL -- -<pgid>` on Unix, `taskkill /T /F` on Windows, both
   tested against a real process tree on both platforms in CI. What it costs is
   a fork on the way past, and only on a path where something has already hung
-  or been stopped by hand. The `--` and the range check on the pid are both
-  scars: without the first, procps reads `-123` as a signal rather than a pid
+  or been stopped by hand. The shape of both commands is a scar, and neither
+  is guessable: `taskkill` takes its switches *after* the target, and with
+  `/T` ahead of `/PID` it kills the named process and walks no tree at all —
+  measured on a runner, all three children left standing with their parent
+  links intact and nothing reported. The `--` and the range check on the pid
+  are the other two: without the first, procps reads `-123` as a signal rather than a pid
   and signals *the caller's* group, so eleven of twelve kills on Ubuntu left
   the tree running and killed Taurus instead; without the second, a pid past
   `i32::MAX` negates to `-1`, which on Linux means every process the user owns
   — it took out three CI runners from inside a test written to prove the
-  opposite. What it is not is airtight on Windows: `taskkill /T`
+  opposite. All three were invisible because the kill discarded its own
+  output; it is now read, and a kill that could not be carried out says so on
+  the hook's own refusal rather than in a log nobody reads. What it is not is airtight on Windows: `taskkill /T`
   walks parent-child links, so a process whose parent died before the kill is
   out of its reach, where a Job Object would still catch it. Closing that last
   gap means `windows-sys` and an `unsafe` block, and `unsafe_code` is

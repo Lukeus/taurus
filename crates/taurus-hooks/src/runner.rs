@@ -455,9 +455,18 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
             Err(e) => return Verdict::Denied(format!("could not be run: {e}")),
         },
         _ = tokio::time::sleep(timeout) => {
-            kill_tree(group).await;
+            // A kill that could not be carried out is the user's business
+            // rather than a log line: the hook is gone but what it started is
+            // not, and a turn that said only "stopped" would be wrong about
+            // the one thing a guard is for.
+            let unfinished = match kill_tree(group).await {
+                Ok(()) => String::new(),
+                Err(trouble) => {
+                    format!(", though what it started may still be running: {trouble}")
+                }
+            };
             return Verdict::Denied(format!(
-                "did not finish within {}s and was stopped",
+                "did not finish within {}s and was stopped{unfinished}",
                 hook.timeout_seconds
             ));
         }
@@ -554,9 +563,11 @@ fn kill_command(pid: u32, windows: bool) -> Option<(&'static str, Vec<String>)> 
         return None;
     }
     Some(if windows {
+        // Target first: `/T` ahead of `/PID` kills the named process and walks
+        // no tree. See `taurus_tools::spawn::kill_command`.
         (
             "taskkill",
-            vec!["/T".into(), "/F".into(), "/PID".into(), pid.to_string()],
+            vec!["/PID".into(), pid.to_string(), "/T".into(), "/F".into()],
         )
     } else {
         // `--` is load-bearing. See above.
@@ -575,21 +586,39 @@ fn kill_command(pid: u32, windows: bool) -> Option<(&'static str, Vec<String>)> 
 /// Best-effort, and never the only kill: `kill_on_drop` still ends the hook
 /// itself, so a machine missing the tool is left where it was rather than
 /// worse off.
-async fn kill_tree(leader: Option<u32>) {
+async fn kill_tree(leader: Option<u32>) -> Result<(), String> {
     let Some(pid) = leader else {
-        return;
+        return Ok(());
     };
     let Some((program, args)) = kill_command(pid, cfg!(windows)) else {
-        return;
+        return Err(format!("{pid} does not name a process tree"));
     };
     let mut command = tokio::process::Command::new(program);
     command
-        .args(args)
+        .args(&args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // Captured, because a kill that ran and reached nothing says so on its
+        // own output and nowhere else.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     no_console(&mut command);
-    let _ = command.status().await;
+    let out = command
+        .output()
+        .await
+        .map_err(|e| format!("could not run {program}: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let said = [&out.stderr, &out.stdout]
+        .into_iter()
+        .map(|s| String::from_utf8_lossy(s).trim().to_string())
+        .find(|s| !s.is_empty())
+        .unwrap_or_else(|| "and said nothing".into());
+    Err(format!(
+        "{program} {} exited {:?}: {said}",
+        args.join(" "),
+        out.status.code()
+    ))
 }
 
 /// `CREATE_NO_WINDOW`, so a hook does not flash a console on Windows.
@@ -973,6 +1002,14 @@ mod tests {
             "ended for some other reason than its timeout: {reason:?} after {took:?}\n{}",
             tree()
         );
+        // The kill runs on a path where the tree was alive a moment ago, so it
+        // reporting trouble is a defect and not a race. Checked here because
+        // it names the cause directly, where the marker below only says that
+        // *something* survived — three CI rounds went into working out which.
+        assert!(
+            !reason.contains("may still be running"),
+            "the kill did not do its job: {reason}"
+        );
         // Asserted rather than assumed: a test that stopped something before it
         // had started would pass against the bug it was written for, which is
         // how the sibling test in `taurus_tools::jobs` first passed.
@@ -1017,10 +1054,10 @@ mod tests {
             Some((
                 "taskkill",
                 vec![
-                    "/T".to_string(),
-                    "/F".to_string(),
                     "/PID".to_string(),
-                    "4321".to_string()
+                    "4321".to_string(),
+                    "/T".to_string(),
+                    "/F".to_string()
                 ]
             ))
         );
