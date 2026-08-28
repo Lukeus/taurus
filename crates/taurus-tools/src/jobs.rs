@@ -635,8 +635,19 @@ mod tests {
         alive: &std::path::Path,
     ) -> String {
         if cfg!(windows) {
-            // A second file rather than a quoted command inside `start`, since
-            // batch quoting is where a test like this goes to die.
+            /*
+             * Two files, and the line is nothing but a path to one of them.
+             *
+             * Everything here was once a single `cmd /C` one-liner, and it
+             * never started a grandchild at all: `start ""` needs its empty
+             * title quoted, the whole line is one argument that Rust quotes
+             * again on the way to `cmd`, and cmd's own unquoting rules are not
+             * the ones Rust escaped for. The `start` silently did not run, so
+             * the test failed for having proved nothing rather than for the
+             * bug it watches. A batch file takes the quoting out of the
+             * argument, which is what the sibling test in `taurus_hooks`
+             * already does.
+             */
             let inner = dir.join("inner.bat");
             std::fs::write(
                 &inner,
@@ -647,10 +658,16 @@ mod tests {
                 ),
             )
             .unwrap();
-            format!(
-                "start \"\" /B cmd /C \"{}\" & ping -n 31 127.0.0.1 >NUL",
-                inner.display()
+            let outer = dir.join("outer.bat");
+            std::fs::write(
+                &outer,
+                format!(
+                    "@echo off\r\nstart \"\" /B cmd /C \"{}\"\r\nping -n 31 127.0.0.1 >NUL\r\n",
+                    inner.display()
+                ),
             )
+            .unwrap();
+            outer.display().to_string()
         } else {
             format!(
                 "sh -c 'echo x > \"{}\"; sleep 8; echo alive > \"{}\"' & sleep 30",
@@ -696,7 +713,14 @@ mod tests {
         // before it has spawned anything, and then nothing survives however
         // broken the code is — which is how the first version of this test
         // passed against the bug it was written for.
-        assert!(appears(&started).await, "the grandchild never started");
+        assert!(
+            appears(&started).await,
+            // With the command's own output, because the way this fails is a
+            // shell that never ran what it was given — a quoting mistake on a
+            // platform none of this is written on — and the shell says so.
+            "the grandchild never started; the command said: {:?}",
+            jobs.check(Some(id), Duration::ZERO).await
+        );
 
         jobs.stop(id).await.unwrap();
 
