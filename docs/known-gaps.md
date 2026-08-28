@@ -944,7 +944,13 @@ and they are the minority.
   is guessable: `taskkill` takes its switches *after* the target, and with
   `/T` ahead of `/PID` it kills the named process and walks no tree at all —
   measured on a runner, all three children left standing with their parent
-  links intact and nothing reported. The `--` and the range check on the pid
+  links intact and nothing reported. And on Windows the kill has to run while
+  the parent is *alive*, which meant the hook's wait could not be a future this
+  scope owns: `tokio::select!` declares its branches in an inner block and
+  drops them before an arm body runs, so `kill_on_drop` had already reaped the
+  shell — `taskkill` answered "the process 2172 not found" while its three
+  descendants stood there. The wait is a task now, held by the runtime, and
+  aborted after the kill rather than before it. The `--` and the range check on the pid
   are the other two: without the first, procps reads `-123` as a signal rather than a pid
   and signals *the caller's* group, so eleven of twelve kills on Ubuntu left
   the tree running and killed Taurus instead; without the second, a pid past

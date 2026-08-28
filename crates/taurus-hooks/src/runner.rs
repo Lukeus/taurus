@@ -398,8 +398,8 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
     };
 
     let stdin = child.stdin.take();
-    // Read before the child is moved into the future below, because the
-    // timeout branch needs it after that future has been dropped.
+    // Read before the child is moved into the task below, which is the last
+    // point this scope can ask.
     let group = child.id();
     let timeout = Duration::from_secs(hook.timeout_seconds);
 
@@ -433,26 +433,39 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
     };
 
     /*
-     * A `select!` rather than `timeout`, and the difference is the one thing
-     * on this path that is not obvious.
+     * Handed to a task, and the reason is the whole of the Windows half of
+     * this.
      *
-     * `timeout(..).await` consumes the future it was given, so the child — and
-     * with it `kill_on_drop` — is already gone by the time the timed-out arm
-     * runs. On Unix that costs nothing, because a process group outlives its
-     * leader and can still be signalled. On Windows there is no group to
-     * signal: `taskkill /T` finds a tree by walking down from the parent, and
-     * a parent that has already been reaped has no tree left to walk.
+     * The wait owns the child, and the child is `kill_on_drop`. So whatever
+     * holds that future has to still be holding it when the timeout branch
+     * runs, or the hook is already dead and reaped before anything has asked
+     * about its children. `timeout(..)` consumes the future it was given, so
+     * that is out — and `select!` is no better, whatever an earlier version of
+     * this comment claimed: it declares its futures in an inner block whose
+     * value is the poll, so they are dropped before the arm bodies run at all.
      *
-     * `select!` drops the losing future *after* the winning arm's body, so
-     * inside the arm below the hook is still alive and still has its children.
+     * On Unix none of that shows, because a process group outlives its leader
+     * and can still be signalled. On Windows there is no group: `taskkill /T`
+     * walks down from the parent, and a parent that has been reaped has no
+     * tree left to walk. Measured on a runner — the shell alive at 1.2s with
+     * both children, and `taskkill` at 2s answering "the process 2172 not
+     * found" while all three of its descendants stood there.
+     *
+     * A task is held by the runtime rather than by this scope, so `&mut` on
+     * its handle can lose the race without the child going anywhere. It is
+     * aborted after the kill, not before.
      */
+    let mut task = Abandoned(tokio::spawn(run));
     let output = tokio::select! {
         // So a hook that finishes exactly on the deadline is finished rather
         // than killed.
         biased;
-        result = run => match result {
-            Ok(output) => output,
-            Err(e) => return Verdict::Denied(format!("could not be run: {e}")),
+        joined = &mut task.0 => match joined {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => return Verdict::Denied(format!("could not be run: {e}")),
+            // The task itself came apart, which is a bug here rather than in
+            // the hook — but an event that can deny still has to deny.
+            Err(e) => return Verdict::Denied(format!("could not be waited for: {e}")),
         },
         _ = tokio::time::sleep(timeout) => {
             // A kill that could not be carried out is the user's business
@@ -465,6 +478,9 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
                     format!(", though what it started may still be running: {trouble}")
                 }
             };
+            // After the kill, so the tree above was still standing while it
+            // ran. This is what ends the hook itself, through `kill_on_drop`.
+            task.0.abort();
             return Verdict::Denied(format!(
                 "did not finish within {}s and was stopped{unfinished}",
                 hook.timeout_seconds
@@ -534,6 +550,22 @@ fn own_group(command: &mut tokio::process::Command) {
     command.process_group(0);
     #[cfg(not(unix))]
     let _ = command;
+}
+
+/// A running hook that does not outlive the scope waiting on it.
+///
+/// A `JoinHandle` dropped is a task that keeps running, and this one holds the
+/// child. Without the abort below, a turn cancelled while a hook was mid-flight
+/// would leave the hook running with nothing left that could stop it — which is
+/// the leak the tree kill exists to close, arriving through the other door.
+struct Abandoned(tokio::task::JoinHandle<std::io::Result<std::process::Output>>);
+
+impl Drop for Abandoned {
+    fn drop(&mut self) {
+        // Idempotent, so the timeout branch aborting explicitly — after its
+        // kill, deliberately — costs nothing here.
+        self.0.abort();
+    }
 }
 
 /// The command that ends a process tree, per platform.
