@@ -270,6 +270,9 @@ const ALIASES: Record<string, string> = {
   yaml: "yaml",
   yml: "yaml",
   toml: "toml",
+  md: "markdown",
+  markdown: "markdown",
+  mdx: "markdown",
 };
 
 /**
@@ -302,9 +305,134 @@ export function grammarFor(hint: string | null | undefined): string | null {
  * file does not say.
  */
 export function paint(source: string, grammar: string | null): Ink[] {
+  // Markdown is not a `Grammar` and could not be made into one honestly. Every
+  // entry above describes a language whose structure is comments, literals and
+  // words; Markdown's is headings, fences and emphasis, and there is no set of
+  // keywords that would say anything true about it. Rather than bend the shape
+  // until it fits, it gets its own walk — and gives back the same `Ink[]`, so
+  // the editor, the transcript and the diff paint it with the palette they
+  // already have.
+  if (grammar === "markdown") return markdown(source);
   const g = grammar ? GRAMMARS[grammar] : undefined;
   if (!g) return source.length ? [{ text: source, kind: "plain" }] : [];
   return scan(source, g);
+}
+
+/**
+ * Markdown source, tinted line by line.
+ *
+ * Line by line because that is how Markdown is structured: a heading is a line,
+ * a fence toggles a mode until the next fence, and a list marker is only a list
+ * marker at the start of one. What is *inside* a line — code spans, emphasis,
+ * links — is found by a second, smaller walk that runs only on the lines where
+ * it can matter.
+ *
+ * Deliberately shallow. This is colour for somebody editing prose, not a
+ * parser: it does not track reference links, nested emphasis, or setext
+ * headings, and it does not need to. What it does hold is the property every
+ * painter here holds — every character of the input comes back exactly once,
+ * in order — because the runs are laid under a textarea and one dropped
+ * character slides the rest of the file out of line.
+ */
+function markdown(source: string): Ink[] {
+  const out: Ink[] = [];
+  const push = (text: string, kind: InkKind) => {
+    if (!text) return;
+    // Runs of the same kind are merged as they are added rather than in a pass
+    // afterwards. A paragraph is otherwise one run per word.
+    const last = out[out.length - 1];
+    if (last && last.kind === kind) last.text += text;
+    else out.push({ text, kind });
+  };
+
+  let fenced = false;
+  // `split` on the newline rather than a line iterator, so the newlines
+  // themselves are still ours to put back — a painter that dropped them would
+  // paint the whole file on one line.
+  const lines = source.split("\n");
+  lines.forEach((line, i) => {
+    const newline = i < lines.length - 1 ? "\n" : "";
+
+    // A fence is its own line, and it flips what the lines after it mean. The
+    // opener and closer both tint as the code they delimit.
+    if (/^\s*(```|~~~)/.test(line)) {
+      fenced = !fenced;
+      push(line, "string");
+      push(newline, "plain");
+      return;
+    }
+    if (fenced) {
+      // Not painted as the language it declares. Inside an editor the fence's
+      // contents are still the file's text, and switching palettes mid-document
+      // is a rainbow rather than a reading aid.
+      push(line, "string");
+      push(newline, "plain");
+      return;
+    }
+
+    const heading = /^(#{1,6}\s)(.*)$/.exec(line);
+    if (heading) {
+      // The whole line, marker included. A heading is a heading because of how
+      // it reads, and tinting only the hashes would be colouring the syntax
+      // and not the thing.
+      push(heading[1] + heading[2], "keyword");
+      push(newline, "plain");
+      return;
+    }
+
+    // A block quote or a horizontal rule: the marker carries the meaning and
+    // the rest is ordinary prose.
+    const quoted = /^(\s*>+\s?)(.*)$/.exec(line);
+    if (quoted) {
+      push(quoted[1], "comment");
+      inline(quoted[2], push);
+      push(newline, "plain");
+      return;
+    }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+      push(line, "punct");
+      push(newline, "plain");
+      return;
+    }
+
+    // A list marker, numbered or not, and a task box after it.
+    const list = /^(\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)(.*)$/.exec(line);
+    if (list) {
+      push(list[1], "punct");
+      inline(list[2], push);
+      push(newline, "plain");
+      return;
+    }
+
+    inline(line, push);
+    push(newline, "plain");
+  });
+
+  return out;
+}
+
+/**
+ * What can appear inside one line of Markdown prose.
+ *
+ * One regular expression with alternatives rather than four passes, because
+ * they compete: the `` ` `` in `` `**not bold**` `` wins, and only a single
+ * left-to-right walk gets that right. Code spans are listed first for exactly
+ * that reason.
+ */
+function inline(line: string, push: (text: string, kind: InkKind) => void) {
+  const pattern =
+    /(`[^`]*`)|(\*\*[^*]+\*\*|__[^_]+__)|(\*[^*\s][^*]*\*|_[^_\s][^_]*_)|(\[[^\]]*\]\([^)]*\))/g;
+  let at = 0;
+  for (const m of line.matchAll(pattern)) {
+    const start = m.index ?? 0;
+    push(line.slice(at, start), "plain");
+    // Code spans read as code; emphasis and links read as marked-up prose. Two
+    // colours rather than four, because a line wearing four is harder to read
+    // than the one it replaced.
+    push(m[0], m[1] ? "string" : m[4] ? "fn" : "keyword");
+    at = start + m[0].length;
+  }
+  push(line.slice(at), "plain");
 }
 
 /** The grammar for SQL is assembled by `sql.ts`, which owns the vocabulary. */

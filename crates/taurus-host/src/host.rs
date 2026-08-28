@@ -32,7 +32,9 @@ use taurus_skills::proposal::ProposalSink;
 use taurus_skills::skill::SkillSummary;
 use taurus_skills::SharedCatalog;
 use taurus_tools::builtin::plan::UpdatePlan;
-use taurus_tools::builtin::present::{AskUser, ShowChart, ShowFlow, ShowSequence, ShowTable};
+use taurus_tools::builtin::present::{
+    AskUser, OpenFile, ShowChart, ShowFlow, ShowSequence, ShowTable,
+};
 use taurus_tools::PlanBoard;
 use taurus_tools::{
     Asker, CheckpointStore, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
@@ -40,6 +42,7 @@ use taurus_tools::{
 
 use crate::command;
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
+use crate::document::{fingerprint, Document, MAX_DOCUMENT_BYTES};
 use crate::freshness::Freshness;
 use crate::instructions::{self, Instructions};
 use crate::mcp_view::{LayerOf, McpServerView};
@@ -83,6 +86,7 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_tools::builtin::present::SHOW_SEQUENCE_TOOL,
     taurus_tools::builtin::present::SHOW_FLOW_TOOL,
     taurus_tools::builtin::present::ASK_USER_TOOL,
+    taurus_tools::builtin::present::OPEN_FILE_TOOL,
     taurus_tools::builtin::plan::UPDATE_PLAN_TOOL,
 ];
 
@@ -1052,6 +1056,11 @@ impl Host {
         registry.register(Arc::new(ShowSequence));
         registry.register(Arc::new(ShowFlow));
         registry.register(Arc::new(AskUser::new(self.asker.clone())));
+        // Per turn with the rest of them, and the argument is the sharpest
+        // here: the canvas is one pane in one window belonging to one
+        // conversation. A delegate opening a file would put it on a screen
+        // nobody had asked to change, in the middle of work they cannot see.
+        registry.register(Arc::new(OpenFile));
 
         // The *tool* is per turn, like the three above: a delegate writing into
         // the parent's checklist would report progress against a task nobody
@@ -2064,6 +2073,56 @@ impl Host {
         let mut left = memory::forget(&self.workspace.read().await.clone(), id)?;
         left.reverse();
         Ok(left)
+    }
+
+    /* ------------------------------------------------------------- canvas */
+
+    /// One text file, read for the editor.
+    ///
+    /// The canvas reads through here rather than being handed the text by the
+    /// tool that opened it, and that separation is the point. `open_file` says
+    /// *which* file; this says what is in it *now*. So a card in a conversation
+    /// from last week opens today's version, a file the model has just
+    /// rewritten reloads by calling this again, and the editor never shows
+    /// bytes that came from somewhere other than the disk.
+    ///
+    /// Guarded like every other read: the path comes from a transcript the
+    /// user may have reopened, or from a click, and neither is a reason to let
+    /// `../` out of the workspace.
+    pub async fn open_document(&self, path: &str) -> Result<Document, String> {
+        let workspace = self.workspace().await;
+        let resolved =
+            taurus_tools::path_guard::resolve(&workspace, path).map_err(|e| e.to_string())?;
+        let shown = taurus_tools::path_guard::display(&workspace, &resolved);
+
+        let meta =
+            std::fs::metadata(&resolved).map_err(|e| format!("Could not open {shown}: {e}"))?;
+        if meta.is_dir() {
+            return Err(format!("{shown} is a folder, not a file."));
+        }
+        if meta.len() > MAX_DOCUMENT_BYTES {
+            return Err(format!(
+                "{shown} is too large to open in the editor ({:.1} MB). Files up to {} MB open \
+                 here; anything bigger is better read in pieces.",
+                meta.len() as f64 / (1024.0 * 1024.0),
+                MAX_DOCUMENT_BYTES / (1024 * 1024)
+            ));
+        }
+
+        let text = std::fs::read_to_string(&resolved).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                format!("{shown} is not a text file, so there is nothing to show in the editor.")
+            } else {
+                format!("Could not open {shown}: {e}")
+            }
+        })?;
+
+        Ok(Document {
+            lines: text.lines().count() as u32,
+            fingerprint: fingerprint(&meta),
+            path: shown,
+            text,
+        })
     }
 
     /// Where a workspace's dataset list lives.

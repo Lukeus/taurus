@@ -267,32 +267,69 @@ describe("the provider picker in the header", () => {
  */
 describe("what a message carries from the pane it was sent in", () => {
   const events = { name: "events", path: "data/events.csv", format: "csv" as const };
+  const open = { path: "docs/known-gaps.md", selection: null };
 
   it("carries nothing from the conversation", () => {
     // A question asked while reading a conversation is about the conversation.
-    expect(onScreenFor("conversation", events, "SELECT 1")).toBeNull();
+    expect(onScreenFor("conversation", events, "SELECT 1", null)).toBeNull();
   });
 
   it("carries the dataset and its file from the pane", () => {
-    expect(onScreenFor("data", events, "")).toEqual({
-      dataset: "events",
-      path: "data/events.csv",
+    expect(onScreenFor("data", events, "", null)).toEqual({
+      data: { dataset: "events", path: "data/events.csv" },
     });
   });
 
   /** "Why does this not work?" is a question about the text in the box. */
   it("carries the query box when there is something in it", () => {
-    expect(onScreenFor("data", events, " SELECT count(*) FROM events ")?.sql).toBe(
-      "SELECT count(*) FROM events",
-    );
+    expect(
+      onScreenFor("data", events, " SELECT count(*) FROM events ", null)?.data?.sql,
+    ).toBe("SELECT count(*) FROM events");
   });
 
   it("leaves an empty box out rather than sending an empty string", () => {
-    expect(onScreenFor("data", events, "   \n ")).not.toHaveProperty("sql");
+    expect(onScreenFor("data", events, "   \n ", null)?.data).not.toHaveProperty("sql");
   });
 
   it("carries nothing when the pane is open on nothing", () => {
-    expect(onScreenFor("data", null, "SELECT 1")).toBeNull();
+    expect(onScreenFor("data", null, "SELECT 1", null)).toBeNull();
+  });
+
+  /*
+   * The canvas half. The rule that separates it from the dataset's is that a
+   * split is not a tab: the file stays on screen while the conversation is
+   * being read, so a question asked there is still a question about it.
+   */
+  it("carries the open file from the conversation, unlike a dataset", () => {
+    expect(onScreenFor("conversation", events, "", open)).toEqual({
+      document: { path: "docs/known-gaps.md" },
+    });
+  });
+
+  it("carries both halves when both are on screen", () => {
+    const on = onScreenFor("data", events, "", open);
+    expect(on?.data?.dataset).toBe("events");
+    expect(on?.document?.path).toBe("docs/known-gaps.md");
+  });
+
+  /** The one thing here that cannot be looked up: nothing on disk records
+   *  which lines somebody had highlighted. */
+  it("carries a selection with its line numbers", () => {
+    const on = onScreenFor("conversation", null, "", {
+      path: "src/lib.rs",
+      selection: { from: 40, to: 58, text: "fn retry() {}" },
+    });
+    expect(on?.document?.selection).toEqual({
+      from: 40,
+      to: 58,
+      text: "fn retry() {}",
+    });
+  });
+
+  it("leaves an empty selection out rather than sending a null", () => {
+    expect(onScreenFor("conversation", null, "", open)?.document).not.toHaveProperty(
+      "selection",
+    );
   });
 });
 

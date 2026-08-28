@@ -165,6 +165,12 @@ pub fn render(view: &TranscriptView, color: bool) -> String {
         // prints the query. What a terminal *does* have is the result, which
         // the tool returns as text either way.
         TranscriptView::Query { .. } => String::new(),
+
+        // And again. A canvas is a pane in a window; a terminal has no second
+        // place to put a file. The tool's own row already says which file was
+        // opened and where — that sentence is the whole of what a reader here
+        // can use, and `less +40 README.md` is what they will do with it.
+        TranscriptView::Document { .. } => String::new(),
     }
 }
 
@@ -542,6 +548,17 @@ mod tests {
     fn a_query_card_draws_nothing_here() {
         let view = taurus_tools::view::TranscriptView::Query {
             sql: "SELECT count(*) FROM events".into(),
+        };
+        assert_eq!(render(&view, false), "");
+    }
+
+    /// Third of the same kind. A terminal has nowhere to open a file, and the
+    /// tool's row already names it and the line.
+    #[test]
+    fn a_document_draws_nothing_here() {
+        let view = taurus_tools::view::TranscriptView::Document {
+            path: "README.md".into(),
+            lines: Some(taurus_tools::view::LineRange { from: 40, to: 58 }),
         };
         assert_eq!(render(&view, false), "");
     }

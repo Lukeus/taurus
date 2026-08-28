@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ChartCard } from "./ChartCard";
 import { DatasetCard } from "./DatasetCard";
+import { DocumentCard } from "./DocumentCard";
 import { QueryCard } from "./QueryCard";
 import { Waveform, waveFor } from "./Waveform";
 import { FlowCard } from "./FlowCard";
@@ -12,7 +13,7 @@ import { Attachments } from "./Attachments";
 import { QuestionsCard } from "./QuestionsCard";
 import { TableCard } from "./TableCard";
 import { duration, plural } from "../lib/format";
-import type { Answer } from "../lib/api";
+import type { Answer, LineRange } from "../lib/api";
 import type { Entry } from "../state/store";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -115,6 +116,9 @@ export type TranscriptProps = {
   /** Shows a dataset in the Data pane. Absent where there is no pane to show
    *  it in, which is a delegate's transcript for the same reason as above. */
   onOpenDataset?: (name: string) => void;
+  /** Opens a file in the canvas. Threaded exactly where `onOpenDataset` is,
+   *  and absent in the same place — a delegate's transcript has no canvas. */
+  onOpenDocument?: (path: string, lines: LineRange | null) => void;
   /** Takes a query the model ran to the pane's box and runs it there. Absent
    *  wherever `onOpenDataset` is, and for the same reason. */
   onRunQuery?: (sql: string) => void;
@@ -148,6 +152,7 @@ export function Transcript({
   onAnswer,
   onOpenDelegate,
   onOpenDataset,
+  onOpenDocument,
   onRunQuery,
   follow = true,
   find = null,
@@ -166,6 +171,7 @@ export function Transcript({
   const answer = useStable(onAnswer);
   const openDelegate = useStable(onOpenDelegate);
   const openDataset = useStable(onOpenDataset);
+  const openDocument = useStable(onOpenDocument);
   const runQuery = useStable(onRunQuery);
 
   // Follow the stream, but stop fighting the user the moment they scroll up.
@@ -238,6 +244,7 @@ export function Transcript({
           onAnswer={answer}
           onOpenDelegate={openDelegate}
           onOpenDataset={openDataset}
+          onOpenDocument={openDocument}
           onRunQuery={runQuery}
         />
       ))}
@@ -430,6 +437,7 @@ const TurnView = memo(function TurnView({
   onAnswer,
   onOpenDelegate,
   onOpenDataset,
+  onOpenDocument,
   onRunQuery,
 }: {
   turn: Turn;
@@ -441,6 +449,9 @@ const TurnView = memo(function TurnView({
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
   onOpenDataset?: (name: string) => void;
+  /** Opens a file in the canvas. Threaded exactly where `onOpenDataset` is,
+   *  and absent in the same place — a delegate's transcript has no canvas. */
+  onOpenDocument?: (path: string, lines: LineRange | null) => void;
   onRunQuery?: (sql: string) => void;
 }) {
   const self = useRef<HTMLElement>(null);
@@ -471,6 +482,7 @@ const TurnView = memo(function TurnView({
               onAnswer={onAnswer}
               onOpenDelegate={onOpenDelegate}
               onOpenDataset={onOpenDataset}
+              onOpenDocument={onOpenDocument}
               onRunQuery={onRunQuery}
             />
           </div>
@@ -559,12 +571,16 @@ const EntryView = memo(function EntryView({
   onAnswer,
   onOpenDelegate,
   onOpenDataset,
+  onOpenDocument,
   onRunQuery,
 }: {
   entry: Entry;
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
   onOpenDataset?: (name: string) => void;
+  /** Opens a file in the canvas. Threaded exactly where `onOpenDataset` is,
+   *  and absent in the same place — a delegate's transcript has no canvas. */
+  onOpenDocument?: (path: string, lines: LineRange | null) => void;
   onRunQuery?: (sql: string) => void;
 }) {
   if (entry.kind === "tool" && entry.view) {
@@ -579,6 +595,8 @@ const EntryView = memo(function EntryView({
         return <FlowCard view={entry.view} />;
       case "dataset":
         return <DatasetCard view={entry.view} onOpen={onOpenDataset} />;
+      case "document":
+        return <DocumentCard view={entry.view} onOpen={onOpenDocument} />;
       case "query":
         return <QueryCard view={entry.view} onRun={onRunQuery} />;
       case "questions":

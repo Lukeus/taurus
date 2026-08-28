@@ -459,6 +459,58 @@ Ordinary text that begins with a slash is never treated as a command:
 `/usr/bin/env is portable` is sent as written. A command has to name a skill or
 an agent, start with a letter, and be followed by a space or nothing.
 
+## The canvas
+
+Ask to see a file and it opens in an editor beside the conversation:
+
+> open the readme
+
+> show me where the retry logic is in `crates/taurus-host/src/host.rs`
+
+The second one opens on the passage rather than at the top — the model passes
+the lines it means, the editor scrolls there and selects them. It is the
+difference between being handed a file and being pointed at something in it.
+
+The transcript keeps a card for every file that was opened, and clicking one
+opens it again. The card holds a path and nothing else, so a conversation from
+last month opens today's version of the file — which is the version worth
+looking at, since the reason to go back is usually to find out whether what was
+said is still true.
+
+### It is a split, not a screen
+
+The conversation does not go anywhere. That is the whole point: the reason to
+have a file on screen is to talk about it while it is there. Drag the edge to
+give either side more room; close it with the ✕ and the conversation takes the
+width back.
+
+Markdown opens on its rendered preview, with a **Source** switch for the
+asterisks. Source files open as source, coloured by the same tokenizer the
+transcript uses.
+
+### Asking about a passage
+
+Select some text and **Ask about this** appears. It puts the beginning of a
+sentence in the message box — `About lines 40–58 of host.rs: ` — and leaves the
+rest to you. Nothing is sent until you send it.
+
+What travels with that message is the selection itself: the model is told which
+file was open, which lines were highlighted, and what they said. So "tighten
+this" and "does this handle the empty case?" are complete questions, which they
+are on screen and are not in a transcript. Without a selection it is told the
+file is open and to read it before answering anything about what it says.
+
+The chip above the message box is where that becomes visible — it names the file
+and the lines while you are typing, because context you cannot see is behaviour
+you cannot explain.
+
+### What it does not do yet
+
+The editor is read-only. Typing into it, saving, and reconciling an edit the
+model makes to a file you have open are the next slice; until then it is a place
+to read and to point at. It opens text — source, Markdown, config — one file at
+a time, up to 4 MB. See `docs/known-gaps.md`.
+
 ## Terminal
 
 <kbd>Ctrl</kbd>+<kbd>`</kbd> opens a shell in the bottom of the window, in the

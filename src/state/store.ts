@@ -14,6 +14,7 @@ import type {
   AppStatus,
   CreatedSession,
   Message,
+  LineRange,
   OnScreen,
   PermissionDecision,
   PermissionRequest,
@@ -136,6 +137,24 @@ interface Store {
    * header, listed turn by turn in the Changes drawer.
    */
   changed: string[];
+  /**
+   * A file the model has just asked to have opened, waiting to be shown.
+   *
+   * An errand rather than state. Held here because it arrives on the turn's
+   * event stream, which the store owns, and acted on in `App` because which
+   * pane is open is the app's business and not the conversation's.
+   *
+   * Never cleared, deliberately: clearing it would be a second write per turn
+   * to undo the first, and it would race the render that is acting on it. The
+   * reader keys off `at` instead, which makes an errand a *moment* rather than
+   * a flag somebody has to remember to lower.
+   *
+   * `at` is a counter, so `open_file` called twice on the same file at the same
+   * lines is two errands. Without it the second call would be an unchanged
+   * object and nothing would move — which is exactly the case where the model
+   * is saying "no, *here*".
+   */
+  opening: { path: string; lines: LineRange | null; at: number } | null;
   /**
    * How full the model's context is, as the next request would fill it.
    *
@@ -336,6 +355,7 @@ export const useStore = create<Store>((set, get) => ({
   sessions: [],
   entries: [],
   changed: [],
+  opening: null,
   context: null,
   busy: false,
   stopping: false,
@@ -453,6 +473,7 @@ export const useStore = create<Store>((set, get) => ({
       session,
       entries: [],
       changed: [],
+  opening: null,
       context: null,
       error: null,
       proposals: [],
@@ -489,6 +510,7 @@ export const useStore = create<Store>((set, get) => ({
         session,
         entries: entriesFromMessages(messages, switches),
         changed: [],
+  opening: null,
         context: null,
         error: null,
         proposals: [],
@@ -520,6 +542,7 @@ export const useStore = create<Store>((set, get) => ({
       session: null,
       entries: [],
       changed: [],
+  opening: null,
       context: null,
       proposals: [],
       agentProposals: [],
@@ -620,6 +643,12 @@ export const useStore = create<Store>((set, get) => ({
       // loaded. Waiting for the turn to end would leave that card reading
       // "not loaded" for as long as the turn keeps working.
       if (loadedADataset(events, get().entries)) void get().refreshDatasets();
+      // The canvas opens as the call is *announced*, not when it finishes.
+      // That is the whole feel of the feature: "open the readme" puts the
+      // readme on screen while the model is still typing the sentence about
+      // it, rather than a beat later once a tool has returned.
+      const open = opened(events);
+      if (open) set((s) => ({ opening: { ...open, at: (s.opening?.at ?? 0) + 1 } }));
     });
 
     try {
@@ -764,6 +793,7 @@ export const useStore = create<Store>((set, get) => ({
       sessions: [],
       entries: [],
       changed: [],
+  opening: null,
       context: null,
       permission: null,
       proposals: [],
@@ -1234,6 +1264,26 @@ function loadedADataset(events: UiEvent[], entries: Entry[]): boolean {
           entry.name === "load_dataset",
       ),
   );
+}
+
+/**
+ * The last file an `open_file` call in this batch asked for, if any.
+ *
+ * Read off the *view* rather than the tool name, because the view is the
+ * payload and the payload is the call's own input — so this needs no lookup
+ * against the entry list the way `loadedADataset` does.
+ *
+ * The last rather than the first: a turn that opens two files in one batch has
+ * changed its mind, and the one it ended on is the one it means.
+ */
+function opened(events: UiEvent[]): { path: string; lines: LineRange | null } | null {
+  let found: { path: string; lines: LineRange | null } | null = null;
+  for (const event of events) {
+    if (event.type === "tool_call_started" && event.view?.type === "document") {
+      found = { path: event.view.path, lines: event.view.lines ?? null };
+    }
+  }
+  return found;
 }
 
 /** `caption` is optional to the model and nullable across the boundary. */

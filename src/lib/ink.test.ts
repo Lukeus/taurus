@@ -165,3 +165,67 @@ describe("marking a span inside painted runs", () => {
     }
   });
 });
+
+describe("markdown", () => {
+  /** The property every painter here holds. A dropped character would slide the
+   *  colour off the text under a textarea and keep sliding. */
+  const exact = (source: string) =>
+    expect(
+      paint(source, "markdown")
+        .map((run) => run.text)
+        .join(""),
+    ).toBe(source);
+
+  it("gives back exactly what it was handed", () => {
+    exact("# Title\n\nSome **bold** and `code`.\n\n- one\n- two\n");
+    exact("```rust\nfn main() {}\n```\n");
+    exact("> quoted\n\n---\n\n1. first\n");
+    exact("");
+    exact("\n\n\n");
+    exact("no trailing newline");
+  });
+
+  it("finds a language from a filename", () => {
+    expect(grammarFor("README.md")).toBe("markdown");
+    expect(grammarFor("docs/known-gaps.md")).toBe("markdown");
+    expect(grammarFor("md")).toBe("markdown");
+  });
+
+  it("tints a heading whole, marker and all", () => {
+    const runs = paint("## Why this exists\n", "markdown");
+    expect(runs[0]).toEqual({ text: "## Why this exists", kind: "keyword" });
+  });
+
+  /** A fence flips what the lines after it mean, and flips back. */
+  it("keeps a fenced block one colour and stops at the closer", () => {
+    const runs = paint("```\n# inside\n```\n# outside\n", "markdown");
+    expect(runs.find((r) => r.text.includes("inside"))?.kind).toBe("string");
+    expect(runs.find((r) => r.text.includes("outside"))).toEqual({
+      text: "# outside",
+      kind: "keyword",
+    });
+  });
+
+  /** The reason the alternatives are one expression and code is listed first. */
+  it("lets a code span win over the emphasis inside it", () => {
+    const runs = paint("a `**not bold**` b", "markdown");
+    expect(runs.find((r) => r.text.startsWith("`"))).toEqual({
+      text: "`**not bold**`",
+      kind: "string",
+    });
+  });
+
+  it("separates a list marker from what follows it", () => {
+    const runs = paint("- [ ] do the thing\n", "markdown");
+    expect(runs[0].kind).toBe("punct");
+    expect(runs[0].text).toBe("- [ ] ");
+  });
+
+  it("paints a link as one run", () => {
+    const runs = paint("see [the docs](docs/x.md) for more", "markdown");
+    expect(runs.find((r) => r.text.startsWith("["))).toEqual({
+      text: "[the docs](docs/x.md)",
+      kind: "fn",
+    });
+  });
+});

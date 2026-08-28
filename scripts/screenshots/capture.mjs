@@ -61,6 +61,11 @@ const SHOTS = [
   // — it is the one card here that is neither a result nor a pointer but an
   // offer to ask again.
   { name: "query", shot: "query", theme: "dark" },
+  // The canvas: a Markdown file open beside the conversation that asked for
+  // it, with the passage the model pointed at selected. Two things only a
+  // photograph can check — that the split is a split, and that a line number
+  // lands on the line it counts.
+  { name: "canvas", shot: "canvas", theme: "dark" },
   // Where that button lands: the same query, asked again at full width, with
   // the offer to keep it. Captured by pressing the card rather than by opening
   // the tab, so the image is of the trip and not of the destination.

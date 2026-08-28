@@ -244,6 +244,27 @@ question again in the pane at full width. A query that fails, and a recipe run
 that does, each offer themselves back to Taurus with the error already in the
 message.
 
+**[The canvas](docs/capabilities.md#the-canvas)** — a file open beside the
+conversation, not instead of it.
+
+Ask to see a file and it opens in an editor to the right of the transcript.
+"Show me where the retry logic is" opens on that passage with it selected — the
+model passes the lines it means, so it can point rather than quote.
+
+![A Markdown file open beside the conversation that asked for it, with the
+lines the model pointed at selected](docs/screenshots/canvas.png)
+
+Select a passage and **Ask about this** starts a sentence in the message box.
+What travels with that message is the selection itself — which file, which
+lines, and what they said — so "tighten this" is a complete question, which it
+is on screen and is not in a transcript. The chip above the box says so while
+you type, because context you cannot see is behaviour you cannot explain.
+
+It is read-only for now: a place to read and to point at. Typing into it is the
+next slice, and the reason it is a separate one is that the moment both you and
+the model can write the same file, an edit landing under an unsaved buffer has
+to be reconciled rather than silently won.
+
 **[Configuration](docs/configuration.md)** — providers, keys, MCP servers, and
 web search.
 

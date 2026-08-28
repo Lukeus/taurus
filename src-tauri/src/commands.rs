@@ -35,7 +35,7 @@ use taurus_host::traces::{self, TraceReport};
 use taurus_host::trust::TrustStatus;
 use taurus_host::usage::{self, UsageReport};
 use taurus_host::{
-    sessions, Attachment, BackendKind, Checkpoint, Commit, CustomTheme, Host, KeyStatus,
+    sessions, Attachment, BackendKind, Checkpoint, Commit, CustomTheme, Document, Host, KeyStatus,
     McpServerDraft, McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus,
     Rewind, SessionLog, SessionMeta, Settings, Switch, Theme, ThemeFile, TurnChange, TurnRef,
 };
@@ -1415,6 +1415,19 @@ pub async fn dataset_page(
     limit: u64,
 ) -> CmdResult<DataPage> {
     state.host.dataset_page(&name, offset, limit).await
+}
+
+/// One text file, read for the canvas.
+///
+/// Called when a document is opened and again whenever it has to be re-read —
+/// the model rewrote it, the window came back into focus. Cheap enough to be
+/// the answer to both: a file small enough for an editor is one `read`.
+///
+/// Not the tool's job to supply this, deliberately. See `taurus_host::document`
+/// for why a card carries a path and never a copy of the file.
+#[tauri::command]
+pub async fn open_document(state: State<'_, Arc<AppState>>, path: String) -> CmdResult<Document> {
+    state.host.open_document(&path).await
 }
 
 /// Answers one read-only SQL question over every dataset loaded here.
