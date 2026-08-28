@@ -932,14 +932,44 @@ and they are the minority.
   that path would re-encode every logo on the machine several times a turn. The
   cost is that a *different* theme's problems, in a file you are not using, are
   not reported until you open Settings › Appearance.
-- **A hook's timeout kills the hook, not its grandchildren.** `timeout_seconds`
-  is enforced by killing the program the hook names — the whole of it, including
-  the wait for a hook that never reads the payload off its stdin. What it does
-  not reach is anything that program started and left running: a hook whose
-  script backgrounds a job and returns has put that job outside what a timeout
-  can undo. Covering it means a process group per hook — `setsid` and `killpg`
-  on Unix, a Job Object on Windows — which is the same gap every other child
-  process in the harness has, since `kill_on_drop` is what the terminal and the
-  skill scripts use too. What it costs today: a hook that leaks a background
-  process leaks one per call, and nothing in the app will say so. The direct
-  case, which is the one people write, is covered and tested.
+- **Ending a child reaches its whole tree, by running the tool each platform
+  ships for it.** A hook that hits its timeout, and a background command that
+  is Stopped, are both usually a shell — so killing the child alone reached
+  `/bin/sh` or `cmd.exe` and left the linter, the build or the watcher running,
+  while the app reported the thing as stopped. Now the tree goes: a process
+  group and `kill -KILL -- -<pgid>` on Unix, `taskkill /T /F` on Windows, both
+  tested against a real process tree on both platforms in CI. What it costs is
+  a fork on the way past, and only on a path where something has already hung
+  or been stopped by hand. The shape of both commands is a scar, and neither
+  is guessable: `taskkill` takes its switches *after* the target, and with
+  `/T` ahead of `/PID` it kills the named process and walks no tree at all —
+  measured on a runner, all three children left standing with their parent
+  links intact and nothing reported. And on Windows the kill has to run while
+  the parent is *alive*, which meant the hook's wait could not be a future this
+  scope owns: `tokio::select!` declares its branches in an inner block and
+  drops them before an arm body runs, so `kill_on_drop` had already reaped the
+  shell — `taskkill` answered "the process 2172 not found" while its three
+  descendants stood there. The wait is a task now, held by the runtime, and
+  aborted after the kill rather than before it. The `--` and the range check on the pid
+  are the other two: without the first, procps reads `-123` as a signal rather than a pid
+  and signals *the caller's* group, so eleven of twelve kills on Ubuntu left
+  the tree running and killed Taurus instead; without the second, a pid past
+  `i32::MAX` negates to `-1`, which on Linux means every process the user owns
+  — it took out three CI runners from inside a test written to prove the
+  opposite. All three were invisible because the kill discarded its own
+  output; it is now read, and a kill that could not be carried out says so on
+  the hook's own refusal rather than in a log nobody reads. What it is not is airtight on Windows: `taskkill /T`
+  walks parent-child links, so a process whose parent died before the kill is
+  out of its reach, where a Job Object would still catch it. Closing that last
+  gap means `windows-sys` and an `unsafe` block, and `unsafe_code` is
+  `forbid` across this workspace — a policy worth more than the remaining
+  sliver, given the kill now runs while the parent is deliberately still alive.
+- **Two other children are still killed one process at a time.** A *foreground*
+  `run_command` is left in the parent's process group on purpose — a terminal's
+  own Ctrl-C then reaches the whole tree without anything in this code having
+  to run first, which is worth more than a group would be — so its timeout
+  kills the shell alone. And a skill's script (`taurus_skills::tools`) uses
+  `kill_on_drop` with no tree kill at all. Both are the same small change as
+  above wherever it is wanted; neither has been made, because neither has the
+  safety argument the hook timeout does — a hook is a guard whose whole promise
+  is that it stopped something.

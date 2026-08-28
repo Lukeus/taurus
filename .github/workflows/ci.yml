@@ -19,6 +19,13 @@ jobs:
   workflows:
     name: Lint workflows
     runs-on: ubuntu-22.04
+    # Every job here is bounded, because the default is six hours and a test
+    # that hangs is a thing that happens: `kill -KILL -<pid>` with a pid out of
+    # range means "every process this user owns" on Linux, so a bad argument
+    # killed the runner agent from inside the test run and the job sat there
+    # with no output until somebody cancelled it. Each ceiling below is roughly
+    # double what the step costs when it is working.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       # Pinned. Unpinned, a new actionlint release turns unrelated pull requests
@@ -32,6 +39,7 @@ jobs:
   check:
     name: Lint and test
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -77,6 +85,9 @@ jobs:
       matrix:
         os: [macos-14, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
+    # Generous, because Windows is the slow one and it is slow honestly: a cold
+    # release build of the app is six minutes there on its own.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -100,11 +111,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Platform-specific behavior lives in these three: process spawning and
-      # path handling in tools, interpreter resolution in skills, and the
-      # Windows launcher shim in mcp. Run their tests on every OS even though
-      # the rest ran on Linux only.
-      - run: cargo test -p taurus-tools -p taurus-skills -p taurus-mcp
+      # Platform-specific behavior lives in these four: process spawning and
+      # path handling in tools, interpreter resolution in skills, the Windows
+      # launcher shim in mcp, and — since hooks run programs and have to be
+      # able to stop them again — ending a process tree, which is a process
+      # group on Unix and `taskkill /T` on Windows. Run their tests on every OS
+      # even though the rest ran on Linux only.
+      - run: cargo test -p taurus-tools -p taurus-skills -p taurus-mcp -p taurus-hooks
 
       # Through the same script a contributor runs, in the default shell of each
       # OS. Pinning this step to bash was what kept a Windows-only break in the

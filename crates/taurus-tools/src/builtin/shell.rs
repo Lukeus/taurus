@@ -208,7 +208,7 @@ impl Tool for RunCommand {
             }
         }
 
-        let mut child = spawn_piped(program, args, &cwd, input.stdin.is_some())?;
+        let mut child = spawn_piped(program, args, &cwd, input.stdin.is_some(), false)?;
         feed_stdin(&mut child, input.stdin.as_deref()).await;
 
         // Drain the pipes concurrently with the wait. A child that fills its
@@ -312,6 +312,19 @@ fn spawn_piped(
     args: Vec<String>,
     cwd: &std::path::Path,
     stdin: bool,
+    // `own_group`: whether the child leads a process group of its own.
+    //
+    // True only for a background command, which is ended deliberately later —
+    // by Stop, or by the workspace closing — and whose whole tree has to go
+    // with it. `kill_on_drop` and `start_kill` reach the child alone, and the
+    // child of a `sh -c` is the shell rather than the program somebody wanted
+    // stopped.
+    //
+    // False in the foreground, on purpose. A command left in the parent's
+    // group is one the terminal's own Ctrl-C reaches, whole tree included,
+    // without anything here having to run first — and that is worth keeping
+    // over a group this code would then have to signal itself.
+    own_group: bool,
 ) -> Result<tokio::process::Child, ToolError> {
     let mut command = Command::new(program);
     command
@@ -325,6 +338,9 @@ fn spawn_piped(
     // end of the call, so this does not end one early — it is what ends them
     // all when the runtime goes away.
     command.kill_on_drop(true);
+    if own_group {
+        crate::spawn::own_group(&mut command);
+    }
     // Taurus has no console of its own, so on Windows starting `cmd` here
     // would open one — a black window flashing up on every command.
     crate::spawn::no_console(&mut command);
@@ -398,7 +414,7 @@ async fn start_in_background(
         None => None,
     };
 
-    let mut child = spawn_piped(program, args, &cwd, input.stdin.is_some())?;
+    let mut child = spawn_piped(program, args, &cwd, input.stdin.is_some(), true)?;
     feed_stdin(&mut child, input.stdin.as_deref()).await;
     let id = jobs.adopt(input.command.clone(), child, sweep).await;
 
