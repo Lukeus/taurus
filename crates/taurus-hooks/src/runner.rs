@@ -338,13 +338,23 @@ fn compile(globs: &[String]) -> Option<globset::GlobSet> {
         return None;
     }
     let mut builder = globset::GlobSetBuilder::new();
+    let mut usable = 0;
     for glob in globs {
         match globset::Glob::new(glob) {
             Ok(glob) => {
                 builder.add(glob);
+                usable += 1;
             }
             Err(e) => warn!(%glob, %e, "unusable hook path glob; ignoring this filter"),
         }
+    }
+    // Nothing compiled, so there is no filter left to apply. Returning the
+    // empty set instead would be worse than useless: an empty `GlobSet`
+    // matches *nothing*, so the hook would stop running at all — silently, and
+    // in the one direction this crate never takes. Dropping the filter applies
+    // it too widely, which is the failure the caller's comment asks for.
+    if usable == 0 {
+        return None;
     }
     builder.build().ok()
 }
@@ -363,7 +373,13 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("TAURUS_HOOK_EVENT", payload.event.label())
-        .env("TAURUS_WORKSPACE", &payload.workspace);
+        .env("TAURUS_WORKSPACE", &payload.workspace)
+        // A timeout is only a timeout if it takes the process with it. Tokio
+        // *detaches* a child whose future is dropped unless this is set, so
+        // without it the branch below reported a hook as "stopped" and left it
+        // running — a turn leaking one every time a hook hung, and the message
+        // saying the opposite of what had happened.
+        .kill_on_drop(true);
     if let Some(tool) = &payload.tool {
         command.env("TAURUS_TOOL", tool);
     }
@@ -378,15 +394,39 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
         }
     };
 
-    if let Some(mut stdin) = child.stdin.take() {
-        // A hook that ignores stdin closes it, and writing to a closed pipe is
-        // not an error worth failing a turn over.
-        let _ = stdin.write_all(&body).await;
-        let _ = stdin.shutdown().await;
-    }
-
+    let stdin = child.stdin.take();
     let timeout = Duration::from_secs(hook.timeout_seconds);
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+
+    /*
+     * Fed inside the timeout, and at the same time as the wait.
+     *
+     * A pipe holds about 64KB. The payload carries the tool's whole input, so
+     * a `write_file` of anything sizeable fills it — and a hook that never
+     * reads stdin then blocks this write until it exits of its own accord.
+     * Writing *before* the timeout started made that wait unbounded: the
+     * hook's `timeout_seconds` was skipped entirely, and a hook that should
+     * have been denied for hanging came back with whatever it eventually
+     * exited with. Measured at 20s against a 1s timeout, ending in a pass.
+     *
+     * Joined rather than sequenced for the same reason `wait_with_output`
+     * reads both output pipes at once: two pipes and one thread is a deadlock
+     * waiting for whichever fills first.
+     */
+    let run = async move {
+        let feed = async move {
+            if let Some(mut stdin) = stdin {
+                // A hook that ignores stdin closes it, and writing to a closed
+                // pipe is not an error worth failing a turn over.
+                let _ = stdin.write_all(&body).await;
+                let _ = stdin.shutdown().await;
+                // Dropped here, which is what a hook reading to EOF is waiting
+                // for.
+            }
+        };
+        tokio::join!(feed, child.wait_with_output()).1
+    };
+
+    let output = match tokio::time::timeout(timeout, run).await {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => return Verdict::Denied(format!("could not be run: {e}")),
         Err(_) => {
@@ -481,6 +521,35 @@ mod tests {
         path.display().to_string()
     }
 
+    /// Whether a process still exists, without signalling it.
+    #[cfg(unix)]
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Waits for a process to actually be gone, up to a generous ceiling.
+    ///
+    /// Polled rather than slept once. Delivering a signal and reaping the
+    /// child is fast but not instant, and this crate's tests run alongside
+    /// every other test binary in the workspace — a fixed wait tuned on an
+    /// idle machine is a test that fails a few times a week on a busy one and
+    /// teaches everybody to rerun rather than to read. The ceiling is long
+    /// enough that reaching it means the kill genuinely did not happen.
+    #[cfg(unix)]
+    async fn gone(pid: &str) -> bool {
+        for _ in 0..100 {
+            if !alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
     fn hook(command: &str, on: HookEvent) -> Hook {
         Hook {
             on,
@@ -568,8 +637,23 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_that_hangs_is_stopped_rather_than_hanging_the_turn() {
+        /*
+         * The bug this grew to cover: this test used to assert only that the
+         * *message* said the hook had been stopped, and the message was wrong.
+         * Tokio detaches a child whose future is dropped unless the command
+         * asked for `kill_on_drop`, so the hook was reported as stopped and
+         * left running — one leaked process per hook that ever hung, and a
+         * turn saying the opposite of what had happened. Nothing caught it,
+         * because the only thing being checked was a string this file also
+         * wrote.
+         */
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "slow", "sleep 30");
+        let pidfile = dir.path().join("pid");
+        let path = script(
+            dir.path(),
+            "slow",
+            &format!("echo $$ > {}\nsleep 30", pidfile.display()),
+        );
         let mut slow = hook(&path, HookEvent::PreToolUse);
         slow.timeout_seconds = 1;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
@@ -580,6 +664,69 @@ mod tests {
 
         assert!(outcome.is_denied());
         assert!(outcome.denied.unwrap().contains("did not finish"));
+
+        let pid = std::fs::read_to_string(&pidfile).expect("the hook never started");
+        assert!(
+            gone(pid.trim()).await,
+            "the hook is still running after the runner said it was stopped"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hook_that_ignores_a_large_payload_still_hits_its_timeout() {
+        /*
+         * The bug this exists for, and it is the more serious of the two: the
+         * payload was written to stdin *before* the timeout started. A pipe
+         * holds about 64KB and the payload carries the tool's whole input, so
+         * a `write_file` of any size filled it — and against a hook that never
+         * reads stdin, that write blocked until the hook exited on its own.
+         *
+         * The timeout was therefore skipped entirely. Measured at 20s against
+         * a 1s limit, and it did not merely run long: the hook exited 0 on its
+         * own terms afterwards, so the call was **allowed**. That is the one
+         * outcome this crate promises cannot happen — "a hook that cannot run
+         * refuses" is the whole of its safety argument.
+         */
+        let dir = tempfile::tempdir().unwrap();
+        let path = script(dir.path(), "deaf", "sleep 20");
+        let mut deaf = hook(&path, HookEvent::PreToolUse);
+        deaf.timeout_seconds = 1;
+        let runner = HookRunner::new(vec![("deaf".into(), deaf)]);
+
+        // Comfortably past a pipe buffer, which is what a real `write_file`
+        // call carrying a file of any size looks like.
+        let payload = HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
+            "write_file",
+            serde_json::json!({ "content": "x".repeat(1_000_000) }),
+            vec![],
+        );
+
+        let started = std::time::Instant::now();
+        let outcome = runner.run(&payload).await;
+        let took = started.elapsed();
+
+        assert!(outcome.is_denied(), "a hook that never answered was obeyed");
+        assert!(
+            took < Duration::from_secs(5),
+            "the 1s timeout took {took:?}, so stdin blocked outside it"
+        );
+    }
+
+    #[test]
+    fn a_path_filter_that_cannot_compile_is_dropped_rather_than_silencing_the_hook() {
+        /*
+         * `compile` used to hand back the empty `GlobSet` it had built, and an
+         * empty set matches *nothing* — so a hook whose globs all failed
+         * stopped running at all, quietly, which is the direction this crate
+         * never takes. Load-time validation means no real config reaches here,
+         * but the fallback has to fail the way its own comment says it does.
+         */
+        assert!(compile(&["[".to_string()]).is_none());
+        // And one bad glob among good ones keeps the good ones.
+        let set = compile(&["[".to_string(), "src/**".to_string()]).expect("no filter compiled");
+        assert!(set.is_match("src/widget.rs"));
+        assert!(!set.is_match("docs/readme.md"));
     }
 
     #[cfg(unix)]

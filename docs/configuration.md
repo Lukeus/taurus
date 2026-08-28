@@ -173,7 +173,14 @@ because nobody knows. On `post_tool_use` and `stop` there is nothing left to
 stop, so a failure there is reported and the turn continues.
 
 `timeout_seconds` defaults to 30. A hook runs inside a turn, so a hook that
-hangs is a turn that hangs.
+hangs is a turn that hangs — and a hook that reaches its limit is killed and
+counted as a refusal, on the events that can still refuse. The limit covers the
+whole of it, including the payload being handed to a hook that never reads its
+stdin.
+
+What the kill reaches is the program the hook names, not anything that program
+started in the background. A hook that backgrounds a long job and returns is
+outside what a timeout can undo — see [Known gaps](known-gaps.md).
 
 Seeing what will run, and why something is not:
 

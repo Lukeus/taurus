@@ -932,3 +932,14 @@ and they are the minority.
   that path would re-encode every logo on the machine several times a turn. The
   cost is that a *different* theme's problems, in a file you are not using, are
   not reported until you open Settings › Appearance.
+- **A hook's timeout kills the hook, not its grandchildren.** `timeout_seconds`
+  is enforced by killing the program the hook names — the whole of it, including
+  the wait for a hook that never reads the payload off its stdin. What it does
+  not reach is anything that program started and left running: a hook whose
+  script backgrounds a job and returns has put that job outside what a timeout
+  can undo. Covering it means a process group per hook — `setsid` and `killpg`
+  on Unix, a Job Object on Windows — which is the same gap every other child
+  process in the harness has, since `kill_on_drop` is what the terminal and the
+  skill scripts use too. What it costs today: a hook that leaks a background
+  process leaks one per call, and nothing in the app will say so. The direct
+  case, which is the one people write, is covered and tested.
