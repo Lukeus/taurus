@@ -977,10 +977,19 @@ mod tests {
         slow.timeout_seconds = 2;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
 
+        // Read while the hook is still inside its timeout, because the kill
+        // reported the hook's own shell already gone and the question that
+        // answers is whether it ever lived that long.
+        let midway = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            tree()
+        });
+
         let began = std::time::Instant::now();
         let outcome = runner
             .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
             .await;
+        let midway = midway.await.unwrap_or_else(|e| format!("({e})"));
         let took = began.elapsed();
         // The moment that matters: what the kill left standing, read before
         // anything has had time to exit on its own. The tree at *failure* time
@@ -1008,7 +1017,9 @@ mod tests {
         // *something* survived — three CI rounds went into working out which.
         assert!(
             !reason.contains("may still be running"),
-            "the kill did not do its job: {reason}"
+            "the kill did not do its job: {reason}\
+             \n== 1.2s in, before the timeout ==\n{midway}\
+             \n== a moment after the kill ==\n{after_the_kill}"
         );
         // Asserted rather than assumed: a test that stopped something before it
         // had started would pass against the bug it was written for, which is
