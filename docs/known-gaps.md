@@ -589,23 +589,25 @@ and they are the minority.
   shows it for the length of the session. The fix is the same — the two files
   the Windows bundle ships beside the executable — and the startup log line
   saying whether they were found is still the only warning available.
-- **The canvas is read-only, and holds one file.** You can open a file beside
-  the conversation, read it, select a passage and ask about it. You cannot type
-  into it. That is the next slice rather than an oversight, and the reason it is
-  a separate one is that writing is where the hard part lives: the moment both
-  you and the model can change the same file, an edit landing under an unsaved
-  buffer has to be reconciled rather than silently won, which means a
-  compare-and-swap save, a conflict bar, and a rule about which of the two
-  versions is the one on screen. `Document.fingerprint` is already carried for
-  it. One file at a time for a smaller reason: tabs are a second navigation
-  model to build and to explain, and "open the readme while we talk about it"
-  does not need one.
-- **Nothing tells the canvas a file changed underneath it.** The model writing
-  to an open file, or a `git checkout` in the terminal dock, leaves the editor
-  showing what it read when it opened. Reopening the file re-reads it. The
-  signal to act on already exists — `files_changed` arrives on the turn's own
-  event stream — and hooking it up belongs with the writing slice, where a
-  reload has to know whether there are unsaved edits to protect.
+- **The canvas holds one file at a time.** Opening another replaces it. Tabs
+  are a second navigation model to build and to explain, and "open the readme
+  while we talk about it" does not need one. What that costs is comparing two
+  files side by side, which is still the terminal dock's job.
+- **A canvas edit is invisible to the Changes drawer and to rewind.** The
+  drawer is what this *conversation* changed and the way back from it; your own
+  typing is neither, so git is the undo that covers it. The cost is real and
+  worth naming: rewinding a turn restores the files that turn wrote, and if you
+  had also been typing in one of them, that typing is inside what gets restored
+  over. Nothing warns you.
+- **A file changing outside a turn goes unnoticed.** The canvas reloads when
+  the running turn writes the file — `files_changed` says so on the turn's own
+  event stream — and when the document is opened again. A `git checkout` in the
+  terminal dock, or another editor, is neither, so the canvas goes on showing
+  what it read. The save is still safe: it compares fingerprints and refuses
+  rather than overwriting. But you find out at the moment you save rather than
+  at the moment it happened. Watching the filesystem properly is a dependency
+  and a lifetime to get right; refreshing on window focus, the way
+  `rescan_library` does, is the cheap version and is not written.
 - **The editor folds nothing, finds nothing, and has one cursor.** No code
   folding, no in-editor find-and-replace, no multiple cursors, no bracket
   matching. Each is a feature in its own right rather than a detail of this one,

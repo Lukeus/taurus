@@ -66,6 +66,10 @@ const SHOTS = [
   // photograph can check — that the split is a split, and that a line number
   // lands on the line it counts.
   { name: "canvas", shot: "canvas", theme: "dark" },
+  // The moment the two writers meet: Taurus wrote the file while there was
+  // typing in it, so both versions exist and neither has been chosen. The only
+  // picture of the rule the whole write slice is built around.
+  { name: "canvas-conflict", shot: "canvas-conflict", theme: "dark" },
   // Where that button lands: the same query, asked again at full width, with
   // the offer to keep it. Captured by pressing the card rather than by opening
   // the tab, so the image is of the trip and not of the destination.

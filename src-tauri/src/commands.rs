@@ -37,7 +37,8 @@ use taurus_host::usage::{self, UsageReport};
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, CustomTheme, Document, Host, KeyStatus,
     McpServerDraft, McpServerRef, McpServerView, Note, Problem, ProviderConfig, Repo, RepoStatus,
-    Rewind, SessionLog, SessionMeta, Settings, Switch, Theme, ThemeFile, TurnChange, TurnRef,
+    Rewind, Saved, SessionLog, SessionMeta, Settings, Switch, Theme, ThemeFile, TurnChange,
+    TurnRef,
 };
 
 use crate::state::{AppState, SessionEntry};
@@ -1428,6 +1429,22 @@ pub async fn dataset_page(
 #[tauri::command]
 pub async fn open_document(state: State<'_, Arc<AppState>>, path: String) -> CmdResult<Document> {
     state.host.open_document(&path).await
+}
+
+/// Writes what the canvas holds back to the file.
+///
+/// `fingerprint` is the one the editor was handed when it read, and the whole
+/// of the guarantee: a save that does not match what is on disk writes nothing
+/// and comes back as `Saved::Stale` carrying the other version. That is not an
+/// error — see `taurus_host::document`.
+#[tauri::command]
+pub async fn save_document(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+    text: String,
+    fingerprint: String,
+) -> CmdResult<Saved> {
+    state.host.save_document(&path, &text, &fingerprint).await
 }
 
 /// Answers one read-only SQL question over every dataset loaded here.

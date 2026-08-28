@@ -692,7 +692,14 @@ impl Tool for ListDir {
     }
 }
 
-fn to_crlf(s: &str) -> String {
+/// Rewrites every line ending as CRLF, whatever it was.
+///
+/// Public because the canvas writes the same files this tool does, and the rule
+/// about line endings has to be one rule. Two copies would drift, and the way
+/// they would drift is that one writer starts rewriting every line of a file it
+/// was asked to change three lines of — which reads as a whole-file diff in
+/// review and hides the actual change inside it.
+pub fn to_crlf(s: &str) -> String {
     s.replace("\r\n", "\n").replace('\n', "\r\n")
 }
 

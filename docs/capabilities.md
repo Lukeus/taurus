@@ -504,12 +504,43 @@ The chip above the message box is where that becomes visible — it names the fi
 and the lines while you are typing, because context you cannot see is behaviour
 you cannot explain.
 
+### Typing in it
+
+The editor takes edits, and saves them itself about a second after you stop
+typing — there is no ⌘S and nothing to remember. That is not a convenience: the
+whole argument for the canvas is that you and Taurus are looking at the same
+file, and an unsaved buffer breaks it silently. You would ask about the
+paragraph on screen and get an answer about the one on disk.
+
+The header says **Unsaved** while a save is pending and **Saving…** while it
+runs. Silence means it is written.
+
+### When you both write at once
+
+Taurus edits files too, and neither of you waits for the other.
+
+If Taurus writes the file you have open and you have not typed anything, the
+editor takes the new version and tints what changed for a second — you watch it
+edit your document. If you *have* typed something, nothing is taken: a bar
+appears saying the file changed while you were typing, with **Keep mine** and
+**Take theirs**. Your version stays in the editor either way.
+
+A save never overwrites something it has not seen. The editor holds the
+fingerprint of the file as it read it, and a save that does not match is refused
+rather than applied — so the race is closed at the write, not papered over in
+the UI. While a conflict is open, Taurus is told that the file on disk is not
+what is on screen, so it cannot answer confidently from the wrong version.
+
+CRLF files stay CRLF. A browser reports its editor's contents with LF endings
+whatever went in, so without this a three-line edit would land as a diff
+touching every line in the file.
+
 ### What it does not do yet
 
-The editor is read-only. Typing into it, saving, and reconciling an edit the
-model makes to a file you have open are the next slice; until then it is a place
-to read and to point at. It opens text — source, Markdown, config — one file at
-a time, up to 4 MB. See `docs/known-gaps.md`.
+One file at a time — opening another replaces it. It opens text (source,
+Markdown, config) up to 4 MB. There is no folding, no in-editor find, and one
+cursor. A file changed outside a turn — a `git checkout` in the dock — is
+noticed when you save rather than when it happens. See `docs/known-gaps.md`.
 
 ## Terminal
 

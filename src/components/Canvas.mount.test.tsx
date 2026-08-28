@@ -70,7 +70,14 @@ function canvas(over: Partial<Parameters<typeof Canvas>[0]> = {}) {
       path="src/main.rs"
       reveal={null}
       document={doc("src/main.rs", CODE)}
+      draft={over.draft ?? over.document?.text ?? CODE}
+      state="idle"
+      flash={null}
+      conflict={null}
       error={null}
+      onEdit={noop}
+      onKeepMine={noop}
+      onTakeTheirs={noop}
       onSelect={noop}
       onAsk={noop}
       onClose={noop}
@@ -107,7 +114,14 @@ describe("the canvas", () => {
         path={null}
         reveal={null}
         document={null}
+        draft=""
+        state="idle"
+        flash={null}
+        conflict={null}
         error={null}
+        onEdit={noop}
+        onKeepMine={noop}
+        onTakeTheirs={noop}
         onSelect={noop}
         onAsk={noop}
         onClose={noop}
@@ -236,6 +250,102 @@ describe("the canvas", () => {
     expect(onAsk).toHaveBeenCalledWith("About line 1 of main.rs: ");
   });
 
+  /* ------------------------------------------------------- saving state */
+
+  /** "Saved" that never goes away is furniture; the resting state says
+   *  nothing, and the line count keeps its place. */
+  it("says nothing while there is nothing to say", () => {
+    const host = canvas();
+    expect(host.querySelector(".canvas-state")).toBeNull();
+    expect(host.querySelector(".canvas-count")?.textContent).toBe("5 lines");
+  });
+
+  it("says where the save has got to, and gives up the line count for it", () => {
+    for (const [state, word] of [
+      ["typing", "Unsaved"],
+      ["saving", "Saving…"],
+      ["failed", "Not saved"],
+    ] as const) {
+      const host = canvas({ state });
+      expect(host.querySelector(".canvas-state")?.textContent).toBe(word);
+      expect(host.querySelector(".canvas-count")).toBeNull();
+    }
+  });
+
+  /** The editor shows what has been typed, not what is on disk. */
+  it("shows the buffer rather than the file", () => {
+    const host = canvas({ draft: "typed over it\n" });
+    expect(box(host).value).toBe("typed over it\n");
+  });
+
+  /** A preview of the disk version beside an editor holding a newer one would
+   *  be two answers to the same question on one screen. */
+  it("previews the buffer too", () => {
+    const host = canvas({
+      path: "README.md",
+      document: doc("README.md", PROSE),
+      draft: "# Something else entirely\n",
+    });
+    expect(host.querySelector(".canvas-preview")?.textContent).toContain(
+      "Something else entirely",
+    );
+  });
+
+  /* ---------------------------------------------------------- conflicts */
+
+  it("draws nothing about conflicts while there is not one", () => {
+    expect(canvas().querySelector(".canvas-conflict")).toBeNull();
+  });
+
+  /**
+   * The rule the whole slice is built around: both versions are kept and
+   * neither is chosen. The editor still holds the typing, and the bar says so.
+   */
+  it("keeps both versions and asks, rather than choosing", () => {
+    const host = canvas({
+      draft: "mine\n",
+      conflict: doc("src/main.rs", "theirs\n"),
+    });
+    const bar = host.querySelector(".canvas-conflict");
+    expect(bar?.textContent).toContain("Taurus changed this file while you were typing");
+    // The typing is still there — the point of not choosing.
+    expect(box(host).value).toBe("mine\n");
+    expect(bar?.textContent).toContain("still here, unsaved");
+    // And it must not claim a loss that did not happen: the save was refused,
+    // so nothing was written over anything.
+    expect(bar?.textContent).not.toContain("over it");
+  });
+
+  it("offers both ways out of a conflict", () => {
+    const onKeepMine = vi.fn();
+    const onTakeTheirs = vi.fn();
+    const host = canvas({
+      draft: "mine\n",
+      conflict: doc("src/main.rs", "theirs\n"),
+      onKeepMine,
+      onTakeTheirs,
+    });
+    const buttons = [...host.querySelectorAll(".canvas-conflict button")];
+    act(() =>
+      (buttons.find((b) => b.textContent === "Take theirs") as HTMLButtonElement).click(),
+    );
+    act(() =>
+      (buttons.find((b) => b.textContent === "Keep mine") as HTMLButtonElement).click(),
+    );
+    expect(onTakeTheirs).toHaveBeenCalled();
+    expect(onKeepMine).toHaveBeenCalled();
+  });
+
+  /** Above the editor rather than over it: what is being decided about has to
+   *  stay readable while the decision is made. */
+  it("does not cover the document it is asking about", () => {
+    const host = canvas({
+      draft: "mine\n",
+      conflict: doc("src/main.rs", "theirs\n"),
+    });
+    expect(host.querySelector(".doc-input")).not.toBeNull();
+  });
+
   it("closes on the close button", () => {
     const onClose = vi.fn();
     const host = canvas({ onClose });
@@ -273,6 +383,7 @@ describe("the editor", () => {
         text={CODE}
         path="src/main.rs"
         reveal={null}
+        flash={null}
         onSelect={noop}
         {...over}
       />,
@@ -297,9 +408,29 @@ describe("the editor", () => {
     expect(numbers).toEqual(["1", "2", "3", "4", "5"]);
   });
 
-  /** Read-only for now. Slice 2 is what makes this a place to type. */
-  it("does not take edits yet", () => {
-    expect(box(editor()).readOnly).toBe(true);
+  it("takes what is typed into it", () => {
+    const onChange = vi.fn();
+    const host = editor({ onChange });
+    const area = box(host);
+    expect(area.readOnly).toBe(false);
+    const set = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    )!.set!;
+    act(() => {
+      set.call(area, "typed");
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith("typed");
+  });
+
+  /** The band is behind the text rather than a class on the painted runs,
+   *  because a changed *line* is not a token boundary. */
+  it("tints the lines somebody else just changed", () => {
+    expect(editor().querySelector(".doc-flash")).toBeNull();
+    expect(
+      editor({ flash: { from: 2, to: 3 } }).querySelector(".doc-flash"),
+    ).not.toBeNull();
   });
 
   /**

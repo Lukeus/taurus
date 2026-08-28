@@ -180,6 +180,24 @@ window.__TAURI_INTERNALS__ = {
         },
       };
     }
+    // The conflict shot needs a save that comes back refused, which is a
+    // decision about *this* call rather than a fixed answer — so it is here
+    // rather than in `ANSWERS`.
+    if (cmd === "save_document") {
+      return shot === "canvas-conflict"
+        ? {
+            type: "stale",
+            current: {
+              ...DOCUMENT,
+              text: DOCUMENT.text.replace(
+                "backs off exponentially",
+                "backs off exponentially, with full jitter",
+              ),
+              fingerprint: "9999-9",
+            },
+          }
+        : { type: "written", document: { ...DOCUMENT, fingerprint: "2-2" } };
+    }
     if (cmd in ANSWERS) return ANSWERS[cmd];
     // Anything else is a command a screenshot does not need. Answering null
     // rather than throwing keeps one unmodelled call from blanking the window.
@@ -229,7 +247,7 @@ requestAnimationFrame(() => {
           ? MOTION_EVENTS
           : shot.startsWith("query")
             ? DATA_EVENTS
-            : shot === "canvas"
+            : shot.startsWith("canvas")
               ? DOCUMENT_EVENTS
               : EVENTS
       ).reduce(reduce, [
@@ -238,7 +256,7 @@ requestAnimationFrame(() => {
           id: "u1",
           text: shot.startsWith("query")
             ? DATA_PROMPT
-            : shot === "canvas"
+            : shot.startsWith("canvas")
               ? DOCUMENT_PROMPT
               : PROMPT,
         },
@@ -253,7 +271,7 @@ requestAnimationFrame(() => {
       // rather than a hole — a conversation *reopened* rehydrates its entries
       // the same way, and a week-old transcript flinging a file onto the
       // screen would be the app deciding where you are looking.
-      ...(shot === "canvas"
+      ...(shot.startsWith("canvas")
         ? { opening: { path: DOCUMENT.path, lines: { from: 15, to: 19 }, at: 1 } as never }
         : {}),
       // Seeded rather than fetched, for the same reason the entries above are:
@@ -336,6 +354,19 @@ requestAnimationFrame(() => {
       // which is the behaviour being photographed. Waited on rather than
       // assumed, because the file arrives a round trip after the event that
       // asked for it.
+      // The conflict, taken by actually causing one: type into the editor,
+      // then answer the save with a `stale` carrying a different file. Nothing
+      // here is seeded into place — the bar in the picture is the one the app
+      // draws when a real save comes back refused, which is the only way to
+      // photograph a rule rather than a stylesheet.
+      "canvas-conflict": async () => {
+        const area = (await until(() =>
+          window.document.querySelector(".doc-input"),
+        )) as HTMLTextAreaElement;
+        typeInto(area, DOCUMENT.text.replace("exponentially", "with a jittered backoff"));
+        await until(() => window.document.querySelector(".canvas-conflict"), 400);
+        scrollTo(transcript, window.document.querySelector(".document-card"));
+      },
       canvas: async () => {
         // The editor, not the panel: `.canvas` is on screen the moment the
         // errand lands, and waiting on that would photograph an empty frame

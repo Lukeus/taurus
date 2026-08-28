@@ -65,8 +65,10 @@ export function DocumentEditor({
   text,
   path,
   reveal,
+  flash,
   onSelect,
-  readOnly = true,
+  onChange,
+  readOnly = false,
 }: {
   /** The file, whole. */
   text: string;
@@ -88,7 +90,17 @@ export function DocumentEditor({
    * the app makes and the editor only observes. `null` when the selection is
    * empty, which is most of the time.
    */
+  /**
+   * Lines somebody else just changed, to tint briefly.
+   *
+   * The difference between the model editing your document and the text
+   * blinking. An object rather than a range so two edits to the same lines are
+   * two flashes.
+   */
+  flash: { from: number; to: number } | null;
   onSelect: (selection: { from: number; to: number; text: string } | null) => void;
+  /** What was typed. Absent while the document is not editable. */
+  onChange?: (text: string) => void;
   readOnly?: boolean;
 }) {
   const box = useRef<HTMLTextAreaElement>(null);
@@ -97,6 +109,12 @@ export function DocumentEditor({
   const [scroll, setScroll] = useState(0);
   const [height, setHeight] = useState(0);
   const [line, setLine] = useState(0);
+  /* Bumped whenever a flash arrives, so the element's key changes and the
+     animation runs again even when the same lines changed twice. */
+  const [flashes, setFlashes] = useState(0);
+  useEffect(() => {
+    if (flash) setFlashes((n) => n + 1);
+  }, [flash]);
 
   const grammar = useMemo(() => grammarFor(path), [path]);
   /*
@@ -212,6 +230,28 @@ export function DocumentEditor({
       </div>
 
       <div className="doc-scroll">
+        {/*
+          * What somebody else just changed, tinted for a moment.
+          *
+          * A band behind the text rather than a class on the painted runs,
+          * because the runs are split by token and a changed *line* is not a
+          * token boundary. Positioned in the same arithmetic everything else
+          * here uses — a row is a line, so a span of lines is a rectangle —
+          * and keyed on the flash so a second edit to the same lines restarts
+          * the animation instead of being ignored as an unchanged element.
+          */}
+        {flash && (
+          <div
+            key={`${flash.from}-${flash.to}-${flashes}`}
+            className="doc-flash"
+            aria-hidden
+            style={{
+              top: (flash.from - 1) * row - scroll,
+              height: (flash.to - flash.from + 1) * row,
+            }}
+          />
+        )}
+
         <pre className="doc-ink" aria-hidden ref={ghost}>
           {/* Everything above the window, as height and nothing else. */}
           <div style={{ height: window_.from * row }} />
@@ -234,11 +274,7 @@ export function DocumentEditor({
           readOnly={readOnly}
           spellCheck={false}
           aria-label={path}
-          // Read-only for now, so nothing here changes the file. The handler
-          // exists because React warns about a `value` with no `onChange`, and
-          // saying so is better than reaching for `defaultValue` and quietly
-          // giving up control of what is shown.
-          onChange={() => {}}
+          onChange={(e) => onChange?.(e.target.value)}
           onScroll={view}
           onSelect={(e) => report(e.currentTarget)}
           onKeyUp={(e) => report(e.currentTarget)}

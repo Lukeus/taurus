@@ -32,7 +32,14 @@ export function Canvas({
   path,
   reveal,
   document,
+  draft,
+  state,
+  flash,
+  conflict,
   error,
+  onEdit,
+  onKeepMine,
+  onTakeTheirs,
   onSelect,
   onAsk,
   onClose,
@@ -41,9 +48,25 @@ export function Canvas({
   path: string | null;
   /** Where in it to go, when the call that opened it said. */
   reveal: { from: number; to: number } | null;
-  /** The file, once it has been read. `null` while it is being read. */
+  /** The file as last read from or written to disk. `null` while reading. */
   document: Document | null;
+  /** What is in the editor now, which is what is shown. */
+  draft: string;
+  /** Where the save has got to, for the one word in the header that says so. */
+  state: SaveState;
+  /** Lines somebody else just changed, to tint briefly. */
+  flash: { from: number; to: number } | null;
+  /**
+   * The other version, when a save was refused because somebody got there
+   * first. Both are kept and neither is chosen — see `reconcile`.
+   */
+  conflict: Document | null;
   error: string | null;
+  onEdit: (text: string) => void;
+  /** Saves what is in the editor over the other version. */
+  onKeepMine: () => void;
+  /** Throws away what is in the editor and takes the other version. */
+  onTakeTheirs: () => void;
   onSelect: (selection: { from: number; to: number; text: string } | null) => void;
   /**
    * Hands the composer a sentence about the selection.
@@ -107,7 +130,15 @@ export function Canvas({
 
         <div className="spacer" />
 
-        {document && (
+        {/* One word, and only when it is not the resting state. "Saved" that
+            never goes away is furniture; "Saving…" that appears for 200ms on
+            every keystroke is a flicker. So: silence when there is nothing to
+            say, and a word when there is. */}
+        {state !== "idle" && (
+          <span className={`canvas-state ${state}`}>{SAVE_WORD[state]}</span>
+        )}
+
+        {document && state === "idle" && (
           <span className="canvas-count">
             {document.lines === 1 ? "1 line" : `${document.lines} lines`}
           </span>
@@ -136,6 +167,33 @@ export function Canvas({
         </button>
       </header>
 
+      {/*
+       * Somebody else wrote the file while there was typing in the editor.
+       *
+       * Both versions are kept and neither is chosen, which is the whole rule:
+       * the one thing that must not happen here is the app deciding whose work
+       * to throw away. Drawn above the editor rather than over it, so what is
+       * being decided about stays readable while the decision is made.
+       */}
+      {conflict && (
+        <div className="canvas-conflict" role="alert">
+          <div className="canvas-conflict-say">
+            {/* Not "wrote over it" — nothing was overwritten, which is the
+                entire point. The save was refused, so both versions exist and
+                the sentence has to say that rather than describe a loss that
+                did not happen. */}
+            <b>Taurus changed this file while you were typing.</b>
+            <span>Your version is still here, unsaved.</span>
+          </div>
+          <button className="pill" onClick={onTakeTheirs}>
+            Take theirs
+          </button>
+          <button className="pill primary" onClick={onKeepMine}>
+            Keep mine
+          </button>
+        </div>
+      )}
+
       {error ? (
         <div className="canvas-problem">{error}</div>
       ) : !document ? (
@@ -145,17 +203,24 @@ export function Canvas({
         <div className="canvas-loading" />
       ) : mode === "preview" ? (
         <div className="canvas-preview">
-          <Markdown text={document.text} streaming={false} />
+          {/* The draft, not what was read: a preview showing the version on
+              disk while the editor holds a newer one would be two answers to
+              the same question on the same screen. */}
+          <Markdown text={draft} streaming={false} />
         </div>
       ) : (
         <DocumentEditor
           // Keyed on the path so a different file gets a fresh box rather than
-          // the previous one's scroll position and selection.
+          // the previous one's scroll position and selection. Deliberately not
+          // on the fingerprint: a save must not remount the editor and throw
+          // away the caret in the middle of a sentence.
           key={document.path}
-          text={document.text}
+          text={draft}
           path={document.path}
           reveal={reveal}
+          flash={flash}
           onSelect={take}
+          onChange={onEdit}
         />
       )}
 
@@ -186,6 +251,15 @@ export function Canvas({
 
 type Mode = "source" | "preview";
 type Sel = { from: number; to: number; text: string };
+
+/** Where a save has got to. `idle` covers both "nothing typed" and "written". */
+export type SaveState = "idle" | "typing" | "saving" | "failed";
+
+const SAVE_WORD: Record<Exclude<SaveState, "idle">, string> = {
+  typing: "Unsaved",
+  saving: "Saving…",
+  failed: "Not saved",
+};
 
 /**
  * What goes in the composer when somebody asks about a selection.

@@ -34,6 +34,7 @@ import type { DataStep } from "../bindings/DataStep";
 import type { DataValueCount } from "../bindings/DataValueCount";
 import type { Dataset } from "../bindings/Dataset";
 import type { Document } from "../bindings/Document";
+import type { Saved } from "../bindings/Saved";
 import type { LineRange } from "../bindings/LineRange";
 import type { Recipe } from "../bindings/Recipe";
 import type { RecipeStep } from "../bindings/RecipeStep";
@@ -163,6 +164,7 @@ export type {
   Dataset,
   Document,
   LineRange,
+  Saved,
   Recipe,
   RecipeStep,
   RecipeTable,
@@ -910,6 +912,22 @@ export const rescanLibrary = () => invoke<void>("rescan_library");
  */
 export const openDocument = (path: string) =>
   invoke<Document>("open_document", { path });
+
+/**
+ * Writes what the editor holds back to the file.
+ *
+ * `fingerprint` is the one the last read handed over, and it is the whole of
+ * the guarantee: a save that does not match what is on disk writes nothing and
+ * comes back as `{ type: "stale" }` carrying the other version, in the same
+ * round trip. That is not an error — being beaten to a file is an ordinary
+ * thing when two writers share a workspace, and the answer to it is a decision
+ * the person makes.
+ *
+ * No permission prompt. This is a person typing in an editor they opened, not
+ * the model changing a file; see `taurus_host::document`.
+ */
+export const saveDocument = (path: string, text: string, fingerprint: string) =>
+  invoke<Saved>("save_document", { path, text, fingerprint });
 
 /* ------------------------------------------------------------- background */
 

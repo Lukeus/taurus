@@ -111,6 +111,17 @@ pub struct DocumentOnScreen {
     /// What was highlighted, when anything was.
     #[ts(optional)]
     pub selection: Option<Selection>,
+    /// Whether the editor holds something the file on disk does not.
+    ///
+    /// Nearly always false, because the canvas saves itself a moment after
+    /// typing stops. What makes it worth a field anyway is the case where it
+    /// stays true indefinitely: a save refused because somebody else wrote the
+    /// file, where the screen and the disk hold different things until a person
+    /// decides. Asking about the document then, without this, gets an answer
+    /// about a version nobody is looking at — confidently, and with no sign
+    /// anything is wrong.
+    #[serde(default)]
+    pub unsaved: bool,
 }
 
 /// A highlighted passage, and where in the file it came from.
@@ -172,6 +183,16 @@ impl DocumentOnScreen {
             return None;
         }
 
+        // Said whether or not there is a selection, and said early: everything
+        // after it is about a document whose contents on disk are not the
+        // contents on screen, and a model that reads the file has been warned.
+        let stale = if self.unsaved {
+            " The editor holds unsaved changes, so the file on disk is **not** what is on \
+             screen — say so rather than answering from what read_file returns."
+        } else {
+            ""
+        };
+
         // Two sentences with and without a selection rather than one with a
         // clause bolted on, because the *referent* differs. With lines
         // highlighted, "this" is the passage; without, it is the file.
@@ -183,7 +204,7 @@ impl DocumentOnScreen {
             return Some(format!(
                 "The file `{path}` was open in the editor when this message was sent. Unless the \
                  message names another, \"this\", \"the file\", and \"the document\" mean that \
-                 one. Nothing was selected in it. Read it with read_file before answering \
+                 one. Nothing was selected in it.{stale} Read it with read_file before answering \
                  anything about what it says."
             ));
         };
@@ -195,8 +216,9 @@ impl DocumentOnScreen {
         };
         Some(format!(
             "The file `{path}` was open in the editor when this message was sent, with {lines} \
-             selected. Unless the message names something else, \"this\", \"this section\", and \
-             \"the selection\" mean the selected passage — which reads, in full:\n\n{}",
+             selected.{stale} Unless the message names something else, \"this\", \"this \
+             section\", and \"the selection\" mean the selected passage — which reads, in \
+             full:\n\n{}",
             cut_to(&at.text, MAX_SELECTION, "the selection runs on")
         ))
     }
@@ -254,6 +276,7 @@ mod tests {
             document: Some(DocumentOnScreen {
                 path: "docs/known-gaps.md".into(),
                 selection: None,
+                unsaved: false,
             }),
         }
     }
@@ -412,6 +435,37 @@ mod tests {
         });
         let text = on.describe().unwrap();
         assert!(text.contains("Nothing was selected"), "{text}");
+    }
+
+    /// The silent-wrong-answer case. A conflict leaves the screen and the disk
+    /// holding different things until somebody decides, and a model answering
+    /// from `read_file` in that window is answering about a version nobody is
+    /// looking at.
+    #[test]
+    fn an_unsaved_buffer_warns_that_the_file_is_not_what_is_on_screen() {
+        let mut on = reading();
+        on.document.as_mut().unwrap().unsaved = true;
+        let text = on.describe().unwrap();
+        assert!(text.contains("unsaved"), "{text}");
+        assert!(text.contains("not** what is on screen"), "{text}");
+
+        // And with a selection too, where the passage quoted below it is the
+        // unsaved one.
+        on.document.as_mut().unwrap().selection = Some(Selection {
+            from: 4,
+            to: 4,
+            text: "half a sentence".into(),
+        });
+        let text = on.describe().unwrap();
+        assert!(text.contains("unsaved"), "{text}");
+        assert!(text.contains("half a sentence"), "{text}");
+    }
+
+    /// Which is the ordinary case: the canvas saves a moment after typing
+    /// stops, so a sentence about staleness would be wrong nearly every time.
+    #[test]
+    fn a_saved_buffer_says_nothing_about_staleness() {
+        assert!(!reading().describe().unwrap().contains("unsaved"));
     }
 
     #[test]

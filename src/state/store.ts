@@ -156,6 +156,20 @@ interface Store {
    */
   opening: { path: string; lines: LineRange | null; at: number } | null;
   /**
+   * Files the running turn has just written, waiting to be reconciled.
+   *
+   * The same errand shape as `opening`, and for the same reasons: it arrives on
+   * the turn's event stream, and what the canvas does about it is the app's
+   * business. `at` counts, so a file written twice in a turn is two errands —
+   * which matters, because the second write is exactly the one a reader who
+   * looked away would otherwise miss.
+   *
+   * Distinct from `changed`, which accumulates for the whole conversation and
+   * answers "what has this turn touched": a set that only grows cannot say
+   * *just now*, which is the only question a reload has.
+   */
+  wrote: { paths: string[]; at: number } | null;
+  /**
    * How full the model's context is, as the next request would fill it.
    *
    * `null` until a turn has run: before that there is nothing measured and a
@@ -312,6 +326,15 @@ interface Store {
    * guess about what is on disk.
    */
   forgetDataset: (name: string) => Promise<void>;
+  /**
+   * Puts something in the error banner from outside the store.
+   *
+   * The banner is the one place the window says something went wrong, and a
+   * failure that happens in a pane — a save that could not be written — has
+   * nowhere else to go. Everything else here sets `error` on its own way past;
+   * this is the door for the parts of the app that do their own IO.
+   */
+  noteError: (message: string) => void;
   dismissError: () => void;
 }
 
@@ -356,6 +379,7 @@ export const useStore = create<Store>((set, get) => ({
   entries: [],
   changed: [],
   opening: null,
+  wrote: null,
   context: null,
   busy: false,
   stopping: false,
@@ -474,6 +498,7 @@ export const useStore = create<Store>((set, get) => ({
       entries: [],
       changed: [],
   opening: null,
+  wrote: null,
       context: null,
       error: null,
       proposals: [],
@@ -511,6 +536,7 @@ export const useStore = create<Store>((set, get) => ({
         entries: entriesFromMessages(messages, switches),
         changed: [],
   opening: null,
+  wrote: null,
         context: null,
         error: null,
         proposals: [],
@@ -543,6 +569,7 @@ export const useStore = create<Store>((set, get) => ({
       entries: [],
       changed: [],
   opening: null,
+  wrote: null,
       context: null,
       proposals: [],
       agentProposals: [],
@@ -649,6 +676,14 @@ export const useStore = create<Store>((set, get) => ({
       // it, rather than a beat later once a tool has returned.
       const open = opened(events);
       if (open) set((s) => ({ opening: { ...open, at: (s.opening?.at ?? 0) + 1 } }));
+      // Every path this batch wrote, so a document open on one of them can
+      // reload — or, if it has unsaved typing in it, say so rather than lose
+      // it. Folded here with the rest rather than watched separately, so a
+      // write costs no extra render.
+      const paths = events.flatMap((e) => (e.type === "files_changed" ? e.paths : []));
+      if (paths.length > 0) {
+        set((s) => ({ wrote: { paths, at: (s.wrote?.at ?? 0) + 1 } }));
+      }
     });
 
     try {
@@ -794,6 +829,7 @@ export const useStore = create<Store>((set, get) => ({
       entries: [],
       changed: [],
   opening: null,
+  wrote: null,
       context: null,
       permission: null,
       proposals: [],
@@ -867,6 +903,7 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
+  noteError: (message) => set({ error: message }),
   dismissError: () => set({ error: null }),
 }));
 

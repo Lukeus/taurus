@@ -260,10 +260,22 @@ lines, and what they said — so "tighten this" is a complete question, which it
 is on screen and is not in a transcript. The chip above the box says so while
 you type, because context you cannot see is behaviour you cannot explain.
 
-It is read-only for now: a place to read and to point at. Typing into it is the
-next slice, and the reason it is a separate one is that the moment both you and
-the model can write the same file, an edit landing under an unsaved buffer has
-to be reconciled rather than silently won.
+You can type in it, and it saves itself a second after you stop. That is not a
+convenience: the whole argument for the canvas is that you and Taurus are
+looking at the same file, and an unsaved buffer breaks it silently — you would
+ask about the paragraph on screen and get an answer about the one on disk.
+
+Taurus writes files too, and neither of you waits for the other. If it changes
+the file you have open and you have typed nothing, the editor takes the new
+version and tints what moved. If you *have* typed something, nothing is taken:
+both versions are kept and you are asked which survives.
+
+![Taurus changed the file while it was being typed in, so both versions are kept
+and neither is chosen](docs/screenshots/canvas-conflict.png)
+
+A save never overwrites something it has not seen — the editor holds the
+fingerprint of the file as it read it, and a save that no longer matches is
+refused rather than applied. The race is closed at the write, not papered over.
 
 **[Configuration](docs/configuration.md)** — providers, keys, MCP servers, and
 web search.

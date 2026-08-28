@@ -267,7 +267,7 @@ describe("the provider picker in the header", () => {
  */
 describe("what a message carries from the pane it was sent in", () => {
   const events = { name: "events", path: "data/events.csv", format: "csv" as const };
-  const open = { path: "docs/known-gaps.md", selection: null };
+  const open = { path: "docs/known-gaps.md", selection: null, unsaved: false };
 
   it("carries nothing from the conversation", () => {
     // A question asked while reading a conversation is about the conversation.
@@ -302,7 +302,7 @@ describe("what a message carries from the pane it was sent in", () => {
    */
   it("carries the open file from the conversation, unlike a dataset", () => {
     expect(onScreenFor("conversation", events, "", open)).toEqual({
-      document: { path: "docs/known-gaps.md" },
+      document: { path: "docs/known-gaps.md", unsaved: false },
     });
   });
 
@@ -317,6 +317,7 @@ describe("what a message carries from the pane it was sent in", () => {
   it("carries a selection with its line numbers", () => {
     const on = onScreenFor("conversation", null, "", {
       path: "src/lib.rs",
+      unsaved: false,
       selection: { from: 40, to: 58, text: "fn retry() {}" },
     });
     expect(on?.document?.selection).toEqual({
@@ -324,6 +325,15 @@ describe("what a message carries from the pane it was sent in", () => {
       to: 58,
       text: "fn retry() {}",
     });
+  });
+
+  /** The silent-wrong-answer case: a conflict leaves the screen and the disk
+   *  holding different things until somebody decides. */
+  it("carries whether the editor holds something the file does not", () => {
+    expect(
+      onScreenFor("conversation", null, "", { ...open, unsaved: true })?.document
+        ?.unsaved,
+    ).toBe(true);
   });
 
   it("leaves an empty selection out rather than sending a null", () => {

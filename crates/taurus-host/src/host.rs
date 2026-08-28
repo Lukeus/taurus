@@ -42,7 +42,7 @@ use taurus_tools::{
 
 use crate::command;
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
-use crate::document::{fingerprint, Document, MAX_DOCUMENT_BYTES};
+use crate::document::{fingerprint, Document, Saved, MAX_DOCUMENT_BYTES};
 use crate::freshness::Freshness;
 use crate::instructions::{self, Instructions};
 use crate::mcp_view::{LayerOf, McpServerView};
@@ -2123,6 +2123,23 @@ impl Host {
             path: shown,
             text,
         })
+    }
+
+    /// Writes what the editor holds, unless the file moved since it was read.
+    ///
+    /// No permission prompt, and that is the decision rather than an omission:
+    /// this is a person typing in an editor they opened, not the model changing
+    /// a file. See [`crate::document`] for the argument and for what follows
+    /// from it — chiefly that a canvas edit does not appear in the Changes
+    /// drawer, which is about what the *conversation* changed.
+    pub async fn save_document(
+        &self,
+        path: &str,
+        text: &str,
+        fingerprint: &str,
+    ) -> Result<Saved, String> {
+        let workspace = self.workspace().await;
+        crate::document::save(&workspace, path, text, fingerprint)
     }
 
     /// Where a workspace's dataset list lives.

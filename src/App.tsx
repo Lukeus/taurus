@@ -9,8 +9,9 @@ import { Attachments } from "./components/Attachments";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { ContextMeter } from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
-import { Canvas } from "./components/Canvas";
+import { Canvas, type SaveState } from "./components/Canvas";
 import { PermissionDialog } from "./components/PermissionDialog";
+import { changedLines, FLASH_MS, reconcile, SAVE_AFTER_MS } from "./lib/document";
 import { TrustBanner } from "./components/TrustBanner";
 import { PlanPanel } from "./components/PlanPanel";
 import { Rail, type ProviderHealth } from "./components/Rail";
@@ -171,6 +172,8 @@ export default function App() {
       sessions: s.sessions,
       changed: s.changed,
       opening: s.opening,
+      wrote: s.wrote,
+      noteError: s.noteError,
       busy: s.busy,
       stopping: s.stopping,
       resuming: s.resuming,
@@ -300,6 +303,24 @@ export default function App() {
   } | null>(null);
   const [doc, setDoc] = useState<OpenDocument | null>(null);
   const [docError, setDocError] = useState<string | null>(null);
+  /**
+   * What is in the editor, which is not always what is on disk.
+   *
+   * Held beside `doc` rather than inside it, because they are two different
+   * facts and the difference between them *is* the unsaved state. `doc` is what
+   * was last read or written; this is what has been typed since.
+   *
+   * Not called `draft`: the composer already has one of those, and two in one
+   * component is the sort of shadowing that compiles and then goes wrong
+   * somewhere else.
+   */
+  const [typed, setTyped] = useState("");
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  /** The other version, when a save was refused because somebody got there
+   *  first. Both are kept; neither is chosen here. */
+  const [conflict, setConflict] = useState<OpenDocument | null>(null);
+  /** Lines somebody else just changed, to tint for a moment. */
+  const [flash, setFlash] = useState<{ from: number; to: number } | null>(null);
   /** What is highlighted in the canvas right now. Travels with the next
    *  message; see `onScreenFor`. */
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -900,14 +921,24 @@ export default function App() {
     if (!openPath) {
       setDoc(null);
       setDocError(null);
+      setTyped("");
       return;
     }
     let current = true;
     setDoc(null);
     setDocError(null);
+    setConflict(null);
+    setFlash(null);
+    setSaveState("idle");
     api
       .openDocument(openPath)
-      .then((read) => current && setDoc(read))
+      .then((read) => {
+        if (!current) return;
+        setDoc(read);
+        // The buffer starts as what was read. Everything after this point is
+        // the difference between the two.
+        setTyped(read.text);
+      })
       .catch((e) => current && setDocError(String(e)));
     // A file opened, then closed, then opened again before the first read
     // landed would otherwise show the first file's contents under the second
@@ -916,6 +947,101 @@ export default function App() {
       current = false;
     };
   }, [openPath, workspace]);
+
+  /*
+   * Writes what has been typed, once typing has stopped.
+   *
+   * Debounced rather than saved per keystroke, and autosaved rather than left
+   * to ⌘S, because the whole argument for the canvas is that the model is
+   * looking at the same file you are. An unsaved buffer breaks that silently:
+   * you ask about the paragraph on screen and it reads the one on disk.
+   *
+   * Nothing runs while a conflict is open — a save is exactly what is being
+   * decided about, and repeating the refusal every 800ms would bury the
+   * question under its own answer.
+   */
+  useEffect(() => {
+    if (!doc || conflict || typed === doc.text) return;
+    setSaveState("typing");
+    const timer = setTimeout(() => {
+      setSaveState("saving");
+      api
+        .saveDocument(doc.path, typed, doc.fingerprint)
+        .then((result) => {
+          if (result.type === "stale") {
+            // Not an error. Somebody wrote the file after this editor read it,
+            // so both versions exist and which one survives is not a decision
+            // this code gets to make.
+            setConflict(result.current);
+            setSaveState("typing");
+            return;
+          }
+          setDoc(result.document);
+          setSaveState("idle");
+        })
+        .catch((e) => {
+          setSaveState("failed");
+          store.noteError(String(e));
+        });
+    }, SAVE_AFTER_MS);
+    return () => clearTimeout(timer);
+    // `store` is stable; depending on it would restart the timer on every
+    // render and a fast typist would never reach the end of one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typed, doc, conflict]);
+
+  /*
+   * What to do when the running turn writes the file that is open.
+   *
+   * The rule is `reconcile`'s: never silently lose typing. A clean buffer takes
+   * the new version and flashes what moved, which is the model visibly editing
+   * the document. A dirty one keeps both and asks.
+   */
+  const wrote = store.wrote;
+  useEffect(() => {
+    if (!wrote || !doc) return;
+    if (!wrote.paths.includes(doc.path)) return;
+    let current = true;
+    api
+      .openDocument(doc.path)
+      .then((read) => {
+        if (!current) return;
+        const what = reconcile({ base: doc.text, draft: typed }, read.text);
+        if (what.kind === "same") {
+          // Still take the new fingerprint: the bytes match, but the file has
+          // been rewritten, and saving against the old stamp would be refused
+          // for a conflict that does not exist.
+          setDoc(read);
+          return;
+        }
+        if (what.kind === "conflict") {
+          setConflict(read);
+          return;
+        }
+        setFlash(changedLines(doc.text, read.text));
+        setDoc(read);
+        setTyped(read.text);
+      })
+      .catch(() => {
+        // A file the turn deleted or moved. Left as it was rather than blanked
+        // — what is on screen is still what was there, and saying so with an
+        // empty editor would be a lie about the file.
+      });
+    return () => {
+      current = false;
+    };
+    // Only the counter, for the reason `opening` gives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wrote?.at]);
+
+  /* The tint is a moment, not a state. Cleared on a timer rather than by the
+     animation ending, so nothing depends on an event that does not fire when
+     motion is turned off. */
+  useEffect(() => {
+    if (!flash) return;
+    const timer = setTimeout(() => setFlash(null), FLASH_MS);
+    return () => clearTimeout(timer);
+  }, [flash]);
 
   /**
    * Puts a sentence in the composer without sending it.
@@ -947,7 +1073,14 @@ export default function App() {
     pane,
     showing,
     sql,
-    canvas && { path: canvas.path, selection },
+    canvas && {
+      path: canvas.path,
+      selection,
+      // Nearly always false — the canvas saves a moment after typing stops.
+      // What it catches is the conflict, where the screen and the disk hold
+      // different things until somebody decides.
+      unsaved: !!doc && typed !== doc.text,
+    },
   );
 
   const forgetDataset = (name: string) => void store.forgetDataset(name);
@@ -1178,7 +1311,28 @@ export default function App() {
                   path={canvas.path}
                   reveal={canvas.reveal}
                   document={doc}
+                  draft={typed}
+                  state={saveState}
+                  flash={flash}
+                  conflict={conflict}
                   error={docError}
+                  onEdit={setTyped}
+                  onKeepMine={() => {
+                    // Adopt the *fingerprint* the refusal handed back while
+                    // keeping the old text as the base. The stamp is what makes
+                    // the next save succeed where the refused one did not; the
+                    // stale base is what keeps `draft !== doc.text`, so the
+                    // autosave below still has something to do.
+                    if (conflict && doc) setDoc({ ...conflict, text: doc.text });
+                    setConflict(null);
+                  }}
+                  onTakeTheirs={() => {
+                    if (!conflict) return;
+                    setDoc(conflict);
+                    setTyped(conflict.text);
+                    setConflict(null);
+                    setSaveState("idle");
+                  }}
                   onSelect={setSelection}
                   onAsk={ask}
                   onClose={() => setCanvas(null)}
@@ -1572,7 +1726,7 @@ export function onScreenFor(
   pane: "conversation" | "data",
   showing: Dataset | null,
   sql: string,
-  canvas: { path: string; selection: Selection | null } | null,
+  canvas: { path: string; selection: Selection | null; unsaved: boolean } | null,
 ): OnScreen | null {
   // A question asked while reading a conversation is about the conversation. A
   // paragraph about a dataset nobody mentioned would be the app talking over
@@ -1596,6 +1750,7 @@ export function onScreenFor(
   const document: DocumentOnScreen | null = canvas
     ? {
         path: canvas.path,
+        unsaved: canvas.unsaved,
         ...(canvas.selection ? { selection: canvas.selection } : {}),
       }
     : null;
