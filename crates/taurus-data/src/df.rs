@@ -1401,7 +1401,14 @@ id,event,price,active
     #[tokio::test]
     async fn a_path_holding_glob_characters_is_read_as_a_path() {
         let dir = TempDir::new().unwrap();
-        let odd = dir.path().join("q3 [final] ?draft");
+        // Brackets rather than `?`, and the reason is the joke this whole
+        // change is about: `?` is one of the characters Windows will not put
+        // in a filename at all, so a fixture using one fails at `create_dir`
+        // with `InvalidFilename` and never reaches the engine. Brackets are
+        // legal on all three platforms and are just as much a glob, so they
+        // are what carries this everywhere. The `?` case is covered where it
+        // actually arises — in the verbatim prefix, below.
+        let odd = dir.path().join("q3 [final]");
         std::fs::create_dir_all(&odd).unwrap();
 
         // `data[1].csv` is not contrived either: it is what a browser calls
@@ -1411,6 +1418,24 @@ id,event,price,active
         let source = Source::at(path).unwrap();
 
         let profile = DataFusionEngine::new().profile(&source).await.unwrap();
+        assert_eq!(profile.rows, 5, "the file globbed instead of being opened");
+    }
+
+    /// And the two glob characters Windows does not allow in a name, on the
+    /// platforms where it is possible to make one.
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn a_path_holding_a_question_mark_or_a_star_is_read_as_a_path() {
+        let dir = TempDir::new().unwrap();
+        let odd = dir.path().join("drafts ?v2 *final");
+        std::fs::create_dir_all(&odd).unwrap();
+        let path = odd.join("events.csv");
+        std::fs::write(&path, EVENTS).unwrap();
+
+        let profile = DataFusionEngine::new()
+            .profile(&Source::at(path).unwrap())
+            .await
+            .unwrap();
         assert_eq!(profile.rows, 5, "the file globbed instead of being opened");
     }
 
