@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import type {
   AllowedRule,
+  CustomTheme,
   IndexProgress,
   KeyStatus,
   ModelEntry,
@@ -18,11 +19,13 @@ import {
   DEFAULT_MAX_ITERATIONS,
   MAX_ITERATIONS_LIMIT,
 } from "../lib/limits";
-import { applyTheme } from "../lib/theme";
+import { applyTheme, resolveWith } from "../lib/theme";
 import { useStore } from "../state/store";
+import { CopyButton } from "./CopyButton";
 import { Modal } from "./Modal";
+import { ThemeEditor } from "./ThemeEditor";
 
-type Tab = "models" | "search" | "permissions" | "behavior";
+type Tab = "models" | "search" | "permissions" | "behavior" | "appearance";
 
 /**
  * The settings drawer.
@@ -295,9 +298,11 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <IterationLimit
               limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
             />
-
-            <ThemePicker theme={status?.settings.theme ?? "system"} />
           </>
+        )}
+
+        {tab === "appearance" && (
+          <ThemePicker theme={status?.settings.theme ?? "system"} />
         )}
 
         <section className="section">
@@ -359,45 +364,220 @@ export function IterationLimit({ limit }: { limit: number }) {
 }
 
 /**
- * Light, dark, or whatever the machine is doing.
+ * Light, dark, or whatever the machine is doing — and whose colours those are.
  *
- * Painted before the write lands, and deliberately: a theme change is the one
+ * Two rows, because they are two questions. The first is the mode, and it is
+ * painted before the write lands, deliberately: a theme change is the one
  * setting whose result is the screen itself, and waiting a round trip to see it
  * makes the app feel like it did not hear you. The write is still the authority
  * — `refresh` follows it, and App repaints from whatever settings actually say,
  * so a failed write corrects the optimism rather than leaving it.
+ *
+ * The second is which brand is painting over it. Kept apart from the mode
+ * rather than folded into one list of options, because folding them means
+ * picking a brand throws away "follow the system" — which is both the default
+ * and the only setting here that can change on its own, at dusk, without
+ * anybody touching it.
  */
 export function ThemePicker({ theme }: { theme: Theme }) {
+  const status = useStore((s) => s.status);
   const refresh = useStore((s) => s.refresh);
+  const custom = status?.theme ?? null;
 
-  const choose = async (next: Theme) => {
-    applyTheme(next);
+  const [themes, setThemes] = useState<CustomTheme[] | null>(null);
+  /** The theme the editor is open on, or `{ theme: null }` for a new one. */
+  const [editing, setEditing] = useState<{ theme: CustomTheme | null } | null>(null);
+  const [arming, setArming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () => {
+    api
+      .listThemes()
+      .then(setThemes)
+      .catch(() => setThemes([]));
+  };
+  useEffect(load, []);
+
+  const chooseMode = async (next: Theme) => {
+    applyTheme(next, custom);
     await api.setTheme(next);
     await refresh();
   };
 
+  const chooseBrand = async (id: string) => {
+    setArming(false);
+    const picked = themes?.find((t) => t.id === id) ?? null;
+    applyTheme(theme, picked);
+    await api.setThemeId(id);
+    await refresh();
+  };
+
+  const remove = async () => {
+    if (!custom) return;
+    setArming(false);
+    try {
+      await api.deleteTheme(custom.scope, custom.id);
+      await refresh();
+      load();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  /**
+   * Creates the themes folder if it is not there, and says where it is.
+   *
+   * It says rather than opens. The webview is granted almost nothing on
+   * purpose — "the harness reaches the filesystem and processes through Rust,
+   * not through frontend plugins", as the capabilities file puts it — and
+   * launching a file manager would mean either a new permission on the window
+   * or a process spawn in Rust, neither of which is worth what it buys over a
+   * path you can copy. Creating the directory is the part that actually helps:
+   * on a machine that has never had one, an editor opening on nothing is the
+   * usual way this feature looks broken.
+   */
+  const [folder, setFolder] = useState<string | null>(null);
+  const showFolder = async () => {
+    try {
+      setFolder(await api.themesDir("global"));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // Everything a theme file said that the app could not use. Shown here rather
+  // than only in the app-wide list because this is the screen that can fix it,
+  // which is what `ProblemSource::where_to_fix` says about them.
+  const problems = (status?.problems ?? []).filter((p) => p.source === "themes");
+
+  const pinned = custom !== null && custom.modes !== "both";
+
   return (
-    <section className="section">
-      <span className="micro">Appearance</span>
-      <div className="pill-row" role="radiogroup" aria-label="Theme">
-        {THEMES.map(([value, label]) => (
+    <>
+      <section className="section">
+        <span className="micro">Appearance</span>
+        <div className="pill-row" role="radiogroup" aria-label="Theme">
+          {THEMES.map(([value, label]) => (
+            <button
+              key={value}
+              role="radio"
+              aria-checked={theme === value}
+              className={`pill${theme === value ? " on" : ""}`}
+              /* A theme that fills in only one palette has said which one it
+                 is. Leaving the other two live would leave two controls that
+                 look available and do nothing — so they say why instead. */
+              disabled={pinned}
+              data-tip={
+                pinned
+                  ? `${custom!.name} only defines a ${custom!.modes === "dark_only" ? "dark" : "light"} palette`
+                  : undefined
+              }
+              onClick={() => void chooseMode(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="hint">
+          {pinned
+            ? `${custom!.name} defines only a ${
+                custom!.modes === "dark_only" ? "dark" : "light"
+              } palette, so it paints that way whatever the system does. Give it the other one to get this choice back.`
+            : theme === "system"
+              ? "Follows your system setting, including when it changes at sunset."
+              : "Stays this way in every workspace, whatever the system does."}
+        </p>
+      </section>
+
+      <section className="section">
+        <span className="micro">Brand</span>
+        <div className="pill-row" role="radiogroup" aria-label="Brand">
           <button
-            key={value}
             role="radio"
-            aria-checked={theme === value}
-            className={`pill${theme === value ? " on" : ""}`}
-            onClick={() => choose(value)}
+            aria-checked={custom === null}
+            className={`pill${custom === null ? " on" : ""}`}
+            onClick={() => void chooseBrand("")}
           >
-            {label}
+            Taurus
           </button>
+          {(themes ?? []).map((t) => (
+            <button
+              key={t.id}
+              role="radio"
+              aria-checked={custom?.id === t.id}
+              className={`pill${custom?.id === t.id ? " on" : ""}`}
+              data-tip={
+                t.scope === "workspace"
+                  ? "From this workspace's .taurus/themes"
+                  : t.path
+              }
+              onClick={() => void chooseBrand(t.id)}
+            >
+              {t.name}
+            </button>
+          ))}
+        </div>
+
+        <div className="settings-actions">
+          <button onClick={() => setEditing({ theme: null })}>New theme</button>
+          {custom !== null && (
+            <button onClick={() => setEditing({ theme: custom })}>
+              Edit {custom.name}
+            </button>
+          )}
+          {custom !== null &&
+            /* Arms rather than acts. It is one file and it is the only
+               irreversible thing on this screen, sitting in a row of controls
+               that merely switch between palettes. */
+            (arming ? (
+              <>
+                <button className="danger" onClick={() => void remove()}>
+                  Delete {custom.name}
+                </button>
+                <button onClick={() => setArming(false)}>Keep it</button>
+              </>
+            ) : (
+              <button onClick={() => setArming(true)}>Delete</button>
+            ))}
+          <button onClick={() => void showFolder()}>Themes folder</button>
+        </div>
+
+        {folder && (
+          <p className="hint">
+            <code>{folder}</code>{" "}
+            <CopyButton className="link" text={folder} label="copy path" />
+          </p>
+        )}
+
+        <p className="hint">
+          A theme is a file in <code>~/.taurus/themes</code> — fourteen colours,
+          three typefaces, a wordmark and a corner radius. Everything it leaves
+          out stays as the app ships it, so changing one accent is four lines.
+          A workspace can carry its own in <code>.taurus/themes</code>, which is
+          how a repository brands the app for everyone who opens it.
+        </p>
+
+        {problems.map((problem) => (
+          <p key={problem.message} className="settings-problem">
+            {problem.message}
+          </p>
         ))}
-      </div>
-      <p className="hint">
-        {theme === "system"
-          ? "Follows your system setting, including when it changes at sunset."
-          : "Stays this way in every workspace, whatever the system does."}
-      </p>
-    </section>
+        {error && <p className="settings-problem">{error}</p>}
+      </section>
+
+      {editing && (
+        <ThemeEditor
+          editing={editing.theme}
+          mode={resolveWith(theme, custom)}
+          onClose={() => setEditing(null)}
+          onSaved={(id) => {
+            setEditing(null);
+            load();
+            void chooseBrand(id);
+          }}
+        />
+      )}
+    </>
   );
 }
 
@@ -752,6 +932,14 @@ const TABS: [Tab, string][] = [
   ["search", "Search"],
   ["permissions", "Permissions"],
   ["behavior", "Behavior"],
+  // Its own tab rather than the last section of Behavior, which is where it
+  // started. Behavior is what the agent is allowed to do on its own — propose
+  // skills, propose sub-agents, take this many steps — and how the window is
+  // painted is not one of those. It was three pills when it was filed there;
+  // it is now a mode, a brand, an editor and whatever a theme file got wrong,
+  // and a tab whose name does not predict its contents is the same problem the
+  // rail had with "Tools".
+  ["appearance", "Appearance"],
 ];
 
 const SCOPE_LABEL: Record<Scope, string> = {

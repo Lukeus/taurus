@@ -40,7 +40,7 @@ import type {
 import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
 import { extend } from "./lib/jobs";
-import { applyTheme, watchSystemTheme } from "./lib/theme";
+import { applyTheme, currentToken, watchSystemTheme } from "./lib/theme";
 import type { Entry } from "./state/store";
 import { pinnedPlan, useStore } from "./state/store";
 
@@ -475,11 +475,40 @@ export default function App() {
   // machine that switches at dusk switches the app with it, and the listener is
   // torn down the moment someone picks a side.
   const theme = store.status?.settings.theme;
+  /** The brand painting over that palette, resolved by Rust. Null is ours. */
+  const custom = store.status?.theme ?? null;
   useEffect(() => {
     if (!theme) return;
-    applyTheme(theme);
-    return watchSystemTheme(theme);
-  }, [theme]);
+    applyTheme(theme, custom);
+    return watchSystemTheme(theme, custom);
+  }, [theme, custom]);
+
+  /*
+   * The native window's own ground, which no stylesheet can reach.
+   *
+   * It is what shows for the frame before the document paints and in whatever
+   * the webview does not cover; `paint_window` sets it at launch from the
+   * settings file, and this is the half that moves it when a theme is picked
+   * while the app is running. Read back off the document rather than off the
+   * theme, because a theme that names no ink inherits the stylesheet's and
+   * only the document knows what that resolved to.
+   *
+   * Guarded on the value rather than on the dependencies: `custom` is a fresh
+   * object on every status the window is pushed, and this would otherwise be
+   * an IPC call at the end of every turn to set the colour it already is.
+   */
+  const painted = useRef<string | null>(null);
+  useEffect(() => {
+    if (!theme) return;
+    const ink = currentToken("--lk-ink");
+    if (!ink || ink === painted.current) return;
+    painted.current = ink;
+    void api.setWindowBackground(ink).catch(() => {
+      // A window whose edges are the previous palette is a smaller thing than
+      // an unhandled rejection, and everything the user is looking at has
+      // already been repainted by the effect above.
+    });
+  }, [theme, custom]);
 
   const providers = store.status?.providers ?? [];
   const providerId = currentProvider(
@@ -766,7 +795,7 @@ export default function App() {
    * — which is what the effect above repaints from.
    */
   const chooseTheme = async (next: Theme) => {
-    applyTheme(next);
+    applyTheme(next, custom);
     await api.setTheme(next);
   };
 
@@ -838,6 +867,11 @@ export default function App() {
         mcp={mcpCounts(store.status?.mcp_servers)}
         health={health(store.status?.providers.length, providerId, models)}
         theme={theme ?? "system"}
+        brand={
+          custom && (custom.wordmark !== null || custom.logo !== null)
+            ? { name: custom.name, wordmark: custom.wordmark, logo: custom.logo }
+            : null
+        }
         onPickWorkspace={pickWorkspace}
         onNew={newConversation}
         onOpen={store.resume}

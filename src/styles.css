@@ -44,7 +44,14 @@
 
   --lk-text: #eef2f6;
   --lk-text-dim: #90a0b0;
-  --lk-text-faint: #5c6a78;
+  /* Carries the 10px mono micro-labels — a conversation's model and time, the
+     rail's counts, the workspace path — so it is the one that has to be
+     lightest relative to its job: small text needs more contrast, not less.
+     The light palette below has always said this about its own faint weight;
+     this half was #5c6a78 and measured 3.19:1 on a panel and 2.86:1 on a
+     raised one, against the 4.5:1 that size wants. It now clears both, and
+     `contrast.test.ts` measures every pair the app puts on screen. */
+  --lk-text-faint: #7c8b9c;
 
   --lk-cyan: #7cd2ff;
   --lk-cyan-hover: #a4e0ff;
@@ -660,6 +667,23 @@ body.resizing-y * {
   padding: 0 var(--gutter-rail);
   border-bottom: 1px solid var(--rule);
 }
+/*
+ * A theme's own mark, in place of the app's.
+ *
+ * Capped rather than trusted: the file is somebody's SVG and its intrinsic
+ * size is whatever their editor wrote. Unbounded, a 200px-tall logo takes the
+ * 44px brand row with it — and that row is what clears the macOS traffic
+ * lights, so the failure is a window whose close button is under a picture.
+ * `object-fit` keeps the aspect ratio inside the box rather than squashing a
+ * wordmark that is wider than it is tall.
+ */
+.rail-logo {
+  width: auto;
+  max-width: 96px;
+  height: 16px;
+  object-fit: contain;
+  object-position: left center;
+}
 .rail-brand span {
   font-family: var(--mono);
   font-size: 11.5px;
@@ -737,9 +761,20 @@ body.resizing-y * {
   font-size: 13px;
 }
 
+/*
+ * The conversations, which get the room that is left and a floor under it.
+ *
+ * The floor is the point. The footer below is eight rows and three headers,
+ * and at the window's 520px minimum it wants more height than the rail has —
+ * so without this the list it is supposed to sit under is squeezed to nothing
+ * and the footer overflows the rail instead. Conversations are the app's
+ * spine; they are the one thing here that must still be on screen when
+ * everything is competing for the same pixels, so the footer is what gives
+ * way. See `.rail-foot`.
+ */
 .rail-scroll {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 96px;
   overflow-y: auto;
 }
 /*
@@ -934,13 +969,56 @@ body.resizing-y * {
   color: var(--text-faint);
 }
 
+/*
+ * The panels, the way out, and the provider.
+ *
+ * Shrinks and scrolls rather than holding its full height, which is what keeps
+ * it from pushing the conversation list off the bottom of a short window. It
+ * takes what it needs whenever there is room — which is every window that is
+ * not close to the 520px minimum — so the scrolling is a floor under the worst
+ * case rather than something anybody meets in normal use.
+ */
 .rail-foot {
-  flex: none;
+  flex: 0 1 auto;
+  overflow-y: auto;
   border-top: 1px solid var(--rule);
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+/*
+ * Three folds in a footer that used to hold one.
+ *
+ * A section header in the scrolling list above can afford 16px of air over it,
+ * because only one of them is ever on screen at a time. Stacked three deep in
+ * a footer that also carries Settings, the theme and the provider, that same
+ * 16px is most of a conversation row's worth of nothing between each pair — so
+ * the footer's headers take the next step down the ladder instead. The first
+ * takes less still: the rule along the top of the footer is already doing the
+ * separating its top padding would otherwise be for.
+ */
+.rail-foot .rail-group {
+  padding-top: 10px;
+}
+.rail-foot > .rail-group:first-child {
+  padding-top: 4px;
+}
+
+/*
+ * A count of things happening right now, as against a count of things that
+ * exist.
+ *
+ * They share a slot — the far right of a row or of a shut fold — so they need
+ * to be told apart by colour rather than by position. Faint is the register
+ * for furniture, and how many skills are installed is furniture; how many
+ * commands are running is not, and it stops being true on its own while you
+ * are looking at it.
+ */
+.rail-link .count.live,
+.rail-group .count.live {
+  color: var(--accent);
 }
 .rail-link {
   display: flex;
@@ -4172,6 +4250,132 @@ button.link:hover {
 .settings-check input {
   margin-top: 4px;
 }
+/* ---------------------------------------------------------- theme editor */
+
+/*
+ * The editor is taller than the settings drawer it opens from, because it is
+ * fourteen colours, three typefaces and a shape — so it scrolls, and the
+ * drawer's own width is kept rather than widened. A wider panel would cover
+ * more of the window it is previewing on, and the preview is the point.
+ */
+.theme-editor {
+  gap: 16px;
+}
+
+/*
+ * A colour: the picker, the name, the hex, and the way back to inheriting it.
+ *
+ * A grid rather than a flex row, so the fourteen names line up down a column
+ * whatever their length. `surface-hover` and `ok` are eight characters apart,
+ * and ragged labels turn a list of related things into a list of unrelated
+ * ones.
+ */
+.theme-swatches {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.theme-swatch {
+  display: grid;
+  grid-template-columns: 24px 1fr 96px 24px;
+  align-items: center;
+  gap: 8px;
+}
+/* Chrome draws its own bevel and padding on a colour input, which at 24px is
+   most of the control. */
+.theme-swatch input[type="color"] {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: none;
+  cursor: pointer;
+}
+.theme-swatch-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+/* Set, the name reads at the weight of something somebody decided. Inherited,
+   it stays furniture — which is the only thing on the row that says which of
+   the fourteen this theme actually has an opinion about. */
+.theme-swatch.set .theme-swatch-name {
+  color: var(--text);
+}
+.theme-swatch-hex {
+  font-family: var(--mono);
+  font-size: 11px;
+  width: 100%;
+  min-width: 0;
+}
+.theme-swatch-clear {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  padding: 4px;
+  font-size: 11px;
+  line-height: 1;
+}
+.theme-swatch-clear:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+/* Nothing to clear is not a failure state, so it recedes rather than greying
+   out — a disabled control on every inherited row would be eleven disabled
+   controls in a list of fourteen. */
+.theme-swatch-clear:disabled {
+  opacity: 0;
+}
+
+/* How many of the fourteen this palette states, at the far end of the row that
+   switches between them. The number is the answer to "have I done the light
+   one yet", which is the question this editor is easiest to get wrong on. */
+.theme-count {
+  margin-left: auto;
+  align-self: center;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/*
+ * The pairs that will not be readable.
+ *
+ * Warning-coloured and not danger-coloured, which is the whole posture: this
+ * is somebody's own machine and their own screen, the floors are a default
+ * rather than a rule, and the editor's job is to make sure a 3:1 body text is
+ * a thing they chose rather than a thing that happened.
+ */
+.theme-contrast ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.theme-contrast li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 2px solid var(--warn);
+  padding-left: 8px;
+}
+.theme-contrast li b {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--text);
+}
+.theme-contrast li span {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.micro.warn {
+  color: var(--warn);
+}
+
 .settings-paths {
   margin: 0;
   display: grid;

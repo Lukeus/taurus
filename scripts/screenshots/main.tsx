@@ -40,6 +40,7 @@ import {
   STATUS,
   USAGE,
   TRACES,
+  THEMES,
 } from "./fixtures";
 
 /** Which part of the conversation to frame. See `capture.mjs` for the set. */
@@ -132,6 +133,8 @@ const ANSWERS: Record<string, unknown> = {
   usage_report: USAGE,
   trace_report: TRACES,
   mcp_environment: MCP_ENVIRONMENT,
+  list_themes: THEMES,
+  themes_dir: "~/.taurus/themes",
   // The dock's shell. Nothing is ever written back down the channel, so the
   // Terminal tab is an empty emulator — which is the right picture, because
   // the shot is of the tab beside it.
@@ -267,6 +270,15 @@ requestAnimationFrame(() => {
       // being of a tab somebody clicked. The profile it then fetches is
       // answered from the stub above, well inside Chrome's virtual-time
       // budget.
+      // Settings, on the tab a theme is picked from. Pressed rather than
+      // seeded, like the drawers below: which tab is showing is local state in
+      // `Settings`, and the picture is more honest for being of one somebody
+      // clicked. The theme list arrives from the stub above, which is why the
+      // brand row has anything in it.
+      appearance: async () => {
+        (await click(".rail-link b", (b) => b === "Settings"))();
+        (await click(".pill-row .pill", (b) => b === "Appearance"))();
+      },
       data: () => {
         const tab = [...document.querySelectorAll(".pane-switch .seg")].find(
           (button) => button.textContent?.startsWith("Data"),

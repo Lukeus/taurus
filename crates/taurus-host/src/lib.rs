@@ -22,6 +22,7 @@ pub mod secrets;
 pub mod sessions;
 #[cfg(test)]
 mod testing;
+pub mod theme;
 pub mod traces;
 pub mod trust;
 pub mod usage;
@@ -40,6 +41,7 @@ pub use search::{Match, SearchResults, SessionHit};
 pub use secrets::KeyStatus;
 pub use sessions::{SessionLog, SessionMeta, SubagentLogs, Switch};
 pub use taurus_tools::{Checkpoint, Restored, Rewind, TurnChange};
+pub use theme::{CustomTheme, ThemeFile, ThemeModes};
 pub use traces::{ModelLatency, ToolLatency, TraceReport, TraceStep, TurnTrace};
 pub use trust::PendingConfig;
 pub use usage::{SchemaCost, ToolUsage, UsageReport};

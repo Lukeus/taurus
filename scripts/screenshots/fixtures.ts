@@ -166,6 +166,48 @@ export const MCP_SERVERS = [
 ];
 
 /** What the panel says about where it looks for a stdio server's program. */
+/**
+ * Two themes on disk, one of them the workspace's own.
+ *
+ * The second is the half of this feature that is easiest to forget exists: a
+ * repository can carry its own branding in `.taurus/themes`, and a picture of
+ * one global theme would not say so.
+ */
+export const THEMES = [
+  {
+    id: "midnight",
+    name: "Midnight",
+    path: "~/.taurus/themes/midnight.json",
+    scope: "global",
+    dark: {
+      ink: "#07090d",
+      "surface-1": "#10141c",
+      accent: "#b48cff",
+      "accent-hover": "#c9aaff",
+      "on-accent": "#07090d",
+    },
+    light: { accent: "#6b3fd4", "on-accent": "#ffffff" },
+    fonts: { display: null, body: null, mono: null },
+    wordmark: null,
+    logo: null,
+    shape: { radius: null, gutter: null, "rail-gutter": null },
+    modes: "both",
+  },
+  {
+    id: "acme",
+    name: "Acme",
+    path: ".taurus/themes/acme.json",
+    scope: "workspace",
+    dark: { accent: "#ffb703" },
+    light: {},
+    fonts: { display: null, body: null, mono: null },
+    wordmark: "acme",
+    logo: null,
+    shape: { radius: null, gutter: null, "rail-gutter": null },
+    modes: "dark_only",
+  },
+];
+
 export const MCP_ENVIRONMENT = {
   path: [
     "/Users/you/.nvm/versions/node/v22.17.1/bin",

@@ -213,6 +213,16 @@ cargo run -p taurus-mcp --example probe -- path/to/mcp.json
 # Web: one real search, then fetch the first result it returns.
 cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async book"
 
+# Themes: what the app makes of the ones on your disk. Needs no provider, reads
+# `~/.taurus/themes` and writes nothing. The answer to "why is my theme not in
+# the picker" — which layer each came from, which of the two palettes it can
+# paint, which `--lk-*` tokens it actually sets, whether its logo was read, and
+# every complaint the loader had. The app reports the problems of the theme in
+# force and the picker reports the rest only while it is open; this reports all
+# of them at once, without starting the app.
+cargo run -p taurus-host --example theme        # global themes
+cargo run -p taurus-host --example theme -- .   # and this workspace's
+
 # What a sweep costs on a real workspace, and that it stays quiet when nothing
 # changed. Needs no provider. Run it on something large before touching the
 # caps in `sweep.rs` — every command pays this twice. It reports a turn's first

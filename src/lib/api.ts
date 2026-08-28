@@ -95,6 +95,12 @@ import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
 import type { TerminalEvent } from "../bindings/TerminalEvent";
 import type { Theme } from "../bindings/Theme";
+import type { CustomTheme } from "../bindings/CustomTheme";
+import type { ThemeFile } from "../bindings/ThemeFile";
+import type { ThemeModes } from "../bindings/ThemeModes";
+import type { Fonts } from "../bindings/Fonts";
+import type { Brand } from "../bindings/Brand";
+import type { Shape } from "../bindings/Shape";
 import type { ToolOutput } from "../bindings/ToolOutput";
 import type { ToolResultBlock } from "../bindings/ToolResultBlock";
 import type { ModelLatency } from "../bindings/ModelLatency";
@@ -131,6 +137,12 @@ export type {
   CommandKind,
   CommandSummary,
   Commit,
+  CustomTheme,
+  ThemeFile,
+  ThemeModes,
+  Fonts,
+  Brand,
+  Shape,
   DataColumn,
   DataColumnKind,
   DataColumnProfile,
@@ -690,6 +702,40 @@ export const setAgentSynthesis = (enabled: boolean) =>
   invoke<void>("set_agent_synthesis", { enabled });
 
 export const setTheme = (theme: Theme) => invoke<void>("set_theme", { theme });
+
+/** Picks the custom theme painting over that palette. Empty is the built-in. */
+export const setThemeId = (id: string) => invoke<void>("set_theme_id", { id });
+
+/**
+ * Every custom theme on the machine.
+ *
+ * Asked for when the picker opens rather than carried on the status, because
+ * each theme brings its logo inlined and the status is pushed after anything
+ * that moves a number on screen.
+ */
+export const listThemes = () => invoke<CustomTheme[]>("list_themes");
+
+export const saveTheme = (scope: Scope, id: string, theme: ThemeFile) =>
+  invoke<string>("save_theme", { scope, id, theme });
+
+export const deleteTheme = (scope: Scope, id: string) =>
+  invoke<void>("delete_theme", { scope, id });
+
+/** Creates the themes folder if it is not there, and says where it is. */
+export const themesDir = (scope: Scope) => invoke<string>("themes_dir", { scope });
+
+/**
+ * Repaints the native window behind the webview.
+ *
+ * The window's own ground is the platform's, not the stylesheet's — it is what
+ * shows for the frame before the document paints and in the corners a webview
+ * does not cover. `paint_window` sets it at launch from the settings file, and
+ * this is the other half: a theme picked while the app is running has to move
+ * it too, or the ink around the edges stays the colour of a palette nobody is
+ * looking at any more.
+ */
+export const setWindowBackground = (color: string) =>
+  invoke<void>("set_window_background", { color });
 
 /**
  * Which embedding model semantic search runs on, and which backend serves it.

@@ -60,7 +60,8 @@ fn paint_window(app: &tauri::App) {
     // folder that has not been resolved yet, and a window that opened in one
     // palette because of the last project it was in would be worse than one
     // that opened in the user's own.
-    let stored = config::read_settings(Scope::Global, None).theme;
+    let settings = config::read_settings(Scope::Global, None);
+    let stored = settings.theme;
     let resolved = match stored {
         Some(config::Theme::Light) => Some(Theme::Light),
         Some(config::Theme::Dark) => Some(Theme::Dark),
@@ -70,10 +71,49 @@ fn paint_window(app: &tauri::App) {
         Some(config::Theme::System) | None => window.theme().ok(),
     };
 
-    if resolved == Some(Theme::Light) {
-        let _ = window.set_background_color(Some(LIGHT));
-    } else {
-        let _ = window.set_background_color(Some(DARK));
+    let light = resolved == Some(Theme::Light);
+
+    // A custom theme may have moved the ground out from under both constants.
+    // Read the one file the setting names rather than the directory — this is
+    // on the path to the first frame, and the rest of somebody's themes have
+    // nothing to say about the colour this window opens in.
+    let branded = settings
+        .theme_id
+        .as_deref()
+        .and_then(|id| taurus_host::theme::load_theme(None, id).0)
+        .and_then(|theme| {
+            let palette = if light { theme.light } else { theme.dark };
+            palette.get("ink").and_then(|hex| parse_color(hex))
+        });
+
+    let color = branded.unwrap_or(if light { LIGHT } else { DARK });
+    let _ = window.set_background_color(Some(color));
+}
+
+/// A `#rgb`, `#rrggbb` or `#rrggbbaa` hex string as a window colour.
+///
+/// Alpha is read and then forced opaque: this is the ground the whole window
+/// sits on, and a translucent one composites against the desktop rather than
+/// against anything this app drew. Returns `None` for anything else, which
+/// leaves the shipped constant standing — the same rule the rest of the theme
+/// layer follows, where a value that is not a colour costs itself and nothing
+/// around it.
+pub(crate) fn parse_color(hex: &str) -> Option<tauri::window::Color> {
+    let digits = hex.strip_prefix('#')?;
+    let expand = |c: char| u8::from_str_radix(&format!("{c}{c}"), 16).ok();
+    let byte = |at: usize| u8::from_str_radix(digits.get(at..at + 2)?, 16).ok();
+    match digits.len() {
+        3 | 4 => {
+            let mut chars = digits.chars();
+            Some(tauri::window::Color(
+                expand(chars.next()?)?,
+                expand(chars.next()?)?,
+                expand(chars.next()?)?,
+                0xff,
+            ))
+        }
+        6 | 8 => Some(tauri::window::Color(byte(0)?, byte(2)?, byte(4)?, 0xff)),
+        _ => None,
     }
 }
 
@@ -249,6 +289,12 @@ pub fn run() {
             commands::set_max_iterations,
             commands::set_agent_iterations,
             commands::set_theme,
+            commands::set_theme_id,
+            commands::list_themes,
+            commands::save_theme,
+            commands::delete_theme,
+            commands::themes_dir,
+            commands::set_window_background,
             commands::set_embedding_model,
             commands::set_rerank,
             commands::build_index,

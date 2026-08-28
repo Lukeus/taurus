@@ -252,8 +252,14 @@ web search.
 - Everything the Settings drawer writes is a plain file the CLI reads too.
 - [**MCP servers**](docs/configuration.md#mcp-servers) — add and test them in
   the app, in the same `mcpServers` format Claude Desktop uses.
+- [**Themes**](docs/configuration.md#themes) — fourteen colours, three
+  typefaces, a wordmark and a corner radius, in a file you can commit. A
+  workspace can carry its own, so a repository brands the app for everyone who
+  opens it.
 
 ![The MCP panel](docs/screenshots/mcp.png)
+
+![Settings, Appearance](docs/screenshots/appearance.png)
 
 **[Development](docs/development.md)** — tests, the live checks, the app icon,
 regenerating these screenshots, and cutting a release.

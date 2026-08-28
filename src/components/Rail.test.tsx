@@ -32,6 +32,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       jobsRunning={0}
       health={{ state: "connected", id: "ollama", models: 4 }}
       theme="dark"
+      brand={null}
       onPickWorkspace={() => {}}
       onNew={() => {}}
       onOpen={() => {}}
@@ -48,6 +49,48 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       {...props}
     />,
   );
+
+describe("the panels, grouped", () => {
+  /** The fold headers, in the order the rail stacks them. */
+  const groups = (html: string) =>
+    [...html.matchAll(/class="rail-group[^"]*"[^>]*>.*?<b>([^<]*)<\/b>/g)].map(
+      ([, label]) => label,
+    );
+
+  it("names each fold after what is behind it", () => {
+    // The bug this replaces: seven unlike panels behind one fold called
+    // "Tools". A label that does not predict its contents is a label nobody
+    // can decide to leave shut, so the fold stops being worth having.
+    expect(groups(draw({ sessions: [] }))).toEqual([
+      "Agent",
+      "Connections",
+      "Activity",
+    ]);
+  });
+
+  it("puts every panel in exactly one of them", () => {
+    // Read off the rendered rail rather than restated here, so a panel added
+    // later and dropped outside the three is a failure rather than a row that
+    // quietly lands beside Settings.
+    const html = draw({ sessions: [] });
+    const links = [...html.matchAll(/class="rail-link[^"]*"[^>]*>.*?<b>([^<]*)<\/b>/g)].map(
+      ([, label]) => label,
+    );
+    expect(links).toEqual([
+      "Skills",
+      "Agents",
+      "Memory",
+      "MCP",
+      "Terminal",
+      "Context",
+      "Traces",
+      // Outside all three on purpose — a fold that can hide the way out of a
+      // state you did not mean to be in is a fold that can strand somebody.
+      "Settings",
+      "Dark theme",
+    ]);
+  });
+});
 
 describe("branch awareness", () => {
   it("marks a conversation started on a branch that is no longer checked out", () => {
@@ -67,7 +110,7 @@ describe("branch awareness", () => {
       sessions: [{ ...session("a", "Fix the parser", now), branch: "main" }],
       branch: "main",
     });
-    expect(html).not.toContain("on main");
+    expect(subtitleOf(html, "Fix the parser")).not.toMatch(/^on /);
   });
 
   it("says nothing about branches for a workspace that has none", () => {
@@ -77,9 +120,25 @@ describe("branch awareness", () => {
       sessions: [session("a", "Fix the parser", now)],
       branch: null,
     });
-    expect(html).not.toContain(" on ");
+    expect(subtitleOf(html, "Fix the parser")).not.toMatch(/^on /);
   });
 });
+
+/**
+ * The line the rail draws under one conversation's title.
+ *
+ * These two used to assert over the whole rendered rail — that "on main" and
+ * then that " on " appeared nowhere in it. Both were standing in for one
+ * narrow claim: that the *subtitle* does not open with a branch prefix. The
+ * wider form fails on any tooltip elsewhere in the rail that happens to use
+ * the word in a sentence, which is a test that breaks on prose rather than on
+ * the behaviour it was written for.
+ */
+function subtitleOf(html: string, title: string): string {
+  const row = html.match(new RegExp(`<b>${title}</b><span[^>]*>([^<]*)</span>`));
+  expect(row, `the rail drew no row titled "${title}"`).not.toBeNull();
+  return row![1];
+}
 
 describe("the workspace button", () => {
   it("leads with the folder name and keeps the path underneath", () => {
