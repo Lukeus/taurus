@@ -85,9 +85,22 @@ jobs:
       matrix:
         os: [macos-14, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
-    # Generous, because Windows is the slow one and it is slow honestly: a cold
-    # release build of the app is six minutes there on its own.
-    timeout-minutes: 45
+    # Windows is the slow one and it is slow honestly. The number was 45, set
+    # when a cold release build of the app there was six minutes on its own,
+    # and it stopped being generous without anybody changing it: measured on
+    # three branches in one afternoon, macOS came in at 44m40s and 40m01s —
+    # *inside* the budget by twenty seconds — and Windows was cancelled at the
+    # wall three times running, always partway through `cargo build --release`.
+    #
+    # What grew is the dependency tree. A release build of DataFusion and its
+    # Arrow half is most of an hour from cold, and it is cold on every new
+    # branch: `rust-cache` keys on the branch, so the first push to one pays
+    # for all of it. A timeout tuned to the old tree reads as a Windows-only
+    # failure and is really a clock.
+    #
+    # 75 rather than 60, so the next thing that gets slower is caught by a
+    # measurement rather than by a red X on somebody's unrelated pull request.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 

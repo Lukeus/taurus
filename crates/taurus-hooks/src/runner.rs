@@ -969,14 +969,34 @@ mod tests {
             ("ps", vec!["-eo", "pid,ppid,pgid,command"])
         };
         let out = std::process::Command::new(program).args(args).output();
-        match out {
-            Ok(out) => String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .take(40)
-                .collect::<Vec<_>>()
-                .join("\n"),
-            Err(e) => format!("(could not list processes: {e})"),
+        let out = match out {
+            Ok(out) => out,
+            Err(e) => return format!("(could not run {program}: {e})"),
+        };
+        let listing: String = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .take(40)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !listing.is_empty() {
+            return listing;
+        }
+        /*
+         * Nothing on stdout is two different things, and reading only stdout
+         * conflated them for three CI rounds: an empty process list, and a
+         * lister that failed. Every Windows failure of this test printed two
+         * blank snapshots — which read as "the tree is gone, so the kill
+         * worked" and was really "PowerShell said something and nobody
+         * listened". The instrument built to answer the question was answering
+         * it wrong.
+         */
+        let complaint = String::from_utf8_lossy(&out.stderr);
+        let complaint = complaint.trim();
+        if complaint.is_empty() {
+            format!("(no matching processes; {program} exited {})", out.status)
+        } else {
+            format!("({program} could not list them: {complaint})")
         }
     }
 
@@ -1001,27 +1021,43 @@ mod tests {
 
         let mut slow = hook(&command, HookEvent::PreToolUse);
         slow.args = args;
-        // Two seconds rather than one, and the extra second is not for the
-        // hook: it is for the runner. Two shells and a `start` have to get the
-        // grandchild up *before* the timeout fires, or the timeout kills a
-        // tree that has not grown yet and the assertion below is proving
-        // nothing. On Windows that is `cmd` starting `cmd`, cold.
-        slow.timeout_seconds = 2;
+        // Five seconds, and every one of them is for the runner rather than
+        // the hook. Two shells and a `start` have to get the grandchild up
+        // *before* the timeout fires — on Windows that is `cmd` starting
+        // `cmd`, cold — and then `taskkill` has to start, which is itself a
+        // process and costs a good part of a second more.
+        //
+        // It was two, and two lost: three Windows runs in one afternoon, and
+        // one of them failed with the marker appearing at 13s, which is a
+        // grandchild that was never in the tree when the kill walked it rather
+        // than one the kill let go. Widening the window is the fix because the
+        // race is the *fixture's*, not the product's — and `raced` below is
+        // what tells those two apart when it happens again.
+        slow.timeout_seconds = 5;
+        let slow_timeout = slow.timeout_seconds;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
 
         // Read while the hook is still inside its timeout, because the kill
         // reported the hook's own shell already gone and the question that
         // answers is whether it ever lived that long.
-        let midway = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(1200)).await;
-            tree()
+        // Read while the hook is still inside its timeout. Two things at that
+        // moment, not one: the tree, and — the question every failure of this
+        // test has actually turned on — whether the grandchild had started
+        // *yet*. Asserting `started.exists()` afterwards cannot tell a kill
+        // that missed from a fixture that had not finished growing, and those
+        // want opposite fixes.
+        let watch = started.clone();
+        let midway = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(3000)).await;
+            (tree(), watch.exists())
         });
 
         let began = std::time::Instant::now();
         let outcome = runner
             .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
             .await;
-        let midway = midway.await.unwrap_or_else(|e| format!("({e})"));
+        let (midway, up_before_the_kill) =
+            midway.await.unwrap_or_else(|e| (format!("({e})"), false));
         let took = began.elapsed();
         // The moment that matters: what the kill left standing, read before
         // anything has had time to exit on its own. The tree at *failure* time
@@ -1057,6 +1093,19 @@ mod tests {
         // had started would pass against the bug it was written for, which is
         // how the sibling test in `taurus_tools::jobs` first passed.
         assert!(started.exists(), "the grandchild never started");
+        // And that it was there *in time*, which is the stronger claim and the
+        // one the survivor below depends on. A grandchild that appeared after
+        // the kill had already walked the tree was never a candidate to be
+        // killed, so its survival says nothing about the kill — and a failure
+        // reading "the kill did not do its job" would be blaming the wrong
+        // thing. Widen the timeout above if this is what fires.
+        assert!(
+            up_before_the_kill,
+            "the fixture lost its own race: the grandchild was not up 3s in, so the kill \
+             at {}s had nothing to find. This is the timeout being too tight, not the tree \
+             kill failing.\n== 3s in ==\n{midway}",
+            slow_timeout
+        );
 
         // Comfortably past when the grandchild would have written, had it
         // lived. Polled rather than slept in one go so a failure is quick.
