@@ -33,6 +33,9 @@ import type { DataRun } from "../bindings/DataRun";
 import type { DataStep } from "../bindings/DataStep";
 import type { DataValueCount } from "../bindings/DataValueCount";
 import type { Dataset } from "../bindings/Dataset";
+import type { Document } from "../bindings/Document";
+import type { Saved } from "../bindings/Saved";
+import type { LineRange } from "../bindings/LineRange";
 import type { Recipe } from "../bindings/Recipe";
 import type { RecipeStep } from "../bindings/RecipeStep";
 import type { RecipeTable } from "../bindings/RecipeTable";
@@ -66,7 +69,10 @@ import type { Message } from "../bindings/Message";
 import type { MessageKind } from "../bindings/MessageKind";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { Note } from "../bindings/Note";
+import type { DataOnScreen } from "../bindings/DataOnScreen";
+import type { DocumentOnScreen } from "../bindings/DocumentOnScreen";
 import type { OnScreen } from "../bindings/OnScreen";
+import type { Selection } from "../bindings/Selection";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
 import type { Problem } from "../bindings/Problem";
@@ -156,6 +162,9 @@ export type {
   DataStep,
   DataValueCount,
   Dataset,
+  Document,
+  LineRange,
+  Saved,
   Recipe,
   RecipeStep,
   RecipeTable,
@@ -190,7 +199,10 @@ export type {
   ModelEntry,
   ModelInfo,
   Note,
+  DataOnScreen,
+  DocumentOnScreen,
   OnScreen,
+  Selection,
   PermissionDecision,
   PermissionRequest,
   Problem,
@@ -884,6 +896,38 @@ export const commitTurn = (sessionId: string, turn: number, message: string) =>
  * own boundary anyway.
  */
 export const rescanLibrary = () => invoke<void>("rescan_library");
+
+/* ----------------------------------------------------------------- canvas */
+
+/**
+ * One text file, for the editor beside the conversation.
+ *
+ * Called when a document is opened, and again whenever what is held might be
+ * stale — the model wrote to it, the window came back into focus. Cheap enough
+ * to be the answer to both: a file small enough to edit is one read.
+ *
+ * The path is workspace-relative and goes through the same guard every tool
+ * read does, because it arrives from a transcript that may have been reopened
+ * or hand-edited.
+ */
+export const openDocument = (path: string) =>
+  invoke<Document>("open_document", { path });
+
+/**
+ * Writes what the editor holds back to the file.
+ *
+ * `fingerprint` is the one the last read handed over, and it is the whole of
+ * the guarantee: a save that does not match what is on disk writes nothing and
+ * comes back as `{ type: "stale" }` carrying the other version, in the same
+ * round trip. That is not an error — being beaten to a file is an ordinary
+ * thing when two writers share a workspace, and the answer to it is a decision
+ * the person makes.
+ *
+ * No permission prompt. This is a person typing in an editor they opened, not
+ * the model changing a file; see `taurus_host::document`.
+ */
+export const saveDocument = (path: string, text: string, fingerprint: string) =>
+  invoke<Saved>("save_document", { path, text, fingerprint });
 
 /* ------------------------------------------------------------- background */
 

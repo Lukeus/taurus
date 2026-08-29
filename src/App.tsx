@@ -9,11 +9,14 @@ import { Attachments } from "./components/Attachments";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { ContextMeter } from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
+import { Canvas, type SaveState } from "./components/Canvas";
 import { PermissionDialog } from "./components/PermissionDialog";
+import { changedLines, FLASH_MS, reconcile, SAVE_AFTER_MS } from "./lib/document";
 import { TrustBanner } from "./components/TrustBanner";
 import { PlanPanel } from "./components/PlanPanel";
 import { Rail, type ProviderHealth } from "./components/Rail";
 import {
+  CANVAS_WIDTH,
   RAIL_WIDTH,
   ResizeHandle,
   TERMINAL_HEIGHT,
@@ -30,9 +33,14 @@ import type {
   Attachment,
   BackgroundJob,
   CommandSummary,
+  DataOnScreen,
   Dataset,
+  Document as OpenDocument,
+  DocumentOnScreen,
+  LineRange,
   ModelInfo,
   OnScreen,
+  Selection,
   ProviderConfig,
   ServerStatus,
   Theme,
@@ -163,6 +171,9 @@ export default function App() {
       session: s.session,
       sessions: s.sessions,
       changed: s.changed,
+      opening: s.opening,
+      wrote: s.wrote,
+      noteError: s.noteError,
       busy: s.busy,
       stopping: s.stopping,
       resuming: s.resuming,
@@ -195,6 +206,13 @@ export default function App() {
   const dock = useResizableHeight({
     storageKey: "taurus.terminalHeight",
     ...TERMINAL_HEIGHT,
+  });
+  /* Pinned to the right of the centre column, so it widens as the pointer
+     moves left — the same sign the Changes drawer uses. */
+  const canvasPane = useResizableWidth({
+    storageKey: "taurus.canvasWidth",
+    grow: -1,
+    ...CANVAS_WIDTH,
   });
   /**
    * Whether the terminal dock is showing.
@@ -267,6 +285,45 @@ export default function App() {
    * let the same query be run again by merely coming back.
    */
   const [pendingQuery, setPendingQuery] = useState<string | null>(null);
+  /**
+   * The file open in the canvas, and where in it to go.
+   *
+   * One document at a time, deliberately: tabs are a second navigation model
+   * to build and to explain, and the case this exists for is "open the readme
+   * while we talk about it" rather than "keep nine files". See
+   * `docs/known-gaps.md`.
+   *
+   * `reveal` is an object rather than a bare range so that being sent to the
+   * same lines twice is two events — a model saying "look here" again should
+   * move the view again, even when it is already there.
+   */
+  const [canvas, setCanvas] = useState<{
+    path: string;
+    reveal: { from: number; to: number } | null;
+  } | null>(null);
+  const [doc, setDoc] = useState<OpenDocument | null>(null);
+  const [docError, setDocError] = useState<string | null>(null);
+  /**
+   * What is in the editor, which is not always what is on disk.
+   *
+   * Held beside `doc` rather than inside it, because they are two different
+   * facts and the difference between them *is* the unsaved state. `doc` is what
+   * was last read or written; this is what has been typed since.
+   *
+   * Not called `draft`: the composer already has one of those, and two in one
+   * component is the sort of shadowing that compiles and then goes wrong
+   * somewhere else.
+   */
+  const [typed, setTyped] = useState("");
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  /** The other version, when a save was refused because somebody got there
+   *  first. Both are kept; neither is chosen here. */
+  const [conflict, setConflict] = useState<OpenDocument | null>(null);
+  /** Lines somebody else just changed, to tint for a moment. */
+  const [flash, setFlash] = useState<{ from: number; to: number } | null>(null);
+  /** What is highlighted in the canvas right now. Travels with the next
+   *  message; see `onScreenFor`. */
+  const [selection, setSelection] = useState<Selection | null>(null);
   /**
    * Something for the composer to say, put there by a button somewhere else.
    *
@@ -822,6 +879,171 @@ export default function App() {
   };
 
   /**
+   * Opens a file in the canvas beside the conversation.
+   *
+   * The trip out of a transcript card, and also what the `open_file` tool's
+   * announcement runs. Deliberately does *not* switch panes: the canvas is a
+   * split, so opening a file leaves whatever was in the middle column where it
+   * was — which is the whole difference between this and the Data pane.
+   */
+  const showDocument = (path: string, lines: LineRange | null) => {
+    setCanvas({ path, reveal: lines ? { from: lines.from, to: lines.to } : null });
+    setSelection(null);
+  };
+
+  /*
+   * Reads whatever the canvas is open on.
+   *
+   * Re-runs on the path rather than on the whole `canvas` object, so being
+   * sent to new lines in a file that is already open scrolls it instead of
+   * fetching it again.
+   */
+  /*
+   * The model's own request to open something.
+   *
+   * An errand from the store, taken once. Not cleared afterwards — clearing it
+   * would mean a write per turn to undo a write per turn — so this keys off
+   * the counter instead, which is what makes "open it again, at line 90" move
+   * the view a second time.
+   */
+  const opening = store.opening;
+  useEffect(() => {
+    if (!opening) return;
+    showDocument(opening.path, opening.lines);
+    // Only the counter. The path and the lines are read through the closure,
+    // and depending on them would re-open the file every time this component
+    // re-rendered with the same errand still sitting there.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opening?.at]);
+
+  const openPath = canvas?.path ?? null;
+  useEffect(() => {
+    if (!openPath) {
+      setDoc(null);
+      setDocError(null);
+      setTyped("");
+      return;
+    }
+    let current = true;
+    setDoc(null);
+    setDocError(null);
+    setConflict(null);
+    setFlash(null);
+    setSaveState("idle");
+    api
+      .openDocument(openPath)
+      .then((read) => {
+        if (!current) return;
+        setDoc(read);
+        // The buffer starts as what was read. Everything after this point is
+        // the difference between the two.
+        setTyped(read.text);
+      })
+      .catch((e) => current && setDocError(String(e)));
+    // A file opened, then closed, then opened again before the first read
+    // landed would otherwise show the first file's contents under the second
+    // one's name.
+    return () => {
+      current = false;
+    };
+  }, [openPath, workspace]);
+
+  /*
+   * Writes what has been typed, once typing has stopped.
+   *
+   * Debounced rather than saved per keystroke, and autosaved rather than left
+   * to ⌘S, because the whole argument for the canvas is that the model is
+   * looking at the same file you are. An unsaved buffer breaks that silently:
+   * you ask about the paragraph on screen and it reads the one on disk.
+   *
+   * Nothing runs while a conflict is open — a save is exactly what is being
+   * decided about, and repeating the refusal every 800ms would bury the
+   * question under its own answer.
+   */
+  useEffect(() => {
+    if (!doc || conflict || typed === doc.text) return;
+    setSaveState("typing");
+    const timer = setTimeout(() => {
+      setSaveState("saving");
+      api
+        .saveDocument(doc.path, typed, doc.fingerprint)
+        .then((result) => {
+          if (result.type === "stale") {
+            // Not an error. Somebody wrote the file after this editor read it,
+            // so both versions exist and which one survives is not a decision
+            // this code gets to make.
+            setConflict(result.current);
+            setSaveState("typing");
+            return;
+          }
+          setDoc(result.document);
+          setSaveState("idle");
+        })
+        .catch((e) => {
+          setSaveState("failed");
+          store.noteError(String(e));
+        });
+    }, SAVE_AFTER_MS);
+    return () => clearTimeout(timer);
+    // `store` is stable; depending on it would restart the timer on every
+    // render and a fast typist would never reach the end of one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typed, doc, conflict]);
+
+  /*
+   * What to do when the running turn writes the file that is open.
+   *
+   * The rule is `reconcile`'s: never silently lose typing. A clean buffer takes
+   * the new version and flashes what moved, which is the model visibly editing
+   * the document. A dirty one keeps both and asks.
+   */
+  const wrote = store.wrote;
+  useEffect(() => {
+    if (!wrote || !doc) return;
+    if (!wrote.paths.includes(doc.path)) return;
+    let current = true;
+    api
+      .openDocument(doc.path)
+      .then((read) => {
+        if (!current) return;
+        const what = reconcile({ base: doc.text, draft: typed }, read.text);
+        if (what.kind === "same") {
+          // Still take the new fingerprint: the bytes match, but the file has
+          // been rewritten, and saving against the old stamp would be refused
+          // for a conflict that does not exist.
+          setDoc(read);
+          return;
+        }
+        if (what.kind === "conflict") {
+          setConflict(read);
+          return;
+        }
+        setFlash(changedLines(doc.text, read.text));
+        setDoc(read);
+        setTyped(read.text);
+      })
+      .catch(() => {
+        // A file the turn deleted or moved. Left as it was rather than blanked
+        // — what is on screen is still what was there, and saying so with an
+        // empty editor would be a lie about the file.
+      });
+    return () => {
+      current = false;
+    };
+    // Only the counter, for the reason `opening` gives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wrote?.at]);
+
+  /* The tint is a moment, not a state. Cleared on a timer rather than by the
+     animation ending, so nothing depends on an event that does not fire when
+     motion is turned off. */
+  useEffect(() => {
+    if (!flash) return;
+    const timer = setTimeout(() => setFlash(null), FLASH_MS);
+    return () => clearTimeout(timer);
+  }, [flash]);
+
+  /**
    * Puts a sentence in the composer without sending it.
    *
    * The trip the other way, and the pane's only route into a turn besides
@@ -847,7 +1069,19 @@ export default function App() {
    * it costs. What keeps that from being invisible context is the chip on the
    * composer: it is on screen, next to the box, while the message is typed.
    */
-  const onScreen = onScreenFor(pane, showing, sql);
+  const onScreen = onScreenFor(
+    pane,
+    showing,
+    sql,
+    canvas && {
+      path: canvas.path,
+      selection,
+      // Nearly always false — the canvas saves a moment after typing stops.
+      // What it catches is the conflict, where the screen and the disk hold
+      // different things until somebody decides.
+      unsaved: !!doc && typed !== doc.text,
+    },
+  );
 
   const forgetDataset = (name: string) => void store.forgetDataset(name);
 
@@ -992,6 +1226,10 @@ export default function App() {
         )}
 
         <main>
+          {/* The centre column, which the canvas sits beside rather than over.
+              A split and not a third tab: see `Canvas`, and see the Data pane
+              above for the experiment that argued it. */}
+          <div className="pane-split">
           {pane === "data" ? (
             <Suspense fallback={<div className="data-pane" />}>
               <DataPane
@@ -1017,6 +1255,7 @@ export default function App() {
               onAnswer={store.answerQuestions}
               onOpenDelegate={setDelegate}
               onOpenDataset={showDataset}
+              onOpenDocument={showDocument}
               onRunQuery={showQuery}
               find={find}
               empty={
@@ -1057,6 +1296,49 @@ export default function App() {
                 />
               ))}
             </div>
+          )}
+          </div>
+
+          {/* Mounted only while a file is open, like the terminal dock and for
+              the same reason: an editor laid out to nothing is not hidden, it
+              is broken, and a canvas kept alive behind a zero-width column
+              would hold a document nobody can see. */}
+          {canvas && (
+            <>
+              <ResizeHandle pane={canvasPane} label="Editor width" />
+              <div className="canvas-slot" style={{ width: canvasPane.size }}>
+                <Canvas
+                  path={canvas.path}
+                  reveal={canvas.reveal}
+                  document={doc}
+                  draft={typed}
+                  state={saveState}
+                  flash={flash}
+                  conflict={conflict}
+                  error={docError}
+                  onEdit={setTyped}
+                  onKeepMine={() => {
+                    // Adopt the *fingerprint* the refusal handed back while
+                    // keeping the old text as the base. The stamp is what makes
+                    // the next save succeed where the refused one did not; the
+                    // stale base is what keeps `draft !== doc.text`, so the
+                    // autosave below still has something to do.
+                    if (conflict && doc) setDoc({ ...conflict, text: doc.text });
+                    setConflict(null);
+                  }}
+                  onTakeTheirs={() => {
+                    if (!conflict) return;
+                    setDoc(conflict);
+                    setTyped(conflict.text);
+                    setConflict(null);
+                    setSaveState("idle");
+                  }}
+                  onSelect={setSelection}
+                  onAsk={ask}
+                  onClose={() => setCanvas(null)}
+                />
+              </div>
+            </>
           )}
         </main>
 
@@ -1429,28 +1711,52 @@ function PinnedPlan() {
  * What travels with a message, from where it was sent.
  *
  * Extracted and exported because the decision is the interesting part and it
- * is entirely a decision: nothing here renders. The three rules it encodes are
- * that a message from the transcript carries nothing, that a pane open on
- * nothing carries nothing, and that an empty query box is left out rather than
- * sent as an empty string.
+ * is entirely a decision: nothing here renders. The rules it encodes are that
+ * a message from the transcript alone carries nothing, that a pane open on
+ * nothing carries nothing, that an empty query box is left out rather than
+ * sent as an empty string — and that the two halves are independent, because
+ * the canvas is a *split* rather than a third tab, so a file and a dataset can
+ * both genuinely be on screen and choosing between them would be guessing.
+ *
+ * Returns `null` rather than an empty object when there is nothing at all,
+ * which is what keeps the chip off the composer and the paragraph off the
+ * prompt for the ordinary case of somebody just talking.
  */
 export function onScreenFor(
   pane: "conversation" | "data",
   showing: Dataset | null,
   sql: string,
+  canvas: { path: string; selection: Selection | null; unsaved: boolean } | null,
 ): OnScreen | null {
   // A question asked while reading a conversation is about the conversation. A
   // paragraph about a dataset nobody mentioned would be the app talking over
   // the user.
-  if (pane !== "data" || !showing) return null;
   const typed = sql.trim();
-  return {
-    dataset: showing.name,
-    path: showing.path,
-    // Omitted rather than empty — the field is optional on the Rust side, and
-    // an empty box is nothing to say rather than something to say nothing.
-    ...(typed ? { sql: typed } : {}),
-  };
+  const data: DataOnScreen | null =
+    pane === "data" && showing
+      ? {
+          dataset: showing.name,
+          path: showing.path,
+          // Omitted rather than empty — the field is optional on the Rust
+          // side, and an empty box is nothing to say rather than something to
+          // say nothing.
+          ...(typed ? { sql: typed } : {}),
+        }
+      : null;
+
+  // The canvas travels whichever pane is behind it, and that is the point of
+  // it being a split: the file is still on screen while you read the
+  // conversation, so a question about it is still a question about it.
+  const document: DocumentOnScreen | null = canvas
+    ? {
+        path: canvas.path,
+        unsaved: canvas.unsaved,
+        ...(canvas.selection ? { selection: canvas.selection } : {}),
+      }
+    : null;
+
+  if (!data && !document) return null;
+  return { ...(data ? { data } : {}), ...(document ? { document } : {}) };
 }
 
 /**
@@ -1739,13 +2045,33 @@ function Composer({
       {/* Above the box rather than inside it: this is not something you typed
           and must not read as though it were. It says what the message is
           about to carry, in the one place you are already looking. */}
-      {onScreen && (
-        <div className="composer-context" data-tip={onScreen.path}>
+      {onScreen?.data && (
+        <div className="composer-context" data-tip={onScreen.data.path}>
           <span className="dataset-mark">▦</span>
           <span>
-            asking about <b>{onScreen.dataset}</b>
+            asking about <b>{onScreen.data.dataset}</b>
           </span>
-          {onScreen.sql && <span className="micro">· and the query below</span>}
+          {onScreen.data.sql && <span className="micro">· and the query below</span>}
+        </div>
+      )}
+      {/* The canvas's own chip, and it earns its place more than the dataset's
+          does: a selection is invisible the moment focus leaves the editor, so
+          without this the message carries forty lines the user can no longer
+          see it carrying. */}
+      {onScreen?.document && (
+        <div className="composer-context" data-tip={onScreen.document.path}>
+          <span className="dataset-mark">¶</span>
+          <span>
+            asking about <b>{onScreen.document.path.split("/").pop()}</b>
+          </span>
+          {onScreen.document.selection && (
+            <span className="micro">
+              ·{" "}
+              {onScreen.document.selection.from === onScreen.document.selection.to
+                ? `line ${onScreen.document.selection.from}`
+                : `lines ${onScreen.document.selection.from}–${onScreen.document.selection.to}`}
+            </span>
+          )}
         </div>
       )}
       <div

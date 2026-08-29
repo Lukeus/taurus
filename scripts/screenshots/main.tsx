@@ -27,6 +27,9 @@ import {
   DATA_QUERY,
   DATA_TABLES,
   EVENTS,
+  DOCUMENT,
+  DOCUMENT_EVENTS,
+  DOCUMENT_PROMPT,
   MCP_ENVIRONMENT,
   MOTION_EVENTS,
   MCP_SERVERS,
@@ -128,6 +131,10 @@ const ANSWERS: Record<string, unknown> = {
   run_recipe: RECIPE_RUN,
   query_data: DATA_QUERY,
   dataset_tables: DATA_TABLES,
+  // The canvas reads the file itself rather than being handed it by the tool
+  // — see `taurus_host::document` — so the shot needs this as well as the
+  // event that opened it.
+  open_document: DOCUMENT,
   list_mcp_servers: MCP_SERVERS,
   search_sessions: SEARCH_HITS,
   usage_report: USAGE,
@@ -172,6 +179,24 @@ window.__TAURI_INTERNALS__ = {
           cursor: BACKGROUND_OUTPUT.length,
         },
       };
+    }
+    // The conflict shot needs a save that comes back refused, which is a
+    // decision about *this* call rather than a fixed answer — so it is here
+    // rather than in `ANSWERS`.
+    if (cmd === "save_document") {
+      return shot === "canvas-conflict"
+        ? {
+            type: "stale",
+            current: {
+              ...DOCUMENT,
+              text: DOCUMENT.text.replace(
+                "backs off exponentially",
+                "backs off exponentially, with full jitter",
+              ),
+              fingerprint: "9999-9",
+            },
+          }
+        : { type: "written", document: { ...DOCUMENT, fingerprint: "2-2" } };
     }
     if (cmd in ANSWERS) return ANSWERS[cmd];
     // Anything else is a command a screenshot does not need. Answering null
@@ -222,17 +247,33 @@ requestAnimationFrame(() => {
           ? MOTION_EVENTS
           : shot.startsWith("query")
             ? DATA_EVENTS
-            : EVENTS
+            : shot.startsWith("canvas")
+              ? DOCUMENT_EVENTS
+              : EVENTS
       ).reduce(reduce, [
         {
           kind: "user",
           id: "u1",
-          text: shot.startsWith("query") ? DATA_PROMPT : PROMPT,
+          text: shot.startsWith("query")
+            ? DATA_PROMPT
+            : shot.startsWith("canvas")
+              ? DOCUMENT_PROMPT
+              : PROMPT,
         },
       ] as never),
       // The dialog is state, not a route, so seeding it is all it takes to
       // photograph the moment a write is actually approved.
       ...(shot === "permission" ? { permission: PERMISSION as never } : {}),
+      // Seeded, and the reason is worth the line: the canvas opens off the
+      // `opening` errand, which is set as a turn's events are folded inside
+      // `send`. This harness folds the same events with the same reducer but
+      // never runs `send`, so nothing sets it. That is the right behaviour
+      // rather than a hole — a conversation *reopened* rehydrates its entries
+      // the same way, and a week-old transcript flinging a file onto the
+      // screen would be the app deciding where you are looking.
+      ...(shot.startsWith("canvas")
+        ? { opening: { path: DOCUMENT.path, lines: { from: 15, to: 19 }, at: 1 } as never }
+        : {}),
       // Seeded rather than fetched, for the same reason the entries above are:
       // the list arrives from `refresh`, which the harness never calls, and
       // the switch this shot presses does not exist until the list is there.
@@ -305,6 +346,35 @@ requestAnimationFrame(() => {
       motion: () => scrollTo(transcript, document.querySelector(".working")),
       query: () =>
         scrollTo(transcript, document.querySelector(".dataset-card")),
+      // The one picture of the split, and the only check of most of the
+      // editor there is: jsdom reports every measurement as zero, so the mount
+      // tests can prove the gutter has the right numbers in it and nothing
+      // about whether a number sits on the line it counts. Nothing is pressed
+      // — the canvas opens because the turn's `open_file` call opened it,
+      // which is the behaviour being photographed. Waited on rather than
+      // assumed, because the file arrives a round trip after the event that
+      // asked for it.
+      // The conflict, taken by actually causing one: type into the editor,
+      // then answer the save with a `stale` carrying a different file. Nothing
+      // here is seeded into place — the bar in the picture is the one the app
+      // draws when a real save comes back refused, which is the only way to
+      // photograph a rule rather than a stylesheet.
+      "canvas-conflict": async () => {
+        const area = (await until(() =>
+          window.document.querySelector(".doc-input"),
+        )) as HTMLTextAreaElement;
+        typeInto(area, DOCUMENT.text.replace("exponentially", "with a jittered backoff"));
+        await until(() => window.document.querySelector(".canvas-conflict"), 400);
+        scrollTo(transcript, window.document.querySelector(".document-card"));
+      },
+      canvas: async () => {
+        // The editor, not the panel: `.canvas` is on screen the moment the
+        // errand lands, and waiting on that would photograph an empty frame
+        // while the file was still being read. `.doc-input` is the thing that
+        // only exists once there is a document in it.
+        await until(() => document.querySelector(".doc-input"));
+        scrollTo(transcript, document.querySelector(".document-card"));
+      },
       // The other half, taken the way somebody takes it: press the card's own
       // button and photograph where it lands. Async because the grid does not
       // exist until the pane has mounted and the query has come back — which

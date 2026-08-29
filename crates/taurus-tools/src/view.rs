@@ -134,6 +134,65 @@ pub enum TranscriptView {
         /// The SQL, verbatim as the call sent it.
         sql: String,
     },
+    /// A file a call has opened in the canvas.
+    ///
+    /// A **reference**, like [`Self::Dataset`] and for the same argument one
+    /// step further on: a document is a file somebody is editing, so a card
+    /// carrying its text would be stale by the next keystroke rather than by
+    /// the next week. What travels is the path and the place to look.
+    ///
+    /// The rule the payload cards keep is kept here too — this *is* the call's
+    /// input, unchanged — so a reopened conversation redraws the card with no
+    /// lookup, and opening it reads the file as it is now. That is the right
+    /// answer rather than a compromise: a week-old conversation that says
+    /// "opened `README.md` at line 40" should show today's line 40.
+    ///
+    /// A frontend with no canvas ignores it and prints the call's own row, the
+    /// way the CLI already does for a dataset and a query.
+    Document {
+        /// Workspace-relative, forward slashes, as every other path shown is.
+        path: String,
+        /// The lines to reveal and select, 1-based and inclusive.
+        ///
+        /// The reason `open_file` is worth having as well as `read_file`:
+        /// "the retry logic is here" is a sentence about a place, and a
+        /// canvas that opens at the top of a 900-line file has not said it.
+        #[ts(optional)]
+        lines: Option<LineRange>,
+    },
+}
+
+/// A span of lines in a file, 1-based and inclusive at both ends.
+///
+/// A struct rather than a tuple because it crosses into TypeScript, where a
+/// two-element tuple is a shape nobody can read at the call site — `lines[0]`
+/// says nothing and `lines.from` says everything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct LineRange {
+    /// The first line, counting from 1.
+    pub from: u32,
+    /// The last line, included. Equal to `from` for a single line.
+    pub to: u32,
+}
+
+impl LineRange {
+    /// The range as it should be read, or `None` when it says nothing.
+    ///
+    /// Normalizes rather than refuses: a model that sends `to` before `from`
+    /// means the span between them, and a `from` of 0 means the first line —
+    /// neither is worth failing a call that is only asking to scroll somewhere.
+    /// A range with no `from` at all is nothing to say.
+    pub fn normalized(self) -> Option<Self> {
+        let from = self.from.max(1);
+        let to = self.to.max(from);
+        (self.from > 0 || self.to > 0).then_some(Self { from, to })
+    }
+
+    /// How many lines it covers.
+    pub fn count(self) -> u32 {
+        self.to.saturating_sub(self.from) + 1
+    }
 }
 
 // Doc comments on this struct and its fields are advertised to the model

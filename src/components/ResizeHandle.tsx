@@ -10,6 +10,18 @@ export const CHANGES_WIDTH = { initial: 440, min: 320, max: 620 };
 export const TERMINAL_HEIGHT = { initial: 300, min: 120, max: 900 };
 
 /**
+ * The same, for the canvas.
+ *
+ * Wider than the drawers because this one is read *and* worked in: 560px is
+ * about ninety columns of the editor's font, which is where source stops
+ * needing a horizontal scrollbar and prose stops being a column of three words.
+ * The floor is the point below which it stops being an editor and becomes a
+ * strip; the ceiling leaves the transcript readable, since the whole argument
+ * for a split is that both halves are usable at once.
+ */
+export const CANVAS_WIDTH = { initial: 560, min: 380, max: 1000 };
+
+/**
  * Which way a pane is sized.
  *
  * `x` is a pane beside another one, sized by dragging its left or right edge;

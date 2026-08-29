@@ -244,6 +244,39 @@ question again in the pane at full width. A query that fails, and a recipe run
 that does, each offer themselves back to Taurus with the error already in the
 message.
 
+**[The canvas](docs/capabilities.md#the-canvas)** — a file open beside the
+conversation, not instead of it.
+
+Ask to see a file and it opens in an editor to the right of the transcript.
+"Show me where the retry logic is" opens on that passage with it selected — the
+model passes the lines it means, so it can point rather than quote.
+
+![A Markdown file open beside the conversation that asked for it, with the
+lines the model pointed at selected](docs/screenshots/canvas.png)
+
+Select a passage and **Ask about this** starts a sentence in the message box.
+What travels with that message is the selection itself — which file, which
+lines, and what they said — so "tighten this" is a complete question, which it
+is on screen and is not in a transcript. The chip above the box says so while
+you type, because context you cannot see is behaviour you cannot explain.
+
+You can type in it, and it saves itself a second after you stop. That is not a
+convenience: the whole argument for the canvas is that you and Taurus are
+looking at the same file, and an unsaved buffer breaks it silently — you would
+ask about the paragraph on screen and get an answer about the one on disk.
+
+Taurus writes files too, and neither of you waits for the other. If it changes
+the file you have open and you have typed nothing, the editor takes the new
+version and tints what moved. If you *have* typed something, nothing is taken:
+both versions are kept and you are asked which survives.
+
+![Taurus changed the file while it was being typed in, so both versions are kept
+and neither is chosen](docs/screenshots/canvas-conflict.png)
+
+A save never overwrites something it has not seen — the editor holds the
+fingerprint of the file as it read it, and a save that no longer matches is
+refused rather than applied. The race is closed at the write, not papered over.
+
 **[Configuration](docs/configuration.md)** — providers, keys, MCP servers, and
 web search.
 

@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
 use crate::view::{
-    Answer, Asker, Column, FlowEdge, FlowStage, Question, SequenceMessage, Series, TranscriptView,
+    Answer, Asker, Column, FlowEdge, FlowStage, LineRange, Question, SequenceMessage, Series,
+    TranscriptView,
 };
 
 /// Rows one call may draw.
@@ -57,6 +58,7 @@ pub const SHOW_CHART_TOOL: &str = "show_chart";
 pub const SHOW_SEQUENCE_TOOL: &str = "show_sequence";
 pub const SHOW_FLOW_TOOL: &str = "show_flow";
 pub const ASK_USER_TOOL: &str = "ask_user";
+pub const OPEN_FILE_TOOL: &str = "open_file";
 
 // ---------------------------------------------------------------- show_table
 
@@ -784,6 +786,188 @@ fn render_answers(questions: &[Question], answers: &[Answer]) -> String {
     out
 }
 
+/// Bytes past which a file is not something to open in an editor.
+///
+/// Not a reading limit — the canvas paints only the lines on screen, so a long
+/// file costs what a short one does to scroll. It is a *transfer* limit: the
+/// whole file crosses the IPC channel as one string, and past a few megabytes
+/// that is a stall the user watches with nothing to look at. Anything this
+/// large is generated, and generated files are read with `read_file`, which
+/// windows.
+const MAX_DOCUMENT_BYTES: u64 = 4 * 1024 * 1024;
+
+#[derive(Deserialize, JsonSchema)]
+pub struct OpenFileInput {
+    /// Path to the file, relative to the workspace root — `README.md`,
+    /// `src/lib.rs`.
+    pub path: String,
+    /// The lines to scroll to and select, 1-based and inclusive.
+    ///
+    /// Send them whenever the reason for opening the file is somewhere in
+    /// particular. Leave them out to open at the top.
+    #[serde(default)]
+    pub lines: Option<LineRange>,
+}
+
+/// Opens a file in the canvas beside the conversation.
+///
+/// # Why this returns nothing to read
+///
+/// The obvious mistake here would be to hand the file's text back to the model
+/// as well as drawing it — and it would be a mistake in the expensive
+/// direction. Opening a file would then cost a whole file's worth of context
+/// every time somebody said "open the readme", including the nine times out of
+/// ten they meant "put it on my screen" and asked nothing about it.
+///
+/// So this draws and reports, exactly like [`ShowTable`]: the return value says
+/// the file is open and how long it is. When the model does need the contents,
+/// `read_file` is the tool for that and is one call away — and because the
+/// canvas reads from disk itself, the two never disagree about what the file
+/// says.
+pub struct OpenFile;
+
+#[async_trait]
+impl Tool for OpenFile {
+    fn name(&self) -> &str {
+        OPEN_FILE_TOOL
+    }
+
+    fn description(&self) -> &str {
+        "Open a file in the editor beside the conversation, where the user can read and work in \
+         it while you talk. Reach for it whenever somebody asks to see, open, or look at a file, \
+         and whenever you are about to explain something that is easier to point at than to quote \
+         — pass `lines` and the editor opens on that passage with it selected. \
+         This does not give *you* the contents: use `read_file` for that, and use this as well \
+         when the answer is somewhere the person should be looking. Text files only — source, \
+         Markdown, config. It is not a way to show output you generated; say that in your reply."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        schema_for::<OpenFileInput>()
+    }
+
+    /// Nothing changes. A file is put on screen, which needs no permission —
+    /// the same answer the `show_*` tools give, and the same answer `read_file`
+    /// gives for the same file.
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
+    fn preview(&self, input: &serde_json::Value) -> String {
+        let path = input.get("path").and_then(|p| p.as_str()).unwrap_or("?");
+        match input
+            .get("lines")
+            .and_then(|l| serde_json::from_value::<LineRange>(l.clone()).ok())
+            .and_then(LineRange::normalized)
+        {
+            Some(at) if at.from == at.to => format!("Open {path} at line {}", at.from),
+            Some(at) => format!("Open {path} at lines {}–{}", at.from, at.to),
+            None => format!("Open {path}"),
+        }
+    }
+
+    /// Drawn from the input alone, with no disk read — which is what lets the
+    /// card appear the instant the call is announced rather than after it runs.
+    /// A path that turns out not to exist fails in `execute` a moment later and
+    /// the card is replaced by the error; that is the same order the `show_*`
+    /// tools accept, and the alternative is a canvas that opens late.
+    fn view(&self, _id: &str, input: &serde_json::Value) -> Option<TranscriptView> {
+        let input: OpenFileInput = serde_json::from_value(input.clone()).ok()?;
+        Some(TranscriptView::Document {
+            path: input.path,
+            lines: input.lines.and_then(LineRange::normalized),
+        })
+    }
+
+    fn touches(&self, input: &serde_json::Value) -> Vec<String> {
+        input
+            .get("path")
+            .and_then(|p| p.as_str())
+            .map(|p| vec![p.to_string()])
+            .unwrap_or_default()
+    }
+
+    async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let input: OpenFileInput = parse_input(input)?;
+        let path = ctx.resolve_read(&input.path)?;
+        let shown = ctx.display(&path);
+
+        // Checked here rather than left to the canvas, because the canvas
+        // opens on the *announcement* — so a failure that only surfaced when
+        // the file was fetched would arrive after the empty editor did.
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| ToolError::Failed(format!("could not open {shown}: {e}")))?;
+        if meta.is_dir() {
+            return Err(ToolError::InvalidInput(format!(
+                "{shown} is a directory. Use list_dir to see what is in it, then open one of the \
+                 files."
+            )));
+        }
+        if meta.len() > MAX_DOCUMENT_BYTES {
+            return Err(ToolError::InvalidInput(format!(
+                "{shown} is {} and the editor takes files up to {} MB. Read it with read_file, \
+                 which takes a window rather than the whole file.",
+                human_bytes(meta.len()),
+                MAX_DOCUMENT_BYTES / (1024 * 1024)
+            )));
+        }
+
+        let text = std::fs::read_to_string(&path).map_err(|e| {
+            // The error a binary file gives is `InvalidData`, and "stream did
+            // not contain valid UTF-8" is not a sentence that tells anybody
+            // what to do next.
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                ToolError::InvalidInput(format!(
+                    "{shown} is not text, so there is nothing for the editor to show. The canvas \
+                     opens source, Markdown, and config files."
+                ))
+            } else {
+                ToolError::Failed(format!("could not open {shown}: {e}"))
+            }
+        })?;
+
+        let lines = text.lines().count();
+        let at = input.lines.and_then(LineRange::normalized);
+        // Named rather than silently ignored. A model that asked for line 400
+        // of a 90-line file has misremembered something, and a canvas that
+        // quietly opened at the top would leave it believing otherwise.
+        let past_the_end = at.is_some_and(|at| at.from as usize > lines.max(1));
+
+        Ok(match at {
+            Some(at) if past_the_end => format!(
+                "Opened {shown} in the editor, at the top: it has {lines} lines and line {} was \
+                 asked for. The user can see it; do not repeat its contents.",
+                at.from
+            ),
+            Some(at) if at.from == at.to => format!(
+                "Opened {shown} in the editor at line {}, selected. It has {lines} lines. The \
+                 user can see it; do not repeat its contents.",
+                at.from
+            ),
+            Some(at) => format!(
+                "Opened {shown} in the editor at lines {}–{}, selected. It has {lines} lines. \
+                 The user can see it; do not repeat its contents.",
+                at.from, at.to
+            ),
+            None => format!(
+                "Opened {shown} in the editor. It has {lines} lines. The user can see it; do not \
+                 repeat its contents."
+            ),
+        }
+        .into())
+    }
+}
+
+/// A size in the units a person would say it in.
+fn human_bytes(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{} kB", bytes / 1024)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -796,6 +980,165 @@ mod tests {
             "columns": [{ "label": "Crate" }, { "label": "Time", "kind": "number" }],
             "rows": rows,
         })
+    }
+
+    /* --------------------------------------------------------- open_file */
+
+    /// Writes a file into the test workspace and hands back the input that
+    /// opens it.
+    fn open(ctx: &ToolContext, name: &str, body: &str) -> serde_json::Value {
+        let path = ctx.workspace.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, body).unwrap();
+        serde_json::json!({ "path": name })
+    }
+
+    /// The whole economy of this tool. Opening a file is something people ask
+    /// for casually and often, and a version of it that returned the contents
+    /// would spend a file's worth of context every time somebody said "show me
+    /// the readme" without asking a thing about it.
+    #[tokio::test]
+    async fn opening_a_file_draws_it_without_sending_it_to_the_model() {
+        let (ctx, _dir) = test_ctx();
+        let input = open(&ctx, "README.md", "# Taurus\n\nA shell.\n");
+
+        let view = OpenFile.view("call-1", &input).unwrap();
+        let result = OpenFile.execute(input, &ctx).await.unwrap();
+        let text = result.to_text();
+
+        assert!(matches!(
+            view,
+            TranscriptView::Document { ref path, lines: None } if path == "README.md"
+        ));
+        assert!(text.contains("README.md"), "{text}");
+        assert!(text.contains("3 lines"), "{text}");
+        assert!(
+            !text.contains("A shell"),
+            "the file's text reached the model: {text}"
+        );
+        assert!(text.contains("do not repeat"), "{text}");
+    }
+
+    /// The reason this exists beside `read_file` at all: "the retry logic is
+    /// here" is a sentence about a place.
+    #[tokio::test]
+    async fn a_line_range_travels_to_the_card_and_is_reported_back() {
+        let (ctx, _dir) = test_ctx();
+        let mut input = open(&ctx, "src/lib.rs", &"x\n".repeat(80));
+        input["lines"] = serde_json::json!({ "from": 40, "to": 58 });
+
+        let view = OpenFile.view("call-1", &input).unwrap();
+        assert!(matches!(
+            view,
+            TranscriptView::Document { lines: Some(at), .. } if at.from == 40 && at.to == 58
+        ));
+
+        let result = OpenFile.execute(input, &ctx).await.unwrap();
+        let text = result.to_text();
+        assert!(text.contains("lines 40–58"), "{text}");
+        assert!(text.contains("selected"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn one_line_reads_as_one_line() {
+        let (ctx, _dir) = test_ctx();
+        let mut input = open(&ctx, "a.rs", &"x\n".repeat(30));
+        input["lines"] = serde_json::json!({ "from": 12, "to": 12 });
+        let result = OpenFile.execute(input, &ctx).await.unwrap();
+        let text = result.to_text();
+        assert!(text.contains("at line 12"), "{text}");
+    }
+
+    /// A model that asked for line 400 of a 90-line file has misremembered
+    /// something. Opening quietly at the top would leave it believing
+    /// otherwise, and it would explain the wrong lines with total confidence.
+    #[tokio::test]
+    async fn a_line_past_the_end_is_named_rather_than_ignored() {
+        let (ctx, _dir) = test_ctx();
+        let mut input = open(&ctx, "short.md", "one\ntwo\n");
+        input["lines"] = serde_json::json!({ "from": 400, "to": 400 });
+        let result = OpenFile.execute(input, &ctx).await.unwrap();
+        let text = result.to_text();
+        assert!(text.contains("2 lines"), "{text}");
+        assert!(text.contains("400 was asked for"), "{text}");
+        assert!(text.contains("at the top"), "{text}");
+    }
+
+    /// Normalized rather than refused. A reversed range means the span between
+    /// them, and failing a call that is only asking to scroll somewhere would
+    /// cost a turn to say so.
+    #[test]
+    fn a_backwards_range_is_read_the_way_it_was_meant() {
+        let at = LineRange { from: 58, to: 40 }.normalized().unwrap();
+        assert_eq!((at.from, at.to), (58, 58));
+        let zero = LineRange { from: 0, to: 12 }.normalized().unwrap();
+        assert_eq!((zero.from, zero.to), (1, 12));
+        assert!(LineRange { from: 0, to: 0 }.normalized().is_none());
+    }
+
+    /// Checked in `execute` even though the card is drawn from the input, so a
+    /// failure arrives with the announcement rather than after an empty editor
+    /// has already opened.
+    #[tokio::test]
+    async fn a_directory_says_to_list_it_instead() {
+        let (ctx, _dir) = test_ctx();
+        std::fs::create_dir_all(ctx.workspace.join("src")).unwrap();
+        let error = OpenFile
+            .execute(serde_json::json!({ "path": "src" }), &ctx)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("list_dir"), "{error}");
+    }
+
+    /// "stream did not contain valid UTF-8" is not a sentence that tells
+    /// anybody what to do next.
+    #[tokio::test]
+    async fn a_binary_file_says_what_the_editor_takes() {
+        let (ctx, _dir) = test_ctx();
+        std::fs::write(ctx.workspace.join("logo.png"), [0x89, 0x50, 0x00, 0xff]).unwrap();
+        let error = OpenFile
+            .execute(serde_json::json!({ "path": "logo.png" }), &ctx)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not text"), "{error}");
+        assert!(error.contains("Markdown"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_file_outside_the_workspace_is_refused_by_the_guard() {
+        let (ctx, _dir) = test_ctx();
+        assert!(OpenFile
+            .execute(serde_json::json!({ "path": "../../etc/hosts" }), &ctx)
+            .await
+            .is_err());
+    }
+
+    /// Nothing on the machine changes, so nothing is asked — the same answer
+    /// `read_file` gives about the same file.
+    #[test]
+    fn opening_a_file_needs_no_permission() {
+        assert_eq!(OpenFile.effect(), Effect::Read);
+    }
+
+    /// The row above the card, which is what a reader sees before the editor
+    /// has opened.
+    #[test]
+    fn the_preview_says_where_it_is_going() {
+        assert_eq!(
+            OpenFile.preview(&serde_json::json!({ "path": "README.md" })),
+            "Open README.md"
+        );
+        assert_eq!(
+            OpenFile.preview(&serde_json::json!({
+                "path": "src/lib.rs",
+                "lines": { "from": 40, "to": 58 }
+            })),
+            "Open src/lib.rs at lines 40–58"
+        );
     }
 
     #[tokio::test]

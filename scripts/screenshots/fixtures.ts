@@ -383,6 +383,61 @@ export const PERMISSION = {
 export const PROMPT = "Where is the build time going? Show me the shape of it.";
 
 /** One turn: real work, a table, a chart, and a question left open. */
+/**
+ * The file the canvas shot opens, and the turn that opens it.
+ *
+ * Markdown rather than source, because the shot has to show the one thing that
+ * cannot be checked anywhere else: the split. A rendered preview beside a
+ * conversation is unmistakably two surfaces at once, where two columns of
+ * monospace could be read as one wide pane.
+ */
+export const DOCUMENT = {
+  path: "docs/retries.md",
+  lines: 34,
+  fingerprint: "1024-1",
+  text: `# Retries
+
+Every provider call goes through one place, and it backs off exponentially
+rather than on a fixed interval.
+
+## What is retried
+
+- A 429, with the delay the provider asked for when it sent one.
+- A 5xx, up to four attempts.
+- A dropped connection mid-stream, which is the common one on a long turn.
+
+## What is not
+
+A 400 is a request this harness built wrong, and asking again would build it
+wrong again. The same goes for a 401: a key that is not a key at attempt one
+is not a key at attempt four, and four rejected requests is how an account
+gets rate-limited for the rest of the hour.
+
+## The ceiling
+
+Four attempts, then the error reaches the transcript in the provider's own
+words. A harness that retried forever would turn a typo in a model name into a
+window that never stops spinning.
+`,
+};
+
+/** A turn that answers a question by pointing at a passage rather than
+ *  quoting it — which is the whole argument for the tool. */
+export const DOCUMENT_PROMPT = "how do we handle retries? show me the doc";
+
+export const DOCUMENT_EVENTS = [
+  say("The rules are written down — opening them now."),
+  call("d1", "open_file", "Open docs/retries.md at lines 15–19", {
+    type: "document",
+    path: "docs/retries.md",
+    lines: { from: 15, to: 19 },
+  }),
+  done("d1", "Opened docs/retries.md in the editor at lines 15–19, selected."),
+  say(
+    "Short version: exponential, four attempts, and the interesting half is what is *not* retried — a 400 or a 401 is a request that will fail identically next time, so asking again only spends the rate limit. That is the part selected on the right.",
+  ),
+];
+
 export const EVENTS = [
   say("Timing a clean release build now."),
   call("c1", "run_command", "Run: cargo build --release --timings"),

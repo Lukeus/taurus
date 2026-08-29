@@ -266,6 +266,8 @@ pub fn run() {
             commands::list_datasets,
             commands::dataset_profile,
             commands::dataset_page,
+            commands::open_document,
+            commands::save_document,
             commands::dataset_tables,
             commands::query_data,
             commands::forget_dataset,

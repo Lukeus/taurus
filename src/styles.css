@@ -5499,7 +5499,19 @@ button.link:hover {
  * files leaves four of these rather than four screens of somebody's
  * spreadsheet.
  */
-.dataset-card {
+/*
+ * The same row a dataset card is, because it is the same kind of thing: a
+ * reference to something living outside the conversation, on one line, with the
+ * way in at the end of it.
+ *
+ * Shares `.dataset-card`'s rule rather than repeating it. Found by
+ * photographing it: without this the card inherits `.view-card`'s column, so
+ * the mark, the name and the folder stack into three rows with a full-width
+ * button under them — which reads as a panel rather than as a line, and made a
+ * one-line reference three times the height of the sentence that introduced it.
+ */
+.dataset-card,
+.document-card {
   flex-direction: row;
   align-items: center;
   gap: 12px;
@@ -6393,5 +6405,378 @@ button.link:hover {
   }
   to {
     opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------- the canvas
+
+   The file open beside the conversation.
+
+   A split rather than a third tab, which is a decision argued in `Canvas.tsx`
+   and shows up here as one line: `main` is a row. Everything that was in the
+   centre column before goes on being a column inside `.pane-split`, so the
+   transcript, the Data pane and the proposals below them are laid out exactly
+   as they were and simply have less width. */
+.pane main {
+  flex-direction: row;
+}
+.pane-split {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.canvas-slot {
+  flex: none;
+  min-width: 0;
+  display: flex;
+  /* The width is the user's, set inline by the handle beside it — the same
+     arrangement the rail and the terminal dock use. */
+}
+
+.canvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border-left: 1px solid var(--rule);
+  position: relative;
+  /* Slides in from its own edge rather than fading. A fade says "something
+     appeared"; a slide says "something was brought in from over there", which
+     is what happened and is why the transcript is now narrower. Transform and
+     opacity only, so nothing here lays out twice. */
+  animation: canvas-in var(--reveal) var(--ease) both;
+}
+@keyframes canvas-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.canvas-head {
+  flex: none;
+  height: 44px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--rule);
+}
+/* Baseline-aligned above, so the filename and the folder sit on one line; the
+   controls need centring back. */
+.canvas-modes,
+.canvas-close {
+  align-self: center;
+}
+.canvas-name {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The folder, dimmed and first to go. The filename is what anybody is looking
+   for; the folder is only what tells two of them apart, so it gives up its
+   width before the name gives up a character. */
+.canvas-where {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+.canvas-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.canvas-modes {
+  display: flex;
+  gap: 2px;
+}
+.canvas-close {
+  font-size: 12px;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+}
+.canvas-close:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.canvas-loading,
+.canvas-preview,
+.canvas-problem {
+  flex: 1;
+  min-height: 0;
+}
+.canvas-preview {
+  overflow: auto;
+  padding: 20px 24px 32px;
+}
+.canvas-problem {
+  padding: 20px 24px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+/* ------------------------------------------------------------ the editor
+
+   Three layers that have to agree to the pixel: a gutter, a painted `<pre>`,
+   and the real `<textarea>` on top of it. The same trick `.sql-ink` uses, at
+   the size of a file. */
+.doc-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.doc-scroll {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
+
+/* Every property here decides where a character lands. Declared once across
+   both layers so they cannot drift: a hair of letter-spacing or a different
+   tab size in one of them slides the colour a little further off the text with
+   every character. */
+.doc-ink,
+.doc-input {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  letter-spacing: normal;
+  tab-size: 2;
+  /* Never `pre-wrap`. A wrapped line takes more than one row and the gutter is
+     one number per row, so wrapping walks the numbers off their own lines from
+     the first long paragraph on. Markdown that wants wrapping has the preview,
+     which is the mode built for reading. See `DocumentEditor`. */
+  white-space: pre;
+  border: none;
+  background: transparent;
+}
+.doc-ink {
+  position: absolute;
+  inset: 0;
+  /* Behind the textarea and unclickable: every pointer event belongs to the
+     real control on top. */
+  pointer-events: none;
+  overflow: hidden;
+  color: var(--text);
+}
+.doc-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  overflow: auto;
+  /* The text is invisible and the layer underneath is what is read. The caret
+     and the selection are not invisible, which is the whole reason this is a
+     real textarea: both are drawn by the browser over the real text. */
+  color: transparent;
+  caret-color: var(--accent);
+  outline: none;
+}
+.doc-input::selection {
+  background: var(--sel, color-mix(in srgb, var(--accent) 26%, transparent));
+}
+
+.doc-gutter {
+  flex: none;
+  overflow: hidden;
+  padding: 8px 0;
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid var(--rule);
+  background: var(--bg-raised);
+}
+.doc-line-no {
+  /* The same font size and line-height as the text it numbers. Not a smaller
+     number in a narrower column, tempting as that looks: a row here has to be
+     exactly a row there, and any difference accumulates one line at a time
+     until line 400 is numbered 396. */
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-faint);
+  padding: 0 10px 0 12px;
+  min-width: 4ch;
+}
+.doc-line-no.on {
+  color: var(--text-dim);
+}
+
+/* ----------------------------------------------------------- ask about this
+
+   The one gesture that makes the canvas a place to work rather than a place to
+   read. Anchored to the panel rather than following the pointer: a popover
+   that chases a drag is in the way of the drag. */
+.canvas-ask {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--rule);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-pop, 0 6px 20px rgb(0 0 0 / 0.22));
+  animation: canvas-ask-in var(--reveal) var(--ease) both;
+}
+@keyframes canvas-ask-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.canvas-ask-where {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.canvas-ask-go {
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  padding: 4px 10px;
+}
+.canvas-ask-go:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+/* One word where the line count sits, so the header does not change width as
+   a save comes and goes. */
+.canvas-state {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.canvas-state.saving {
+  color: var(--text-dim);
+}
+.canvas-state.failed {
+  color: var(--danger, var(--accent));
+}
+
+/*
+ * Somebody else wrote the file while there was typing in it.
+ *
+ * Above the editor and in the flow rather than over it, because what is being
+ * decided about is the document underneath — a bar that covered it would ask
+ * you to choose between two versions while hiding one of them.
+ */
+.canvas-conflict {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg-elevated);
+  animation: canvas-ask-in var(--reveal) var(--ease) both;
+}
+.canvas-conflict-say {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.canvas-conflict-say b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/*
+ * What somebody else just changed, tinted for a moment.
+ *
+ * A band behind the text rather than a class on the painted runs: the runs are
+ * split by token and a changed *line* is not a token boundary. Positioned in
+ * the same arithmetic as everything else here — a row is a line, so a span of
+ * lines is a rectangle — which is one more thing that only holds because
+ * nothing wraps.
+ *
+ * Fades rather than blinks. The point is to be catchable out of the corner of
+ * an eye while reading something else, not to demand attention.
+ */
+.doc-flash {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  animation: doc-flash-out 1.8s var(--ease) both;
+}
+@keyframes doc-flash-out {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.document-card .dataset-mark {
+  /* A pilcrow rather than the dataset's grid. Both are references to something
+     outside the conversation, and the shape is what says which. */
+  color: var(--text-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas,
+  .canvas-ask,
+  .canvas-conflict {
+    animation: none;
+  }
+  /* The tint still appears and still goes away — it is cleared on a timer, not
+     by the animation ending — it simply does not fade. A change nobody was
+     told about would be worse than a change that arrives without motion. */
+  .doc-flash {
+    animation: none;
   }
 }

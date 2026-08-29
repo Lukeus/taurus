@@ -589,6 +589,47 @@ and they are the minority.
   shows it for the length of the session. The fix is the same — the two files
   the Windows bundle ships beside the executable — and the startup log line
   saying whether they were found is still the only warning available.
+- **The canvas holds one file at a time.** Opening another replaces it. Tabs
+  are a second navigation model to build and to explain, and "open the readme
+  while we talk about it" does not need one. What that costs is comparing two
+  files side by side, which is still the terminal dock's job.
+- **A canvas edit is invisible to the Changes drawer and to rewind.** The
+  drawer is what this *conversation* changed and the way back from it; your own
+  typing is neither, so git is the undo that covers it. The cost is real and
+  worth naming: rewinding a turn restores the files that turn wrote, and if you
+  had also been typing in one of them, that typing is inside what gets restored
+  over. Nothing warns you.
+- **A file changing outside a turn goes unnoticed.** The canvas reloads when
+  the running turn writes the file — `files_changed` says so on the turn's own
+  event stream — and when the document is opened again. A `git checkout` in the
+  terminal dock, or another editor, is neither, so the canvas goes on showing
+  what it read. The save is still safe: it compares fingerprints and refuses
+  rather than overwriting. But you find out at the moment you save rather than
+  at the moment it happened. Watching the filesystem properly is a dependency
+  and a lifetime to get right; refreshing on window focus, the way
+  `rescan_library` does, is the cheap version and is not written.
+- **The editor folds nothing, finds nothing, and has one cursor.** No code
+  folding, no in-editor find-and-replace, no multiple cursors, no bracket
+  matching. Each is a feature in its own right rather than a detail of this one,
+  and the painted-textarea approach the canvas shares with the query box means
+  each would be built rather than configured — which is the honest cost of not
+  carrying a quarter of a megabyte of editor. The browser's own find-on-page
+  still works, because underneath it is a real `<textarea>`. If this list starts
+  being the reason people do not use it, that is the evidence for importing an
+  editor rather than growing this one.
+- **Source view does not wrap, so long prose lines scroll sideways.** A
+  paragraph written as one long line runs off the right edge of the editor
+  rather than folding at it. That is a decision rather than an omission, and it
+  was made by photographing the alternative: a wrapped line takes more than one
+  row, a gutter is one number per row, and with wrapping on the numbers walked
+  off their own lines at the first long paragraph — 4 pointing at the second
+  half of line 3. A wrong line number is worse than a long line, because
+  everything else here speaks in line numbers: the model points with them, the
+  selection reports in them, the chip on the composer repeats them. Markdown
+  that somebody wants to read has the preview, which wraps and is the mode
+  built for reading. Fixing it properly means measuring every line's height,
+  which gives up both the windowed painting and the arithmetic that makes the
+  caret cheap.
 - **A query answers thirty rows, and that is a context limit rather than a
   reading one.** `query_data` results are read by the model, and every row is
   paid for again on each later request of the turn — so the tool is shaped for
