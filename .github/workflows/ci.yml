@@ -52,7 +52,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Saved even when the job fails. The default is to save only on success,
+      # which means one flaky test costs the *next* push a cold build as well —
+      # and on Windows that is over an hour. What was compiled is just as valid
+      # whether or not a test passed afterwards.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - uses: pnpm/action-setup@v4
         with:
@@ -85,9 +91,37 @@ jobs:
       matrix:
         os: [macos-14, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
-    # Generous, because Windows is the slow one and it is slow honestly: a cold
-    # release build of the app is six minutes there on its own.
-    timeout-minutes: 45
+    # Windows is the slow one and it is slow honestly. The number was 45, set
+    # when a cold release build of the app there was six minutes on its own,
+    # and it stopped being generous without anybody changing it: measured on
+    # three branches in one afternoon, macOS came in at 44m40s and 40m01s —
+    # *inside* the budget by twenty seconds — and Windows was cancelled at the
+    # wall three times running, always partway through `cargo build --release`.
+    #
+    # What grew is the dependency tree. A release build of DataFusion and its
+    # Arrow half is most of an hour from cold, and it is cold on every new
+    # branch: `rust-cache` keys on the branch, so the first push to one pays
+    # for all of it. A timeout tuned to the old tree reads as a Windows-only
+    # failure and is really a clock.
+    #
+    # 120, and the number is measured rather than picked. One cold Windows run,
+    # step by step: 4m of tests, 12m to generate the bindings, 36m to build the
+    # app in release, and 18m more for the CLI, which shares no artifacts with
+    # it. That is 70 minutes of compiling before any overhead, and 45 — and
+    # then 75 — cut it partway through.
+    #
+    # Raising it generously is nearly free and *not* raising it is not, because
+    # the failure feeds itself. `rust-cache` does not save on a cancelled job:
+    # `Post Run Swatinem/rust-cache@v2` is skipped, so a run killed by this
+    # clock leaves the cache exactly as cold as it found it, and the next run
+    # pays the full 70 minutes again. Three afternoons of red X's on unrelated
+    # pull requests came out of that loop. A budget large enough for one run to
+    # finish ends it, because the run after that starts warm.
+    #
+    # A ceiling is not a target: GitHub bills the minutes used, so a job that
+    # finishes in twelve costs twelve. What this buys is that a genuinely hung
+    # job is still caught, two hours later rather than never.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -99,7 +133,13 @@ jobs:
             libappindicator3-dev librsvg2-dev patchelf
 
       - uses: dtolnay/rust-toolchain@stable
+      # Saved even when the job fails. The default is to save only on success,
+      # which means one flaky test costs the *next* push a cold build as well —
+      # and on Windows that is over an hour. What was compiled is just as valid
+      # whether or not a test passed afterwards.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - uses: pnpm/action-setup@v4
         with:
