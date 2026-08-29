@@ -508,6 +508,21 @@ impl DataError {
             detail: detail.to_string(),
         }
     }
+
+    /// A path the engine cannot be given at all.
+    ///
+    /// Separate from [`Self::unreadable`] because nothing was read: the path
+    /// never became something an engine could address. In practice that is a
+    /// Windows share reached by its UNC name — see `df::table_url`, which is
+    /// the only thing that raises this.
+    pub fn unaddressable(path: &Path) -> Self {
+        Self::Failed(format!(
+            "{} cannot be opened as a data file. Datasets have to sit on a local \
+             drive; a path on a network share is not one. Copy the file into the \
+             workspace and load it from there.",
+            path.display()
+        ))
+    }
 }
 
 /// Reading, describing, and transforming tabular data.

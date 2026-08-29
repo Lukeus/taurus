@@ -151,13 +151,19 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Platform-specific behavior lives in these four: process spawning and
+      # Platform-specific behavior lives in these five: process spawning and
       # path handling in tools, interpreter resolution in skills, the Windows
       # launcher shim in mcp, and — since hooks run programs and have to be
       # able to stop them again — ending a process tree, which is a process
       # group on Unix and `taskkill /T` on Windows. Run their tests on every OS
       # even though the rest ran on Linux only.
-      - run: cargo test -p taurus-tools -p taurus-skills -p taurus-mcp -p taurus-hooks
+      #
+      # `taurus-data` is here because leaving it out hides a break that costs
+      # the whole feature on Windows and nothing anywhere else: every path it
+      # gets has been canonicalized, which on Windows is the verbatim
+      # `\\?\C:\...` form, and DataFusion reads the `?` in that prefix as a
+      # glob. See `df::table_url`.
+      - run: cargo test -p taurus-tools -p taurus-skills -p taurus-mcp -p taurus-hooks -p taurus-data
 
       # Through the same script a contributor runs, in the default shell of each
       # OS. Pinning this step to bash was what kept a Windows-only break in the

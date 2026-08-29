@@ -821,6 +821,15 @@ and they are the minority.
   supposed to protect you from. Converting it is one `jq` line and the agent can
   run it. There is no Excel reader either, and adding one is a dependency rather
   than a design question.
+- **A dataset has to sit on a local drive.** A file reached by its UNC name —
+  `\\fileserver\reports\q3.csv`, or anything under a Windows share that has not
+  been mapped to a drive letter — is refused when it is loaded, with a message
+  saying to copy it into the workspace first. The engine addresses files by
+  `file://` URL, a share becomes a URL with a *host* in it, and only the local
+  filesystem is registered to serve one. Mapping the share to a drive letter is
+  the workaround and it is a real one. Serving `file://server/` properly means
+  registering a second object store per share, which is more machinery than the
+  case has yet asked for.
 - **A nested column is counted and not described.** A list, a struct, or a map
   profiles as how many rows have one and nothing else — no distinct count, no
   range, no common values, because none of those are questions with an answer

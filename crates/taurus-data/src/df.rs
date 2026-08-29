@@ -45,6 +45,7 @@ use datafusion::prelude::{
     CsvReadOptions, DataFrame, JsonReadOptions, ParquetReadOptions, SessionConfig, SessionContext,
 };
 use futures::StreamExt;
+use url::Url;
 
 use crate::engine::{
     ColumnHead, ColumnKind, ColumnProfile, DataError, Distinct, Engine, Format, Materialized, Page,
@@ -137,9 +138,8 @@ impl DataFusionEngine {
         table: &str,
         source: &Source,
     ) -> Result<(), DataError> {
-        let path = source.path.to_str().ok_or_else(|| {
-            DataError::Failed(format!("{} is not valid UTF-8", source.path.display()))
-        })?;
+        let path = table_url(&source.path).ok_or_else(|| DataError::unaddressable(&source.path))?;
+        let path = path.as_str();
 
         // Bound before the options, which borrow it rather than owning it.
         let suffix = extension(source);
@@ -657,10 +657,14 @@ impl DataFusionEngine {
                 detail: e.to_string(),
             })?;
         }
-        let path = destination.to_str().ok_or_else(|| DataError::NotWritten {
+        // A URL rather than the path, for the reason `table_url` gives — and
+        // the destination needs it as much as the sources do, because a recipe
+        // run on Windows writes its steps to the same kind of path it read.
+        let path = table_url(destination).ok_or_else(|| DataError::NotWritten {
             path: destination.display().to_string(),
-            detail: "the path is not valid UTF-8".into(),
+            detail: "the path cannot be addressed as a file URL".into(),
         })?;
+        let path = path.as_str();
 
         // One file, named exactly as asked. Without this DataFusion treats the
         // path as a directory and writes partitions into it, which is a
@@ -1059,6 +1063,43 @@ fn quoted(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// The `file://` URL naming a path, which is what DataFusion has to be handed.
+///
+/// **Never give DataFusion a filesystem path.** `ListingTableUrl::parse` reads
+/// a scheme-less string as a path *and as a glob*, and both halves of that are
+/// traps this crate walks straight into:
+///
+/// - **Windows.** Every path here has been through
+///   [`taurus_tools::path_guard`], which canonicalizes — and on Windows that
+///   answers in the verbatim `\\?\C:\...` form. The `?` in the prefix is a
+///   glob wildcard. Handed the path, DataFusion splits at it, keeps `\\` as
+///   the directory to list, resolves that against the current directory, and
+///   reports "No files found" for a file that is sitting right there. That one
+///   character is the whole of what costs this feature Windows: not a
+///   permission, not a separator, a prefix nobody looks at.
+/// - **Everywhere.** `?`, `*`, and `[` are legal in filenames on all three
+///   platforms, and `data[1].csv` is what a browser calls the second copy of a
+///   download. Handed as a path, that file globs too.
+///
+/// A URL has neither problem: [`Url::from_file_path`] percent-encodes what
+/// needs it and flattens the verbatim prefix back to a drive letter, and
+/// `ListingTableUrl::parse` takes the scheme branch, where no glob is looked
+/// for at all. Writes go through the same parse, so the recipe destination is
+/// built here too.
+///
+/// `None` for a path that cannot be one — a relative path, or a Windows share
+/// reached by its UNC name. The share is the reason the host is checked rather
+/// than assumed empty: `\\server\share\x.csv` converts happily, into
+/// `file://server/share/x.csv`, and the local object store is registered under
+/// `file:///` alone — so what comes back from DataFusion is a store-lookup
+/// failure naming a URL the user never typed. Refused here instead, where the
+/// message can say what to do about it. Nothing in this crate produces a
+/// relative path; the guard resolves before anything reaches here.
+fn table_url(path: &Path) -> Option<String> {
+    let url = Url::from_file_path(path).ok()?;
+    url.host().is_none().then(|| url.into())
+}
+
 /// The extension a reader should accept, taken from the file itself.
 ///
 /// DataFusion filters candidate paths by extension, and the default is the
@@ -1342,6 +1383,121 @@ id,event,price,active
             .map(|c| c.head.name.as_str())
             .collect();
         assert_eq!(names, ["id", "event"], "the tab was read as a delimiter");
+    }
+
+    /// What costs this feature Windows entirely, reduced to something a Unix
+    /// box can run.
+    ///
+    /// A path is not a glob, but DataFusion reads a scheme-less string as
+    /// both, and `?`, `*`, and `[` are all legal in a filename. On Windows the
+    /// path does not even have to be unusual: the guard canonicalizes, which
+    /// answers `\\?\C:\...`, and the `?` in that prefix is enough on its own —
+    /// DataFusion splits there, lists `\\`, and reports "No files found" about
+    /// a file it has just been handed. See [`table_url`].
+    ///
+    /// So this covers the same door with the same character, from a directory
+    /// name a person could plausibly have. It fails against a path handed
+    /// straight through and passes against a URL.
+    #[tokio::test]
+    async fn a_path_holding_glob_characters_is_read_as_a_path() {
+        let dir = TempDir::new().unwrap();
+        // Brackets rather than `?`, and the reason is the joke this whole
+        // change is about: `?` is one of the characters Windows will not put
+        // in a filename at all, so a fixture using one fails at `create_dir`
+        // with `InvalidFilename` and never reaches the engine. Brackets are
+        // legal on all three platforms and are just as much a glob, so they
+        // are what carries this everywhere. The `?` case is covered where it
+        // actually arises — in the verbatim prefix, below.
+        let odd = dir.path().join("q3 [final]");
+        std::fs::create_dir_all(&odd).unwrap();
+
+        // `data[1].csv` is not contrived either: it is what a browser calls
+        // the second copy of a download.
+        let path = odd.join("data[1].csv");
+        std::fs::write(&path, EVENTS).unwrap();
+        let source = Source::at(path).unwrap();
+
+        let profile = DataFusionEngine::new().profile(&source).await.unwrap();
+        assert_eq!(profile.rows, 5, "the file globbed instead of being opened");
+    }
+
+    /// And the two glob characters Windows does not allow in a name, on the
+    /// platforms where it is possible to make one.
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn a_path_holding_a_question_mark_or_a_star_is_read_as_a_path() {
+        let dir = TempDir::new().unwrap();
+        let odd = dir.path().join("drafts ?v2 *final");
+        std::fs::create_dir_all(&odd).unwrap();
+        let path = odd.join("events.csv");
+        std::fs::write(&path, EVENTS).unwrap();
+
+        let profile = DataFusionEngine::new()
+            .profile(&Source::at(path).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(profile.rows, 5, "the file globbed instead of being opened");
+    }
+
+    /// And the write half, which goes through the same parse inside
+    /// DataFusion's `CopyTo` planning — so a recipe writing into a folder with
+    /// a bracket in its name writes somewhere else, or nowhere.
+    #[tokio::test]
+    async fn a_recipe_writes_into_a_directory_holding_glob_characters() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let out = dir.path().join("out [v2]").join("clean.parquet");
+
+        let run = DataFusionEngine::new()
+            .materialize(
+                &[("events".to_string(), source)],
+                "events",
+                &[("all of it".into(), "SELECT * FROM input".into())],
+                &out,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(run.rows, 5);
+        assert!(out.is_file(), "nothing was written to {}", out.display());
+    }
+
+    /// The Windows shape itself, on Windows, where the canonicalized form is
+    /// the one every path in this crate actually arrives in.
+    #[test]
+    #[cfg(windows)]
+    fn a_canonicalized_windows_path_becomes_a_url_with_no_wildcard_in_it() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("events.csv");
+        std::fs::write(&path, EVENTS).unwrap();
+        // What the path guard hands this crate: the verbatim form.
+        let canonical = path.canonicalize().unwrap();
+        assert!(
+            canonical.to_str().unwrap().starts_with(r"\\?\"),
+            "the premise of this test has changed: {}",
+            canonical.display()
+        );
+
+        let url = table_url(&canonical).expect("a local drive is addressable");
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(
+            !url.contains('?') && !url.contains('*'),
+            "a wildcard survived into {url}"
+        );
+    }
+
+    /// A share is refused with something a person can act on, rather than
+    /// handed on to fail as an object-store lookup for a URL nobody typed.
+    #[test]
+    fn a_path_on_a_network_share_says_so_instead_of_failing_obscurely() {
+        let unc = Path::new(r"\\fileserver\reports\q3.csv");
+        // Only a UNC path on Windows; elsewhere this is a relative name, which
+        // is refused for its own reason and by the same door.
+        assert!(table_url(unc).is_none());
+
+        let message = DataError::unaddressable(unc).to_string();
+        assert!(message.contains("network share"), "{message}");
+        assert!(message.contains("Copy the file"), "{message}");
     }
 
     /// The same trap on the other reader: `.jsonl` against a default of
