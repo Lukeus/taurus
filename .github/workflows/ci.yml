@@ -52,7 +52,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Saved even when the job fails. The default is to save only on success,
+      # which means one flaky test costs the *next* push a cold build as well —
+      # and on Windows that is over an hour. What was compiled is just as valid
+      # whether or not a test passed afterwards.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - uses: pnpm/action-setup@v4
         with:
@@ -98,9 +104,24 @@ jobs:
     # for all of it. A timeout tuned to the old tree reads as a Windows-only
     # failure and is really a clock.
     #
-    # 75 rather than 60, so the next thing that gets slower is caught by a
-    # measurement rather than by a red X on somebody's unrelated pull request.
-    timeout-minutes: 75
+    # 120, and the number is measured rather than picked. One cold Windows run,
+    # step by step: 4m of tests, 12m to generate the bindings, 36m to build the
+    # app in release, and 18m more for the CLI, which shares no artifacts with
+    # it. That is 70 minutes of compiling before any overhead, and 45 — and
+    # then 75 — cut it partway through.
+    #
+    # Raising it generously is nearly free and *not* raising it is not, because
+    # the failure feeds itself. `rust-cache` does not save on a cancelled job:
+    # `Post Run Swatinem/rust-cache@v2` is skipped, so a run killed by this
+    # clock leaves the cache exactly as cold as it found it, and the next run
+    # pays the full 70 minutes again. Three afternoons of red X's on unrelated
+    # pull requests came out of that loop. A budget large enough for one run to
+    # finish ends it, because the run after that starts warm.
+    #
+    # A ceiling is not a target: GitHub bills the minutes used, so a job that
+    # finishes in twelve costs twelve. What this buys is that a genuinely hung
+    # job is still caught, two hours later rather than never.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -112,7 +133,13 @@ jobs:
             libappindicator3-dev librsvg2-dev patchelf
 
       - uses: dtolnay/rust-toolchain@stable
+      # Saved even when the job fails. The default is to save only on success,
+      # which means one flaky test costs the *next* push a cold build as well —
+      # and on Windows that is over an hour. What was compiled is just as valid
+      # whether or not a test passed afterwards.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - uses: pnpm/action-setup@v4
         with:
