@@ -324,7 +324,6 @@ mod tests {
     }
 }
 
-
 /// The credential store, as `taurus-mcp` needs to see it.
 ///
 /// One implementation over the module above, so an OAuth refresh token and a

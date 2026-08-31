@@ -337,8 +337,7 @@ async fn handshake(
                 match manager {
                     Some(manager) => {
                         let client = oauth::Authorized::new(reqwest::Client::default(), manager);
-                        let transport =
-                            StreamableHttpClientTransport::with_client(client, config);
+                        let transport = StreamableHttpClientTransport::with_client(client, config);
                         ().serve(transport)
                             .await
                             .map_err(|e| handshake_failure(e, false))?

@@ -196,7 +196,9 @@ impl CatalogEntry {
         for text in sides {
             let mut rest = text.as_str();
             while let Some(start) = rest.find('{') {
-                let Some(end) = rest[start..].find('}') else { break };
+                let Some(end) = rest[start..].find('}') else {
+                    break;
+                };
                 let name = &rest[start + 1..start + end];
                 if !name.is_empty() && !found.iter().any(|seen| seen == name) {
                     found.push(name.to_string());
@@ -242,9 +244,15 @@ mod tests {
                 // A blocked entry is an explanation. One carrying a command
                 // would be an install button that does nothing.
                 assert!(reason.len() > 40, "{id} is blocked without saying why");
-                assert!(entry.command.is_empty(), "{id} is blocked but has a command");
+                assert!(
+                    entry.command.is_empty(),
+                    "{id} is blocked but has a command"
+                );
                 assert!(entry.url.is_empty(), "{id} is blocked but has a url");
-                assert!(entry.inputs.is_empty(), "{id} is blocked but asks for input");
+                assert!(
+                    entry.inputs.is_empty(),
+                    "{id} is blocked but asks for input"
+                );
                 continue;
             }
 

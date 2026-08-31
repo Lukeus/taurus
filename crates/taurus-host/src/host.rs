@@ -2396,10 +2396,7 @@ impl Host {
     ///
     /// Two halves because the middle of it belongs to the application layer,
     /// which is the only one that can open a window. See `taurus_mcp::oauth`.
-    pub async fn begin_mcp_sign_in(
-        &self,
-        name: &str,
-    ) -> Result<taurus_mcp::oauth::SignIn, String> {
+    pub async fn begin_mcp_sign_in(&self, name: &str) -> Result<taurus_mcp::oauth::SignIn, String> {
         let workspace = self.workspace.read().await.clone();
         let (config, _) = self.mcp_layers(&workspace);
         let server = config

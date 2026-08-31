@@ -35,6 +35,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use reqwest::header::{HeaderName, HeaderValue};
+use rmcp::model::ClientJsonRpcMessage;
 use rmcp::transport::auth::{
     AuthError, AuthorizationCallback, AuthorizationManager, CredentialStore, StoredCredentials,
 };
@@ -42,8 +44,6 @@ use rmcp::transport::common::client_side_sse::BoxedSseResponse;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClient, StreamableHttpError, StreamableHttpPostResponse,
 };
-use rmcp::model::ClientJsonRpcMessage;
-use reqwest::header::{HeaderName, HeaderValue};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
@@ -114,7 +114,9 @@ impl CredentialStore for VaultStore {
     }
 
     async fn clear(&self) -> Result<(), AuthError> {
-        self.vault.erase(&self.key).map_err(AuthError::InternalError)
+        self.vault
+            .erase(&self.key)
+            .map_err(AuthError::InternalError)
     }
 }
 
