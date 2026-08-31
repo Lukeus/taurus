@@ -22,8 +22,9 @@
 //!    hosted redirect, so it listens on loopback for exactly one request. See
 //!    [`Loopback`].
 //! 2. **Where the tokens live.** A refresh token is a long-lived credential and
-//!    belongs in the OS keychain, which this crate cannot reach on its own —
-//!    see [`TokenVault`].
+//!    belongs in the OS keychain, which this crate cannot reach on its own — it
+//!    goes through [`taurus_tools::SecretVault`], which the application layer
+//!    implements over the credential store.
 //! 3. **When to start.** Never on its own. A connection that opened a browser
 //!    window because a server returned 401 would be the application taking over
 //!    the screen in response to something the user did not do. A server that
@@ -44,6 +45,7 @@ use rmcp::transport::common::client_side_sse::BoxedSseResponse;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClient, StreamableHttpError, StreamableHttpPostResponse,
 };
+use taurus_tools::SecretVault;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
@@ -60,28 +62,16 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 /// rather than a crate name.
 const CLIENT_NAME: &str = "Taurus";
 
-/// Somewhere to keep a refresh token.
-///
-/// A trait rather than a keychain call, because the platform matrix for that —
-/// which backend on which OS, and what happens on a machine with none — is
-/// already written down once in `taurus_host::secrets`, and this crate sits
-/// below that one. Duplicating it would give the same question two answers that
-/// drift.
-pub trait TokenVault: Send + Sync {
-    fn read(&self, key: &str) -> Option<String>;
-    fn write(&self, key: &str, value: &str) -> Result<(), String>;
-    fn erase(&self, key: &str) -> Result<(), String>;
-}
-
 /// The vault entry one server's credentials live under.
 ///
-/// Namespaced, because the vault is shared with provider API keys and a server
-/// called `anthropic` must not be able to overwrite one.
+/// Namespaced, because [`SecretVault`] is one flat namespace shared with the
+/// provider API keys — which are stored under bare provider ids — and an MCP
+/// server called `anthropic` must not be able to overwrite one.
 pub fn vault_key(server: &str) -> String {
     format!("mcp-oauth:{server}")
 }
 
-/// An `rmcp` credential store backed by a [`TokenVault`].
+/// An `rmcp` credential store backed by a [`SecretVault`].
 ///
 /// Everything `rmcp` wants to persist — the access token, the refresh token,
 /// the client id it registered, the issuer — travels as one JSON blob under one
@@ -89,7 +79,7 @@ pub fn vault_key(server: &str) -> String {
 /// client id without the refresh token that goes with it, which fails at the
 /// next launch rather than at the moment it happened.
 struct VaultStore {
-    vault: Arc<dyn TokenVault>,
+    vault: Arc<dyn SecretVault>,
     key: String,
 }
 
@@ -121,7 +111,7 @@ impl CredentialStore for VaultStore {
 }
 
 /// Whether this server has credentials stored.
-pub fn signed_in(vault: &Arc<dyn TokenVault>, server: &str) -> bool {
+pub fn signed_in(vault: &Arc<dyn SecretVault>, server: &str) -> bool {
     vault.read(&vault_key(server)).is_some()
 }
 
@@ -131,7 +121,7 @@ pub fn signed_in(vault: &Arc<dyn TokenVault>, server: &str) -> bool {
 /// this removes Taurus's copy, it does not revoke the grant. The authorization
 /// server still lists the application until the user removes it there, which is
 /// what the panel says when it offers this.
-pub fn sign_out(vault: &Arc<dyn TokenVault>, server: &str) -> Result<(), String> {
+pub fn sign_out(vault: &Arc<dyn SecretVault>, server: &str) -> Result<(), String> {
     vault.erase(&vault_key(server))
 }
 
@@ -240,7 +230,7 @@ impl SignIn {
         url: &str,
         server: &str,
         challenge: Option<&str>,
-        vault: Arc<dyn TokenVault>,
+        vault: Arc<dyn SecretVault>,
     ) -> Result<Self, String> {
         let loopback = Loopback::bind().await?;
         let redirect_uri = loopback.redirect_uri();
@@ -447,7 +437,7 @@ impl<C: StreamableHttpClient + Clone + Send + Sync + 'static> StreamableHttpClie
 pub async fn manager_for(
     url: &str,
     server: &str,
-    vault: Arc<dyn TokenVault>,
+    vault: Arc<dyn SecretVault>,
 ) -> Option<AuthorizationManager> {
     if !signed_in(&vault, server) {
         return None;
@@ -466,24 +456,7 @@ pub async fn manager_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    #[derive(Default)]
-    struct Memory(Mutex<HashMap<String, String>>);
-
-    impl TokenVault for Memory {
-        fn read(&self, key: &str) -> Option<String> {
-            self.0.lock().unwrap().get(key).cloned()
-        }
-        fn write(&self, key: &str, value: &str) -> Result<(), String> {
-            self.0.lock().unwrap().insert(key.into(), value.into());
-            Ok(())
-        }
-        fn erase(&self, key: &str) -> Result<(), String> {
-            self.0.lock().unwrap().remove(key);
-            Ok(())
-        }
-    }
+    use taurus_tools::vault::InMemoryVault;
 
     #[test]
     fn one_servers_credentials_cannot_overwrite_another_secret() {
@@ -495,7 +468,7 @@ mod tests {
 
     #[test]
     fn signing_out_forgets_the_server_and_nothing_else() {
-        let vault: Arc<dyn TokenVault> = Arc::new(Memory::default());
+        let vault: Arc<dyn SecretVault> = Arc::new(InMemoryVault::default());
         vault.write(&vault_key("linear"), "{}").unwrap();
         vault.write(&vault_key("sentry"), "{}").unwrap();
 
@@ -507,7 +480,7 @@ mod tests {
     #[test]
     fn signing_out_of_something_never_signed_in_to_succeeds() {
         // The caller asked for it to be gone, and it is.
-        let vault: Arc<dyn TokenVault> = Arc::new(Memory::default());
+        let vault: Arc<dyn SecretVault> = Arc::new(InMemoryVault::default());
         assert!(sign_out(&vault, "linear").is_ok());
     }
 
@@ -515,7 +488,7 @@ mod tests {
     async fn a_blob_that_will_not_parse_reads_as_nothing_stored() {
         // The format can change between versions, and the recovery — sign in
         // again — is one the user can perform where an error message is not.
-        let vault: Arc<dyn TokenVault> = Arc::new(Memory::default());
+        let vault: Arc<dyn SecretVault> = Arc::new(InMemoryVault::default());
         vault.write(&vault_key("linear"), "not json").unwrap();
         let store = VaultStore {
             vault: vault.clone(),

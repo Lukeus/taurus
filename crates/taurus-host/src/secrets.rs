@@ -324,19 +324,21 @@ mod tests {
     }
 }
 
-/// The credential store, as `taurus-mcp` needs to see it.
+/// The credential store, as the crates below this one need to see it.
 ///
 /// One implementation over the module above, so an OAuth refresh token and a
 /// provider API key are kept the same way on every platform — including the
 /// platforms that have nowhere to keep either, where both fail the same way and
 /// say the same thing.
 ///
-/// This exists because the dependency runs the wrong way for `taurus-mcp` to
-/// reach the keychain itself: it sits *below* this crate, and the platform
-/// matrix is written down once, here. See `taurus_mcp::oauth::TokenVault`.
+/// This exists because the dependency runs the wrong way for those crates to
+/// reach the keychain themselves: they sit *below* this one, and the platform
+/// matrix is written down once, here. The trait lives at the bottom of the
+/// graph in `taurus_tools::vault` so that any of them can name it —
+/// deliberately not in `taurus-mcp`, whose OAuth flow is only the first caller.
 pub struct Keychain;
 
-impl taurus_mcp::oauth::TokenVault for Keychain {
+impl taurus_tools::SecretVault for Keychain {
     fn read(&self, key: &str) -> Option<String> {
         backend::stored(key)
     }

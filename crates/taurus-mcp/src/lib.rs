@@ -23,7 +23,7 @@ use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioC
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use taurus_tools::{expand_env, Effect, Tool, ToolContext, ToolError, ToolResult};
+use taurus_tools::{expand_env, Effect, SecretVault, Tool, ToolContext, ToolError, ToolResult};
 
 pub use catalog::{catalog, Catalog};
 pub use config::{load, parse, McpConfig, ServerConfig};
@@ -106,7 +106,7 @@ pub struct McpManager {
     /// is written down once in `taurus_host::secrets` and this crate sits below
     /// that one. `None` leaves every HTTP server unauthenticated, which is what
     /// the CLI and the tests want and is the behaviour that existed before.
-    vault: Option<Arc<dyn oauth::TokenVault>>,
+    vault: Option<Arc<dyn SecretVault>>,
 }
 
 impl McpManager {
@@ -115,7 +115,7 @@ impl McpManager {
     }
 
     /// The same, able to sign in to servers that want OAuth.
-    pub fn with_vault(vault: Arc<dyn oauth::TokenVault>) -> Self {
+    pub fn with_vault(vault: Arc<dyn SecretVault>) -> Self {
         Self {
             vault: Some(vault),
             ..Self::default()
@@ -279,7 +279,7 @@ async fn handshake(
     // Where OAuth credentials live, when there is anywhere. `None` connects
     // every HTTP server unauthenticated, which is what the CLI and the probe
     // example do.
-    vault: Option<Arc<dyn oauth::TokenVault>>,
+    vault: Option<Arc<dyn SecretVault>>,
 ) -> Result<(RunningService<RoleClient, ()>, Vec<rmcp::model::Tool>), String> {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
         let service = match server {
@@ -435,7 +435,7 @@ pub async fn probe(
     server: &ServerConfig,
     // So that testing a server you are signed in to tests the thing that
     // actually runs, rather than the unauthenticated half of it.
-    vault: Option<Arc<dyn oauth::TokenVault>>,
+    vault: Option<Arc<dyn SecretVault>>,
 ) -> Result<Vec<String>, String> {
     if server.disabled() {
         // Worth testing anyway — this is how you check an entry before switching
