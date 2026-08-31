@@ -5,6 +5,7 @@
 //! and the permission gate treat them identically. The model sees one flat
 //! namespace.
 
+pub mod catalog;
 pub mod config;
 pub mod draft;
 
@@ -23,6 +24,7 @@ use tracing::{info, warn};
 
 use taurus_tools::{expand_env, Effect, Tool, ToolContext, ToolError, ToolResult};
 
+pub use catalog::{catalog, Catalog};
 pub use config::{load, parse, McpConfig, ServerConfig};
 pub use draft::{DraftMcpServer, DRAFT_MCP_TOOL};
 

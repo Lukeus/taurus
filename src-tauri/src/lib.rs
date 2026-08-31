@@ -315,6 +315,8 @@ pub fn run() {
             commands::rescan_library,
             commands::open_mcp_config,
             commands::list_mcp_servers,
+            commands::mcp_catalog,
+            commands::programs_on_path,
             commands::mcp_environment,
             commands::save_mcp_server,
             commands::delete_mcp_server,

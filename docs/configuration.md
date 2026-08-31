@@ -246,6 +246,48 @@ so, and environment variables are the whole story.
 
 ## MCP servers
 
+The MCP panel's **Browse servers** carries the setup for the ones Taurus knows —
+what the command is, which argument the directory goes in, which header holds
+the token — so adding GitHub does not start with reading a README. Filling one
+in produces an ordinary entry and hands it to the same form an entry typed by
+hand goes through, so the command line is on screen before anything is written
+and **Test** is the same Test.
+
+![The catalogue, listing the servers Taurus knows the setup
+for](screenshots/mcp-catalog.png)
+
+Adding one writes into `mcp.json` and nothing else. Nothing is downloaded and no
+installer runs — `npx` and `uvx` fetch the program at launch exactly as they do
+for an entry you typed. The blast radius of pressing the button is a config
+file.
+
+The list ships with the application rather than being fetched, and every entry
+is one somebody reviewed in a commit against its source, which each card links.
+That is the whole difference between this and a registry search: the reviewable
+artifact for `npx -y @scope/package` is a package name, which says nothing about
+what the package does, and a search box handing those back would be asking for a
+decision nobody in the loop can make. The cost is that it goes out of date
+between releases — the panel shows when it was last checked — and that a server
+not on it is added by hand, which is one extra step rather than a dead end. A
+list that has gone stale cannot break a working setup: installing copies the
+entry into `mcp.json` and the catalogue never looks at it again.
+
+**Some of what you will search for is not there, and says why.** Postgres has
+had no first-party server since the reference one was archived and deprecated
+over a SQL-injection vulnerability, and nothing official replaced it. Google
+Drive, Linear, Sentry, Stripe and Notion all run hosted servers secured with
+OAuth, which Taurus does not speak — see
+[Known gaps](known-gaps.md). Those are entries too, carrying the reason instead
+of a button, because searching for the thing you cannot have should return an
+explanation rather than nothing.
+
+**A credential goes in the global file by default.** Every catalogued entry that
+wants one defaults to `~/.taurus/mcp.json`, which is not a file anybody commits.
+Choosing this project instead writes it into `<workspace>/.taurus/mcp.json` — a
+file inside a repository, one `git add .` from being published — so that
+combination asks you to confirm rather than going through quietly. It is not
+refused; there are good reasons to want it.
+
 `mcp.json` takes stdio and streamable-HTTP servers in the format Claude Desktop
 and Claude Code use, so an existing `mcpServers` block pastes in unchanged:
 

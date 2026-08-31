@@ -143,19 +143,19 @@ export const MCP_SERVERS = [
     },
   },
   {
-    name: "postgres",
+    name: "memory",
     scope: "workspace",
     transport: "stdio",
     command: "npx",
-    args: ["-y", "@modelcontextprotocol/server-postgres"],
-    env: [{ key: "DATABASE_URL", value: "${DATABASE_URL}", secret: false }],
+    args: ["-y", "@modelcontextprotocol/server-memory"],
+    env: [{ key: "MEMORY_FILE_PATH", value: "${MEMORY_FILE_PATH}", secret: false }],
     url: "",
     headers: [],
     disabled: true,
     program: "/Users/you/.nvm/versions/node/v22.17.1/bin/npx",
     status: {
-      name: "postgres",
-      description: "npx -y @modelcontextprotocol/server-postgres",
+      name: "memory",
+      description: "npx -y @modelcontextprotocol/server-memory",
       connected: false,
       tool_count: 0,
       error: null,
@@ -1073,3 +1073,12 @@ failures:
 
 test result: FAILED. 382 passed; 1 failed; 0 ignored; 0 measured
 `;
+
+/**
+ * The catalogue, read off the file the binary embeds.
+ *
+ * Imported rather than restated, so a picture of the panel cannot disagree with
+ * what the panel offers. Vite parses the JSON at build time; nothing is fetched
+ * here any more than it is in the app.
+ */
+export { default as MCP_CATALOG } from "../../crates/taurus-mcp/catalog/servers.json";

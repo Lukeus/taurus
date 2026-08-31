@@ -1258,6 +1258,36 @@ pub async fn test_mcp_server(
     state.host.test_mcp_server(&draft.name, &server).await
 }
 
+/// Which of these programs are on the PATH this application inherited.
+///
+/// The catalogue warns "needs uvx" before anything is filled in, and that
+/// warning has to be a fact rather than a guess: `uvx` being installed and
+/// `uvx` being *reachable* are different questions, because a window opened
+/// from the Dock inherits the launcher's PATH and not a shell's. Answered
+/// through the same resolver that fills in `McpServerView::program`, so the
+/// catalogue and the server list cannot disagree about the same binary.
+///
+/// Returns the subset that resolves, rather than a map. The caller asks about
+/// two or three names and wants to know which are missing.
+#[tauri::command]
+pub async fn programs_on_path(names: Vec<String>) -> CmdResult<Vec<String>> {
+    Ok(names
+        .into_iter()
+        .filter(|name| taurus_tools::login_path::which(name.trim()).is_some())
+        .collect())
+}
+
+/// The servers the panel offers to add, and the ones it explains instead.
+///
+/// Shipped in the binary rather than fetched. See
+/// [`taurus_mcp::catalog`] for why a list reviewed in a commit is the only
+/// arrangement that answers the objection `draft_mcp_server` makes about
+/// installing a package name nobody has read.
+#[tauri::command]
+pub async fn mcp_catalog() -> CmdResult<taurus_mcp::Catalog> {
+    Ok(taurus_mcp::catalog())
+}
+
 /// Reconnects every MCP server without rescanning anything else.
 ///
 /// Narrower than [`reload_config`] on purpose — see `Host::reload_mcp`.

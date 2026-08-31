@@ -21,6 +21,7 @@ import {
   BACKGROUND_OUTPUT,
   CHECKPOINTS,
   CONVERSATION_CHANGES,
+  MCP_CATALOG,
   REPO,
   DATASETS,
   DATA_EVENTS,
@@ -140,6 +141,14 @@ const ANSWERS: Record<string, unknown> = {
   // event that opened it.
   open_document: DOCUMENT,
   list_mcp_servers: MCP_SERVERS,
+  // The catalogue is shipped in the binary, so the real one is what the shot
+  // should show — read off disk at build time rather than restated here, which
+  // would let a picture of the panel disagree with what the panel offers.
+  mcp_catalog: MCP_CATALOG,
+  // Only `npx` resolves in the fixture, so the uvx entries wear the warning —
+  // which is the state worth photographing. A frame where everything is
+  // reachable says nothing about what the check is for.
+  programs_on_path: ["npx"],
   search_sessions: SEARCH_HITS,
   usage_report: USAGE,
   trace_report: TRACES,
@@ -380,6 +389,22 @@ requestAnimationFrame(() => {
         (await click(".topbar .chip", (b) => b.includes("changed")))();
         (await click(".everything-head", (b) => b.includes("whole diff")))();
         await until(() => document.querySelector(".everything .diff"));
+      },
+      // The catalogue, searched. Three clicks and a keystroke, so the picture
+      // is of a list somebody actually looked something up in — and the query
+      // is one with no answer, because the entries that explain why are half
+      // the reason this is a curated list rather than a registry search.
+      catalog: async () => {
+        (await click(".rail-link b", (b) => b === "MCP"))();
+        (await click(".card-add", (b) => b === "Browse servers"))();
+        const box = (await until(() =>
+          document.querySelector(".catalog-search"),
+        )) as HTMLInputElement;
+        // Left empty: the frame worth having is the whole list, where the
+        // installable entries and the ones that only explain themselves sit
+        // next to each other. Searching would photograph one card.
+        typeInto(box, "");
+        await until(() => document.querySelector(".catalog-card"));
       },
       canvas: async () => {
         // The editor, not the panel: `.canvas` is on screen the moment the

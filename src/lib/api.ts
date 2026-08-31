@@ -62,6 +62,10 @@ import type { KeyStatus } from "../bindings/KeyStatus";
 import type { McpEnvironment } from "../bindings/McpEnvironment";
 import type { McpServerDraft } from "../bindings/McpServerDraft";
 import type { McpServerRef } from "../bindings/McpServerRef";
+import type { Catalog } from "../bindings/Catalog";
+import type { CatalogEntry } from "../bindings/CatalogEntry";
+import type { CatalogInput } from "../bindings/CatalogInput";
+import type { InputKind } from "../bindings/InputKind";
 import type { McpServerView } from "../bindings/McpServerView";
 import type { McpTransport } from "../bindings/McpTransport";
 import type { McpValue } from "../bindings/McpValue";
@@ -191,6 +195,10 @@ export type {
   McpEnvironment,
   McpServerDraft,
   McpServerRef,
+  Catalog,
+  CatalogEntry,
+  CatalogInput,
+  InputKind,
   McpServerView,
   McpTransport,
   McpValue,
@@ -612,6 +620,25 @@ export const openMcpConfig = (scope: Scope) =>
 
 /** Every configured server, merged across layers, with how it is doing. */
 export const listMcpServers = () => invoke<McpServerView[]>("list_mcp_servers");
+
+/**
+ * The servers the panel offers to add, and the ones it explains instead.
+ *
+ * Shipped in the binary rather than fetched, so this never fails and never
+ * waits on a network. See `taurus_mcp::catalog` for why the list is reviewed in
+ * a commit instead of pulled from a registry.
+ */
+export const mcpCatalog = () => invoke<Catalog>("mcp_catalog");
+
+/**
+ * Which of these programs are on the PATH Taurus inherited.
+ *
+ * Returns the subset that resolves. Asked before a catalogue entry is filled
+ * in, so "needs uvx" arrives before somebody has typed a connection string
+ * rather than after the server refuses to start.
+ */
+export const programsOnPath = (names: string[]) =>
+  invoke<string[]>("programs_on_path", { names });
 
 /**
  * Where the app looks for a stdio server's program.

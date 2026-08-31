@@ -49,6 +49,9 @@ const SHOTS = [
   // switched off — because the panel exists for the ones that are not working,
   // and a frame of four green rows would say nothing about what it is for.
   { name: "mcp", shot: "mcp", theme: "dark" },
+  // The catalogue, searched for something it cannot offer — which is half of
+  // what a curated list is for, and the half a registry search cannot do.
+  { name: "mcp-catalog", shot: "catalog", theme: "dark" },
   // Appearance, with two themes on disk and one of them the workspace's own —
   // because a repository carrying its own branding is the half of this that a
   // picture of one global theme would not say exists.

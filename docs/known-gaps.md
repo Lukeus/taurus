@@ -390,8 +390,30 @@ and they are the minority.
 - **The agent will not install an MCP server for you.** `draft_mcp_server` hands
   back an entry; adding it is yours to do, in the MCP panel or in the file. The
   command line is the whole of what a review could show, and it does not say
-  what the program does, so this is a limit rather than a to-do. See
-  [MCP servers](configuration.md#mcp-servers).
+  what the program does, so this is a limit rather than a to-do. The catalogue
+  behind **Browse servers** is the same argument answered from the other end:
+  the review happens once, in a commit, against the source — which is a thing a
+  person can do properly and a model emitting a package name at runtime cannot.
+  See [MCP servers](configuration.md#mcp-servers).
+- **Taurus speaks no OAuth, so most vendor-hosted MCP servers cannot be
+  reached.** An HTTP server is sent fixed headers and nothing else. That is
+  enough for GitHub, which issues personal access tokens, and not enough for
+  Google Drive, Linear, Sentry, Stripe, Notion or Cloudflare — all of which now
+  run hosted servers behind an OAuth consent flow, which is where the ecosystem
+  has gone. Closing it means a browser redirect, a loopback listener, token
+  storage and refresh, and a per-server registration: a feature, not a patch.
+  This is the single biggest limit on what Taurus can be extended with, and the
+  catalogue names each affected server rather than leaving the search empty.
+- **The catalogue is a snapshot, and it is small on purpose.** Around a dozen
+  entries, shipped in the binary, each one first-party — the MCP project's own
+  reference servers, plus GitHub's and Brave's. Nothing third-party is listed,
+  because a third-party package name is exactly the artifact `draft_mcp_server`
+  refuses to ask anybody to approve. It goes out of date between releases and
+  the panel says when it was last checked. What it cannot do is break a working
+  setup: an install copies the entry into `mcp.json` and the catalogue never
+  reads it again. A registry search would fix the staleness and reintroduce the
+  unreviewed-package problem, so if it is added it will be marked as such and
+  will land in the manual form rather than the guided one.
 - **A PATH read from your login shell is a snapshot, not a subscription.**
   Taurus asks the shell once at startup, because a window launched from the Dock
   inherits the launcher's PATH and not yours. A server installed after that —

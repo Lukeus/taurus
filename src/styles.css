@@ -6949,3 +6949,118 @@ button.link:hover {
 .everything .diff {
   margin-top: 8px;
 }
+
+/* ------------------------------------------------------- the MCP catalogue */
+
+.catalog-search {
+  width: 100%;
+}
+
+/* Denser than the server cards it sits in place of: this is a list being
+   scanned for one thing, where the installed list is a list being read. The
+   action goes on the title row rather than a row of its own, which is most of
+   the height back. */
+.catalog-card .card-body {
+  padding: 10px 12px;
+  gap: 4px;
+}
+.catalog-card .card-row:last-child {
+  margin-top: 2px;
+}
+/* Prose, and drawn as prose. `.card-files` is the monospace class the installed
+   cards use for paths, and a sentence set in it reads as a command line. */
+.catalog-blurb {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  max-width: var(--measure);
+}
+/* One that cannot be installed. Dimmed rather than struck through, because the
+   text is the point — it is the only thing on the card worth reading. */
+.catalog-card.blocked {
+  background: var(--bg-sunken);
+}
+.catalog-blocked {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  border-left: 2px solid var(--rule);
+  padding-left: 10px;
+  max-width: var(--measure);
+}
+
+.mcp-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+.mcp-setup h3 {
+  margin: 0;
+}
+/* A box with a picker beside it. Not `.field-row`, which lays out two fields
+   side by side and would put a 16px canyon between an input and its button. */
+.field-with-button {
+  display: flex;
+  gap: 8px;
+}
+.field-with-button input {
+  flex: 1;
+  min-width: 0;
+}
+.field-help {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  max-width: var(--measure);
+}
+.field-optional {
+  color: var(--text-faint);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/*
+ * A credential about to be written into a file inside the workspace.
+ *
+ * A checkbox rather than a refusal. There are good reasons to want one — a
+ * throwaway sandbox, a repository nobody else has — and the app is not entitled
+ * to overrule them; what it is entitled to do is make sure the choice was made
+ * rather than defaulted into.
+ */
+.mcp-leak {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: var(--measure);
+}
+.mcp-leak input {
+  margin-top: 2px;
+  flex: none;
+}
+
+/* What is about to be written, before it is written. */
+.mcp-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mcp-preview pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  border: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre;
+}
