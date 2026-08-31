@@ -40,10 +40,18 @@ const SHOTS = [
   { name: "app-light", shot: "chart", theme: "light" },
   { name: "questions", shot: "questions", theme: "dark" },
   { name: "permission-diff", shot: "permission", theme: "dark" },
+  // Changes beside the conversation rather than over it, and unfolded to the
+  // one diff that spans the whole conversation — because the turn list above
+  // it is the half that already existed, and a frame of that alone would not
+  // show what moved.
+  { name: "changes", shot: "changes", theme: "dark" },
   // Shown with two servers working, one that cannot find its program, and one
   // switched off — because the panel exists for the ones that are not working,
   // and a frame of four green rows would say nothing about what it is for.
   { name: "mcp", shot: "mcp", theme: "dark" },
+  // The catalogue, searched for something it cannot offer — which is half of
+  // what a curated list is for, and the half a registry search cannot do.
+  { name: "mcp-catalog", shot: "catalog", theme: "dark" },
   // Appearance, with two themes on disk and one of them the workspace's own —
   // because a repository carrying its own branding is the half of this that a
   // picture of one global theme would not say exists.

@@ -11,8 +11,6 @@ import type {
 } from "../lib/api";
 import { plural, when } from "../lib/format";
 import { DiffView } from "./DiffView";
-import { CHANGES_WIDTH, ResizeHandle, useResizableWidth } from "./ResizeHandle";
-import { Modal } from "./Modal";
 
 /**
  * Files this conversation changed, the way back, and the way forward.
@@ -29,6 +27,16 @@ import { Modal } from "./Modal";
  * each turn can be read as a diff and committed on its own, with the same rule
  * in both directions: what the checkpoint log recorded is what is offered, and
  * nothing else in the tree is touched.
+ *
+ * Beside the conversation rather than over it, which it was not always. As a
+ * modal it covered the one thing a reviewer needs at the same time as the
+ * diff: the exchange that produced it. "Why is this line here" is answered by
+ * scrolling up in the transcript, and a panel that had to be closed to do that
+ * was asking people to hold a diff in their head. The canvas settled the same
+ * argument for a file and settled it the same way — see `Canvas` — and this is
+ * that decision applied to the other thing worth reading next to a
+ * conversation. It shares the canvas's slot, because a window this wide has
+ * one column to spare and two would each be too narrow to read.
  */
 export function ChangesDrawer({
   sessionId,
@@ -39,14 +47,6 @@ export function ChangesDrawer({
   busy: boolean;
   onClose: () => void;
 }) {
-  // The one drawer worth sizing: a rewind is read before it is pressed, and
-  // the paths it lists are as long as the tree they came out of. Diffs made
-  // that more true rather than less.
-  const pane = useResizableWidth({
-    storageKey: "taurus.changesWidth",
-    grow: -1,
-    ...CHANGES_WIDTH,
-  });
   const [turns, setTurns] = useState<Checkpoint[] | null>(null);
   const [repo, setRepo] = useState<RepoStatus | null>(null);
   const [plan, setPlan] = useState<{ turn: number; rewind: Rewind } | null>(null);
@@ -99,11 +99,20 @@ export function ChangesDrawer({
     }
   };
 
+  // Escape closes it, which `Modal` used to do on this panel's behalf. Not
+  // captured, unlike the modal version: this is a pane beside the conversation
+  // rather than over it, so anything inside it with its own use for the key —
+  // a diff, a commit box — is entitled to answer first.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
-    <Modal onClose={onClose}>
-      <div className="drawer-dock" onClick={(e) => e.stopPropagation()}>
-        <ResizeHandle pane={pane} label="Changes drawer width" />
-        <aside className="drawer" style={{ width: pane.size }}>
+        <aside className="drawer changes-pane">
           <header className="drawer-head">
             <h2>Changes</h2>
             <button onClick={refresh}>Refresh</button>
@@ -155,6 +164,17 @@ export function ChangesDrawer({
               This conversation has not changed any files. Taurus records what a
               file held before it edits it, so a turn can be undone.
             </p>
+          )}
+
+          {/* Above the turns, because it is the question asked first. What the
+              per-turn list below cannot answer is what a file looks like now
+              against what it held when the conversation started — a file
+              edited in four turns has four diffs down there, and none of them
+              is the one somebody reads before committing. See
+              `conversation_changes` on the Rust side for why it is not those
+              four added up. */}
+          {turns !== null && turns.length > 0 && (
+            <Everything sessionId={sessionId} turns={turns.length} />
           )}
 
           <ul className="card-list">
@@ -278,8 +298,85 @@ export function ChangesDrawer({
             before it runs.
           </p>
         </aside>
-      </div>
-    </Modal>
+  );
+}
+
+/**
+ * The whole conversation as one diff per file.
+ *
+ * Folded shut, and that is the considered position rather than a default: the
+ * panel's job on opening is to show *what* changed, which the turn list does
+ * in one line each, and unfolding this fetches and renders every diff the
+ * conversation produced. It is opened by somebody about to commit or about to
+ * hand the work to a reviewer, which is a deliberate act, and it is one click.
+ *
+ * Fetched when it is opened rather than when the panel is, for the same reason
+ * `TurnDetail` is: reading it costs a pass over the checkpoint log and a read
+ * of every file it names.
+ */
+function Everything({ sessionId, turns }: { sessionId: string; turns: number }) {
+  const [open, setOpen] = useState(false);
+  const [changes, setChanges] = useState<TurnChange[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    api
+      .conversationChanges(sessionId)
+      .then((all) => live && setChanges(all))
+      .catch((e) => {
+        if (!live) return;
+        setError(String(e));
+        setChanges([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [open, sessionId]);
+
+  return (
+    <section className="section everything">
+      <button
+        className="quiet everything-head"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <span className="run-chevron">{open ? "⌄" : "›"}</span>
+        {open ? "Hide the whole diff" : "View the whole diff"}
+        <div className="spacer" />
+        <span className="card-files">{plural(turns, "turn")}</span>
+      </button>
+
+      {open && changes === null && !error && (
+        <p className="card-files">Reading every file it touched…</p>
+      )}
+
+      {open &&
+        changes?.map((change, i) =>
+          change.kind === "diff" ? (
+            <DiffView key={i} diff={change.diff} />
+          ) : (
+            <p key={i} className="card-files">
+              <span className="tag warn">not shown</span> {change.path} —{" "}
+              {change.reason}
+            </p>
+          ),
+        )}
+
+      {/* A file changed and then changed back is still listed, with nothing in
+          it. Saying so beats an empty box, which reads as a diff that failed
+          to load. */}
+      {open &&
+        changes?.every((c) => c.kind === "diff" && c.diff.hunks.length === 0) &&
+        changes.length > 0 && (
+          <p className="card-files">
+            Every file this conversation touched holds what it held before it.
+          </p>
+        )}
+
+      {error && <p className="settings-problem">{error}</p>}
+    </section>
   );
 }
 

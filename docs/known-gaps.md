@@ -390,8 +390,41 @@ and they are the minority.
 - **The agent will not install an MCP server for you.** `draft_mcp_server` hands
   back an entry; adding it is yours to do, in the MCP panel or in the file. The
   command line is the whole of what a review could show, and it does not say
-  what the program does, so this is a limit rather than a to-do. See
-  [MCP servers](configuration.md#mcp-servers).
+  what the program does, so this is a limit rather than a to-do. The catalogue
+  behind **Browse servers** is the same argument answered from the other end:
+  the review happens once, in a commit, against the source — which is a thing a
+  person can do properly and a model emitting a package name at runtime cannot.
+  See [MCP servers](configuration.md#mcp-servers).
+- **A sign-in needs the authorization server to register Taurus on the spot.**
+  OAuth works by dynamic client registration (RFC 7591): Taurus asks the
+  authorization server for a client id at the moment you press Sign in. The
+  specification now prefers a Client ID Metadata Document instead — an HTTPS URL
+  the authorization server fetches to learn about the client — and a desktop
+  application has nowhere to host one, so that route is closed until Taurus has
+  a published document to point at. A server that offers neither, and instead
+  expects a client id issued by hand through a developer console, cannot be
+  signed in to; the panel says so rather than failing at the redirect. Where
+  such a server also issues a plain token, the HTTP form takes it.
+- **Signing out is local.** It removes Taurus's copy of the tokens from the
+  keychain. The grant itself lives at the authorization server and stays there
+  until you remove the application in that provider's own settings, which is the
+  only place it can be revoked from. The panel says this rather than implying a
+  revocation it cannot perform.
+- **Scope step-up is not wired to anything.** A server that answers a tool call
+  with `insufficient_scope` gets that error surfaced as the call failing. The
+  library underneath supports re-authorizing for a wider scope, and what is
+  missing is the decision it needs: asking somebody mid-turn to widen a grant is
+  a permission prompt of its own, and it is not built.
+- **The catalogue is a snapshot, and it is small on purpose.** Around a dozen
+  entries, shipped in the binary, each one first-party — the MCP project's own
+  reference servers, plus GitHub's and Brave's. Nothing third-party is listed,
+  because a third-party package name is exactly the artifact `draft_mcp_server`
+  refuses to ask anybody to approve. It goes out of date between releases and
+  the panel says when it was last checked. What it cannot do is break a working
+  setup: an install copies the entry into `mcp.json` and the catalogue never
+  reads it again. A registry search would fix the staleness and reintroduce the
+  unreviewed-package problem, so if it is added it will be marked as such and
+  will land in the manual form rather than the guided one.
 - **A PATH read from your login shell is a snapshot, not a subscription.**
   Taurus asks the shell once at startup, because a window launched from the Dock
   inherits the launcher's PATH and not yours. A server installed after that —
@@ -561,7 +594,7 @@ and they are the minority.
   the *agent* runs is bracketed by a sweep of the workspace, so anything it
   changed can be put back by a rewind. A command you type in the dock is not:
   the shell runs it directly, nothing reads the workspace before or after, and a
-  `sed -i` there is invisible to the Changes drawer and to every checkpoint. The
+  `sed -i` there is invisible to the Changes panel and to every checkpoint. The
   dock does not pretend otherwise — it is a terminal, and a terminal has never
   had an undo — but it is worth knowing that the two halves of the window keep
   different promises. Covering it needs the same command boundaries the entry
@@ -593,7 +626,7 @@ and they are the minority.
   are a second navigation model to build and to explain, and "open the readme
   while we talk about it" does not need one. What that costs is comparing two
   files side by side, which is still the terminal dock's job.
-- **A canvas edit is invisible to the Changes drawer and to rewind.** The
+- **A canvas edit is invisible to the Changes panel and to rewind.** The
   drawer is what this *conversation* changed and the way back from it; your own
   typing is neither, so git is the undo that covers it. The cost is real and
   worth naming: rewinding a turn restores the files that turn wrote, and if you
@@ -797,7 +830,7 @@ and they are the minority.
   in `~/.taurus/data/<workspace>/datasets.json`, beside the transcripts and the
   search index, not in the project's own `.taurus`. That is what keeps loading a
   file from being a *write* to the workspace — otherwise looking at a CSV would
-  cost a permission dialog, a diff in the Changes drawer, and a line in the next
+  cost a permission dialog, a diff in the Changes panel, and a line in the next
   commit. The cost is that a teammate who clones the repository loads the files
   again, which is one sentence to the agent. A recipe sidesteps it by naming its
   own files — `source: data/events.csv`, plus a `tables:` block for anything it
@@ -909,14 +942,63 @@ and they are the minority.
   Adding it means a price table per provider per model that somebody has to
   keep current, and a table that is six months stale reporting dollars to two
   decimal places is worse than no dollars at all.
-- **There are four keyboard shortcuts.** ⌘K and ⌘⇧P open the palette, ⌘N starts
-  a conversation, ⌘, opens Settings, and ⌃` shows the terminal. That is the
-  whole list, and it is short on purpose: every one of them is also a row in
+- **There are five window shortcuts and two more inside one dialog.** ⌘K and
+  ⌘⇧P open the palette, ⌘N starts a conversation, ⌘L puts the cursor in the
+  composer, ⌘, opens Settings, and ⌃` shows the terminal. That is the whole
+  window list, and it is short on purpose: every one of them is also a row in
   the palette wearing the key it answers to, so the palette is the discovery
-  surface and adding a fifth shortcut is cheap in a way adding the first was
-  not. What is not here is user-defined bindings — a keymap file means a
-  conflict resolver, a way to see what is bound, and a way to find out why a
-  key did nothing.
+  surface and adding a sixth is cheap in a way adding the first was not.
+
+  The permission dialog is the exception, and it is an exception on an argument
+  rather than by oversight. ⌘↵ allows once and ⌘⌫ denies, printed on the
+  buttons. The reason the window list stays short is that it is a shared
+  namespace; a modal has none, so a chord bound there collides with nothing and
+  needs no discovery surface beyond the key on the button it fires. It is also
+  the most-pressed control in the app. See
+  [Permissions](safety.md#permissions) for why the two standing grants get no
+  key.
+
+  What is not here is user-defined bindings — a keymap file means a conflict
+  resolver, a way to see what is bound, and a way to find out why a key did
+  nothing.
+- **One message can be typed ahead, not a list of them.** Enter during a turn
+  holds the message and sends it when that turn finishes; a second one typed
+  ahead replaces the first rather than joining a queue. That is a decision:
+  the composer is one box, and it offers no way to see three pending messages,
+  reorder them, or edit the second one — so a queue would be state the app
+  holds and the user cannot inspect. What it costs is that a genuine list of
+  follow-ups has to be sent one at a time.
+- **"Edit" on a question re-asks it; it does not rewind the conversation.** The
+  button puts a sent message back in the composer, and the original stays in
+  the transcript along with whatever it produced. Making it a true edit means
+  truncating the conversation at that turn — dropping the messages after it
+  from the transcript on disk, and from the model's next request — which is a
+  different feature with a different failure mode: a mis-click that discards an
+  hour of work. The files a discarded turn wrote are already recoverable
+  through [Rewinding a turn](safety.md#rewinding-a-turn); the words are not.
+- **A "try again" is a resend, not a resume.** The harness cannot pick a turn
+  up partway, so retrying a turn that died runs it from the top — and a turn
+  that had already written files before it broke leaves those writes in place.
+  Both turns are in the checkpoint log and either can be rewound, which is the
+  honest arrangement rather than a convenient one: folding them together would
+  leave a rewind that undid twice as much as its label said.
+- **The dock badge is not on Windows.** The desktop is told when a turn needs
+  somebody — a badge counting what is owed, a bounce when the count rises while
+  the window is not focused — and `set_badge_count` is unsupported on Windows,
+  where the documented substitute is a taskbar overlay icon and that means
+  shipping a rendered image per count. The taskbar flash is what carries the
+  signal there, and it works. On Linux the badge needs a desktop with
+  `libunity` and is dropped where there is none. Neither fallback is silent to
+  the *user*, who still gets the flash; both are silent to anyone reading the
+  code expecting a number.
+- **Changes and the canvas share one column, so opening one hides the other.**
+  Both dock to the right of the conversation, and only one is drawn at a time —
+  the canvas is hidden rather than closed, so its unsaved typing and scroll
+  position come back when Changes is shut. A third column is what this refuses:
+  at the width the window is designed for, the transcript already gives up half
+  of itself to whichever of these is open, and splitting the rest three ways
+  leaves nothing readable. Reading a diff and the file it changed side by side
+  therefore means closing one of them.
 - **Chunking for the index is a line window, and structure-aware chunking was
   tried and lost.** Forty lines with ten of overlap, in every language. The
   obvious improvement is to cut where a definition starts, and the obvious

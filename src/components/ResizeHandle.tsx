@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /** How wide the rail opens on a machine that has never been dragged. */
 export const RAIL_WIDTH = { initial: 236, min: 180, max: 360 };
 
-/** The same, for the Changes drawer. */
+/** The same, for the Changes panel. */
 export const CHANGES_WIDTH = { initial: 440, min: 320, max: 620 };
 
 /** The same, for the terminal dock — a height rather than a width. */

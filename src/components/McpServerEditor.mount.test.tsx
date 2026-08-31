@@ -30,6 +30,7 @@ const server = (patch: Partial<McpServerView> = {}): McpServerView => ({
   url: "",
   headers: [],
   disabled: false,
+  signed_in: false,
   ...patch,
 });
 

@@ -36,16 +36,27 @@ import { Modal } from "./Modal";
  */
 export function McpServerEditor({
   server,
+  initial,
   onClose,
   onSaved,
 }: {
   /** The server being changed, or null to add one. */
   server: McpServerView | null;
+  /**
+   * A draft to open on, from the catalogue.
+   *
+   * The whole of how an installed server and one typed by hand stay the same
+   * thing: the catalogue fills this in and hands it over, and everything from
+   * here — the command line on screen, Test, the merge into `mcp.json` — is the
+   * path an entry typed by hand already takes. There is deliberately no route
+   * into the file that skips this form.
+   */
+  initial?: McpServerDraft | null;
   onClose: () => void;
   onSaved: (servers: McpServerView[]) => void;
 }) {
   const [draft, setDraft] = useState<McpServerDraft>(
-    server ? draftFrom(server) : blankDraft("global"),
+    server ? draftFrom(server) : (initial ?? blankDraft("global")),
   );
   /*
    * A command line as one field, because that is how server documentation is
@@ -54,9 +65,10 @@ export function McpServerEditor({
    * not re-render into a shape that fights the cursor; it is split on save and
    * on test, and the split is shown below the field so it is never a guess.
    */
-  const [commandLine, setCommandLine] = useState(
-    server ? joinCommandLine([server.command, ...server.args]) : "",
-  );
+  const [commandLine, setCommandLine] = useState(() => {
+    const from = server ?? initial;
+    return from ? joinCommandLine([from.command, ...from.args]) : "";
+  });
 
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);

@@ -339,6 +339,50 @@ impl CheckpointStore {
             .collect())
     }
 
+    /// What the whole conversation changed, file by file, as one diff each.
+    ///
+    /// Not the sum of [`Self::changes`] over every turn, and the difference is
+    /// the point. A file edited in three turns has three per-turn diffs, none
+    /// of which answers the question somebody asks before committing: what is
+    /// different about this file now, against what it held when the
+    /// conversation started. That is the *earliest* pre-image recorded for it
+    /// against what is on disk, and every intermediate state is noise.
+    ///
+    /// Ordered by when each file was first touched, so the list reads in the
+    /// order the conversation arrived at it rather than alphabetically.
+    ///
+    /// A file changed and then changed back produces an empty diff rather than
+    /// disappearing. It is still a file the conversation wrote, and a listing
+    /// that silently dropped it would be describing a workspace the checkpoint
+    /// log does not agree with.
+    pub fn changes_all(
+        &self,
+        session_id: &str,
+        workspace: &Path,
+    ) -> Result<Vec<TurnChange>, String> {
+        let Some(path) = self.log_path(session_id) else {
+            return Err(format!("'{session_id}' is not a usable session id"));
+        };
+        let turns = read_log(&path)?.turns;
+
+        // A `Vec` rather than a map, because insertion order *is* the output
+        // order and the lists this walks are one turn's worth of paths — a
+        // linear scan over something that never gets long.
+        let mut first: Vec<(&str, &State)> = Vec::new();
+        for turn in &turns {
+            for (file, before) in &turn.changes {
+                if !first.iter().any(|(seen, _)| *seen == file.as_str()) {
+                    first.push((file.as_str(), before));
+                }
+            }
+        }
+
+        Ok(first
+            .into_iter()
+            .map(|(file, before)| describe(file, before, &state_now(workspace, file)))
+            .collect())
+    }
+
     /// What one turn changed, file by file, as a diff.
     ///
     /// The turn numbers are the ones [`Self::turns`] hands out, and the files
@@ -1381,6 +1425,88 @@ mod tests {
             !lines.iter().any(|l| l.text == "three"),
             "turn 2's work leaked into turn 1: {lines:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_conversations_diff_spans_every_turn_that_touched_the_file() {
+        // The exact contrast with the test above, and the reason `changes_all`
+        // is not `changes` called in a loop: three turns on one file are three
+        // diffs there and one here, from where the conversation found the file
+        // to where it left it.
+        let f = Fixture::new();
+        let file = f.path("a.txt");
+        std::fs::write(&file, "one\n").unwrap();
+
+        for content in ["two\n", "three\n"] {
+            let turn = f.store.begin_turn("s1", &f.root, "change it");
+            turn.capture(&file).await;
+            std::fs::write(&file, content).unwrap();
+        }
+
+        let diff = only_diff(f.store.changes_all("s1", &f.root).unwrap());
+        let lines: Vec<_> = diff.hunks.iter().flat_map(|h| h.lines.iter()).collect();
+        assert!(
+            lines.iter().any(|l| l.text == "one") && lines.iter().any(|l| l.text == "three"),
+            "the whole conversation is 'one' becoming 'three': {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.text == "two"),
+            "'two' is a state the conversation passed through, not one it left: {lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_conversations_files_read_in_the_order_it_first_touched_them() {
+        // Alphabetical would be easier and would describe a different thing.
+        // This list is read next to the transcript that produced it.
+        let f = Fixture::new();
+        for name in ["z.txt", "a.txt"] {
+            let file = f.path(name);
+            let turn = f.store.begin_turn("s1", &f.root, "write it");
+            turn.capture(&file).await;
+            std::fs::write(&file, "x\n").unwrap();
+        }
+
+        let paths: Vec<_> = f
+            .store
+            .changes_all("s1", &f.root)
+            .unwrap()
+            .into_iter()
+            .map(|change| match change {
+                TurnChange::Diff { diff } => diff.path,
+                TurnChange::Opaque { path, .. } => path,
+            })
+            .collect();
+        assert_eq!(paths, ["z.txt", "a.txt"]);
+    }
+
+    #[tokio::test]
+    async fn a_file_put_back_the_way_it_was_is_still_listed() {
+        // With an empty diff, which is the honest answer. Dropping it would
+        // describe a conversation that never opened the file, and the count in
+        // the header — which counts files touched — would disagree with the
+        // list under it.
+        let f = Fixture::new();
+        let file = f.path("a.txt");
+        std::fs::write(&file, "original\n").unwrap();
+
+        for content in ["edited\n", "original\n"] {
+            let turn = f.store.begin_turn("s1", &f.root, "change it");
+            turn.capture(&file).await;
+            std::fs::write(&file, content).unwrap();
+        }
+
+        let diff = only_diff(f.store.changes_all("s1", &f.root).unwrap());
+        assert_eq!((diff.added, diff.removed), (0, 0), "{diff:?}");
+    }
+
+    #[tokio::test]
+    async fn a_conversation_that_changed_nothing_has_nothing_to_show() {
+        // No log at all, which is the ordinary case for a conversation that
+        // only read and answered. An error here would put a failure in the
+        // panel for the commonest thing the app does.
+        let f = Fixture::new();
+        assert!(f.store.changes_all("s1", &f.root).unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -20,7 +20,7 @@ describe("dragging an edge", () => {
   });
 
   it("widens a right-anchored drawer when the pointer goes the other way", () => {
-    // The Changes drawer is pinned to the right edge of the window, so the room
+    // The Changes panel is docked at the right of the window, so the room
     // it can take is all to its left. Sharing the rail's sign would shrink it
     // on exactly the gesture that should open it up.
     const drawer = { at: 900, size: 440 };

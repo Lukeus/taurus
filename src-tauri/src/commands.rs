@@ -1258,6 +1258,90 @@ pub async fn test_mcp_server(
     state.host.test_mcp_server(&draft.name, &server).await
 }
 
+/// Signs in to an MCP server that wants OAuth.
+///
+/// One command for the whole flow, and it does not return until the browser has
+/// come back. The alternative — begin, hand the URL to the frontend, poll — puts
+/// a half-finished authorization in the window's state where a reload would
+/// strand it holding a port open.
+///
+/// The three steps in order: discover and register, which needs the network;
+/// open a browser, which needs this layer, since `taurus-mcp` cannot reach the
+/// desktop; and wait for the redirect on loopback. Nothing is written to
+/// `mcp.json` — the credentials go to the keychain, keyed to the server's name.
+///
+/// Never called on its own behalf. A connection that opened a browser window
+/// because a server answered 401 would be the application taking the screen in
+/// response to something the user did not do; this runs when somebody presses
+/// **Sign in**.
+#[tauri::command]
+pub async fn mcp_sign_in(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> CmdResult<Vec<McpServerView>> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let sign_in = state.host.begin_mcp_sign_in(&name).await?;
+    app.opener()
+        .open_url(sign_in.authorization_url.clone(), None::<&str>)
+        .map_err(|e| format!("could not open a browser to sign in: {e}"))?;
+    sign_in.finish().await?;
+
+    // Reconnected rather than left for the user to press Reconnect: the whole
+    // point of signing in is the server working, and it cannot work until it is
+    // reconnected with the credentials that did not exist a moment ago.
+    state.host.reload_mcp().await;
+    emit_status(&state).await;
+    Ok(state.host.mcp_servers().await)
+}
+
+/// Forgets one server's sign-in.
+///
+/// Taurus's copy only. The grant still exists at the authorization server until
+/// it is removed there, which the panel says rather than leaving somebody to
+/// assume this revoked something.
+#[tauri::command]
+pub async fn mcp_sign_out(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> CmdResult<Vec<McpServerView>> {
+    state.host.mcp_sign_out(&name)?;
+    state.host.reload_mcp().await;
+    emit_status(&state).await;
+    Ok(state.host.mcp_servers().await)
+}
+
+/// Which of these programs are on the PATH this application inherited.
+///
+/// The catalogue warns "needs uvx" before anything is filled in, and that
+/// warning has to be a fact rather than a guess: `uvx` being installed and
+/// `uvx` being *reachable* are different questions, because a window opened
+/// from the Dock inherits the launcher's PATH and not a shell's. Answered
+/// through the same resolver that fills in `McpServerView::program`, so the
+/// catalogue and the server list cannot disagree about the same binary.
+///
+/// Returns the subset that resolves, rather than a map. The caller asks about
+/// two or three names and wants to know which are missing.
+#[tauri::command]
+pub async fn programs_on_path(names: Vec<String>) -> CmdResult<Vec<String>> {
+    Ok(names
+        .into_iter()
+        .filter(|name| taurus_tools::login_path::which(name.trim()).is_some())
+        .collect())
+}
+
+/// The servers the panel offers to add, and the ones it explains instead.
+///
+/// Shipped in the binary rather than fetched. See
+/// [`taurus_mcp::catalog`] for why a list reviewed in a commit is the only
+/// arrangement that answers the objection `draft_mcp_server` makes about
+/// installing a package name nobody has read.
+#[tauri::command]
+pub async fn mcp_catalog() -> CmdResult<taurus_mcp::Catalog> {
+    Ok(taurus_mcp::catalog())
+}
+
 /// Reconnects every MCP server without rescanning anything else.
 ///
 /// Narrower than [`reload_config`] on purpose — see `Host::reload_mcp`.
@@ -2243,6 +2327,24 @@ pub async fn turn_changes(
         .changes(&session_id, &workspace, turn)
 }
 
+/// What the whole conversation changed, file by file, as one diff each.
+///
+/// The question asked before a commit, which the per-turn view cannot answer:
+/// a file edited in three turns has three diffs there and one here. See
+/// [`taurus_tools::checkpoint::CheckpointStore::changes_all`] for why that is
+/// not the same list read twice.
+#[tauri::command]
+pub async fn conversation_changes(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> CmdResult<Vec<TurnChange>> {
+    let workspace = session_workspace(&state, &session_id).await;
+    state
+        .host
+        .checkpoints_for(&workspace)
+        .changes_all(&session_id, &workspace)
+}
+
 /// Where the workspace stands with git, for the branch label and the commit
 /// button.
 #[tauri::command]
@@ -2532,6 +2634,58 @@ pub async fn terminal_resize(
 #[tauri::command]
 pub async fn terminal_close(state: State<'_, Arc<AppState>>, id: String) -> CmdResult<()> {
     state.terminals.close(&id);
+    Ok(())
+}
+
+/// Says, to the desktop rather than to the window, that the turn needs a person.
+///
+/// The one thing a webview cannot do for itself, and the gap it closes is the
+/// whole reason a turn against a local model is worth walking away from: a
+/// permission dialog or a question card parks the turn indefinitely, and until
+/// this there was nothing outside the window saying so. Somebody alt-tabs, the
+/// model finishes its third tool call, and the run waits until they happen to
+/// look back.
+///
+/// Two signals, because they answer different questions. `waiting` is a count
+/// and it persists — a badge on the dock icon that says *something is still
+/// owed*, readable at any point later. `ring` is an event and it fires once —
+/// a bounce or a taskbar flash at the moment the turn stops being able to
+/// continue on its own. Sending the count every time and the ring only on the
+/// transition is what keeps the second from becoming noise.
+///
+/// The frontend decides what counts, because it is what knows: this carries
+/// the answer to the OS and makes no judgement of its own. It does not gate on
+/// focus either — `request_user_attention` is documented as a no-op while the
+/// application is focused, so the platform already holds that rule and holding
+/// it twice would mean two places to get it wrong.
+///
+/// ## Platform-specific
+///
+/// - **Windows:** no badge. `set_badge_count` is unsupported there and the
+///   documented substitute is an overlay icon, which means shipping a rendered
+///   image per count. The taskbar flash is the signal that carries, and it
+///   works.
+/// - **Linux:** the badge needs a desktop with `libunity`; where there is
+///   none it is quietly dropped.
+///
+/// Errors are logged and swallowed. A dock badge that cannot be set is not a
+/// reason to fail the call that noticed the turn had parked.
+#[tauri::command]
+pub async fn attention(window: tauri::WebviewWindow, waiting: u32, ring: bool) -> CmdResult<()> {
+    // `Some(0)` and `None` both clear it; `None` is the spelling that says so.
+    let badge = (waiting > 0).then_some(i64::from(waiting));
+    if let Err(e) = window.set_badge_count(badge) {
+        info!("cannot set the dock badge: {e}");
+    }
+    if ring {
+        // Informational rather than Critical: on macOS Critical bounces until
+        // the app is activated, which is the right level for a crash and the
+        // wrong one for "your turn wants a yes". This bounces once.
+        if let Err(e) = window.request_user_attention(Some(tauri::UserAttentionType::Informational))
+        {
+            info!("cannot ask for attention: {e}");
+        }
+    }
     Ok(())
 }
 

@@ -47,6 +47,20 @@ is a decision worth not making. A file that is not text produces no diff at all,
 because a diff of replacement characters is the same non-answer the byte count
 already gave.
 
+The two narrow answers carry a key each — ⌘↵ for **Allow once**, ⌘⌫ for
+**Deny**, Ctrl on Windows and Linux — printed on the buttons. This is the
+most-pressed control in the app: a turn that greps, reads, edits and runs the
+tests stops here four times, and reaching for the mouse four times is what
+makes a keyboard-driven session stop being one.
+
+They are chords rather than bare Enter and bare Escape, and that is the safety
+argument rather than a stylistic one. The dialog appears under whatever you
+happen to be typing, and nothing in it is focused when it opens — a prompt that
+opens with the affirmative already focused turns a stray Enter into a grant
+nobody read. A chord is not a stray keystroke. **Neither standing grant has a
+key**: "always" is a decision about every future call, and a decision about
+every future call is worth a deliberate press.
+
 An "allow always" decision persists into one of two layers, and both are
 consulted:
 
@@ -334,7 +348,7 @@ type in the terminal dock goes to your shell directly. Nothing prompts, because
 nothing should — you are the one at the keyboard, and a terminal that asked
 permission before each line would be a worse terminal — but the consequence is
 worth stating in the same place as the rest: what you run there is not
-checkpointed, not recorded in the Changes drawer, and not undoable by a rewind.
+checkpointed, not recorded in the Changes panel, and not undoable by a rewind.
 The two halves of the window make different promises. See
 [Terminal](capabilities.md#terminal).
 
@@ -354,7 +368,24 @@ taurus rewind --to last --dry-run    # exactly what undoing the last one does
 taurus rewind --to 3                 # back to just before turn 3
 ```
 
-The desktop app's **Changes** drawer is the same thing with a button.
+The desktop app's **Changes** panel is the same thing with a button. It docks
+beside the conversation rather than over it, which is the whole reason it is
+worth having as a panel: "why is this line here" is answered by scrolling up in
+the transcript, and a view you had to close to do that would be asking you to
+hold a diff in your head. It shares the column the canvas uses, so opening it
+hides an open file — and shutting it brings that file back with its unsaved
+typing, because the file was hidden rather than closed.
+
+![The Changes panel beside the conversation, unfolded to one diff per file
+across the whole conversation](screenshots/changes.png)
+
+Two views of the same log, and they answer different questions. The turn list
+is what changed and when, one line each, with the rewind and the commit hanging
+off it. **View the whole diff** is the question asked before a commit: what
+these files hold now against what they held when the conversation started. It
+is not the per-turn diffs added up — a file edited in four turns has four of
+those and one of these — and it is folded shut because unfolding it reads every
+file the conversation touched.
 
 Rewinding to turn *N* undoes every turn from *N* onward, not only that one: the
 log records what a file held before a turn, and restoring one turn while

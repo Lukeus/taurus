@@ -102,6 +102,7 @@ export const MCP_SERVERS = [
   {
     name: "github",
     scope: "workspace",
+    signed_in: false,
     transport: "http",
     command: "",
     args: [],
@@ -143,19 +144,19 @@ export const MCP_SERVERS = [
     },
   },
   {
-    name: "postgres",
+    name: "memory",
     scope: "workspace",
     transport: "stdio",
     command: "npx",
-    args: ["-y", "@modelcontextprotocol/server-postgres"],
-    env: [{ key: "DATABASE_URL", value: "${DATABASE_URL}", secret: false }],
+    args: ["-y", "@modelcontextprotocol/server-memory"],
+    env: [{ key: "MEMORY_FILE_PATH", value: "${MEMORY_FILE_PATH}", secret: false }],
     url: "",
     headers: [],
     disabled: true,
     program: "/Users/you/.nvm/versions/node/v22.17.1/bin/npx",
     status: {
-      name: "postgres",
-      description: "npx -y @modelcontextprotocol/server-postgres",
+      name: "memory",
+      description: "npx -y @modelcontextprotocol/server-memory",
       connected: false,
       tool_count: 0,
       error: null,
@@ -258,7 +259,78 @@ export const CHECKPOINTS = [
     at: NOW - 120,
     files: ["Cargo.toml", "crates/taurus-core/src/agent.rs"],
   },
+  // A second turn that touched one of the same files, because that is the
+  // whole reason the conversation-wide diff exists: `agent.rs` has two per-turn
+  // diffs below and one here, and a picture of a conversation that edited each
+  // file exactly once would show two views that agree and say nothing.
+  {
+    turn: 2,
+    prompt: "Make the ceiling configurable",
+    at: NOW - 40,
+    files: ["crates/taurus-core/src/agent.rs"],
+  },
 ];
+
+/** On a branch, so the commit offer is drawn rather than explained away. */
+export const REPO = {
+  repository: true,
+  branch: "faster-builds",
+  head: "9f2c1ab",
+};
+
+/**
+ * What the whole conversation did to the two files, as the panel reads it.
+ *
+ * Not the sum of the turns above. `agent.rs` was touched twice, and this is
+ * where it started against where it ended — which is the diff somebody reads
+ * before committing, and the one no single turn can produce.
+ */
+export const CONVERSATION_CHANGES = [
+  {
+    kind: "diff",
+    diff: {
+      path: "Cargo.toml",
+      created: false,
+      deleted: false,
+      added: 1,
+      removed: 1,
+      elided: 0,
+      hunks: [
+        {
+          lines: [
+            { kind: "context", text: "[profile.release]", old_line: 22, new_line: 22 },
+            { kind: "removed", text: "lto = false", old_line: 23, new_line: null },
+            { kind: "added", text: "lto = \"thin\"", old_line: null, new_line: 23 },
+            { kind: "context", text: "codegen-units = 16", old_line: 24, new_line: 24 },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    kind: "diff",
+    diff: {
+      path: "crates/taurus-core/src/agent.rs",
+      created: false,
+      deleted: false,
+      added: 3,
+      removed: 1,
+      elided: 0,
+      hunks: [
+        {
+          lines: [
+            { kind: "context", text: "    let mut usage = TokenUsage::default();", old_line: 411, new_line: 411 },
+            { kind: "removed", text: "    for round in 0..MAX_ITERATIONS {", old_line: 413, new_line: null },
+            { kind: "added", text: "    for round in 0..self.config.max_iterations {", old_line: null, new_line: 413 },
+            { kind: "added", text: "        self.compact_if_needed(&mut usage).await;", old_line: null, new_line: 415 },
+            { kind: "context", text: "        let (tx, rx) = mpsc::channel(64);", old_line: 415, new_line: 416 },
+            { kind: "added", text: "        trace!(round, \"iteration\");", old_line: null, new_line: 417 },
+          ],
+        },
+      ],
+    },
+  },
+] as const;
 
 const TABLE = {
   title: "Crates by build time",
@@ -1002,3 +1074,12 @@ failures:
 
 test result: FAILED. 382 passed; 1 failed; 0 ignored; 0 measured
 `;
+
+/**
+ * The catalogue, read off the file the binary embeds.
+ *
+ * Imported rather than restated, so a picture of the panel cannot disagree with
+ * what the panel offers. Vite parses the JSON at build time; nothing is fetched
+ * here any more than it is in the app.
+ */
+export { default as MCP_CATALOG } from "../../crates/taurus-mcp/catalog/servers.json";

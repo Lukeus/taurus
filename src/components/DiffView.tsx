@@ -9,7 +9,7 @@ import { pairs, refine } from "../lib/intraline";
  *
  * Shown at the moment of approval, which is the moment it matters: a byte count
  * says a file is about to be replaced and nothing about what with, and for an
- * overwrite that is the whole decision. The Changes drawer reuses it after the
+ * overwrite that is the whole decision. The Changes panel reuses it after the
  * fact, for a turn already made — the same rendering, so a diff read before
  * approving and a diff read a week later cannot disagree about what happened.
  *
@@ -89,7 +89,7 @@ const GUTTER: Record<string, string> = {
  * Together because neither answer is a property of a line on its own: which
  * characters changed is a fact about a *pair* of lines, and the pairing is
  * read off the run's shape. Doing it a hunk at a time is also what keeps the
- * work proportional to what is on screen — the Changes drawer draws a diff per
+ * work proportional to what is on screen — the Changes panel draws a diff per
  * file, and the permission dialog draws one while a turn waits on it.
  */
 function Hunk({ lines, grammar }: { lines: DiffLine[]; grammar: string | null }) {

@@ -246,6 +246,70 @@ so, and environment variables are the whole story.
 
 ## MCP servers
 
+The MCP panel's **Browse servers** carries the setup for the ones Taurus knows —
+what the command is, which argument the directory goes in, which header holds
+the token — so adding GitHub does not start with reading a README. Filling one
+in produces an ordinary entry and hands it to the same form an entry typed by
+hand goes through, so the command line is on screen before anything is written
+and **Test** is the same Test.
+
+![The catalogue, listing the servers Taurus knows the setup
+for](screenshots/mcp-catalog.png)
+
+Adding one writes into `mcp.json` and nothing else. Nothing is downloaded and no
+installer runs — `npx` and `uvx` fetch the program at launch exactly as they do
+for an entry you typed. The blast radius of pressing the button is a config
+file.
+
+The list ships with the application rather than being fetched, and every entry
+is one somebody reviewed in a commit against its source, which each card links.
+That is the whole difference between this and a registry search: the reviewable
+artifact for `npx -y @scope/package` is a package name, which says nothing about
+what the package does, and a search box handing those back would be asking for a
+decision nobody in the loop can make. The cost is that it goes out of date
+between releases — the panel shows when it was last checked — and that a server
+not on it is added by hand, which is one extra step rather than a dead end. A
+list that has gone stale cannot break a working setup: installing copies the
+entry into `mcp.json` and the catalogue never looks at it again.
+
+**Some of what you will search for is not there, and says why.** Postgres has
+had no first-party server since the reference one was archived and deprecated
+over a SQL-injection vulnerability, and nothing official replaced it. Entries
+like that carry the reason instead of a button, because searching for the thing
+you cannot have should return an explanation rather than nothing.
+
+### Signing in
+
+A hosted server — Linear, Google Drive, and most of what vendors now run — is
+secured with OAuth rather than a token you can paste. Add the entry, then press
+**Sign in** on its card: Taurus discovers the authorization server, registers
+itself, and opens your browser. Approving there sends the browser back to a
+loopback address Taurus is listening on for exactly one request, and the tokens
+land in the OS keychain — the same place provider API keys go, and never in
+`mcp.json`.
+
+Nothing starts that flow on its own. A connection that opened a browser window
+because a server answered 401 would be the application taking over the screen in
+response to something you did not do, so a server that needs an account says so
+and waits to be asked.
+
+Every request carries a token minted for it, refreshed when it has expired, so a
+window left open overnight goes on working without a tool call failing at the
+first use after the token lapsed. **Sign out** forgets Taurus's copy; the grant
+itself stays until you remove the application in the provider's own settings,
+which is the only place it can be revoked.
+
+Stdio servers have no sign-in and are not offered one — the MCP authorization
+specification is explicit that a local program takes its credentials from the
+environment, which is what `${VAR}` below is for.
+
+**A credential goes in the global file by default.** Every catalogued entry that
+wants one defaults to `~/.taurus/mcp.json`, which is not a file anybody commits.
+Choosing this project instead writes it into `<workspace>/.taurus/mcp.json` — a
+file inside a repository, one `git add .` from being published — so that
+combination asks you to confirm rather than going through quietly. It is not
+refused; there are good reasons to want it.
+
 `mcp.json` takes stdio and streamable-HTTP servers in the format Claude Desktop
 and Claude Code use, so an existing `mcpServers` block pastes in unchanged:
 

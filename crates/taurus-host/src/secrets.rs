@@ -323,3 +323,29 @@ mod tests {
         );
     }
 }
+
+/// The credential store, as `taurus-mcp` needs to see it.
+///
+/// One implementation over the module above, so an OAuth refresh token and a
+/// provider API key are kept the same way on every platform — including the
+/// platforms that have nowhere to keep either, where both fail the same way and
+/// say the same thing.
+///
+/// This exists because the dependency runs the wrong way for `taurus-mcp` to
+/// reach the keychain itself: it sits *below* this crate, and the platform
+/// matrix is written down once, here. See `taurus_mcp::oauth::TokenVault`.
+pub struct Keychain;
+
+impl taurus_mcp::oauth::TokenVault for Keychain {
+    fn read(&self, key: &str) -> Option<String> {
+        backend::stored(key)
+    }
+
+    fn write(&self, key: &str, value: &str) -> Result<(), String> {
+        backend::store(key, value)
+    }
+
+    fn erase(&self, key: &str) -> Result<(), String> {
+        backend::clear(key)
+    }
+}

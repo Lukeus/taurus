@@ -141,6 +141,27 @@ export type TranscriptProps = {
    * a conversation that has since been compacted.
    */
   find?: string | null;
+  /**
+   * Sends the last message again, for a turn that died before it answered.
+   *
+   * Offered on the failure itself and nowhere else, and only on the newest
+   * one: what a retry resends is the last message the conversation sent, so a
+   * button on an older failure would quietly ask a different question than the
+   * one it is sitting under. Absent where there is nothing to resend into — a
+   * delegate's transcript, which nobody is typing at.
+   */
+  onRetry?: () => void;
+  /**
+   * Puts a message that was already sent back in the composer, to change and
+   * ask again.
+   *
+   * Not an edit in place. The transcript is the record of what was actually
+   * asked and answered, and rewriting a question the model already read would
+   * make it a record of something that did not happen. What this offers is the
+   * cheap half — the typing back — leaving the conversation honest and the way
+   * back to the *files* where it already is, in Changes.
+   */
+  onEditPrompt?: (text: string) => void;
 };
 
 export function Transcript({
@@ -156,10 +177,25 @@ export function Transcript({
   onRunQuery,
   follow = true,
   find = null,
+  onRetry,
+  onEditPrompt,
 }: TranscriptProps) {
   const bottom = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  /*
+   * The same fact as `pinned`, kept where a render can see it.
+   *
+   * Two copies of one boolean is worth defending. `pinned` is read inside a
+   * scroll handler and inside the effect that follows the stream, both of
+   * which run far more often than anything should re-render — a ref is the
+   * whole reason scrolling a long conversation is free. But a reader who has
+   * scrolled up needs something drawn, and nothing draws off a ref. So the
+   * state is written only on the edge, not on every scroll event: the pill
+   * appears once when the view comes off the foot and disappears once when it
+   * returns, and the thirty events in between set nothing.
+   */
+  const [adrift, setAdrift] = useState(false);
 
   // Held steady before they go any further down. Everything below this is
   // memoized, and a memo compares its props — so a caller writing
@@ -179,7 +215,9 @@ export function Transcript({
     const el = container.current;
     if (!el) return;
     const onScroll = () => {
-      pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      const at = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      pinned.current = at;
+      setAdrift((was) => (was === !at ? was : !at));
     };
     el.addEventListener("scroll", onScroll);
     return () => el.removeEventListener("scroll", onScroll);
@@ -239,6 +277,7 @@ export function Transcript({
           // question most recently asked, and the marker belongs on its rail
           // rather than floating under the conversation as a whole.
           found={i === found}
+          latest={i === conversation.length - 1}
           working={busy && i === conversation.length - 1}
           stopping={stopping}
           onAnswer={answer}
@@ -246,9 +285,41 @@ export function Transcript({
           onOpenDataset={openDataset}
           onOpenDocument={openDocument}
           onRunQuery={runQuery}
+          // The newest turn and nothing else. See the prop.
+          onRetry={i === conversation.length - 1 ? onRetry : undefined}
+          onEditPrompt={onEditPrompt}
         />
       ))}
       <div ref={bottom} />
+
+      {/*
+        * The way back to the live edge.
+        *
+        * Scrolling up mid-turn is the ordinary thing to do — the model says
+        * something worth re-reading three tool calls ago — and doing it used
+        * to be one-way: the follow stops, correctly, and then nothing on
+        * screen says the conversation has moved on or offers to catch up.
+        *
+        * Only where there is a foot to return to. A delegate's transcript is
+        * a finished record read from the top, and a control saying "jump to
+        * the end" on a page that is not being written is furniture.
+        */}
+      {follow && adrift && (
+        <button
+          className={`to-foot${busy ? " live" : ""}`}
+          onClick={() => {
+            // Set here as well as by the scroll it starts, because the effect
+            // that follows the stream reads the ref and a smooth scroll takes
+            // longer than the next token does to arrive.
+            pinned.current = true;
+            setAdrift(false);
+            bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+          }}
+        >
+          {busy ? "Jump to the live edge" : "Jump to the end"}
+          <span className="to-foot-arrow">↓</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -432,6 +503,7 @@ function turnHolding(conversation: Turn[], find: string | null): number {
 const TurnView = memo(function TurnView({
   turn,
   found,
+  latest,
   working,
   stopping,
   onAnswer,
@@ -439,10 +511,21 @@ const TurnView = memo(function TurnView({
   onOpenDataset,
   onOpenDocument,
   onRunQuery,
+  onRetry,
+  onEditPrompt,
 }: {
   turn: Turn;
   /** Landed on by a search. Marked, and scrolled to when it becomes true. */
   found: boolean;
+  /**
+   * The newest turn in the conversation, whether or not anything is running.
+   *
+   * Not the same question as `working`, which is about a turn in flight. This
+   * is about where the eye is: the newest turn is the one being read, and it
+   * is what decides whether a run of tool calls shows its steps or its
+   * heading. See `ToolRun`.
+   */
+  latest: boolean;
   working: boolean;
   /** Cancelling. Only ever read when `working`. */
   stopping: boolean;
@@ -453,6 +536,9 @@ const TurnView = memo(function TurnView({
    *  and absent in the same place — a delegate's transcript has no canvas. */
   onOpenDocument?: (path: string, lines: LineRange | null) => void;
   onRunQuery?: (sql: string) => void;
+  /** Present only on the newest turn. See `Transcript`. */
+  onRetry?: () => void;
+  onEditPrompt?: (text: string) => void;
 }) {
   const self = useRef<HTMLElement>(null);
 
@@ -469,11 +555,11 @@ const TurnView = memo(function TurnView({
       ref={self}
       className={`turn${turn.prompt ? "" : " unprompted"}${found ? " found" : ""}`}
     >
-      {turn.prompt && <Prompt entry={turn.prompt} />}
-      {turn.body.map((item) =>
+      {turn.prompt && <Prompt entry={turn.prompt} onEdit={onEditPrompt} />}
+      {turn.body.map((item, at) =>
         Array.isArray(item) ? (
           <div className="turn-step" key={item[0].id}>
-            <ToolRun steps={item} onOpenDelegate={onOpenDelegate} />
+            <ToolRun steps={item} latest={latest} onOpenDelegate={onOpenDelegate} />
           </div>
         ) : (
           <div className="turn-step" key={item.id}>
@@ -484,6 +570,11 @@ const TurnView = memo(function TurnView({
               onOpenDataset={onOpenDataset}
               onOpenDocument={onOpenDocument}
               onRunQuery={onRunQuery}
+              // Only where the failure is the last word. A turn that broke and
+              // then carried on to say something else is not one waiting to be
+              // tried again, and a button halfway up it would be offering to
+              // resend a message the conversation has already moved past.
+              onRetry={at === turn.body.length - 1 ? onRetry : undefined}
             />
           </div>
         ),
@@ -503,7 +594,13 @@ const TurnView = memo(function TurnView({
 });
 
 /** The question, at the head of the thread that answers it. */
-function Prompt({ entry }: { entry: UserEntry }) {
+function Prompt({
+  entry,
+  onEdit,
+}: {
+  entry: UserEntry;
+  onEdit?: (text: string) => void;
+}) {
   return (
     <div className="turn-step prompt">
       {/* Above the text, matching the order they were sent in and the order
@@ -512,6 +609,18 @@ function Prompt({ entry }: { entry: UserEntry }) {
         <Attachments images={entry.images} />
       )}
       <div className="prompt-text">{entry.text}</div>
+      {/* Revealed on hover and on focus, not drawn standing. Every question in
+          a long conversation carrying a visible button would make the column
+          of them read as a list of controls rather than as what was asked. */}
+      {onEdit && (
+        <button
+          className="prompt-edit"
+          onClick={() => onEdit(entry.text)}
+          data-tip="Put this back in the box to change and ask again"
+        >
+          Edit
+        </button>
+      )}
     </div>
   );
 }
@@ -573,6 +682,7 @@ const EntryView = memo(function EntryView({
   onOpenDataset,
   onOpenDocument,
   onRunQuery,
+  onRetry,
 }: {
   entry: Entry;
   onAnswer: (id: string, answers: Answer[]) => void | Promise<void>;
@@ -582,6 +692,8 @@ const EntryView = memo(function EntryView({
    *  and absent in the same place — a delegate's transcript has no canvas. */
   onOpenDocument?: (path: string, lines: LineRange | null) => void;
   onRunQuery?: (sql: string) => void;
+  /** Present only on the last entry of the newest turn. See `Transcript`. */
+  onRetry?: () => void;
 }) {
   if (entry.kind === "tool" && entry.view) {
     switch (entry.view.type) {
@@ -638,14 +750,30 @@ const EntryView = memo(function EntryView({
       return <ToolRun steps={[entry]} onOpenDelegate={onOpenDelegate} />;
 
     case "notice":
-      return entry.rule ? (
-        <div className="rule">
-          <span className="micro">{entry.rule.label}</span>
-          <div className="rule-line" />
-          <span className="rule-note">{entry.rule.note}</span>
+      if (entry.rule) {
+        return (
+          <div className="rule">
+            <span className="micro">{entry.rule.label}</span>
+            <div className="rule-line" />
+            <span className="rule-note">{entry.rule.note}</span>
+          </div>
+        );
+      }
+      return (
+        <div className={`notice ${entry.tone}`}>
+          <span className="notice-text">{entry.text}</span>
+          {/* In the failure rather than under it. What went wrong and what to
+              do about it are one thought, and a provider that stopped
+              answering is the commonest way a turn ends here — the alternative
+              was retyping the question. `failed` is what separates a turn that
+              died from a tool that returned an error inside one that carried
+              on; see the field on `Entry`. */}
+          {entry.failed && onRetry && (
+            <button className="notice-retry" onClick={onRetry}>
+              Try again
+            </button>
+          )}
         </div>
-      ) : (
-        <div className={`notice ${entry.tone}`}>{entry.text}</div>
       );
   }
 });
@@ -675,20 +803,48 @@ function Thinking({ text }: { text: string }) {
  */
 const ToolRun = memo(function ToolRun({
   steps,
+  latest = true,
   onOpenDelegate,
 }: {
   steps: ToolEntry[];
+  /**
+   * Whether this run belongs to the newest turn. See below.
+   *
+   * Defaults to true, for the one caller that renders a call outside a turn
+   * and has no newest to compare it against: a run standing on its own is
+   * being read on its own.
+   */
+  latest?: boolean;
   onOpenDelegate?: (transcript: { session: string; agent: string }) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  /*
+   * Whether the reader has had an opinion about this run yet.
+   *
+   * `null` until they click, and that third value is the whole of the design.
+   * A run shows its steps while it is the newest thing in the conversation —
+   * watching a turn work is most of what the transcript is for — and closes to
+   * its one-line heading once a newer question has been asked, which is what
+   * lets a fifty-turn conversation be read as fifty steps rather than as four
+   * hundred tool calls.
+   *
+   * Neither of which may happen to somebody who has said what they want. A
+   * panel that reopened because a turn ended, or shut while it was being read,
+   * would be the app overruling a click — so the first click freezes this run
+   * at what was asked for and nothing moves it again.
+   */
+  const [touched, setTouched] = useState<boolean | null>(null);
 
   const failed = steps.some((s) => s.status === "error");
   const running = steps.some((s) => s.status === "running");
+  // A run that broke stays open wherever it is. The heading says a step failed
+  // and not which one, and folding away the answer to the question the heading
+  // just raised is the one case where tidiness costs more than it saves.
+  const open = touched ?? (latest || running || failed);
   const elapsed = span(steps);
 
   return (
     <div className={`run${open ? " open" : ""}`}>
-      <button className="run-head" onClick={() => setOpen(!open)}>
+      <button className="run-head" onClick={() => setTouched(!open)}>
         <span className={`dot ${failed ? "error" : running ? "warn" : "ok"}`} />
         <span className="run-steps">
           {plural(steps.length, "step")}
@@ -707,6 +863,7 @@ const ToolRun = memo(function ToolRun({
 },
 (a, b) =>
   a.onOpenDelegate === b.onOpenDelegate &&
+  a.latest === b.latest &&
   a.steps.length === b.steps.length &&
   a.steps.every((step, i) => step === b.steps[i]));
 

@@ -8,6 +8,7 @@
  * combinations.
  */
 import type {
+  CatalogEntry,
   McpServerDraft,
   McpServerView,
   McpTransport,
@@ -188,4 +189,137 @@ export function blankValue(): McpValue {
  */
 export function valuesFor(transport: McpTransport): "env" | "headers" {
   return transport === "stdio" ? "env" : "headers";
+}
+
+
+/**
+ * What a catalogue entry still needs before it can be installed.
+ *
+ * Required inputs only. An optional one left blank is a decision, not an
+ * omission — the argument it fills is deleted rather than written empty, which
+ * is what `fill` does below.
+ */
+export function missingInputs(
+  entry: CatalogEntry,
+  answers: Record<string, string>,
+): string[] {
+  return entry.inputs
+    .filter((input) => input.required && !(answers[input.key] ?? "").trim())
+    .map((input) => input.label);
+}
+
+/**
+ * Puts the answers into one templated string.
+ *
+ * Returns null when a placeholder in it has no answer, which is how an optional
+ * input removes the argument it belongs to rather than leaving `{timezone}` or
+ * an empty `--local-timezone=` on the command line. Both of those are worse
+ * than the argument being absent: the server either takes the literal brace as
+ * a value or refuses to start, and neither failure points back here.
+ */
+function fill(text: string, answers: Record<string, string>): string | null {
+  let missing = false;
+  const out = text.replace(/\{([A-Za-z0-9_-]+)\}/g, (whole, key: string) => {
+    const value = answers[key];
+    if (value === undefined || value.trim() === "") {
+      missing = true;
+      return whole;
+    }
+    return value;
+  });
+  return missing ? null : out;
+}
+
+/** The same, for a list of `env` or `headers` pairs. */
+function fillValues(
+  pairs: { key: string; value: string }[],
+  answers: Record<string, string>,
+): McpValue[] {
+  return pairs.flatMap((pair) => {
+    const value = fill(pair.value, answers);
+    // A header whose token was left blank is dropped rather than sent empty:
+    // `Authorization: Bearer` is a request that fails with a confusing 401,
+    // where no header at all fails with the one the server means.
+    return value === null ? [] : [{ key: pair.key, value, secret: false }];
+  });
+}
+
+/**
+ * A catalogue entry and its answers, as an entry the form can save.
+ *
+ * Done here rather than in Rust so there is exactly one thing that decides what
+ * a form produces: an installed server and one typed by hand go through the
+ * same `McpServerDraft`, the same validation, and the same Test. The catalogue
+ * supplies the knowledge — which package, which argument, which header — and
+ * stops there.
+ */
+export function fromCatalog(
+  entry: CatalogEntry,
+  answers: Record<string, string>,
+  scope: Scope,
+): McpServerDraft {
+  const stdio = entry.transport === "stdio";
+  return {
+    name: entry.id,
+    scope,
+    transport: stdio ? "stdio" : "http",
+    command: stdio ? (fill(entry.command, answers) ?? entry.command) : "",
+    args: stdio
+      ? entry.args.flatMap((arg) => {
+          const filled = fill(arg, answers);
+          return filled === null ? [] : [filled];
+        })
+      : [],
+    env: stdio ? fillValues(entry.env, answers) : [],
+    url: stdio ? "" : (fill(entry.url, answers) ?? entry.url),
+    headers: stdio ? [] : fillValues(entry.headers, answers),
+    disabled: false,
+  };
+}
+
+/**
+ * Whether installing this entry at this scope would write a credential into a
+ * file inside the workspace.
+ *
+ * The one thing the catalogue can catch that a person filling in a form cannot.
+ * A project-scope entry lands in `<workspace>/.taurus/mcp.json`, which is a file
+ * in somebody's repository — and the commit that leaks the token is one
+ * `git add .` away. Every shipped entry that wants a secret defaults to the
+ * global file; this is what happens when the scope is changed by hand.
+ */
+export function leaksSecret(entry: CatalogEntry, scope: Scope): boolean {
+  return scope === "workspace" && entry.inputs.some((i) => i.kind === "secret");
+}
+
+/**
+ * Which config layer a catalogue entry wants to be written into.
+ *
+ * The catalogue says `project` where the harness says `workspace`; the two
+ * names are the same layer, and the mapping lives here rather than in the
+ * catalogue so that crate keeps no dependency on the one above it.
+ */
+export function scopeFor(entry: CatalogEntry): Scope {
+  return entry.scope === "project" ? "workspace" : "global";
+}
+
+/**
+ * The catalogue, narrowed to what somebody typed.
+ *
+ * Name, blurb and keywords, because what gets typed is rarely the name — "db"
+ * for Postgres, "folder" for Filesystem. Blocked entries match too, and that is
+ * the point of them: searching for the thing you cannot have should return the
+ * reason rather than nothing.
+ */
+export function searchCatalog(
+  entries: CatalogEntry[],
+  query: string,
+): CatalogEntry[] {
+  const wanted = query.trim().toLowerCase();
+  if (!wanted) return entries;
+  return entries.filter((entry) =>
+    [entry.name, entry.blurb, entry.id, ...entry.keywords]
+      .join(" ")
+      .toLowerCase()
+      .includes(wanted),
+  );
 }

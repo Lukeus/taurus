@@ -116,7 +116,25 @@ export type Entry =
        * rather than in it — compaction being the only one so far.
        */
       rule?: { label: string; note: string };
+      /**
+       * Whether this is a turn that died, as opposed to a thing that went
+       * wrong inside one that carried on.
+       *
+       * Only these get offered a way back. A provider that stopped answering
+       * and a stream that broke are both one message away from working, and
+       * the message is the one already sent — but a tool that returned an
+       * error is part of a turn the model went on to handle, and a button
+       * there would be offering to redo something that already finished.
+       */
+      failed?: boolean;
     };
+
+/** A message on its way, or waiting for the turn in front of it to finish. */
+export interface Outgoing {
+  text: string;
+  images: Attachment[];
+  onScreen: OnScreen | null;
+}
 
 interface Store {
   status: AppStatus | null;
@@ -134,7 +152,7 @@ interface Store {
   entries: Entry[];
   /**
    * Workspace-relative paths this conversation has changed. Counted in the
-   * header, listed turn by turn in the Changes drawer.
+   * header, listed turn by turn in the Changes panel.
    */
   changed: string[];
   /**
@@ -200,6 +218,28 @@ interface Store {
    * ordinary switch does not flicker.
    */
   resuming: boolean;
+  /**
+   * A message typed while a turn was still running, waiting its turn.
+   *
+   * The composer stays live during a turn, which is an invitation to type the
+   * next thing while the model works — and until this existed, pressing Enter
+   * on it did nothing at all, silently. One slot rather than a list: a second
+   * message typed ahead replaces the first, because a queue of three is a
+   * conversation nobody is having and the box gives no way to see or reorder
+   * one.
+   *
+   * Drained only by a turn that finished on its own. See `send`.
+   */
+  queued: Outgoing | null;
+  /**
+   * The last message actually sent, so a turn that died can be tried again.
+   *
+   * Held rather than read back off `entries`, because what a retry needs is
+   * not only the text: the images and the pane the question was asked from
+   * travelled with it, and a retry that dropped them would be re-asking a
+   * different question.
+   */
+  sent: Outgoing | null;
   /** Set while a turn is running so the composer can show Stop instead of Send. */
   permission: PermissionRequest | null;
   proposals: SkillProposal[];
@@ -249,6 +289,19 @@ interface Store {
     /** What the Data pane was showing, when the message came from it. */
     onScreen?: OnScreen | null,
   ) => Promise<void>;
+  /**
+   * Sends the last message again, for a turn that died before answering.
+   *
+   * A resend and not a resume: the harness has no way to pick a turn back up
+   * partway, so this is a second turn asking the same thing. Where the first
+   * one had already written files before it broke, both turns are in the
+   * checkpoint log and either can be rewound — which is the honest way round,
+   * since silently folding them together would leave a rewind that undid
+   * twice as much as its label said.
+   */
+  retry: () => Promise<void>;
+  /** Throws away a message typed ahead, without sending it. */
+  unqueue: () => void;
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
   /**
@@ -384,6 +437,8 @@ export const useStore = create<Store>((set, get) => ({
   busy: false,
   stopping: false,
   resuming: false,
+  queued: null,
+  sent: null,
   permission: null,
   proposals: [],
   agentProposals: [],
@@ -499,6 +554,11 @@ export const useStore = create<Store>((set, get) => ({
       changed: [],
   opening: null,
   wrote: null,
+      // Both belong to the conversation being left. A message typed ahead in
+      // one must not fire in another, and the way back to a turn that failed
+      // is not offered for a turn that is no longer on screen.
+      queued: null,
+      sent: null,
       context: null,
       error: null,
       proposals: [],
@@ -537,6 +597,8 @@ export const useStore = create<Store>((set, get) => ({
         changed: [],
   opening: null,
   wrote: null,
+      queued: null,
+      sent: null,
         context: null,
         error: null,
         proposals: [],
@@ -570,6 +632,8 @@ export const useStore = create<Store>((set, get) => ({
       changed: [],
   opening: null,
   wrote: null,
+      queued: null,
+      sent: null,
       context: null,
       proposals: [],
       agentProposals: [],
@@ -641,15 +705,29 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   send: async (text, images = [], onScreen = null) => {
-    const { session } = get();
+    const { session, busy } = get();
     // Text is still required with an image attached. "What is wrong with this?"
     // is a question; a bare screenshot is a guess about what was wanted.
     if (!session || !text.trim()) return;
+
+    // Held rather than refused. The composer stays typeable through a turn on
+    // purpose — thinking of the next thing while the model works is most of
+    // how this gets used — and the previous behaviour was to swallow the Enter
+    // that ended that thought. See `queued` for why there is only ever one.
+    if (busy) {
+      set({ queued: { text, images, onScreen } });
+      return;
+    }
 
     set((s) => ({
       busy: true,
       stopping: false,
       error: null,
+      // Cleared here rather than by the caller: this *is* the send the queue
+      // was waiting for, whether it arrived from the box or from the drain
+      // below.
+      queued: null,
+      sent: { text, images, onScreen },
       entries: [...s.entries, { kind: "user", id: nextId(), text, images }],
     }));
 
@@ -686,20 +764,31 @@ export const useStore = create<Store>((set, get) => ({
       }
     });
 
+    let died = false;
     try {
       await api.sendMessage(session.id, text, stream.push, images, onScreen);
     } catch (e) {
+      died = true;
       // Before the notice, so it reads after whatever the turn had already
       // streamed rather than in front of it.
       stream.flush();
       set((s) => ({
         entries: [
           ...s.entries,
-          { kind: "notice", id: nextId(), tone: "error", text: String(e) },
+          {
+            kind: "notice",
+            id: nextId(),
+            tone: "error",
+            text: String(e),
+            failed: true,
+          },
         ],
       }));
     } finally {
       stream.flush();
+      // Read before the `set` below clears it. A turn the user stopped is not
+      // a turn that finished, and the difference decides the drain.
+      const stopped = get().stopping;
       set((s) => ({
         busy: false,
         stopping: false,
@@ -708,6 +797,25 @@ export const useStore = create<Store>((set, get) => ({
           e.kind === "assistant" ? { ...e, open: false } : e,
         ),
       }));
+
+      /*
+       * A message typed ahead goes now — but only after a turn that ran to the
+       * end on its own.
+       *
+       * Stopping is the clearer of the two: pressing Stop and then watching
+       * the thing you typed while it worked fire anyway is the opposite of
+       * what the button said. A turn that died is the same argument at one
+       * remove — whatever broke is still broken a millisecond later, and an
+       * automatic resend would spend the rate limit rather than report it.
+       *
+       * Both leave the message where it is, and the composer draws it with a
+       * way to send or drop it by hand. Nothing typed is thrown away by the
+       * app deciding for you; that rule is the same one `withDraft` follows.
+       */
+      const { queued } = get();
+      if (queued && !died && !stopped) {
+        void get().send(queued.text, queued.images, queued.onScreen);
+      }
       // Nothing is re-read here. The conversation's listing entry arrives on
       // `EVENT_SESSION` — pushed when its transcript first lands and again when
       // the turn ends — and the files it changed arrived on the turn's own
@@ -716,6 +824,17 @@ export const useStore = create<Store>((set, get) => ({
       // nothing left to watch.
     }
   },
+
+  retry: async () => {
+    const { sent, busy } = get();
+    // Guarded rather than trusted to the button being hidden: `send` would
+    // otherwise queue this behind the running turn, and a retry that fires a
+    // minute later is not one anybody asked for.
+    if (!sent || busy) return;
+    await get().send(sent.text, sent.images, sent.onScreen);
+  },
+
+  unqueue: () => set({ queued: null }),
 
   stop: async () => {
     const { session } = get();
@@ -830,6 +949,8 @@ export const useStore = create<Store>((set, get) => ({
       changed: [],
   opening: null,
   wrote: null,
+      queued: null,
+      sent: null,
       context: null,
       permission: null,
       proposals: [],
@@ -1803,9 +1924,18 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
       ];
 
     case "error":
+      // `failed`, like the notice `send` writes when the call itself throws:
+      // the harness emits this when the turn cannot go on, so the message that
+      // produced it is the one to send again. See the field on `Entry`.
       return [
         ...entries,
-        { kind: "notice", id: nextId(), tone: "error", text: event.message },
+        {
+          kind: "notice",
+          id: nextId(),
+          tone: "error",
+          text: event.message,
+          failed: true,
+        },
       ];
 
     // Iteration boundaries and the final usage report are not shown per-entry;

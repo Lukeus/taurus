@@ -1,4 +1,7 @@
+import { useEffect } from "react";
+
 import type { PermissionDecision, PermissionRequest } from "../lib/api";
+import { chord, isChord } from "../lib/keys";
 import { DiffView } from "./DiffView";
 import { Modal } from "./Modal";
 
@@ -20,6 +23,22 @@ const EFFECT_LABEL: Record<string, string> = {
  * The one `Modal` with no `onClose`: this is answered, not dismissed. Escape
  * would have to mean one of the buttons, and none of them is what a person
  * pressing Escape has decided.
+ *
+ * Two chords, and the reason they exist here and almost nowhere else is that
+ * this is the most-pressed control in the app. A turn that greps, reads, edits
+ * and runs the tests stops at this dialog four times, and until now every one
+ * of those was a reach for the mouse or a count of tab stops. The window-wide
+ * shortcut list is short on purpose — see `App` — but that argument is about a
+ * shared namespace, and a modal has none: while this is open it is the only
+ * thing on screen, so a chord bound here can collide with nothing and needs no
+ * discovery surface beyond the key printed on the button it fires.
+ *
+ * Deliberately not bare Enter and bare Escape, which is what makes this safe
+ * rather than merely fast. The dialog can appear under someone mid-sentence,
+ * and the whole argument for not focusing the affirmative below is that a
+ * stray keystroke must not become a grant. A chord is not a stray keystroke.
+ * The two widest grants have no key at all: "always" is a standing decision,
+ * and a standing decision is worth a deliberate press.
  */
 export function PermissionDialog({
   request,
@@ -28,6 +47,31 @@ export function PermissionDialog({
   request: PermissionRequest;
   onDecide: (decision: PermissionDecision) => void;
 }) {
+  // Captured, for the same reason `Modal` captures Escape: nothing inside this
+  // panel has a use for either chord, and a control that swallowed one would
+  // leave a key printed on a button that does nothing.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Shift is refused explicitly, the way `App` refuses it on ⌘N: `isChord`
+      // leaves that modifier to its caller, because ⌘⇧P and ⌘P are two
+      // different chords there. Here there is no shifted variant to reach —
+      // and a grant is not something to hand out to a near miss.
+      if (e.shiftKey) return;
+      if (isChord(e, "Enter")) {
+        e.preventDefault();
+        onDecide("allow_once");
+      } else if (isChord(e, "Backspace")) {
+        e.preventDefault();
+        onDecide("deny");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+    // Rebound per request: `onDecide` closes over which call is being answered,
+    // and a handler left over from the previous one would answer the wrong
+    // question.
+  }, [onDecide, request.id]);
+
   return (
     <Modal>
       <div className="dialog" role="alertdialog" aria-labelledby="perm-title">
@@ -62,6 +106,7 @@ export function PermissionDialog({
               grant they never read. Tab reaches it in one press. */}
           <button className="primary" onClick={() => onDecide("allow_once")}>
             Allow once
+            <span className="key">{chord("↵")}</span>
           </button>
           {/* Absent in a workspace whose own config is not being read: there
               is no workspace layer to write a standing decision into, so the
@@ -88,6 +133,7 @@ export function PermissionDialog({
           <div className="spacer" />
           <button className="danger" onClick={() => onDecide("deny")}>
             Deny
+            <span className="key">{chord("⌫")}</span>
           </button>
         </div>
       </div>

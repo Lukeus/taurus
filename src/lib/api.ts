@@ -62,6 +62,10 @@ import type { KeyStatus } from "../bindings/KeyStatus";
 import type { McpEnvironment } from "../bindings/McpEnvironment";
 import type { McpServerDraft } from "../bindings/McpServerDraft";
 import type { McpServerRef } from "../bindings/McpServerRef";
+import type { Catalog } from "../bindings/Catalog";
+import type { CatalogEntry } from "../bindings/CatalogEntry";
+import type { CatalogInput } from "../bindings/CatalogInput";
+import type { InputKind } from "../bindings/InputKind";
 import type { McpServerView } from "../bindings/McpServerView";
 import type { McpTransport } from "../bindings/McpTransport";
 import type { McpValue } from "../bindings/McpValue";
@@ -191,6 +195,10 @@ export type {
   McpEnvironment,
   McpServerDraft,
   McpServerRef,
+  Catalog,
+  CatalogEntry,
+  CatalogInput,
+  InputKind,
   McpServerView,
   McpTransport,
   McpValue,
@@ -614,6 +622,49 @@ export const openMcpConfig = (scope: Scope) =>
 export const listMcpServers = () => invoke<McpServerView[]>("list_mcp_servers");
 
 /**
+ * The servers the panel offers to add, and the ones it explains instead.
+ *
+ * Shipped in the binary rather than fetched, so this never fails and never
+ * waits on a network. See `taurus_mcp::catalog` for why the list is reviewed in
+ * a commit instead of pulled from a registry.
+ */
+export const mcpCatalog = () => invoke<Catalog>("mcp_catalog");
+
+/**
+ * Signs in to an MCP server that wants OAuth.
+ *
+ * Does not resolve until the browser has come back, which for a consent screen
+ * somebody has to read can be a minute or more — the panel shows that it is
+ * waiting rather than treating it as a hang. Answers with the server list after
+ * the reconnect, like every other write in this panel.
+ *
+ * Rejects with the authorization server's own words where there are any: a
+ * refused consent and an unregisterable client fail differently and are worth
+ * telling apart.
+ */
+export const mcpSignIn = (name: string) =>
+  invoke<McpServerView[]>("mcp_sign_in", { name });
+
+/**
+ * Forgets one server's sign-in.
+ *
+ * Taurus's copy only. The grant still exists at the authorization server until
+ * it is removed there.
+ */
+export const mcpSignOut = (name: string) =>
+  invoke<McpServerView[]>("mcp_sign_out", { name });
+
+/**
+ * Which of these programs are on the PATH Taurus inherited.
+ *
+ * Returns the subset that resolves. Asked before a catalogue entry is filled
+ * in, so "needs uvx" arrives before somebody has typed a connection string
+ * rather than after the server refuses to start.
+ */
+export const programsOnPath = (names: string[]) =>
+  invoke<string[]>("programs_on_path", { names });
+
+/**
  * Where the app looks for a stdio server's program.
  *
  * The panel shows this because "command not found" for a command that plainly
@@ -867,6 +918,31 @@ export const rewindTo = (sessionId: string, turn: number, dryRun: boolean) =>
  */
 export const turnChanges = (sessionId: string, turn: number) =>
   invoke<TurnChange[]>("turn_changes", { sessionId, turn });
+
+/**
+ * What the whole conversation changed, file by file, as one diff each.
+ *
+ * The question asked before a commit — what is different about this file now,
+ * against what it held when the conversation started — which the per-turn view
+ * structurally cannot answer for a file edited more than once.
+ */
+export const conversationChanges = (sessionId: string) =>
+  invoke<TurnChange[]>("conversation_changes", { sessionId });
+
+/**
+ * Tells the desktop that the turn is waiting on a person.
+ *
+ * `waiting` is a count and it persists as a badge on the dock icon; `ring` is
+ * an event and fires once, as a bounce or a taskbar flash. Sending the count
+ * on every change and the ring only on the transition into needing somebody is
+ * what keeps the second from becoming noise — see the Rust side for the
+ * per-platform detail, including that Windows has no badge.
+ *
+ * Never throws: a dock badge that could not be set is not worth failing the
+ * thing that noticed.
+ */
+export const attention = (waiting: number, ring: boolean) =>
+  invoke<void>("attention", { waiting, ring }).catch(() => {});
 
 /** Where the workspace stands with git. Never throws for "not a repository". */
 export const repoStatus = () => invoke<RepoStatus>("repo_status");

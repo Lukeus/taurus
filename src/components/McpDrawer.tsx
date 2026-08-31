@@ -1,10 +1,18 @@
 import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
-import type { McpEnvironment, McpServerView, Scope } from "../lib/api";
+import type {
+  CatalogEntry,
+  McpEnvironment,
+  McpServerDraft,
+  McpServerView,
+  Scope,
+} from "../lib/api";
 import { plural } from "../lib/format";
 import { stateOf } from "../lib/mcp";
+import { McpCatalog } from "./McpCatalog";
 import { McpServerEditor } from "./McpServerEditor";
+import { McpSetup } from "./McpSetup";
 import { useStore } from "../state/store";
 import { Modal } from "./Modal";
 
@@ -30,6 +38,28 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
   const [servers, setServers] = useState<McpServerView[] | null>(null);
   const [environment, setEnvironment] = useState<McpEnvironment | null>(null);
   const [editing, setEditing] = useState<McpServerView | "new" | null>(null);
+  /*
+   * Where in adding a server the panel is: the list, the catalogue, or one
+   * entry's setup.
+   *
+   * Three states rather than a stack, because there is only one way through and
+   * every step has a Back. Browsing replaces the list inside the same panel
+   * rather than opening over it: it is a step on the way to adding a server,
+   * not an errand of its own, and what is already installed is the context that
+   * makes it read properly.
+   */
+  const [adding, setAdding] = useState<"catalog" | CatalogEntry | null>(null);
+  /** A filled-in catalogue entry, on its way into the editor. */
+  const [prefilled, setPrefilled] = useState<McpServerDraft | null>(null);
+  /*
+   * Which server has a browser window open on it, if any.
+   *
+   * Its own state rather than the panel's `busy`, because this wait is a
+   * different kind: `busy` is a round trip and is over in a moment, and this
+   * one lasts as long as it takes somebody to read a consent screen. Naming the
+   * server is what lets the other cards stay usable while one of them waits.
+   */
+  const [signingIn, setSigningIn] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -92,6 +122,26 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
   return (
     <Modal onClose={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
+        {adding === "catalog" ? (
+          <McpCatalog
+            installed={servers ?? []}
+            onPick={setAdding}
+            onBack={() => setAdding(null)}
+          />
+        ) : adding ? (
+          <McpSetup
+            entry={adding}
+            onCancel={() => setAdding("catalog")}
+            onReady={(draft) => {
+              // Straight into the ordinary editor, which is where it is looked
+              // at, tested and saved. Nothing here writes.
+              setPrefilled(draft);
+              setEditing("new");
+              setAdding(null);
+            }}
+          />
+        ) : (
+        <>
         <header className="drawer-head">
           <h2>MCP servers</h2>
           {/* Reconnect rather than Rescan: this restarts programs, which is a
@@ -142,6 +192,20 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
               key={`${server.scope}:${server.name}`}
               server={server}
               busy={busy}
+              signingIn={signingIn === server.name}
+              onSignIn={async () => {
+                setSigningIn(server.name);
+                setError(null);
+                try {
+                  setServers(await api.mcpSignIn(server.name));
+                  await refreshStatus();
+                } catch (e) {
+                  setError(String(e));
+                } finally {
+                  setSigningIn(null);
+                }
+              }}
+              onSignOut={() => apply(() => api.mcpSignOut(server.name))}
               onEdit={() => setEditing(server)}
               onToggle={() =>
                 apply(() =>
@@ -173,8 +237,21 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
         <PathSection environment={environment} servers={servers ?? []} />
 
         <div className="drawer-foot">
-          <button className="card-add" onClick={() => setEditing("new")}>
-            Add server — stdio or HTTP
+          {/* Two doors, and the first is the one most people want: adding
+              GitHub should not require knowing which header carries the token.
+              The second stays exactly where it was, because the catalogue is a
+              shortcut into this form rather than a replacement for it. */}
+          <button className="card-add" onClick={() => setAdding("catalog")}>
+            Browse servers
+          </button>
+          <button
+            className="link"
+            onClick={() => {
+              setPrefilled(null);
+              setEditing("new");
+            }}
+          >
+            Add by hand
           </button>
           {/* Still here, and deliberately. The panel writes the same file, and
               anything it cannot express is edited in the one place that can. */}
@@ -191,14 +268,23 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
             Edit mcp.json
           </button>
         </div>
+        </>
+        )}
       </aside>
 
       {editing && (
         <McpServerEditor
           server={editing === "new" ? null : editing}
-          onClose={() => setEditing(null)}
+          initial={prefilled}
+          // Cleared on both exits. Left behind, it would reopen under the
+          // next "Add by hand" carrying the last catalogue entry's command.
+          onClose={() => {
+            setEditing(null);
+            setPrefilled(null);
+          }}
           onSaved={(updated) => {
             setEditing(null);
+            setPrefilled(null);
             setServers(updated);
             refreshStatus().catch(() => {});
           }}
@@ -218,15 +304,22 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
 function ServerCard({
   server,
   busy,
+  signingIn,
   onEdit,
   onToggle,
   onDelete,
+  onSignIn,
+  onSignOut,
 }: {
   server: McpServerView;
   busy: boolean;
+  /** This server's browser flow is open and waiting to be finished. */
+  signingIn: boolean;
   onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
+  onSignIn: () => void;
+  onSignOut: () => void;
 }) {
   /*
    * Deleting takes an entry someone typed, and nothing brings it back. The
@@ -251,6 +344,15 @@ function ServerCard({
             {server.scope === "workspace" ? "project" : "all projects"}
           </span>
           {server.disabled && <span className="tag warn">off</span>}
+          {/* Only where a browser flow is possible at all. A stdio server takes
+              its credentials from the environment — the MCP authorization
+              specification says so explicitly — so a sign-in state there would
+              be a control for something that cannot happen. */}
+          {!stdio && server.signed_in && (
+            <span className="tag ok" data-tip="Taurus holds an OAuth sign-in for this server">
+              signed in
+            </span>
+          )}
         </div>
 
         <span className="card-sub mono">
@@ -305,6 +407,31 @@ function ServerCard({
         )}
 
         <div className="card-actions">
+          {/* First, because on a server that wants an account it is the only
+              thing that will make anything else work. */}
+          {!stdio &&
+            (server.signed_in ? (
+              <button
+                disabled={busy}
+                onClick={onSignOut}
+                data-tip="Forgets Taurus's copy. The grant stays until you remove it at the provider."
+              >
+                Sign out
+              </button>
+            ) : (
+              <button
+                // Primary only where signing in is the thing that will make it
+                // work. A server already connected on a token can still be
+                // signed in to, and a blue button on a working row would be
+                // urging something nobody needs.
+                className={server.status?.connected ? "" : "primary"}
+                disabled={busy || signingIn}
+                onClick={onSignIn}
+                data-tip="Opens your browser to authorize Taurus"
+              >
+                {signingIn ? "Waiting for the browser…" : "Sign in"}
+              </button>
+            ))}
           <button disabled={busy} onClick={onEdit}>
             Edit
           </button>

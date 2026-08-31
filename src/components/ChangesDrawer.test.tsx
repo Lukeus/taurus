@@ -56,14 +56,34 @@ describe("rendering", () => {
     expect(html).toContain("Changes");
   });
 
-  it("carries an edge the user can drag it wider by", () => {
+  it("brings no chrome of its own to the slot it is docked in", () => {
+    /*
+     * It used to be a modal, and carried the three things a modal needs: a
+     * scrim, its own drag handle, and an inline width. All three now belong to
+     * `App`, which owns the column this and the canvas take turns in — and a
+     * panel that still drew its own would be a second opinion about how wide
+     * it is, laid over the first.
+     */
     const html = renderToStaticMarkup(
       <ChangesDrawer sessionId="s1" busy={false} onClose={() => {}} />,
     );
-    expect(html).toContain('role="separator"');
-    expect(html).toContain("Changes drawer width");
-    // Opened at the design's width, before anything is dragged or remembered.
-    expect(html).toContain("width:440px");
+    expect(html).not.toContain("scrim");
+    expect(html).not.toContain('role="separator"');
+    expect(html).not.toContain("width:");
+    // Docked, and saying so, because the stylesheet sizes it off this.
+    expect(html).toContain("changes-pane");
+  });
+
+  it("offers the whole conversation as one diff, folded", () => {
+    // Folded because opening it reads every file the conversation touched.
+    // The turn list above answers "what changed"; this answers the question
+    // asked before a commit, which no single turn's diff can.
+    const html = renderToStaticMarkup(
+      <ChangesDrawer sessionId="s1" busy={false} onClose={() => {}} />,
+    );
+    // Not before the listing has arrived: with no turns there is nothing for
+    // it to be the whole of.
+    expect(html).not.toContain("the whole diff");
   });
 
   it("shows no empty-state message until the list has actually arrived", () => {

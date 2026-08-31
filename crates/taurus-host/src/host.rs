@@ -244,7 +244,9 @@ impl Host {
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             hooks: RwLock::new(Arc::new(taurus_hooks::HookRunner::default())),
             permissions: RwLock::new(permissions),
-            mcp: McpManager::new(),
+            // Handed the keychain, so a server that wants OAuth can be signed
+            // in to. See `secrets::Keychain`.
+            mcp: McpManager::with_vault(Arc::new(crate::secrets::Keychain)),
             problems: RwLock::new(Vec::new()),
             prompts,
             asker,
@@ -2379,9 +2381,41 @@ impl Host {
             .into_iter()
             .map(|(name, server)| {
                 let status = statuses.get(&name).cloned();
-                McpServerView::new(name, server, &defined_in, status)
+                // Read here rather than inside the view, which is built from
+                // config alone and has no way to reach a keychain.
+                let signed_in = self.mcp.signed_in(&name);
+                McpServerView {
+                    signed_in,
+                    ..McpServerView::new(name, server, &defined_in, status)
+                }
             })
             .collect()
+    }
+
+    /// Begins a sign-in for one server, returning the URL to send a browser to.
+    ///
+    /// Two halves because the middle of it belongs to the application layer,
+    /// which is the only one that can open a window. See `taurus_mcp::oauth`.
+    pub async fn begin_mcp_sign_in(&self, name: &str) -> Result<taurus_mcp::oauth::SignIn, String> {
+        let workspace = self.workspace.read().await.clone();
+        let (config, _) = self.mcp_layers(&workspace);
+        let server = config
+            .servers
+            .get(name)
+            .ok_or_else(|| format!("'{name}' is not a configured server"))?;
+        let taurus_mcp::ServerConfig::Http { url, .. } = server else {
+            return Err(format!(
+                "'{name}' talks over stdio, which takes its credentials from the \
+                 environment rather than from a browser."
+            ));
+        };
+        let url = taurus_tools::expand_env(url).map_err(|e| format!("url: {e}"))?;
+        self.mcp.begin_sign_in(name, &url).await
+    }
+
+    /// Forgets one server's sign-in. Local only — the grant itself survives.
+    pub fn mcp_sign_out(&self, name: &str) -> Result<(), String> {
+        self.mcp.sign_out(name)
     }
 
     /// Both `mcp.json` layers, merged, plus which layer defined each server.
@@ -2504,7 +2538,9 @@ impl Host {
         server: &taurus_mcp::ServerConfig,
     ) -> Result<Vec<String>, String> {
         server.validate()?;
-        taurus_mcp::probe(name, server).await
+        // The same credentials the live connection would use, so Test tests
+        // what actually runs rather than the unauthenticated half of it.
+        taurus_mcp::probe(name, server, Some(Arc::new(crate::secrets::Keychain))).await
     }
 
     pub async fn permissions(&self) -> Arc<PermissionEngine> {

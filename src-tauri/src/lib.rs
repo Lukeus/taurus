@@ -315,6 +315,10 @@ pub fn run() {
             commands::rescan_library,
             commands::open_mcp_config,
             commands::list_mcp_servers,
+            commands::mcp_catalog,
+            commands::mcp_sign_in,
+            commands::mcp_sign_out,
+            commands::programs_on_path,
             commands::mcp_environment,
             commands::save_mcp_server,
             commands::delete_mcp_server,
@@ -324,6 +328,7 @@ pub fn run() {
             commands::list_checkpoints,
             commands::rewind_to,
             commands::turn_changes,
+            commands::conversation_changes,
             commands::repo_status,
             commands::usage_report,
             commands::trace_report,
@@ -336,6 +341,7 @@ pub fn run() {
             commands::terminal_close,
             commands::background,
             commands::background_stop,
+            commands::attention,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Taurus");

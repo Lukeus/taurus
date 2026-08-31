@@ -5,8 +5,10 @@
 //! and the permission gate treat them identically. The model sees one flat
 //! namespace.
 
+pub mod catalog;
 pub mod config;
 pub mod draft;
+pub mod oauth;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -23,6 +25,7 @@ use tracing::{info, warn};
 
 use taurus_tools::{expand_env, Effect, Tool, ToolContext, ToolError, ToolResult};
 
+pub use catalog::{catalog, Catalog};
 pub use config::{load, parse, McpConfig, ServerConfig};
 pub use draft::{DraftMcpServer, DRAFT_MCP_TOOL};
 
@@ -97,11 +100,54 @@ impl ServerStatus {
 pub struct McpManager {
     connections: RwLock<BTreeMap<String, Arc<Connection>>>,
     status: RwLock<BTreeMap<String, ServerStatus>>,
+    /// Where OAuth credentials are kept, when the layer above supplied one.
+    ///
+    /// Injected rather than reached for, because the keychain's platform matrix
+    /// is written down once in `taurus_host::secrets` and this crate sits below
+    /// that one. `None` leaves every HTTP server unauthenticated, which is what
+    /// the CLI and the tests want and is the behaviour that existed before.
+    vault: Option<Arc<dyn oauth::TokenVault>>,
 }
 
 impl McpManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The same, able to sign in to servers that want OAuth.
+    pub fn with_vault(vault: Arc<dyn oauth::TokenVault>) -> Self {
+        Self {
+            vault: Some(vault),
+            ..Self::default()
+        }
+    }
+
+    /// Whether this server has OAuth credentials stored.
+    pub fn signed_in(&self, name: &str) -> bool {
+        self.vault
+            .as_ref()
+            .is_some_and(|vault| oauth::signed_in(vault, name))
+    }
+
+    /// Begins a sign-in, returning the URL a browser has to be sent to.
+    ///
+    /// Two halves, because the middle belongs to whoever can open a window.
+    /// See [`oauth::SignIn`].
+    pub async fn begin_sign_in(&self, name: &str, url: &str) -> Result<oauth::SignIn, String> {
+        let vault = self
+            .vault
+            .clone()
+            .ok_or_else(|| "no credential store on this system to keep a sign-in in".to_string())?;
+        oauth::SignIn::begin(url, name, None, vault).await
+    }
+
+    /// Forgets one server's credentials. Local only — see [`oauth::sign_out`].
+    pub fn sign_out(&self, name: &str) -> Result<(), String> {
+        let vault = self
+            .vault
+            .as_ref()
+            .ok_or_else(|| "no credential store on this system".to_string())?;
+        oauth::sign_out(vault, name)
     }
 
     /// Connects to every enabled server and returns the tools they expose.
@@ -169,7 +215,7 @@ impl McpManager {
         name: &str,
         server: &ServerConfig,
     ) -> Result<Vec<Arc<dyn Tool>>, String> {
-        let (service, listed) = handshake(name, server).await?;
+        let (service, listed) = handshake(name, server, self.vault.clone()).await?;
         let peer = service.peer().clone();
 
         let tools: Vec<Arc<dyn Tool>> = listed
@@ -230,6 +276,10 @@ impl McpManager {
 async fn handshake(
     name: &str,
     server: &ServerConfig,
+    // Where OAuth credentials live, when there is anywhere. `None` connects
+    // every HTTP server unauthenticated, which is what the CLI and the probe
+    // example do.
+    vault: Option<Arc<dyn oauth::TokenVault>>,
 ) -> Result<(RunningService<RoleClient, ()>, Vec<rmcp::model::Tool>), String> {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
         let service = match server {
@@ -268,13 +318,38 @@ async fn handshake(
             }
             ServerConfig::Http { url, headers, .. } => {
                 let url = expand_env(url).map_err(|e| format!("url: {e}"))?;
-                let transport = StreamableHttpClientTransport::<reqwest::Client>::from_config(
-                    StreamableHttpClientTransportConfig::with_uri(url)
-                        .custom_headers(http_headers(headers)?),
-                );
-                ().serve(transport)
-                    .await
-                    .map_err(|e| format!("handshake failed: {e}"))?
+                let config = StreamableHttpClientTransportConfig::with_uri(url.clone())
+                    .custom_headers(http_headers(headers)?);
+
+                /*
+                 * Signed in, so every request carries a token that is refreshed
+                 * when it needs to be — see `oauth::Authorized`. Nothing here
+                 * starts a sign-in: a connection that opened a browser window
+                 * because a server answered 401 would be the application taking
+                 * over the screen in response to something nobody asked for. A
+                 * server that needs signing in fails, says so, and waits.
+                 */
+                let manager = match vault.clone() {
+                    Some(vault) => oauth::manager_for(&url, name, vault).await,
+                    None => None,
+                };
+
+                match manager {
+                    Some(manager) => {
+                        let client = oauth::Authorized::new(reqwest::Client::default(), manager);
+                        let transport = StreamableHttpClientTransport::with_client(client, config);
+                        ().serve(transport)
+                            .await
+                            .map_err(|e| handshake_failure(e, false))?
+                    }
+                    None => {
+                        let transport =
+                            StreamableHttpClientTransport::<reqwest::Client>::from_config(config);
+                        ().serve(transport)
+                            .await
+                            .map_err(|e| handshake_failure(e, true))?
+                    }
+                }
             }
             // Layer merging resolves toggles against the server they name, so
             // one reaching this far means it named nothing.
@@ -320,19 +395,54 @@ fn start_failure(command: &str, error: &std::io::Error) -> String {
     )
 }
 
+/// Why a handshake failed, said in terms of what to do about it.
+///
+/// The one case worth translating is a server that wants somebody signed in.
+/// Its raw form is a 401 somewhere inside a transport error, which reads as a
+/// misconfiguration and is not one — the entry is correct and the account is
+/// missing. `offer_sign_in` is false where credentials were already used, so a
+/// 401 there means the grant has been revoked or has expired beyond refresh,
+/// which needs signing in *again* rather than for the first time.
+fn handshake_failure(error: impl std::fmt::Display, offer_sign_in: bool) -> String {
+    let text = error.to_string();
+    // Matched on the text because the status is several error types down inside
+    // a service error, and the cost of a miss is the raw message rather than a
+    // wrong one. Sign in is offered on every unauthenticated HTTP server
+    // regardless, so nothing is unreachable if this fails to spot one.
+    let unauthorized = text.contains("401")
+        || text.contains("Auth required")
+        || text.to_lowercase().contains("unauthorized");
+    if !unauthorized {
+        return format!("handshake failed: {text}");
+    }
+    if offer_sign_in {
+        "this server wants an account. Sign in below, or add a token as an          Authorization header if it issues one."
+            .to_string()
+    } else {
+        "the stored sign-in is no longer accepted — it has expired or been          revoked. Sign in again."
+            .to_string()
+    }
+}
+
 /// Connects to one server, reports what it offers, and disconnects.
 ///
 /// Separate from [`McpManager`] on purpose: this is the Test button, and testing
 /// an entry must not register its tools, replace a working connection, or leave
 /// a child process behind. The service is dropped at the end of this function,
 /// which is what stops the one it started.
-pub async fn probe(name: &str, server: &ServerConfig) -> Result<Vec<String>, String> {
+pub async fn probe(
+    name: &str,
+    server: &ServerConfig,
+    // So that testing a server you are signed in to tests the thing that
+    // actually runs, rather than the unauthenticated half of it.
+    vault: Option<Arc<dyn oauth::TokenVault>>,
+) -> Result<Vec<String>, String> {
     if server.disabled() {
         // Worth testing anyway — this is how you check an entry before switching
         // it on — so this is a note rather than a refusal.
         info!(server = %name, "probing a disabled server");
     }
-    let (service, listed) = handshake(name, server).await?;
+    let (service, listed) = handshake(name, server, vault).await?;
     let tools = listed.iter().map(|t| t.name.to_string()).collect();
     // Explicit rather than left to the drop glue, so the child is gone before
     // this returns and a run of tests cannot pile them up.
@@ -768,7 +878,7 @@ mod tests {
         // absence of the variable's name rather than the presence of any
         // particular message, because how a missing program fails differs by
         // platform — see the test above.
-        let error = probe("t", &server).await.unwrap_err();
+        let error = probe("t", &server, None).await.unwrap_err();
         assert!(
             !error.contains("TAURUS_TEST_MCP_STDIO_TOKEN"),
             "a variable that is set must not be reported as a problem: {error}"
@@ -783,7 +893,7 @@ mod tests {
             )]),
             disabled: false,
         };
-        let error = probe("t", &unset).await.unwrap_err();
+        let error = probe("t", &unset, None).await.unwrap_err();
         assert!(
             error.contains("TAURUS_TEST_MCP_STDIO_DEFINITELY_UNSET"),
             "{error}"
@@ -806,7 +916,7 @@ mod tests {
             headers: Default::default(),
             disabled: false,
         };
-        assert!(probe("remote", &server).await.is_err());
+        assert!(probe("remote", &server, None).await.is_err());
         assert!(
             manager.statuses().await.is_empty(),
             "a probe must leave the manager untouched"
