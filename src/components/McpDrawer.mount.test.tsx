@@ -31,6 +31,7 @@ const server = (patch: Partial<McpServerView> = {}): McpServerView => ({
   url: "",
   headers: [],
   disabled: false,
+  signed_in: false,
   program: "/opt/homebrew/bin/npx",
   ...patch,
 });
@@ -179,5 +180,42 @@ describe("opening the panel", () => {
     expect(host.innerHTML).toContain("after");
     expect(host.innerHTML).not.toContain("before");
     unmount();
+  });
+});
+
+describe("a server that wants an account", () => {
+  /*
+   * OAuth is offered on an HTTP server and never on a stdio one. That is not a
+   * layout preference: the MCP authorization specification says a stdio server
+   * takes its credentials from the environment, so a Sign in button there would
+   * be a control for something that cannot happen.
+   */
+  const remote = (patch: Partial<McpServerView> = {}): McpServerView =>
+    server({
+      name: "linear",
+      transport: "http",
+      command: "",
+      args: [],
+      url: "https://mcp.linear.app/mcp",
+      program: undefined,
+      ...patch,
+    });
+
+  it("offers to sign in to an HTTP server", async () => {
+    const { host } = await mount([remote()]);
+    expect(host.textContent).toContain("Sign in");
+  });
+
+  it("offers to sign out of one already signed in, and says so", async () => {
+    const { host } = await mount([remote({ signed_in: true })]);
+    expect(host.textContent).toContain("Sign out");
+    expect(host.textContent).toContain("signed in");
+    expect(host.textContent).not.toContain("Sign in");
+  });
+
+  it("offers neither on a stdio server", async () => {
+    const { host } = await mount([server()]);
+    expect(host.textContent).not.toContain("Sign in");
+    expect(host.textContent).not.toContain("Sign out");
   });
 });

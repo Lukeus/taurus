@@ -562,6 +562,12 @@ code {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
+/* A state that is settled and good — an OAuth sign-in Taurus holds. The same
+   green the connected dot uses, so "working" reads as one colour everywhere. */
+.tag.ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
 
 /* A pill is a toggle that reads as a filter, not a command. */
 .pill {

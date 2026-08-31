@@ -6,12 +6,23 @@
       "name": "Filesystem",
       "blurb": "Read and write files under directories you name, with the paths checked against that list.",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
-      "keywords": ["files", "directory", "folder", "disk", "read", "write"],
+      "keywords": [
+        "files",
+        "directory",
+        "folder",
+        "disk",
+        "read",
+        "write"
+      ],
       "scope": "project",
       "requires": "npx",
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "{directory}"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "{directory}"
+      ],
       "inputs": [
         {
           "key": "directory",
@@ -27,12 +38,21 @@
       "name": "Git",
       "blurb": "Read history, diffs and blame in a repository, and stage and commit in it.",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
-      "keywords": ["git", "commit", "diff", "history", "blame", "branch"],
+      "keywords": [
+        "git",
+        "commit",
+        "diff",
+        "history",
+        "blame",
+        "branch"
+      ],
       "scope": "project",
       "requires": "uvx",
       "transport": "stdio",
       "command": "uvx",
-      "args": ["mcp-server-git"],
+      "args": [
+        "mcp-server-git"
+      ],
       "inputs": []
     },
     {
@@ -40,12 +60,21 @@
       "name": "Fetch",
       "blurb": "Fetch a web page and convert it to markdown for the model to read.",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
-      "keywords": ["web", "http", "url", "page", "scrape", "browse"],
+      "keywords": [
+        "web",
+        "http",
+        "url",
+        "page",
+        "scrape",
+        "browse"
+      ],
       "scope": "global",
       "requires": "uvx",
       "transport": "stdio",
       "command": "uvx",
-      "args": ["mcp-server-fetch"],
+      "args": [
+        "mcp-server-fetch"
+      ],
       "inputs": []
     },
     {
@@ -53,12 +82,21 @@
       "name": "Memory",
       "blurb": "A knowledge graph the model can write to and read back across conversations.",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
-      "keywords": ["memory", "notes", "knowledge", "graph", "remember"],
+      "keywords": [
+        "memory",
+        "notes",
+        "knowledge",
+        "graph",
+        "remember"
+      ],
       "scope": "global",
       "requires": "npx",
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
       "inputs": []
     },
     {
@@ -66,12 +104,20 @@
       "name": "Sequential thinking",
       "blurb": "A scratchpad for working a problem in steps, revising earlier ones as it goes.",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
-      "keywords": ["thinking", "reasoning", "planning", "steps"],
+      "keywords": [
+        "thinking",
+        "reasoning",
+        "planning",
+        "steps"
+      ],
       "scope": "global",
       "requires": "npx",
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
       "inputs": []
     },
     {
@@ -79,12 +125,21 @@
       "name": "Time",
       "blurb": "The current time, and conversion between timezones.",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
-      "keywords": ["time", "clock", "timezone", "date", "utc"],
+      "keywords": [
+        "time",
+        "clock",
+        "timezone",
+        "date",
+        "utc"
+      ],
       "scope": "global",
       "requires": "uvx",
       "transport": "stdio",
       "command": "uvx",
-      "args": ["mcp-server-time", "--local-timezone={timezone}"],
+      "args": [
+        "mcp-server-time",
+        "--local-timezone={timezone}"
+      ],
       "inputs": [
         {
           "key": "timezone",
@@ -101,18 +156,30 @@
       "name": "GitHub",
       "blurb": "Issues, pull requests, code search and Actions, against GitHub's own hosted server.",
       "homepage": "https://github.com/github/github-mcp-server",
-      "keywords": ["github", "issues", "pr", "pull request", "repo", "actions"],
+      "keywords": [
+        "github",
+        "issues",
+        "pr",
+        "pull request",
+        "repo",
+        "actions"
+      ],
       "scope": "global",
       "transport": "http",
       "url": "https://api.githubcopilot.com/mcp/",
-      "headers": [{ "key": "Authorization", "value": "Bearer {token}" }],
+      "headers": [
+        {
+          "key": "Authorization",
+          "value": "Bearer {token}"
+        }
+      ],
       "inputs": [
         {
           "key": "token",
           "label": "Personal access token",
-          "help": "A fine-grained token, scoped to the repositories you want reachable. GitHub's server also speaks OAuth, which Taurus cannot do yet — a token is the way in.",
+          "help": "A fine-grained token, scoped to the repositories you want reachable. GitHub's server also speaks OAuth: add it with the token box empty and press Sign in on the card instead.",
           "kind": "secret",
-          "required": true,
+          "required": false,
           "link": "https://github.com/settings/personal-access-tokens"
         }
       ]
@@ -122,13 +189,27 @@
       "name": "Brave Search",
       "blurb": "Web, news and image search through Brave's own index.",
       "homepage": "https://github.com/brave/brave-search-mcp-server",
-      "keywords": ["search", "web", "brave", "news", "images"],
+      "keywords": [
+        "search",
+        "web",
+        "brave",
+        "news",
+        "images"
+      ],
       "scope": "global",
       "requires": "npx",
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@brave/brave-search-mcp-server"],
-      "env": [{ "key": "BRAVE_API_KEY", "value": "{key}" }],
+      "args": [
+        "-y",
+        "@brave/brave-search-mcp-server"
+      ],
+      "env": [
+        {
+          "key": "BRAVE_API_KEY",
+          "value": "{key}"
+        }
+      ],
       "inputs": [
         {
           "key": "key",
@@ -140,38 +221,67 @@
         }
       ]
     },
-
     {
       "id": "postgres",
       "name": "PostgreSQL",
       "blurb": "Query a Postgres database.",
       "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/postgres",
-      "keywords": ["postgres", "postgresql", "sql", "database", "db"],
+      "keywords": [
+        "postgres",
+        "postgresql",
+        "sql",
+        "database",
+        "db"
+      ],
       "blocked": "There is no first-party Postgres server to recommend. The reference one was archived in May 2025 and deprecated on npm in July 2025 over a SQL-injection vulnerability, and nothing official replaced it. The maintained alternatives are all third-party, which is exactly the package-name-nobody-reviewed problem this catalogue exists to avoid — so pick one yourself, read it, and add it by hand."
+    },
+    {
+      "id": "linear",
+      "name": "Linear",
+      "blurb": "Issues, projects and comments, against Linear's own hosted server. Add it, then press Sign in on its card to authorize Taurus in your browser.",
+      "homepage": "https://linear.app/docs/mcp",
+      "keywords": [
+        "linear",
+        "issues",
+        "tickets",
+        "projects",
+        "sprint"
+      ],
+      "scope": "global",
+      "transport": "http",
+      "url": "https://mcp.linear.app/mcp",
+      "inputs": []
     },
     {
       "id": "google-drive",
       "name": "Google Drive",
-      "blurb": "Search and read files in Drive.",
+      "blurb": "Search and read files in Drive, inheriting your own permissions. Add it, then press Sign in on its card to authorize Taurus in your browser.",
       "homepage": "https://developers.google.com/workspace/drive",
-      "keywords": ["google", "drive", "docs", "sheets", "workspace", "gdrive"],
-      "blocked": "Google runs a hosted server at https://drivemcp.googleapis.com/mcp/v1, and it authenticates with OAuth against credentials you create in your own Google Cloud project. Taurus speaks HTTP to a server with fixed headers and has no OAuth flow, so there is nowhere to put the consent step. The reference Drive server that predated Google's is archived and should not be used."
-    },
-    {
-      "id": "linear",
-      "name": "Linear, Sentry, Stripe, Notion, Cloudflare",
-      "blurb": "Vendor-hosted servers for issue trackers, payments and docs.",
-      "homepage": "https://modelcontextprotocol.io/clients",
-      "keywords": ["linear", "sentry", "stripe", "notion", "cloudflare", "atlassian", "jira", "oauth", "hosted", "remote"],
-      "blocked": "All of these are hosted by the vendor and secured with OAuth rather than a token you can paste. Taurus sends fixed headers and has no consent flow, so none of them can be reached yet. Where a vendor also issues a plain API token, the HTTP form below will take it."
+      "keywords": [
+        "google",
+        "drive",
+        "docs",
+        "sheets",
+        "workspace",
+        "gdrive"
+      ],
+      "scope": "global",
+      "transport": "http",
+      "url": "https://drivemcp.googleapis.com/mcp/v1",
+      "inputs": []
     },
     {
       "id": "slack",
       "name": "Slack",
       "blurb": "Read and post in channels.",
       "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/slack",
-      "keywords": ["slack", "chat", "channel", "message"],
-      "blocked": "The reference Slack server is archived and is now maintained outside the project. Slack's own replacement is hosted and OAuth-secured, which Taurus cannot do yet. Add a third-party one by hand if you have read it."
+      "keywords": [
+        "slack",
+        "chat",
+        "channel",
+        "message"
+      ],
+      "blocked": "The reference Slack server is archived and is now maintained outside the project. Slack's own replacement is hosted; if it advertises an authorization server, add it here as an HTTP entry and press Sign in. Otherwise add a third-party one by hand, once you have read it."
     }
   ]
 }

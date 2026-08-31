@@ -1258,6 +1258,60 @@ pub async fn test_mcp_server(
     state.host.test_mcp_server(&draft.name, &server).await
 }
 
+/// Signs in to an MCP server that wants OAuth.
+///
+/// One command for the whole flow, and it does not return until the browser has
+/// come back. The alternative — begin, hand the URL to the frontend, poll — puts
+/// a half-finished authorization in the window's state where a reload would
+/// strand it holding a port open.
+///
+/// The three steps in order: discover and register, which needs the network;
+/// open a browser, which needs this layer, since `taurus-mcp` cannot reach the
+/// desktop; and wait for the redirect on loopback. Nothing is written to
+/// `mcp.json` — the credentials go to the keychain, keyed to the server's name.
+///
+/// Never called on its own behalf. A connection that opened a browser window
+/// because a server answered 401 would be the application taking the screen in
+/// response to something the user did not do; this runs when somebody presses
+/// **Sign in**.
+#[tauri::command]
+pub async fn mcp_sign_in(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> CmdResult<Vec<McpServerView>> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let sign_in = state.host.begin_mcp_sign_in(&name).await?;
+    app.opener()
+        .open_url(sign_in.authorization_url.clone(), None::<&str>)
+        .map_err(|e| format!("could not open a browser to sign in: {e}"))?;
+    sign_in.finish().await?;
+
+    // Reconnected rather than left for the user to press Reconnect: the whole
+    // point of signing in is the server working, and it cannot work until it is
+    // reconnected with the credentials that did not exist a moment ago.
+    state.host.reload_mcp().await;
+    emit_status(&state).await;
+    Ok(state.host.mcp_servers().await)
+}
+
+/// Forgets one server's sign-in.
+///
+/// Taurus's copy only. The grant still exists at the authorization server until
+/// it is removed there, which the panel says rather than leaving somebody to
+/// assume this revoked something.
+#[tauri::command]
+pub async fn mcp_sign_out(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> CmdResult<Vec<McpServerView>> {
+    state.host.mcp_sign_out(&name)?;
+    state.host.reload_mcp().await;
+    emit_status(&state).await;
+    Ok(state.host.mcp_servers().await)
+}
+
 /// Which of these programs are on the PATH this application inherited.
 ///
 /// The catalogue warns "needs uvx" before anything is filled in, and that

@@ -395,15 +395,26 @@ and they are the minority.
   the review happens once, in a commit, against the source — which is a thing a
   person can do properly and a model emitting a package name at runtime cannot.
   See [MCP servers](configuration.md#mcp-servers).
-- **Taurus speaks no OAuth, so most vendor-hosted MCP servers cannot be
-  reached.** An HTTP server is sent fixed headers and nothing else. That is
-  enough for GitHub, which issues personal access tokens, and not enough for
-  Google Drive, Linear, Sentry, Stripe, Notion or Cloudflare — all of which now
-  run hosted servers behind an OAuth consent flow, which is where the ecosystem
-  has gone. Closing it means a browser redirect, a loopback listener, token
-  storage and refresh, and a per-server registration: a feature, not a patch.
-  This is the single biggest limit on what Taurus can be extended with, and the
-  catalogue names each affected server rather than leaving the search empty.
+- **A sign-in needs the authorization server to register Taurus on the spot.**
+  OAuth works by dynamic client registration (RFC 7591): Taurus asks the
+  authorization server for a client id at the moment you press Sign in. The
+  specification now prefers a Client ID Metadata Document instead — an HTTPS URL
+  the authorization server fetches to learn about the client — and a desktop
+  application has nowhere to host one, so that route is closed until Taurus has
+  a published document to point at. A server that offers neither, and instead
+  expects a client id issued by hand through a developer console, cannot be
+  signed in to; the panel says so rather than failing at the redirect. Where
+  such a server also issues a plain token, the HTTP form takes it.
+- **Signing out is local.** It removes Taurus's copy of the tokens from the
+  keychain. The grant itself lives at the authorization server and stays there
+  until you remove the application in that provider's own settings, which is the
+  only place it can be revoked from. The panel says this rather than implying a
+  revocation it cannot perform.
+- **Scope step-up is not wired to anything.** A server that answers a tool call
+  with `insufficient_scope` gets that error surfaced as the call failing. The
+  library underneath supports re-authorizing for a wider scope, and what is
+  missing is the decision it needs: asking somebody mid-turn to widen a grant is
+  a permission prompt of its own, and it is not built.
 - **The catalogue is a snapshot, and it is small on purpose.** Around a dozen
   entries, shipped in the binary, each one first-party — the MCP project's own
   reference servers, plus GitHub's and Brave's. Nothing third-party is listed,

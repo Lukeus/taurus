@@ -247,6 +247,12 @@ describe("browsing the catalogue", () => {
     }
   });
 
+  it("marks a hosted server as one that runs elsewhere", async () => {
+    const { card } = await browse();
+    expect(card("GitHub").textContent).toContain("hosted");
+    expect(card("Filesystem").textContent).not.toContain("hosted");
+  });
+
   it("hands the chosen entry back rather than installing it", async () => {
     const { card, picked } = await browse();
     await act(async () => {

@@ -631,6 +631,30 @@ export const listMcpServers = () => invoke<McpServerView[]>("list_mcp_servers");
 export const mcpCatalog = () => invoke<Catalog>("mcp_catalog");
 
 /**
+ * Signs in to an MCP server that wants OAuth.
+ *
+ * Does not resolve until the browser has come back, which for a consent screen
+ * somebody has to read can be a minute or more — the panel shows that it is
+ * waiting rather than treating it as a hang. Answers with the server list after
+ * the reconnect, like every other write in this panel.
+ *
+ * Rejects with the authorization server's own words where there are any: a
+ * refused consent and an unregisterable client fail differently and are worth
+ * telling apart.
+ */
+export const mcpSignIn = (name: string) =>
+  invoke<McpServerView[]>("mcp_sign_in", { name });
+
+/**
+ * Forgets one server's sign-in.
+ *
+ * Taurus's copy only. The grant still exists at the authorization server until
+ * it is removed there.
+ */
+export const mcpSignOut = (name: string) =>
+  invoke<McpServerView[]>("mcp_sign_out", { name });
+
+/**
  * Which of these programs are on the PATH Taurus inherited.
  *
  * Returns the subset that resolves. Asked before a catalogue entry is filled

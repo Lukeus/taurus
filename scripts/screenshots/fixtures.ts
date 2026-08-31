@@ -102,6 +102,7 @@ export const MCP_SERVERS = [
   {
     name: "github",
     scope: "workspace",
+    signed_in: false,
     transport: "http",
     command: "",
     args: [],

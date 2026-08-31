@@ -274,12 +274,34 @@ entry into `mcp.json` and the catalogue never looks at it again.
 
 **Some of what you will search for is not there, and says why.** Postgres has
 had no first-party server since the reference one was archived and deprecated
-over a SQL-injection vulnerability, and nothing official replaced it. Google
-Drive, Linear, Sentry, Stripe and Notion all run hosted servers secured with
-OAuth, which Taurus does not speak — see
-[Known gaps](known-gaps.md). Those are entries too, carrying the reason instead
-of a button, because searching for the thing you cannot have should return an
-explanation rather than nothing.
+over a SQL-injection vulnerability, and nothing official replaced it. Entries
+like that carry the reason instead of a button, because searching for the thing
+you cannot have should return an explanation rather than nothing.
+
+### Signing in
+
+A hosted server — Linear, Google Drive, and most of what vendors now run — is
+secured with OAuth rather than a token you can paste. Add the entry, then press
+**Sign in** on its card: Taurus discovers the authorization server, registers
+itself, and opens your browser. Approving there sends the browser back to a
+loopback address Taurus is listening on for exactly one request, and the tokens
+land in the OS keychain — the same place provider API keys go, and never in
+`mcp.json`.
+
+Nothing starts that flow on its own. A connection that opened a browser window
+because a server answered 401 would be the application taking over the screen in
+response to something you did not do, so a server that needs an account says so
+and waits to be asked.
+
+Every request carries a token minted for it, refreshed when it has expired, so a
+window left open overnight goes on working without a tool call failing at the
+first use after the token lapsed. **Sign out** forgets Taurus's copy; the grant
+itself stays until you remove the application in the provider's own settings,
+which is the only place it can be revoked.
+
+Stdio servers have no sign-in and are not offered one — the MCP authorization
+specification is explicit that a local program takes its credentials from the
+environment, which is what `${VAR}` below is for.
 
 **A credential goes in the global file by default.** Every catalogued entry that
 wants one defaults to `~/.taurus/mcp.json`, which is not a file anybody commits.

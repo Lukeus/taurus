@@ -51,6 +51,15 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
   const [adding, setAdding] = useState<"catalog" | CatalogEntry | null>(null);
   /** A filled-in catalogue entry, on its way into the editor. */
   const [prefilled, setPrefilled] = useState<McpServerDraft | null>(null);
+  /*
+   * Which server has a browser window open on it, if any.
+   *
+   * Its own state rather than the panel's `busy`, because this wait is a
+   * different kind: `busy` is a round trip and is over in a moment, and this
+   * one lasts as long as it takes somebody to read a consent screen. Naming the
+   * server is what lets the other cards stay usable while one of them waits.
+   */
+  const [signingIn, setSigningIn] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -183,6 +192,20 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
               key={`${server.scope}:${server.name}`}
               server={server}
               busy={busy}
+              signingIn={signingIn === server.name}
+              onSignIn={async () => {
+                setSigningIn(server.name);
+                setError(null);
+                try {
+                  setServers(await api.mcpSignIn(server.name));
+                  await refreshStatus();
+                } catch (e) {
+                  setError(String(e));
+                } finally {
+                  setSigningIn(null);
+                }
+              }}
+              onSignOut={() => apply(() => api.mcpSignOut(server.name))}
               onEdit={() => setEditing(server)}
               onToggle={() =>
                 apply(() =>
@@ -281,15 +304,22 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
 function ServerCard({
   server,
   busy,
+  signingIn,
   onEdit,
   onToggle,
   onDelete,
+  onSignIn,
+  onSignOut,
 }: {
   server: McpServerView;
   busy: boolean;
+  /** This server's browser flow is open and waiting to be finished. */
+  signingIn: boolean;
   onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
+  onSignIn: () => void;
+  onSignOut: () => void;
 }) {
   /*
    * Deleting takes an entry someone typed, and nothing brings it back. The
@@ -314,6 +344,15 @@ function ServerCard({
             {server.scope === "workspace" ? "project" : "all projects"}
           </span>
           {server.disabled && <span className="tag warn">off</span>}
+          {/* Only where a browser flow is possible at all. A stdio server takes
+              its credentials from the environment — the MCP authorization
+              specification says so explicitly — so a sign-in state there would
+              be a control for something that cannot happen. */}
+          {!stdio && server.signed_in && (
+            <span className="tag ok" data-tip="Taurus holds an OAuth sign-in for this server">
+              signed in
+            </span>
+          )}
         </div>
 
         <span className="card-sub mono">
@@ -368,6 +407,31 @@ function ServerCard({
         )}
 
         <div className="card-actions">
+          {/* First, because on a server that wants an account it is the only
+              thing that will make anything else work. */}
+          {!stdio &&
+            (server.signed_in ? (
+              <button
+                disabled={busy}
+                onClick={onSignOut}
+                data-tip="Forgets Taurus's copy. The grant stays until you remove it at the provider."
+              >
+                Sign out
+              </button>
+            ) : (
+              <button
+                // Primary only where signing in is the thing that will make it
+                // work. A server already connected on a token can still be
+                // signed in to, and a blue button on a working row would be
+                // urging something nobody needs.
+                className={server.status?.connected ? "" : "primary"}
+                disabled={busy || signingIn}
+                onClick={onSignIn}
+                data-tip="Opens your browser to authorize Taurus"
+              >
+                {signingIn ? "Waiting for the browser…" : "Sign in"}
+              </button>
+            ))}
           <button disabled={busy} onClick={onEdit}>
             Edit
           </button>

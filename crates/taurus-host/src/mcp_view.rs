@@ -104,6 +104,13 @@ pub struct McpServerView {
     /// worth showing.
     #[ts(optional)]
     pub program: Option<String>,
+    /// Whether Taurus holds an OAuth sign-in for this server.
+    ///
+    /// Always false for a stdio server, which takes its credentials from the
+    /// environment and has no browser flow — the MCP authorization
+    /// specification says so explicitly. For an HTTP one it is the difference
+    /// between the panel offering **Sign in** and offering **Sign out**.
+    pub signed_in: bool,
     /// How the last connect went. `None` before the first reload has run.
     #[ts(optional)]
     pub status: Option<ServerStatus>,
@@ -142,6 +149,7 @@ impl McpServerView {
                 env: values(&env),
                 url: String::new(),
                 headers: Vec::new(),
+                signed_in: false,
                 disabled,
                 status,
             },
@@ -158,6 +166,9 @@ impl McpServerView {
                 env: Vec::new(),
                 url,
                 headers: values(&headers),
+                // Filled in by the caller, which is the only layer that can see
+                // the keychain. See `Host::mcp_servers`.
+                signed_in: false,
                 disabled,
                 program: None,
                 status,
@@ -175,6 +186,7 @@ impl McpServerView {
                 env: Vec::new(),
                 url: String::new(),
                 headers: Vec::new(),
+                signed_in: false,
                 disabled: toggle.disabled,
                 program: None,
                 status,
