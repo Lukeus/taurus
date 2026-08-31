@@ -20,6 +20,8 @@ import {
   BACKGROUND_JOBS,
   BACKGROUND_OUTPUT,
   CHECKPOINTS,
+  CONVERSATION_CHANGES,
+  REPO,
   DATASETS,
   DATA_EVENTS,
   DATA_PROFILE,
@@ -120,6 +122,8 @@ const ANSWERS: Record<string, unknown> = {
   list_sessions: SESSIONS,
   list_models: MODELS,
   list_checkpoints: CHECKPOINTS,
+  repo_status: REPO,
+  conversation_changes: CONVERSATION_CHANGES,
   list_skills: [],
   list_commands: [],
   list_agents: [],
@@ -366,6 +370,16 @@ requestAnimationFrame(() => {
         typeInto(area, DOCUMENT.text.replace("exponentially", "with a jittered backoff"));
         await until(() => window.document.querySelector(".canvas-conflict"), 400);
         scrollTo(transcript, window.document.querySelector(".document-card"));
+      },
+      // The Changes panel, beside the conversation it is about — which is the
+      // whole of what moved, so the shot has to hold both. Opened by pressing
+      // the header chip a user presses, then unfolding the conversation-wide
+      // diff: the turn list above it is the part that already existed, and the
+      // one diff spanning two turns is the part that did not.
+      changes: async () => {
+        (await click(".topbar .chip", (b) => b.includes("changed")))();
+        (await click(".everything-head", (b) => b.includes("whole diff")))();
+        await until(() => document.querySelector(".everything .diff"));
       },
       canvas: async () => {
         // The editor, not the panel: `.canvas` is on screen the moment the

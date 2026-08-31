@@ -40,6 +40,11 @@ const SHOTS = [
   { name: "app-light", shot: "chart", theme: "light" },
   { name: "questions", shot: "questions", theme: "dark" },
   { name: "permission-diff", shot: "permission", theme: "dark" },
+  // Changes beside the conversation rather than over it, and unfolded to the
+  // one diff that spans the whole conversation — because the turn list above
+  // it is the half that already existed, and a frame of that alone would not
+  // show what moved.
+  { name: "changes", shot: "changes", theme: "dark" },
   // Shown with two servers working, one that cannot find its program, and one
   // switched off — because the panel exists for the ones that are not working,
   // and a frame of four green rows would say nothing about what it is for.

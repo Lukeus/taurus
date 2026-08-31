@@ -450,6 +450,78 @@ while an index is a thing the model searches, and putting secrets in front of it
 is the opposite of what anyone wants. `.taurus` is excluded too, so a search
 over the project cannot answer with the conversation about the project.
 
+## While a turn runs
+
+The box stays typeable through a turn, and Enter in it holds the message rather
+than sending it — one message, drawn above the box, sent as its own turn the
+moment the one in front of it finishes. Thinking of the next thing while the
+model works is most of how this gets used, and the alternative is a keystroke
+that appears to do nothing.
+
+Only one is held. A queue of three is a conversation nobody is having, and the
+box offers no way to see or reorder one, so a second message typed ahead
+replaces the first. The ✕ beside it throws it away.
+
+A held message goes on its own **only after a turn that ran to the end**. Press
+Stop and it stays where it is, because watching the thing you typed fire anyway
+is the opposite of what the button said; the same is true of a turn that died,
+since whatever broke is still broken a millisecond later and an automatic
+resend spends the rate limit rather than reporting it. In both cases the row
+stays, says it did not go, and offers to send it by hand.
+
+Scrolling up stops the transcript following the stream, which is what you want
+— and a pill at the foot offers the way back to the live edge, so reading
+something from three tool calls ago is not one-way.
+
+A run of tool calls shows its steps while its turn is the newest thing said,
+and folds to its one-line heading once a newer question has been asked. That is
+what lets a fifty-turn conversation be read as fifty steps rather than as four
+hundred calls. Two exceptions: a run that failed stays open wherever it ends
+up, because the heading says a step failed and not which one — and a run you
+have opened or closed by hand stays as you left it, because a panel that
+reopens on its own is the app arguing with a click.
+
+### When it needs you
+
+A turn stops dead at three things it cannot decide: a permission, a question
+card, and a proposed skill or sub-agent. On a model running on your own machine
+that can be minutes into a turn you have already walked away from, so the app
+says so to the desktop rather than only to its own window — a badge on the dock
+icon counting what is owed, and a single bounce at the moment the count rises.
+
+Both are suppressed while the window has focus. Everything the badge could say
+is already on screen, in colour, three inches from the pointer. The bounce
+fires when something new arrives while you are away, and not when you leave
+with something already pending: alt-tabbing away from a permission dialog is
+not news about the permission dialog. A turn that finishes while nobody is
+watching counts as one thing owed, and coming back is what clears it.
+
+On Windows there is no badge — the platform has no taskbar badge count, and the
+documented substitute is an overlay icon, which means shipping a rendered image
+per number. The taskbar flash carries the signal there. On Linux the badge
+needs a desktop with `libunity`, and is quietly dropped where there is none.
+
+### Asking something again
+
+Every question in the transcript carries an **Edit** on hover, which puts it
+back in the box to change and ask again. It is added to whatever is already
+there rather than replacing it, the same rule every other offered sentence
+follows.
+
+It does not rewrite the transcript, and that is deliberate: the transcript is
+the record of what was actually asked and answered, and editing a question the
+model already read would make it a record of something that did not happen. The
+way back to the *files* is where it already is — see
+[Rewinding a turn](safety.md#rewinding-a-turn).
+
+A turn that died carries a **Try again** on the failure itself, which sends the
+same message — with the images and the pane it was asked from, since a retry
+that dropped those would be asking a different question. It is a resend and not
+a resume: the harness cannot pick a turn up partway, so where the first one had
+already written files before it broke, both turns are in the checkpoint log and
+either can be rewound. Folding them together would leave a rewind that undid
+twice as much as its label said.
+
 ## When a turn stops
 
 A turn runs until the model stops asking for tools. Three things end one early,
@@ -895,7 +967,7 @@ as soon as a line wraps.
 
 A fenced block in the app is coloured by the language on the fence, and every
 diff — the one on a permission prompt and the same one read back later in the
-Changes drawer — is coloured by the file's own extension. One palette does all
+Changes panel — is coloured by the file's own extension. One palette does all
 of it, the query box included, so a `SELECT` is the same colour wherever you
 read it.
 

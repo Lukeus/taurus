@@ -868,6 +868,31 @@ export const rewindTo = (sessionId: string, turn: number, dryRun: boolean) =>
 export const turnChanges = (sessionId: string, turn: number) =>
   invoke<TurnChange[]>("turn_changes", { sessionId, turn });
 
+/**
+ * What the whole conversation changed, file by file, as one diff each.
+ *
+ * The question asked before a commit — what is different about this file now,
+ * against what it held when the conversation started — which the per-turn view
+ * structurally cannot answer for a file edited more than once.
+ */
+export const conversationChanges = (sessionId: string) =>
+  invoke<TurnChange[]>("conversation_changes", { sessionId });
+
+/**
+ * Tells the desktop that the turn is waiting on a person.
+ *
+ * `waiting` is a count and it persists as a badge on the dock icon; `ring` is
+ * an event and fires once, as a bounce or a taskbar flash. Sending the count
+ * on every change and the ring only on the transition into needing somebody is
+ * what keeps the second from becoming noise — see the Rust side for the
+ * per-platform detail, including that Windows has no badge.
+ *
+ * Never throws: a dock badge that could not be set is not worth failing the
+ * thing that noticed.
+ */
+export const attention = (waiting: number, ring: boolean) =>
+  invoke<void>("attention", { waiting, ring }).catch(() => {});
+
 /** Where the workspace stands with git. Never throws for "not a repository". */
 export const repoStatus = () => invoke<RepoStatus>("repo_status");
 

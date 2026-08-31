@@ -324,6 +324,7 @@ pub fn run() {
             commands::list_checkpoints,
             commands::rewind_to,
             commands::turn_changes,
+            commands::conversation_changes,
             commands::repo_status,
             commands::usage_report,
             commands::trace_report,
@@ -336,6 +337,7 @@ pub fn run() {
             commands::terminal_close,
             commands::background,
             commands::background_stop,
+            commands::attention,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Taurus");

@@ -23,7 +23,8 @@ of the conversation. Results the model means you to *look* at — a table, a cha
 — stand on their own beside the prose rather than inside that card.
 
 ![The same app in its light theme, showing a bar chart with a tab per series and
-a question card below it](docs/screenshots/app-light.png)
+a question card below it, with the pill that offers the way back to the foot of
+the conversation](docs/screenshots/app-light.png)
 
 When a decision is genuinely yours, it asks and waits rather than guessing. Every
 question can be skipped — "You decide" answers all of them at once — so the turn

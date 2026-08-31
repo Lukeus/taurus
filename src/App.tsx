@@ -1,4 +1,12 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
@@ -17,6 +25,7 @@ import { PlanPanel } from "./components/PlanPanel";
 import { Rail, type ProviderHealth } from "./components/Rail";
 import {
   CANVAS_WIDTH,
+  CHANGES_WIDTH,
   RAIL_WIDTH,
   ResizeHandle,
   TERMINAL_HEIGHT,
@@ -49,7 +58,7 @@ import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
 import { extend } from "./lib/jobs";
 import { applyTheme, currentToken, watchSystemTheme } from "./lib/theme";
-import type { Entry } from "./state/store";
+import type { Entry, Outgoing } from "./state/store";
 import { pinnedPlan, useStore } from "./state/store";
 
 /*
@@ -177,12 +186,15 @@ export default function App() {
       busy: s.busy,
       stopping: s.stopping,
       resuming: s.resuming,
+      queued: s.queued,
       error: s.error,
       permission: s.permission,
       proposals: s.proposals,
       agentProposals: s.agentProposals,
       init: s.init,
       send: s.send,
+      retry: s.retry,
+      unqueue: s.unqueue,
       stop: s.stop,
       resume: s.resume,
       remove: s.remove,
@@ -208,11 +220,19 @@ export default function App() {
     ...TERMINAL_HEIGHT,
   });
   /* Pinned to the right of the centre column, so it widens as the pointer
-     moves left — the same sign the Changes drawer uses. */
+     moves left — the same sign the Changes panel beside it uses. */
   const canvasPane = useResizableWidth({
     storageKey: "taurus.canvasWidth",
     grow: -1,
     ...CANVAS_WIDTH,
+  });
+  /* The same edge, and its own width: a rewind is read before it is pressed
+     and the paths it lists are as long as the tree they came out of, which is
+     not the width anybody wants a file open at. */
+  const changesPane = useResizableWidth({
+    storageKey: "taurus.changesWidth",
+    grow: -1,
+    ...CHANGES_WIDTH,
   });
   /**
    * Whether the terminal dock is showing.
@@ -332,6 +352,21 @@ export default function App() {
    * the second one does nothing.
    */
   const [draft, setDraft] = useState<{ text: string } | null>(null);
+  /**
+   * Unsent drafts, per conversation, for as long as the window is open.
+   *
+   * Held here rather than in the composer because the composer is keyed on the
+   * conversation and therefore does not outlive one — which is the point. See
+   * the park effect in `Composer` for what fills this and why it has to be
+   * handed a key rather than reading one.
+   *
+   * Not persisted. A draft is a sentence somebody is in the middle of, and
+   * restoring one across a restart would put words in the box that were typed
+   * before whatever made them relevant.
+   */
+  const [parked, setParked] = useState<Record<string, Parked>>({});
+  /** Bumped to put the cursor in the composer. See the prop. */
+  const [focusComposer, setFocusComposer] = useState(0);
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
@@ -401,9 +436,13 @@ export default function App() {
    * adding a seventh is cheap in a way that adding the first was not.
    *
    * ⌘K opens the palette, and ⌘⇧P is the same door for anybody arriving from
-   * an editor that spells it that way. The rest are the two verbs worth
+   * an editor that spells it that way. The rest are the three verbs worth
    * reaching without it: a new conversation and settings, both of which
-   * every application on the platform binds to these keys already.
+   * every application on the platform binds to these keys already, and ⌘L for
+   * the composer — which earns its place differently. It is not a verb at all
+   * but a way back: this window has four things that take the keyboard once
+   * they have focus, and the box the whole layout is arranged around was the
+   * only one of the five that could not be reached without the mouse.
    *
    * On the window, like the terminal toggle above, and for the same reason:
    * the point of a shortcut is that it works wherever you happen to be. The
@@ -425,6 +464,9 @@ export default function App() {
       } else if (isChord(e, ",")) {
         e.preventDefault();
         setSettingsOpen(true);
+      } else if (isChord(e, "l")) {
+        e.preventDefault();
+        setFocusComposer((n) => n + 1);
       }
     };
     window.addEventListener("keydown", key);
@@ -733,6 +775,14 @@ export default function App() {
         keywords: "cancel interrupt halt",
         unavailable: store.busy ? undefined : "Nothing is running",
         run: store.stop,
+      },
+      {
+        id: "compose",
+        label: "Write a message",
+        group: "Do",
+        keywords: "composer box type focus prompt reply ask",
+        shortcut: chord("L"),
+        run: () => setFocusComposer((n) => n + 1),
       },
       {
         id: "workspace",
@@ -1052,6 +1102,57 @@ export default function App() {
    */
   const ask = (text: string) => setDraft({ text });
 
+  /**
+   * Takes a conversation's unsent draft as the composer for it goes away.
+   *
+   * Stable, because the composer registers it once at mount and calls it once
+   * at teardown. Empty drafts are dropped rather than stored: the map is keyed
+   * by every conversation ever opened in this window, and filling it with
+   * blanks would make "is there something parked here" a question about the
+   * value rather than the key.
+   */
+  /** Which conversation the composer is typing at. `"none"` before there is
+   *  one, so the key is a string and the map needs no special case. */
+  const sessionKey = store.session?.id ?? "none";
+
+  /**
+   * Which of the two right-hand panels is showing, if either.
+   *
+   * Derived rather than held, so the two cannot disagree: opening Changes with
+   * a file already open needs no bookkeeping beyond this line, and closing it
+   * puts the file back because the file never went anywhere. See the slot in
+   * `main` for why there is only one.
+   */
+  const side: "changes" | "canvas" | null =
+    changesOpen && store.session ? "changes" : canvas ? "canvas" : null;
+
+  /**
+   * Sends a message that was typed ahead and then not fired, because the turn
+   * in front of it broke or was stopped.
+   *
+   * The queue drains itself after a clean turn; this is the hand-operated
+   * half, and it exists so that the alternative to an automatic resend is one
+   * click rather than retyping the sentence.
+   */
+  const sendQueued = () => {
+    const held = store.queued;
+    if (!held) return;
+    store.unqueue();
+    void store.send(held.text, held.images, held.onScreen);
+  };
+
+  const park = useCallback((key: string, held: Parked) => {
+    setParked((all) => {
+      const empty = !held.text.trim() && held.images.length === 0;
+      if (empty && !(key in all)) return all;
+      if (empty) {
+        const { [key]: _gone, ...rest } = all;
+        return rest;
+      }
+      return { ...all, [key]: held };
+    });
+  }, []);
+
   /** Whichever dataset the pane is actually showing — see `DataPane`, which
    *  falls back to the first rather than being open on nothing. */
   const showing =
@@ -1258,6 +1359,11 @@ export default function App() {
               onOpenDocument={showDocument}
               onRunQuery={showQuery}
               find={find}
+              onRetry={store.retry}
+              // Not an edit in place — see the prop. It arrives in the box the
+              // way every other offered sentence does, added to whatever is
+              // already there rather than replacing it.
+              onEditPrompt={ask}
               empty={
                 <FirstRun
                   workspace={workspace}
@@ -1299,14 +1405,45 @@ export default function App() {
           )}
           </div>
 
+          {/*
+            * One column beside the conversation, and two things that want it.
+            *
+            * Changes wins while it is open, and the canvas is hidden rather
+            * than closed — every piece of state a file being edited has lives
+            * up here in `App`, so it comes back with its unsaved typing and
+            * its scroll position when Changes is shut again. Closing it for
+            * real would be the app throwing away work to make room for a
+            * panel.
+            *
+            * Not a third column. At the width this window is drawn for, the
+            * transcript is already giving up half of itself to whichever of
+            * these is open; giving up the other half would leave three
+            * columns, none of them readable, which is exactly the outcome the
+            * Data pane experiment argued against.
+            */}
+          {side === "changes" && store.session && (
+            <>
+              <ResizeHandle pane={changesPane} label="Changes width" />
+              <div className="side-slot" style={{ width: changesPane.size }}>
+                <Suspense fallback={<aside className="drawer changes-pane" />}>
+                  <ChangesDrawer
+                    sessionId={store.session.id}
+                    busy={store.busy}
+                    onClose={() => setChangesOpen(false)}
+                  />
+                </Suspense>
+              </div>
+            </>
+          )}
+
           {/* Mounted only while a file is open, like the terminal dock and for
               the same reason: an editor laid out to nothing is not hidden, it
               is broken, and a canvas kept alive behind a zero-width column
               would hold a document nobody can see. */}
-          {canvas && (
+          {side === "canvas" && canvas && (
             <>
               <ResizeHandle pane={canvasPane} label="Editor width" />
-              <div className="canvas-slot" style={{ width: canvasPane.size }}>
+              <div className="side-slot" style={{ width: canvasPane.size }}>
                 <Canvas
                   path={canvas.path}
                   reveal={canvas.reveal}
@@ -1384,6 +1521,18 @@ export default function App() {
         <PinnedPlan />
 
         <Composer
+          // Keyed on the conversation, so a half-written question never
+          // follows a click in the rail into another one. What was typed is
+          // handed back through `onPark` on the way out and restored through
+          // `parked` on the way in — see both.
+          key={sessionKey}
+          sessionKey={sessionKey}
+          parked={parked[sessionKey] ?? null}
+          onPark={park}
+          queued={store.queued}
+          onSendQueued={sendQueued}
+          onUnqueue={store.unqueue}
+          focus={focusComposer}
           busy={store.busy}
           stopping={store.stopping}
           ready={!!store.session}
@@ -1441,6 +1590,10 @@ export default function App() {
         />
       )}
 
+      {/* Renders nothing. Mounted here because it is about the window rather
+          than about anything in it. */}
+      <Attention />
+
       {/* One boundary for all of them: they are mutually exclusive in practice
           and none is ever nested inside another, so a boundary each would be
           seven of the same thing. `null` rather than a spinner because by the
@@ -1487,13 +1640,6 @@ export default function App() {
           />
         )}
 
-        {changesOpen && store.session && (
-          <ChangesDrawer
-            sessionId={store.session.id}
-            busy={store.busy}
-            onClose={() => setChangesOpen(false)}
-          />
-        )}
         {delegate && store.session && (
           <DelegateTranscript
             sessionId={store.session.id}
@@ -1840,6 +1986,99 @@ export function TurnStrip({ onOpen }: { onOpen: () => void }) {
 }
 
 /**
+ * Says to the desktop, rather than to the window, that the turn needs somebody.
+ *
+ * The gap this closes is the one that made a long turn not worth walking away
+ * from. A model on your own machine takes minutes, and the harness stops dead
+ * at three things it cannot decide — a permission, a question card, a proposal
+ * — so the ordinary shape of a session was: ask, alt-tab, and come back some
+ * unknown number of minutes after it had actually needed you. Nothing outside
+ * this window said so, because a webview cannot say anything outside itself.
+ *
+ * Renders nothing, and subscribes on its own behalf for the reason `TurnStrip`
+ * does: both of the values it reads collapse to a number and a boolean, so a
+ * turn streaming thirty frames a second re-renders this zero times.
+ *
+ * Two signals with two different jobs, and keeping them apart is most of what
+ * makes this bearable to live with. The badge is a *state* — how much is owed
+ * — and it is worth being wrong about quietly. The ring is an *event*, a dock
+ * bounce or a taskbar flash, and it is only worth having if it never fires for
+ * something you were already looking at. So:
+ *
+ *   - Nothing at all while the window has focus. Everything the badge could
+ *     say is on screen, in colour, three inches from the pointer.
+ *   - The ring fires when the count *rises* while you are away, and not when
+ *     you leave with something already pending. Alt-tabbing away from a
+ *     permission dialog is not news about the permission dialog.
+ *   - A turn that finished counts as one thing owed, and coming back is what
+ *     clears it. It is the commonest reason to walk away and the only one of
+ *     these that is not a question.
+ */
+function Attention() {
+  const waiting = useStore(
+    (s) =>
+      (s.permission ? 1 : 0) +
+      s.proposals.length +
+      s.agentProposals.length +
+      (isAsking(s.entries) ? 1 : 0),
+  );
+  const busy = useStore((s) => s.busy);
+
+  // Seeded from the platform rather than assumed: a window can be opened
+  // behind something, and a first turn finishing in a window that never had
+  // focus is exactly the case worth ringing for. Guarded because this file is
+  // also rendered to a string by the tests, where there is no document to ask
+  // — and "not away" is the right answer for a render with no window, since
+  // nothing there can ring anyway.
+  const [away, setAway] = useState(
+    () => typeof document !== "undefined" && !document.hasFocus(),
+  );
+  /** A turn that ended with nobody watching. */
+  const [missed, setMissed] = useState(false);
+
+  useEffect(() => {
+    const here = () => {
+      setAway(false);
+      // Coming back *is* seeing it. Anything still genuinely outstanding is
+      // still on screen and still counted; this only clears the one thing
+      // whose whole content was "it finished while you were out".
+      setMissed(false);
+    };
+    const gone = () => setAway(true);
+    window.addEventListener("focus", here);
+    window.addEventListener("blur", gone);
+    return () => {
+      window.removeEventListener("focus", here);
+      window.removeEventListener("blur", gone);
+    };
+  }, []);
+
+  const ran = useRef(busy);
+  useEffect(() => {
+    const ended = ran.current && !busy;
+    ran.current = busy;
+    if (ended && away) setMissed(true);
+    // `away` is a dependency so this reads the current answer rather than a
+    // stale one. It cannot fire spuriously on that account: re-running for a
+    // focus change finds `ran.current` already equal to `busy`, so `ended` is
+    // false.
+  }, [busy, away]);
+
+  const owed = waiting + (missed ? 1 : 0);
+  const before = useRef(owed);
+  useEffect(() => {
+    // Compared against the raw count and not against what the dock was last
+    // told, which is what keeps leaving the window from ringing: blurring
+    // changes what is *shown* without changing what is owed.
+    const rose = owed > before.current;
+    before.current = owed;
+    void api.attention(away ? owed : 0, rose && away);
+  }, [owed, away]);
+
+  return null;
+}
+
+/**
  * Whether the turn has stopped and is waiting to be answered.
  *
  * A question card is the one thing the strip could never stand in for — it is
@@ -1885,7 +2124,22 @@ export function lastActivity(entries: Entry[]): string | null {
   return null;
 }
 
-function Composer({
+/**
+ * What a conversation had in its composer when it was last on screen.
+ *
+ * The images are here as well as the text because they are half the message:
+ * a pasted screenshot is not something anybody wants to find again in their
+ * clipboard history because they clicked another conversation.
+ */
+export type Parked = { text: string; images: Attachment[] };
+
+/*
+ * Exported for its own tests. Everything interesting about it is stateful —
+ * what it holds on to across a conversation change, what Enter does while a
+ * turn runs, what the line under the box says — and none of that is visible in
+ * a render of `App`.
+ */
+export function Composer({
   busy,
   stopping,
   ready,
@@ -1894,8 +2148,15 @@ function Composer({
   library,
   onScreen,
   draft,
+  focus,
+  sessionKey,
+  parked,
+  queued,
+  onPark,
   onPickWorkspace,
   onSend,
+  onSendQueued,
+  onUnqueue,
   onStop,
   onUsage,
 }: {
@@ -1937,22 +2198,54 @@ function Composer({
    * never.
    */
   draft: { text: string } | null;
+  /**
+   * A request from somewhere else in the window to put the cursor here.
+   *
+   * A counter rather than a boolean, so asking twice is two events. What it
+   * closes is the last gap in getting around without the mouse: once focus is
+   * in the terminal, the canvas or the query box, every key belongs to that
+   * thing, and the way back to the one control the whole window is arranged
+   * around was a click.
+   */
+  focus: number;
+  /**
+   * Which conversation is being typed at, captured at mount.
+   *
+   * The composer is keyed on this, so it is constant for the life of one
+   * instance — which is what makes it safe to hand back on the way out. Read
+   * from a ref during teardown it would already name the conversation being
+   * switched *to*, and every draft would be parked under the wrong one.
+   */
+  sessionKey: string;
+  /** What was left in the box last time this conversation was open. */
+  parked: Parked | null;
+  /**
+   * A message typed while the previous turn was still running.
+   *
+   * Drawn above the box, and this is the whole visible half of the queue: the
+   * store holds it, and until something says so on screen a message that has
+   * not been sent yet is indistinguishable from one that has.
+   */
+  queued: Outgoing | null;
+  onPark: (sessionKey: string, draft: Parked) => void;
   onPickWorkspace: () => void;
   onSend: (
     text: string,
     images: Attachment[],
     onScreen: OnScreen | null,
   ) => void;
+  onSendQueued: () => void;
+  onUnqueue: () => void;
   onStop: () => void;
   /** Opens the context account. The meter this sits behind says how full the
    *  window is; this is where "of what" is answered, and one click apart is
    *  the right distance between the two. */
   onUsage: () => void;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(parked?.text ?? "");
   const [commands, setCommands] = useState<CommandSummary[]>([]);
   const [active, setActive] = useState(0);
-  const [images, setImages] = useState<Attachment[]>([]);
+  const [images, setImages] = useState<Attachment[]>(parked?.images ?? []);
   const [attachError, setAttachError] = useState<string | null>(null);
   // Tracked with a counter rather than a boolean: dragging over a child fires
   // `dragleave` on the parent, so a boolean flickers the highlight off while
@@ -1989,6 +2282,39 @@ function Composer({
    * every one of these drafts ends on the ask, and the next thing typed
    * qualifies it.
    */
+  /*
+   * Hands whatever is in the box back on the way out.
+   *
+   * The composer used to outlive the conversation it was typed into: switching
+   * in the rail changed the transcript underneath a half-written question,
+   * which then went to whichever conversation happened to be open when Enter
+   * was finally pressed — with any pasted screenshots along with it. Keying
+   * this component on the conversation fixes that and would, on its own,
+   * replace one wrong behaviour with another: silently throwing the sentence
+   * away. So it is parked instead, and comes back when that conversation does.
+   *
+   * Registered once and read through a ref, because what it has to save is the
+   * state at teardown and an effect that re-ran per keystroke to keep a
+   * closure fresh would be a subscription rebuilt on every letter typed.
+   */
+  const held = useRef<Parked>({ text: "", images: [] });
+  held.current = { text, images };
+  useEffect(() => {
+    return () => onPark(sessionKey, held.current);
+    // Both are constant for this instance: `sessionKey` because the component
+    // is keyed on it, `onPark` because `App` holds it steady.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Asked for from the palette or its shortcut. Skips the first render, where
+  // the counter is only its starting value and nothing has requested anything.
+  const asked = useRef(focus);
+  useEffect(() => {
+    if (focus === asked.current) return;
+    asked.current = focus;
+    box.current?.focus();
+  }, [focus]);
+
   useEffect(() => {
     if (!draft) return;
     setText((typed) => withDraft(typed, draft.text));
@@ -2025,7 +2351,11 @@ function Composer({
   };
 
   const submit = () => {
-    if (!text.trim() || busy) return;
+    // No longer refused while a turn runs. The box stays typeable through one
+    // on purpose, and the send is held rather than dropped — see `queued` in
+    // the store, and the line below the box that says which of the two just
+    // happened.
+    if (!text.trim()) return;
     onSend(text, images, onScreen);
     setText("");
     setImages([]);
@@ -2072,6 +2402,34 @@ function Composer({
                 : `lines ${onScreen.document.selection.from}–${onScreen.document.selection.to}`}
             </span>
           )}
+        </div>
+      )}
+      {/*
+        * A message typed ahead, sitting where it can be seen.
+        *
+        * The row is not decoration: without it the queue would be a promise
+        * the app made silently, and the failure mode of a silent promise is
+        * the one this replaced — an Enter that appeared to do nothing.
+        *
+        * It says two different things depending on what happened to the turn
+        * in front of it. Still running: this goes next, and there is an ✕ to
+        * change your mind. Finished badly, or stopped: it did *not* go, and
+        * the sentence is still here with a button to send it by hand. See the
+        * drain in `send` for why a turn that broke does not fire it for you.
+        */}
+      {queued && (
+        <div className={`composer-queued${busy ? "" : " held"}`}>
+          <span className="dataset-mark">↳</span>
+          <span className="composer-queued-text">{queued.text}</span>
+          <div className="spacer" />
+          {!busy && (
+            <button className="quiet" onClick={onSendQueued}>
+              Send it
+            </button>
+          )}
+          <button className="quiet" onClick={onUnqueue} aria-label="Discard this message">
+            ✕
+          </button>
         </div>
       )}
       <div
@@ -2181,9 +2539,19 @@ function Composer({
           {/* The hint is the only place the slash namespace announces itself,
               and only while there is something in it to run. Paste is the
               same: a model that cannot see must not advertise it. */}
+          {/* What Enter will actually do, which stops being "send" for as
+              long as a turn is running. Said only while there is something in
+              the box for it to do it to, so the line does not spend a turn
+              announcing a rule about text that has not been typed. */}
           <span className="composer-hint">
-            ↵ send · ⇧↵ newline{commands.length > 0 && " · / commands"}
-            {vision && " · paste an image"}
+            {busy && text.trim() ? (
+              "↵ sends when this turn ends · ⇧↵ newline"
+            ) : (
+              <>
+                ↵ send · ⇧↵ newline{commands.length > 0 && " · / commands"}
+                {vision && " · paste an image"}
+              </>
+            )}
           </span>
           {busy ? (
             // Disabled while it takes, because a second press does nothing the

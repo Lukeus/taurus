@@ -21,7 +21,7 @@ export type Action = {
   /**
    * Words it should match on that are not on the row.
    *
-   * The synonyms someone would reach for — "undo" for the Changes drawer,
+   * The synonyms someone would reach for — "undo" for the Changes panel,
    * "tokens" for the context account. Matched at a penalty and never
    * highlighted, because marking characters in text that is not on screen is
    * marking nothing.
