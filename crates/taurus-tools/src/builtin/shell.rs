@@ -12,7 +12,6 @@
 //! real pseudo-terminal instead, and `stdin` hands it the answers up front,
 //! which is what turns "behaves correctly" into "completes". See [`super::pty`].
 
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +25,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::budget::OutputBudget;
+use crate::overflow;
 use crate::tool::{
     parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult,
 };
@@ -46,14 +46,6 @@ const MIN_OUTPUT_BYTES: usize = 4 * 1024;
 /// Past this a single command's output is a different problem than a budget,
 /// however much room the window has.
 const MAX_OUTPUT_BYTES: usize = 512 * 1024;
-
-/// How many cut streams one workspace keeps on disk.
-///
-/// Enough that a model can still reach back several turns for the middle of a
-/// build it was shown the ends of; few enough that a directory of logs never
-/// grows into something somebody has to go and notice. Trimmed on the way to
-/// writing one, which is the only moment this code runs at all.
-const KEPT_SPILLS: usize = 20;
 
 /// How long output may pool before it reaches the screen.
 ///
@@ -658,20 +650,9 @@ fn shell_invocation(command: &str) -> (String, Vec<String>) {
 fn for_the_model(raw: &str, stream: &str, ctx: &ToolContext) -> String {
     let condensed = super::condense::condense(raw, ctx.budget);
     let shown = condensed.as_deref().unwrap_or(raw);
-    let cap = output_cap(ctx.budget);
-    if shown.len() <= cap {
-        return shown.to_string();
-    }
-    let head_len = cap * 2 / 3;
-    let head = floor_boundary(shown, head_len);
-    let tail_start = shown.len() - (cap - head_len);
-    let tail = ceil_boundary(shown, tail_start);
-    format!(
-        "{}\n\n[… {} …]\n\n{}",
-        &shown[..head],
-        elision(shown.len() - cap, raw, stream, ctx),
-        &shown[tail..]
-    )
+    overflow::cut(shown, output_cap(ctx.budget), |omitted| {
+        elision(omitted, raw, stream, ctx)
+    })
 }
 
 /// What one command's output may take, for the model this turn is on.
@@ -685,7 +666,7 @@ fn output_cap(budget: OutputBudget) -> usize {
 /// middle of a long build is to run the build again — minutes, and a second
 /// set of side effects, to look at something that already happened.
 fn elision(omitted: usize, raw: &str, stream: &str, ctx: &ToolContext) -> String {
-    let Some(path) = spill(raw, stream, ctx) else {
+    let Some(path) = overflow::spill(raw, stream, ctx) else {
         return format!("{omitted} bytes omitted");
     };
     // `read_file` at any size: it windows around the offset it is given
@@ -698,91 +679,11 @@ fn elision(omitted: usize, raw: &str, stream: &str, ctx: &ToolContext) -> String
     )
 }
 
-/// Writes a stream out whole and says where it went.
-///
-/// `None` when there is nowhere to put it, or the write failed, and both are
-/// silent on purpose. The command ran. Losing the copy costs the model a
-/// second look at the middle, and turning that into a failed tool call would
-/// throw away the result along with it.
-fn spill(text: &str, stream: &str, ctx: &ToolContext) -> Option<PathBuf> {
-    let dir = ctx.command_output.as_ref()?;
-    std::fs::create_dir_all(dir).ok()?;
-    // Before the write rather than after, so the directory is at its bound
-    // once this one lands rather than one over it until the next command runs.
-    prune(dir, KEPT_SPILLS.saturating_sub(1));
-    let path = dir.join(format!(
-        "{}-{}-{}.txt",
-        slug(ctx.session_id.as_deref().unwrap_or("session")),
-        slug(ctx.call_id.as_deref().unwrap_or("command")),
-        stream
-    ));
-    std::fs::write(&path, text).ok()?;
-    // Canonicalized because this is about to be handed back as a path to read,
-    // and the guard that decides whether it may be read canonicalizes both
-    // sides before comparing them.
-    path.canonicalize().ok()
-}
-
-/// Keeps the newest `keep` files in a directory and deletes the rest.
-///
-/// Every failure here is ignored. This is tidying, and a directory that
-/// cannot be tidied is not a reason to fail the command whose output was
-/// about to go into it.
-fn prune(dir: &Path, keep: usize) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let meta = entry.metadata().ok()?;
-            if !meta.is_file() {
-                return None;
-            }
-            Some((meta.modified().ok()?, entry.path()))
-        })
-        .collect();
-    if files.len() <= keep {
-        return;
-    }
-    // Newest first, so what survives is the head of the list.
-    files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-    for (_, path) in files.into_iter().skip(keep) {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-/// A session or call id as a filename component.
-///
-/// Both are ids this process was handed rather than ids it chose — a
-/// provider names the call — so nothing guarantees they are made of
-/// characters a path may contain.
-fn slug(id: &str) -> String {
-    let cleaned: String = id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    cleaned.trim_matches('-').chars().take(64).collect()
-}
-
-fn floor_boundary(s: &str, mut i: usize) -> usize {
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn ceil_boundary(s: &str, mut i: usize) -> usize {
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     /// Unix-only: these assert on shell behavior that `cmd.exe` does not share,
@@ -1227,7 +1128,7 @@ mod tests {
     #[test]
     fn only_the_newest_spills_are_kept() {
         let dir = TempDir::new().unwrap();
-        for i in 0..KEPT_SPILLS + 5 {
+        for i in 0..overflow::KEPT + 5 {
             let path = dir.path().join(format!("{i}.txt"));
             let file = std::fs::File::create(&path).unwrap();
             // Stamped rather than written in order: twenty-five writes can
@@ -1238,7 +1139,7 @@ mod tests {
             )
             .unwrap();
         }
-        prune(dir.path(), KEPT_SPILLS);
+        overflow::prune(dir.path(), overflow::KEPT);
 
         let mut left: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -1246,19 +1147,12 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         left.sort();
-        assert_eq!(left.len(), KEPT_SPILLS);
+        assert_eq!(left.len(), overflow::KEPT);
         assert!(!left.contains(&"0.txt".to_string()), "{left:?}");
         assert!(
-            left.contains(&format!("{}.txt", KEPT_SPILLS + 4)),
+            left.contains(&format!("{}.txt", overflow::KEPT + 4)),
             "{left:?}"
         );
-    }
-
-    /// An id a provider chose, not one this process did.
-    #[test]
-    fn an_id_with_path_separators_in_it_cannot_escape_the_directory() {
-        assert_eq!(slug("../../etc/passwd"), "etc-passwd");
-        assert_eq!(slug("toolu_01AbC"), "toolu-01AbC");
     }
 
     /// The whole loop, through the two real tools rather than the helpers: a

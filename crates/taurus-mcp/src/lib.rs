@@ -16,14 +16,19 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderName, HeaderValue};
-use rmcp::model::{CallToolRequestParams, ContentBlock};
-use rmcp::service::{Peer, RoleClient, RunningService, ServiceExt};
+use rmcp::model::{
+    CallToolRequest, CallToolRequestParams, CancelledNotification, CancelledNotificationParam,
+    ClientRequest, ContentBlock, ServerResult,
+};
+use rmcp::service::{
+    Peer, PeerRequestOptions, RoleClient, RunningService, ServiceError, ServiceExt,
+};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use taurus_tools::{expand_env, Effect, Tool, ToolContext, ToolError, ToolResult};
+use taurus_tools::{expand_env, Effect, SecretVault, Tool, ToolContext, ToolError, ToolResult};
 
 pub use catalog::{catalog, Catalog};
 pub use config::{load, parse, McpConfig, ServerConfig};
@@ -40,6 +45,31 @@ pub const NAMESPACE: &str = "mcp__";
 /// Generous enough for the common worst case, which is `npx` downloading a
 /// package it has not cached yet.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a tool call may go without a word before it is given up on.
+///
+/// An *idle* deadline rather than a total one, and the difference is the whole
+/// of the design. `rmcp` restarts the clock whenever the server sends a
+/// progress notification, so a server doing an hour of honest work and saying
+/// so is never cut off, while one that has wedged is. There is deliberately no
+/// ceiling above it: "no tool may take more than N minutes" is a guess about
+/// somebody else's build, and **Stop** is always there for the case where the
+/// guess would have been right.
+///
+/// Longer than [`CONNECT_TIMEOUT`] because the two measure different things. A
+/// handshake is a round trip and should be quick; a call is the work.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// What one MCP result may take of the model's context.
+///
+/// The same three numbers the shell tool uses, for the same reason and against
+/// the same window. A server is a program nobody here reviewed, returning as
+/// much text as it likes into the context every later turn has to carry; that
+/// it was written by somebody else is an argument for bounding it, not an
+/// exemption from being bounded.
+const OUTPUT_SHARE: f32 = 0.08;
+const MIN_OUTPUT_BYTES: usize = 4 * 1024;
+const MAX_OUTPUT_BYTES: usize = 512 * 1024;
 
 pub fn namespaced(server: &str, tool: &str) -> String {
     format!("{NAMESPACE}{server}__{tool}")
@@ -99,14 +129,19 @@ impl ServerStatus {
 #[derive(Default)]
 pub struct McpManager {
     connections: RwLock<BTreeMap<String, Arc<Connection>>>,
-    status: RwLock<BTreeMap<String, ServerStatus>>,
+    /// Shared with the tools themselves, not merely owned.
+    ///
+    /// A tool call is the only thing that finds out a server has died — the
+    /// manager is not in the loop once the tools are registered — so the tools
+    /// need a way to say so. See [`McpTool::note_it_is_gone`].
+    status: Arc<RwLock<BTreeMap<String, ServerStatus>>>,
     /// Where OAuth credentials are kept, when the layer above supplied one.
     ///
     /// Injected rather than reached for, because the keychain's platform matrix
     /// is written down once in `taurus_host::secrets` and this crate sits below
     /// that one. `None` leaves every HTTP server unauthenticated, which is what
     /// the CLI and the tests want and is the behaviour that existed before.
-    vault: Option<Arc<dyn oauth::TokenVault>>,
+    vault: Option<Arc<dyn SecretVault>>,
 }
 
 impl McpManager {
@@ -115,7 +150,7 @@ impl McpManager {
     }
 
     /// The same, able to sign in to servers that want OAuth.
-    pub fn with_vault(vault: Arc<dyn oauth::TokenVault>) -> Self {
+    pub fn with_vault(vault: Arc<dyn SecretVault>) -> Self {
         Self {
             vault: Some(vault),
             ..Self::default()
@@ -232,6 +267,7 @@ impl McpManager {
                         .unwrap_or_else(|| format!("Tool `{}` from the {name} server", tool.name)),
                     schema: serde_json::Value::Object((*tool.input_schema).clone()),
                     peer: peer.clone(),
+                    status: self.status.clone(),
                 }) as Arc<dyn Tool>
             })
             .collect();
@@ -279,7 +315,7 @@ async fn handshake(
     // Where OAuth credentials live, when there is anywhere. `None` connects
     // every HTTP server unauthenticated, which is what the CLI and the probe
     // example do.
-    vault: Option<Arc<dyn oauth::TokenVault>>,
+    vault: Option<Arc<dyn SecretVault>>,
 ) -> Result<(RunningService<RoleClient, ()>, Vec<rmcp::model::Tool>), String> {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
         let service = match server {
@@ -435,7 +471,7 @@ pub async fn probe(
     server: &ServerConfig,
     // So that testing a server you are signed in to tests the thing that
     // actually runs, rather than the unauthenticated half of it.
-    vault: Option<Arc<dyn oauth::TokenVault>>,
+    vault: Option<Arc<dyn SecretVault>>,
 ) -> Result<Vec<String>, String> {
     if server.disabled() {
         // Worth testing anyway — this is how you check an entry before switching
@@ -509,6 +545,9 @@ struct McpTool {
     description: String,
     schema: serde_json::Value,
     peer: Peer<RoleClient>,
+    /// The manager's status map, so a call that discovers the server is gone
+    /// can correct what the panel is claiming. See [`Self::note_it_is_gone`].
+    status: Arc<RwLock<BTreeMap<String, ServerStatus>>>,
 }
 
 #[async_trait]
@@ -554,22 +593,55 @@ impl Tool for McpTool {
         let mut params = CallToolRequestParams::default();
         params.name = self.remote_name.clone().into();
         params.arguments = arguments;
-        let call = self.peer.call_tool(params);
 
-        let result = tokio::select! {
-            biased;
-            _ = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
-            result = call => result,
+        // Sent the long way round rather than through `peer.call_tool`, which
+        // takes the default options and so has no deadline at all. Everything
+        // below is what the default leaves out.
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        let options = PeerRequestOptions::with_timeout(CALL_TIMEOUT).reset_timeout_on_progress();
+        let handle = match self.peer.send_request_with_option(request, options).await {
+            Ok(handle) => handle,
+            Err(e) => return Err(self.explain(e).await),
         };
 
-        let result = result.map_err(|e| {
-            ToolError::Failed(format!(
-                "{} on server '{}': {e}",
-                self.remote_name, self.server
-            ))
-        })?;
+        // Kept before the handle is consumed by the await, because cancelling
+        // needs it and `await_response` takes the handle by value.
+        let id = handle.id.clone();
+        let waiting = handle.await_response();
+        tokio::pin!(waiting);
+        let answered = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => None,
+            answer = &mut waiting => Some(answer),
+        };
 
-        let blocks = render(&result);
+        let Some(answer) = answered else {
+            // Told to stop rather than merely dropped. Dropping the future ends
+            // this side's interest in the answer and nothing else: the server
+            // goes on computing one nobody will read, which for a child process
+            // is a core spinning behind a window that looks idle. The timeout
+            // path above sends the same notification, so this is the one case
+            // that would otherwise leak.
+            let stop = CancelledNotification::new(CancelledNotificationParam::new(
+                Some(id),
+                Some("the turn was stopped".into()),
+            ));
+            let _ = self.peer.send_notification(stop.into()).await;
+            return Err(ToolError::Canceled);
+        };
+
+        let result = match answer {
+            Ok(ServerResult::CallToolResult(result)) => result,
+            Ok(_) => {
+                return Err(ToolError::Failed(format!(
+                    "the '{}' server answered {} with something that was not a tool result",
+                    self.server, self.remote_name
+                )))
+            }
+            Err(e) => return Err(self.explain(e).await),
+        };
+
+        let blocks = fit(&self.name, render(&result), ctx);
         // MCP reports tool-level failure in-band; surface it as an error result
         // so the model can react rather than treating it as success. An error
         // is flattened to text on the way out: what a failed call has to say is
@@ -579,6 +651,197 @@ impl Tool for McpTool {
         }
         Ok(blocks)
     }
+}
+
+impl McpTool {
+    /// Turns a failed call into something worth reading, and — where the
+    /// failure means the server is gone — stops the panel claiming otherwise.
+    async fn explain(&self, error: ServiceError) -> ToolError {
+        match &error {
+            // The transport is the child process's pipe, or the HTTP
+            // connection. Either being gone is not a call that failed, it is a
+            // server that is no longer there, and every later call will fail
+            // the same way until something restarts it.
+            ServiceError::TransportClosed | ServiceError::TransportSend(_) => {
+                self.note_it_is_gone(&error).await;
+                ToolError::Failed(format!(
+                    "the '{}' server is no longer running, so {} could not be called. \
+                     Press Reconnect in the MCP panel to start it again.",
+                    self.server, self.remote_name
+                ))
+            }
+            // Deliberately *not* marked gone. A server that ignored one request
+            // for two minutes may well answer the next; saying it is dead on
+            // that evidence would be a panel that lies in the other direction,
+            // and the recovery — press Reconnect — is one the user can reach
+            // for anyway.
+            ServiceError::Timeout { timeout } => ToolError::Failed(format!(
+                "{} on the '{}' server said nothing for {} seconds and was given up on. \
+                 A server that reports progress is not cut off while it works, so this \
+                 one has either hung or does not report any.",
+                self.remote_name,
+                self.server,
+                timeout.as_secs()
+            )),
+            other => ToolError::Failed(format!(
+                "{} on server '{}': {other}",
+                self.remote_name, self.server
+            )),
+        }
+    }
+
+    /// Corrects the status this server is listed under.
+    ///
+    /// The status map is written once, at connect, and nothing else revises it
+    /// — so a server that died half an hour ago went on being listed as
+    /// connected, with a tool count, while every call against it failed. The
+    /// panel was the one place a person would go to find out why, and it was
+    /// the one place saying nothing was wrong.
+    ///
+    /// This does not remove the tools from the registry: they were handed out
+    /// as `Arc<dyn Tool>` and nothing here can reach back for them. So the
+    /// model can still call a tool whose server is gone, and gets the sentence
+    /// above for its trouble. Making the two agree means a reconnect, which is
+    /// a button rather than something to do behind somebody's back.
+    async fn note_it_is_gone(&self, why: &ServiceError) {
+        if note_gone(&mut *self.status.write().await, &self.server, why) {
+            warn!(server = %self.server, error = %why, "mcp server stopped answering");
+        }
+    }
+}
+
+/// Writes the death into the status map, and says whether it was news.
+///
+/// Only over a server currently listed as connected. A server that never
+/// started already carries the reason it did not, and that reason — the program
+/// is not on the PATH, the command is misspelled — is far more useful than
+/// "the transport closed", which is only what happens next.
+fn note_gone(
+    status: &mut BTreeMap<String, ServerStatus>,
+    server: &str,
+    why: &impl std::fmt::Display,
+) -> bool {
+    let Some(entry) = status.get_mut(server) else {
+        return false;
+    };
+    if !entry.connected {
+        return false;
+    }
+    entry.connected = false;
+    entry.tool_count = 0;
+    entry.tools.clear();
+    entry.error = Some(format!(
+        "stopped answering part way through the session ({why}). Press Reconnect."
+    ));
+    true
+}
+
+/// Bounds what one result may take of the window.
+///
+/// Text only. An image is already bounded by the provider's own size check on
+/// the way in, and cutting one in half produces a broken image rather than a
+/// shorter one.
+///
+/// The full text is written out first where there is anywhere to write it, so
+/// the middle of a long answer is a `read_file` away rather than gone — the same
+/// bargain the shell tool strikes, and the reason a cut here is worth making at
+/// all. `label` names the spill file, and is the namespaced tool name.
+///
+/// Free rather than a method so a test can reach it: the tool it belongs to
+/// carries a live connection to a server, which is not a thing to conjure to
+/// check that a long string comes back shorter.
+fn fit(
+    label: &str,
+    blocks: taurus_provider::ToolOutput,
+    ctx: &ToolContext,
+) -> taurus_provider::ToolOutput {
+    use taurus_provider::ToolResultBlock;
+
+    let cap = ctx
+        .budget
+        .bytes(OUTPUT_SHARE, MIN_OUTPUT_BYTES, MAX_OUTPUT_BYTES);
+    let sizes: Vec<usize> = blocks
+        .as_slice()
+        .iter()
+        .filter_map(|block| match block {
+            ToolResultBlock::Text { text } => Some(text.len()),
+            _ => None,
+        })
+        .collect();
+    if sizes.iter().sum::<usize>() <= cap {
+        return blocks;
+    }
+
+    let whole = blocks.to_text();
+    let spilled = taurus_tools::overflow::spill(&whole, label, ctx);
+    let gap = |omitted: usize| match &spilled {
+        // `read_file` windows around an offset rather than reading a
+        // prefix, so the middle of a large answer is one call away.
+        Some(path) => format!(
+            "{omitted} bytes omitted; the whole answer was written to {} — read_file it",
+            path.display()
+        ),
+        None => format!("{omitted} bytes omitted"),
+    };
+
+    let mut allowances = shares(&sizes, cap).into_iter();
+    let kept: Vec<ToolResultBlock> = blocks
+        .as_slice()
+        .iter()
+        .map(|block| match block {
+            ToolResultBlock::Text { text } => {
+                let allowance = allowances.next().unwrap_or(0);
+                ToolResultBlock::text(taurus_tools::overflow::cut(text, allowance, gap))
+            }
+            other => other.clone(),
+        })
+        .collect();
+
+    // `blocks` only fails on an empty vector, and this rewrites one block for
+    // one block.
+    taurus_provider::ToolOutput::blocks(kept).unwrap_or(blocks)
+}
+
+/// Divides `cap` between blocks so that only the big ones are cut.
+///
+/// An even split would take the knife to a two-line block sitting beside a
+/// megabyte one, which shortens nothing worth shortening and puts a "bytes
+/// omitted" note in the middle of a sentence. So the allowance is filled the
+/// other way about: anything already smaller than an equal share keeps all of
+/// itself and hands back what it did not need, and the round repeats until only
+/// blocks larger than their share are left. Those split what remains.
+///
+/// Nearly every MCP result is a single text block, where this returns `[cap]`
+/// and the whole thing collapses to one `cut`.
+fn shares(sizes: &[usize], cap: usize) -> Vec<usize> {
+    let mut allowance = vec![0usize; sizes.len()];
+    let mut settled = vec![false; sizes.len()];
+    let mut left = cap;
+    loop {
+        let open: Vec<usize> = (0..sizes.len()).filter(|i| !settled[*i]).collect();
+        if open.is_empty() {
+            break;
+        }
+        let share = left / open.len();
+        let small: Vec<usize> = open
+            .iter()
+            .copied()
+            .filter(|i| sizes[*i] <= share)
+            .collect();
+        if small.is_empty() {
+            // Everything left is over its share, so they divide what remains.
+            for i in open {
+                allowance[i] = share;
+            }
+            break;
+        }
+        for i in small {
+            allowance[i] = sizes[i];
+            settled[i] = true;
+            left -= sizes[i];
+        }
+    }
+    allowance
 }
 
 /// MCP's content blocks as this harness's own.
@@ -663,6 +926,212 @@ fn describe(rejected: taurus_provider::image::Rejected) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taurus_provider::{ToolOutput, ToolResultBlock};
+
+    /// A context with a real budget and somewhere to spill to.
+    fn ctx_in(dir: &std::path::Path) -> ToolContext {
+        let engine = Arc::new(taurus_tools::PermissionEngine::new(
+            dir,
+            dir.join(".taurus"),
+            Box::new(taurus_tools::AllowAll),
+        ));
+        ToolContext::new(dir, engine, tokio_util::sync::CancellationToken::new())
+            .with_budget(taurus_tools::OutputBudget::for_window(200_000))
+            .with_command_output(dir.join("output"))
+    }
+
+    fn cap_of(ctx: &ToolContext) -> usize {
+        ctx.budget
+            .bytes(OUTPUT_SHARE, MIN_OUTPUT_BYTES, MAX_OUTPUT_BYTES)
+    }
+
+    #[test]
+    fn one_block_is_given_the_whole_allowance() {
+        assert_eq!(shares(&[10_000], 500), vec![500]);
+    }
+
+    #[test]
+    fn a_short_block_beside_a_long_one_is_not_cut() {
+        // The reason this is not an even split: halving a 20-byte block to make
+        // room in a budget a megabyte block is blowing shortens nothing and
+        // puts "bytes omitted" in the middle of a sentence.
+        let out = shares(&[20, 1_000_000], 1000);
+        assert_eq!(out[0], 20, "the short one keeps all of itself");
+        assert_eq!(out[1], 980, "and hands the rest to the long one");
+    }
+
+    #[test]
+    fn blocks_all_over_their_share_divide_what_is_there() {
+        assert_eq!(shares(&[10_000, 10_000], 1000), vec![500, 500]);
+    }
+
+    #[test]
+    fn everything_fitting_leaves_the_allowance_unspent() {
+        // Nothing is cut, so nothing needs an allowance larger than itself.
+        assert_eq!(shares(&[10, 20, 30], 1000), vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn a_result_that_fits_is_passed_through_untouched() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ctx = ctx_in(dir.path());
+        let out = fit("mcp__x__y", ToolOutput::text("small enough"), &ctx);
+        assert_eq!(out.as_text(), Some("small enough"));
+    }
+
+    #[test]
+    fn a_result_far_too_large_comes_back_bounded() {
+        // The finding this closes: a server returning a large page went into
+        // the context whole, while every built-in tool beside it was capped.
+        let dir = tempfile::TempDir::new().unwrap();
+        let ctx = ctx_in(dir.path());
+        let cap = cap_of(&ctx);
+        let huge = "x".repeat(cap * 4);
+
+        let out = fit("mcp__fetch__get", ToolOutput::text(huge), &ctx);
+        let text = out.to_text();
+        assert!(text.len() < cap * 2, "{} bytes came back", text.len());
+        assert!(text.contains("bytes omitted"), "it says how much went");
+    }
+
+    #[test]
+    fn the_whole_answer_is_written_out_and_the_gap_names_it() {
+        // A cut with no file behind it turns "the middle is elsewhere" into
+        // "the middle is gone".
+        let dir = tempfile::TempDir::new().unwrap();
+        let ctx = ctx_in(dir.path());
+        let cap = cap_of(&ctx);
+        let huge = format!("HEAD{}TAIL", "x".repeat(cap * 4));
+
+        let out = fit("mcp__fetch__get", ToolOutput::text(huge.clone()), &ctx);
+        let text = out.to_text();
+        assert!(text.starts_with("HEAD"), "the head survives");
+        assert!(text.ends_with("TAIL"), "and so does the tail");
+
+        let path = text
+            .split_once("written to ")
+            .and_then(|(_, rest)| rest.split_once(" —"))
+            .map(|(path, _)| std::path::PathBuf::from(path))
+            .expect("the gap names a file");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), huge);
+    }
+
+    #[test]
+    fn a_picture_beside_too_much_text_is_not_cut_in_half() {
+        // Half an image is a broken image, not a smaller one.
+        let dir = tempfile::TempDir::new().unwrap();
+        let ctx = ctx_in(dir.path());
+        let cap = cap_of(&ctx);
+        let blocks = ToolOutput::blocks(vec![
+            ToolResultBlock::text("x".repeat(cap * 4)),
+            ToolResultBlock::image("image/png", "AAAA"),
+        ])
+        .unwrap();
+
+        let out = fit("mcp__shot__take", blocks, &ctx);
+        assert!(
+            matches!(
+                out.as_slice(),
+                [ToolResultBlock::Text { .. }, ToolResultBlock::Image { data, .. }] if data == "AAAA"
+            ),
+            "the image crosses whole and stays where it was: {:?}",
+            out.as_slice()
+        );
+    }
+
+    #[test]
+    fn with_nowhere_to_spill_the_cut_still_happens() {
+        // The context a CLI run hands over has no command-output directory.
+        // Losing the copy is not a reason to hand the model the whole thing.
+        let dir = tempfile::TempDir::new().unwrap();
+        let engine = Arc::new(taurus_tools::PermissionEngine::new(
+            dir.path(),
+            dir.path().join(".taurus"),
+            Box::new(taurus_tools::AllowAll),
+        ));
+        let ctx = ToolContext::new(
+            dir.path(),
+            engine,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .with_budget(taurus_tools::OutputBudget::for_window(200_000));
+        let cap = cap_of(&ctx);
+
+        let out = fit("mcp__x__y", ToolOutput::text("x".repeat(cap * 4)), &ctx);
+        let text = out.to_text();
+        assert!(text.len() < cap * 2);
+        assert!(text.contains("bytes omitted"));
+        assert!(!text.contains("read_file"), "there is no file to name");
+    }
+
+    fn connected_status(name: &str) -> ServerStatus {
+        ServerStatus {
+            name: name.into(),
+            description: "a server".into(),
+            connected: true,
+            tool_count: 3,
+            error: None,
+            disabled: false,
+            tools: vec!["one".into(), "two".into(), "three".into()],
+        }
+    }
+
+    #[test]
+    fn a_server_that_dies_stops_being_listed_as_connected() {
+        // The finding this closes: the status map was written once, at connect,
+        // so a server that died half an hour ago was still shown green with a
+        // tool count while every call against it failed.
+        let mut status = BTreeMap::new();
+        status.insert("git".to_string(), connected_status("git"));
+
+        assert!(note_gone(&mut status, "git", &"transport closed"));
+        let entry = &status["git"];
+        assert!(!entry.connected);
+        assert_eq!(entry.tool_count, 0);
+        assert!(entry.tools.is_empty(), "and stops listing what it offered");
+        let said = entry.error.as_deref().unwrap();
+        assert!(said.contains("transport closed"), "{said}");
+        assert!(said.contains("Reconnect"), "it says what to do: {said}");
+    }
+
+    #[test]
+    fn a_server_that_never_started_keeps_the_reason_it_did_not() {
+        // "uvx is not on the PATH" is the useful sentence. "the transport
+        // closed" is only what happened next, and would overwrite it.
+        let mut status = BTreeMap::new();
+        status.insert(
+            "git".to_string(),
+            ServerStatus {
+                error: Some("uvx is not on the PATH".into()),
+                connected: false,
+                ..connected_status("git")
+            },
+        );
+
+        assert!(!note_gone(&mut status, "git", &"transport closed"));
+        assert_eq!(
+            status["git"].error.as_deref(),
+            Some("uvx is not on the PATH")
+        );
+    }
+
+    #[test]
+    fn a_death_reported_twice_is_news_once() {
+        // Two tool calls in one turn against the same dead server should not
+        // put the same line in the log twice.
+        let mut status = BTreeMap::new();
+        status.insert("git".to_string(), connected_status("git"));
+        assert!(note_gone(&mut status, "git", &"transport closed"));
+        assert!(!note_gone(&mut status, "git", &"transport closed"));
+    }
+
+    #[test]
+    fn a_call_gets_longer_to_answer_than_a_connection_gets_to_open() {
+        // They measure different things: a handshake is a round trip, a call is
+        // the work. A call deadline at the connect deadline would cut off every
+        // tool that does anything.
+        assert!(CALL_TIMEOUT > CONNECT_TIMEOUT);
+    }
 
     #[test]
     fn tool_names_are_namespaced_by_server() {

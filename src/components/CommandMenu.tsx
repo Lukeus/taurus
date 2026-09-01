@@ -15,16 +15,24 @@ export function matches(
   commands: CommandSummary[],
   query: string,
 ): CommandSummary[] {
+  // Both sides lowered, not just the query. A name is whatever its author
+  // wrote in the frontmatter — nothing lowercases it on the way in, and skills
+  // borrowed from other clients are under no obligation to be kebab-case — so
+  // comparing a lowered query against a raw name made every skill with a
+  // capital letter in it unreachable the moment you typed anything.
   const typed = query.toLowerCase();
+  const lowered = new Map(commands.map((c) => [c, c.name.toLowerCase()]));
+  const nameOf = (c: CommandSummary) => lowered.get(c) ?? c.name.toLowerCase();
   return (
     commands
-      .filter((c) => c.name.includes(typed))
+      .filter((c) => nameOf(c).includes(typed))
       // A prefix match is what the user is typing toward; an interior match is
       // a happy accident and belongs below it. `speckit-plan` should win `plan`
       // only once nothing starts with it.
       .sort((a, b) => {
         const byPrefix =
-          Number(b.name.startsWith(typed)) - Number(a.name.startsWith(typed));
+          Number(nameOf(b).startsWith(typed)) -
+          Number(nameOf(a).startsWith(typed));
         return byPrefix !== 0 ? byPrefix : a.name.localeCompare(b.name);
       })
   );
@@ -36,12 +44,18 @@ export function matches(
  * Only ever the first word, and only while it is still the whole message: once
  * there is a space the name is settled and the rest is arguments, so the menu
  * gets out of the way rather than hovering over someone writing a sentence.
+ *
+ * The character set is the one a name may actually be made of — letters in
+ * either case, digits, `-` and `_`. It used to be lowercase only, which meant a
+ * capital or an underscore did not narrow the menu, it *closed* it: the query
+ * became null, and a list that had been showing every command a keystroke ago
+ * vanished with no way to tell that from having matched nothing.
  */
 export function commandQuery(text: string): string | null {
   if (!text.startsWith("/")) return null;
   const name = text.slice(1);
   if (/\s/.test(name)) return null;
-  return /^[a-z0-9-]*$/.test(name) ? name : null;
+  return /^[\w-]*$/.test(name) ? name : null;
 }
 
 export function CommandMenu({

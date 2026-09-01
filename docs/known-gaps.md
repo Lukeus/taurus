@@ -395,6 +395,39 @@ and they are the minority.
   the review happens once, in a commit, against the source — which is a thing a
   person can do properly and a model emitting a package name at runtime cannot.
   See [MCP servers](configuration.md#mcp-servers).
+- **Taurus speaks the tools half of MCP and none of the rest.** A server's
+  tools are found, namespaced and offered to the model. Its *resources*,
+  *prompts* and *roots* are not asked for, `notifications/tools/list_changed` is
+  not listened to — a server that gains a tool mid-session is not noticed until
+  the next Reconnect — and the two requests a server can make of the client,
+  *sampling* and *elicitation*, are not answered. Tools are the part almost
+  every server leads with, which is why they came first and not why the rest is
+  missing. Prompts and roots are the two worth having next: prompts because a
+  server's own prompts belong in a shell's command line, roots because a
+  filesystem server told once where it may look is better than one told again on
+  every call.
+- **A dead server's tools stay callable until you reconnect.** The panel is
+  corrected the moment a call finds the server gone, but the tools themselves
+  were handed to the tool registry and nothing revokes them from there. So the
+  model can still call one, and gets a sentence saying the server is not running
+  and Reconnect is the fix. Restarting it automatically is not done: a server
+  that dies on startup would be restarted in a loop, and deciding when a crash
+  is worth retrying is a policy nobody has written here.
+- **A server that hangs is not marked dead, only the call is.** The line is
+  drawn at the transport: a closed pipe or a dropped connection means the server
+  is gone and the panel says so. A server that simply ignores a request for two
+  minutes may well answer the next one, so its card is left alone and only the
+  call fails. That is a judgement, and it can be wrong in the direction of a
+  panel that looks healthier than the server is.
+- **A token you paste is stored in `mcp.json` in plain text.** OAuth refresh
+  tokens go to the OS keychain; a personal access token typed into the header or
+  environment field does not — it is written into the file, which is the file
+  the panel exists to save you from editing. Entries that want one default to the
+  global file rather than the one inside the repository, and choosing the
+  repository asks you to acknowledge that a commit can publish it. What is not
+  there is a keychain reference: `${VARIABLE}` is expanded in any field, so the
+  way to keep a token out of the file today is to export it and name the
+  variable, and nothing in the panel tells you that.
 - **A sign-in needs the authorization server to register Taurus on the spot.**
   OAuth works by dynamic client registration (RFC 7591): Taurus asks the
   authorization server for a client id at the moment you press Sign in. The

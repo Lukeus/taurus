@@ -384,6 +384,28 @@ Other things the panel will tell you rather than leave you to find:
 - A server switched off is listed as `off` rather than disappearing.
 - A server that never answers is given up on after 60 seconds, so one hung
   program cannot stall the reload the others are waiting for.
+- A server that **stops** answering part way through a session is moved back to
+  red with the reason, rather than going on being listed as connected while
+  every call against it fails. Press **Reconnect** to start it again.
+
+### What a call may take
+
+Two limits sit around every tool call an MCP server serves, because a server is
+a program nobody here reviewed running in the same window as everything else.
+
+**Two minutes of silence.** A call that goes two minutes without a word is given
+up on, and the model is told the server either hung or reports no progress. The
+clock measures *silence*, not work: a server that sends progress notifications
+restarts it every time, so a job that legitimately takes an hour and says so is
+never cut off. There is no ceiling above that — how long your build takes is not
+something this can usefully guess — and **Stop** ends a call at any point,
+telling the server to stop rather than merely walking away from the answer.
+
+**A share of the context.** A result too large for the window is cut to its head
+and its tail, with a line saying how many bytes went and where they went: the
+whole answer is written out to the same place long command output goes, so the
+middle is a `read_file` away rather than lost. Pictures are never cut — half an
+image is a broken image — and the share is the same one the shell tool takes.
 
 ### What the agent may and may not do
 

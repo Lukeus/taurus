@@ -8,6 +8,7 @@ pub mod diff;
 pub mod env;
 pub mod jobs;
 pub mod login_path;
+pub mod overflow;
 pub mod path_guard;
 pub mod permission;
 pub mod plan;
@@ -16,6 +17,7 @@ pub mod schema;
 pub mod spawn;
 pub mod sweep;
 pub mod tool;
+pub mod vault;
 pub mod view;
 
 pub use budget::OutputBudget;
@@ -34,6 +36,7 @@ pub use registry::ToolRegistry;
 pub use spawn::no_console;
 pub use sweep::{Sweep, SweepCache};
 pub use tool::{Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult};
+pub use vault::SecretVault;
 pub use view::{Answer, Asker, Question, Step, StepState, TranscriptView, Unattended};
 
 #[cfg(test)]
