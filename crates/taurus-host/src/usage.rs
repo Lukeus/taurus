@@ -52,6 +52,21 @@ pub struct SchemaCost {
     pub tokens: u32,
 }
 
+/// What advertising one tool costs, estimated.
+///
+/// Here rather than inside [`Fixed::new`] because two screens ask it now: the
+/// context account, which lists every tool heaviest first, and the MCP panel,
+/// which shows what one server's tools add beside the switch that turns them
+/// off. Two copies of this arithmetic would be two answers to the same
+/// question, and the disagreement would land on the one decision the numbers
+/// exist to inform.
+pub fn schema_cost(def: &ToolDef) -> u32 {
+    // Name, description, and schema: what the provider is handed.
+    estimate_tokens(&def.name)
+        + estimate_tokens(&def.description)
+        + estimate_tokens(&def.input_schema.to_string())
+}
+
 /// The whole account, ready to print or to draw.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -130,10 +145,7 @@ impl Fixed {
             .iter()
             .map(|def| SchemaCost {
                 name: def.name.clone(),
-                // Name, description, and schema: what the provider is handed.
-                tokens: estimate_tokens(&def.name)
-                    + estimate_tokens(&def.description)
-                    + estimate_tokens(&def.input_schema.to_string()),
+                tokens: schema_cost(def),
             })
             .collect();
         schemas.sort_by(|a, b| b.tokens.cmp(&a.tokens).then(a.name.cmp(&b.name)));

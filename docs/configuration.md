@@ -349,6 +349,21 @@ there for anything the form cannot express.
 disconnects. It registers nothing and leaves any live connection alone, so an
 edit can be checked before it is saved rather than after.
 
+Each connected server carries what it costs: **~1.2k tokens of every request**,
+and a total for the drawer beside the tool count in the header. That is the
+number the switch next to it is for. A tool is paid for on every iteration of
+every turn whether or not the model calls it, so four servers left on out of
+habit are four servers the conversation starts owing — which on an 8k window is
+the difference between a harness that works and one with no room left to think
+in. It is the same figure the Context panel reports as the fixed half, narrowed
+to one server, and it comes from the same arithmetic so the two cannot disagree.
+
+A server that never connected shows no figure rather than a zero. Its tools are
+not registered, so there is nothing to measure; what you can read here is what
+enabling one cost you, not what enabling one would cost. A server that connected
+and offers nothing shows a real `~0`, which is worth saying out loud — it is a
+child process running for no benefit.
+
 A stored value that is not a `${VAR}` reference is treated as a secret: the
 panel is told the key is set and never given the value. Leaving that field alone
 keeps what is on disk; typing over it replaces it.

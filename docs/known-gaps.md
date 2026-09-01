@@ -122,6 +122,24 @@ and they are the minority.
   the thing you asked it to run. Commands still go through the permission
   prompt, which is where that decision is actually made. An untrusted workspace
   is not a sandbox and is not described as one.
+
+  The banner now reads those config files and names what is in them worth
+  looking at, which narrows the gap and does not close it: a finding is a thing
+  to read, and an *absence* of findings is not a clean bill of health. The rules
+  are deliberately quiet — a zero-width joiner is how a family emoji is built
+  and a `data:` image is a long run of base64, so neither fires — and quiet
+  rules miss things by construction. Anything that arrives as a technique
+  nobody wrote a rule for arrives unflagged. See
+  [Trusting a workspace](safety.md#trusting-a-workspace).
+- **The config scan reads the first 64 KB of at most 64 files.** It runs inside
+  the same `pending` the desktop app calls on every refresh and the CLI calls
+  once per command, so it is capped in three directions — files opened, bytes
+  per file, findings reported — and a payload past any of those is not seen.
+  Raising the caps is three numbers; the reason they are where they are is that
+  the alternative is reading an unbounded tree on every `taurus run`, on the
+  path whose whole job is to print one line and get out of the way. The scan
+  also never runs at all on a workspace with no config of its own, which is
+  most of them.
 - **Nothing re-reads trust between turns on its own.** The desktop app asks the
   backend for it when it refreshes, and the CLI once per command. A workspace
   that gains its first `.taurus/mcp.json` while the window is open raises its
@@ -129,6 +147,38 @@ and they are the minority.
   turn-boundary rule the rest of the config follows, and for the same reason
   there is no watcher here. See
   [Trusting a workspace](configuration.md#trusting-a-workspace).
+- **A review reads the code and not the intent.** **Review this turn** hands a
+  diff to an agent with none of the conversation in it, which is the only
+  arrangement in which the exercise means anything — and it is also the whole of
+  the limitation. The reviewer cannot know what was asked for, so it will call a
+  deliberate choice a defect: a function left unused on purpose, an error
+  swallowed because the caller handles it, a simplification the user asked for
+  by name. The brief tells it to say "if this was intended, ignore me" rather
+  than to assert, which softens the wording and not the underlying fact.
+  Covering it means giving the reviewer the request back, which gives it the
+  context that wrote the code — the thing there was no point running. See
+  [Reading it back](safety.md#reading-it-back-to-somebody-who-did-not-write-it).
+- **A review reads; it does not run.** Its tool list is `explorer`'s, so no
+  build, no tests, and no reproducing anything. It is told not to claim a test
+  passes, which is a prompt and therefore not a guarantee. What makes it unable
+  to *change* anything is structural rather than instructed: the scope holds no
+  writing tool and the context carries no checkpoint recorder, so there is
+  nothing to record a write into.
+- **A review sees at most 24 KB of diff, and at most 160 lines of any one
+  file.** The per-file cap is `FileDiff`'s own and predates this; the total is
+  the reviewer's, and it keeps whole files rather than cutting one mid-hunk —
+  a diff that stops in the middle reads as a change that ends there. Everything
+  left out is named in the report rather than dropped, and a single file over
+  the cap is still reviewed whole, because refusing the largest turn is
+  refusing the one most worth reviewing. A turn past both caps gets a partial
+  review that says which parts it is.
+- **A review costs a model round trip, on your own provider.** It is a button
+  that takes a minute on a local model, and nothing about it is free or
+  cached — asking twice asks twice. It is deliberately not a roster line the
+  model can reach: a `reviewer` sub-agent would be a line in every request's
+  spawn-tool description, charging every conversation for a button pressed once
+  an hour. The trade is that the model cannot decide to review something on its
+  own; only you can.
 - **A rewind does not cover ignored directories.** A file an ignore rule
   excludes by name is covered; everything under a directory an ignore rule
   excludes is not, so a command that rewrites something in `target/` or
@@ -395,6 +445,17 @@ and they are the minority.
   the review happens once, in a commit, against the source — which is a thing a
   person can do properly and a model emitting a package name at runtime cannot.
   See [MCP servers](configuration.md#mcp-servers).
+- **A disabled server's cost is unknown, not zero.** The MCP panel prices each
+  connected server's tool schemas — what it adds to every request, called or
+  not — and shows nothing at all for one that never connected. That is the
+  honest answer rather than a gap in the rendering: a disabled server registers
+  no tools, so there is nothing on the live registry to measure. What the panel
+  answers is "what did enabling this cost me", and the question someone
+  actually wants answered before they flip a switch is "what would enabling it
+  cost", which cannot be answered without starting the program and asking it —
+  the thing the switch is off to avoid. The figures are also estimates at four
+  characters a token, like every other token count outside the **Billed** row.
+  See [The MCP panel](configuration.md#the-mcp-panel).
 - **Taurus speaks the tools half of MCP and none of the rest.** A server's
   tools are found, namespaced and offered to the model. Its *resources*,
   *prompts* and *roots* are not asked for, `notifications/tools/list_changed` is

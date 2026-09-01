@@ -6,11 +6,13 @@ import type {
   Commit,
   RepoStatus,
   Restored,
+  ReviewReport,
   Rewind,
   TurnChange,
 } from "../lib/api";
 import { plural, when } from "../lib/format";
 import { DiffView } from "./DiffView";
+import { Markdown } from "./Markdown";
 
 /**
  * Files this conversation changed, the way back, and the way forward.
@@ -409,6 +411,9 @@ export function TurnDetail({
   const [committing, setCommitting] = useState(false);
   const [committed, setCommitted] = useState<Commit | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const [review, setReview] = useState<ReviewReport | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -419,6 +424,25 @@ export function TurnDetail({
         setChanges([]);
       });
   }, [sessionId, turn.turn]);
+
+  /**
+   * Hands the diff to an agent that has never seen this conversation.
+   *
+   * Its own error state rather than the shared one: a review that could not
+   * reach the model must not read as a commit that failed, and the two can be
+   * in flight at once.
+   */
+  const runReview = async () => {
+    setReviewError(null);
+    setReviewing(true);
+    try {
+      setReview(await api.reviewTurn(sessionId, turn.turn));
+    } catch (e) {
+      setReviewError(String(e));
+    } finally {
+      setReviewing(false);
+    }
+  };
 
   const commit = async () => {
     setError(null);
@@ -455,6 +479,43 @@ export function TurnDetail({
           This turn's pre-images are recorded, but none of them could be read
           back as text.
         </p>
+      )}
+
+      {/* Before the commit box on purpose: reading a turn over is what you do
+          before deciding to keep it, and a button under the commit field would
+          be offering it after the decision. */}
+      {changes !== null && changes.length > 0 && (
+        <div className="turn-review">
+          <div className="actions">
+            <button
+              className="quiet"
+              disabled={reviewing}
+              data-tip="Hands this diff to an agent with none of this conversation's context. Costs a model round trip."
+              onClick={runReview}
+            >
+              {reviewing ? "Reading it over…" : "Review this turn"}
+            </button>
+          </div>
+          {reviewError && <p className="settings-problem">{reviewError}</p>}
+          {review && (
+            <section className="section">
+              {/* Not streaming: a review arrives whole or not at all. */}
+              <Markdown text={review.text} streaming={false} />
+              <p className="drawer-foot">
+                {plural(review.files, "file")} read by <b>{review.model}</b>,
+                without the conversation that produced them — so it cannot know
+                what was asked for, and may call a deliberate choice a defect.
+              </p>
+              {/* A review that covered four of six files and did not say so
+                  reads as a clean bill of health for all six. */}
+              {review.omitted.map((path) => (
+                <p key={path} className="card-files">
+                  <span className="tag warn">not reviewed</span> {path}
+                </p>
+              ))}
+            </section>
+          )}
+        </div>
       )}
 
       {error && <p className="settings-problem">{error}</p>}

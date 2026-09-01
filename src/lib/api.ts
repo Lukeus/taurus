@@ -120,6 +120,8 @@ import type { TraceReport } from "../bindings/TraceReport";
 import type { TraceStep } from "../bindings/TraceStep";
 import type { TurnTrace } from "../bindings/TurnTrace";
 import type { TranscriptView } from "../bindings/TranscriptView";
+import type { Finding } from "../bindings/Finding";
+import type { ReviewReport } from "../bindings/ReviewReport";
 import type { PendingConfig } from "../bindings/PendingConfig";
 import type { TrustStatus } from "../bindings/TrustStatus";
 import type { TurnChange } from "../bindings/TurnChange";
@@ -236,7 +238,9 @@ export type {
   Switch,
   TerminalEvent,
   Theme,
+  Finding,
   PendingConfig,
+  ReviewReport,
   ToolOutput,
   ToolResultBlock,
   TranscriptView,
@@ -918,6 +922,18 @@ export const rewindTo = (sessionId: string, turn: number, dryRun: boolean) =>
  */
 export const turnChanges = (sessionId: string, turn: number) =>
   invoke<TurnChange[]>("turn_changes", { sessionId, turn });
+
+/**
+ * Reads one turn back to an agent that did not write it.
+ *
+ * A model round trip, on this conversation's own provider — minutes on a local
+ * model — so the button that calls it says so before it is pressed. The answer
+ * comes back here and goes nowhere near the transcript: a review in the
+ * conversation is a review in the context window of every request after it,
+ * which is the cost the whole design exists to avoid. See `taurus_host::review`.
+ */
+export const reviewTurn = (sessionId: string, turn: number) =>
+  invoke<ReviewReport>("review_turn", { sessionId, turn });
 
 /**
  * What the whole conversation changed, file by file, as one diff each.

@@ -3104,6 +3104,27 @@ body.resizing-y * {
      part of the banner whose length the project decides. */
   overflow-wrap: anywhere;
 }
+.trust-findings {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--warn) 22%, transparent);
+}
+.trust-findings code {
+  font-family: var(--mono);
+  font-size: 12px;
+  /* Same rule the command lines follow: a path the project chose must not push
+     the buttons off the edge. */
+  overflow-wrap: anywhere;
+}
+.trust-detail {
+  font-size: 12px;
+  color: var(--text-dim);
+  /* Indented under its path rather than beside it. The detail is a sentence and
+     the path is a label, and a line that wraps back under the bullet reads as a
+     second finding. */
+  padding-left: 2px;
+}
+
 .trust-note {
   margin: 2px 0 0;
   font-size: 12px;
@@ -4018,6 +4039,20 @@ body.resizing-y * {
  * Keeping a turn, rather than undoing it. Sits under the diffs it describes,
  * so the message is written with the change on screen.
  */
+.turn-review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0 4px;
+  border-top: 1px dashed var(--rule);
+}
+/* The reviewer's own prose, indented off the diff above it so a paragraph
+   about the code is not mistaken for part of it. */
+.turn-review .section {
+  border-left: 2px solid var(--rule);
+  padding-left: 10px;
+}
+
 .commit-turn {
   display: flex;
   flex-direction: column;

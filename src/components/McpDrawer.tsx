@@ -8,7 +8,7 @@ import type {
   McpServerView,
   Scope,
 } from "../lib/api";
-import { plural } from "../lib/format";
+import { plural, short } from "../lib/format";
 import { stateOf } from "../lib/mcp";
 import { McpCatalog } from "./McpCatalog";
 import { McpServerEditor } from "./McpServerEditor";
@@ -118,6 +118,14 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
     (sum, s) => sum + (s.status?.connected ? s.status.tool_count : 0),
     0,
   );
+  // What the servers above cost before anyone types anything. Summed over the
+  // connected ones only, which is the same set `tools` counts — a disabled
+  // server reports no figure at all rather than a zero, so there is nothing
+  // here to add for one. See `McpServerView::schema_tokens`.
+  const schemaTokens = (servers ?? []).reduce(
+    (sum, s) => sum + (s.schema_tokens ?? 0),
+    0,
+  );
 
   return (
     <Modal onClose={onClose}>
@@ -173,6 +181,16 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
             {connected === servers.length
               ? `All ${plural(servers.length, "server")} connected · ${plural(tools, "tool")}`
               : `${connected} of ${servers.length} connected · ${plural(tools, "tool")}`}
+            {/* The number the switches above are for. A tool is paid for on
+                every request whether or not it is called, so this is what the
+                conversation starts owing — the same figure the Context panel
+                calls the fixed half, restricted to these servers. */}
+            {schemaTokens > 0 && (
+              <>
+                {" · "}
+                <b>~{short(schemaTokens)} tokens</b> of every request
+              </>
+            )}
           </p>
         )}
 
@@ -383,6 +401,20 @@ function ServerCard({
         )}
         {state.tone === "unknown" && (
           <span className="card-files">Not connected yet — press Reconnect.</span>
+        )}
+
+        {/* Outside the tool list on purpose. A connected server that exposes
+            nothing costs nothing, and that zero is the most useful thing this
+            panel can say about it — a child process running for no benefit.
+            Absent entirely for a server that never connected, where there is
+            no figure to have. */}
+        {server.schema_tokens !== undefined && (
+          <span
+            className="card-files"
+            data-tip="Added to every request, whether or not it is called"
+          >
+            ~{short(server.schema_tokens)} tokens of every request
+          </span>
         )}
 
         {server.status?.connected && server.status.tools.length > 0 && (

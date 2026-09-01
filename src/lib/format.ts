@@ -60,3 +60,25 @@ export function plural(count: number, noun: string, many?: string): string {
   if (count === 1) return `${count} ${noun}`;
   return `${count} ${many ?? `${noun}s`}`;
 }
+
+/**
+ * `128000` → `128k`.
+ *
+ * Every number this is used on is read rather than computed with, and the
+ * difference that matters is between 40k and 400k. Below a thousand the exact
+ * figure is shorter than the abbreviation, so it stays.
+ *
+ * Here rather than in `UsagePanel`, which is where it was written, because the
+ * MCP drawer now prints token counts too — and two screens abbreviating the
+ * same figure differently is the sort of disagreement that makes someone go
+ * and check which one is lying.
+ */
+export function short(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000;
+    return `${millions % 1 === 0 ? millions : millions.toFixed(1)}M`;
+  }
+  if (tokens >= 10_000) return `${Math.round(tokens / 1_000)}k`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return String(tokens);
+}

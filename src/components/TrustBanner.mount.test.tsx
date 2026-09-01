@@ -25,6 +25,7 @@ const EMPTY: PendingConfig = {
   providers: false,
   search: false,
   settings: false,
+  findings: [],
 };
 
 const status = (pending: Partial<PendingConfig>, trusted = false): TrustStatus => {
@@ -140,5 +141,62 @@ describe("TrustBanner", () => {
     );
     expect(host.textContent).toContain("1 skill");
     expect(host.textContent).not.toContain("1 skills");
+  });
+});
+
+describe("what is inside the files", () => {
+  it("names a finding, where it is, and what it is", () => {
+    // The whole argument for this section: "1 skill" is not a thing anyone can
+    // judge, and an override that reverses a sentence is not a thing anyone can
+    // see. The banner has to say both.
+    const host = mount(
+      <TrustBanner
+        trust={status({
+          skills: 1,
+          findings: [
+            {
+              path: ".taurus/skills/build/SKILL.md",
+              kind: "hidden_characters",
+              detail: "1 character that renders as nothing, first on line 3",
+            },
+          ],
+        })}
+        onTrust={() => {}}
+        onDismiss={() => {}}
+      />,
+    );
+    expect(host.textContent).toContain("Worth reading first");
+    expect(host.textContent).toContain(".taurus/skills/build/SKILL.md");
+    expect(host.textContent).toContain("invisible characters");
+    expect(host.textContent).toContain("first on line 3");
+  });
+
+  it("says findings are not a verdict", () => {
+    // The sentence that keeps this from being read as a safety rating. A
+    // workspace with nothing found is not a workspace that is safe to run.
+    const host = mount(
+      <TrustBanner
+        trust={status({
+          skills: 1,
+          findings: [
+            { path: "AGENTS.md", kind: "encoded_payload", detail: "a run of base64" },
+          ],
+        })}
+        onTrust={() => {}}
+        onDismiss={() => {}}
+      />,
+    );
+    expect(host.textContent).toContain("Nothing here is a verdict");
+  });
+
+  it("shows no section at all when there is nothing to read", () => {
+    const host = mount(
+      <TrustBanner
+        trust={status({ skills: 1 })}
+        onTrust={() => {}}
+        onDismiss={() => {}}
+      />,
+    );
+    expect(host.textContent).not.toContain("Worth reading first");
   });
 });

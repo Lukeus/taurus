@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
 import type { UsageReport } from "../lib/api";
+import { short } from "../lib/format";
 import { Modal } from "./Modal";
 
 /**
@@ -314,21 +315,4 @@ function Total({
       <p className="micro">{note}</p>
     </div>
   );
-}
-
-/**
- * `128000` → `128k`.
- *
- * Every number on this panel is read rather than computed with, and the
- * difference that matters is between 40k and 400k. Below a thousand the exact
- * figure is shorter than the abbreviation, so it stays.
- */
-function short(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    const millions = tokens / 1_000_000;
-    return `${millions % 1 === 0 ? millions : millions.toFixed(1)}M`;
-  }
-  if (tokens >= 10_000) return `${Math.round(tokens / 1_000)}k`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
-  return String(tokens);
 }

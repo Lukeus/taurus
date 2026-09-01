@@ -114,6 +114,22 @@ pub struct McpServerView {
     /// How the last connect went. `None` before the first reload has run.
     #[ts(optional)]
     pub status: Option<ServerStatus>,
+    /// What this server's tool schemas add to every request, estimated.
+    ///
+    /// The number behind the switch beside it. A server is paid for on every
+    /// iteration of every turn whether or not the model calls it, and on an 8k
+    /// window that is the difference between a harness that works and one that
+    /// runs out of room before the conversation starts — so the cost belongs
+    /// where the decision to keep it is made, rather than only in the context
+    /// account where you go to find out why.
+    ///
+    /// `None` for a server that is not connected — disabled, failed, or not
+    /// yet reloaded. Its tools are not registered, so there is nothing here to
+    /// measure, and a `0` would read as "this one is free" rather than "not
+    /// known". Filled in by the caller for the same reason `signed_in` is: the
+    /// view is built from config, and this needs the live registry.
+    #[ts(optional)]
+    pub schema_tokens: Option<u32>,
 }
 
 impl McpServerView {
@@ -152,6 +168,7 @@ impl McpServerView {
                 signed_in: false,
                 disabled,
                 status,
+                schema_tokens: None,
             },
             ServerConfig::Http {
                 url,
@@ -172,6 +189,7 @@ impl McpServerView {
                 disabled,
                 program: None,
                 status,
+                schema_tokens: None,
             },
             // Merging resolves a toggle against the server it names, so one that
             // survives to here named nothing. Rendered as an empty stdio entry so
@@ -190,6 +208,7 @@ impl McpServerView {
                 disabled: toggle.disabled,
                 program: None,
                 status,
+                schema_tokens: None,
             },
         }
     }

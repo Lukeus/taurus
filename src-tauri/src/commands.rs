@@ -2327,6 +2327,40 @@ pub async fn turn_changes(
         .changes(&session_id, &workspace, turn)
 }
 
+/// Reads one turn back to an agent that did not write it.
+///
+/// Runs on the conversation's own provider and model, resolved the same way a
+/// turn is — a review that quietly ran somewhere else would be a bill nobody
+/// authorised — but it is not a turn: nothing is recorded, nothing reaches the
+/// transcript, and the conversation's cancellation token is left alone so a
+/// review and the turn it is about cannot stop each other.
+///
+/// It takes minutes on a local model, which is why the drawer says so before
+/// the button rather than after it. See [`taurus_host::review`].
+#[tauri::command]
+pub async fn review_turn(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    turn: u32,
+) -> CmdResult<taurus_host::review::ReviewReport> {
+    let entry = state.session(&session_id)?;
+    check_workspace(&entry.workspace, &state.host.workspace().await)?;
+
+    let provider_id = entry.provider_id.lock().await.clone();
+    let provider = state.host.provider(&provider_id).await?;
+    let model = session_model(&entry).await;
+
+    // A token of its own rather than the conversation's. Stopping a turn must
+    // not kill a review of an earlier one, and closing a review must not stop
+    // the turn running beside it.
+    let cancel = CancellationToken::new();
+
+    state
+        .host
+        .review_turn(provider, &model, &session_id, turn, cancel)
+        .await
+}
+
 /// What the whole conversation changed, file by file, as one diff each.
 ///
 /// The question asked before a commit, which the per-turn view cannot answer:
