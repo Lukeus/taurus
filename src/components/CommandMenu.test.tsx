@@ -33,6 +33,17 @@ describe("reading the command being typed", () => {
     expect(commandQuery("nope")).toBeNull();
     expect(commandQuery("")).toBeNull();
   });
+
+  it("keeps reading a name through a capital or an underscore", () => {
+    // The bug this closes: a name is whatever its author wrote, and neither of
+    // these used to be part of a name as far as this was concerned. Typing one
+    // returned null, which the composer reads as "not in a command" — so the
+    // menu did not narrow, it disappeared, and the only way back was to delete
+    // the character.
+    expect(commandQuery("/Release")).toBe("Release");
+    expect(commandQuery("/my_skill")).toBe("my_skill");
+    expect(commandQuery("/A")).toBe("A");
+  });
 });
 
 describe("narrowing to a command", () => {
@@ -63,6 +74,38 @@ describe("narrowing to a command", () => {
 
   it("returns nothing for a name nothing has", () => {
     expect(matches(library, "nonsense")).toEqual([]);
+  });
+
+  it("finds a name whatever case it was written in", () => {
+    // Nothing lowercases a name on the way in — it is the author's frontmatter
+    // verbatim, and a skill borrowed from another client is under no
+    // obligation to be kebab-case. Lowering only the query meant every one of
+    // these was reachable from the bare slash and unreachable the moment a
+    // letter was typed.
+    const mixed = [skill("Release-Notes"), skill("deploy"), agent("Reviewer")];
+    expect(matches(mixed, "release").map((c) => c.name)).toEqual([
+      "Release-Notes",
+    ]);
+    expect(matches(mixed, "rev").map((c) => c.name)).toEqual(["Reviewer"]);
+    expect(matches(mixed, "notes").map((c) => c.name)).toEqual([
+      "Release-Notes",
+    ]);
+  });
+
+  it("ranks a prefix above an interior match whatever the case", () => {
+    const mixed = [skill("speckit-Plan"), skill("Plan-release")];
+    expect(matches(mixed, "plan").map((c) => c.name)).toEqual([
+      "Plan-release",
+      "speckit-Plan",
+    ]);
+  });
+
+  it("matches a typed capital against a lowercase name", () => {
+    // The other direction: the query is lowered too, so shift-typing a name
+    // finds it rather than emptying the list.
+    expect(matches([skill("deploy")], "Dep").map((c) => c.name)).toEqual([
+      "deploy",
+    ]);
   });
 
   it("ranks skills and agents against each other on the name alone", () => {
