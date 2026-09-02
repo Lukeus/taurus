@@ -93,6 +93,18 @@ pub async fn run(host: &Host, args: TrustArgs) -> Result<ExitCode, String> {
     for command in &status.pending.mcp_commands {
         println!("    {command}");
     }
+
+    // What is inside those files, for the half of them nobody can read by
+    // looking. See `taurus_host::inspect`, including what this does not claim.
+    if status.pending.has_findings() {
+        println!();
+        println!("Worth reading first:");
+        for finding in &status.pending.findings {
+            println!("  {} — {}", finding.path, finding.kind.label());
+            println!("    {}", finding.detail);
+        }
+    }
+
     if !status.trusted {
         println!();
         println!("Read them first, then: taurus trust --allow");
@@ -113,7 +125,15 @@ pub fn notice(workspace: &Path) {
     if !status.decision_needed {
         return;
     }
-    let what = status.pending.summary().join(", ");
+    let mut what = status.pending.summary().join(", ");
+    // A count, not the findings themselves. This line is printed by every
+    // command and lands beside somebody's actual work — the place to read what
+    // was found is `taurus trust`, and this is the sentence that sends them
+    // there rather than the one that tries to be it.
+    if status.pending.has_findings() {
+        let n = status.pending.findings.len();
+        what.push_str(&format!("; {n} worth reading first",));
+    }
     eprintln!(
         "  note: not reading config from {} ({what}). Review it, then: taurus trust --allow",
         workspace.display()

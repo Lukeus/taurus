@@ -213,6 +213,23 @@ cargo run -p taurus-mcp --example probe -- path/to/mcp.json
 # Web: one real search, then fetch the first result it returns.
 cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async book"
 
+# Reading a turn back to an agent that did not write it. Needs Ollama; writes
+# only inside a temp directory. It plants a defect that is invisible from the
+# hunk and visible from the doc comment two lines above it, then asserts the
+# two claims a unit test cannot reach: that the reviewer read the file rather
+# than only the diff, and that the workspace is untouched afterwards. A
+# reviewer that "helpfully" restored the guard would have become a turn.
+cargo run -p taurus-host --example review -- qwen3.6:27b
+
+# What is inside the config a workspace wants to be trusted with. Needs no
+# provider; reads a workspace and writes nothing. The answer to "why is this
+# flagged", and the way to check the rules stay quiet on repositories you
+# already trust — a scanner that fires on every folder is one people learn to
+# click past. Run it over your own clones: a clean sweep is the expected
+# result, and anything else is either a real finding or a rule to tighten.
+cargo run -p taurus-host --example inspect -- .
+cargo run -p taurus-host --example inspect -- ~/src/some-fresh-clone
+
 # Themes: what the app makes of the ones on your disk. Needs no provider, reads
 # `~/.taurus/themes` and writes nothing. The answer to "why is my theme not in
 # the picker" — which layer each came from, which of the two palettes it can

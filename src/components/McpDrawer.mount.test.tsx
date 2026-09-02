@@ -219,3 +219,57 @@ describe("a server that wants an account", () => {
     expect(host.textContent).not.toContain("Sign out");
   });
 });
+
+describe("what a server costs", () => {
+  const connected = (patch: Partial<McpServerView> = {}) =>
+    server({
+      status: {
+        name: "filesystem",
+        description: "npx",
+        connected: true,
+        tool_count: 11,
+        error: null,
+        disabled: false,
+        tools: ["read_file", "write_file"],
+      },
+      ...patch,
+    });
+
+  it("prices a connected server beside its tools, and the drawer as a whole", async () => {
+    const { host } = await mount([connected({ schema_tokens: 1240 })]);
+    // The per-server figure, and the total the header carries — the number the
+    // switch beside it is actually for.
+    expect(host.textContent).toContain("~1.2k tokens");
+    expect(host.textContent).toContain("of every request");
+  });
+
+  it("says nothing at all about a server that is not connected", async () => {
+    // Absence and zero are different answers here. A disabled server registers
+    // no tools, so there is nothing to measure — and a `0` in this row would
+    // read as "this one is free" rather than "not known".
+    const { host } = await mount([server({ disabled: true })]);
+    expect(host.textContent).not.toContain("tokens");
+  });
+
+  it("shows a real zero for a connected server that offers nothing", async () => {
+    // Worth saying rather than hiding: a child process running for no benefit
+    // is exactly what someone opening this panel is looking for. This is also
+    // why the figure sits outside the tool list — inside it, the server with
+    // the most to answer for would be the one that said nothing.
+    const { host } = await mount([
+      connected({
+        schema_tokens: 0,
+        status: {
+          name: "filesystem",
+          description: "npx",
+          connected: true,
+          tool_count: 0,
+          error: null,
+          disabled: false,
+          tools: [],
+        },
+      }),
+    ]);
+    expect(host.textContent).toContain("~0 tokens of every request");
+  });
+});

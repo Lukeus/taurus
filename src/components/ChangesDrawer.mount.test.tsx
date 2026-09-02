@@ -380,3 +380,74 @@ describe("a turn that is already kept", () => {
     ui.unmount();
   });
 });
+
+describe("reviewing a turn", () => {
+  const REPORT = {
+    turn: 1,
+    files: 1,
+    model: "qwen3.6:27b",
+    text: "The rename misses the caller in `src/main.rs:12`.",
+    omitted: [],
+  };
+
+  it("offers no review until a turn's diff is on screen", async () => {
+    // There is nothing to hand a reviewer before the diff has been read, and a
+    // button that starts a model round trip must not be reachable from a list.
+    backend({ list_checkpoints: [TURN], repo_status: { repository: false } });
+    const drawer = await open();
+    expect(drawer.text()).not.toContain("Review this turn");
+  });
+
+  it("reports what a review found, and what produced it", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+      review_turn: REPORT,
+    });
+    const drawer = await open();
+    await drawer.click("View changes");
+    await drawer.click("Review this turn");
+
+    expect(drawer.text()).toContain("misses the caller");
+    // Which model, and the sentence that keeps this from being read as a
+    // verdict: it never saw what was asked for.
+    expect(drawer.text()).toContain("qwen3.6:27b");
+    expect(drawer.text()).toContain("cannot know what was asked for");
+  });
+
+  it("names the files the reviewer was not shown", async () => {
+    // A review that covered one of two files and did not say so reads as a
+    // clean bill of health for both.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+      review_turn: { ...REPORT, omitted: ["logo.png"] },
+    });
+    const drawer = await open();
+    await drawer.click("View changes");
+    await drawer.click("Review this turn");
+
+    expect(drawer.text()).toContain("not reviewed");
+    expect(drawer.text()).toContain("logo.png");
+  });
+
+  it("keeps a failed review out of the commit box's error", async () => {
+    // The two can be in flight at once, and a review that could not reach the
+    // model must not read as a commit that failed.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: true, branch: "main" },
+      turn_changes: [DIFF],
+      review_turn: new Error("provider unreachable"),
+    });
+    const drawer = await open();
+    await drawer.click("View changes");
+    await drawer.click("Review this turn");
+
+    expect(drawer.text()).toContain("provider unreachable");
+    // The commit path is untouched and still offered.
+    expect(drawer.text()).toContain("Commit this turn");
+  });
+});

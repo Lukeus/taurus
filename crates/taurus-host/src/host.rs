@@ -52,6 +52,7 @@ use crate::prompt;
 use crate::secrets;
 use crate::sessions::SubagentLogs;
 use crate::theme::{self, CustomTheme};
+use crate::usage;
 
 /// How many sub-agents may run at once. Low on purpose: each is a full model
 /// stream, and local hardware serves them all from the same GPU.
@@ -1176,6 +1177,74 @@ impl Host {
     /// rewinding both used to do the moment somebody switched folders.
     pub fn checkpoints_for(&self, workspace: &Path) -> CheckpointStore {
         CheckpointStore::new(crate::sessions::checkpoints_dir(workspace))
+    }
+
+    /// Reads one turn back to an agent that did not write it.
+    ///
+    /// Assembled here for the reason [`Self::build_agent`] is: this is the
+    /// second place a provider, a registry and a tool context come together,
+    /// and the two of them agreeing about what an agent may do is the whole
+    /// value of there being one host. What differs is everything a review does
+    /// not need — no checkpoint recorder, no background jobs, no per-turn tools
+    /// — and the absences are the design. With no recorder the reviewer cannot
+    /// produce a rewindable write even if its tool list were wrong, which is
+    /// the belt beside [`crate::review`]'s braces.
+    ///
+    /// Config is *not* refreshed first, unlike a turn. A review is about a turn
+    /// that has already run, and re-reading `AGENTS.md` on the way in would
+    /// change nothing about it while costing a walk of the workspace.
+    ///
+    /// The answer comes back to the caller and goes nowhere near the
+    /// transcript. See [`crate::review`] for why that is not an omission.
+    pub async fn review_turn(
+        &self,
+        provider: Arc<dyn Provider>,
+        model: &str,
+        session_id: &str,
+        turn: u32,
+        cancel: CancellationToken,
+    ) -> Result<crate::review::ReviewReport, String> {
+        let workspace = self.workspace().await;
+        let changes = self
+            .checkpoints_for(&workspace)
+            .changes(session_id, &workspace, turn)?;
+
+        // The shared registry, which is the one a delegate gets: it holds no
+        // `ask_user`, no chart tools, and no plan board, because those address
+        // the person watching a conversation and a review is not one.
+        let registry = self.registry.read().await.clone();
+
+        crate::review::review(
+            provider,
+            model,
+            registry,
+            self.review_context(cancel.clone()).await,
+            changes,
+            turn,
+            cancel,
+        )
+        .await
+    }
+
+    /// The context a review's tools run in.
+    ///
+    /// [`Self::tool_context`] with three things left off, each an absence with
+    /// a reason. No checkpoint recorder: nothing here writes, and a recorder
+    /// would open a turn on a conversation that is not having one. No jobs: a
+    /// reviewer that started a background command would leave it running for a
+    /// review that has ended. No command output directory: it has no
+    /// `run_command` to cut the output of.
+    ///
+    /// Hooks are kept. A guard a delegate could route around is not a guard,
+    /// and this is a delegate by every measure but the one that spawned it.
+    async fn review_context(&self, cancel: CancellationToken) -> ToolContext {
+        let workspace = self.workspace.read().await.clone();
+        ToolContext::new(workspace, self.permissions.read().await.clone(), cancel)
+            // The loaded skills' own directories, so a reviewer following a
+            // procedure's "see references/…" can read it. Read-only, and it
+            // widens nothing that may be written.
+            .with_readable_roots(self.catalog.read().await.dirs())
+            .with_hooks(self.hooks.read().await.clone())
     }
 
     /// Where this workspace stands with git.
@@ -2376,6 +2445,13 @@ impl Host {
             .map(|s| (s.name.clone(), s))
             .collect();
 
+        // Read once for the whole list rather than per server: this assembles
+        // every advertised tool's definition, and asking it back for each of a
+        // dozen servers would rebuild that list a dozen times to answer the
+        // same question.
+        let names: Vec<String> = config.servers.keys().cloned().collect();
+        let costs = mcp_schema_tokens(&names, &self.tool_definitions().await);
+
         config
             .servers
             .into_iter()
@@ -2384,8 +2460,16 @@ impl Host {
                 // Read here rather than inside the view, which is built from
                 // config alone and has no way to reach a keychain.
                 let signed_in = self.mcp.signed_in(&name);
+                // Only for a server that actually connected. A disabled one
+                // registers no tools, and reporting the zero that follows from
+                // that would read as "this one is free".
+                let schema_tokens = status
+                    .as_ref()
+                    .filter(|s| s.connected)
+                    .map(|_| costs.get(&name).copied().unwrap_or(0));
                 McpServerView {
                     signed_in,
+                    schema_tokens,
                     ..McpServerView::new(name, server, &defined_in, status)
                 }
             })
@@ -2607,6 +2691,42 @@ impl Host {
     }
 }
 
+/// What each configured server's tools add to every request, estimated.
+///
+/// Attributed by the configured name rather than by splitting a tool name on
+/// `__`, and to the *longest* configured name that matches. Both halves are
+/// load-bearing: a server may be called `code__search`, so splitting would
+/// charge `mcp__code__search__query` to a server called `code` — and matching
+/// every prefix would charge it to `code__search` and `code` both, which is the
+/// same tool counted twice in a total. The longest matching name is the one
+/// that actually registered it.
+///
+/// A server with nothing registered is absent from the map rather than zero.
+/// Which of those the panel shows is the caller's decision, taken from whether
+/// the server connected: a connected server exposing no tools genuinely costs
+/// nothing, and a disabled one has nothing to measure at all.
+fn mcp_schema_tokens(
+    servers: &[String],
+    advertised: &[taurus_provider::ToolDef],
+) -> BTreeMap<String, u32> {
+    let prefixes: Vec<(String, &str)> = servers
+        .iter()
+        .map(|name| (taurus_mcp::namespaced(name, ""), name.as_str()))
+        .collect();
+
+    let mut totals = BTreeMap::new();
+    for def in advertised {
+        let owner = prefixes
+            .iter()
+            .filter(|(prefix, _)| def.name.starts_with(prefix.as_str()))
+            .max_by_key(|(prefix, _)| prefix.len());
+        if let Some((_, name)) = owner {
+            *totals.entry(name.to_string()).or_insert(0) += usage::schema_cost(def);
+        }
+    }
+    totals
+}
+
 /// Removes the tools the user has turned off, returning a message for every
 /// name that matched nothing.
 ///
@@ -2748,6 +2868,73 @@ mod tests {
     use taurus_tools::builtin::fs::{ReadFile, WriteFile};
     use taurus_tools::{DenyAll, Tool, ToolError};
     use tempfile::TempDir;
+
+    fn tool_def(name: &str) -> taurus_provider::ToolDef {
+        taurus_provider::ToolDef {
+            name: name.into(),
+            description: "does a thing".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    #[test]
+    fn a_server_is_charged_for_its_own_tools_and_nothing_else() {
+        let advertised = [
+            tool_def(&taurus_mcp::namespaced("notes", "search")),
+            tool_def(&taurus_mcp::namespaced("notes", "write")),
+            tool_def(&taurus_mcp::namespaced("github", "create_issue")),
+            // A built-in belongs to no server and must not land on one.
+            tool_def("read_file"),
+        ];
+        let names = ["notes".to_string(), "github".to_string()];
+
+        let costs = mcp_schema_tokens(&names, &advertised);
+
+        assert_eq!(
+            costs.get("notes").copied(),
+            Some(usage::schema_cost(&advertised[0]) + usage::schema_cost(&advertised[1]))
+        );
+        assert_eq!(
+            costs.get("github").copied(),
+            Some(usage::schema_cost(&advertised[2]))
+        );
+        // Every advertised tool but the built-in, and no entry invented for it.
+        assert_eq!(costs.len(), 2);
+    }
+
+    #[test]
+    fn a_server_with_no_tools_is_absent_rather_than_zero() {
+        // The panel turns absence into a real zero for a connected server and
+        // into "not known" for a disabled one. It can only do that if this
+        // does not decide for it.
+        let costs = mcp_schema_tokens(&["quiet".to_string()], &[]);
+        assert!(costs.is_empty());
+    }
+
+    #[test]
+    fn a_server_whose_name_contains_the_separator_keeps_its_own_tools() {
+        // `mcp__code__` prefixes `mcp__code__search__query` as surely as
+        // `mcp__code__search__` does, so matching every prefix would charge one
+        // tool to two servers and splitting on `__` would charge it to the
+        // wrong one. The longest configured name that matches is the one that
+        // registered it.
+        let advertised = [
+            tool_def(&taurus_mcp::namespaced("code__search", "query")),
+            tool_def(&taurus_mcp::namespaced("code", "lint")),
+        ];
+        let names = ["code".to_string(), "code__search".to_string()];
+
+        let costs = mcp_schema_tokens(&names, &advertised);
+
+        assert_eq!(
+            costs.get("code__search").copied(),
+            Some(usage::schema_cost(&advertised[0]))
+        );
+        assert_eq!(
+            costs.get("code").copied(),
+            Some(usage::schema_cost(&advertised[1]))
+        );
+    }
 
     struct DenyingPrompts;
 

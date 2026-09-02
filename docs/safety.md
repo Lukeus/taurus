@@ -148,6 +148,42 @@ This project has configuration Taurus is not reading.
 
 A count of servers is not something anyone can judge. `npx -y some-package` is.
 
+The same argument reaches the rest of the layer. A skill is a file with a
+procedure in it and an `AGENTS.md` is a brief the model is handed before it
+reads a line of the code — so those files are read, and anything in them worth
+your eyes is named beside the count:
+
+```
+Worth reading first:
+  AGENTS.md — invisible characters
+    1 character that renders as nothing or reorders the text around it, first
+    on line 3. The model is given this file as text and reads what you cannot
+    see.
+  .taurus/skills/deploy — a skill carrying a script
+    carries setup.sh — read it before trusting this workspace
+  .taurus/providers.json — names an endpoint
+    every message would be sent to gateway.example.com
+```
+
+Seven things are looked for: characters that render as nothing or reorder what
+is around them, HTML comments long enough to hold an instruction, runs of base64
+long enough to be a program, the endpoint `providers.json` names, `search.json`
+lifting the guard that keeps `fetch_url` off private hosts, standing grants wide
+enough to cover a whole tool, and a skill carrying something executable. Most of
+them are things a reviewer could not have seen by reading the file.
+
+**None of it is a verdict.** A workspace with nothing found is not a workspace
+that is safe to run — this reads configuration, not behaviour, and the two rules
+most likely to matter are the ones written so they *stay quiet*: a zero-width
+joiner is how a family emoji is built and is never flagged, and an image
+embedded in Markdown is a long run of base64 and is never flagged either. A
+scanner that fires on ordinary repositories is one people learn to click past,
+which would cost exactly the workspace where it mattered.
+
+`cargo run -p taurus-host --example inspect -- .` runs the same rules over any
+folder without starting the app, which is the way to check that claim on your
+own disk.
+
 The desktop app puts this in a banner above the composer rather than a modal on
 open — nothing from the folder is loaded, so nothing is waiting on the answer,
 and a modal to clear before starting work is how a security prompt turns into a
@@ -617,6 +653,46 @@ A file whose pre-image could not be held — not text, or too large — is named
 with its reason rather than left out, the same files a rewind reports as
 `skipped`. A turn that looks smaller than it was would be the worst version of
 this view.
+
+### Reading it back to somebody who did not write it
+
+Beside the diff, above the offer to keep it, is **Review this turn** — because
+reading a change over is what you do *before* deciding to keep it.
+
+It hands that diff to an agent with none of this conversation in it. Not the
+request, not the plan, not what you said when you rejected the first attempt.
+That is the whole of the idea rather than an economy: an agent asked to check
+its own turn is asked to find a mistake using the reasoning that made it, and it
+will report that the code is fine. The reviewer has never seen the code before,
+reads the surrounding file to judge the hunk, and answers.
+
+It can only read. Its tools are `explorer`'s — the same scope, taken from the
+same definition — and its context carries no checkpoint recorder, so a write is
+not something it declines to do so much as something it has no way to perform.
+It also does not run anything: no build, no tests.
+
+The answer stays in the drawer. It is deliberately not put into the
+conversation, because a review in the transcript is a review in the context
+window of every request after it, which is the cost this arrangement exists to
+avoid paying. And it says what produced it:
+
+```
+  2 files read by qwen3.6:27b, without the conversation that produced them —
+  so it cannot know what was asked for, and may call a deliberate choice a
+  defect.
+```
+
+That sentence is not a disclaimer, it is the trade. A reviewer that could see
+the request would be a reviewer reasoning from the context that wrote the code,
+and there would have been no point running it. Any file it was not shown —
+binary, or dropped to fit — is named under the report, because a review that
+covered four of a turn's six files and did not say so reads as a clean bill of
+health for all six.
+
+The terminal does the same thing: `taurus review` lists what there is,
+`taurus review --turn 3` reads one back. `--model` runs it on something other
+than the conversation's own, which is how "check that with the big one" is said
+without moving the conversation onto it.
 
 ### Committing a turn
 

@@ -172,7 +172,10 @@ to put things back after.
   points in a turn, able to refuse a call and never to approve one.
 - [**Trusting a workspace**](docs/safety.md#trusting-a-workspace) — a cloned
   repository's own config does not configure your agent until you say so, and
-  you are only asked when the folder actually holds something.
+  you are only asked when the folder actually holds something. What is *in*
+  those files is named beside the count, including the parts nobody can see by
+  looking: a byte that renders as nothing, a comment the renderer hides, a run
+  of base64 in a file that should hold prose.
 - [**Running commands**](docs/safety.md#running-commands) — a real PTY per
   platform, so a program that checks `isatty` behaves the way it does in a
   terminal.
@@ -184,6 +187,11 @@ to put things back after.
   touched is recorded first, so any turn can be undone.
 - [**Keeping a turn**](docs/safety.md#keeping-a-turn) — read a turn back as a
   diff and commit it on its own.
+- [**Reviewing a turn**](docs/safety.md#reading-it-back-to-somebody-who-did-not-write-it)
+  — hand that diff to an agent with none of the conversation in it. An agent
+  checking its own turn looks for the mistake with the reasoning that made it;
+  this one has never seen the code. It reads and cannot write, and it cannot
+  know what you asked for — which is the point, and the cost.
 
 **[Working with it](docs/working-with-it.md)** — what a turn looks like in use.
 

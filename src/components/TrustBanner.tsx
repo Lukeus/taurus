@@ -1,4 +1,4 @@
-import type { TrustStatus } from "../lib/api";
+import type { Finding, TrustStatus } from "../lib/api";
 
 /**
  * The one place the app says "this project's config is not being read".
@@ -67,9 +67,30 @@ export function TrustBanner({
           {items.search && <li>web search settings</li>}
           {items.settings && <li>harness settings</li>}
         </ul>
+        {/* What is inside those files, for the part nobody can read by
+            looking. Named rather than counted, on the same argument the MCP
+            command lines are: a count of skills is not something anyone can
+            judge, and an invisible character is not something anyone can see.
+            Findings are not a verdict — see `taurus_host::inspect`. */}
+        {items.findings.length > 0 && (
+          <div className="trust-findings">
+            <strong>Worth reading first</strong>
+            <ul className="trust-list">
+              {items.findings.map((finding: Finding) => (
+                <li key={`${finding.path}:${finding.kind}`}>
+                  <code>{finding.path}</code> — {label(finding.kind)}
+                  <div className="trust-detail">{finding.detail}</div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <p className="trust-note">
           Your own skills, agents, and settings are unaffected — only this
-          folder's are being held back.
+          folder's are being held back. Nothing here is a verdict: these are
+          the parts of those files worth your eyes, not a judgement about
+          them.
         </p>
       </div>
       <div className="spacer" />
@@ -88,4 +109,32 @@ export function TrustBanner({
 
 function count(n: number, noun: string) {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * The short label in front of a finding's detail.
+ *
+ * Duplicated from `FindingKind::label` rather than sent over the wire with the
+ * finding: it is a fixed phrase per variant, and shipping the same seven
+ * strings on every refresh to save seven lines here is the wrong trade. The
+ * exhaustive switch is what keeps the two in step — a variant added in Rust
+ * fails the typecheck here.
+ */
+function label(kind: Finding["kind"]): string {
+  switch (kind) {
+    case "hidden_characters":
+      return "invisible characters";
+    case "hidden_directive":
+      return "a hidden comment";
+    case "encoded_payload":
+      return "an encoded block";
+    case "endpoint":
+      return "names an endpoint";
+    case "private_hosts":
+      return "reaches private hosts";
+    case "broad_grant":
+      return "a broad permission grant";
+    case "executable_skill":
+      return "a skill carrying a script";
+  }
 }

@@ -13,6 +13,7 @@ mod markdown;
 mod notes_cmd;
 mod permission;
 mod render;
+mod review_cmd;
 mod rewind_cmd;
 mod session;
 mod skills_cmd;
@@ -66,6 +67,23 @@ enum Command {
         #[arg(long, value_name = "ID")]
         agents: Option<String>,
     },
+    /// Read a turn back to an agent that did not write it.
+    ///
+    /// With no `--turn`, lists what there is to review. Reviewing one costs a
+    /// model round trip on this workspace's provider.
+    Review {
+        #[command(flatten)]
+        session: SessionArgs,
+
+        /// Session to review. Defaults to this workspace's most recent.
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+
+        /// The turn to review. Omit to list what there is.
+        #[arg(long, value_name = "TURN")]
+        turn: Option<u32>,
+    },
+
     /// List file changes a session made, and undo them.
     Rewind {
         #[command(flatten)]
@@ -354,6 +372,20 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 }
             }
             Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Review { session, id, turn } => {
+            let provider = session.provider.clone();
+            let model = session.model.clone();
+            let host = build_host(&session, Policy::default()).await?.host;
+            review_cmd::run(
+                &host,
+                id.as_deref(),
+                turn,
+                provider.as_deref(),
+                model.as_deref(),
+            )
+            .await
         }
 
         Command::Rewind {
