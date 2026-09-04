@@ -70,7 +70,9 @@ describe("rendering", () => {
     expect(html).not.toContain("scrim");
     expect(html).not.toContain('role="separator"');
     expect(html).not.toContain("width:");
-    // Docked, and saying so, because the stylesheet sizes it off this.
+    // Docked, and saying so. The name carries no rule — the width comes from
+    // `.drawer` — so this is an identity mark rather than a style, which is
+    // what `styles.test.ts` has it listed as.
     expect(html).toContain("changes-pane");
   });
 

@@ -22,8 +22,9 @@ import {
 import { applyTheme, resolveWith } from "../lib/theme";
 import { useStore } from "../state/store";
 import { CopyButton } from "./CopyButton";
-import { Modal } from "./Modal";
+import { Drawer } from "./Drawer";
 import { ThemeEditor } from "./ThemeEditor";
+import { Problem, Problems } from "./Problem";
 
 type Tab = "models" | "search" | "permissions" | "behavior" | "appearance";
 
@@ -105,217 +106,199 @@ export function Settings({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Modal onClose={onClose}>
-      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
-        <header className="drawer-head">
-          <h2>Settings</h2>
-          <button className="drawer-close" onClick={onClose} aria-label="Close">
-            ✕
+    <Drawer title="Settings" onClose={onClose}>
+      <div className="pill-row">
+        {TABS.map(([value, label]) => (
+          <button
+            key={value}
+            className={`pill${tab === value ? " on" : ""}`}
+            onClick={() => setTab(value)}
+          >
+            {label}
           </button>
-        </header>
+        ))}
+      </div>
 
-        <div className="pill-row">
-          {TABS.map(([value, label]) => (
-            <button
-              key={value}
-              className={`pill${tab === value ? " on" : ""}`}
-              onClick={() => setTab(value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+      {tab === "models" && (
+        <>
+          <p className="drawer-intro">
+            Saved to <code>~/.taurus/providers.json</code>, shared with the
+            CLI. API keys are never stored here — name the environment
+            variable that holds one.
+          </p>
 
-        {tab === "models" && (
-          <>
-            <p className="drawer-intro">
-              Saved to <code>~/.taurus/providers.json</code>, shared with the
-              CLI. API keys are never stored here — name the environment
-              variable that holds one.
-            </p>
+          {/* A providers.json that will not parse is why the list below can
+              be empty or stale, so it belongs at the top of this tab rather
+              than in a drawer about skills, where it used to appear. */}
+          {providerProblems.length > 0 && (
+            <Problems problems={providerProblems.map((p) => p.message)} />
+          )}
 
-            {/* A providers.json that will not parse is why the list below can
-                be empty or stale, so it belongs at the top of this tab rather
-                than in a drawer about skills, where it used to appear. */}
-            {providerProblems.length > 0 && (
-              <section className="section">
-                <span className="micro">Could not load</span>
-                {providerProblems.map((problem) => (
-                  <p key={problem.message} className="settings-problem">
-                    {problem.message}
-                  </p>
-                ))}
-              </section>
-            )}
-
-            <div className="card-list">
-              {draft?.map((provider, index) => (
-                <ProviderForm
-                  key={index}
-                  provider={provider}
-                  problems={problemsWith(provider, draft)}
-                  overriddenBy={overrideOf(provider, status?.providers ?? [])}
-                  keyStatus={keys.get(provider.id)}
-                  keychainAvailable={keychain}
-                  onKeyChanged={refreshKeys}
-                  onChange={(patch) => update(index, patch)}
-                  onRemove={() => {
-                    setDraft((d) => d?.filter((_, i) => i !== index) ?? d);
-                    setSaved(false);
-                  }}
-                />
-              ))}
-
-              <button
-                className="card-add"
-                onClick={() => {
-                  setDraft((d) => [...(d ?? []), blankProvider(d ?? [])]);
+          <div className="card-list">
+            {draft?.map((provider, index) => (
+              <ProviderForm
+                key={index}
+                provider={provider}
+                problems={problemsWith(provider, draft)}
+                overriddenBy={overrideOf(provider, status?.providers ?? [])}
+                keyStatus={keys.get(provider.id)}
+                keychainAvailable={keychain}
+                onKeyChanged={refreshKeys}
+                onChange={(patch) => update(index, patch)}
+                onRemove={() => {
+                  setDraft((d) => d?.filter((_, i) => i !== index) ?? d);
                   setSaved(false);
                 }}
-              >
-                Add a provider
-              </button>
-            </div>
-
-            <div className="settings-actions">
-              {saved && !saving && <span className="muted small">Saved</span>}
-              <div className="spacer" />
-              <button
-                className="primary"
-                onClick={save}
-                disabled={saving || !dirty || problems.length > 0 || !draft}
-              >
-                {saving ? "Saving…" : "Save"}
-              </button>
-            </div>
-
-            {problems.map((problem) => (
-              <p key={problem} className="settings-problem">
-                {problem}
-              </p>
+              />
             ))}
-            {error && <p className="settings-problem">{error}</p>}
-          </>
-        )}
 
-        {tab === "search" && (
-          <>
-            <SearchTab />
-            <CodeSearch
-              model={status?.settings.embedding_model ?? ""}
-              provider={status?.settings.embedding_provider ?? ""}
-              rerankModel={status?.settings.rerank_model ?? ""}
-              rerankProvider={status?.settings.rerank_provider ?? ""}
-            />
-          </>
-        )}
+            <button
+              className="card-add"
+              onClick={() => {
+                setDraft((d) => [...(d ?? []), blankProvider(d ?? [])]);
+                setSaved(false);
+              }}
+            >
+              Add a provider
+            </button>
+          </div>
 
-        {tab === "permissions" && (
-          <>
-            <p className="drawer-intro">
-              Approvals you marked “always”. Revoking one puts the next such
-              call back in front of you.
+          <div className="settings-actions">
+            {saved && !saving && <span className="text-dim text-12">Saved</span>}
+            <div className="spacer" />
+            <button
+              className="primary"
+              onClick={save}
+              disabled={saving || !dirty || problems.length > 0 || !draft}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
+
+          {problems.map((problem) => (
+            <Problem key={problem}>{problem}</Problem>
+          ))}
+          {error && <Problem>{error}</Problem>}
+        </>
+      )}
+
+      {tab === "search" && (
+        <>
+          <SearchTab />
+          <CodeSearch
+            model={status?.settings.embedding_model ?? ""}
+            provider={status?.settings.embedding_provider ?? ""}
+            rerankModel={status?.settings.rerank_model ?? ""}
+            rerankProvider={status?.settings.rerank_provider ?? ""}
+          />
+        </>
+      )}
+
+      {tab === "permissions" && (
+        <>
+          <p className="drawer-intro">
+            Approvals you marked “always”. Revoking one puts the next such
+            call back in front of you.
+          </p>
+          {rules.length === 0 ? (
+            <p className="drawer-empty">
+              Nothing has been granted permanently yet.
             </p>
-            {rules.length === 0 ? (
-              <p className="drawer-empty">
-                Nothing has been granted permanently yet.
-              </p>
-            ) : (
-              <ul className="card-list">
-                {rules.map((allowed) => (
-                  <li key={`${allowed.scope}:${allowed.rule}`} className="card">
-                    <div className="card-body">
-                      <div className="card-row">
-                        <span className="card-title mono rule-name">
-                          {allowed.rule}
-                        </span>
-                        <span
-                          className={`tag${allowed.scope === "workspace" ? " project" : ""}`}
-                        >
-                          {SCOPE_LABEL[allowed.scope]}
-                        </span>
-                        <div className="spacer" />
-                        <button
-                          className="danger"
-                          onClick={async () => {
-                            await api.revokePermissionRule(
-                              allowed.rule,
-                              allowed.scope,
-                            );
-                            setRules(await api.listPermissionRules());
-                          }}
-                        >
-                          Revoke
-                        </button>
-                      </div>
+          ) : (
+            <ul className="card-list">
+              {rules.map((allowed) => (
+                <li key={`${allowed.scope}:${allowed.rule}`} className="card">
+                  <div className="card-body">
+                    <div className="card-row">
+                      <span className="card-title font-mono rule-name text-12-5 min-w-0 wrap-anywhere">
+                        {allowed.rule}
+                      </span>
+                      <span
+                        className={`tag${allowed.scope === "workspace" ? " project" : ""}`}
+                      >
+                        {SCOPE_LABEL[allowed.scope]}
+                      </span>
+                      <div className="spacer" />
+                      <button
+                        className="danger"
+                        onClick={async () => {
+                          await api.revokePermissionRule(
+                            allowed.rule,
+                            allowed.scope,
+                          );
+                          setRules(await api.listPermissionRules());
+                        }}
+                      >
+                        Revoke
+                      </button>
                     </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
 
-        {tab === "behavior" && (
-          <>
-            <label className="settings-check">
-              <input
-                type="checkbox"
-                checked={status?.settings.skill_synthesis_enabled ?? true}
-                onChange={async (e) => {
-                  await api.setSkillSynthesis(e.target.checked);
-                  await refresh();
-                }}
-              />
-              <span>
-                Let Taurus propose skills
-                <span className="hint">
-                  It offers a procedure it worked out; nothing is saved without
-                  your approval.
-                </span>
-              </span>
-            </label>
-
-            <label className="settings-check">
-              <input
-                type="checkbox"
-                checked={status?.settings.agent_synthesis_enabled ?? true}
-                onChange={async (e) => {
-                  await api.setAgentSynthesis(e.target.checked);
-                  await refresh();
-                }}
-              />
-              <span>
-                Let Taurus propose sub-agents
-                <span className="hint">
-                  It offers a delegate for work that recurs. It can never be
-                  given a tool you do not have, and nothing is saved without
-                  your approval.
-                </span>
-              </span>
-            </label>
-
-            <IterationLimit
-              limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
+      {tab === "behavior" && (
+        <>
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={status?.settings.skill_synthesis_enabled ?? true}
+              onChange={async (e) => {
+                await api.setSkillSynthesis(e.target.checked);
+                await refresh();
+              }}
             />
-          </>
-        )}
+            <span>
+              Let Taurus propose skills
+              <span className="hint">
+                It offers a procedure it worked out; nothing is saved without
+                your approval.
+              </span>
+            </span>
+          </label>
 
-        {tab === "appearance" && (
-          <ThemePicker theme={status?.settings.theme ?? "system"} />
-        )}
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={status?.settings.agent_synthesis_enabled ?? true}
+              onChange={async (e) => {
+                await api.setAgentSynthesis(e.target.checked);
+                await refresh();
+              }}
+            />
+            <span>
+              Let Taurus propose sub-agents
+              <span className="hint">
+                It offers a delegate for work that recurs. It can never be
+                given a tool you do not have, and nothing is saved without
+                your approval.
+              </span>
+            </span>
+          </label>
 
-        <section className="section">
-          <span className="micro">Files</span>
-          <dl className="settings-paths">
-            <dt>Config</dt>
-            <dd>~/.taurus</dd>
-            <dt>This project</dt>
-            <dd>{status ? `${status.workspace}/.taurus` : "—"}</dd>
-          </dl>
-        </section>
-      </aside>
-    </Modal>
+          <IterationLimit
+            limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
+          />
+        </>
+      )}
+
+      {tab === "appearance" && (
+        <ThemePicker theme={status?.settings.theme ?? "system"} />
+      )}
+
+      <section className="section">
+        <span className="micro">Files</span>
+        <dl className="settings-paths m-0 grid grid-cols-[88px_1fr] gap-x-3 gap-y-1.5 text-12-5 [&_dt]:text-faint [&_dd]:m-0 [&_dd]:wrap-anywhere [&_dd]:font-mono [&_dd]:text-12 [&_dd]:text-dim">
+          <dt>Config</dt>
+          <dd>~/.taurus</dd>
+          <dt>This project</dt>
+          <dd>{status ? `${status.workspace}/.taurus` : "—"}</dd>
+        </dl>
+      </section>
+    </Drawer>
   );
 }
 
@@ -558,11 +541,9 @@ export function ThemePicker({ theme }: { theme: Theme }) {
         </p>
 
         {problems.map((problem) => (
-          <p key={problem.message} className="settings-problem">
-            {problem.message}
-          </p>
+          <Problem key={problem.message}>{problem.message}</Problem>
         ))}
-        {error && <p className="settings-problem">{error}</p>}
+        {error && <Problem>{error}</Problem>}
       </section>
 
       {editing && (
@@ -639,9 +620,7 @@ export function SearchTab() {
         <section className="section">
           <span className="micro">Could not load</span>
           {settings.problems.map((problem) => (
-            <p key={problem.message} className="settings-problem">
-              {problem.message}
-            </p>
+            <Problem key={problem.message}>{problem.message}</Problem>
           ))}
         </section>
       )}
@@ -852,7 +831,7 @@ export function CodeSearch({
 
       {model.trim() && (
         <>
-          <div className="index-actions">
+          <div className="index-actions flex items-center gap-3">
             <button onClick={building ? api.stopIndexBuild : build}>
               {building ? "Stop" : "Build index now"}
             </button>
@@ -865,7 +844,7 @@ export function CodeSearch({
             )}
           </div>
           {building && (
-            <div className="plan-bar index-bar" aria-hidden="true">
+            <div className="plan-bar index-bar w-full" aria-hidden="true">
               <span className="plan-bar-fill" style={{ width: `${pct}%` }} />
             </div>
           )}
@@ -941,6 +920,20 @@ const TABS: [Tab, string][] = [
   // rail had with "Tools".
   ["appearance", "Appearance"],
 ];
+
+/*
+ * Settings is mostly other people's furniture.
+ *
+ * `card`, `drawer`, `micro`, `spacer` are rules shared with a dozen panels and
+ * stay rules — and so, less obviously, do `settings-field`, `settings-actions`
+ * and `settings-check`, whose prefix says this drawer owns them and is wrong:
+ * the theme editor lays out its fields with the first. What is converted here
+ * is only what Settings actually owns. The fourth of them, the sentence saying
+ * why something failed, was shared by eleven panels and is now `Problem`.
+ */
+
+/** What stands in for the key box where there is nothing to type into. */
+const KEY_NONE = "settings-key-none py-2 text-12-5 text-faint italic";
 
 const SCOPE_LABEL: Record<Scope, string> = {
   global: "every workspace",
@@ -1116,7 +1109,7 @@ function ApiKeyField({
         label="API key"
         hint="This machine has no credential store Taurus can use, so the key has to come from the environment variable above."
       >
-        <div className="settings-key-none">unavailable</div>
+        <div className={KEY_NONE}>unavailable</div>
       </Field>
     );
   }
@@ -1126,7 +1119,7 @@ function ApiKeyField({
   if (!status) {
     return (
       <Field label="API key" hint={unsavedHint}>
-        <div className="settings-key-none">not saved yet</div>
+        <div className={KEY_NONE}>not saved yet</div>
       </Field>
     );
   }
@@ -1149,7 +1142,7 @@ function ApiKeyField({
 
   return (
     <Field label="API key" hint={keyHint(status)}>
-      <div className="settings-key">
+      <div className="settings-key flex items-center gap-2 [&_input]:flex-1 [&_input]:min-w-0 [&_input]:font-mono [&_button]:flex-none">
         <input
           type="password"
           value={value}
@@ -1171,7 +1164,7 @@ function ApiKeyField({
           </button>
         )}
       </div>
-      {error && <div className="settings-key-error">{error}</div>}
+      {error && <div className="settings-key-error text-12 text-danger">{error}</div>}
     </Field>
   );
 }
@@ -1241,11 +1234,14 @@ function ProviderForm({
   const [open, setOpen] = useState(() => problems.length > 0);
 
   return (
-    <div className={`card settings-provider${open ? " open" : ""}`}>
+    <div
+      className="card settings-provider p-3 flex flex-col gap-3 not-data-open:py-2"
+      data-open={open || undefined}
+    >
       <div className="card-row">
         <button
           type="button"
-          className="settings-provider-fold"
+          className="settings-provider-fold flex-none w-5.5 self-stretch p-0 border-0 bg-transparent text-12 leading-none text-faint hover:text-ink focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1"
           aria-expanded={open}
           aria-label={`${open ? "Collapse" : "Expand"} ${provider.id || "this provider"}`}
           onClick={() => setOpen((was) => !was)}
@@ -1257,7 +1253,7 @@ function ProviderForm({
           <span aria-hidden="true">{open ? "⌄" : "›"}</span>
         </button>
         <input
-          className="settings-id"
+          className="settings-id flex-1 min-w-0 font-mono"
           value={provider.id}
           aria-label="Provider id"
           placeholder="id"
@@ -1446,7 +1442,7 @@ function ProviderForm({
       )}
 
       {overriddenBy.length > 0 && (
-        <p className="settings-note">
+        <p className="settings-note m-0 text-12 leading-[1.5] text-warn">
           This workspace overrides {listSentence(overriddenBy)} in its own{" "}
           <code>.taurus/providers.json</code>. Changes here apply everywhere
           else; the override still wins in this project.
@@ -1496,26 +1492,42 @@ export function ModelList({
         </button>
       </div>
 
-      <ul className="model-rows">
+      <ul className="model-rows list-none m-0 p-0 flex flex-col gap-2.5">
         {models.map((model, i) => (
           // Keyed by position because nothing else is stable: the id is the
           // field being typed into, and is empty on a row just added.
-          <li key={i} className="model-row">
+          <li
+            key={i}
+            className="model-row grid grid-cols-[1fr_auto] gap-x-2 gap-y-1.5 items-center [&_input]:min-w-0 [&_input]:w-full [&_select]:min-w-0 [&_select]:w-full"
+          >
             <input
-              className="mono"
+              className="font-mono"
               aria-label={`Model ${i + 1} id`}
               value={model.id}
               placeholder="gpt-4o"
               onChange={(e) => patch(i, { id: e.target.value })}
             />
             <button
-              className="quiet model-remove"
+              className="quiet model-remove py-1.5 px-2 text-faint"
               aria-label={`Remove ${model.id || `model ${i + 1}`}`}
               onClick={() => onChange(models.filter((_, n) => n !== i))}
             >
               ✕
             </button>
-            <div className="model-caps">
+            {/*
+                Two rows rather than one, because one never fitted.
+
+                The three controls used to sit in a row with the selects capped
+                at 46% each — which is 92% of a 369px block before the gaps, so
+                the context length was left with thirteen pixels and could not
+                be typed into at all. It is a box for a six-digit number.
+
+                So the number takes a line of its own and the two switches share
+                the one under it. Each select comes out at 180px, wider than the
+                170px the cap allowed, so nothing that fitted before stops
+                fitting; what changes is that the field beside them exists.
+            */}
+            <div className="model-caps col-span-full grid grid-cols-2 gap-x-2 gap-y-1.5 pl-3 border-l border-rule [&_input]:col-span-full">
               <input
                 inputMode="numeric"
                 aria-label={`Context length for ${model.id || `model ${i + 1}`}`}

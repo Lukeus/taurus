@@ -9,7 +9,8 @@ import {
 } from "../lib/limits";
 import { AgentEditor } from "./AgentEditor";
 import { useStore } from "../state/store";
-import { Modal } from "./Modal";
+import { Drawer } from "./Drawer";
+import { Problems } from "./Problem";
 
 type Filter = "all" | "builtin" | "attention";
 
@@ -67,119 +68,109 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
   const { all, builtin, attention, shown } = partition(agents ?? [], filter);
 
   return (
-    <Modal onClose={onClose}>
-      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
-        <header className="drawer-head">
-          <h2>Agents</h2>
-          {/* The roster is a directory, and a directory changes under a drawer
-              that is already open. Mounting rescans; this is how you rescan
-              without closing and reopening. */}
-          <button
-            disabled={rescanning}
-            onClick={async () => {
-              setRescanning(true);
-              try {
-                await refresh();
-              } catch {
-                // The list on screen is the one from before, which is still
-                // true; the drawer says nothing rather than emptying itself.
-              } finally {
-                setRescanning(false);
-              }
-            }}
-          >
-            {rescanning ? "Rescanning…" : "Rescan"}
-          </button>
-          <button className="drawer-close" onClick={onClose} aria-label="Close">
-            ✕
-          </button>
-        </header>
-
-        <p className="drawer-intro">
-          Sub-agents Taurus can delegate to. A project file overrides a user
-          file of the same name; either overrides a built-in.
-        </p>
-
-        {/* The two limits are separate numbers that read as one concept, and
-            keeping them two screens apart is how someone raises an agent's
-            ceiling and wonders why the turn that spawned it still stops. */}
-        <p className="drawer-intro hint">
-          Each agent's limit is its own. The conversation that delegates gets{" "}
-          {status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS} steps of
-          its own — Settings › Behavior.
-        </p>
-
-        {agents === null ? (
-          // A count of zero is an answer, and this is not one yet. The same
-          // distinction `MemoryDrawer` draws between empty and still reading.
-          <p className="drawer-loading">Reading…</p>
-        ) : (
-          <div className="pill-row">
-            <button
-              className={`pill${filter === "all" ? " on" : ""}`}
-              onClick={() => setFilter("all")}
-            >
-              All {all.length}
-            </button>
-            <button
-              className={`pill${filter === "builtin" ? " on" : ""}`}
-              onClick={() => setFilter("builtin")}
-            >
-              Built-in {builtin.length}
-            </button>
-            <button
-              className={`pill${filter === "attention" ? " on" : ""}`}
-              onClick={() => setFilter("attention")}
-              disabled={attention.length === 0}
-            >
-              Needs attention {attention.length}
-            </button>
-          </div>
-        )}
-
-        {agents !== null && shown.length === 0 && (
-          <p className="drawer-empty">Nothing here.</p>
-        )}
-
-        <ul className="card-list">
-          {shown.map((agent) => (
-            <AgentCard key={agent.name} agent={agent} onChanged={refresh} />
-          ))}
-        </ul>
-
-        {problems.length > 0 && (
-          <section className="section">
-            <span className="micro">Could not load</span>
-            {problems.map((problem) => (
-              <p key={problem.message} className="settings-problem">
-                {problem.message}
-              </p>
-            ))}
-          </section>
-        )}
-
-        <div className="drawer-foot">
-          <button className="card-add" onClick={() => setCreating(true)}>
-            New agent — .md with frontmatter
-          </button>
-          {cost !== null && (
-            <p className="agent-cost">
-              Roster costs {cost.toLocaleString()} characters of every request.
-            </p>
-          )}
-        </div>
-      </aside>
-
-      {creating && (
-        <AgentEditor
-          onClose={() => setCreating(false)}
-          onSaved={async () => {
-            setCreating(false);
-            await refresh();
+    <Drawer
+      title="Agents"
+      onClose={onClose}
+      /* The roster is a directory, and a directory changes under a drawer that
+         is already open. Mounting rescans; this is how you rescan without
+         closing and reopening. */
+      actions={
+        <button
+          disabled={rescanning}
+          onClick={async () => {
+            setRescanning(true);
+            try {
+              await refresh();
+            } catch {
+              // The list on screen is the one from before, which is still
+              // true; the drawer says nothing rather than emptying itself.
+            } finally {
+              setRescanning(false);
+            }
           }}
-        />
+        >
+          {rescanning ? "Rescanning…" : "Rescan"}
+        </button>
+      }
+      overlay={
+        creating && (
+          <AgentEditor
+            onClose={() => setCreating(false)}
+            onSaved={async () => {
+              setCreating(false);
+              await refresh();
+            }}
+          />
+        )
+      }
+    >
+      <p className="drawer-intro">
+        Sub-agents Taurus can delegate to. A project file overrides a user
+        file of the same name; either overrides a built-in.
+      </p>
+
+      {/* The two limits are separate numbers that read as one concept, and
+          keeping them two screens apart is how someone raises an agent's
+          ceiling and wonders why the turn that spawned it still stops. */}
+      <p className="drawer-intro hint">
+        Each agent's limit is its own. The conversation that delegates gets{" "}
+        {status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS} steps of
+        its own — Settings › Behavior.
+      </p>
+
+      {agents === null ? (
+        // A count of zero is an answer, and this is not one yet. The same
+        // distinction `MemoryDrawer` draws between empty and still reading.
+        <p className="drawer-loading">Reading…</p>
+      ) : (
+        <div className="pill-row">
+          <button
+            className={`pill${filter === "all" ? " on" : ""}`}
+            onClick={() => setFilter("all")}
+          >
+            All {all.length}
+          </button>
+          <button
+            className={`pill${filter === "builtin" ? " on" : ""}`}
+            onClick={() => setFilter("builtin")}
+          >
+            Built-in {builtin.length}
+          </button>
+          <button
+            className={`pill${filter === "attention" ? " on" : ""}`}
+            onClick={() => setFilter("attention")}
+            disabled={attention.length === 0}
+          >
+            Needs attention {attention.length}
+          </button>
+        </div>
       )}
-    </Modal>
+
+      {agents !== null && shown.length === 0 && (
+        <p className="drawer-empty">Nothing here.</p>
+      )}
+
+      <ul className="card-list">
+        {shown.map((agent) => (
+          <AgentCard key={agent.name} agent={agent} onChanged={refresh} />
+        ))}
+      </ul>
+
+      {problems.length > 0 && (
+        <Problems problems={problems.map((p) => p.message)} />
+      )}
+
+      <div className="drawer-foot">
+        <button className="card-add" onClick={() => setCreating(true)}>
+          New agent — .md with frontmatter
+        </button>
+        {cost !== null && (
+          <p className="agent-cost">
+            Roster costs {cost.toLocaleString()} characters of every request.
+          </p>
+        )}
+      </div>
+    </Drawer>
   );
 }
 
@@ -298,7 +289,7 @@ function IterationField({
       <label>
         <span className="micro">Max iterations</span>
         <input
-          className="mono"
+          className="font-mono"
           inputMode="numeric"
           aria-label={`Max iterations for ${agent.name}`}
           value={draft}

@@ -42,7 +42,7 @@ export function SkillProposalCard({
         {proposal.rationale && (
           <>
             <dt>Why</dt>
-            <dd className="muted">{proposal.rationale}</dd>
+            <dd className="text-dim">{proposal.rationale}</dd>
           </>
         )}
       </dl>

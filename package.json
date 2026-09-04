@@ -32,11 +32,13 @@
     "zustand": "^5"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5",
     "jsdom": "^30.0.1",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.7",
     "vite": "^7",
     "vitest": "^3"

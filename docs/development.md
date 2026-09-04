@@ -20,6 +20,201 @@ pnpm screenshots
 pnpm bindings
 ```
 
+## Styling
+
+Two files, and the split between them is the whole of it.
+
+`src/styles.css` names the Lukeus palette once at the top and writes everything
+below in roles — the window at `--bg`, a panel raised off it at `--bg-raised`,
+anything inset back into a panel at `--bg-sunken`. `src/tailwind.css` hands those
+roles to Tailwind 4 as its theme and takes Tailwind's own defaults away. So
+`bg-raised` compiles to `background-color: var(--bg-raised)` — the same
+declaration the hand-written rule made, from the same token, resolved at the
+element rather than frozen at build time.
+
+That is why nothing else had to change to adopt it. The light theme still
+restates only the raw `--lk-*` tokens, a custom theme still writes fourteen
+inline properties on `<html>`, and `contrast.test.ts` still measures the pairs
+the app puts on screen. A utility and a rule are two spellings of one decision.
+
+**There is no `dark:` variant in this app and there should never be one.** A
+token that means the same thing under both themes is what the role ladder is
+for; a `dark:` prefix is that decision made a second time, in a place the theme
+editor cannot reach. The `light:` variant exists in `tailwind.css` as a marked
+escape hatch for the rare rule the ladder genuinely does not cover — a shadow
+that needs less black on a light ground — and reaching for it should feel like
+reaching for something.
+
+An alias whose whole content is the declaration it stands for earns nothing, and
+two of them are gone: `.mono` and `.muted` said exactly what `font-mono` and
+`text-dim` say, in the same tokens. `.spacer` stays, though `flex: 1` is exactly
+what it means — `flex-1` says what the browser does, `spacer` says why the empty
+div is there at all, which is the one thing the declaration cannot say for
+itself.
+
+Tailwind's palette, type scale, radii, easings and shadows are cleared rather
+than merely unused. `bg-gray-800` compiles to nothing; so do `text-sm` and
+`rounded-2xl`. The vocabulary is the app's: surfaces (`canvas`, `rail`,
+`raised`, `sunken`, `elevated`, `hover`, `active`, `row`), text (`ink`, `dim`,
+`faint`), lines (`line`, `rule`, `thread`), signals (`accent`, `ok`, `warn`,
+`danger`), and a type scale named by the size it is — `text-12-5` is the app's
+control size, `text-10` its mono micro-labels.
+
+### Converting a component
+
+The rail is the worked example: `src/components/Rail.tsx` reads utilities
+throughout, and the four hundred lines of `styles.css` it replaced are gone. It
+came out pixel-identical to what it replaced, which is the bar. Settings is the
+second, and it is the more instructive one — see "What belongs to a component"
+below.
+
+1. **Write every property the element ends up with, except the primitives.**
+   `button`, `input` and friends still carry base rules — they are the app's
+   own reset — so a converted button only spells out its deltas. Everything
+   else on the element should be readable from its class list.
+2. **State becomes a `data-` attribute, not a class.** `data-current`,
+   `data-armed`, `data-shut`; styled with `data-current:bg-active` and, for
+   descendants, `group` plus `group-data-current:text-ink`. Render it as
+   `data-current={current || undefined}` so the attribute is absent rather than
+   `"false"`.
+3. **Keep the semantic class name.** It costs nothing, it is what tests and
+   `data-tip` tooling find the element by, and it says what the element *is*
+   where the utilities only say what it looks like.
+4. **Move the rationale with the decision.** The comments in `styles.css` are
+   most of its value. A rule deleted without its comment landing beside the new
+   class list is a net loss, whatever the diff says.
+5. **Delete the rules you replaced, and re-run `pnpm screenshots`.** A diff of
+   zero pixels is the proof; anything else is a decision you did not know you
+   were making. If the surface has no baseline, add one — the providers tab got
+   `docs/screenshots/providers.png` and four IPC stubs for exactly this reason,
+   because most of the Settings form had never been photographed.
+
+   Six baselines are unreliable and will waste an afternoon if you trust them.
+   `canvas.png` and `motion.png` do not reproduce on every machine — they differ
+   by the same amount at a clean `HEAD`, so it is environment drift, not you.
+   `app-light`, `palette`, `query-run`, `query-complete`, `mcp-catalog` and
+   `canvas-conflict` are flaky between runs: a "Jump to the end" pill and some
+   mid-animation frames come and go. Re-run before believing any of the six.
+
+### What belongs to a component
+
+Not what its name says. This is the single biggest trap in the migration, and
+it costs a silent regression every time it is guessed at.
+
+Settings looked like 1,714 lines of its own markup. Almost none of it was: the
+drawer wears `card`, `drawer`, `micro`, `spacer` and `hint`, which fifteen to
+twenty-seven other files also wear, and — less obviously — `settings-field`,
+`settings-actions`, `settings-problem` and `settings-check`, whose prefix says
+Settings owns them and is simply wrong. The theme editor lays out its fields
+with the first. Eleven panels say why something failed with the third. Deleting
+them on the strength of the prefix took the styling off all eleven, and nothing
+failed.
+
+So, before deleting a rule, count the files that write its class:
+
+```bash
+grep -rlE 'className=\{?[`"][^`"]*\bsettings-problem\b' --include='*.tsx' src
+```
+
+One file means the component owns it and it converts. More than one means it is
+a shape several components agreed on, and a shape several components agree on is
+what a rule is for — leave it, whatever it is called.
+
+Past a certain reach it stops being a rule and becomes a component. Eleven
+panels wearing `settings-problem` was not a styling problem, it was a missing
+abstraction: that sentence is now `<Problem>` and `<Problems>` in
+`src/components/Problem.tsx`, and the eleven find it by importing it rather than
+by knowing which drawer happened to write it first. Three `settings-*` names are
+still shared and still misnamed, which is a rename worth doing on its own and
+not inside a conversion.
+
+That is the general shape of it. Ten panels were writing out the same `Modal`,
+the same `<aside className="drawer">` and the same header, and they had
+drifted: three spelled
+the dismiss as the word "Close" and seven as a ✕, so one control in one corner
+read two ways depending on which panel was open. `src/components/Drawer.tsx` is
+that shape written once — `<Drawer title onClose panel actions overlay>` for the
+seven that fit, `<DrawerHead>` for the five that share only the title bar.
+
+The line count barely moved; most of the diff is re-indentation. What the
+extraction is actually for is one line that was in nine of the ten and is easy
+to leave out of the tenth:
+
+```jsx
+onClick={(e) => e.stopPropagation()}
+```
+
+`Modal` dismisses on a click that reaches the scrim, so without that, clicking
+any patch of drawer that is not itself a control closes the drawer. No type
+catches it and no test notices; it is just the panel shutting under somebody's
+cursor. The `overlay` slot is the same kind of knowledge: an editor opened from
+a drawer has to render *inside* that drawer's scrim and outside its panel,
+because that containment is how `Modal` decides whether Escape belongs to it or
+to the thing on top of it.
+
+Two more things this turned up, both about order:
+
+- **A rule's position in the file can be load-bearing.** `.hint` looks like a
+  primitive and was moved up to sit with `.micro` and `.mono` where primitives
+  live. The MCP drawer opens with `class="drawer-intro hint"` and means the
+  second of those to win — same specificity, so the only thing deciding it is
+  which is written last. Moved, it read a point larger and a shade brighter and
+  every row under it shifted three pixels down the screen. It is back where it
+  was, with a comment saying why.
+- **A rule that never applied looks exactly like one that does.** `.index-bar
+  { width: 100% }` lost to `.plan-bar { width: 64px }` seven lines below it, so
+  the index progress bar had been a 64px stub. Written as a utility it wins,
+  which is what the rule always said — worth knowing that converting a class can
+  turn a dead rule live.
+
+### What the tests hold
+
+`src/styles.test.ts` reads the stylesheet *and* every `className` in the tree,
+because half the styling decisions now live in the markup and the constraints
+have to follow them there.
+
+- **The ladder** — 2, 4, 6, 8, 10, 12, 16, 20, 24, 32 — holds for padding,
+  margin and gap whether written `padding: 12px` or `p-3`. Sub-4px is exempt;
+  so is `auto`, which is not a distance.
+- **No class name may be one a utility also claims.** `.table-row { display:
+  grid }` was the bug that taught this: `table-row` is a CSS `display` value, so
+  Tailwind generates a utility for it, and a utility outranks the stylesheet's
+  layer by design. Every table in the app silently stopped being a grid. The
+  typecheck passed and a thousand tests passed. It is now `.table-line`.
+- **No second palette**, and no size or radius from a scale this app does not
+  have — because a cleared name compiles to nothing, and "the text is the wrong
+  size" is the slowest possible way to find out a class name was wrong.
+- **The one destructive control in the rail keeps a 28px target**, read out of
+  its class list now that the two numbers live there.
+- **No shared class name is left without a rule or a utility behind it.** Every
+  class the markup writes must be one or the other; a name that is neither
+  renders as nothing at all. Scoped to names used by more than one file, because
+  a converted component legitimately keeps a ruleless name of its own —
+  `rail-row` and `settings-provider` are what a test finds the element by, with
+  every declaration in the utilities beside them. This is the check that catches
+  a deleted rule, and it names the files that were still wearing it.
+
+### The cascade, once
+
+`tailwind.css` declares the order: `theme, base, vendor, taurus, components,
+utilities`. `taurus` is `styles.css`, wrapped at both ends; `vendor` is xterm's
+own sheet, imported through `src/vendor.css`.
+
+Layering the hand-written stylesheet is not cosmetic. Unlayered CSS beats every
+layer regardless of specificity, so left alone `button { padding: 6px 12px }`
+would quietly win over `px-3 py-1.5` on a converted button — the conversion
+would look finished and change nothing on screen.
+
+`styles.css` imports `tailwind.css` itself rather than the entry point doing it,
+because there are two entry points: the app and the screenshot harness. When
+only one of them had both files, every image came out of a rail with none of its
+layout. One import, and it brings the other with it in the right order.
+
+Preflight is deliberately not imported. This app's reset is already written —
+box-sizing, margins, the button and input primitives, the scrollbars — and
+layering a second one under it would move pixels in twenty-one baselines to
+arrive back where the app already was.
+
 ## Drawing a token
 
 ```bash

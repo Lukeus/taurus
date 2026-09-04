@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
 import type { TraceReport, TraceStep, TurnTrace } from "../lib/api";
-import { Modal } from "./Modal";
+import { Drawer } from "./Drawer";
+import { Problem } from "./Problem";
 
 /**
  * Where the time went.
@@ -73,248 +74,239 @@ export function TracePanel({
   };
 
   return (
-    <Modal onClose={onClose}>
-      <aside className="drawer traces" onClick={(e) => e.stopPropagation()}>
-        <header className="drawer-head">
-          <h2>Traces</h2>
-          <button className="drawer-close" onClick={onClose}>
-            Close
-          </button>
-        </header>
+    <Drawer title="Traces" onClose={onClose} panel="traces">
+      <p className="drawer-intro">
+        What each turn spent its wall time on, from the spans the harness
+        emits. Kept in memory for this run of the app only — set an OTLP
+        endpoint in Settings to send the same spans somewhere that keeps them.
+      </p>
 
-        <p className="drawer-intro">
-          What each turn spent its wall time on, from the spans the harness
-          emits. Kept in memory for this run of the app only — set an OTLP
-          endpoint in Settings to send the same spans somewhere that keeps them.
+      <div className="usage-scope" role="tablist">
+        <button
+          role="tab"
+          aria-selected={scope === "session"}
+          className={`seg${scope === "session" ? " on" : ""}`}
+          disabled={!sessionId}
+          data-tip={
+            sessionId ? undefined : "There is no conversation open to time"
+          }
+          onClick={() => setScope("session")}
+        >
+          This conversation
+        </button>
+        <button
+          role="tab"
+          aria-selected={scope === "window"}
+          className={`seg${scope === "window" ? " on" : ""}`}
+          onClick={() => setScope("window")}
+        >
+          Everything since launch
+        </button>
+      </div>
+
+      {failed && <Problem>{failed}</Problem>}
+
+      {report === null && !failed ? (
+        <p className="drawer-loading">Reading…</p>
+      ) : report === null ? null : report.spans === 0 ? (
+        /* Not a failure and not an error: a window that has not run a turn
+           yet has nothing to time, and saying what would fill this is more
+           use than an empty table. */
+        <p className="drawer-empty">
+          Nothing has been timed yet. Every turn this window runs is recorded
+          here as it finishes — including the ones that fail, which are
+          usually the interesting ones.
         </p>
+      ) : (
+        <>
+          <dl className="usage-totals">
+            <Total
+              label="Turns"
+              value={report.turns.toLocaleString()}
+              note={
+                report.dropped > 0
+                  ? `and ${report.dropped.toLocaleString()} older spans already forgotten`
+                  : since(report.since)
+              }
+            />
+            <Total
+              label="Median turn"
+              value={ms(report.median_turn_ms)}
+              note="the middle one, not the average"
+            />
+            <Total
+              label="Slowest turn"
+              value={ms(report.slowest_turn_ms)}
+              note="a real turn, and usually the one being looked for"
+            />
+            <Total
+              label="Failures"
+              value={report.failures.toLocaleString()}
+              note="spans of any kind that ended in an error"
+            />
+          </dl>
 
-        <div className="usage-scope" role="tablist">
-          <button
-            role="tab"
-            aria-selected={scope === "session"}
-            className={`seg${scope === "session" ? " on" : ""}`}
-            disabled={!sessionId}
-            data-tip={
-              sessionId ? undefined : "There is no conversation open to time"
-            }
-            onClick={() => setScope("session")}
-          >
-            This conversation
-          </button>
-          <button
-            role="tab"
-            aria-selected={scope === "window"}
-            className={`seg${scope === "window" ? " on" : ""}`}
-            onClick={() => setScope("window")}
-          >
-            Everything since launch
-          </button>
-        </div>
-
-        {failed && <div className="settings-problem">{failed}</div>}
-
-        {report === null && !failed ? (
-          <p className="drawer-loading">Reading…</p>
-        ) : report === null ? null : report.spans === 0 ? (
-          /* Not a failure and not an error: a window that has not run a turn
-             yet has nothing to time, and saying what would fill this is more
-             use than an empty table. */
-          <p className="drawer-empty">
-            Nothing has been timed yet. Every turn this window runs is recorded
-            here as it finishes — including the ones that fail, which are
-            usually the interesting ones.
+          <h3 className="usage-heading">
+            Where the time went
+            <span className="usage-total">{ms(report.total_ms)}</span>
+          </h3>
+          <p className="usage-explain">
+            Time inside a model call, against everything else — tools doing
+            their own work, the harness between steps, and waiting. Tools are
+            not summed against this: a <code className="md-inline-code">spawn</code>{" "}
+            holds a whole sub-agent turn, so adding it to what ran inside it
+            would count the same seconds twice.
           </p>
-        ) : (
-          <>
-            <dl className="usage-totals">
-              <Total
-                label="Turns"
-                value={report.turns.toLocaleString()}
-                note={
-                  report.dropped > 0
-                    ? `and ${report.dropped.toLocaleString()} older spans already forgotten`
-                    : since(report.since)
-                }
-              />
-              <Total
-                label="Median turn"
-                value={ms(report.median_turn_ms)}
-                note="the middle one, not the average"
-              />
-              <Total
-                label="Slowest turn"
-                value={ms(report.slowest_turn_ms)}
-                note="a real turn, and usually the one being looked for"
-              />
-              <Total
-                label="Failures"
-                value={report.failures.toLocaleString()}
-                note="spans of any kind that ended in an error"
-              />
-            </dl>
+          <Split model={report.model_ms} other={report.other_ms} />
 
-            <h3 className="usage-heading">
-              Where the time went
-              <span className="usage-total">{ms(report.total_ms)}</span>
-            </h3>
-            <p className="usage-explain">
-              Time inside a model call, against everything else — tools doing
-              their own work, the harness between steps, and waiting. Tools are
-              not summed against this: a <code className="md-inline-code">spawn</code>{" "}
-              holds a whole sub-agent turn, so adding it to what ran inside it
-              would count the same seconds twice.
-            </p>
-            <Split model={report.model_ms} other={report.other_ms} />
+          {report.recent.length > 0 && (
+            <>
+              <h3 className="usage-heading">Recent turns</h3>
+              <ul className="trace-turns">
+                {report.recent.map((turn) => (
+                  <Turn
+                    key={turn.seq}
+                    turn={turn}
+                    open={open === turn.seq}
+                    onToggle={() =>
+                      setOpen(open === turn.seq ? null : turn.seq)
+                    }
+                  />
+                ))}
+              </ul>
+            </>
+          )}
 
-            {report.recent.length > 0 && (
-              <>
-                <h3 className="usage-heading">Recent turns</h3>
-                <ul className="trace-turns">
-                  {report.recent.map((turn) => (
-                    <Turn
-                      key={turn.seq}
-                      turn={turn}
-                      open={open === turn.seq}
-                      onToggle={() =>
-                        setOpen(open === turn.seq ? null : turn.seq)
-                      }
-                    />
-                  ))}
-                </ul>
-              </>
-            )}
-
-            {report.models.length > 0 && (
-              <>
-                <h3 className="usage-heading">Models</h3>
-                <table className="usage-table">
-                  <thead>
-                    <tr>
-                      <th>Model</th>
-                      <th className="num">Calls</th>
-                      <th className="num">Median</th>
-                      <th className="num">Slowest</th>
-                      <th className="num">Out/s</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.models.map((model) => (
-                      <tr key={`${model.provider}/${model.name}`}>
-                        <th scope="row">
-                          <span className="usage-name">{model.name}</span>
-                          {model.failures > 0 && (
-                            <span
-                              className="usage-failed"
-                              data-tip="Requests that came back an error. A retried request is counted twice, because it was two round trips."
-                            >
-                              {model.failures} failed
-                            </span>
-                          )}
-                          {model.cached_tokens !== null && (
-                            /* Only when a backend reported a cache. A local
-                               model has none to have missed, and a 0% beside
-                               its name invites the wrong conclusion. */
-                            <span className="trace-aside">
-                              {Math.round(
-                                (model.cached_tokens /
-                                  Math.max(model.input_tokens, 1)) *
-                                  100,
-                              )}
-                              % cached
-                            </span>
-                          )}
-                        </th>
-                        <td className="num">{model.calls.toLocaleString()}</td>
-                        <td className="num">{ms(model.median_ms)}</td>
-                        <td className="num">{ms(model.slowest_ms)}</td>
-                        <td className="num">
-                          {model.output_per_second === null
-                            ? "—"
-                            : model.output_per_second.toLocaleString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            )}
-
-            {report.tools.length > 0 && (
-              <>
-                <h3 className="usage-heading">Tools</h3>
-                <table className="usage-table">
-                  <thead>
-                    <tr>
-                      <th>Tool</th>
-                      <th className="num">Calls</th>
-                      <th className="num">Median</th>
-                      <th className="num">Slowest</th>
-                      <th className="num">Share</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.tools.map((tool) => (
-                      <tr key={tool.name}>
-                        <th scope="row">
-                          <span className="usage-name">{tool.name}</span>
-                          {tool.nested && (
-                            /* Said rather than left to be inferred from a row
-                               that dwarfs the others: this one contains a
-                               delegate's whole turn. */
-                            <span
-                              className="trace-aside"
-                              data-tip="This tool ran a sub-agent, so its time includes the delegate's model calls and tools"
-                            >
-                              includes a delegate
-                            </span>
-                          )}
-                          {tool.failures > 0 && (
-                            <span className="usage-failed">
-                              {tool.failures} failed
-                            </span>
-                          )}
-                        </th>
-                        <td className="num">{tool.calls.toLocaleString()}</td>
-                        <td className="num">{ms(tool.median_ms)}</td>
-                        <td className="num">{ms(tool.slowest_ms)}</td>
-                        <td className="num">
+          {report.models.length > 0 && (
+            <>
+              <h3 className="usage-heading">Models</h3>
+              <table className="usage-table">
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th className="num">Calls</th>
+                    <th className="num">Median</th>
+                    <th className="num">Slowest</th>
+                    <th className="num">Out/s</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.models.map((model) => (
+                    <tr key={`${model.provider}/${model.name}`}>
+                      <th scope="row">
+                        <span className="usage-name">{model.name}</span>
+                        {model.failures > 0 && (
                           <span
-                            className="usage-share"
-                            style={{ ["--share" as string]: `${tool.share}%` }}
+                            className="usage-failed"
+                            data-tip="Requests that came back an error. A retried request is counted twice, because it was two round trips."
                           >
-                            {tool.share}%
+                            {model.failures} failed
                           </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <p className="usage-note">
-                  Share is of tool time, not of the turn — see above.
-                </p>
-              </>
-            )}
+                        )}
+                        {model.cached_tokens !== null && (
+                          /* Only when a backend reported a cache. A local
+                             model has none to have missed, and a 0% beside
+                             its name invites the wrong conclusion. */
+                          <span className="trace-aside">
+                            {Math.round(
+                              (model.cached_tokens /
+                                Math.max(model.input_tokens, 1)) *
+                                100,
+                            )}
+                            % cached
+                          </span>
+                        )}
+                      </th>
+                      <td className="num">{model.calls.toLocaleString()}</td>
+                      <td className="num">{ms(model.median_ms)}</td>
+                      <td className="num">{ms(model.slowest_ms)}</td>
+                      <td className="num">
+                        {model.output_per_second === null
+                          ? "—"
+                          : model.output_per_second.toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
 
-            <div className="trace-foot-actions">
-              <button
-                className="quiet"
-                onClick={() => void clear()}
-                data-tip="Forget everything recorded so far, so the next reading is of the next thing you do"
-              >
-                Clear
-              </button>
-              <button className="quiet" onClick={() => setAsked((n) => n + 1)}>
-                Refresh
-              </button>
-            </div>
-          </>
-        )}
+          {report.tools.length > 0 && (
+            <>
+              <h3 className="usage-heading">Tools</h3>
+              <table className="usage-table">
+                <thead>
+                  <tr>
+                    <th>Tool</th>
+                    <th className="num">Calls</th>
+                    <th className="num">Median</th>
+                    <th className="num">Slowest</th>
+                    <th className="num">Share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.tools.map((tool) => (
+                    <tr key={tool.name}>
+                      <th scope="row">
+                        <span className="usage-name">{tool.name}</span>
+                        {tool.nested && (
+                          /* Said rather than left to be inferred from a row
+                             that dwarfs the others: this one contains a
+                             delegate's whole turn. */
+                          <span
+                            className="trace-aside"
+                            data-tip="This tool ran a sub-agent, so its time includes the delegate's model calls and tools"
+                          >
+                            includes a delegate
+                          </span>
+                        )}
+                        {tool.failures > 0 && (
+                          <span className="usage-failed">
+                            {tool.failures} failed
+                          </span>
+                        )}
+                      </th>
+                      <td className="num">{tool.calls.toLocaleString()}</td>
+                      <td className="num">{ms(tool.median_ms)}</td>
+                      <td className="num">{ms(tool.slowest_ms)}</td>
+                      <td className="num">
+                        <span
+                          className="usage-share"
+                          style={{ ["--share" as string]: `${tool.share}%` }}
+                        >
+                          {tool.share}%
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="usage-note">
+                Share is of tool time, not of the turn — see above.
+              </p>
+            </>
+          )}
 
-        <p className="drawer-foot">
-          the same spans an OTLP collector receives
-        </p>
-      </aside>
-    </Modal>
+          <div className="trace-foot-actions">
+            <button
+              className="quiet"
+              onClick={() => void clear()}
+              data-tip="Forget everything recorded so far, so the next reading is of the next thing you do"
+            >
+              Clear
+            </button>
+            <button className="quiet" onClick={() => setAsked((n) => n + 1)}>
+              Refresh
+            </button>
+          </div>
+        </>
+      )}
+
+      <p className="drawer-foot">
+        the same spans an OTLP collector receives
+      </p>
+    </Drawer>
   );
 }
 

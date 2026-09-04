@@ -20,6 +20,33 @@ import {
   TrashIcon,
 } from "./icons";
 
+/*
+ * The class lists more than one element wears.
+ *
+ * Named for the same reason the stylesheet named `.rail-link` instead of
+ * repeating nine declarations eight times: eight copies of one string is eight
+ * places for it to drift, and the eighth is the one nobody notices. Only the
+ * genuinely shared ones are here — a list used once reads better at the element
+ * that wears it than as a name two hundred lines away.
+ */
+
+/** One of the seven panels in the footer, and the glyph that leads it. */
+const LINK =
+  "rail-link flex items-center gap-2 py-2 px-3 rounded-sm border-0 bg-transparent text-13 text-dim text-left hover:not-disabled:bg-hover";
+const GLYPH = "glyph w-3.5 flex-none inline-flex items-center";
+
+/**
+ * The trash can, and the two controls it becomes once it is armed.
+ *
+ * The 28px floor is the point of the shared half — see the comment at the row —
+ * and `styles.test.ts` reads it back out of whichever of these an element
+ * wears, so it cannot be dropped from one and kept in the others.
+ */
+const DELETE =
+  "rail-delete flex-none inline-flex items-center justify-center border-0 rounded-sm bg-transparent min-w-7 min-h-7 hover:not-disabled:text-danger hover:not-disabled:bg-danger/12";
+const DELETE_ICON = `${DELETE} p-1.5 text-faint`;
+const DELETE_CONFIRM = `${DELETE} py-1 px-2 font-mono text-11 text-danger`;
+
 /** How the provider behind the current session is actually doing. */
 export type ProviderHealth =
   | { state: "unknown" }
@@ -161,12 +188,31 @@ export function Rail({
     const armed = arming === session.id;
     const title = session.title || "New conversation";
     return (
+      /*
+       * A conversation and the one destructive thing that can be done to it.
+       *
+       * The row carries the padding, the hover and the selection because what
+       * is in it is two controls, not one: a button cannot contain another
+       * button, and a trash can that only appeared on hover could not be
+       * reached from the keyboard at all.
+       *
+       * Armed, it holds its own ground hover or not — under the pointer it
+       * would otherwise look exactly like the four rows around it, one of
+       * which is about to be deleted and three of which are not.
+       */
       <div
         key={session.id}
-        className={`rail-row${current ? " current" : ""}${armed ? " armed" : ""}`}
+        className="rail-row group flex items-center gap-1 min-w-0 py-2 pr-1.5 pl-2.5 rounded-sm border-l-2 border-l-transparent hover:bg-hover data-current:bg-active data-current:border-l-accent data-armed:bg-danger/10 data-armed:border-l-danger data-armed:hover:bg-danger/10"
+        data-current={current || undefined}
+        data-armed={armed || undefined}
       >
+        {/* A conversation reads as text; only the hover tells you it is a
+            control, which is why the row lights up and the title inside it
+            must not light up again. Disabled while it is the open one, and
+            that is not the same as unavailable — so it keeps its full
+            opacity where a genuinely unavailable one fades. */}
         <button
-          className="rail-item"
+          className="rail-item flex-1 min-w-0 flex flex-col gap-px p-0 border-0 rounded-none bg-transparent text-left hover:not-disabled:bg-transparent group-data-current:disabled:opacity-100"
           // Switching mid-turn would leave the running turn streaming into a
           // transcript nobody is looking at.
           disabled={busy || current}
@@ -174,8 +220,12 @@ export function Rail({
           data-tip-side="right"
           onClick={() => onOpen(session.id)}
         >
-          <b>{title}</b>
-          <span className={armed ? "warn" : undefined}>
+          <b className="text-13 font-normal text-dim truncate group-data-current:text-ink">
+            {title}
+          </b>
+          {/* Armed, the row spends its subtitle line saying what is about to
+              be lost; there is no other room at this width to say it. */}
+          <span className="font-mono text-10 text-faint truncate group-data-armed:text-danger">
             {armed
               ? "delete this and its undo history?"
               : subtitle(session, current ? changedCount : null, branch)}
@@ -185,7 +235,8 @@ export function Rail({
         {armed ? (
           <>
             <button
-              className="rail-delete confirm"
+              className={DELETE_CONFIRM}
+              data-confirm
               data-tip="Erase the transcript and the checkpoints that made its turns undoable"
               onClick={() => {
                 setArming(null);
@@ -195,7 +246,7 @@ export function Rail({
               Delete
             </button>
             <button
-              className="rail-delete"
+              className={DELETE_ICON}
               aria-label="Keep this conversation"
               data-tip="Keep it"
               onClick={() => setArming(null)}
@@ -204,8 +255,17 @@ export function Rail({
             </button>
           </>
         ) : (
+          /*
+              The one control in the rail that cannot be taken back, and it
+              measured 23×23 — the smallest target in the app, sitting against
+              a row whose remaining 200-odd pixels merely select. Missing it is
+              safe; missing the row is not, and the two were four pixels apart.
+              The glyph stays 14px: what grows is the area around it, which is
+              the part a pointer is aiming at, and `styles.test.ts` reads the
+              floor back out of this class list.
+          */
           <button
-            className="rail-delete"
+            className={DELETE_ICON}
             // The backend refuses this outright for the conversation a turn is
             // running in; the other rows stay live, because deleting one of
             // them costs the running turn nothing.
@@ -222,27 +282,47 @@ export function Rail({
   };
 
   return (
-    <aside className="rail" style={{ width }}>
+    <aside
+      className="rail flex-none flex flex-col min-h-0 bg-rail"
+      style={{ width }}
+    >
       {/* Clears the macOS traffic lights, which float over this corner, and
           carries the wordmark at the one height that lines its rule up with
           the topbar's across the fold. */}
-      <div className="rail-brand">
+      <div className="rail-brand h-11 flex-none flex items-center gap-2 px-gutter-rail border-b border-rule">
         {brand?.logo ? (
-          /* A theme's own mark, inlined as a data URI by the loader. Sized by
-             the stylesheet rather than by the file, because a logo that came
-             out 200px tall would take the traffic lights with it. */
-          <img className="rail-logo" src={brand.logo} alt="" aria-hidden="true" />
+          /*
+             A theme's own mark, inlined as a data URI by the loader.
+
+             Capped rather than trusted: the file is somebody's SVG and its
+             intrinsic size is whatever their editor wrote. Unbounded, a 200px
+             logo takes the 44px brand row with it — and that row is what
+             clears the macOS traffic lights, so the failure is a window whose
+             close button is under a picture. `object-contain` keeps the aspect
+             ratio inside the box rather than squashing a wordmark that is
+             wider than it is tall.
+          */
+          <img
+            className="rail-logo w-auto max-w-24 h-4 object-contain object-left"
+            src={brand.logo}
+            alt=""
+            aria-hidden="true"
+          />
         ) : (
           <Logo />
         )}
         {/* Null is "no opinion" and falls back to the app's name; empty string
             is a decision, and means a mark standing on its own. */}
-        {brand?.wordmark !== "" && <span>{brand?.wordmark ?? "taurus"}</span>}
+        {brand?.wordmark !== "" && (
+          <span className="font-mono text-11-5 tracking-[0.06em] text-dim">
+            {brand?.wordmark ?? "taurus"}
+          </span>
+        )}
       </div>
 
-      <div className="rail-pad">
+      <div className="rail-pad px-2 pt-2.5 pb-2.5">
         <button
-          className="rail-workspace"
+          className="rail-workspace w-full flex items-center gap-2 py-2 px-3 rounded-md bg-hover text-left hover:not-disabled:bg-active"
           // Switching folders closes the conversation and reconnects every MCP
           // server, neither of which a running turn survives.
           disabled={busy}
@@ -255,19 +335,23 @@ export function Rail({
           data-tip-side="bottom"
         >
           <span className="mark">t</span>
-          <span className="rail-workspace-name">
-            <b>{workspace ? basename(workspace) : "No workspace"}</b>
-            <span>{workspace ? parentDir(workspace) : "choose a folder"}</span>
+          <span className="rail-workspace-name flex-1 min-w-0">
+            <b className="block text-12-5 font-normal text-ink truncate">
+              {workspace ? basename(workspace) : "No workspace"}
+            </b>
+            <span className="block font-mono text-10 text-faint truncate">
+              {workspace ? parentDir(workspace) : "choose a folder"}
+            </span>
           </span>
-          <span className="rail-workspace-swap">
+          <span className="rail-workspace-swap flex-none inline-flex text-faint">
             <SwapIcon size={12} />
           </span>
         </button>
       </div>
 
-      <div className="rail-pad">
+      <div className="rail-pad px-2 pb-2.5">
         <button
-          className="primary rail-new"
+          className="primary rail-new w-full py-2 px-2.5 text-13"
           onClick={onNew}
           disabled={busy}
           data-tip={
@@ -281,9 +365,21 @@ export function Rail({
         </button>
       </div>
 
-      <div className="rail-scroll">
+      {/*
+          The conversations, which get the room that is left and a floor under
+          it.
+
+          The floor is the point. The footer below is eight rows and three
+          headers, and at the window's 520px minimum it wants more height than
+          the rail has — so without `min-h-24` the list it is supposed to sit
+          under is squeezed to nothing and the footer overflows the rail
+          instead. Conversations are the app's spine; they are the one thing
+          here that must still be on screen when everything is competing for
+          the same pixels, so the footer is what gives way.
+      */}
+      <div className="rail-scroll flex-auto min-h-24 overflow-y-auto">
         {sessions.length === 0 && (
-          <p className="rail-empty">
+          <p className="rail-empty pt-1 px-gutter-rail text-12-5 text-faint">
             Nothing saved yet. Every conversation is written to disk as it
             happens.
           </p>
@@ -296,7 +392,7 @@ export function Rail({
             sections={sections}
             tip="Conversations you have touched today"
           >
-            <div className="rail-list">{today.map(item)}</div>
+            <div className="rail-list px-2 flex flex-col gap-px">{today.map(item)}</div>
           </Section>
         )}
         {earlier.length > 0 && (
@@ -307,12 +403,22 @@ export function Rail({
             sections={sections}
             tip="Everything older than today"
           >
-            <div className="rail-list">{earlier.map(item)}</div>
+            <div className="rail-list px-2 flex flex-col gap-px">{earlier.map(item)}</div>
           </Section>
         )}
       </div>
 
-      <div className="rail-foot">
+      {/*
+          The panels, the way out, and the provider.
+
+          `flex-initial` rather than a fixed height: it shrinks and scrolls
+          instead of holding its full size, which is what keeps it from pushing
+          the conversation list off the bottom of a short window. It takes what
+          it needs whenever there is room — every window that is not close to
+          the 520px minimum — so the scrolling is a floor under the worst case
+          rather than something anybody meets in normal use.
+      */}
+      <div className="rail-foot flex-initial overflow-y-auto border-t border-rule p-2 flex flex-col gap-px">
         {/*
             The seven panels, in three folds rather than one.
 
@@ -336,33 +442,34 @@ export function Rail({
           name="agent"
           label="Agent"
           sections={sections}
+          pad="pt-1"
           tip="What the model can do in this workspace, and what it already knows"
         >
-          <button className="rail-link accent" onClick={onSkills} data-tip={SKILLS_HINT}>
-            <span className="glyph">
+          <button className={LINK} onClick={onSkills} data-tip={SKILLS_HINT}>
+            <span className={`${GLYPH} text-accent`}>
               <SparkIcon />
             </span>
-            <b>Skills</b>
-            {skillCount !== null && <span className="count">{skillCount}</span>}
+            <b className="flex-1 font-normal">Skills</b>
+            {skillCount !== null && <span className="count font-mono text-10 text-faint">{skillCount}</span>}
           </button>
-          <button className="rail-link" onClick={onAgents} data-tip={AGENTS_HINT}>
-            <span className="glyph">
+          <button className={LINK} onClick={onAgents} data-tip={AGENTS_HINT}>
+            <span className={`${GLYPH} text-faint`}>
               <DelegateIcon />
             </span>
-            <b>Agents</b>
-            {agentCount !== null && <span className="count">{agentCount}</span>}
+            <b className="flex-1 font-normal">Agents</b>
+            {agentCount !== null && <span className="count font-mono text-10 text-faint">{agentCount}</span>}
           </button>
           <button
-            className="rail-link"
+            className={LINK}
             onClick={onMemory}
             data-tip="What earlier conversations here left for this one"
           >
-            <span className="glyph">
+            <span className={`${GLYPH} text-faint`}>
               <BookmarkIcon />
             </span>
-            <b>Memory</b>
+            <b className="flex-1 font-normal">Memory</b>
             {noteCount !== null && noteCount > 0 && (
-              <span className="count">{noteCount}</span>
+              <span className="count font-mono text-10 text-faint">{noteCount}</span>
             )}
           </button>
         </Section>
@@ -371,6 +478,7 @@ export function Rail({
           name="connections"
           label="Connections"
           sections={sections}
+          pad="pt-2.5"
           tip={connectionsHint(mcp, jobsRunning)}
           /* What a collapsed section is still obliged to say. A server that is
              configured and not answering is the one thing in here that is
@@ -384,18 +492,19 @@ export function Rail({
              job nothing else on screen would mention. */
           live={jobsRunning}
         >
-          <button className="rail-link" onClick={onMcp} data-tip={mcpHint(mcp)}>
-            <span className="glyph">
+          <button className={LINK} onClick={onMcp} data-tip={mcpHint(mcp)}>
+            <span className={`${GLYPH} text-faint`}>
               <PlugIcon />
             </span>
-            <b>MCP</b>
+            <b className="flex-1 font-normal">MCP</b>
             {mcp !== null && mcp.total > 0 && (
               /* Marked when some server is not answering, so a failure is
                  visible from the rail rather than only from inside the panel.
                  A configured server that is not there is the one state this
                  feature keeps being reported for. */
               <span
-                className={`count${mcp.connected < mcp.total ? " warn" : ""}`}
+                className="count font-mono text-10 text-faint data-warn:text-warn"
+                data-warn={mcp.connected < mcp.total || undefined}
               >
                 {mcp.connected < mcp.total
                   ? `${mcp.connected}/${mcp.total}`
@@ -404,7 +513,7 @@ export function Rail({
             )}
           </button>
           <button
-            className="rail-link"
+            className={LINK}
             onClick={onTerminal}
             data-tip={
               jobsRunning > 0
@@ -412,11 +521,13 @@ export function Rail({
                 : "A shell in this folder (⌃`)"
             }
           >
-            <span className="glyph">
+            <span className={`${GLYPH} text-faint`}>
               <TerminalIcon />
             </span>
-            <b>Terminal</b>
-            {jobsRunning > 0 && <span className="count live">{jobsRunning}</span>}
+            <b className="flex-1 font-normal">Terminal</b>
+            {jobsRunning > 0 && <span className="count font-mono text-10 text-accent" data-live>
+              {jobsRunning}
+            </span>}
           </button>
         </Section>
 
@@ -424,55 +535,56 @@ export function Rail({
           name="activity"
           label="Activity"
           sections={sections}
+          pad="pt-2.5"
           tip="What the turns so far have cost — tokens on one side, seconds on the other"
         >
           <button
-            className="rail-link"
+            className={LINK}
             onClick={onUsage}
             data-tip="What has filled the context window, and what every request costs before it starts"
           >
-            <span className="glyph">
+            <span className={`${GLYPH} text-faint`}>
               <GaugeIcon />
             </span>
-            <b>Context</b>
+            <b className="flex-1 font-normal">Context</b>
           </button>
           <button
-            className="rail-link"
+            className={LINK}
             onClick={onTraces}
             data-tip="Where each turn's time went — model calls, tools, and everything in between"
           >
-            <span className="glyph">
+            <span className={`${GLYPH} text-faint`}>
               <WaterfallIcon />
             </span>
-            <b>Traces</b>
+            <b className="flex-1 font-normal">Traces</b>
           </button>
         </Section>
 
         <button
-          className="rail-link"
+          className={LINK}
           onClick={onSettings}
           data-tip="Providers, models, permissions and everything else"
         >
-          <span className="glyph">
+          <span className={`${GLYPH} text-faint`}>
             <SlidersIcon />
           </span>
-          <b>Settings</b>
+          <b className="flex-1 font-normal">Settings</b>
         </button>
         {/* Three preferences on one row, so it cycles rather than toggles.
             A light/dark switch here would quietly throw away "follow the
             system", which is both the default and the only one of the three
             that can change on its own. */}
         <button
-          className="rail-link"
+          className={LINK}
           data-tip={THEME_HINT[theme]}
           onClick={() => onTheme(NEXT_THEME[theme])}
         >
-          <span className="glyph">{themeIcon(theme)}</span>
-          <b>{THEME_LABEL[theme]}</b>
+          <span className={`${GLYPH} text-faint`}>{themeIcon(theme)}</span>
+          <b className="flex-1 font-normal">{THEME_LABEL[theme]}</b>
         </button>
-        <div className="rail-status" data-tip={healthTitle(health)}>
-          <span className={`dot ${healthDot(health)}`} />
-          <span>{healthLabel(health)}</span>
+        <div className="rail-status flex items-center gap-2 py-2 px-3" data-tip={healthTitle(health)}>
+          <span className={`dot ml-1 ${healthDot(health)}`} />
+          <span className="font-mono text-10-5 text-faint truncate">{healthLabel(health)}</span>
         </div>
       </div>
     </aside>
@@ -500,6 +612,7 @@ function Section({
   warn,
   live,
   sections,
+  pad = "pt-4",
   children,
 }: {
   /** The key this section is remembered under. */
@@ -526,26 +639,72 @@ function Section({
    */
   live?: number;
   sections: { collapsed: (name: string) => boolean; toggle: (name: string) => void };
+  /**
+   * How much air the header takes above it.
+   *
+   * A header in the scrolling list can afford 16px, because only one of them is
+   * ever on screen at a time. Stacked three deep in a footer that also carries
+   * Settings, the theme and the provider, that same 16px is most of a
+   * conversation row's worth of nothing between each pair — so the footer's
+   * headers take the next step down the ladder, and its first takes less still
+   * because the rule along the top is already doing the separating.
+   */
+  pad?: string;
   children: ReactNode;
 }) {
   const shut = sections.collapsed(name);
+  const counted = count !== undefined || (live !== undefined && live > 0);
   return (
     <>
+      {/*
+          Still a micro-label to read — mono, tracked, faint — because the
+          sections are furniture and the conversations inside them are the
+          content. What changed when it became a button is only that it answers
+          a pointer: no border, no fill, and the same left edge every other line
+          in the rail sits on, so a column of headers does not read as a column
+          of controls.
+
+          The caret hangs in the gutter rather than in the text column. `pl-2`
+          is exactly where the conversation rows below start their hover
+          rectangles and where a selected row draws its 2px bar; that plus the
+          caret's 8px box and the 4px gap puts the *label* back on
+          --gutter-rail with every other line in the rail. Left of that line is
+          where the rail keeps the marks that are about a row rather than part
+          of it, and a disclosure triangle is one of those.
+
+          Shut, the header is the only thing standing for what is inside it, so
+          it stops being furniture and steps up to the weight of a row — and
+          the caret and the count come with it, which is why neither names a
+          colour of its own.
+      */}
       <button
-        className={`rail-group micro${shut ? " shut" : ""}`}
+        className={`rail-group micro group flex items-center gap-1 w-full pr-gutter-rail pb-1.5 pl-2 border-0 rounded-none bg-transparent text-left hover:not-disabled:bg-transparent hover:not-disabled:text-dim data-shut:text-dim ${pad}`}
+        data-shut={shut || undefined}
         aria-expanded={!shut}
         data-tip={warn ?? tip}
         onClick={() => sections.toggle(name)}
       >
-        <span className="rail-caret">{shut ? "▸" : "▾"}</span>
-        <b>{label}</b>
+        {/* Fixed width, so the label does not shift sideways as the caret
+            changes glyph. */}
+        <span className="rail-caret w-2 flex-none text-[8.5px] leading-none text-faint group-data-shut:text-dim">
+          {shut ? "▸" : "▾"}
+        </span>
+        <b className="font-normal">{label}</b>
         {/* Only while it is shut. Open, the rows are right there to be counted,
             and a number beside them is one more thing on a dense surface. */}
-        {shut && count !== undefined && <span className="count">{count}</span>}
-        {shut && live !== undefined && live > 0 && (
-          <span className="count live">{live}</span>
+        {shut && count !== undefined && (
+          <span className="count ml-auto font-mono text-10 tracking-normal">{count}</span>
         )}
-        {shut && warn && <span className="dot warn" />}
+        {shut && live !== undefined && live > 0 && (
+          <span className="count ml-auto font-mono text-10 tracking-normal text-accent" data-live>
+            {live}
+          </span>
+        )}
+        {/* A count and a warning together would put two things in one slot, so
+            they sit as a pair and only the first one takes the margin. */}
+        {shut && warn && (
+          <span className={`dot warn ${counted ? "ml-1.5" : "ml-auto"}`} />
+        )}
       </button>
       {!shut && children}
     </>

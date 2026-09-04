@@ -1,0 +1,10 @@
+/*
+ * The terminal emulator's own stylesheet, placed under this app's.
+ *
+ * xterm ships CSS that positions its viewport and paints it black, and the dock
+ * has opinions about both. Imported bare from the component it would arrive
+ * unlayered, which beats every layer in the cascade regardless of specificity —
+ * so the dock's rules would need `!important` to be heard, and one of them
+ * already carried it for exactly this reason.
+ */
+@import "@xterm/xterm/css/xterm.css" layer(vendor);

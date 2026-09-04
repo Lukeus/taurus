@@ -13,6 +13,8 @@ import type {
 import { plural, when } from "../lib/format";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
+import { DrawerHead } from "./Drawer";
+import { Problem } from "./Problem";
 
 /**
  * Files this conversation changed, the way back, and the way forward.
@@ -115,13 +117,9 @@ export function ChangesDrawer({
 
   return (
         <aside className="drawer changes-pane">
-          <header className="drawer-head">
-            <h2>Changes</h2>
+          <DrawerHead title="Changes" onClose={onClose}>
             <button onClick={refresh}>Refresh</button>
-            <button className="drawer-close" onClick={onClose} aria-label="Close">
-              ✕
-            </button>
-          </header>
+          </DrawerHead>
 
           <p className="drawer-intro">
             Every file Taurus changed in this conversation, and the state it was
@@ -139,7 +137,7 @@ export function ChangesDrawer({
             </p>
           )}
 
-          {error && <p className="settings-problem">{error}</p>}
+          {error && <Problem>{error}</Problem>}
 
           {done && (
             <section className="section">
@@ -377,7 +375,7 @@ function Everything({ sessionId, turns }: { sessionId: string; turns: number }) 
           </p>
         )}
 
-      {error && <p className="settings-problem">{error}</p>}
+      {error && <Problem>{error}</Problem>}
     </section>
   );
 }
@@ -496,7 +494,7 @@ export function TurnDetail({
               {reviewing ? "Reading it over…" : "Review this turn"}
             </button>
           </div>
-          {reviewError && <p className="settings-problem">{reviewError}</p>}
+          {reviewError && <Problem>{reviewError}</Problem>}
           {review && (
             <section className="section">
               {/* Not streaming: a review arrives whole or not at all. */}
@@ -518,7 +516,7 @@ export function TurnDetail({
         </div>
       )}
 
-      {error && <p className="settings-problem">{error}</p>}
+      {error && <Problem>{error}</Problem>}
 
       {committed && (
         <section className="section">

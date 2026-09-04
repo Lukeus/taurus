@@ -8,7 +8,9 @@ import {
   MAX_ITERATIONS_LIMIT,
 } from "../lib/limits";
 import { useStore } from "../state/store";
+import { DrawerHead } from "./Drawer";
 import { Modal } from "./Modal";
+import { Problem } from "./Problem";
 
 /**
  * Writing an agent without already knowing the frontmatter.
@@ -104,15 +106,11 @@ export function AgentEditor({
   return (
     <Modal onClose={onClose} className="scrim modal-scrim">
       <div className="modal agent-editor" onClick={(e) => e.stopPropagation()}>
-        <header className="drawer-head">
-          <h2>New agent</h2>
+        <DrawerHead title="New agent" onClose={onClose}>
           <span className={`tag ${target === "project" ? "project" : ""}`}>
             {target === "project" ? "project" : "all projects"}
           </span>
-          <button className="drawer-close" onClick={onClose} aria-label="Close">
-            ✕
-          </button>
-        </header>
+        </DrawerHead>
 
         <section className="agent-generate">
           <span className="micro">Describe what it should do</span>
@@ -143,33 +141,33 @@ export function AgentEditor({
             <label className="field">
               <span className="micro">Name</span>
               <input
-                className="mono"
+                className="font-mono"
                 value={name}
                 placeholder="code-reviewer"
                 onChange={(e) => setName(e.target.value)}
               />
-              <span className="hint mono">
+              <span className="hint font-mono">
                 kebab-case · saved as {name.trim() || "name"}.md
               </span>
             </label>
             <label className="field narrow">
               <span className="micro">Max iterations</span>
               <input
-                className="mono"
+                className="font-mono"
                 type="number"
                 min={1}
                 max={MAX_ITERATIONS_LIMIT}
                 value={maxIterations}
                 onChange={(e) => setMaxIterations(Number(e.target.value))}
               />
-              <span className="hint mono">1–{MAX_ITERATIONS_LIMIT}</span>
+              <span className="hint font-mono">1–{MAX_ITERATIONS_LIMIT}</span>
             </label>
           </div>
 
           <label className="field">
             <span className="field-label">
               <span className="micro">Description</span>
-              <span className={`hint mono${overLimit ? " over" : ""}`}>
+              <span className={`hint font-mono${overLimit ? " over" : ""}`}>
                 {description.length} / {DESCRIPTION_LIMIT}
               </span>
             </span>
@@ -218,17 +216,17 @@ export function AgentEditor({
           <label className="field">
             <span className="field-label">
               <span className="micro">System prompt</span>
-              <span className="hint mono">markdown · the .md body</span>
+              <span className="hint font-mono">markdown · the .md body</span>
             </span>
             <textarea
-              className="mono"
+              className="font-mono"
               rows={6}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
             />
           </label>
 
-          {error && <p className="settings-problem">{error}</p>}
+          {error && <Problem>{error}</Problem>}
         </div>
 
         <footer className="agent-editor-foot">

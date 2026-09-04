@@ -56,7 +56,7 @@ export function TableCard({ view }: { view: TableView }) {
       </div>
 
       <div className="table-box">
-        <div className="table-row head" style={{ gridTemplateColumns: template }}>
+        <div className="table-line head" style={{ gridTemplateColumns: template }}>
           {columns.map((column, i) => (
             <button
               key={i}
@@ -83,7 +83,7 @@ export function TableCard({ view }: { view: TableView }) {
         {ordered.map((row, i) => (
           <div
             key={i}
-            className="table-row"
+            className="table-line"
             style={{ gridTemplateColumns: template }}
           >
             {row.map((cell, j) => (
@@ -112,8 +112,8 @@ export function TableCard({ view }: { view: TableView }) {
 }
 
 function cellClass(kind: string | undefined, cell: string): string {
-  if (kind === "delta") return `table-cell delta ${direction(cell)}`;
-  return kind === "text" ? "table-cell" : "table-cell right";
+  if (kind === "delta") return `table-value delta ${direction(cell)}`;
+  return kind === "text" ? "table-value" : "table-value right";
 }
 
 /**

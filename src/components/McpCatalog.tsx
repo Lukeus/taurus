@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as api from "../lib/api";
 import type { CatalogEntry, McpServerView } from "../lib/api";
 import { searchCatalog } from "../lib/mcp";
+import { Problem } from "./Problem";
 
 /**
  * The servers Taurus knows how to add, and the ones it explains instead.
@@ -107,7 +108,7 @@ export function McpCatalog({
         aria-label="Search the catalogue"
       />
 
-      {error && <p className="settings-problem">{error}</p>}
+      {error && <Problem>{error}</Problem>}
       {!catalog && !error && <p className="drawer-loading">Reading the list…</p>}
 
       {catalog && shown.length === 0 && (

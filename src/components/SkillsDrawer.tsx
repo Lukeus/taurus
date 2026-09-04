@@ -4,7 +4,8 @@ import * as api from "../lib/api";
 import type { Instructions, SkillSummary } from "../lib/api";
 import { plural } from "../lib/format";
 import { useStore } from "../state/store";
-import { Modal } from "./Modal";
+import { Drawer } from "./Drawer";
+import { Problems } from "./Problem";
 
 type Filter = "all" | "project" | "attention";
 
@@ -63,147 +64,136 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   const { all, project, attention, shown } = partition(skills ?? [], filter);
 
   return (
-    <Modal onClose={onClose}>
-      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
-        <header className="drawer-head">
-          <h2>Skills</h2>
-          <button
-            disabled={rescanning}
-            onClick={async () => {
-              setRescanning(true);
-              try {
-                await api.reloadConfig();
-                setSkills(await api.listSkills());
-                setInstructions(await api.listInstructions().catch(() => []));
-                // The rescan replaced the host's catalog and its problems, so
-                // the count on the rail and the list in here have to come from
-                // after it. Without this a rescan that found a new skill showed
-                // it below and left the badge on the old number.
-                await refreshStatus();
-              } finally {
-                setRescanning(false);
-              }
-            }}
-          >
-            {rescanning ? "Rescanning…" : "Rescan"}
-          </button>
-          <button className="drawer-close" onClick={onClose} aria-label="Close">
-            ✕
-          </button>
-        </header>
+    <Drawer
+      title="Skills"
+      onClose={onClose}
+      actions={
+        <button
+          disabled={rescanning}
+          onClick={async () => {
+            setRescanning(true);
+            try {
+              await api.reloadConfig();
+              setSkills(await api.listSkills());
+              setInstructions(await api.listInstructions().catch(() => []));
+              // The rescan replaced the host's catalog and its problems, so the
+              // count on the rail and the list in here have to come from after
+              // it. Without this a rescan that found a new skill showed it
+              // below and left the badge on the old number.
+              await refreshStatus();
+            } finally {
+              setRescanning(false);
+            }
+          }}
+        >
+          {rescanning ? "Rescanning…" : "Rescan"}
+        </button>
+      }
+    >
+      {skills === null ? (
+        // Not "All 0" over an empty list, which is what a drawer that has
+        // finished reading and found nothing looks like. `MemoryDrawer` has
+        // always drawn the distinction; the counts here made it worse, by
+        // stating a number that was not an answer yet.
+        <p className="drawer-loading">Reading…</p>
+      ) : (
+      <div className="pill-row">
+        <button
+          className={`pill${filter === "all" ? " on" : ""}`}
+          onClick={() => setFilter("all")}
+        >
+          All {all.length}
+        </button>
+        <button
+          className={`pill${filter === "project" ? " on" : ""}`}
+          onClick={() => setFilter("project")}
+        >
+          This project {project.length}
+        </button>
+        <button
+          className={`pill${filter === "attention" ? " on" : ""}`}
+          onClick={() => setFilter("attention")}
+          disabled={attention.length === 0}
+        >
+          Needs attention {attention.length}
+        </button>
+      </div>
+      )}
 
-        {skills === null ? (
-          // Not "All 0" over an empty list, which is what a drawer that has
-          // finished reading and found nothing looks like. `MemoryDrawer` has
-          // always drawn the distinction; the counts here made it worse, by
-          // stating a number that was not an answer yet.
-          <p className="drawer-loading">Reading…</p>
-        ) : (
-        <div className="pill-row">
-          <button
-            className={`pill${filter === "all" ? " on" : ""}`}
-            onClick={() => setFilter("all")}
-          >
-            All {all.length}
-          </button>
-          <button
-            className={`pill${filter === "project" ? " on" : ""}`}
-            onClick={() => setFilter("project")}
-          >
-            This project {project.length}
-          </button>
-          <button
-            className={`pill${filter === "attention" ? " on" : ""}`}
-            onClick={() => setFilter("attention")}
-            disabled={attention.length === 0}
-          >
-            Needs attention {attention.length}
-          </button>
-        </div>
-        )}
+      {skills !== null && shown.length === 0 && (
+        <p className="drawer-empty">
+          {filter === "all"
+            ? "No skills yet. Taurus will offer to write one when it works out a procedure worth keeping."
+            : "Nothing here."}
+        </p>
+      )}
 
-        {skills !== null && shown.length === 0 && (
-          <p className="drawer-empty">
-            {filter === "all"
-              ? "No skills yet. Taurus will offer to write one when it works out a procedure worth keeping."
-              : "Nothing here."}
-          </p>
-        )}
-
-        <ul className="card-list">
-          {shown.map((skill) => (
-            <li key={`${skill.tier}:${skill.name}`} className="card">
-              <div className="card-body">
-                <div className="card-row">
-                  <span className="card-title">{skill.name}</span>
-                  <span className={`tag ${skill.tier === "project" ? "project" : ""}`}>
-                    {TIER_LABEL[skill.tier]}
-                  </span>
-                  {/* Only for skills Taurus did not install. Where a borrowed
-                      skill came from is the first thing you want to know about
-                      it; where Taurus's own skills live is not news. */}
-                  {originLabel(skill.origin, skill.tier) && (
-                    <span className="tag">
-                      {originLabel(skill.origin, skill.tier)}
-                    </span>
-                  )}
-                  {skill.degraded && <span className="tag warn">degraded</span>}
-                </div>
-                <span className="card-sub">{skill.when_to_use}</span>
-                {/* The skill's own claim about what it needs to run. Taurus
-                    cannot check it, and says so by placing it here rather than
-                    beside `degraded`, which is a fact Taurus established. */}
-                {skill.compatibility && (
-                  <span className="card-files">needs {skill.compatibility}</span>
-                )}
-                {/* Wrong but survivable — a name in the wrong case, a colon
-                    the YAML never quoted. The skill works, so it belongs on
-                    its own row rather than under "Could not load". */}
-                {skill.warnings.map((warning) => (
-                  <span key={warning} className="card-files warn">
-                    {warning}
-                  </span>
-                ))}
-                {skill.degraded ? (
-                  <span className="card-files warn">
-                    {skill.degraded} — Taurus will follow the written steps.
-                  </span>
-                ) : (
-                  skill.scripts.length > 0 && (
-                    <span className="card-files">
-                      {plural(skill.scripts.length, "script")} ·{" "}
-                      {[...new Set(skill.scripts.map((s) => s.interpreter))].join(", ")}
-                    </span>
-                  )
-                )}
-                {/* What the skill says it reaches for. Advisory — it is not a
-                    grant, and every call still meets the permission gate — but
-                    it is the one thing you would want to read before running
-                    something a model wrote. */}
-                {skill.allowed_tools.length > 0 && (
-                  <span className="card-files">
-                    uses {skill.allowed_tools.join(", ")}
+      <ul className="card-list">
+        {shown.map((skill) => (
+          <li key={`${skill.tier}:${skill.name}`} className="card">
+            <div className="card-body">
+              <div className="card-row">
+                <span className="card-title">{skill.name}</span>
+                <span className={`tag ${skill.tier === "project" ? "project" : ""}`}>
+                  {TIER_LABEL[skill.tier]}
+                </span>
+                {/* Only for skills Taurus did not install. Where a borrowed
+                    skill came from is the first thing you want to know about
+                    it; where Taurus's own skills live is not news. */}
+                {originLabel(skill.origin, skill.tier) && (
+                  <span className="tag">
+                    {originLabel(skill.origin, skill.tier)}
                   </span>
                 )}
+                {skill.degraded && <span className="tag warn">degraded</span>}
               </div>
-            </li>
-          ))}
-        </ul>
+              <span className="card-sub">{skill.when_to_use}</span>
+              {/* The skill's own claim about what it needs to run. Taurus
+                  cannot check it, and says so by placing it here rather than
+                  beside `degraded`, which is a fact Taurus established. */}
+              {skill.compatibility && (
+                <span className="card-files">needs {skill.compatibility}</span>
+              )}
+              {/* Wrong but survivable — a name in the wrong case, a colon
+                  the YAML never quoted. The skill works, so it belongs on
+                  its own row rather than under "Could not load". */}
+              {skill.warnings.map((warning) => (
+                <span key={warning} className="card-files warn">
+                  {warning}
+                </span>
+              ))}
+              {skill.degraded ? (
+                <span className="card-files warn">
+                  {skill.degraded} — Taurus will follow the written steps.
+                </span>
+              ) : (
+                skill.scripts.length > 0 && (
+                  <span className="card-files">
+                    {plural(skill.scripts.length, "script")} ·{" "}
+                    {[...new Set(skill.scripts.map((s) => s.interpreter))].join(", ")}
+                  </span>
+                )
+              )}
+              {/* What the skill says it reaches for. Advisory — it is not a
+                  grant, and every call still meets the permission gate — but
+                  it is the one thing you would want to read before running
+                  something a model wrote. */}
+              {skill.allowed_tools.length > 0 && (
+                <span className="card-files">
+                  uses {skill.allowed_tools.join(", ")}
+                </span>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
 
-        <InstructionsSection instructions={instructions} />
+      <InstructionsSection instructions={instructions} />
 
-        {problems.length > 0 && (
-          <section className="section">
-            <span className="micro">Could not load</span>
-            {problems.map((problem) => (
-              <p key={problem.message} className="settings-problem">
-                {problem.message}
-              </p>
-            ))}
-          </section>
-        )}
-      </aside>
-    </Modal>
+      {problems.length > 0 && (
+        <Problems problems={problems.map((p) => p.message)} />
+      )}
+    </Drawer>
   );
 }
 

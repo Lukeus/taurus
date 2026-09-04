@@ -53,7 +53,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
 describe("the panels, grouped", () => {
   /** The fold headers, in the order the rail stacks them. */
   const groups = (html: string) =>
-    [...html.matchAll(/class="rail-group[^"]*"[^>]*>.*?<b>([^<]*)<\/b>/g)].map(
+    [...html.matchAll(/class="rail-group[^"]*"[^>]*>.*?<b[^>]*>([^<]*)<\/b>/g)].map(
       ([, label]) => label,
     );
 
@@ -73,7 +73,7 @@ describe("the panels, grouped", () => {
     // later and dropped outside the three is a failure rather than a row that
     // quietly lands beside Settings.
     const html = draw({ sessions: [] });
-    const links = [...html.matchAll(/class="rail-link[^"]*"[^>]*>.*?<b>([^<]*)<\/b>/g)].map(
+    const links = [...html.matchAll(/class="rail-link[^"]*"[^>]*>.*?<b[^>]*>([^<]*)<\/b>/g)].map(
       ([, label]) => label,
     );
     expect(links).toEqual([
@@ -135,7 +135,7 @@ describe("branch awareness", () => {
  * the behaviour it was written for.
  */
 function subtitleOf(html: string, title: string): string {
-  const row = html.match(new RegExp(`<b>${title}</b><span[^>]*>([^<]*)</span>`));
+  const row = html.match(new RegExp(`<b[^>]*>${title}</b><span[^>]*>([^<]*)</span>`));
   expect(row, `the rail drew no row titled "${title}"`).not.toBeNull();
   return row![1];
 }
@@ -257,7 +257,7 @@ describe("provider health", () => {
   it("says a provider is unreachable rather than showing it as idle", () => {
     const html = label({ state: "unreachable", id: "apim" });
     expect(html).toContain("apim · unreachable");
-    expect(html).toContain("dot error");
+    expect(html).toMatch(/class="dot[^"]*\berror\b/);
   });
 
   it("points at the missing configuration when there is no provider at all", () => {
@@ -286,7 +286,7 @@ describe("the foot links", () => {
     // servers from four broken ones, and a server that is configured and not
     // there is the failure people actually hit.
     const html = draw({ mcp: { total: 4, connected: 3 } });
-    expect(html).toContain("count warn");
+    expect(html).toContain("data-warn");
     expect(html).toContain("3/4");
     // The fraction carries it without colour, for a screenshot and for a reader
     // who cannot tell amber from grey.

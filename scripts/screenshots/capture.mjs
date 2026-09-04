@@ -56,6 +56,10 @@ const SHOTS = [
   // because a repository carrying its own branding is the half of this that a
   // picture of one global theme would not say exists.
   { name: "appearance", shot: "appearance", theme: "dark" },
+  // The providers tab with a card open, which is where nearly all of the
+  // Settings form lives — the fields, the per-model overrides, and the row a
+  // key is stored from.
+  { name: "providers", shot: "providers", theme: "dark" },
   // A profile rather than a page of rows, and a file with real problems in it:
   // one column 42% missing, one with too many distinct values to rank. A grid
   // of clean numbers would be a picture of a spreadsheet.
