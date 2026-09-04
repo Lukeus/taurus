@@ -1,0 +1,232 @@
+/*
+ * Tailwind, taught to speak the palette that was already here.
+ *
+ * The stylesheet next door names the Lukeus tokens once at the top and then
+ * writes everything below in roles — the window at --bg, a panel raised off it
+ * at --bg-raised, anything inset back into a panel at --bg-sunken. That ladder
+ * is the design system; Tailwind is a way of writing it down, not a second
+ * opinion about it. So this file does exactly one thing: it hands Tailwind the
+ * roles as its own theme, and takes its defaults away.
+ *
+ * What that buys is that nothing else has to change. The light theme still
+ * restates only the raw --lk-* tokens, a custom theme still writes fourteen
+ * inline properties on <html>, and `contrast.test.ts` still measures the pairs
+ * the app puts on screen — because `bg-raised` compiles to the same
+ * `var(--bg-raised)` the hand-written rule used, resolved at the element rather
+ * than frozen at build time. There is no `dark:` variant anywhere in this app
+ * and there should never be one: a token that means the same thing under both
+ * themes is what the ladder is for, and a `dark:` prefix is that decision made
+ * a second time, in a place the theme editor cannot reach.
+ *
+ * `@theme inline` is what keeps that true. Without it Tailwind would emit
+ * `--color-raised: var(--bg-raised)` into :root and have utilities read *that*,
+ * which works but adds a hop and freezes the lookup at the root. With it the
+ * utility is `background-color: var(--bg-raised)` directly, so an element under
+ * a subtree that overrides a token gets the override.
+ *
+ * Preflight is deliberately not imported. Tailwind's reset and this app's are
+ * answers to the same question, and this app's is already written — the margin
+ * collapse, the box-sizing, the button and input primitives, the scrollbars.
+ * Layering a second reset under it would change pixels in twenty-one screenshot
+ * baselines to arrive back where the app already was.
+ */
+
+/*
+ * The order everything is written in, declared once and up front.
+ *
+ * `taurus` is the hand-written stylesheet, wrapped at both ends. It has to be a
+ * layer rather than plain CSS, because unlayered rules beat every layer no
+ * matter how specific the utility: left alone, `button { padding: 6px 12px }`
+ * would quietly win over `px-3 py-1.5` on a converted button and the conversion
+ * would look done while changing nothing. Naming it puts the two in the same
+ * conversation — a utility overrides a rule, a rule overrides a vendor default,
+ * and which of the two files a style came from stops mattering.
+ *
+ * `vendor` is below it for the same reason in the other direction: xterm ships
+ * its own sheet, and this app's opinion about the terminal's scrollbar should
+ * not have to be spelled `!important` to be heard.
+ */
+@layer theme, base, vendor, taurus, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/*
+ * Only this app's own source. Automatic detection would walk up to the git root
+ * and pull in `.ui-samples/`, whose four hundred Tailwind Plus files are a
+ * reference sitting in the tree rather than code that ships — every gray-500
+ * and indigo-600 in them would be generated into the bundle for markup nobody
+ * renders.
+ */
+@source "./";
+
+/*
+ * The escape hatch, named so that reaching for it is visible.
+ *
+ * The roles below already swap with the theme, so a rule that needs to know
+ * which theme is showing is a rule that has found something the ladder does not
+ * cover — a shadow that needs less black on a light ground, an image that needs
+ * a different treatment. Rare, and worth being able to write; not the way
+ * colour is normally expressed here.
+ */
+@custom-variant light (&:where(:root[data-theme="light"], :root[data-theme="light"] *));
+
+@theme inline {
+  /* ------------------------------------------------------------------ colour */
+  /*
+   * Tailwind's own palette is cleared rather than merely unused. This app has
+   * one accent and three surfaces; `bg-gray-800` compiles fine, sits a shade
+   * off every panel around it, and survives review because it looks nearly
+   * right. Removing the names is the only way that stays impossible.
+   */
+  --color-*: initial;
+
+  /* The surface ladder, in the order it stacks. */
+  --color-canvas: var(--bg);
+  --color-rail: var(--bg-rail);
+  --color-raised: var(--bg-raised);
+  --color-sunken: var(--bg-sunken);
+  --color-elevated: var(--bg-elevated);
+  --color-hover: var(--bg-hover);
+  --color-active: var(--bg-active);
+  --color-row: var(--bg-row);
+
+  /* Three weights of text, and no fourth. */
+  --color-ink: var(--text);
+  --color-dim: var(--text-dim);
+  --color-faint: var(--text-faint);
+
+  /*
+   * One hairline weight, under two names, because the stylesheet has always
+   * had two: --border is the edge of a box and --rule is a divider drawn
+   * across one. They resolve to the same colour and always have; keeping both
+   * means a converted rule still says which of the two jobs it is doing.
+   *
+   * --thread is the third and the only one that differs — the transcript's
+   * line across open background, mixed toward transparent so it composites
+   * against whatever is behind it.
+   */
+  --color-line: var(--border);
+  --color-rule: var(--rule);
+  --color-thread: var(--thread);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-on-accent: var(--on-accent);
+
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+
+  /* `border-transparent` on a control that gains a border on hover, and
+     `bg-transparent` on one that gains a fill, keep the box from moving. */
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  /* ------------------------------------------------------------------ radius */
+  --radius-*: initial;
+  --radius-sm: var(--r-sm);
+  --radius-base: var(--r);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+  --radius-full: 9999px;
+
+  /* ------------------------------------------------------------------- type */
+  --font-*: initial;
+  --font-sans: var(--sans);
+  --font-display: var(--display);
+  --font-mono: var(--mono);
+  --font-terminal: var(--mono-terminal);
+
+  /*
+   * The type scale, named by the size it is.
+   *
+   * The stylesheet next door argues that a distance reads better as its own
+   * value than as a name for one — `padding: 8px 12px` says what it does where
+   * `var(--sp-4) var(--sp-6)` needs a lookup — and a font size is the same kind
+   * of fact. `text-12-5` is the app's control size whether or not you know that
+   * is what the buttons use, and a rule converted from `font-size: 12.5px`
+   * lands on it without a translation step anyone can get wrong.
+   *
+   * The half-steps are here because they are real: 11.5px carries twenty-two
+   * rules and 10.5px twenty-one. Consolidating them onto whole pixels is a
+   * defensible change to make on purpose; it is not one to make silently while
+   * moving a file to a new syntax.
+   *
+   * A size and no leading, which is the opposite of what Tailwind ships and is
+   * the point. Every `--text-*--line-height` here would make `text-12-5` set
+   * leading as well as size, and this app decides leading once — 1.55 on the
+   * body — and overrides it only where something is deliberately tight. Pairing
+   * the two cost the workspace button five and a half pixels of height the
+   * first time it was converted, because the rule it replaced had never named a
+   * line height at all: it inherited one. A conversion that changes what a rule
+   * inherits is a conversion that has changed the design.
+   */
+  --text-*: initial;
+  --text-10: 10px;
+  --text-10-5: 10.5px;
+  --text-11: 11px;
+  --text-11-5: 11.5px;
+  --text-12: 12px;
+  --text-12-5: 12.5px;
+  --text-13: 13px;
+  --text-13-5: 13.5px;
+  --text-14: 14px;
+  --text-15: 15px;
+  --text-16: 16px;
+  --text-22: 22px;
+  --text-24: 24px;
+
+  /* The one tracking every mono micro-label shares, so a tag, a section label
+     and a run header line up as the same kind of thing. */
+  --tracking-*: initial;
+  --tracking-label: var(--tracking-mono);
+  /* And the way back off it, for the counts that sit inside a tracked label
+     and must not inherit its spacing. */
+  --tracking-normal: 0em;
+
+  /* ----------------------------------------------------------------- motion */
+  /*
+   * One easing curve and two durations, from the design system's own scale:
+   * subtle only, no neon glow, no bounce. Tailwind ships three curves and
+   * eleven durations, which is ten more decisions than this app makes.
+   */
+  --ease-*: initial;
+  --ease-lk: var(--ease);
+  --default-transition-timing-function: var(--ease);
+
+  --animate-*: initial;
+
+  /* ----------------------------------------------------------------- extent */
+  /*
+   * Pinned to pixels rather than left at Tailwind's 0.25rem, so `p-3` is twelve
+   * pixels and not twelve-if-the-root-font-size-is-sixteen. Everything else in
+   * this app is measured in px and the two should not disagree.
+   *
+   * The scale stays dynamic — `w-*`, `h-*` and `size-*` draw on it too, and
+   * those were never on the ladder. The ladder is a constraint on padding,
+   * margin and gap, and it is enforced where it can see the whole app at once:
+   * `styles.test.ts` reads it out of the stylesheet and out of every className
+   * in the tree.
+   */
+  --spacing: 4px;
+
+  /* The two gutters that make the window look assembled, and the reading
+     measure that keeps a sentence from running the width of a monitor. */
+  --spacing-gutter: var(--gutter);
+  --spacing-gutter-rail: var(--gutter-rail);
+  --spacing-run-indent: var(--run-indent);
+  --container-*: initial;
+  --container-measure: var(--measure);
+
+  /* ---------------------------------------------------------------- shadow */
+  --shadow-*: initial;
+  --shadow-lift: var(--lift);
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+  --text-shadow-*: initial;
+  --blur-*: initial;
+  --perspective-*: initial;
+  --aspect-*: initial;
+}

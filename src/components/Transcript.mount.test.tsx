@@ -187,7 +187,7 @@ describe("a table", () => {
 
     // Second header is `Time`; its cells read 18.4s / 42.1s / 11.9s unsorted.
     click(host.querySelectorAll(".table-sort")[1]);
-    const times = [...host.querySelectorAll(".table-row:not(.head)")].map(
+    const times = [...host.querySelectorAll(".table-line:not(.head)")].map(
       (row) => row.children[1].textContent,
     );
 
@@ -200,7 +200,7 @@ describe("a table", () => {
 
     click(time());
     click(time());
-    const times = [...host.querySelectorAll(".table-row:not(.head)")].map(
+    const times = [...host.querySelectorAll(".table-line:not(.head)")].map(
       (row) => row.children[1].textContent,
     );
 
@@ -209,14 +209,14 @@ describe("a table", () => {
 
   it("tints a delta by direction, treating a rise as the cost", () => {
     const { host } = mount([drew("show_table", TABLE)]);
-    const deltas = [...host.querySelectorAll(".table-cell.delta")].map(
+    const deltas = [...host.querySelectorAll(".table-value.delta")].map(
       (cell) => cell.className,
     );
 
     expect(deltas).toEqual([
-      "table-cell delta flat",
-      "table-cell delta down",
-      "table-cell delta up",
+      "table-value delta flat",
+      "table-value delta down",
+      "table-value delta up",
     ]);
   });
 });

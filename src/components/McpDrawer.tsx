@@ -11,10 +11,12 @@ import type {
 import { plural, short } from "../lib/format";
 import { stateOf } from "../lib/mcp";
 import { McpCatalog } from "./McpCatalog";
+import { DrawerHead } from "./Drawer";
 import { McpServerEditor } from "./McpServerEditor";
 import { McpSetup } from "./McpSetup";
 import { useStore } from "../state/store";
 import { Modal } from "./Modal";
+import { Problem, Problems } from "./Problem";
 
 /**
  * Every tool server this workspace reaches, and everything needed to work out
@@ -150,8 +152,7 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
           />
         ) : (
         <>
-        <header className="drawer-head">
-          <h2>MCP servers</h2>
+        <DrawerHead title="MCP servers" onClose={onClose}>
           {/* Reconnect rather than Rescan: this restarts programs, which is a
               heavier thing than rereading a directory and should say so. */}
           <button
@@ -161,10 +162,7 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
           >
             {busy ? "Connecting…" : "Reconnect"}
           </button>
-          <button className="drawer-close" onClick={onClose} aria-label="Close">
-            ✕
-          </button>
-        </header>
+        </DrawerHead>
 
         <p className="drawer-intro">
           External tool servers. Everything they offer becomes a tool Taurus can
@@ -194,7 +192,7 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
           </p>
         )}
 
-        {error && <p className="settings-problem">{error}</p>}
+        {error && <Problem>{error}</Problem>}
 
         {servers !== null && servers.length === 0 && (
           <p className="drawer-empty">
@@ -242,14 +240,7 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
         </ul>
 
         {problems.length > 0 && (
-          <section className="section">
-            <span className="micro">Could not read</span>
-            {problems.map((problem) => (
-              <p key={problem.message} className="settings-problem">
-                {problem.message}
-              </p>
-            ))}
-          </section>
+          <Problems label="Could not read" problems={problems.map((p) => p.message)} />
         )}
 
         <PathSection environment={environment} servers={servers ?? []} />
@@ -373,7 +364,7 @@ function ServerCard({
           )}
         </div>
 
-        <span className="card-sub mono">
+        <span className="card-sub font-mono">
           {stdio
             ? [server.command, ...server.args].join(" ").trim() || "(no command)"
             : server.url || "(no url)"}
@@ -383,7 +374,7 @@ function ServerCard({
             connect is attempted, so the answer is there the first time someone
             looks rather than after a reload. */}
         {stdio && server.program && (
-          <span className="card-files mono">→ {server.program}</span>
+          <span className="card-files">→ {server.program}</span>
         )}
         {/* One line, not two. When the program is missing the connect error says
             the same thing at more length, and a card that states one fact twice
@@ -429,7 +420,7 @@ function ServerCard({
             {showTools && (
               <div className="tool-chips">
                 {server.status.tools.map((tool) => (
-                  <span key={tool} className="tool-chip mono">
+                  <span key={tool} className="tool-chip">
                     {tool}
                   </span>
                 ))}
@@ -551,7 +542,7 @@ export function PathSection({
       )}
 
       {open && (
-        <div className="path-list mono">
+        <div className="path-list font-mono">
           {environment.path.map((dir) => (
             <div
               key={dir}

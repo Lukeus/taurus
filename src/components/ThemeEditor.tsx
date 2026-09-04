@@ -10,7 +10,8 @@ import {
   slug,
   type ResolvedTheme,
 } from "../lib/theme";
-import { Modal } from "./Modal";
+import { Drawer } from "./Drawer";
+import { Problem } from "./Problem";
 
 /**
  * The editor behind "Customize" in Settings › Appearance.
@@ -155,189 +156,184 @@ export function ThemeEditor({
   const named = draft.name.trim().length > 0;
 
   return (
-    <Modal onClose={onClose}>
-      <aside className="drawer theme-editor" onClick={(e) => e.stopPropagation()}>
-        <header className="drawer-head">
-          <h2>{editing ? `Edit ${editing.name}` : "New theme"}</h2>
-          <button className="drawer-close" onClick={onClose} aria-label="Close">
-            ✕
+    <Drawer
+      title={editing ? `Edit ${editing.name}` : "New theme"}
+      onClose={onClose}
+      panel="theme-editor"
+    >
+      <p className="drawer-intro">
+        Saved as{" "}
+        <code>
+          {editing?.path ?? `~/.taurus/themes/${slug(draft.name) || "…"}.json`}
+        </code>
+        . The window is showing this draft; closing without saving puts it back.
+      </p>
+
+      <label className="settings-field">
+        <span className="micro">Name</span>
+        <input
+          value={draft.name}
+          onChange={(e) => set({ name: e.target.value })}
+          placeholder="Midnight"
+        />
+      </label>
+
+      {/* Which palette the fields below edit. It repaints the window with
+          them, because a light palette edited while the window is dark is a
+          light palette nobody has looked at. */}
+      <div className="pill-row" role="radiogroup" aria-label="Palette being edited">
+        {(["dark", "light"] as const).map((which) => (
+          <button
+            key={which}
+            role="radio"
+            aria-checked={painting === which}
+            className={`pill${painting === which ? " on" : ""}`}
+            onClick={() => setPainting(which)}
+          >
+            {which === "dark" ? "Dark palette" : "Light palette"}
           </button>
-        </header>
-
-        <p className="drawer-intro">
-          Saved as{" "}
-          <code>
-            {editing?.path ?? `~/.taurus/themes/${slug(draft.name) || "…"}.json`}
-          </code>
-          . The window is showing this draft; closing without saving puts it back.
-        </p>
-
-        <label className="settings-field">
-          <span className="micro">Name</span>
-          <input
-            value={draft.name}
-            onChange={(e) => set({ name: e.target.value })}
-            placeholder="Midnight"
-          />
-        </label>
-
-        {/* Which palette the fields below edit. It repaints the window with
-            them, because a light palette edited while the window is dark is a
-            light palette nobody has looked at. */}
-        <div className="pill-row" role="radiogroup" aria-label="Palette being edited">
-          {(["dark", "light"] as const).map((which) => (
-            <button
-              key={which}
-              role="radio"
-              aria-checked={painting === which}
-              className={`pill${painting === which ? " on" : ""}`}
-              onClick={() => setPainting(which)}
-            >
-              {which === "dark" ? "Dark palette" : "Light palette"}
-            </button>
-          ))}
-          <span className="theme-count">
-            {Object.keys(draft[painting]).length} of 14 set
-          </span>
-        </div>
-
-        {COLOR_GROUPS.map((group) => (
-          <section className="section" key={group.label}>
-            <span className="micro">{group.label}</span>
-            <p className="hint">{group.hint}</p>
-            <div className="theme-swatches">
-              {group.keys.map((key) => (
-                <Swatch
-                  key={key}
-                  name={key}
-                  /* The value the window is painting, which is the theme's own
-                     where it set one and the stylesheet's where it did not. */
-                  resolved={resolved[key] ?? "#000000"}
-                  own={draft[painting][key] ?? null}
-                  onChange={(value) => setColor(key, value)}
-                />
-              ))}
-            </div>
-          </section>
         ))}
+        <span className="theme-count">
+          {Object.keys(draft[painting]).length} of 14 set
+        </span>
+      </div>
 
-        {wrong.length > 0 && <Contrast failures={wrong} />}
-
-        <section className="section">
-          <span className="micro">Typefaces</span>
-          <p className="hint">
-            Families installed on this machine. Anything not installed falls back
-            to the stack the app ships, and no theme can bring a font with it —
-            the window loads no remote stylesheets.
-          </p>
-          {(
-            [
-              ["display", "Display", "Headings and the wordmark"],
-              ["body", "Body", "Everything that is a sentence"],
-              ["mono", "Mono", "Code, paths, counts, and every micro-label"],
-            ] as const
-          ).map(([key, label, hint]) => (
-            <label className="settings-field" key={key}>
-              <span className="micro">{label}</span>
-              <input
-                value={draft.fonts[key]}
-                placeholder="as shipped"
-                onChange={(e) => set({ fonts: { ...draft.fonts, [key]: e.target.value } })}
+      {COLOR_GROUPS.map((group) => (
+        <section className="section" key={group.label}>
+          <span className="micro">{group.label}</span>
+          <p className="hint">{group.hint}</p>
+          <div className="theme-swatches">
+            {group.keys.map((key) => (
+              <Swatch
+                key={key}
+                name={key}
+                /* The value the window is painting, which is the theme's own
+                   where it set one and the stylesheet's where it did not. */
+                resolved={resolved[key] ?? "#000000"}
+                own={draft[painting][key] ?? null}
+                onChange={(value) => setColor(key, value)}
               />
-              <span className="hint">{hint}</span>
-            </label>
-          ))}
+            ))}
+          </div>
         </section>
+      ))}
 
-        <section className="section">
-          <span className="micro">Brand</span>
-          <label className="settings-check">
+      {wrong.length > 0 && <Contrast failures={wrong} />}
+
+      <section className="section">
+        <span className="micro">Typefaces</span>
+        <p className="hint">
+          Families installed on this machine. Anything not installed falls back
+          to the stack the app ships, and no theme can bring a font with it —
+          the window loads no remote stylesheets.
+        </p>
+        {(
+          [
+            ["display", "Display", "Headings and the wordmark"],
+            ["body", "Body", "Everything that is a sentence"],
+            ["mono", "Mono", "Code, paths, counts, and every micro-label"],
+          ] as const
+        ).map(([key, label, hint]) => (
+          <label className="settings-field" key={key}>
+            <span className="micro">{label}</span>
             <input
-              type="checkbox"
-              checked={draft.wordmark !== null}
-              onChange={(e) => set({ wordmark: e.target.checked ? "" : null })}
+              value={draft.fonts[key]}
+              placeholder="as shipped"
+              onChange={(e) => set({ fonts: { ...draft.fonts, [key]: e.target.value } })}
             />
-            <span>
-              Replace the wordmark
-              <span className="hint">
-                Leave the box below empty for a mark on its own.
-              </span>
-            </span>
+            <span className="hint">{hint}</span>
           </label>
-          {draft.wordmark !== null && (
-            <label className="settings-field">
-              <span className="micro">Wordmark</span>
-              <input
-                value={draft.wordmark}
-                onChange={(e) => set({ wordmark: e.target.value })}
-                placeholder="(mark only)"
-              />
-            </label>
-          )}
-          <label className="settings-field">
-            <span className="micro">Logo</span>
-            <input
-              value={draft.logo}
-              onChange={(e) => set({ logo: e.target.value })}
-              placeholder="mark.svg"
-            />
+        ))}
+      </section>
+
+      <section className="section">
+        <span className="micro">Brand</span>
+        <label className="settings-check">
+          <input
+            type="checkbox"
+            checked={draft.wordmark !== null}
+            onChange={(e) => set({ wordmark: e.target.checked ? "" : null })}
+          />
+          <span>
+            Replace the wordmark
             <span className="hint">
-              An SVG or PNG, up to 256KB. A bare name is read from the folder the
-              theme file is in, so a logo committed beside it travels with it.
+              Leave the box below empty for a mark on its own.
             </span>
-          </label>
-        </section>
-
-        <section className="section">
-          <span className="micro">Shape</span>
+          </span>
+        </label>
+        {draft.wordmark !== null && (
           <label className="settings-field">
-            <span className="micro">Corner radius</span>
+            <span className="micro">Wordmark</span>
             <input
-              type="range"
-              min={0}
-              max={2}
-              step={0.1}
-              value={draft.shape.radius === "" ? 1 : Number(draft.shape.radius)}
-              onChange={(e) => set({ shape: { ...draft.shape, radius: e.target.value } })}
+              value={draft.wordmark}
+              onChange={(e) => set({ wordmark: e.target.value })}
+              placeholder="(mark only)"
             />
-            <span className="hint">
-              {draft.shape.radius === "" || Number(draft.shape.radius) === 1
-                ? "As shipped."
-                : Number(draft.shape.radius) === 0
-                  ? "Square."
-                  : `${Number(draft.shape.radius).toFixed(1)}× the shipped ladder.`}
-            </span>
           </label>
-          {(
-            [
-              ["gutter", "Centre gutter", "Where the transcript and the composer start"],
-              ["railGutter", "Rail gutter", "Where the rail's text starts"],
-            ] as const
-          ).map(([key, label, hint]) => (
-            <label className="settings-field" key={key}>
-              <span className="micro">{label}</span>
-              <input
-                inputMode="numeric"
-                value={draft.shape[key]}
-                placeholder="as shipped"
-                onChange={(e) => set({ shape: { ...draft.shape, [key]: e.target.value } })}
-              />
-              <span className="hint">{hint}</span>
-            </label>
-          ))}
-        </section>
+        )}
+        <label className="settings-field">
+          <span className="micro">Logo</span>
+          <input
+            value={draft.logo}
+            onChange={(e) => set({ logo: e.target.value })}
+            placeholder="mark.svg"
+          />
+          <span className="hint">
+            An SVG or PNG, up to 256KB. A bare name is read from the folder the
+            theme file is in, so a logo committed beside it travels with it.
+          </span>
+        </label>
+      </section>
 
-        {error && <p className="settings-problem">{error}</p>}
+      <section className="section">
+        <span className="micro">Shape</span>
+        <label className="settings-field">
+          <span className="micro">Corner radius</span>
+          <input
+            type="range"
+            min={0}
+            max={2}
+            step={0.1}
+            value={draft.shape.radius === "" ? 1 : Number(draft.shape.radius)}
+            onChange={(e) => set({ shape: { ...draft.shape, radius: e.target.value } })}
+          />
+          <span className="hint">
+            {draft.shape.radius === "" || Number(draft.shape.radius) === 1
+              ? "As shipped."
+              : Number(draft.shape.radius) === 0
+                ? "Square."
+                : `${Number(draft.shape.radius).toFixed(1)}× the shipped ladder.`}
+          </span>
+        </label>
+        {(
+          [
+            ["gutter", "Centre gutter", "Where the transcript and the composer start"],
+            ["railGutter", "Rail gutter", "Where the rail's text starts"],
+          ] as const
+        ).map(([key, label, hint]) => (
+          <label className="settings-field" key={key}>
+            <span className="micro">{label}</span>
+            <input
+              inputMode="numeric"
+              value={draft.shape[key]}
+              placeholder="as shipped"
+              onChange={(e) => set({ shape: { ...draft.shape, [key]: e.target.value } })}
+            />
+            <span className="hint">{hint}</span>
+          </label>
+        ))}
+      </section>
 
-        <div className="settings-actions">
-          <button className="primary" disabled={!named || saving} onClick={save}>
-            {saving ? "Saving…" : "Save theme"}
-          </button>
-          <button onClick={onClose}>Cancel</button>
-          {!named && <span className="hint">A theme needs a name to be saved under.</span>}
-        </div>
-      </aside>
-    </Modal>
+      {error && <Problem>{error}</Problem>}
+
+      <div className="settings-actions">
+        <button className="primary" disabled={!named || saving} onClick={save}>
+          {saving ? "Saving…" : "Save theme"}
+        </button>
+        <button onClick={onClose}>Cancel</button>
+        {!named && <span className="hint">A theme needs a name to be saved under.</span>}
+      </div>
+    </Drawer>
   );
 }
 

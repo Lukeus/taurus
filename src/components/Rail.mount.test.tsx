@@ -88,15 +88,15 @@ describe("a fold that is shut", () => {
     // while this was shut is the job nothing else on screen would mention.
     shut("connections");
     const host = mount({ jobsRunning: 2 });
-    const header = host.querySelector(".rail-group.shut")!;
+    const header = host.querySelector(".rail-group[data-shut]")!;
     expect(header.textContent).toContain("Connections");
-    expect(header.querySelector(".count.live")?.textContent).toBe("2");
+    expect(header.querySelector("[data-live]")?.textContent).toBe("2");
   });
 
   it("still marks a server that is not answering", () => {
     shut("connections");
     const host = mount({ mcp: { total: 3, connected: 1 } });
-    const header = host.querySelector(".rail-group.shut")!;
+    const header = host.querySelector(".rail-group[data-shut]")!;
     expect(header.querySelector(".dot.warn")).not.toBeNull();
     // And says which, because a mark that cannot say what is wrong is a mark
     // people learn to ignore.
@@ -106,8 +106,8 @@ describe("a fold that is shut", () => {
   it("draws nothing at all when there is nothing happening", () => {
     shut("connections");
     const host = mount({ jobsRunning: 0, mcp: { total: 2, connected: 2 } });
-    const header = host.querySelector(".rail-group.shut")!;
-    expect(header.querySelector(".count.live")).toBeNull();
+    const header = host.querySelector(".rail-group[data-shut]")!;
+    expect(header.querySelector("[data-live]")).toBeNull();
     expect(header.querySelector(".dot.warn")).toBeNull();
   });
 
@@ -133,7 +133,7 @@ describe("deleting a conversation", () => {
     const onDelete = vi.fn();
     const host = mount({ onDelete });
     press(host, '[aria-label="Delete Summarize it"]');
-    press(host, ".rail-delete.confirm");
+    press(host, ".rail-delete[data-confirm]");
     expect(onDelete).toHaveBeenCalledWith("b");
   });
 
@@ -152,7 +152,7 @@ describe("deleting a conversation", () => {
     const host = mount();
     press(host, '[aria-label="Delete Rename it"]');
     press(host, '[aria-label="Delete Summarize it"]');
-    expect(host.querySelectorAll(".rail-delete.confirm")).toHaveLength(1);
+    expect(host.querySelectorAll(".rail-delete[data-confirm]")).toHaveLength(1);
   });
 
   it("leaves the other rows deletable while a turn is running", () => {

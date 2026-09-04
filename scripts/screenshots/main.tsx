@@ -30,6 +30,7 @@ import {
   DATA_QUERY,
   DATA_TABLES,
   EVENTS,
+  GLOBAL_PROVIDERS,
   DOCUMENT,
   DOCUMENT_EVENTS,
   DOCUMENT_PROMPT,
@@ -37,7 +38,9 @@ import {
   MOTION_EVENTS,
   MCP_SERVERS,
   MODELS,
+  KEY_STATUSES,
   PERMISSION,
+  PERMISSION_RULES,
   PROMPT,
   RECIPES,
   RECIPE_RUN,
@@ -155,6 +158,14 @@ const ANSWERS: Record<string, unknown> = {
   mcp_environment: MCP_ENVIRONMENT,
   list_themes: THEMES,
   themes_dir: "~/.taurus/themes",
+  // Settings reads all four of these the moment it opens, whichever tab is
+  // showing. Without them the providers tab draws an empty list — which is how
+  // the drawer was photographed for a while, and why the form it is mostly
+  // made of had no picture of it at all.
+  list_global_providers: GLOBAL_PROVIDERS,
+  list_key_statuses: KEY_STATUSES,
+  keychain_available: true,
+  list_permission_rules: PERMISSION_RULES,
   // The dock's shell. Nothing is ever written back down the channel, so the
   // Terminal tab is an empty emulator — which is the right picture, because
   // the shot is of the tab beside it.
@@ -332,6 +343,19 @@ requestAnimationFrame(() => {
       appearance: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();
         (await click(".pill-row .pill", (b) => b === "Appearance"))();
+      },
+      // The providers tab, with a card unfolded — which is where nearly all of
+      // this drawer's form is. Folded it is a header row, and a picture of two
+      // header rows says nothing about the fields, the model list or the key
+      // row underneath them. The card opens itself only when it has a problem
+      // to show, so the shot presses the disclosure the way a reader would.
+      providers: async () => {
+        (await click(".rail-link b", (b) => b === "Settings"))();
+        const folds = await until(() => {
+          const found = document.querySelectorAll(".settings-provider-fold");
+          return found.length > 1 ? found : null;
+        });
+        (folds[1] as HTMLButtonElement).click();
       },
       data: () => {
         const tab = [...document.querySelectorAll(".pane-switch .seg")].find(

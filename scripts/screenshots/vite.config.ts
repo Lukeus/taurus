@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwind from "@tailwindcss/vite";
 
 /**
  * Serves the screenshot harness rather than the app.
@@ -10,7 +11,10 @@ import react from "@vitejs/plugin-react";
  * the images have to come from the interface that ships, not a copy of it.
  */
 export default defineConfig({
-  plugins: [react()],
+  // Tailwind too, and for the same reason the root moves: the images have to
+  // come from the interface that ships, and half of that interface is now
+  // compiled from the class names in it.
+  plugins: [react(), tailwind()],
   root: "scripts/screenshots",
   clearScreen: false,
 });

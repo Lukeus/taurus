@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
+import "../vendor.css";
 
 import * as api from "../lib/api";
 import type { BackgroundJob, Theme } from "../lib/api";

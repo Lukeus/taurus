@@ -1083,3 +1083,74 @@ test result: FAILED. 382 passed; 1 failed; 0 ignored; 0 measured
  * here any more than it is in the app.
  */
 export { default as MCP_CATALOG } from "../../crates/taurus-mcp/catalog/servers.json";
+
+/**
+ * The providers as `providers.json` holds them.
+ *
+ * Not the same list `get_status` reports, and deliberately so: that one is the
+ * *effective* set with this workspace's overrides folded in, and this is the
+ * global file the Settings drawer edits and writes back. One card is a local
+ * endpoint that needs no key and asks Ollama what it serves; the other is a
+ * gateway that names its own menu, because those are the two states the form
+ * has and one card can only be in one of them.
+ */
+export const GLOBAL_PROVIDERS = [
+  {
+    id: "ollama",
+    kind: "ollama",
+    base_url: "http://localhost:11434",
+    models: [],
+    default_model: "qwen3.6:27b",
+    api_key_env: null,
+    api_key_header: null,
+    native_tools: null,
+    context_length: null,
+    vision: null,
+    api_prefix: null,
+    thinking: null,
+  },
+  {
+    id: "apim",
+    kind: "open_ai_compatible",
+    base_url: "https://gateway.internal/openai",
+    // Two models with different answers to the same questions, which is the
+    // whole reason the per-model overrides exist: one gateway routinely fronts
+    // models that share neither a context window nor tool support, and the
+    // wire format reports neither.
+    models: [
+      { id: "gpt-4o", context_length: 128000, native_tools: true },
+      { id: "llama-3.1-8b", context_length: 8192, native_tools: false },
+    ],
+    default_model: "gpt-4o",
+    api_key_env: null,
+    api_key_header: "api-key",
+    native_tools: null,
+    context_length: null,
+    vision: null,
+    api_prefix: null,
+    thinking: null,
+  },
+];
+
+/**
+ * Where each provider's key comes from.
+ *
+ * The gateway's is in the credential store and the local one needs none, so the
+ * key row is photographed in the state that has something to say — "replace the
+ * stored key", with a Remove button beside it.
+ */
+export const KEY_STATUSES: [string, { kind: string; variable?: string }][] = [
+  ["ollama", { kind: "missing" }],
+  ["apim", { kind: "keychain" }],
+];
+
+/**
+ * Two approvals marked "always", one per scope.
+ *
+ * A long command pattern in the first, because that is the row the layout is
+ * about: it has to wrap rather than push the Revoke button off the edge.
+ */
+export const PERMISSION_RULES = [
+  { rule: "cargo test --workspace --all-targets", scope: "workspace" },
+  { rule: "git status", scope: "global" },
+];

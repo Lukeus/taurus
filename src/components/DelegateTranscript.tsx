@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
 import { entriesFromMessages, type Entry } from "../state/store";
+import { DrawerHead } from "./Drawer";
 import { ResizeHandle, useResizableWidth } from "./ResizeHandle";
 import { Transcript } from "./Transcript";
 import { Modal } from "./Modal";
@@ -61,12 +62,7 @@ export function DelegateTranscript({
       <div className="drawer-dock" onClick={(e) => e.stopPropagation()}>
         <ResizeHandle pane={pane} label="Delegate transcript width" />
         <aside className="drawer delegate-drawer" style={{ width: pane.size }}>
-          <header className="drawer-head">
-            <h2>{agent}</h2>
-            <button className="drawer-close" onClick={onClose} aria-label="Close">
-              ✕
-            </button>
-          </header>
+          <DrawerHead title={agent} onClose={onClose} />
 
           <p className="drawer-intro">
             The conversation this delegation had. Its own context, its own tools,

@@ -44,17 +44,17 @@ export function AgentProposalCard({
         <dt>Can use</dt>
         <dd>
           {proposal.tools === null ? (
-            <span className="muted">every tool you have</span>
+            <span className="text-dim">every tool you have</span>
           ) : (
             proposal.tools.join(", ")
           )}
         </dd>
         <dt>Stops after</dt>
-        <dd className="muted">{proposal.max_iterations} round trips</dd>
+        <dd className="text-dim">{proposal.max_iterations} round trips</dd>
         {proposal.rationale && (
           <>
             <dt>Why</dt>
-            <dd className="muted">{proposal.rationale}</dd>
+            <dd className="text-dim">{proposal.rationale}</dd>
           </>
         )}
       </dl>

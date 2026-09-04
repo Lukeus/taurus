@@ -1,4 +1,29 @@
 /*
+ * Tailwind first, and from here rather than from the entry point.
+ *
+ * This file is what the app imports and what the screenshot harness imports,
+ * and there is no third place to remember. The first arrangement put the
+ * Tailwind import in the entry point instead, which the harness does not go
+ * through: every image came out of a rail with none of its layout, and the app
+ * itself was fine, so nothing about running it said so. Pulling the utilities
+ * in from the stylesheet that needs them makes that impossible to half-do —
+ * one thing to import, and it brings the other with it in the right order.
+ */
+@import "./tailwind.css";
+
+/*
+ * Everything below is one cascade layer, named in `tailwind.css`.
+ *
+ * The wrapper is the whole of the change: no rule is re-indented, no selector
+ * moves, and the file reads exactly as it did. What it buys is that a Tailwind
+ * utility can override a rule here without a specificity fight — unlayered CSS
+ * beats every layer, so left as it was, `button { padding: 6px 12px }` would
+ * have silently won over the `px-3 py-1.5` on a converted button and the
+ * conversion would have looked finished while changing nothing on screen.
+ */
+@layer taurus {
+
+/*
  * One stylesheet, no framework. The UI is small enough that a build-time CSS
  * pipeline would cost more than it saves, and Tauri's CSP forbids remote
  * stylesheets anyway — which is why the three typefaces below are installed as
@@ -184,9 +209,18 @@
    */
   --run-indent: calc(12px + 12px + 12px);
 
-  /* The tracking every mono micro-label shares. One value, so a tag, a section
-     label and a run header line up as the same kind of thing. */
-  --tracking-label: 0.1em;
+  /*
+   * The tracking every mono micro-label shares. One value, so a tag, a section
+   * label and a run header line up as the same kind of thing.
+   *
+   * Named for the type rather than for the job, which is the opposite of every
+   * other role here and is deliberate: `tailwind.css` publishes this as the
+   * `tracking-label` utility, and a theme key that read a source token of the
+   * *same* name would compile to a property whose value is a `var()` of itself
+   * — a self-reference that is harmless only because the layer order happens
+   * to resolve it. Two names is what keeps that from being luck.
+   */
+  --tracking-mono: 0.1em;
 
   /*
    * The reading measure — how wide a *sentence* is allowed to get.
@@ -500,15 +534,21 @@ code {
 .spacer {
   flex: 1;
 }
-.muted {
-  color: var(--text-dim);
-}
-.small {
-  font-size: 12px;
-}
-.mono {
-  font-family: var(--mono);
-}
+/*
+ * `.muted` and `.mono` used to live here, one declaration each: `color:
+ * var(--text-dim)` and `font-family: var(--mono)`.
+ *
+ * They are gone because `text-dim` and `font-mono` say the same thing in the
+ * same tokens, and two vocabularies for one idea is the thing the rest of this
+ * file is arranged to avoid — a reader who knows one of them still has to learn
+ * the other, and a review cannot tell which is meant. An alias whose whole
+ * content is the declaration it stands for earns nothing.
+ *
+ * `.spacer` below is deliberately *not* in that category, though `flex: 1` is
+ * exactly what it means. `flex-1` says what the browser does; `spacer` says why
+ * the empty div is there at all, which is the one thing the declaration cannot
+ * say for itself.
+ */
 
 /*
  * The micro-label: mono, tracked out, uppercase. Names a region without
@@ -517,7 +557,7 @@ code {
 .micro {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -546,7 +586,7 @@ code {
 .tag {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   padding: 2px 8px;
   border-radius: 999px;
@@ -600,15 +640,6 @@ code {
 
 /* ------------------------------------------------------------------- rail */
 
-.rail {
-  flex: none;
-  background: var(--bg-rail);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  /* Width is the user's, set inline by the handle beside it. */
-}
-
 /*
  * The edge you drag to size a pane.
  *
@@ -657,68 +688,15 @@ body.resizing-y * {
 }
 
 /*
- * The rail's header: the mark, the name, and the hairline under both.
+ * A square badge holding one letter, in the accent.
  *
- * Also what clears the macOS traffic lights, which float over this corner — it
- * replaced an empty spacer of exactly this height. 44px is the topbar's height
- * too, so the two rules meet across the fold and the app reads as one window
- * rather than two panes that happen to be adjacent.
+ * Shared rather than owned by the rail that made it: the workspace button, a
+ * dataset, a document, a saved query and a background job all stand for a thing
+ * that has a name and no icon, and one initial on the accent is what the app
+ * says in that case. Still a rule rather than a class list because it is a
+ * primitive — eight components agreeing on a shape is exactly what a rule is
+ * for, and eight copies of the same nine utilities is what it prevents.
  */
-.rail-brand {
-  height: 44px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 var(--gutter-rail);
-  border-bottom: 1px solid var(--rule);
-}
-/*
- * A theme's own mark, in place of the app's.
- *
- * Capped rather than trusted: the file is somebody's SVG and its intrinsic
- * size is whatever their editor wrote. Unbounded, a 200px-tall logo takes the
- * 44px brand row with it — and that row is what clears the macOS traffic
- * lights, so the failure is a window whose close button is under a picture.
- * `object-fit` keeps the aspect ratio inside the box rather than squashing a
- * wordmark that is wider than it is tall.
- */
-.rail-logo {
-  width: auto;
-  max-width: 96px;
-  height: 16px;
-  object-fit: contain;
-  object-position: left center;
-}
-.rail-brand span {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  letter-spacing: 0.06em;
-  color: var(--text-dim);
-}
-
-
-.rail-pad {
-  padding: 0 8px 10px;
-}
-/* The header now draws a line the first block would otherwise sit on. */
-.rail-brand + .rail-pad {
-  padding-top: 10px;
-}
-
-.rail-workspace {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--bg-hover);
-  border-radius: var(--r-md);
-  padding: 8px 12px;
-  text-align: left;
-}
-.rail-workspace:hover:not(:disabled) {
-  background: var(--bg-active);
-}
 .mark {
   width: 22px;
   height: 22px;
@@ -732,350 +710,6 @@ body.resizing-y * {
   display: flex;
   align-items: center;
   justify-content: center;
-}
-.rail-workspace-name {
-  flex: 1;
-  min-width: 0;
-}
-.rail-workspace-name b {
-  display: block;
-  font-size: 12.5px;
-  font-weight: 400;
-  color: var(--text);
-}
-.rail-workspace-name span {
-  display: block;
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--text-faint);
-}
-.rail-workspace-name b,
-.rail-workspace-name span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.rail-workspace-swap {
-  color: var(--text-faint);
-  flex: none;
-  display: inline-flex;
-}
-
-.rail-new {
-  width: 100%;
-  padding: 8px 10px;
-  font-size: 13px;
-}
-
-/*
- * The conversations, which get the room that is left and a floor under it.
- *
- * The floor is the point. The footer below is eight rows and three headers,
- * and at the window's 520px minimum it wants more height than the rail has —
- * so without this the list it is supposed to sit under is squeezed to nothing
- * and the footer overflows the rail instead. Conversations are the app's
- * spine; they are the one thing here that must still be on screen when
- * everything is competing for the same pixels, so the footer is what gives
- * way. See `.rail-foot`.
- */
-.rail-scroll {
-  flex: 1 1 auto;
-  min-height: 96px;
-  overflow-y: auto;
-}
-/*
- * A section header, which is also the control that folds it.
- *
- * Still a micro-label to read — mono, tracked, faint — because the sections are
- * furniture and the conversations inside them are the content. What changed
- * when it became a button is only that it answers a pointer: no border, no
- * fill, and the same left edge every other line in the rail sits on, so a
- * column of headers does not read as a column of controls.
- */
-.rail-group {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  text-align: left;
-  /*
-   * The caret hangs in the gutter, not in the text column.
-   *
-   * 8px in — which is exactly where the conversation rows below start their
-   * hover rectangles, and where a selected row draws its 2px bar — plus the
-   * caret's 8px box and a 4px gap puts the *label* back on --gutter-rail with
-   * every other line in the rail. Left of that line is where the rail keeps
-   * the marks that are about a row rather than part of it, and a disclosure
-   * triangle is one of those.
-   */
-  padding: 16px var(--gutter-rail) 6px 8px;
-}
-.rail-group:hover:not(:disabled) {
-  background: transparent;
-  color: var(--text-dim);
-}
-.rail-group b {
-  font-weight: inherit;
-}
-/* The count and the warning mark sit at the far end, where the conversation
-   rows keep their trash cans — one right-hand column down the whole rail. */
-.rail-group .count,
-.rail-group .dot {
-  margin-left: auto;
-}
-.rail-group .count {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0;
-}
-/* A count and a warning together would put two things in one slot, so they
-   sit as a pair and only the first one takes the margin. */
-.rail-group .count + .dot {
-  margin-left: 6px;
-}
-.rail-caret {
-  /* Fixed, so the label does not shift sideways as the caret changes glyph. */
-  width: 8px;
-  flex: none;
-  font-size: 8.5px;
-  line-height: 1;
-  color: var(--text-faint);
-}
-/* Shut, the header is the only thing standing for what is inside it, so it
-   stops being furniture and reads at the weight of a row. */
-.rail-group.shut,
-.rail-group.shut .rail-caret {
-  color: var(--text-dim);
-}
-.rail-list {
-  padding: 0 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-/*
- * A conversation and the one destructive thing that can be done to it.
- *
- * The row carries the padding, the hover and the selection because what is in
- * it is two controls, not one: a button cannot contain another button, and a
- * trash can that only appeared on hover could not be reached from the keyboard
- * at all.
- */
-.rail-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border-radius: var(--r-sm);
-  border-left: 2px solid transparent;
-  padding: 8px 6px 8px 10px;
-  min-width: 0;
-}
-.rail-row:hover {
-  background: var(--bg-hover);
-}
-.rail-row.current {
-  background: var(--bg-active);
-  border-left-color: var(--accent);
-}
-/*
- * A row that has been asked to confirm holds its own ground, hover or not:
- * under the pointer it would otherwise look exactly like the four rows around
- * it, one of which is about to be deleted and three of which are not.
- */
-.rail-row.armed,
-.rail-row.armed:hover {
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-  border-left-color: var(--danger);
-}
-
-/* A conversation reads as text; only the hover tells you it is a control. */
-.rail-item {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: transparent;
-  border-radius: 0;
-  padding: 0;
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-/* The row is what lights up, so the title inside it must not light up again. */
-.rail-item:hover:not(:disabled) {
-  background: transparent;
-}
-/* Disabled because it is already open, which is not the same as unavailable. */
-.rail-row.current .rail-item:disabled {
-  opacity: 1;
-}
-.rail-item b {
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.rail-row.current .rail-item b {
-  color: var(--text);
-}
-.rail-item span {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* The armed row spends its subtitle line saying what is about to be lost;
-   there is no other room at this width to say it. */
-.rail-item span.warn {
-  color: var(--danger);
-}
-
-/*
- * The one control in the rail that cannot be taken back, and it measured 23×23
- * — the smallest target in the app, sitting against a row whose remaining
- * 200-odd pixels select. Missing it is safe; missing the row is not, and the
- * two were four pixels apart. The glyph stays 14px: what grows is the area
- * around it, which is the part a pointer is aiming at.
- */
-.rail-delete {
-  flex: none;
-  border: none;
-  border-radius: var(--r-sm);
-  background: transparent;
-  padding: 6px;
-  min-width: 28px;
-  min-height: 28px;
-  color: var(--text-faint);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.rail-delete:hover:not(:disabled) {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-}
-.rail-delete.confirm {
-  padding: 4px 8px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--danger);
-}
-
-.rail-empty {
-  padding: 4px var(--gutter-rail) 0;
-  font-size: 12.5px;
-  color: var(--text-faint);
-}
-
-/*
- * The panels, the way out, and the provider.
- *
- * Shrinks and scrolls rather than holding its full height, which is what keeps
- * it from pushing the conversation list off the bottom of a short window. It
- * takes what it needs whenever there is room — which is every window that is
- * not close to the 520px minimum — so the scrolling is a floor under the worst
- * case rather than something anybody meets in normal use.
- */
-.rail-foot {
-  flex: 0 1 auto;
-  overflow-y: auto;
-  border-top: 1px solid var(--rule);
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-/*
- * Three folds in a footer that used to hold one.
- *
- * A section header in the scrolling list above can afford 16px of air over it,
- * because only one of them is ever on screen at a time. Stacked three deep in
- * a footer that also carries Settings, the theme and the provider, that same
- * 16px is most of a conversation row's worth of nothing between each pair — so
- * the footer's headers take the next step down the ladder instead. The first
- * takes less still: the rule along the top of the footer is already doing the
- * separating its top padding would otherwise be for.
- */
-.rail-foot .rail-group {
-  padding-top: 10px;
-}
-.rail-foot > .rail-group:first-child {
-  padding-top: 4px;
-}
-
-/*
- * A count of things happening right now, as against a count of things that
- * exist.
- *
- * They share a slot — the far right of a row or of a shut fold — so they need
- * to be told apart by colour rather than by position. Faint is the register
- * for furniture, and how many skills are installed is furniture; how many
- * commands are running is not, and it stops being true on its own while you
- * are looking at it.
- */
-.rail-link .count.live,
-.rail-group .count.live {
-  color: var(--accent);
-}
-.rail-link {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: none;
-  background: transparent;
-  border-radius: var(--r-sm);
-  padding: 8px 12px;
-  font-size: 13px;
-  color: var(--text-dim);
-  text-align: left;
-}
-.rail-link:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-.rail-link .glyph {
-  width: 14px;
-  flex: none;
-  color: var(--text-faint);
-  display: inline-flex;
-  align-items: center;
-}
-.rail-link.accent .glyph {
-  color: var(--accent);
-}
-.rail-link b {
-  flex: 1;
-  font-weight: 400;
-}
-.rail-link .count {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--text-faint);
-}
-.rail-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-}
-.rail-status span {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.rail-status .dot {
-  margin-left: 4px;
 }
 
 /* ------------------------------------------------------------------- pane */
@@ -1554,7 +1188,7 @@ body.resizing-y * {
 .run-steps {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-dim);
 }
@@ -1856,7 +1490,7 @@ body.resizing-y * {
   gap: 10px;
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -2039,18 +1673,6 @@ body.resizing-y * {
   padding: 0 12px 12px;
 }
 
-/* The index build in Settings, which borrows the plan's bar rather than
-   growing a second one: they say the same thing — how far through a long job
-   is — and two bars that looked different would be two things to learn. */
-.index-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.index-bar {
-  width: 100%;
-}
-
 /* How far through, as a shape. Paired with the count beside it, which is the
    same fact for anyone the shape does not reach. Fixed-width in the summary
    row so the step text starts at the same place whatever the numbers are. */
@@ -2118,7 +1740,7 @@ body.resizing-y * {
 .plan-status {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   white-space: nowrap;
   color: var(--text-faint);
@@ -2174,17 +1796,6 @@ body.resizing-y * {
 /* Present for a screen reader, absent for everyone else. The marker beside
    each step is decorative, so the state it stands for has to be named
    somewhere the row can still be understood from. */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
 
 .view-foot,
 .questions-foot {
@@ -2296,7 +1907,7 @@ body.resizing-y * {
   fill: var(--text-faint);
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
 }
 
@@ -2376,19 +1987,30 @@ body.resizing-y * {
   background: var(--bg-sunken);
   overflow: hidden;
 }
-.table-row {
+/*
+ * A row of the table, and a value in it.
+ *
+ * Not `.table-row` and `.table-cell`, which is what they were called and what
+ * they obviously are. Both are CSS `display` values, so both are names Tailwind
+ * generates a utility for — and a utility outranks this layer by design, which
+ * meant `display: grid` below lost to `display: table-row` and every table in
+ * the app collapsed into a run of words. Nothing failed; the tables just
+ * stopped being tables. `styles.test.ts` now refuses any class name the utility
+ * layer also claims, so the next one is caught before it is drawn.
+ */
+.table-line {
   display: grid;
   gap: 0;
   align-items: center;
   padding: 8px 12px;
 }
-.table-row + .table-row {
+.table-line + .table-line {
   border-top: 1px solid var(--rule);
 }
-.table-row:not(.head):hover {
+.table-line:not(.head):hover {
   background: var(--bg-hover);
 }
-.table-row.head {
+.table-line.head {
   /* The same inset the body rows carry, so both grids measure the same box. */
   padding: 0 12px;
   border-bottom: 1px solid var(--rule);
@@ -2397,7 +2019,7 @@ body.resizing-y * {
 .table-sort {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
   background: transparent;
@@ -2428,7 +2050,7 @@ body.resizing-y * {
   color: var(--accent);
 }
 
-.table-cell {
+.table-value {
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--text);
@@ -2436,23 +2058,23 @@ body.resizing-y * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.table-cell.right {
+.table-value.right {
   text-align: right;
   color: var(--text-dim);
 }
 /* Up is the bad direction: every delta a table like this carries is a cost —
    build time, error count, bundle size. Nothing here can tell a cost from a
    benefit, so it commits to the common case rather than colouring at random. */
-.table-cell.delta {
+.table-value.delta {
   text-align: right;
 }
-.table-cell.delta.up {
+.table-value.delta.up {
   color: var(--danger);
 }
-.table-cell.delta.down {
+.table-value.delta.down {
   color: var(--ok);
 }
-.table-cell.delta.flat {
+.table-value.delta.flat {
   color: var(--text-faint);
 }
 
@@ -2769,7 +2391,7 @@ body.resizing-y * {
   flex: 1;
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -3171,7 +2793,7 @@ body.resizing-y * {
   font-family: var(--mono);
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   padding: 4px 8px;
   border-radius: 4px;
   border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
@@ -3271,7 +2893,7 @@ body.resizing-y * {
 .proposal-meta dt {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
   padding-top: 2px;
@@ -3468,7 +3090,7 @@ body.resizing-y * {
 .palette-group {
   padding: 8px 8px 4px;
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -3618,7 +3240,7 @@ body.resizing-y * {
 }
 .usage-total-row dt {
   font-size: 10.5px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -3638,7 +3260,7 @@ body.resizing-y * {
   gap: 8px;
   margin: var(--usage-gap) 0 4px;
   font-size: 12px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -3669,7 +3291,7 @@ body.resizing-y * {
 .usage-table thead th {
   font-size: 10.5px;
   font-weight: 500;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -3948,7 +3570,7 @@ body.resizing-y * {
    faint grey the rest of the micro-labels use. */
 .card-row .micro.turn-no {
   color: var(--accent);
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
 }
 .rewind-open {
   margin-top: 6px;
@@ -4129,128 +3751,21 @@ button.link:hover {
   color: var(--danger);
 }
 
-/* -------------------------------------------------------------- settings */
-
-.settings-provider {
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-/* Folded, the card is its header row and nothing else, so the column gap has
-   nothing to space and the padding is all that is left. */
-.settings-provider:not(.open) {
-  padding-block: 8px;
-}
-/* The disclosure. Sized to the row rather than to the glyph, so the whole left
-   edge of the header is the target — a 6px chevron is a thing you aim at. */
-.settings-provider-fold {
-  flex: none;
-  width: 22px;
-  align-self: stretch;
-  padding: 0;
-  background: none;
-  border: none;
-  color: var(--text-faint);
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-}
-.settings-provider-fold:hover {
-  color: var(--text);
-}
-.settings-provider-fold:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  border-radius: var(--r-sm);
-}
-.settings-id {
-  font-family: var(--mono);
-  min-width: 0;
-  flex: 1;
-}
-/* The key input takes the room; its buttons keep their intrinsic width so
-   "Store" and "Remove" stay side by side rather than wrapping under it. */
-.settings-key {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.settings-key input {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-}
-.settings-key button {
-  flex: none;
-}
-/* Stands in for the input where there is nothing to type into: no credential
-   store, or a provider that has not been saved yet. */
-.settings-key-none {
-  font-size: 12.5px;
-  color: var(--text-faint);
-  font-style: italic;
-  padding: 8px 0;
-}
-.settings-key-error {
-  font-size: 12px;
-  color: var(--danger);
-}
-
 /*
- * One row per model the provider serves.
+ * Three shapes whose names are a lie, and which are staying rules because of it.
  *
- * Two lines rather than four columns: an id, a context length and a tool-call
- * mode do not fit across a drawer at any width worth having, and the id is the
- * only one of them anybody scans down the list for. So the id leads its own
- * line with the remove button, and the overrides sit under it — indented, so a
- * row reads as one thing and the ids stay in a column.
+ * They are spelled `settings-*` because Settings wrote them, but a labelled
+ * field is in the theme editor too. A shape two components agree on is what a
+ * rule is for, and renaming them to say what they are is worth doing — inside a
+ * conversion of one drawer is not when to do it.
+ *
+ * There were four. `settings-problem` was the worst of them, worn by eleven
+ * panels, and deleting it during that conversion on the strength of the prefix
+ * took the red off every one of them at once with nothing failing. It is now
+ * `components/Problem.tsx`, which is where a shape that widely shared belongs:
+ * the eleven find it by importing it rather than by knowing which drawer
+ * happened to write it first.
  */
-.model-rows {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.model-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 6px 8px;
-  align-items: center;
-}
-.model-row input,
-.model-row select {
-  min-width: 0;
-  width: 100%;
-}
-.model-remove {
-  padding: 6px 8px;
-  color: var(--text-faint);
-}
-.model-caps {
-  grid-column: 1 / -1;
-  display: flex;
-  gap: 8px;
-  padding-left: 12px;
-  border-left: 1px solid var(--rule);
-}
-.model-caps input {
-  flex: 1;
-}
-.model-caps select {
-  flex: none;
-  max-width: 46%;
-}
-
-/* A granted rule can be a long command pattern; it wraps rather than
-   pushing the Revoke button off the edge of the drawer. */
-.rule-name {
-  font-size: 12.5px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
 .settings-field {
   display: flex;
   flex-direction: column;
@@ -4263,28 +3778,10 @@ button.link:hover {
   min-width: 0;
   font-family: var(--mono);
 }
-/* The sentence under a control explaining what it actually does. */
-.hint {
-  display: block;
-  font-size: 11.5px;
-  color: var(--text-faint);
-  line-height: 1.5;
-}
 .settings-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.settings-problem {
-  color: var(--danger);
-  margin: 0;
-  font-size: 12.5px;
-}
-.settings-note {
-  color: var(--warn);
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
 }
 .settings-check {
   display: flex;
@@ -4296,6 +3793,25 @@ button.link:hover {
 .settings-check input {
   margin-top: 4px;
 }
+
+/*
+ * The sentence under a control explaining what it actually does.
+ *
+ * Left under the heading of the drawer that wrote it, though eight panels now
+ * borrow it and by every other measure it is a primitive. Its position is
+ * load-bearing: the MCP drawer opens with `class="drawer-intro hint"` and means
+ * the second of those to win, and at equal specificity the only thing deciding
+ * that is which is written last. Filed up with `.micro` and `.mono` where it
+ * belongs by kind, it read a point larger and a shade brighter and every row
+ * under it moved three pixels down the screen.
+ */
+.hint {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
 /* ---------------------------------------------------------- theme editor */
 
 /*
@@ -4420,24 +3936,6 @@ button.link:hover {
 }
 .micro.warn {
   color: var(--warn);
-}
-
-.settings-paths {
-  margin: 0;
-  display: grid;
-  grid-template-columns: 88px 1fr;
-  gap: 6px 12px;
-  font-size: 12.5px;
-}
-.settings-paths dt {
-  color: var(--text-faint);
-}
-.settings-paths dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text-dim);
 }
 
 /* ── Agents ─────────────────────────────────────────────────────────────
@@ -4664,7 +4162,7 @@ button.link:hover {
   font-family: var(--mono);
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   color: var(--text-faint);
 }
 .diff-path {
@@ -4820,13 +4318,6 @@ button.link:hover {
   color: var(--text);
 }
 
-/* The rail badge goes amber when some server is not answering. The number is
-   already `3/4` in that case — the colour is the part you catch without
-   reading, and the fraction is the part that survives not seeing colour. */
-.rail-link .count.warn {
-  color: var(--warn);
-}
-
 /* Name and value side by side, because they are read as a pair, with the
    remove button on the end where it cannot be hit while tabbing between them. */
 .value-row {
@@ -4976,7 +4467,7 @@ button.link:hover {
 .dock-title {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-dim);
 }
@@ -5196,7 +4687,7 @@ button.link:hover {
   gap: 6px;
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
   background: transparent;
@@ -5362,7 +4853,7 @@ button.link:hover {
   border-bottom: 1px solid var(--rule);
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -5485,7 +4976,7 @@ button.link:hover {
   border-bottom: 1px solid var(--rule);
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -5852,7 +5343,7 @@ button.link:hover {
   border-radius: 999px;
   background: color-mix(in srgb, var(--ok) 18%, transparent);
   font-size: 10px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--ok);
 }
@@ -6720,7 +6211,7 @@ button.link:hover {
 .canvas-ask-where {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
   white-space: nowrap;
@@ -6743,7 +6234,7 @@ button.link:hover {
 .canvas-state {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
   color: var(--text-faint);
   white-space: nowrap;
@@ -7104,4 +6595,6 @@ button.link:hover {
   font-size: 12px;
   overflow-x: auto;
   white-space: pre;
+}
+
 }

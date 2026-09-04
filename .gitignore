@@ -23,3 +23,4 @@ bindings/
 # binaries we neither build nor own, pinned by hash in the script instead. See
 # the script's header for why they are shipped at all.
 src-tauri/conpty/
+.ui-samples/

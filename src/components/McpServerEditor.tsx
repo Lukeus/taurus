@@ -18,6 +18,7 @@ import {
   joinCommandLine,
   splitCommandLine,
 } from "../lib/mcp";
+import { DrawerHead } from "./Drawer";
 import { Modal } from "./Modal";
 
 /**
@@ -136,25 +137,20 @@ export function McpServerEditor({
   return (
     <Modal onClose={onClose} className="scrim modal-scrim">
       <div className="modal mcp-editor" onClick={(e) => e.stopPropagation()}>
-        <header className="drawer-head">
-          <h2>{server ? `Edit ${server.name}` : "Add MCP server"}</h2>
-          <button className="drawer-close" onClick={onClose} aria-label="Close">
-            ✕
-          </button>
-        </header>
+        <DrawerHead title={server ? `Edit ${server.name}` : "Add MCP server"} onClose={onClose} />
 
         <div className="agent-fields">
           <div className="field-row">
             <label className="field">
               <span className="micro">Name</span>
               <input
-                className="mono"
+                className="font-mono"
                 value={draft.name}
                 placeholder="filesystem"
                 aria-label="Name"
                 onChange={(e) => change({ name: e.target.value })}
               />
-              <span className="hint mono">
+              <span className="hint font-mono">
                 Its tools are called mcp__{draft.name.trim() || "name"}__…
               </span>
             </label>
@@ -194,7 +190,7 @@ export function McpServerEditor({
             <label className="field">
               <span className="micro">Command</span>
               <input
-                className="mono"
+                className="font-mono"
                 value={commandLine}
                 placeholder="npx -y @modelcontextprotocol/server-filesystem /tmp"
                 aria-label="Command"
@@ -212,7 +208,7 @@ export function McpServerEditor({
                   {parts.map((part, i) => (
                     <span
                       key={`${i}-${part}`}
-                      className={`tool-chip mono${i === 0 ? " lead" : ""}`}
+                      className={`tool-chip${i === 0 ? " lead" : ""}`}
                     >
                       {part}
                     </span>
@@ -229,7 +225,7 @@ export function McpServerEditor({
             <label className="field">
               <span className="micro">URL</span>
               <input
-                className="mono"
+                className="font-mono"
                 value={draft.url}
                 placeholder="https://mcp.example.com/mcp"
                 aria-label="URL"
@@ -316,14 +312,14 @@ export function ValueEditor({
       {values.map((value, index) => (
         <div key={index} className="value-row">
           <input
-            className="mono"
+            className="font-mono"
             value={value.key}
             placeholder={legend === "Headers" ? "Authorization" : "API_KEY"}
             aria-label={`${legend} name ${index + 1}`}
             onChange={(e) => patch(index, { key: e.target.value })}
           />
           <input
-            className="mono"
+            className="font-mono"
             type={value.secret && value.value === "" ? "password" : "text"}
             value={value.value}
             placeholder={
