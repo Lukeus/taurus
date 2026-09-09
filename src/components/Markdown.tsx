@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { grammarFor, paint } from "../lib/ink";
 import { CopyButton } from "./CopyButton";
+import { MermaidBlock } from "./MermaidBlock";
 
 /**
  * Markdown rendering for assistant output.
@@ -32,23 +33,29 @@ export const Markdown = memo(function Markdown({
 }) {
   const throttled = useThrottled(text, streaming ? STREAM_FRAME_MS : 0);
 
+  // Rebuilt when `streaming` changes rather than declared once, because a
+  // ```mermaid fence has to know: half a diagram is not one, and a fence three
+  // lines into being written would otherwise flicker through refusals on the
+  // way to a picture. Cheap, since the document is being re-parsed anyway.
+  const components = useMemo(
+    () => ({
+      a: Anchor,
+      code: (props: CodeProps) => <Code {...props} streaming={streaming} />,
+      pre: Pre,
+      table: ({ node: _node, ...props }: { node?: unknown }) => (
+        // Wide tables scroll inside their own box rather than stretching
+        // the transcript.
+        <div className="md-table-wrap">
+          <table {...props} />
+        </div>
+      ),
+    }),
+    [streaming],
+  );
+
   return (
     <div className="markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: Anchor,
-          code: Code,
-          pre: Pre,
-          table: ({ node: _node, ...props }) => (
-            // Wide tables scroll inside their own box rather than stretching
-            // the transcript.
-            <div className="md-table-wrap">
-              <table {...props} />
-            </div>
-          ),
-        }}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {text.length === 0 ? "" : throttled}
       </ReactMarkdown>
     </div>
@@ -120,19 +127,22 @@ function Anchor({
   );
 }
 
+type CodeProps = {
+  className?: string;
+  children?: React.ReactNode;
+  // `react-markdown` hands every component its AST node. Spreading it onto a
+  // DOM element leaks `node="[object Object]"` into the markup, so it is
+  // pulled out rather than forwarded.
+  node?: unknown;
+};
+
 function Code({
   className,
   children,
-  // `react-markdown` hands every component its AST node. Spreading it onto a
-  // DOM element leaks `node="[object Object]"` into the markup, so it is
-  // pulled out here rather than forwarded.
   node: _node,
+  streaming,
   ...rest
-}: {
-  className?: string;
-  children?: React.ReactNode;
-  node?: unknown;
-}) {
+}: CodeProps & { streaming: boolean }) {
   // `react-markdown` routes both inline spans and fenced blocks here; only the
   // fenced ones carry a `language-*` class, and inline code has no newline.
   const language = /language-(\w+)/.exec(className ?? "")?.[1];
@@ -141,6 +151,13 @@ function Code({
 
   if (!isBlock) {
     return <code className="md-inline-code" {...rest}>{children}</code>;
+  }
+
+  // A diagram rather than its source, where it can be read as one. The fence
+  // keeps a **source** toggle, because a picture is easier to read and harder
+  // to check than the text it came from.
+  if (language === "mermaid") {
+    return <MermaidBlock source={body} streaming={streaming} />;
   }
 
   return (

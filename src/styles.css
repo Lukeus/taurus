@@ -2416,6 +2416,35 @@ body.resizing-y * {
   white-space: pre;
 }
 
+/*
+ * A ```mermaid fence, once it has been read as a diagram.
+ *
+ * The body of the same block a code fence uses, so the head above it — the
+ * language, the source toggle, the copy button — sits in one place whichever of
+ * the two a fence turns out to be. The drawing keeps its own sunken box, which
+ * is the step down `.flow-box` and `.sequence-box` already take inside a card.
+ */
+.md-mermaid {
+  padding: 12px;
+}
+
+/*
+ * What the picture does not say, under it.
+ *
+ * Two things land here and they are deliberately the same weight. A fence this
+ * cannot draw at all says which diagram type or which line stopped it, above
+ * the source it fell back to. A fence it *did* draw says what it left out — a
+ * note, a loop's frame, a direction it re-oriented. Neither is an error: the
+ * text somebody wrote is not wrong, so this reads as a footnote rather than as
+ * a warning, and the fence never turns red.
+ */
+.md-mermaid-note {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 .md-table-wrap {
   overflow-x: auto;
   margin: 0 0 0.7em;
