@@ -146,10 +146,16 @@ function Harness({
   return <NotesPane notebook={notebook} onAsk={onAsk} hasWorkspace={hasWorkspace} />;
 }
 
+let cleanup: (() => void)[] = [];
+
 async function mount(props: Parameters<typeof Harness>[0] = {}) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
+  cleanup.push(() => {
+    act(() => root.unmount());
+    host.remove();
+  });
   await act(async () => {
     root.render(<Harness {...props} />);
   });
@@ -198,6 +204,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmounted, and not only emptied out of the page. A root left mounted
+  // keeps the notebook's effects and whatever React has scheduled for them,
+  // and on a loaded CI runner that work ran after the test environment was
+  // torn down: `window is not defined` from React's scheduler, reported
+  // against this file with every one of its tests passing.
+  cleanup.forEach((fn) => fn());
+  cleanup = [];
   document.body.innerHTML = "";
   vi.useRealTimers();
 });

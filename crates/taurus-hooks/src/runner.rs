@@ -53,7 +53,8 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde::Serialize;
-use tokio::io::AsyncWriteExt;
+use taurus_process::Tree;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, warn};
 
 use crate::config::{Hook, HookEvent};
@@ -383,12 +384,12 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
     if let Some(tool) = &payload.tool {
         command.env("TAURUS_TOOL", tool);
     }
-    // So the timeout below can reach what the hook started, and not only the
-    // hook. See `own_group`.
-    own_group(&mut command);
-    no_console(&mut command);
-
-    let mut child = match command.spawn() {
+    // A tree rather than a single child, so the timeout below can reach what
+    // the hook started and not only the hook. A hook is usually a script, so
+    // the child is `/bin/sh` or `cmd.exe` and the work is *its* child —
+    // measured, every shape of script leaked the program it called when only
+    // the child was killed, including the plainest one there is.
+    let mut child = match Tree::spawn(command) {
         Ok(child) => child,
         Err(e) => {
             // The common case is a path typo, so the message names the program
@@ -397,10 +398,9 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
         }
     };
 
-    let stdin = child.stdin.take();
-    // Read before the child is moved into the task below, which is the last
-    // point this scope can ask.
-    let group = child.id();
+    let stdin = child.take_stdin();
+    let stdout = child.take_stdout();
+    let stderr = child.take_stderr();
     let timeout = Duration::from_secs(hook.timeout_seconds);
 
     /*
@@ -414,73 +414,49 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
      * have been denied for hanging came back with whatever it eventually
      * exited with. Measured at 20s against a 1s timeout, ending in a pass.
      *
-     * Joined rather than sequenced for the same reason `wait_with_output`
-     * reads both output pipes at once: two pipes and one thread is a deadlock
-     * waiting for whichever fills first.
+     * Joined rather than sequenced for the same reason both output pipes are
+     * read alongside the wait: two pipes and one thread is a deadlock waiting
+     * for whichever fills first.
      */
-    let run = async move {
-        let feed = async move {
-            if let Some(mut stdin) = stdin {
-                // A hook that ignores stdin closes it, and writing to a closed
-                // pipe is not an error worth failing a turn over.
-                let _ = stdin.write_all(&body).await;
-                let _ = stdin.shutdown().await;
-                // Dropped here, which is what a hook reading to EOF is waiting
-                // for.
-            }
-        };
-        tokio::join!(feed, child.wait_with_output()).1
+    let feed = async move {
+        if let Some(mut stdin) = stdin {
+            // A hook that ignores stdin closes it, and writing to a closed
+            // pipe is not an error worth failing a turn over.
+            let _ = stdin.write_all(&body).await;
+            let _ = stdin.shutdown().await;
+            // Dropped here, which is what a hook reading to EOF is waiting
+            // for.
+        }
     };
 
     /*
-     * Handed to a task, and the reason is the whole of the Windows half of
-     * this.
-     *
-     * The wait owns the child, and the child is `kill_on_drop`. So whatever
-     * holds that future has to still be holding it when the timeout branch
-     * runs, or the hook is already dead and reaped before anything has asked
-     * about its children. `timeout(..)` consumes the future it was given, so
-     * that is out — and `select!` is no better, whatever an earlier version of
-     * this comment claimed: it declares its futures in an inner block whose
-     * value is the poll, so they are dropped before the arm bodies run at all.
-     *
-     * On Unix none of that shows, because a process group outlives its leader
-     * and can still be signalled. On Windows there is no group: `taskkill /T`
-     * walks down from the parent, and a parent that has been reaped has no
-     * tree left to walk. Measured on a runner — the shell alive at 1.2s with
-     * both children, and `taskkill` at 2s answering "the process 2172 not
-     * found" while all three of its descendants stood there.
-     *
-     * A task is held by the runtime rather than by this scope, so `&mut` on
-     * its handle can lose the race without the child going anywhere. It is
-     * aborted after the kill, not before.
+     * The wait borrows the child rather than owning it, and that is what lets
+     * the timeout below end the tree at all. When `timeout` gives up it drops
+     * this future; had the future owned the child, the child would have gone
+     * with it — and with the child, the only handle on the tree there is.
      */
-    let mut task = Abandoned(tokio::spawn(run));
-    let output = tokio::select! {
-        // So a hook that finishes exactly on the deadline is finished rather
-        // than killed.
-        biased;
-        joined = &mut task.0 => match joined {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => return Verdict::Denied(format!("could not be run: {e}")),
-            // The task itself came apart, which is a bug here rather than in
-            // the hook — but an event that can deny still has to deny.
-            Err(e) => return Verdict::Denied(format!("could not be waited for: {e}")),
-        },
-        _ = tokio::time::sleep(timeout) => {
+    let run = async {
+        let (_, stdout, stderr, status) =
+            tokio::join!(feed, read_all(stdout), read_all(stderr), child.wait());
+        status.map(|status| (status, stdout, stderr))
+    };
+    // The wait is polled before the clock, so a hook that finishes exactly on
+    // the deadline is finished rather than killed.
+    let finished = tokio::time::timeout(timeout, run).await;
+    let (status, stdout, stderr) = match finished {
+        Ok(Ok(done)) => done,
+        Ok(Err(e)) => return Verdict::Denied(format!("could not be run: {e}")),
+        Err(_) => {
             // A kill that could not be carried out is the user's business
             // rather than a log line: the hook is gone but what it started is
             // not, and a turn that said only "stopped" would be wrong about
             // the one thing a guard is for.
-            let unfinished = match kill_tree(group).await {
+            let unfinished = match child.end().await {
                 Ok(()) => String::new(),
                 Err(trouble) => {
                     format!(", though what it started may still be running: {trouble}")
                 }
             };
-            // After the kill, so the tree above was still standing while it
-            // ran. This is what ends the hook itself, through `kill_on_drop`.
-            task.0.abort();
             return Verdict::Denied(format!(
                 "did not finish within {}s and was stopped{unfinished}",
                 hook.timeout_seconds
@@ -488,9 +464,9 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let code = output.status.code();
+    let stdout = String::from_utf8_lossy(&stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr).into_owned();
+    let code = status.code();
     debug!(hook = name, ?code, "hook finished");
 
     match code {
@@ -535,139 +511,16 @@ pub fn environment(payload: &HookPayload) -> BTreeMap<&'static str, String> {
     env
 }
 
-/// Puts a hook in a process group of its own, so what it starts stops with it.
+/// Everything a pipe says until it closes, or nothing if there is no pipe.
 ///
-/// Duplicated from `taurus_tools::spawn` for the reason [`no_console`] below
-/// is: this crate sits under that one, and two small functions are a smaller
-/// cost than the dependency edge.
-///
-/// Without this the timeout reached the hook and nothing the hook ran. A hook
-/// is usually a shell script, so the child is `/bin/sh` and the work is its
-/// child — measured, every shape of script leaked the program it called,
-/// including the plainest one there is.
-fn own_group(command: &mut tokio::process::Command) {
-    #[cfg(unix)]
-    command.process_group(0);
-    #[cfg(not(unix))]
-    let _ = command;
-}
-
-/// A running hook that does not outlive the scope waiting on it.
-///
-/// A `JoinHandle` dropped is a task that keeps running, and this one holds the
-/// child. Without the abort below, a turn cancelled while a hook was mid-flight
-/// would leave the hook running with nothing left that could stop it — which is
-/// the leak the tree kill exists to close, arriving through the other door.
-struct Abandoned(tokio::task::JoinHandle<std::io::Result<std::process::Output>>);
-
-impl Drop for Abandoned {
-    fn drop(&mut self) {
-        // Idempotent, so the timeout branch aborting explicitly — after its
-        // kill, deliberately — costs nothing here.
-        self.0.abort();
+/// A read that fails ends the read rather than the hook: what arrived is kept,
+/// and the exit code is still what decides.
+async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut bytes).await;
     }
-}
-
-/// The command that ends a process tree, per platform.
-///
-/// Taking the platform as an argument rather than reading `cfg!`, so the tests
-/// can check both spellings from whichever machine is running them. Windows
-/// code is otherwise never compiled on the machines this is developed on, and
-/// a wrong argument to a kill is invisible even on Windows: the call succeeds
-/// and kills nothing, which looks exactly like a tree that had already exited.
-///
-/// Duplicated from `taurus_tools::spawn` for the reason [`no_console`] below
-/// is: this crate sits under that one, and a few small functions are a smaller
-/// cost than the dependency edge.
-///
-/// The `--` is not decoration: without it procps reads `-123` as a second
-/// signal option rather than a pid and signals its own group instead, which
-/// leaves the runaway tree alive and kills the caller. See
-/// `taurus_tools::spawn::kill_command` for the measurement.
-///
-/// `None` for a pid that does not name a tree. Negating the pid is what asks
-/// for the group, so the arithmetic has to hold: `-0` is this process's own
-/// group, `-1` is every process the user owns, and anything past `i32::MAX`
-/// wraps into one of those two — `kill -KILL -4294967295` on Linux SIGKILLs
-/// the session, measured. See `taurus_tools::spawn::kill_command`.
-fn kill_command(pid: u32, windows: bool) -> Option<(&'static str, Vec<String>)> {
-    if !(2..=i32::MAX as u32).contains(&pid) {
-        return None;
-    }
-    Some(if windows {
-        // Target first: `/T` ahead of `/PID` kills the named process and walks
-        // no tree. See `taurus_tools::spawn::kill_command`.
-        (
-            "taskkill",
-            vec!["/PID".into(), pid.to_string(), "/T".into(), "/F".into()],
-        )
-    } else {
-        // `--` is load-bearing. See above.
-        ("kill", vec!["-KILL".into(), "--".into(), format!("-{pid}")])
-    })
-}
-
-/// Ends a hook and everything it started.
-///
-/// Neither platform's mechanism is reachable from `std` — a process group
-/// signal on Unix, a Job Object on Windows — and both alternatives are an
-/// `unsafe` call this workspace forbids or a platform-only crate for a single
-/// function. So it runs the tool each platform ships for exactly this, on a
-/// path where a hook has already hung.
-///
-/// Best-effort, and never the only kill: `kill_on_drop` still ends the hook
-/// itself, so a machine missing the tool is left where it was rather than
-/// worse off.
-async fn kill_tree(leader: Option<u32>) -> Result<(), String> {
-    let Some(pid) = leader else {
-        return Ok(());
-    };
-    let Some((program, args)) = kill_command(pid, cfg!(windows)) else {
-        return Err(format!("{pid} does not name a process tree"));
-    };
-    let mut command = tokio::process::Command::new(program);
-    command
-        .args(&args)
-        .stdin(Stdio::null())
-        // Captured, because a kill that ran and reached nothing says so on its
-        // own output and nowhere else.
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    no_console(&mut command);
-    let out = command
-        .output()
-        .await
-        .map_err(|e| format!("could not run {program}: {e}"))?;
-    if out.status.success() {
-        return Ok(());
-    }
-    let said = [&out.stderr, &out.stdout]
-        .into_iter()
-        .map(|s| String::from_utf8_lossy(s).trim().to_string())
-        .find(|s| !s.is_empty())
-        .unwrap_or_else(|| "and said nothing".into());
-    Err(format!(
-        "{program} {} exited {:?}: {said}",
-        args.join(" "),
-        out.status.code()
-    ))
-}
-
-/// `CREATE_NO_WINDOW`, so a hook does not flash a console on Windows.
-///
-/// The same rule `taurus_tools::spawn` applies to every other child process
-/// here. Duplicated rather than depended on because this crate sits below that
-/// one, and one constant is a smaller cost than the dependency edge.
-fn no_console(command: &mut tokio::process::Command) {
-    #[cfg(windows)]
-    {
-        // No `CommandExt` import: `tokio::process::Command` has its own
-        // inherent `creation_flags` on Windows, and bringing the trait in
-        // shadows nothing and warns. `taurus_tools::spawn` does the same.
-        command.creation_flags(0x0800_0000);
-    }
-    #[cfg(not(windows))]
-    let _ = command;
+    bytes
 }
 
 /// Where a hook's own paths are resolved from, for callers building a payload.
@@ -678,10 +531,7 @@ pub fn relative<'a>(workspace: &Path, path: &'a Path) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::HookEvent;
-    // Only the matching tests use it, and those are Unix-only.
-    #[cfg(unix)]
-    use crate::config::Match;
+    use crate::config::{HookEvent, Match};
 
     /// A hook that is a shell one-liner, written to a file so it can be run.
     #[cfg(unix)]
@@ -693,33 +543,30 @@ mod tests {
         path.display().to_string()
     }
 
-    /// Whether a process still exists, without signalling it.
-    #[cfg(unix)]
-    fn alive(pid: &str) -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", pid])
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false)
-    }
-
-    /// Waits for a process to actually be gone, up to a generous ceiling.
+    /// A hook whose program is a script with this body, in the platform's own
+    /// shell.
     ///
-    /// Polled rather than slept once. Delivering a signal and reaping the
-    /// child is fast but not instant, and this crate's tests run alongside
-    /// every other test binary in the workspace — a fixed wait tuned on an
-    /// idle machine is a test that fails a few times a week on a busy one and
-    /// teaches everybody to rerun rather than to read. The ceiling is long
-    /// enough that reaching it means the kill genuinely did not happen.
-    #[cfg(unix)]
-    async fn gone(pid: &str) -> bool {
-        for _ in 0..100 {
-            if !alive(pid) {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        false
+    /// Two bodies because `sh` and `cmd` share almost nothing, and every
+    /// promise a hook makes — refusing in its own words, passing a note on,
+    /// being stopped when it hangs, being told what it decides about — has to
+    /// hold on both. On Windows the hook names the batch file itself, the way a
+    /// `hooks.json` there would, rather than `cmd`: a Windows user's first hook
+    /// is a `.bat`, and whether one starts at all is part of what is tested.
+    fn scripted(dir: &Path, name: &str, unix: &str, windows: &str, on: HookEvent) -> Hook {
+        #[cfg(unix)]
+        let command = {
+            let _ = windows;
+            script(dir, name, unix)
+        };
+        #[cfg(windows)]
+        let command = {
+            let _ = unix;
+            let path = dir.join(format!("{name}.bat"));
+            let body = windows.replace('\n', "\r\n");
+            std::fs::write(&path, format!("@echo off\r\n{body}\r\n")).unwrap();
+            path.display().to_string()
+        };
+        hook(&command, on)
     }
 
     fn hook(command: &str, on: HookEvent) -> Hook {
@@ -733,12 +580,17 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_that_exits_two_refuses_the_call_in_its_own_words() {
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "guard", "echo 'not on main' >&2; exit 2");
-        let runner = HookRunner::new(vec![("guard".into(), hook(&path, HookEvent::PreToolUse))]);
+        let guard = scripted(
+            dir.path(),
+            "guard",
+            "echo 'not on main' >&2; exit 2",
+            "echo not on main 1>&2\nexit 2",
+            HookEvent::PreToolUse,
+        );
+        let runner = HookRunner::new(vec![("guard".into(), guard)]);
 
         let payload = HookPayload::new(HookEvent::PreToolUse, dir.path());
         let outcome = runner.run(&payload).await;
@@ -751,7 +603,6 @@ mod tests {
         assert!(reason.contains("guard"), "{reason}");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_that_cannot_run_refuses_rather_than_waving_the_call_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -770,7 +621,6 @@ mod tests {
         assert!(outcome.denied.unwrap().contains("/nonexistent/guard"));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_broken_hook_on_an_event_with_nothing_left_to_stop_only_reports() {
         let dir = tempfile::tempdir().unwrap();
@@ -788,12 +638,17 @@ mod tests {
         assert_eq!(outcome.notes.len(), 1);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_passing_hook_hands_its_output_to_the_model() {
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "note", "echo 'formatted 2 files'");
-        let runner = HookRunner::new(vec![("fmt".into(), hook(&path, HookEvent::PostToolUse))]);
+        let note = scripted(
+            dir.path(),
+            "note",
+            "echo 'formatted 2 files'",
+            "echo formatted 2 files",
+            HookEvent::PostToolUse,
+        );
+        let runner = HookRunner::new(vec![("fmt".into(), note)]);
 
         let outcome = runner
             .run(&HookPayload::new(HookEvent::PostToolUse, dir.path()))
@@ -806,7 +661,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_that_hangs_is_stopped_rather_than_hanging_the_turn() {
         /*
@@ -818,16 +672,31 @@ mod tests {
          * turn saying the opposite of what had happened. Nothing caught it,
          * because the only thing being checked was a string this file also
          * wrote.
+         *
+         * So the hook says when it has started, and says it is still alive
+         * four seconds later — which it only gets to say if the stop missed
+         * it. A marker rather than a pid, because a batch file has no way to
+         * learn its own.
          */
         let dir = tempfile::tempdir().unwrap();
-        let pidfile = dir.path().join("pid");
-        let path = script(
+        let started = dir.path().join("started");
+        let alive = dir.path().join("alive");
+        let mut slow = scripted(
             dir.path(),
             "slow",
-            &format!("echo $$ > {}\nsleep 30", pidfile.display()),
+            &format!(
+                "echo x > \"{}\"; sleep 4; echo alive > \"{}\"",
+                started.display(),
+                alive.display()
+            ),
+            &format!(
+                "echo x> \"{}\"\nping -n 5 127.0.0.1 >NUL && echo alive> \"{}\"",
+                started.display(),
+                alive.display()
+            ),
+            HookEvent::PreToolUse,
         );
-        let mut slow = hook(&path, HookEvent::PreToolUse);
-        slow.timeout_seconds = 1;
+        slow.timeout_seconds = 2;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
 
         let outcome = runner
@@ -836,15 +705,18 @@ mod tests {
 
         assert!(outcome.is_denied());
         assert!(outcome.denied.unwrap().contains("did not finish"));
-
-        let pid = std::fs::read_to_string(&pidfile).expect("the hook never started");
-        assert!(
-            gone(pid.trim()).await,
-            "the hook is still running after the runner said it was stopped"
-        );
+        // Or stopping it proved nothing.
+        assert!(started.exists(), "the hook never started");
+        // Comfortably past when it would have written, had it lived.
+        for _ in 0..120 {
+            assert!(
+                !alive.exists(),
+                "the hook is still running after the runner said it was stopped"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_that_ignores_a_large_payload_still_hits_its_timeout() {
         /*
@@ -861,8 +733,13 @@ mod tests {
          * refuses" is the whole of its safety argument.
          */
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "deaf", "sleep 20");
-        let mut deaf = hook(&path, HookEvent::PreToolUse);
+        let mut deaf = scripted(
+            dir.path(),
+            "deaf",
+            "sleep 20",
+            "ping -n 21 127.0.0.1 >NUL",
+            HookEvent::PreToolUse,
+        );
         deaf.timeout_seconds = 1;
         let runner = HookRunner::new(vec![("deaf".into(), deaf)]);
 
@@ -891,27 +768,39 @@ mod tests {
     /// then sits there itself, so the grandchild is what a timeout has to
     /// reach past the hook to kill.
     ///
+    /// `orphaned` puts a process between the two that exits as soon as it has
+    /// started the grandchild, so the grandchild's parent is gone by the time
+    /// the timeout fires.
+    ///
     /// Two spellings because the shells have nothing in common here, and this
     /// is the one test that has to run on both: ending a tree is a process
-    /// group on Unix and `taskkill /T` on Windows, and neither code path is
+    /// group on Unix and a Job Object on Windows, and neither code path is
     /// exercised by the other platform's.
     ///
     /// Detected by a file rather than by listing processes. `pgrep` is not on
     /// Windows, `tasklist` cannot filter on a command line, and a marker that
     /// never appears is the same evidence on both.
-    fn leaves_a_grandchild(dir: &Path, started: &Path, alive: &Path) -> (String, Vec<String>) {
+    fn leaves_a_grandchild(
+        dir: &Path,
+        started: &Path,
+        alive: &Path,
+        orphaned: bool,
+    ) -> (String, Vec<String>) {
         #[cfg(unix)]
         {
-            let path = script(
-                dir,
-                "outer",
-                &format!(
-                    "sh -c 'echo x > \"{}\"; sleep 8; echo alive > \"{}\"' &\nsleep 30",
-                    started.display(),
-                    alive.display()
-                ),
+            let grandchild = format!(
+                "sh -c 'echo x > \"{}\"; sleep 8; echo alive > \"{}\"' &",
+                started.display(),
+                alive.display()
             );
-            (path, vec![])
+            // A subshell that exits as soon as it has started the grandchild,
+            // so its parent is gone before anything looks for it.
+            let first = if orphaned {
+                format!("({grandchild})")
+            } else {
+                grandchild
+            };
+            (script(dir, "outer", &format!("{first}\nsleep 30")), vec![])
         }
         #[cfg(windows)]
         {
@@ -932,16 +821,25 @@ mod tests {
                 ),
             )
             .unwrap();
+            let starts_it = format!("start \"\" /B cmd /C \"{}\"", inner.display());
+            // Through a `cmd` of its own that exits once `start` returns, so
+            // the grandchild's parent is gone before anything looks for it.
+            let first = if orphaned {
+                let middle = dir.join("middle.bat");
+                std::fs::write(&middle, format!("@echo off\r\n{starts_it}\r\n")).unwrap();
+                format!("cmd /C \"{}\"", middle.display())
+            } else {
+                starts_it
+            };
             let outer = dir.join("outer.bat");
             std::fs::write(
                 &outer,
-                format!(
-                    "@echo off\r\nstart \"\" /B cmd /C \"{}\"\r\nping -n 31 127.0.0.1 >NUL\r\n",
-                    inner.display()
-                ),
+                format!("@echo off\r\n{first}\r\nping -n 31 127.0.0.1 >NUL\r\n"),
             )
             .unwrap();
-            // `CreateProcess` cannot run a .bat, so the hook names the shell.
+            // The hook names the shell rather than the file. Either works —
+            // see `scripted` — and this is the spelling the tree tests were
+            // measured with.
             (
                 "cmd".to_string(),
                 vec!["/C".to_string(), outer.display().to_string()],
@@ -954,8 +852,8 @@ mod tests {
     /// "Something outlived the timeout" is not a report anybody can act on
     /// from a CI log they cannot attach a debugger to — which of the three
     /// processes survived says immediately whether the kill missed the tree,
-    /// missed a level of it, or never ran. Parent ids included, because on
-    /// Windows the parent link *is* the mechanism.
+    /// missed a level of it, or never ran. Parent ids included, so a survivor
+    /// whose parent is gone reads as one.
     fn tree() -> String {
         let (program, args): (&str, Vec<&str>) = if cfg!(windows) {
             (
@@ -1006,6 +904,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_timeout_reaches_what_the_hook_started_and_not_only_the_hook() {
+        a_timeout_reaches(false).await;
+    }
+
+    /// The same, where the process between the hook and the grandchild has
+    /// already exited. A tree found by walking parent links down from the hook
+    /// cannot reach it, because the link it would follow is gone — so this is
+    /// the case that separates following links from ending a container the
+    /// whole tree is inside.
+    #[tokio::test]
+    async fn a_timeout_reaches_a_grandchild_whose_parent_already_exited() {
+        a_timeout_reaches(true).await;
+    }
+
+    async fn a_timeout_reaches(orphaned: bool) {
         /*
          * A hook is nearly always a script, so the child is a shell and the
          * work is *its* child. Killing the child alone left that work running
@@ -1021,22 +933,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let started = dir.path().join("started");
         let alive = dir.path().join("alive");
-        let (command, args) = leaves_a_grandchild(dir.path(), &started, &alive);
+        let (command, args) = leaves_a_grandchild(dir.path(), &started, &alive, orphaned);
 
         let mut slow = hook(&command, HookEvent::PreToolUse);
         slow.args = args;
         // Five seconds, and every one of them is for the runner rather than
-        // the hook. Two shells and a `start` have to get the grandchild up
-        // *before* the timeout fires — on Windows that is `cmd` starting
-        // `cmd`, cold — and then `taskkill` has to start, which is itself a
-        // process and costs a good part of a second more.
-        //
-        // It was two, and two lost: three Windows runs in one afternoon, and
-        // one of them failed with the marker appearing at 13s, which is a
-        // grandchild that was never in the tree when the kill walked it rather
-        // than one the kill let go. Widening the window is the fix because the
-        // race is the *fixture's*, not the product's — and `raced` below is
-        // what tells those two apart when it happens again.
+        // the hook. Two or three shells and a `start` have to get the
+        // grandchild up *before* the timeout fires — on Windows that is `cmd`
+        // starting `cmd`, cold. `up_before_the_kill` below says whether they
+        // did, so a fixture that lost that race fails as one rather than as a
+        // kill that missed.
         slow.timeout_seconds = 5;
         let slow_timeout = slow.timeout_seconds;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
@@ -1139,10 +1045,9 @@ mod tests {
         // lived. Polled rather than slept in one go so a failure is quick.
         //
         // The grandchild waits eight seconds and this watches for twelve, and
-        // both numbers are margin rather than taste. `taskkill` is a *process*
-        // — starting it on a cold Windows runner costs a good part of a second
-        // on its own, and at two seconds the kill was landing after the marker
-        // had already been written. Measured: this test, and only on Windows.
+        // both numbers are margin rather than taste: a cold Windows runner is
+        // slow to start a shell, and a marker written just after the watch
+        // ended would pass a kill that missed.
         for _ in 0..240 {
             assert!(
                 !alive.exists(),
@@ -1153,42 +1058,6 @@ mod tests {
                 tree()
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    #[test]
-    fn the_kill_is_spelled_the_way_each_platform_spells_it() {
-        // Both arms from whichever machine is running this, because neither is
-        // compiled on the other one — and a wrong argument here is invisible
-        // even on the platform it is wrong for: the kill still succeeds and
-        // simply reaches nothing.
-        assert_eq!(
-            kill_command(4321, false),
-            Some((
-                "kill",
-                vec!["-KILL".to_string(), "--".to_string(), "-4321".to_string()]
-            ))
-        );
-        assert_eq!(
-            kill_command(4321, true),
-            Some((
-                "taskkill",
-                vec![
-                    "/PID".to_string(),
-                    "4321".to_string(),
-                    "/T".to_string(),
-                    "/F".to_string()
-                ]
-            ))
-        );
-
-        // Asserted rather than exercised: `-0` is this process's own group and
-        // `-1` is every process the user owns, so a test that proved the guard
-        // by calling it would be the outage.
-        for platform in [false, true] {
-            assert!(kill_command(0, platform).is_none());
-            assert!(kill_command(1, platform).is_none());
-            assert!(kill_command(u32::MAX, platform).is_none());
         }
     }
 
@@ -1208,14 +1077,20 @@ mod tests {
         assert!(!set.is_match("docs/readme.md"));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_is_told_what_it_is_deciding_about() {
         let dir = tempfile::tempdir().unwrap();
         // Reads the payload off stdin and refuses with it, which is the only
-        // way to assert what the hook actually received.
-        let path = script(dir.path(), "echoer", "cat >&2; exit 2");
-        let runner = HookRunner::new(vec![("echoer".into(), hook(&path, HookEvent::PreToolUse))]);
+        // way to assert what the hook actually received. `sort` is the `cat`
+        // every Windows has: it reads to the end and prints what it read.
+        let echoer = scripted(
+            dir.path(),
+            "echoer",
+            "cat >&2; exit 2",
+            "sort 1>&2\nexit 2",
+            HookEvent::PreToolUse,
+        );
+        let runner = HookRunner::new(vec![("echoer".into(), echoer)]);
 
         let payload = HookPayload::new(HookEvent::PreToolUse, dir.path())
             .with_call(
@@ -1232,21 +1107,25 @@ mod tests {
         assert!(reason.contains("src/widget.rs"), "{reason}");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn the_first_refusal_stops_the_rest_from_running() {
         let dir = tempfile::tempdir().unwrap();
-        let deny = script(dir.path(), "a-deny", "exit 2");
+        let deny = scripted(
+            dir.path(),
+            "a-deny",
+            "exit 2",
+            "exit 2",
+            HookEvent::PreToolUse,
+        );
         let marker = dir.path().join("ran");
-        let second = script(
+        let second = scripted(
             dir.path(),
             "b-second",
-            &format!("touch {}", marker.display()),
+            &format!("touch \"{}\"", marker.display()),
+            &format!("echo x> \"{}\"", marker.display()),
+            HookEvent::PreToolUse,
         );
-        let runner = HookRunner::new(vec![
-            ("a-deny".into(), hook(&deny, HookEvent::PreToolUse)),
-            ("b-second".into(), hook(&second, HookEvent::PreToolUse)),
-        ]);
+        let runner = HookRunner::new(vec![("a-deny".into(), deny), ("b-second".into(), second)]);
 
         let outcome = runner
             .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
@@ -1258,12 +1137,16 @@ mod tests {
         assert!(!marker.exists(), "later hooks must not run after a refusal");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_only_runs_for_the_calls_it_names() {
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "guard", "exit 2");
-        let mut guard = hook(&path, HookEvent::PreToolUse);
+        let mut guard = scripted(
+            dir.path(),
+            "guard",
+            "exit 2",
+            "exit 2",
+            HookEvent::PreToolUse,
+        );
         guard.matches = Some(Match {
             commands: vec!["git".into()],
             ..Default::default()
@@ -1288,12 +1171,16 @@ mod tests {
         assert!(!runner.run(&other).await.is_denied());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_path_glob_selects_which_writes_a_hook_is_about() {
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "guard", "exit 2");
-        let mut guard = hook(&path, HookEvent::PreToolUse);
+        let mut guard = scripted(
+            dir.path(),
+            "guard",
+            "exit 2",
+            "exit 2",
+            HookEvent::PreToolUse,
+        );
         guard.matches = Some(Match {
             paths: vec!["**/*.rs".into()],
             ..Default::default()

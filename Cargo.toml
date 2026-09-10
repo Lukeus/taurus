@@ -15,6 +15,7 @@ members = [
     "crates/taurus-index",
     "crates/taurus-data",
     "crates/taurus-hooks",
+    "crates/taurus-process",
     "crates/taurus-host",
     "crates/taurus-telemetry",
     "crates/taurus-cli",
@@ -24,7 +25,7 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.87"
 license = "MIT"
 
 [workspace.dependencies]
@@ -41,6 +42,7 @@ taurus-mcp = { path = "crates/taurus-mcp" }
 taurus-index = { path = "crates/taurus-index" }
 taurus-data = { path = "crates/taurus-data" }
 taurus-hooks = { path = "crates/taurus-hooks" }
+taurus-process = { path = "crates/taurus-process" }
 taurus-host = { path = "crates/taurus-host" }
 taurus-telemetry = { path = "crates/taurus-telemetry" }
 taurus-core = { path = "crates/taurus-core" }
@@ -65,7 +67,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 directories = "6"
 # Credential storage. Held at 3.x: 4.x needs Rust 1.88 and this workspace
-# promises 1.82. Features are selected per platform by the crate that uses it —
+# promises 1.87. Features are selected per platform by the crate that uses it —
 # there is no default backend, and the wrong one is a compile error rather than
 # a silent no-op.
 keyring = { version = "3.6", default-features = false }
@@ -81,6 +83,16 @@ base64 = "0.23"
 # ConPTY on Windows — so a program that checks `isatty` behaves the way it does
 # in a terminal on all three from the one codebase.
 portable-pty = "0.9"
+# Ending a process tree on Windows, in `taurus-process` and only there. A Job
+# Object holds every process a child starts however its parents come and go,
+# where a tree found by following parent links cannot reach one whose parent
+# already exited. Starting the child suspended and assigning it before it runs
+# are `unsafe` Win32 calls, which this workspace forbids in its own code. The
+# reason `rust-version` is 1.87.
+process-wrap = { version = "9.1", default-features = false, features = ["tokio1", "job-object", "creation-flags"] }
+# The one type process-wrap's creation flags are spelled in. It has to be the
+# version process-wrap itself uses, or the two are different types.
+windows = { version = "0.62", features = ["Win32_System_Threading"] }
 # Undoing Windows' `\\?\` canonicalization before a path is shown to anyone or
 # handed to a child process. `std::fs::canonicalize` produces the verbatim form,
 # `cmd.exe` cannot start in one, and every shell prints it in the prompt. Already
