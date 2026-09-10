@@ -8,6 +8,7 @@ description = "Tool registry, built-in tools, and the permission gate for the Ta
 
 [dependencies]
 taurus-hooks.workspace = true
+taurus-process.workspace = true
 taurus-provider.workspace = true
 async-trait.workspace = true
 futures.workspace = true

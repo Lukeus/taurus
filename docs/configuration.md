@@ -180,9 +180,10 @@ stdin.
 
 The kill reaches the whole tree, not just the program the hook names: a script
 that calls a linter takes the linter with it. On Unix the hook runs in a process
-group of its own and the group is signalled; on Windows the tree is ended with
-`taskkill /T`, which walks down from the hook and so cannot reach a process
-whose own parent died first — see [Known gaps](known-gaps.md).
+group of its own and the group is signalled; on Windows it runs in a Job Object,
+and ending the job ends every process in it, including one whose own parent
+has already exited. What neither reaches is a process that leaves on purpose —
+see [Known gaps](known-gaps.md).
 
 Seeing what will run, and why something is not:
 

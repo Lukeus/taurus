@@ -1,0 +1,20 @@
+[package]
+name = "taurus-process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Starting child processes for Taurus: no console window, and a tree that is ended whole"
+
+[dependencies]
+tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+process-wrap.workspace = true
+windows.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

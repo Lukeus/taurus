@@ -200,8 +200,10 @@ impl Tool for RunCommand {
             }
         }
 
-        let mut child = spawn_piped(program, args, &cwd, input.stdin.is_some(), false)?;
-        feed_stdin(&mut child, input.stdin.as_deref()).await;
+        let mut child = piped(program, args, &cwd, input.stdin.is_some())
+            .spawn()
+            .map_err(cannot_start)?;
+        feed_stdin(child.stdin.take(), input.stdin.as_deref()).await;
 
         // Drain the pipes concurrently with the wait. A child that fills its
         // stdout buffer blocks forever if nobody is reading, which would turn
@@ -298,26 +300,18 @@ fn report_for(code: Option<i32>, stdout: &str, stderr: Option<&str>) -> String {
     }
 }
 
-/// Starts a child with three pipes, the way both paths want it.
-fn spawn_piped(
-    program: String,
-    args: Vec<String>,
-    cwd: &std::path::Path,
-    stdin: bool,
-    // `own_group`: whether the child leads a process group of its own.
-    //
-    // True only for a background command, which is ended deliberately later —
-    // by Stop, or by the workspace closing — and whose whole tree has to go
-    // with it. `kill_on_drop` and `start_kill` reach the child alone, and the
-    // child of a `sh -c` is the shell rather than the program somebody wanted
-    // stopped.
-    //
-    // False in the foreground, on purpose. A command left in the parent's
-    // group is one the terminal's own Ctrl-C reaches, whole tree included,
-    // without anything here having to run first — and that is worth keeping
-    // over a group this code would then have to signal itself.
-    own_group: bool,
-) -> Result<tokio::process::Child, ToolError> {
+/// A command with three pipes, the way both paths want it.
+///
+/// Built here and started by each path itself, because the two start it
+/// differently. The foreground starts a plain child, left in Taurus's own
+/// process group on purpose: a command there is one the terminal's own Ctrl-C
+/// reaches, whole tree included, without anything here having to run first —
+/// and that is worth keeping over a tree this code would then have to end
+/// itself. A background command is ended deliberately later — by Stop, or by
+/// the workspace closing — so it starts as a [`taurus_process::Tree`], whose
+/// whole tree goes with it: the child of a `sh -c` is the shell rather than
+/// the program somebody wanted stopped.
+fn piped(program: String, args: Vec<String>, cwd: &std::path::Path, stdin: bool) -> Command {
     let mut command = Command::new(program);
     command
         .args(args)
@@ -330,28 +324,26 @@ fn spawn_piped(
     // end of the call, so this does not end one early — it is what ends them
     // all when the runtime goes away.
     command.kill_on_drop(true);
-    if own_group {
-        crate::spawn::own_group(&mut command);
-    }
     // Taurus has no console of its own, so on Windows starting `cmd` here
     // would open one — a black window flashing up on every command.
-    crate::spawn::no_console(&mut command);
+    crate::no_console(&mut command);
     command
-        .spawn()
-        .map_err(|e| ToolError::Failed(format!("cannot start shell: {e}")))
+}
+
+fn cannot_start(e: std::io::Error) -> ToolError {
+    ToolError::Failed(format!("cannot start shell: {e}"))
 }
 
 /// Written and closed before the output is drained. A program waiting on input
 /// needs the end-of-file as much as the bytes.
-async fn feed_stdin(child: &mut tokio::process::Child, text: Option<&str>) {
-    let Some(text) = text else {
+async fn feed_stdin(pipe: Option<tokio::process::ChildStdin>, text: Option<&str>) {
+    use tokio::io::AsyncWriteExt;
+
+    let (Some(mut pipe), Some(text)) = (pipe, text) else {
         return;
     };
-    if let Some(mut pipe) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        let _ = pipe.write_all(text.as_bytes()).await;
-        let _ = pipe.shutdown().await;
-    }
+    let _ = pipe.write_all(text.as_bytes()).await;
+    let _ = pipe.shutdown().await;
 }
 
 /// Starts a command that will outlive this call.
@@ -406,8 +398,9 @@ async fn start_in_background(
         None => None,
     };
 
-    let mut child = spawn_piped(program, args, &cwd, input.stdin.is_some(), true)?;
-    feed_stdin(&mut child, input.stdin.as_deref()).await;
+    let mut child = taurus_process::Tree::spawn(piped(program, args, &cwd, input.stdin.is_some()))
+        .map_err(cannot_start)?;
+    feed_stdin(child.take_stdin(), input.stdin.as_deref()).await;
     let id = jobs.adopt(input.command.clone(), child, sweep).await;
 
     Ok(format!(

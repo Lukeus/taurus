@@ -7,6 +7,7 @@ license.workspace = true
 description = "User-configured programs run at fixed points in a Taurus turn"
 
 [dependencies]
+taurus-process.workspace = true
 async-trait.workspace = true
 globset.workspace = true
 serde.workspace = true

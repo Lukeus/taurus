@@ -21,7 +21,7 @@
 //!
 //! A pty here is a ConPTY, and a ConPTY is a real `conhost.exe`. `portable-pty`
 //! builds its own `CreateProcessW` call rather than taking a
-//! `tokio::process::Command`, so [`crate::spawn::no_console`] — the flag every
+//! `tokio::process::Command`, so [`crate::no_console`] — the flag every
 //! other child this program starts is given — has nothing to attach to. In a
 //! release build the app has no console of its own
 //! (`windows_subsystem = "windows"`), so one is created, and it is visible for

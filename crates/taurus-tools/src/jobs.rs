@@ -50,8 +50,8 @@ use std::time::{Duration, Instant};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use taurus_process::Tree;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Child;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
@@ -278,7 +278,7 @@ impl Jobs {
     /// The child is moved rather than shared: one owner may wait on it, and
     /// stopping goes through [`Job::stop`] so that owner is the only one that
     /// ever reaps it.
-    pub async fn adopt(&self, command: String, mut child: Child, sweep: Option<Sweep>) -> u32 {
+    pub async fn adopt(&self, command: String, mut child: Tree, sweep: Option<Sweep>) -> u32 {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Arc::new(Job {
             id,
@@ -293,23 +293,24 @@ impl Jobs {
         self.jobs.lock().unwrap().insert(id, job.clone());
 
         let drains = vec![
-            drain(child.stdout.take(), job.clone()),
-            drain(child.stderr.take(), job.clone()),
+            drain(child.take_stdout(), job.clone()),
+            drain(child.take_stderr(), job.clone()),
         ];
         let stop = job.stop.clone();
         tokio::spawn(async move {
             let status = tokio::select! {
                 biased;
                 _ = stop.cancelled() => {
-                    // The tree before the leader, and that order is load
-                    // bearing: on Windows the tree is found by walking down
-                    // from the parent, so a parent already reaped has no tree
-                    // left to walk. A background command is a shell, and
-                    // killing the shell alone leaves whatever it ran — the
-                    // build, the watcher — still going, while this reports the
-                    // command as stopped. See `crate::spawn::kill_tree`.
-                    crate::spawn::kill_tree(child.id()).await;
-                    let _ = child.start_kill();
+                    // The whole tree, and not only the shell. A background
+                    // command is a shell, and ending the shell alone leaves
+                    // whatever it ran — the build, the watcher — still going,
+                    // while this reports the command as stopped. See
+                    // `taurus_process::Tree`.
+                    if let Err(trouble) = child.end().await {
+                        // A tree kill that quietly fails looks exactly like
+                        // one that had nothing to do.
+                        tracing::warn!("{trouble}");
+                    }
                     child.wait().await
                 }
                 status = child.wait() => status,
@@ -595,7 +596,7 @@ fn took(elapsed: Duration) -> String {
 mod tests {
     use super::*;
 
-    fn sh(command: &str) -> Child {
+    fn sh(command: &str) -> Tree {
         let (program, args) = if cfg!(windows) {
             ("cmd", vec!["/C".to_string(), command.to_string()])
         } else {
@@ -606,12 +607,10 @@ mod tests {
             .args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
-        // The same group the real background path gives a command, so what is
-        // exercised here is what actually runs. See `shell::spawn_piped`.
-        crate::spawn::own_group(&mut command);
-        command.spawn().unwrap()
+            .stdin(std::process::Stdio::null());
+        // Started the way the real background path starts a command, so what
+        // is exercised here is what actually runs. See `shell::piped`.
+        Tree::spawn(command).unwrap()
     }
 
     /// A command that leaves a grandchild behind, as one shell line.
@@ -624,7 +623,7 @@ mod tests {
     ///
     /// Two spellings because the shells have nothing in common here, and this
     /// is the one test that has to run on both: ending a tree is a process
-    /// group on Unix and `taskkill /T` on Windows, and neither code path is
+    /// group on Unix and a Job Object on Windows, and neither code path is
     /// exercised by the other platform's. Detected by files rather than by
     /// listing processes — `pgrep` is not on Windows, `tasklist` cannot filter
     /// on a command line, and a marker that never appears is the same evidence
@@ -757,10 +756,8 @@ mod tests {
         // Comfortably past when the grandchild would have written, had it
         // lived. Polled rather than slept in one go so a failure is quick.
         //
-        // Eight seconds of grandchild against twelve of watching, for the reason
-        // the sibling test in `taurus_hooks` carries the same numbers:
-        // `taskkill` is a process, and starting one on a cold Windows runner
-        // eats most of a two-second margin before it has signalled anything.
+        // Eight seconds of grandchild against twelve of watching, for the
+        // reason the sibling test in `taurus_hooks` carries the same numbers.
         for _ in 0..240 {
             assert!(
                 !alive.exists(),
@@ -797,8 +794,8 @@ mod tests {
     }
 
     /// Long enough that nothing here can outrun it, and bounded so a stop that
-    /// leaves the shell's own child behind on Windows does not leave it for
-    /// long. `cmd` has no `sleep`, which is why this is not one string.
+    /// failed to reach it would not leave it running for long. `cmd` has no
+    /// `sleep`, which is why this is not one string.
     #[cfg(windows)]
     const KEEPS_RUNNING: &str = "ping -n 31 127.0.0.1 > nul";
     #[cfg(not(windows))]
