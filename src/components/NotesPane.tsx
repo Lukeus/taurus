@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import { when } from "../lib/format";
 import { embedFor, pathOf, same, type Notebook } from "../state/notebook";
@@ -72,18 +72,37 @@ export function NotesPane({
     forget,
     keepMine,
     takeTheirs,
+    drain,
+    keptAs,
   } = notebook;
 
   /** What is being made, where, and what it is being called. */
   const [making, setMaking] = useState<{ scope: Scope; kind: PageKind; name: string } | null>(
     null,
   );
-  /** Why the last create or rename was refused. Kept beside the box that asked
-   *  for the name, which is the only place it means anything. */
+  /** Why the last create was refused. Kept beside the box that asked for the
+   *  name, which is the only place it means anything. */
   const [refused, setRefused] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  /** Why the last rename was refused — its own rather than shared with the
+   *  create box, so a name refused in the list is never reported under the
+   *  open note's header, or the other way round. */
+  const [renameRefused, setRenameRefused] = useState<string | null>(null);
   /** Armed once, so nothing is deleted by one stray click. */
   const [arming, setArming] = useState(false);
+
+  /*
+   * A different file is open, by whichever route — a row, an embed's open, a
+   * card in the transcript. A half-typed rename, an armed Delete and a refused
+   * rename are all about the file they began on, and none follows the pane to
+   * the next one.
+   */
+  const openKey = open ? `${open.scope}:${open.kind}:${open.name}` : "";
+  useEffect(() => {
+    setRenaming(null);
+    setRenameRefused(null);
+    setArming(false);
+  }, [openKey]);
 
   const start = useCallback(
     async (scope: Scope, kind: PageKind, name: string) => {
@@ -131,11 +150,8 @@ export function NotesPane({
             disabled={scope === "workspace" && !hasWorkspace}
             making={making?.scope === scope ? making : null}
             refused={making?.scope === scope ? refused : null}
-            onChoose={(p) => {
-              setArming(false);
-              setRenaming(null);
-              choose({ scope: p.scope, kind: p.kind, name: p.name });
-            }}
+            keptAs={keptAs}
+            onChoose={choose}
             onOpen={() => {
               setMaking({ scope, kind: "note", name: "" });
               setRefused(null);
@@ -191,7 +207,7 @@ export function NotesPane({
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
                     setRenaming(null);
-                    setRefused(null);
+                    setRenameRefused(null);
                   }
                   if (e.key === "Enter") {
                     const to = renaming.trim();
@@ -202,9 +218,11 @@ export function NotesPane({
                     rename(page, to)
                       .then(() => {
                         setRenaming(null);
-                        setRefused(null);
+                        setRenameRefused(null);
                       })
-                      .catch((err) => setRefused(String(err)));
+                      .catch((err) =>
+                        setRenameRefused(err instanceof Error ? err.message : String(err)),
+                      );
                   }
                 }}
                 aria-label={`Rename this ${word}`}
@@ -268,7 +286,7 @@ export function NotesPane({
             </button>
           </header>
 
-          {refused && <Problem>{refused}</Problem>}
+          {renameRefused && <Problem>{renameRefused}</Problem>}
 
           {/*
            * Somebody else wrote the file while there was work in the editor.
@@ -306,7 +324,10 @@ export function NotesPane({
                   key={`${page.scope}:${page.name}`}
                   text={typed}
                   generation={generation}
-                  onChange={edit}
+                  // Bound to this sketch, so a stroke it hands over after the
+                  // pane has moved on is not taken as the next file's text.
+                  onChange={(text) => edit(text, page)}
+                  drain={drain}
                 />
               </Suspense>
             </div>
@@ -329,7 +350,7 @@ export function NotesPane({
                   // caret in the middle of a sentence.
                   key={`${page.scope}:${page.name}`}
                   text={typed}
-                  onChange={edit}
+                  onChange={(text) => edit(text, page)}
                   placeholder="Write in Markdown. A mermaid block draws as a diagram."
                 />
               )}
@@ -355,6 +376,7 @@ function Group({
   disabled,
   making,
   refused,
+  keptAs,
   onChoose,
   onOpen,
   onChange,
@@ -367,6 +389,8 @@ function Group({
   disabled: boolean;
   making: { kind: PageKind; name: string } | null;
   refused: string | null;
+  /** Whether a row's file has a version of yours kept for it. */
+  keptAs: Notebook["keptAs"];
   onChoose: (page: PageRef) => void;
   /** Opens the row that asks for a name. */
   onOpen: () => void;
@@ -446,6 +470,12 @@ function Group({
                   <span className="micro">
                     {p.kind === "sketch" ? "sketch · " : ""}
                     {when(p.at)}
+                    {/* A version of yours kept when this was left. Said in the
+                        row, because the row is all that is on screen of it. */}
+                    {keptAs(p) === "conflict" && (
+                      <span className="notes-kept"> · two versions</span>
+                    )}
+                    {keptAs(p) === "unsaved" && <span className="notes-kept"> · not saved</span>}
                   </span>
                 </button>
               </li>

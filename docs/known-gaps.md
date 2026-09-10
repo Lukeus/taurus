@@ -763,6 +763,12 @@ and they are the minority.
   case this app can see: you and a running turn. Two checkouts, or two windows
   on the same folder, meet in the file and are reconciled the way any other file
   in the repository is.
+- **A version kept for a note you left lasts as long as the window.** Leaving a
+  note while it shows two versions, or while its last save is refused or fails,
+  keeps yours in memory and marks the note in the list until you open it again.
+  Closing the window first loses it. Writing it to disk instead would be a second
+  copy of every contested note, somewhere nobody looks, outliving the question
+  it was kept for.
 - **A note's diagram is not searchable and its text is not indexed.** Transcript
   search does not look in notes, and the code index does not either — a project
   note is a Markdown file in `.taurus/`, which the index skips along with the

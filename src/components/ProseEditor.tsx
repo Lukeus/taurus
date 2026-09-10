@@ -92,10 +92,32 @@ export function ProseEditor({
   // auto-sizing query box has.
   useLayoutEffect(() => {
     const el = box.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
+    if (el) fit(el);
   }, [text]);
+
+  /*
+   * And again whenever its width changes, which moves where every line wraps:
+   * the canvas split opening, the rail dragged, the window resized. Measured on
+   * a change of text alone, a narrowed note kept the height it had at the old
+   * width — its last lines cut off below the box, and the painted layer drifting
+   * off the text above it until the next keystroke.
+   *
+   * Width only. The height `fit` sets is itself a resize, and answering that
+   * too would be a loop that only happens to settle.
+   */
+  useLayoutEffect(() => {
+    const el = box.current;
+    // Absent in jsdom, which has no layout for it to report on anyway.
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const watch = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      fit(el);
+    });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
 
   return (
     <div className="prose-edit">
@@ -131,4 +153,10 @@ export function ProseEditor({
       />
     </div>
   );
+}
+
+/** Makes the box exactly as tall as what is in it, at the width it has now. */
+function fit(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
 }

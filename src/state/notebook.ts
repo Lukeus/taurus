@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../lib/api";
 import type { Page, PageKind, PageRef, Scope } from "../lib/api";
 import { reconcile, SAVE_AFTER_MS } from "../lib/document";
+import { basename } from "../lib/format";
 
 /**
  * The notebook, as one screen's worth of state.
@@ -43,6 +44,27 @@ export type NoteMode = "write" | "read";
 
 export type SaveState = "idle" | "typing" | "saving" | "failed";
 
+/** How a flush went. `conflict` is one already open, which no save can settle. */
+export type Flushed = "clean" | "written" | "stale" | "failed" | "conflict";
+
+/**
+ * A version of somebody's, typed into a file they have since left and not yet
+ * written — see `hold`. `base` is the file as it was when that typing began,
+ * and `conflict` whether it was left because the file changed underneath it
+ * rather than because a save failed.
+ */
+type Kept = { base: Page; draft: string; conflict: boolean };
+
+/**
+ * What a kept version is filed under. A project note's includes its folder, so
+ * a version typed in one repository is offered back only in that repository —
+ * and is there again when it is reopened.
+ */
+function keyOf(which: Which, workspace: string | null): string {
+  const folder = which.scope === "workspace" ? (workspace ?? "") : "";
+  return `${which.scope}\u0000${folder}\u0000${which.kind}\u0000${which.name}`;
+}
+
 export type Notebook = ReturnType<typeof useNotebook>;
 
 export function useNotebook({
@@ -64,10 +86,19 @@ export function useNotebook({
    * both are known to have finished.
    */
   busy,
+  /**
+   * The folder that is open, or `null`.
+   *
+   * Watched for a switch. A project note belongs to the folder it was read
+   * from, and the host's notebook moves with the workspace the moment
+   * `set_workspace` returns — see the effect that watches this.
+   */
+  workspace,
   onError,
 }: {
   wrote: { at: number; paths: string[] } | null;
   busy: boolean;
+  workspace: string | null;
   onError: (message: string) => void;
 }) {
   const [pages, setPages] = useState<PageRef[] | null>(null);
@@ -97,6 +128,70 @@ export function useNotebook({
    * under somebody's pen.
    */
   const [generation, setGeneration] = useState(0);
+  /** Versions kept for files that were left unwritten, by `keyOf`. */
+  const [kept, setKept] = useState<Record<string, Kept>>({});
+
+  /*
+   * The same values, for code that runs after the render it was made in — a
+   * save answered after a switch, a flush run from a click. Each needs what is
+   * open now rather than what was open when it was created. Assigned during
+   * render, the way `SketchEditor` holds its `onChange`.
+   */
+  const live = useRef({ open, page, typed, conflict, kept, workspace });
+  live.current = { open, page, typed, conflict, kept, workspace };
+  /**
+   * Which opening of a file the editor is on. It moves the moment the editor
+   * leaves one — see `go` — and a save's answer is applied only if it has not
+   * moved since the save began. Moved on leaving rather than on the next read
+   * arriving, because a save's answer can land between the two: applied there,
+   * a refusal became a conflict over the *next* file, whose **Keep mine** wrote
+   * the next file's text into the one that had been left.
+   */
+  const session = useRef(0);
+  /** The autosave waiting out its debounce, so `flush` can run it now instead. */
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The save in flight, so a flush asking for the same one waits for it rather
+   *  than sending it again against a fingerprint it is about to change. */
+  const saving = useRef<{ page: Page; text: string; done: Promise<Flushed> } | null>(null);
+  /** Set by the sketch editor while it is mounted — see its `drain`. */
+  const drain = useRef<(() => void) | null>(null);
+  // Held rather than depended on. `App` passes a new function on every render,
+  // and an effect keyed on it would restart the autosave with each one.
+  const report = useRef(onError);
+  report.current = onError;
+
+  /** Moves the editor to another file, or to none. The one place `open` is
+   *  set, so the one place a session ends. */
+  const go = useCallback((next: Which | null) => {
+    session.current += 1;
+    setOpen(next && { scope: next.scope, kind: next.kind, name: next.name });
+  }, []);
+
+  /**
+   * Keeps what was typed into a file that is being left and cannot be written:
+   * a conflict still waiting for a choice, or a save that came back refused or
+   * failed after the editor had moved on.
+   *
+   * Leaving is not a decision about whose version survives, so it must not
+   * make one. The version is kept against the file until it is opened again —
+   * which reads it afresh and asks, or simply saves it if nothing else has
+   * written the file since — or until the file is deleted. The list marks it
+   * meanwhile. In memory only: see `docs/known-gaps.md`.
+   */
+  const hold = useCallback((base: Page, draft: string, conflict: boolean) => {
+    const key = keyOf(base, live.current.workspace);
+    setKept((all) => ({ ...all, [key]: { base, draft, conflict } }));
+  }, []);
+
+  const release = useCallback((which: Which) => {
+    const key = keyOf(which, live.current.workspace);
+    setKept((all) => {
+      if (!(key in all)) return all;
+      const rest = { ...all };
+      delete rest[key];
+      return rest;
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -124,6 +219,7 @@ export function useNotebook({
     if (scope === null || kind === null || name === null) {
       setPage(null);
       setTyped("");
+      setConflict(null);
       return;
     }
     let current = true;
@@ -133,8 +229,29 @@ export function useNotebook({
       .readPage(scope, kind, name)
       .then((read) => {
         if (!current) return;
-        setPage(read);
-        setTyped(read.text);
+        const held = live.current.kept[keyOf(read, live.current.workspace)];
+        if (!held) {
+          setPage(read);
+          setTyped(read.text);
+        } else {
+          // The writer's own version was kept when this was left. Put back,
+          // and asked about against the file as it is now, not as it was then.
+          release(read);
+          if (read.text === held.draft) {
+            // Whoever wrote it wrote the same thing.
+            setPage(read);
+            setTyped(read.text);
+          } else if (read.fingerprint === held.base.fingerprint) {
+            // Nothing has written it since the typing began: the kept version
+            // simply saves.
+            setPage(read);
+            setTyped(held.draft);
+          } else {
+            setPage(held.base);
+            setTyped(held.draft);
+            setConflict(read);
+          }
+        }
         setSaveState("idle");
         setGeneration((g) => g + 1);
       })
@@ -146,7 +263,7 @@ export function useNotebook({
     return () => {
       current = false;
     };
-  }, [scope, kind, name]);
+  }, [scope, kind, name, release]);
 
   /*
    * Writes what has been typed, once typing has stopped.
@@ -158,35 +275,145 @@ export function useNotebook({
    */
   useEffect(() => {
     if (!page || conflict || typed === page.text) return;
+    // Being left: its last words went with the flush that left it, and a second
+    // save against the same stamp would be refused by the first.
+    if (!same(open, page)) return;
     setSaveState("typing");
-    const timer = setTimeout(() => {
+    const pending = setTimeout(() => {
+      timer.current = null;
+      void write(page, typed);
+    }, SAVE_AFTER_MS);
+    timer.current = pending;
+    return () => {
+      clearTimeout(pending);
+      if (timer.current === pending) timer.current = null;
+    };
+    // `write` is stable, so this restarts on typing and nothing else.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typed, page, conflict, open]);
+
+  /**
+   * Writes `text` over the file `target` was read as.
+   *
+   * The answer is applied only if the same opening of the same file is still
+   * in the editor — see `session`. A save started on one note and answered
+   * after another had opened is about a file no longer on screen: applied, it
+   * made the old note current again under the new one's text, and the next
+   * autosave wrote that text into the old file. The outcome is returned either
+   * way, for the one caller that has to know — a rename.
+   */
+  const write = useCallback(
+    (target: Page, text: string): Promise<Flushed> => {
+      const underway = saving.current;
+      if (underway && underway.page === target && underway.text === text) return underway.done;
+      const mine = session.current;
+      const here = () => session.current === mine;
       setSaveState("saving");
-      api
-        .savePage(page.scope, page.kind, page.name, typed, page.fingerprint)
-        .then((result) => {
+      const done = api
+        .savePage(target.scope, target.kind, target.name, text, target.fingerprint)
+        .then((result): Flushed => {
           if (result.type === "stale") {
-            // Not an error. Somebody wrote the file after this editor read it,
-            // so both versions exist and which one survives is not a decision
-            // this code gets to make.
-            setConflict(result.current);
-            setSaveState("typing");
-            return;
+            if (here()) {
+              // Not an error. Somebody wrote the file after this editor read
+              // it, so both versions exist and which one survives is not a
+              // decision this code gets to make.
+              setConflict(result.current);
+              setSaveState("typing");
+            } else {
+              // The file has been left, so there is no editor to ask in. Kept
+              // for when it is opened again, and said, since the only sign on
+              // screen is a word in a row of the list.
+              hold(target, text, true);
+              report.current(
+                `"${target.name}" changed on disk while you were working on it, so your version was kept rather than saved. Open it again to choose between them.`,
+              );
+            }
+            return "stale";
           }
-          setPage(result.page);
-          setSaveState("idle");
+          if (here()) {
+            setPage(result.page);
+            setSaveState("idle");
+          }
           // The list carries a size and a timestamp, and this changed both.
           void refresh();
+          return "written";
         })
-        .catch((e) => {
-          setSaveState("failed");
-          onError(String(e));
+        .catch((e): Flushed => {
+          if (here()) {
+            setSaveState("failed");
+            report.current(String(e));
+          } else {
+            hold(target, text, false);
+            report.current(
+              `${String(e)} Your version of "${target.name}" is kept — open it again to save it.`,
+            );
+          }
+          return "failed";
+        })
+        .finally(() => {
+          if (saving.current?.done === done) saving.current = null;
         });
-    }, SAVE_AFTER_MS);
-    return () => clearTimeout(timer);
-    // `refresh` and `onError` are stable; depending on them would restart the
-    // timer on every render and a fast typist would never reach the end of one.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [typed, page, conflict]);
+      saving.current = { page: target, text, done };
+      return done;
+    },
+    [refresh, hold],
+  );
+
+  /**
+   * Writes now whatever is waiting to be written.
+   *
+   * Run before anything that takes the editor off the file it is on: choosing
+   * another, making one, renaming this one, switching workspace. The debounce
+   * is right while somebody is typing and wrong the moment they leave —
+   * cancelled by the switch, it took the last sentence with it. A sketch's last
+   * stroke is asked for first, because it waits on a debounce of its own.
+   *
+   * `leaving` when the editor is about to move off the file: a conflict still
+   * waiting for a choice is then kept rather than dropped — see `hold`. A
+   * rename passes nothing, because it refuses instead and stays.
+   */
+  const flush = useCallback(async (leaving = false): Promise<Flushed> => {
+    drain.current?.();
+    if (timer.current !== null) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    const { open, page, typed, conflict } = live.current;
+    // Nothing open, or already being left — which was flushed when it was.
+    if (!page || !same(open, page)) return "clean";
+    if (conflict) {
+      if (leaving) hold(page, typed, true);
+      return "conflict";
+    }
+    if (typed === page.text) return "clean";
+    return write(page, typed);
+  }, [write, hold]);
+
+  /** Opens a file, having written what was typed into the one being left. */
+  const choose = useCallback(
+    (which: Which) => {
+      // Re-choosing the file that is open is nothing, rather than a re-read
+      // that would throw away what has been typed into it.
+      if (same(live.current.open, which)) return;
+      void flush(true);
+      go(which);
+    },
+    [flush, go],
+  );
+
+  /**
+   * What was typed into the editor of `which`.
+   *
+   * Named, because an editor can speak after its file has been left: the
+   * sketch editor hands over a stroke still waiting to be serialised when it
+   * unmounts, and by then the pane may be showing another file. Taken, it would
+   * become that file's text — and be saved over it.
+   */
+  const edit = useCallback((text: string, which: Which) => {
+    if (!same(which, live.current.page)) return;
+    live.current.typed = text;
+    setTyped(text);
+  }, []);
 
   /**
    * Takes a version of the open file that arrived from somewhere else.
@@ -274,37 +501,99 @@ export function useNotebook({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
 
-  const create = useCallback(async (scope: Scope, kind: PageKind, name: string) => {
-    // Refused names come back from the host, which is the only place that can
-    // know whether one is taken. Thrown rather than swallowed: the box that
-    // asked for the name is where the message belongs.
-    const made = await api.createPage(scope, kind, name);
-    setPages(await api.listPages());
-    setOpen({ scope: made.scope, kind: made.kind, name: made.name });
-    setMode("write");
-    return made;
-  }, []);
+  /*
+   * The workspace switched.
+   *
+   * The list is read again, because its project half is a different folder's
+   * now. And a project file that was open is closed rather than kept: the host
+   * already answers for the new folder, so the next autosave would have landed
+   * in whatever file there has the same name — or been refused as a conflict
+   * whose **Keep mine** overwrote it. What was typed has been written by then,
+   * because `App` flushes before it asks for the switch. A global file stays
+   * open; it belongs to neither folder.
+   */
+  const seenWorkspace = useRef(workspace);
+  useEffect(() => {
+    if (seenWorkspace.current === workspace) return;
+    const previous = seenWorkspace.current;
+    seenWorkspace.current = workspace;
+    void refresh();
+    // Versions kept in the folder being left are kept for when it is back, and
+    // said, because the rows that would have marked them are gone from the list.
+    const left = Object.keys(live.current.kept).filter((key) =>
+      key.startsWith(`workspace\u0000${previous ?? ""}\u0000`),
+    ).length;
+    if (left > 0 && previous) {
+      report.current(
+        `Your unsaved version of ${left === 1 ? "a project note" : `${left} project notes`} is kept for when ${basename(previous)} is open again, until this window closes.`,
+      );
+    }
+    if (live.current.open?.scope !== "workspace") return;
+    if (timer.current !== null) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    go(null);
+  }, [workspace, refresh, go]);
+
+  const create = useCallback(
+    async (scope: Scope, kind: PageKind, name: string) => {
+      // Refused names come back from the host, which is the only place that can
+      // know whether one is taken. Thrown rather than swallowed: the box that
+      // asked for the name is where the message belongs.
+      const made = await api.createPage(scope, kind, name);
+      setPages(await api.listPages());
+      void flush(true);
+      go(made);
+      setMode("write");
+      return made;
+    },
+    [flush, go],
+  );
 
   // Takes only what it addresses a file by, so a `Page` from the editor and a
   // `PageRef` from the list both fit without either being converted.
-  const rename = useCallback(async (from: Which, to: string) => {
-    const moved = await api.renamePage(from.scope, from.kind, from.name, to);
-    setPages(await api.listPages());
-    setOpen({ scope: moved.scope, kind: moved.kind, name: moved.name });
-    return moved;
-  }, []);
-
-  const forget = useCallback(
-    async (target: Which) => {
-      try {
-        setPages(await api.forgetPage(target.scope, target.kind, target.name));
-        if (same(open, target)) setOpen(null);
-      } catch (e) {
-        onError(String(e));
+  const rename = useCallback(
+    async (from: Which, to: string) => {
+      // Written under the name it was typed under before the file moves, since
+      // it is then read afresh under the new one. A save that did not land is a
+      // reason not to move it: what was typed would stay behind with the old
+      // editor, and nothing would say so.
+      if (same(from, live.current.page)) {
+        const saved = await flush();
+        if (saved === "conflict" || saved === "stale") {
+          throw new Error(
+            `Choose a version first — this ${from.kind} changed while you were working on it.`,
+          );
+        }
+        if (saved === "failed") {
+          throw new Error("It was not renamed, because your latest changes to it could not be saved.");
+        }
       }
+      const moved = await api.renamePage(from.scope, from.kind, from.name, to);
+      setPages(await api.listPages());
+      go(moved);
+      return moved;
     },
-    [open, onError],
+    [flush, go],
   );
+
+  const forget = useCallback(async (target: Which) => {
+    try {
+      // An autosave still waiting out its debounce is about a file that is on
+      // its way out, and has nothing left to write to.
+      if (same(live.current.page, target) && timer.current !== null) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
+      setPages(await api.forgetPage(target.scope, target.kind, target.name));
+      // A version kept for a file that is gone has nothing left to be about.
+      release(target);
+      if (same(live.current.open, target)) go(null);
+    } catch (e) {
+      report.current(String(e));
+    }
+  }, [go, release]);
 
   /** Saves what is in the editor over the other version. */
   const keepMine = useCallback(() => {
@@ -342,6 +631,16 @@ export function useNotebook({
    * and sending a whole one with every message from a pane somebody leaves open
    * would be the most expensive habit in the app.
    */
+  /** Whether a file has a version of somebody's kept for it — see `hold`. */
+  const keptAs = useCallback(
+    (which: Which): "conflict" | "unsaved" | null => {
+      const held = kept[keyOf(which, workspace)];
+      if (!held) return null;
+      return held.conflict ? "conflict" : "unsaved";
+    },
+    [kept, workspace],
+  );
+
   const onScreen = useMemo(
     () =>
       page && page.kind === "note"
@@ -362,8 +661,11 @@ export function useNotebook({
     generation,
     onScreen,
     refresh,
-    choose: setOpen,
-    edit: setTyped,
+    choose,
+    edit,
+    flush,
+    drain,
+    keptAs,
     setMode,
     create,
     rename,

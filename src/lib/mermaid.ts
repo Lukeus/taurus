@@ -413,7 +413,7 @@ export function layer(nodes: Node[], edges: FlowEdgeIn[]): Node[][] {
     state.set(key, "open");
     for (const next of forward.get(key)!) {
       const seen = state.get(next);
-      if (seen === "open") back.add(`${key} ${next}`);
+      if (seen === "open") back.add(`${key}\u0000${next}`);
       else if (seen === undefined) walk(next);
     }
     state.set(key, "shut");
@@ -428,7 +428,7 @@ export function layer(nodes: Node[], edges: FlowEdgeIn[]): Node[][] {
   }
   for (const [from, tos] of forward) {
     for (const to of tos) {
-      if (back.has(`${from} ${to}`)) continue;
+      if (back.has(`${from}\u0000${to}`)) continue;
       into.get(to)!.push(from);
       out.set(from, out.get(from)! + 1);
     }
@@ -446,7 +446,7 @@ export function layer(nodes: Node[], edges: FlowEdgeIn[]): Node[][] {
   while (queue.length > 0) {
     const key = queue.shift()!;
     for (const next of forward.get(key)!) {
-      if (back.has(`${key} ${next}`)) continue;
+      if (back.has(`${key}\u0000${next}`)) continue;
       depth.set(next, Math.max(depth.get(next)!, depth.get(key)! + 1));
       const remaining = left.get(next)! - 1;
       left.set(next, remaining);
@@ -605,10 +605,18 @@ function unquote(text: string): string {
  * Tried middle-label first: `A -- yes --> B` also matches the plain form with
  * `yes --> B` left over, which would then fail to parse as a node reference and
  * refuse a diagram that is perfectly ordinary.
+ *
+ * A middle label opens with exactly `--`, `==` or `-.`, as Mermaid's own lexer
+ * has it, and never with a whole link. Opened with `---` or `===`, the middle
+ * form swallowed the next node: `a --- b --- c` came back as one edge from `a`
+ * to `c` labelled "b", with `b` gone and nothing on screen saying so. The same
+ * rule keeps `--x` and `--o` arrowheads out of it. Inside the label a single
+ * dash or equals sign is text, so `-- non-blocking -->` is a label rather than
+ * a node called `non-blocking`.
  */
 export function connector(text: string): { link: Link; rest: string } | null {
   const middle =
-    /^\s*(<)?(?:-{2,}|={2,}|-\.+)\s*([^-=<>|]+?)\s*(?:-{2,}|={2,}|\.-+)([>ox])?\s*/.exec(
+    /^\s*(<)?(?:--(?![-.>ox=])|==(?![-=>ox])|-\.(?![-.>]))\s*((?:[^-=<>|]|-(?![-.>])|=(?![=>]))+?)\s*(?:-{2,}|={2,}|\.-+)([>ox])?\s*/.exec(
       text,
     );
   if (middle && middle[2].trim() !== "") {

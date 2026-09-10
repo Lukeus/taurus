@@ -1,6 +1,6 @@
 import "../lib/excalidrawEnv";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
 import { Excalidraw, MainMenu, hashElementsVersion, serializeAsJSON } from "@excalidraw/excalidraw";
 import type { AppState, BinaryFiles } from "@excalidraw/excalidraw/types";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -49,6 +49,7 @@ export default function SketchEditor({
   text,
   generation,
   onChange,
+  drain,
 }: {
   /** The `.excalidraw` file as last read. Only read when `generation` moves. */
   text: string;
@@ -64,6 +65,12 @@ export default function SketchEditor({
   generation: number;
   /** Called with the new file text, once the drawing has stopped changing. */
   onChange: (text: string) => void;
+  /**
+   * Where to leave a way of handing over a change still waiting to be
+   * serialised. The notebook runs it before it leaves this sketch — see its
+   * `flush` — so a stroke finished just before a switch is saved with the rest.
+   */
+  drain?: RefObject<(() => void) | null>;
 }) {
   const theme = useWindowTheme();
   // Keyed on `generation` alone, deliberately — see the prop.
@@ -81,20 +88,40 @@ export default function SketchEditor({
    */
   const lastKey = useRef<string | null>(null);
   const timer = useRef<number | null>(null);
+  /** The serialisation waiting out `timer`, so it can be run early. */
+  const pending = useRef<(() => string) | null>(null);
   const emit = useRef(onChange);
   emit.current = onChange;
 
-  // A reload starts the comparison over.
+  /** Runs the waiting serialisation now, if there is one. */
+  const settle = useCallback(() => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+    const serialise = pending.current;
+    pending.current = null;
+    if (serialise) emit.current(serialise());
+  }, []);
+
+  // A reload starts the comparison over, and throws away a change waiting to be
+  // serialised: it belongs to the scene the reload replaced, and handing it over
+  // afterwards would save the old drawing over the one just read.
   useEffect(() => {
     lastKey.current = null;
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+    pending.current = null;
   }, [generation]);
 
-  useEffect(
-    () => () => {
-      if (timer.current !== null) window.clearTimeout(timer.current);
-    },
-    [],
-  );
+  // Handed over rather than dropped when the editor goes. A switch back to the
+  // transcript unmounts it, and the last stroke of a drawing is the one somebody
+  // has only just made.
+  useEffect(() => {
+    if (drain) drain.current = settle;
+    return () => {
+      if (drain && drain.current === settle) drain.current = null;
+      settle();
+    };
+  }, [drain, settle]);
 
   /*
    * Every anchor Excalidraw renders goes to the system browser.
@@ -169,12 +196,10 @@ export default function SketchEditor({
           if (key === lastKey.current) return;
           lastKey.current = key;
           if (timer.current !== null) window.clearTimeout(timer.current);
+          pending.current = () => serializeAsJSON(elements, appState, files, "local");
           // Short, because the save loop behind this has its own debounce. This
           // one only keeps a stroke from being serialised once per point.
-          timer.current = window.setTimeout(() => {
-            timer.current = null;
-            emit.current(serializeAsJSON(elements, appState, files, "local"));
-          }, SERIALIZE_AFTER_MS);
+          timer.current = window.setTimeout(settle, SERIALIZE_AFTER_MS);
         }}
       >
         {/*

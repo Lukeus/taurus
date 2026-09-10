@@ -187,6 +187,27 @@ describe("reading a flowchart's links", () => {
     expect(arrows(asFlow("flowchart LR\n  a --- b").input)).toEqual(["a -> b"]);
   });
 
+  it("does not read the node between two whole links as a label", () => {
+    // Read as a middle label, `b` became the text on one edge from `a` to `c` —
+    // a node gone from the picture, and nothing on screen saying so.
+    for (const line of ["a --- b --- c", "a --- b --> c", "a === b ==> c", "a -.- b -.-> c"]) {
+      const { input, skipped } = asFlow(`flowchart LR\n  ${line}`);
+      expect(arrows(input), line).toEqual(["a -> b", "b -> c"]);
+      expect(skipped, line).toEqual([]);
+    }
+  });
+
+  it("reads an arrowhead as an arrowhead rather than the start of a label", () => {
+    const { input } = asFlow("flowchart LR\n  a --x b --> c\n  c --o d");
+    expect(arrows(input)).toEqual(["a -> b", "b -> c", "c -> d"]);
+  });
+
+  it("takes a single dash inside a middle label as text", () => {
+    expect(arrows(asFlow("flowchart LR\n  a -- non-blocking --> b").input)).toEqual([
+      "a -> b (non-blocking)",
+    ]);
+  });
+
   it("follows a chain", () => {
     const { input } = asFlow("flowchart LR\n  a --> b -->|then| c");
     expect(arrows(input)).toEqual(["a -> b", "b -> c (then)"]);

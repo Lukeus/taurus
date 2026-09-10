@@ -4862,6 +4862,11 @@ button.link:where(:not(.excalidraw *)):hover {
 .notes-row[data-current] b {
   color: var(--text);
 }
+/* A version of yours kept for a note you left. `--warn` rather than `--danger`:
+   nothing has been lost, and something is waiting for you. */
+.notes-kept {
+  color: var(--warn);
+}
 
 /* What fills the right half before a note is chosen. The two scopes are
    explained here because this is the one moment somebody is looking for the

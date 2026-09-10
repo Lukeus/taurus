@@ -7,6 +7,8 @@ import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { Notebook } from "../state/notebook";
+
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
@@ -24,28 +26,48 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
  * reloaded by the same machinery as a note. The real canvas is photographed in
  * the `sketch` screenshot, which is its only check.
  */
-const strokes = vi.hoisted(() => ({ count: 0 }));
+const strokes = vi.hoisted(() => ({ count: 0, held: null as string | null }));
 vi.mock("./SketchEditor", () => ({
   default: ({
     text,
     generation,
     onChange,
+    drain,
   }: {
     text: string;
     generation: number;
     onChange: (text: string) => void;
-  }) => (
-    <div className="stub-sketch" data-generation={generation}>
-      <pre>{text}</pre>
-      <button
-        onClick={() =>
-          onChange(`{"type":"excalidraw","elements":[{"id":"s${++strokes.count}"}]}`)
-        }
-      >
-        draw
-      </button>
-    </div>
-  ),
+    drain?: { current: (() => void) | null };
+  }) => {
+    // A stroke the real editor would still be holding on its own debounce,
+    // handed over only when the notebook asks for it.
+    if (drain) {
+      drain.current = () => {
+        if (strokes.held === null) return;
+        onChange(strokes.held);
+        strokes.held = null;
+      };
+    }
+    return (
+      <div className="stub-sketch" data-generation={generation}>
+        <pre>{text}</pre>
+        <button
+          onClick={() =>
+            onChange(`{"type":"excalidraw","elements":[{"id":"s${++strokes.count}"}]}`)
+          }
+        >
+          draw
+        </button>
+        <button
+          onClick={() => {
+            strokes.held = `{"type":"excalidraw","elements":[{"id":"held${++strokes.count}"}]}`;
+          }}
+        >
+          hold
+        </button>
+      </div>
+    );
+  },
 }));
 // And the picture an embed draws, for the same reason.
 vi.mock("../lib/sketchSvg", () => ({
@@ -98,14 +120,29 @@ function Harness({
   hasWorkspace = true,
   onAsk = () => {},
   busy = false,
+  workspace = "/code/taurus",
+  errors,
+  onNotebook,
 }: {
   hasWorkspace?: boolean;
   onAsk?: (draft: string) => void;
   /** Whether a turn is running — moved from true to false to finish one. */
   busy?: boolean;
+  /** The folder that is open — changed to switch workspace. */
+  workspace?: string | null;
+  /** Where the errors `App` would show end up. */
+  errors?: string[];
+  /** Hands out the notebook, for what `App` calls on it directly. */
+  onNotebook?: (notebook: Notebook) => void;
 }) {
   const [wrote] = useState<{ at: number; paths: string[] } | null>(null);
-  const notebook = useNotebook({ wrote, busy, onError: () => {} });
+  const notebook = useNotebook({
+    wrote,
+    busy,
+    workspace,
+    onError: (message) => errors?.push(message),
+  });
+  onNotebook?.(notebook);
   return <NotesPane notebook={notebook} onAsk={onAsk} hasWorkspace={hasWorkspace} />;
 }
 
@@ -620,5 +657,356 @@ describe("when a turn finishes", () => {
 
     await vi.waitFor(() => expect(host.querySelector("textarea")?.value).toContain("SICP"));
     expect(host.textContent).toContain("Made by the turn");
+  });
+});
+
+/** Two notes, each read as `# <name>`, each save answered as written. */
+function twoNotes(extra: Record<string, (args: never) => unknown> = {}) {
+  answering({
+    list_pages: () => [ref("One"), ref("Two")],
+    read_page: (args: never) => {
+      const { name } = args as { name: string };
+      return page(name, `# ${name}\n`);
+    },
+    save_page: (args: never) => {
+      const { name, text } = args as { name: string; text: string };
+      return { type: "written", page: { ...page(name, text), fingerprint: "40-2000" } };
+    },
+    ...extra,
+  });
+}
+
+const rows = (host: HTMLElement) => [...host.querySelectorAll(".notes-row")];
+const saves = () =>
+  invoke.mock.calls.filter(([name]) => name === "save_page").map(([, args]) => args);
+
+/**
+ * `One` as a file somebody else can write mid-test — set `disk.one` — and `Two`
+ * as one nobody does. A save against a stamp the file no longer has is refused,
+ * the way the host refuses it.
+ */
+function contested() {
+  const disk = { one: page("One", "# One\n") };
+  answering({
+    list_pages: () => [ref("One"), ref("Two")],
+    read_page: (args: never) =>
+      (args as { name: string }).name === "One" ? disk.one : page("Two", "# Two\n"),
+    save_page: (args: never) => {
+      const { text, fingerprint } = args as { text: string; fingerprint: string };
+      if (fingerprint !== disk.one.fingerprint) return { type: "stale", current: disk.one };
+      disk.one = { ...page("One", text), fingerprint: `${text.length}-9000` };
+      return { type: "written", page: disk.one };
+    },
+  });
+  return disk;
+}
+
+describe("leaving a file", () => {
+  it("writes what was typed before the next one opens, rather than dropping it", async () => {
+    // The debounce is right while somebody types and wrong the moment they
+    // leave. Cancelled by the switch, it took the last sentence with it.
+    twoNotes();
+    const { host, click, type } = await mount();
+    await click(rows(host)[0]);
+    await type(host.querySelector("textarea"), "# One\n\nthe last sentence\n");
+    await click(rows(host)[1]);
+
+    expect(invoke).toHaveBeenCalledWith("save_page", {
+      scope: "workspace",
+      kind: "note",
+      name: "One",
+      text: "# One\n\nthe last sentence\n",
+      fingerprint: "32-1000",
+    });
+    await vi.waitFor(() => expect(host.querySelector("textarea")?.value).toBe("# Two\n"));
+  });
+
+  it("does not let a save answered late make the note that was left current again", async () => {
+    // Applied, the late answer put `One` back under `Two`'s text, and the next
+    // autosave wrote `Two` into `One`.
+    let land: () => void = () => {};
+    twoNotes({
+      save_page: (args: never) => {
+        const { name, text } = args as { name: string; text: string };
+        const written = { type: "written", page: { ...page(name, text), fingerprint: "40-2000" } };
+        return name === "One" ? new Promise((resolve) => (land = () => resolve(written))) : written;
+      },
+    });
+    const { host, click, type } = await mount();
+    await click(rows(host)[0]);
+    await type(host.querySelector("textarea"), "# One\n\nmine\n");
+
+    vi.useFakeTimers();
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+    // In flight, and not sent a second time by the switch that follows.
+    await click(rows(host)[1]);
+    expect(saves().filter((s) => (s as { name: string }).name === "One")).toHaveLength(1);
+    expect(host.querySelector("textarea")?.value).toBe("# Two\n");
+
+    await act(async () => land());
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(host.querySelector(".notes-name")?.textContent).toBe("Two");
+    expect(host.querySelector("textarea")?.value).toBe("# Two\n");
+    expect(saves()).not.toContainEqual(expect.objectContaining({ name: "One", text: "# Two\n" }));
+  });
+
+  it("keeps yours when its save on the way out is refused, and asks when it is opened", async () => {
+    // There is no editor left to ask in, so it is kept, marked and said — not
+    // put up as a conflict over the note that is open now.
+    const disk = contested();
+    const errors: string[] = [];
+    const { host, click, type } = await mount({ errors });
+    await click(rows(host)[0]);
+    disk.one = { ...page("One", "theirs\n"), fingerprint: "44-3000" };
+    await type(host.querySelector("textarea"), "mine\n");
+    await click(rows(host)[1]);
+
+    await vi.waitFor(() => expect(rows(host)[0].textContent).toContain("two versions"));
+    expect(errors.join()).toContain('"One" changed on disk');
+    expect(host.querySelector("textarea")?.value).toBe("# Two\n");
+    expect(host.querySelector(".notes-conflict")).toBeNull();
+
+    await click(rows(host)[0]);
+    expect(host.querySelector(".notes-conflict")).not.toBeNull();
+    expect(host.querySelector("textarea")?.value).toBe("mine\n");
+  });
+
+  it("hands over a sketch's last stroke before leaving it", async () => {
+    // The canvas waits 200ms before it serialises, on top of the save's own
+    // debounce; a stroke finished just before a switch was in neither.
+    answering({
+      list_pages: () => [ref("Flow", "workspace", "sketch"), ref("Notes")],
+      read_page: (args: never) =>
+        (args as { kind: string }).kind === "sketch"
+          ? page("Flow", EMPTY, "workspace", "sketch")
+          : page("Notes", "# Notes\n"),
+      save_page: (args: never) => {
+        const { name, text, kind } = args as { name: string; text: string; kind: "note" | "sketch" };
+        return { type: "written", page: { ...page(name, text, "workspace", kind), fingerprint: "60-2000" } };
+      },
+    });
+    const { host, click } = await mount();
+    await click(rows(host)[0]);
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
+    await click(saying(host, "hold"));
+    await click(rows(host)[1]);
+
+    expect(invoke).toHaveBeenCalledWith(
+      "save_page",
+      expect.objectContaining({ kind: "sketch", name: "Flow", text: expect.stringContaining('"held') }),
+    );
+  });
+
+  it("writes a note under its old name before renaming it", async () => {
+    twoNotes({
+      rename_page: (args: never) => {
+        const { to } = args as { to: string };
+        return page(to, "# One\n\nmine\n");
+      },
+    });
+    const { host, click, type, press } = await mount();
+    await click(rows(host)[0]);
+    await type(host.querySelector("textarea"), "# One\n\nmine\n");
+    await click(saying(host, "Rename"));
+    const field = host.querySelector(".notes-rename");
+    await type(field, "Renamed");
+    await press(field, "Enter");
+
+    const order = invoke.mock.calls
+      .map(([name]) => name)
+      .filter((name) => name === "save_page" || name === "rename_page");
+    expect(order).toEqual(["save_page", "rename_page"]);
+    expect(saves()[0]).toMatchObject({ name: "One", text: "# One\n\nmine\n" });
+  });
+
+  it("refuses to rename a note while its conflict is open", async () => {
+    // Renamed, it would be read afresh under the new name and the version still
+    // waiting to be chosen would go with the old editor.
+    vi.useFakeTimers();
+    twoNotes({
+      save_page: () => ({
+        type: "stale",
+        current: { ...page("One", "theirs\n"), fingerprint: "44-3000" },
+      }),
+      rename_page: () => page("Renamed", "theirs\n"),
+    });
+    const { host, click, type, press } = await mount();
+    await click(rows(host)[0]);
+    await type(host.querySelector("textarea"), "mine\n");
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+    expect(host.querySelector(".notes-conflict")).not.toBeNull();
+
+    await click(saying(host, "Rename"));
+    const field = host.querySelector(".notes-rename");
+    await type(field, "Renamed");
+    await press(field, "Enter");
+
+    expect(invoke).not.toHaveBeenCalledWith("rename_page", expect.anything());
+    expect(host.querySelector(".notes-doc")?.textContent).toContain("Choose a version first");
+    expect(host.querySelector("textarea")?.value).toBe("mine\n");
+  });
+});
+
+describe("switching workspace", () => {
+  it("closes a project note and reads the list again", async () => {
+    // Kept open, its next autosave would have landed in the new folder's file
+    // of the same name.
+    answering({ list_pages: () => [ref("Notes")], read_page: () => page("Notes", "# Notes\n") });
+    const { host, click, rerender } = await mount();
+    await click(host.querySelector(".notes-row"));
+    expect(host.querySelector("textarea")).not.toBeNull();
+    const listed = invoke.mock.calls.filter(([name]) => name === "list_pages").length;
+
+    await rerender({ workspace: "/code/elsewhere" });
+
+    expect(host.querySelector(".notes-none")).not.toBeNull();
+    expect(invoke.mock.calls.filter(([name]) => name === "list_pages")).toHaveLength(listed + 1);
+  });
+
+  it("leaves a global note open, since it belongs to neither folder", async () => {
+    answering({
+      list_pages: () => [ref("Reading list", "global")],
+      read_page: () => page("Reading list", "# Reading list\n", "global"),
+    });
+    const { host, click, rerender } = await mount();
+    await click(host.querySelector(".notes-row"));
+    await rerender({ workspace: "/code/elsewhere" });
+
+    expect(host.querySelector("textarea")?.value).toBe("# Reading list\n");
+  });
+});
+
+describe("where a refusal is shown", () => {
+  it("keeps a refused create in the box that asked, not under the open note", async () => {
+    twoNotes({ create_page: () => new Error("There is already a note called 'One'.") });
+    const { host, click, type, press } = await mount();
+    await click(rows(host)[0]);
+    await click(host.querySelector(".notes-new"));
+    const field = host.querySelector(".notes-make-name");
+    await type(field, "One");
+    await press(field, "Enter");
+
+    expect(host.querySelector(".notes-make")?.textContent).toContain("already a note called 'One'");
+    expect(host.querySelector(".notes-doc")?.textContent).not.toContain("already a note called");
+  });
+
+  it("does not carry a refused rename onto the next note", async () => {
+    twoNotes({ rename_page: () => new Error("There is already a note called 'Two'.") });
+    const { host, click, type, press } = await mount();
+    await click(rows(host)[0]);
+    await click(saying(host, "Rename"));
+    const field = host.querySelector(".notes-rename");
+    await type(field, "Two");
+    await press(field, "Enter");
+    await vi.waitFor(() =>
+      expect(host.querySelector(".notes-doc")?.textContent).toContain("already a note called 'Two'"),
+    );
+
+    await click(rows(host)[1]);
+    await vi.waitFor(() => expect(host.querySelector("textarea")?.value).toBe("# Two\n"));
+    expect(host.textContent).not.toContain("already a note called");
+  });
+});
+
+describe("a version kept for a note that was left", () => {
+  it("keeps yours when a note is left mid-conflict, and asks again when it is opened", async () => {
+    // Leaving is not a choice between the two versions, so it must not make one.
+    vi.useFakeTimers();
+    const disk = contested();
+    const { host, click, type } = await mount();
+    await click(rows(host)[0]);
+    disk.one = { ...page("One", "theirs\n"), fingerprint: "44-3000" };
+    await type(host.querySelector("textarea"), "mine\n");
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+    expect(host.querySelector(".notes-conflict")).not.toBeNull();
+
+    await click(rows(host)[1]);
+    expect(host.querySelector("textarea")?.value).toBe("# Two\n");
+    expect(rows(host)[0].textContent).toContain("two versions");
+
+    await click(rows(host)[0]);
+    expect(host.querySelector(".notes-conflict")).not.toBeNull();
+    expect(host.querySelector("textarea")?.value).toBe("mine\n");
+    // Back in the editor, so no longer marked in the list.
+    expect(rows(host)[0].textContent).not.toContain("two versions");
+
+    await click(saying(host, "Keep mine"));
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+    expect(disk.one.text).toBe("mine\n");
+  });
+
+  it("keeps yours when its save on the way out fails, and saves it when it is opened", async () => {
+    let failing = true;
+    twoNotes({
+      save_page: (args: never) => {
+        if (failing) return new Error("The disk is full.");
+        const { name, text } = args as { name: string; text: string };
+        return { type: "written", page: { ...page(name, text), fingerprint: "40-2000" } };
+      },
+    });
+    const errors: string[] = [];
+    const { host, click, type } = await mount({ errors });
+    await click(rows(host)[0]);
+    await type(host.querySelector("textarea"), "# One\n\nmine\n");
+    await click(rows(host)[1]);
+    await vi.waitFor(() => expect(rows(host)[0].textContent).toContain("not saved"));
+    expect(errors.join()).toContain("The disk is full.");
+
+    failing = false;
+    vi.useFakeTimers();
+    await click(rows(host)[0]);
+    // Nothing else has written it, so there is nothing to ask: yours saves.
+    expect(host.querySelector(".notes-conflict")).toBeNull();
+    expect(host.querySelector("textarea")?.value).toBe("# One\n\nmine\n");
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+    const all = saves();
+    expect(all[all.length - 1]).toMatchObject({
+      name: "One",
+      text: "# One\n\nmine\n",
+      fingerprint: "32-1000",
+    });
+  });
+
+  it("keeps a project note's version with its folder, across a switch and back", async () => {
+    vi.useFakeTimers();
+    const disk = contested();
+    const errors: string[] = [];
+    const handle: { notebook?: Notebook } = {};
+    const { host, click, type, rerender } = await mount({
+      errors,
+      onNotebook: (notebook) => (handle.notebook = notebook),
+    });
+    await click(rows(host)[0]);
+    disk.one = { ...page("One", "theirs\n"), fingerprint: "44-3000" };
+    await type(host.querySelector("textarea"), "mine\n");
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+
+    // What `App` does before it asks for the switch.
+    await act(async () => {
+      await handle.notebook!.flush(true);
+    });
+    await rerender({ workspace: "/code/elsewhere" });
+    expect(host.querySelector(".notes-none")).not.toBeNull();
+    expect(errors.join()).toContain("is kept for when taurus is open again");
+
+    await rerender({ workspace: "/code/taurus" });
+    await click(rows(host)[0]);
+    expect(host.querySelector(".notes-conflict")).not.toBeNull();
+    expect(host.querySelector("textarea")?.value).toBe("mine\n");
   });
 });

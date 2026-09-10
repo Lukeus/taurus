@@ -1155,6 +1155,15 @@ has not seen. If a turn writes the same note while you are typing in it, the
 save is refused and both versions are kept — the same rule, and the same code,
 as the canvas.
 
+Moving to another note writes what you typed first. Leaving is not a choice
+between two versions, so it never makes one: if the note is showing both when
+you leave it, or the save made on the way out is refused because the file
+changed or fails outright, your version is kept. The note is marked in the list
+— **two versions** or **not saved** — and opening it again reads the file afresh
+and asks the same question, or simply saves yours if nothing else has written
+it since. A project note's kept version stays with its folder, and is there
+again when that folder is.
+
 ### Diagrams
 
 A ```` ```mermaid ```` fence draws in **Read**. It is drawn by the app's own two

@@ -309,6 +309,7 @@ export default function App() {
   const notebook = useNotebook({
     wrote: store.wrote,
     busy: store.busy,
+    workspace: store.status?.workspace ?? null,
     onError: (message) => store.noteError(message),
   });
   /**
@@ -719,7 +720,13 @@ export default function App() {
 
   const pickWorkspace = async () => {
     const chosen = await open({ directory: true, multiple: false });
-    if (typeof chosen === "string") await store.setWorkspace(chosen);
+    if (typeof chosen === "string") {
+      // Written now rather than after: once the host has switched, a project
+      // note's autosave would land in the new folder's file of the same name.
+      // A version still waiting for a choice is kept for this folder.
+      await notebook.flush(true);
+      await store.setWorkspace(chosen);
+    }
   };
 
   /*
