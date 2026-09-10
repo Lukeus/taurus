@@ -5,7 +5,7 @@
 //! cargo run -p taurus-index --example retrieval -- . nomic-embed-text
 //! ```
 //!
-//! `probe` next door prints hits for a reader to judge by eye, which is the
+//! `index-probe` next door prints hits for a reader to judge by eye, which is the
 //! right check for "is this any good at all" and no check at all for "is this
 //! better than what it replaced". This answers the second question with a
 //! number: run it, change something, run it again.

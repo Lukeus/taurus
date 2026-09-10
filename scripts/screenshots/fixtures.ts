@@ -565,7 +565,7 @@ export const MOTION_EVENTS = [
 /*
  * A dataset, profiled.
  *
- * The numbers are a real run of `cargo run -p taurus-data --example probe` over
+ * The numbers are a real run of `cargo run -p taurus-data --example data-probe` over
  * a 400,000-row interactions file, not invented ones — which matters for the
  * two columns the picture is actually of: `rating`, 42% missing, and `user_id`,
  * with too many distinct values for a top five to mean anything. A frame of

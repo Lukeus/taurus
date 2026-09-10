@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! ollama pull nomic-embed-text
-//! cargo run -p taurus-index --example probe -- . nomic-embed-text
+//! cargo run -p taurus-index --example index-probe -- . nomic-embed-text
 //! ```
 //!
 //! It prints what the first pass cost, proves the second pass costs almost

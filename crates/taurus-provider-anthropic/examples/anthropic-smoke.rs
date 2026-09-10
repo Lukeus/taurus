@@ -1,6 +1,6 @@
 //! Live smoke test against the Anthropic Messages API.
 //!
-//! `ANTHROPIC_API_KEY=… cargo run -p taurus-provider-anthropic --example smoke -- <model>`
+//! `ANTHROPIC_API_KEY=… cargo run -p taurus-provider-anthropic --example anthropic-smoke -- <model>`
 //!
 //! Exercises the two things unit tests cannot: that a real key and a real
 //! model produce a tool call this adapter reassembles, and that the models

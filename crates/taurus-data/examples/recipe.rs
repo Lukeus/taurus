@@ -1,6 +1,6 @@
 //! Run a real recipe over real data, and say what each step did to it.
 //!
-//! The other half of what `probe` checks. `probe` answers questions about a
+//! The other half of what `data-probe` checks. `data-probe` answers questions about a
 //! file; this one *writes* one, which is the only part of this crate that
 //! changes anything the user can see — and the part whose failure modes are
 //! properties of real data rather than of a fixture. A step that drops every

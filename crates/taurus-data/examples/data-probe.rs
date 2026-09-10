@@ -7,13 +7,13 @@
 //! properties of real data, and there is no fixture for them.
 //!
 //! ```sh
-//! cargo run -p taurus-data --example probe -- ~/data/events.parquet
-//! cargo run -p taurus-data --example probe -- ~/data/interactions.csv
+//! cargo run -p taurus-data --example data-probe -- ~/data/events.parquet
+//! cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv
 //!
 //! # With a query, which is the other half of what this checks. The table is
 //! # named the way `load_dataset` would name it, so the SQL here is the SQL
 //! # you would type in the pane.
-//! cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+//! cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv \
 //!   "SELECT category, count(*) AS n FROM interactions GROUP BY 1 ORDER BY n DESC"
 //! ```
 //!
@@ -45,7 +45,7 @@ use taurus_data::{DataFusionEngine, Distinct, Engine, Source};
 async fn main() {
     let Some(argument) = std::env::args().nth(1) else {
         eprintln!(
-            "usage: cargo run -p taurus-data --example probe -- <file> [sql]\n\n\
+            "usage: cargo run -p taurus-data --example data-probe -- <file> [sql]\n\n\
              Reads a .csv, .tsv, .parquet, .ndjson, .jsonl, or .json file and reports what\n\
              loading, profiling, and paging it cost. Point it at something large.\n\n\
              With a second argument, runs it as a query. The table is named the way\n\

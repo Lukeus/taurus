@@ -1,6 +1,6 @@
 //! Runs one real search and fetches the first result, through the registry.
 //!
-//! `cargo run -p taurus-web --example probe -- <path-to-search.json> "<query>"`
+//! `cargo run -p taurus-web --example web-probe -- <path-to-search.json> "<query>"`
 //!
 //! The unit tests cover parsing against recorded response shapes, which is the
 //! part that can be pinned. What they cannot check is whether a live backend

@@ -415,16 +415,16 @@ change did not break the parts that unit tests cannot reach.
 
 ```bash
 # One provider, one turn, one tool call.
-cargo run -p taurus-provider-ollama --example smoke -- qwen3.6:27b
-cargo run -p taurus-provider-ollama --example smoke -- gemma3      # prompted fallback
+cargo run -p taurus-provider-ollama --example ollama-smoke -- qwen3.6:27b
+cargo run -p taurus-provider-ollama --example ollama-smoke -- gemma3      # prompted fallback
 
 # The OpenAI adapter, against Ollama's own /v1 endpoint.
-cargo run -p taurus-provider-openai --example smoke -- llama3.2:latest
+cargo run -p taurus-provider-openai --example openai-smoke -- llama3.2:latest
 
 # The hosted adapters. Each prints the capabilities it probed before the turn,
 # which is the half of these two that has no local equivalent.
-ANTHROPIC_API_KEY=… cargo run -p taurus-provider-anthropic --example smoke -- claude-opus-5
-GEMINI_API_KEY=…    cargo run -p taurus-provider-gemini    --example smoke -- gemini-2.5-pro
+ANTHROPIC_API_KEY=… cargo run -p taurus-provider-anthropic --example anthropic-smoke -- claude-opus-5
+GEMINI_API_KEY=…    cargo run -p taurus-provider-gemini    --example gemini-smoke -- gemini-2.5-pro
 
 # The whole harness: read files, write a file, report what happened.
 cargo run -p taurus-core --example e2e -- qwen3.6:27b
@@ -438,10 +438,10 @@ cargo run -p taurus-agents --example delegate -- qwen3.6:27b
 # MCP: repair the PATH the way the app does, connect, list tools, call one
 # through the registry. Reports entries that would not parse, so a typo is named
 # rather than passing in silence or taking its neighbours down with it.
-cargo run -p taurus-mcp --example probe -- path/to/mcp.json
+cargo run -p taurus-mcp --example mcp-probe -- path/to/mcp.json
 
 # Web: one real search, then fetch the first result it returns.
-cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async book"
+cargo run -p taurus-web --example web-probe -- ~/.taurus/search.json "rust async book"
 
 # Reading a turn back to an agent that did not write it. Needs Ollama; writes
 # only inside a temp directory. It plants a defect that is invisible from the
@@ -558,15 +558,15 @@ cargo run -p taurus-host --example vision -- llama3.2:latest   # refused, and wh
 # `schema` must stay flat as the file grows, `profile` is a full pass and is
 # allowed to be slow, and `page` must be flat in the *offset* — which is why it
 # is measured at row 0 and again at the end.
-cargo run -p taurus-data --example probe -- ~/data/interactions.csv
+cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv
 
 # With a query, which is the other half. The table is named the way
 # `load_dataset` names it, so the SQL here is the SQL you would type in the
 # pane — and handing it a write is how the refusal gets checked against a real
 # file rather than a fixture.
-cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv \
   "SELECT category, count(*) AS n FROM interactions GROUP BY 1 ORDER BY n DESC"
-cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv \
   "COPY interactions TO '/tmp/escaped.parquet'"   # must refuse, and write nothing
 
 # A recipe, which is the only thing in this crate that writes a file the user
@@ -609,7 +609,7 @@ taurus run -w ~/data "Build me a purchases table: drop duplicates, keep only \
 # rankings a reader of this repository can check by eye. Run it on something
 # large before changing the caps in `store.rs`.
 ollama pull nomic-embed-text
-cargo run -p taurus-index --example probe -- . nomic-embed-text
+cargo run -p taurus-index --example index-probe -- . nomic-embed-text
 ```
 
 The drawn results have no example of their own, because the check worth making
