@@ -164,7 +164,10 @@ suite("laying out a flow diagram", () => {
     const worker = boxes.find((b) => b.label === "Worker")!;
     const [loop] = arrows;
 
-    expect(loop.back).toBe(true);
+    // Routed around the side, and drawn as an ordinary arrow: two boxes at the
+    // same depth are as often a step apart as a retry apart, and the dash would
+    // be claiming to know which.
+    expect(loop.back).toBe(false);
     expect(loop.path.startsWith(`M ${worker.x} `)).toBe(true);
     expect(loop.extent.bottom).toBe(0);
     // Nothing to shift: this loop is in the second column and reaches into the

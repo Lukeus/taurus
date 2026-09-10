@@ -716,6 +716,49 @@ and they are the minority.
   shows it for the length of the session. The fix is the same — the two files
   the Windows bundle ships beside the executable — and the startup log line
   saying whether they were found is still the only warning available.
+- **A Mermaid fence draws two diagram types, and names the rest.** A
+  ```` ```mermaid ```` block draws when it is a `flowchart`/`graph` or a
+  `sequenceDiagram`. `classDiagram`, `stateDiagram`, `erDiagram`, `gantt`,
+  `pie`, `mindmap`, `gitGraph` and the rest are shown as their source with a
+  sentence naming what stopped them. This is the price of drawing these with the
+  app's own two diagram engines rather than the Mermaid library — see
+  [Notes](working-with-it.md#notes) — and it is the whole of that price. The
+  library is 80 MB unpacked across d3, three cytoscape packages, katex and
+  marked; it themes itself, loads its own fonts, and generates element ids per
+  render that every screenshot would have to tolerate. The engines this uses
+  instead are the ones already drawing `show_flow` and `show_sequence`, in the
+  app's palette, under tests that need no browser. If the named-and-refused list
+  is what stops people using notes for diagrams, that is the evidence for
+  importing the library behind a lazy chunk rather than growing the reader.
+- **Every Mermaid diagram is laid out left to right.** `graph TD`, `TB`, `BT`
+  and `RL` are read and drawn as `LR`, with a line under the picture saying so.
+  Direction in Mermaid is presentational — the same nodes, arrows and labels
+  either way — so this re-orients rather than loses anything, but `TD` is the
+  most common thing people type and the picture is not the shape they drew.
+  Stages as rows is a second geometry for the layout engine, with its own
+  routing for all four kinds of edge, rather than a flag on the one that exists.
+- **Node shapes are read and then drawn as rectangles.** `a{Is it cached?}` and
+  `a[(store)]` come out as boxes with the right text in them. The text is the
+  part that carries the meaning and is parsed properly; the diamond that says
+  "this is where it branches" is not drawn, which is a real loss on a flowchart
+  about a decision. Arrow *heads* are flattened the same way: `--o` and `--x`
+  draw as ordinary arrows.
+- **A `Note over` or a block frame in a sequence diagram is dropped.** The
+  messages inside a `loop`, `alt`, `opt` or `par` still draw, in order — the
+  frame around them and its label do not, and the diagram says how many it left
+  out. Activation bars are ignored silently, because `show_sequence` decided
+  before any of this that a picture somebody reads once carries two kinds of
+  arrow and not four.
+- **Notes are files, so two people editing one is git's problem.** A note saves
+  itself and refuses to overwrite a version it has not seen, which covers the
+  case this app can see: you and a running turn. Two checkouts, or two windows
+  on the same folder, meet in the file and are reconciled the way any other file
+  in the repository is.
+- **A note's diagram is not searchable and its text is not indexed.** Transcript
+  search does not look in notes, and the code index does not either — a project
+  note is a Markdown file in `.taurus/`, which the index skips along with the
+  rest of that directory. Finding a note is scanning the list, which is fine at
+  a dozen and is not at a hundred.
 - **The canvas holds one file at a time.** Opening another replaces it. Tabs
   are a second navigation model to build and to explain, and "open the readme
   while we talk about it" does not need one. What that costs is comparing two

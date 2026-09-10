@@ -343,6 +343,22 @@ of the box's auto-sizing or of where the list lands would be asserting numbers
 the browser never produces. The mount tests prove the list has the right rows
 in it; the PNG is what proves it is in the right place.
 
+`notes` and `notes-diagram` are the only pictures of the notes pane, and the
+only check of two things underneath it. The prose editor wraps, which is what
+separates it from the canvas's — and jsdom, having no layout, can prove the text
+is in the box and nothing at all about where its lines break. And the Mermaid
+reader is checked by unit tests down to the last stage and edge, none of which
+can say whether the picture those describe is *drawn* where its own arrows point.
+The second shot was worth its cost immediately: it is what showed that an edge
+inside one subgraph arrived dashed, so a Mermaid chain drew its happy path in the
+treatment reserved for failures.
+
+Both scenes wait for the editor to appear before pressing **Read**. That is the
+same virtual-time trap in a second form: two waits that both spin, one after the
+other, exhaust the budget between them, and the shot comes out as an empty pane
+rather than as a failure anybody would notice. Gate each step on what the last
+one fetched.
+
 `palette` is the only check that a keyboard shortcut is bound at all. It opens
 the box by dispatching the chord on `window` rather than by pressing anything,
 which is the half no unit test can reach: jsdom can prove `isChord` agrees with
@@ -434,6 +450,20 @@ cargo run -p taurus-host --example inspect -- ~/src/some-fresh-clone
 # of them at once, without starting the app.
 cargo run -p taurus-host --example theme        # global themes
 cargo run -p taurus-host --example theme -- .   # and this workspace's
+
+# Notes: what the app makes of the notebooks on your disk, and what a save does
+# under a race. Listing and reading need no provider and write nothing;
+# `--check` writes, and only inside a temp directory it makes and reports.
+# The listing is the half a test cannot have — a real directory somebody else
+# edits, holding a note added by hand, a file with the wrong extension, or a
+# name the filesystem took and this would refuse, which is how a note ends up
+# listed and unopenable. `--check` runs the compare-and-swap for real: read,
+# write behind the editor's back, save with the stale stamp, watch it refused
+# with the other version in hand, then save with the stamp the refusal returned.
+cargo run -p taurus-host --example notes                     # both notebooks
+cargo run -p taurus-host --example notes -- .                # and this workspace's
+cargo run -p taurus-host --example notes -- . 'Auth redesign'
+cargo run -p taurus-host --example notes -- --check
 
 # What a sweep costs on a real workspace, and that it stays quiet when nothing
 # changed. Needs no provider. Run it on something large before touching the

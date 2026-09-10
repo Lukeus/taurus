@@ -20,6 +20,8 @@ import { ConversationTitle } from "./components/ConversationTitle";
 import { Canvas, type SaveState } from "./components/Canvas";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { changedLines, FLASH_MS, reconcile, SAVE_AFTER_MS } from "./lib/document";
+import { NotesPane } from "./components/NotesPane";
+import { useNotebook } from "./state/notebook";
 import { TrustBanner } from "./components/TrustBanner";
 import { PlanPanel } from "./components/PlanPanel";
 import { Rail, type ProviderHealth } from "./components/Rail";
@@ -48,6 +50,7 @@ import type {
   DocumentOnScreen,
   LineRange,
   ModelInfo,
+  NoteOnScreen,
   OnScreen,
   Selection,
   ProviderConfig,
@@ -279,7 +282,7 @@ export default function App() {
    * — see the effect below. A mode with nothing behind it is a blank pane and
    * a tab that has gone.
    */
-  const [pane, setPane] = useState<"conversation" | "data">("conversation");
+  const [pane, setPane] = useState<Pane>("conversation");
   /** Which dataset the Data pane has open. Held here rather than in the pane
    *  so a card in the transcript can choose one — see `DatasetCard`. */
   const [dataset, setDataset] = useState<string | null>(null);
@@ -296,6 +299,17 @@ export default function App() {
    *  `sql` is, and because a card in the transcript picks it — see
    *  `showQuery`. */
   const [tab, setTab] = useState<DataTab>("columns");
+  /**
+   * The notebook, which is a whole surface rather than a piece of state.
+   *
+   * Held here for the reason `sql` is, and harder: the pane is thrown away on
+   * every switch to the conversation, and what it holds is a half-typed
+   * paragraph rather than a query. See `useNotebook`.
+   */
+  const notebook = useNotebook({
+    wrote: store.wrote,
+    onError: (message) => store.noteError(message),
+  });
   /**
    * A query the transcript has handed to the pane, waiting to be run.
    *
@@ -631,11 +645,15 @@ export default function App() {
       .catch(() => setModels("failed"));
   }, [providerId]);
 
-  // The switch disappears with the last dataset, so a window still showing the
-  // Data pane would be left on a surface with no way back to the conversation.
+  // The Data tab disappears with the last dataset, so a window still showing
+  // that pane would be left on a surface with no way back to the conversation.
   // Covers forgetting the last one and switching to a folder that has none.
+  // Notes is unaffected: that tab is always there, because writing one needs
+  // nothing to have happened first.
   useEffect(() => {
-    if (store.datasets.length === 0) setPane("conversation");
+    if (store.datasets.length === 0) {
+      setPane((was) => (was === "data" ? "conversation" : was));
+    }
   }, [store.datasets.length]);
 
   /**
@@ -1182,6 +1200,7 @@ export default function App() {
       // different things until somebody decides.
       unsaved: !!doc && typed !== doc.text,
     },
+    notebook.onScreen,
   );
 
   const forgetDataset = (name: string) => void store.forgetDataset(name);
@@ -1297,23 +1316,38 @@ export default function App() {
           </select>
         </header>
 
-        {/* Only once there is something behind it. A workspace that has never
-            loaded a file shows no switch at all, which is the whole of how
-            this surface stays out of the way of everyone not using it — the
-            same rule the composer's `/` hint and the rail's MCP badge follow.
-            Drawn above the pane rather than in the topbar: the topbar names
-            the conversation and the model, and neither of those changes when
-            the centre column does. */}
-        {store.datasets.length > 0 && (
-          <div className="pane-switch" role="tablist" aria-label="View">
-            <button
-              role="tab"
-              aria-selected={pane === "conversation"}
-              className={`seg${pane === "conversation" ? " on" : ""}`}
-              onClick={() => setPane("conversation")}
-            >
-              Conversation
-            </button>
+        {/* Drawn above the pane rather than in the topbar: the topbar names the
+            conversation and the model, and neither of those changes when the
+            centre column does.
+
+            Notes is always here and Data only once a dataset is loaded, and the
+            difference is not an inconsistency. A dataset arrives because a tool
+            put it there, so before that happens the Data tab is a tab with
+            nothing behind it — the rule the composer's `/` hint and the rail's
+            MCP badge follow. A note needs nothing to have happened first: the
+            tab *is* how you write the first one, and hiding it until one exists
+            would hide the only door into the room. */}
+        <div className="pane-switch" role="tablist" aria-label="View">
+          <button
+            role="tab"
+            aria-selected={pane === "conversation"}
+            className={`seg${pane === "conversation" ? " on" : ""}`}
+            onClick={() => setPane("conversation")}
+          >
+            Conversation
+          </button>
+          <button
+            role="tab"
+            aria-selected={pane === "notes"}
+            className={`seg${pane === "notes" ? " on" : ""}`}
+            onClick={() => setPane("notes")}
+          >
+            Notes
+            {notebook.pages !== null && notebook.pages.length > 0 && (
+              <span className="count">{notebook.pages.length}</span>
+            )}
+          </button>
+          {store.datasets.length > 0 && (
             <button
               role="tab"
               aria-selected={pane === "data"}
@@ -1323,15 +1357,21 @@ export default function App() {
               Data
               <span className="count">{store.datasets.length}</span>
             </button>
-          </div>
-        )}
+          )}
+        </div>
 
         <main>
           {/* The centre column, which the canvas sits beside rather than over.
               A split and not a third tab: see `Canvas`, and see the Data pane
               above for the experiment that argued it. */}
           <div className="pane-split">
-          {pane === "data" ? (
+          {pane === "notes" ? (
+            <NotesPane
+              notebook={notebook}
+              onAsk={ask}
+              hasWorkspace={!!workspace}
+            />
+          ) : pane === "data" ? (
             <Suspense fallback={<div className="data-pane" />}>
               <DataPane
                 datasets={store.datasets}
@@ -1479,10 +1519,10 @@ export default function App() {
           )}
         </main>
 
-        {/* Only in the Data pane, and only while something is happening. On
-            the conversation the transcript is already saying all of this, and
-            a strip repeating it would be the app talking twice. */}
-        {pane === "data" && store.busy && (
+        {/* Only away from the conversation, and only while something is
+            happening. On the transcript itself all of this is already being
+            said, and a strip repeating it would be the app talking twice. */}
+        {pane !== "conversation" && store.busy && (
           <TurnStrip onOpen={() => setPane("conversation")} />
         )}
 
@@ -1868,11 +1908,14 @@ function PinnedPlan() {
  * which is what keeps the chip off the composer and the paragraph off the
  * prompt for the ordinary case of somebody just talking.
  */
+export type Pane = "conversation" | "data" | "notes";
+
 export function onScreenFor(
-  pane: "conversation" | "data",
+  pane: Pane,
   showing: Dataset | null,
   sql: string,
   canvas: { path: string; selection: Selection | null; unsaved: boolean } | null,
+  note: NoteOnScreen | null,
 ): OnScreen | null {
   // A question asked while reading a conversation is about the conversation. A
   // paragraph about a dataset nobody mentioned would be the app talking over
@@ -1901,8 +1944,18 @@ export function onScreenFor(
       }
     : null;
 
-  if (!data && !document) return null;
-  return { ...(data ? { data } : {}), ...(document ? { document } : {}) };
+  // Like the dataset and unlike the canvas: the notes pane replaces the
+  // transcript rather than sitting beside it, so a note is only on screen while
+  // that pane is the one showing. A question typed on the conversation is about
+  // the conversation.
+  const showingNote = pane === "notes" ? note : null;
+
+  if (!data && !document && !showingNote) return null;
+  return {
+    ...(data ? { data } : {}),
+    ...(document ? { document } : {}),
+    ...(showingNote ? { note: showingNote } : {}),
+  };
 }
 
 /**

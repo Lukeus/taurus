@@ -1961,13 +1961,18 @@ body.resizing-y * {
 }
 
 /*
- * An arrow pointing back to its own stage or an earlier one — a retry, a
- * failure path, a callback.
+ * An arrow that certainly goes back — to an earlier stage, or from a box to
+ * itself. A retry, a failure path, a callback.
  *
- * Routed below the boxes by the layout, and drawn dashed here. Both, not
+ * Routed away from the boxes by the layout, and drawn dashed here. Both, not
  * either: the route is what stops it lying along the forward edge it is the
  * return path for, and the dash is what says it is a loop rather than a line
  * that happens to go the long way round.
+ *
+ * An edge *within* one stage is routed the long way round and is deliberately
+ * not dashed. Being at the same depth says nothing about whether the arrow is a
+ * step or a retry, and the first photograph of a Mermaid subgraph showed the
+ * happy path drawn as a failure one.
  */
 .flow-arrow.back .flow-line {
   stroke: var(--text-faint);
@@ -4741,6 +4746,230 @@ button.link:hover {
   color: var(--accent);
 }
 
+/* -------------------------------------------------------------- the notes pane
+
+   A list on the left and one note on the right, in the same centre column the
+   transcript and the data pane hang off. See `NotesPane` for why this is a pane
+   rather than a split, which is the opposite of what the canvas concluded. */
+
+.notes-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 16px;
+  padding: 16px var(--gutter) 0;
+}
+
+.notes-list {
+  flex: none;
+  width: 200px;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.notes-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notes-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 4px;
+}
+/* Said rather than left blank: an empty group with no sentence in it reads as
+   something broken rather than as something waiting. */
+.notes-group-empty {
+  margin: 0;
+  padding: 2px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.notes-new {
+  flex: none;
+  width: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 14px;
+  line-height: 1;
+}
+.notes-new:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+}
+.notes-make {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0 6px;
+}
+.notes-make-name {
+  width: 100%;
+  font-size: 12.5px;
+}
+.notes-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.notes-row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  text-align: left;
+}
+.notes-row:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.notes-row[data-current] {
+  background: var(--bg-active);
+  border-left-color: var(--accent);
+}
+.notes-row b {
+  font-weight: normal;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.notes-row[data-current] b {
+  color: var(--text);
+}
+
+/* What fills the right half before a note is chosen. The two scopes are
+   explained here because this is the one moment somebody is looking for the
+   difference between them. */
+.notes-none {
+  flex: 1;
+  min-width: 0;
+  max-width: 520px;
+  align-self: center;
+  padding-bottom: 32px;
+}
+.notes-none h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.notes-none p {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.notes-none-more {
+  color: var(--text-faint);
+}
+
+.notes-doc {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.notes-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.notes-name {
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+/* Where the file is, dimmed. The name is what anybody is looking for; the path
+   is what says whether this one gets committed. */
+.notes-where {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notes-rename {
+  flex: 1;
+  min-width: 0;
+  max-width: 280px;
+  font-size: 13px;
+}
+.notes-state {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.notes-state.failed {
+  color: var(--danger);
+}
+.notes-modes {
+  display: flex;
+  gap: 4px;
+}
+
+/* Above the editor rather than over it, so what is being decided about stays
+   readable while the decision is made. Both versions are kept and neither is
+   chosen — see `notebook.rs`. */
+.notes-conflict {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+.notes-conflict-say {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.notes-conflict-say b {
+  font-weight: 500;
+  color: var(--text);
+}
+.notes-conflict-say span {
+  color: var(--text-dim);
+}
+
+/* The one thing on this screen that scrolls. The editor inside it is always
+   exactly as tall as its own text — see `ProseEditor` for why it must not have
+   a scrollbar of its own. */
+.notes-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  border-bottom: none;
+  background: var(--bg-raised);
+}
+.notes-read {
+  padding: 12px 16px;
+}
+
+/* Armed, so a note is never deleted by one stray click. The second press is the
+   one that does it, and the button says which press it is on. */
+.pill.armed {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
 .data-pane {
   flex: 1;
   min-height: 0;
@@ -6205,6 +6434,73 @@ button.link:hover {
 }
 .doc-line-no.on {
   color: var(--text-dim);
+}
+
+/* -------------------------------------------------------- the prose editor
+
+   The third editor on the two-layer trick, and the only one that wraps. See
+   `ProseEditor` for why wrapping and a gutter cannot both be right, and why
+   this is a sibling of `.doc-input` rather than a mode of it. */
+
+.prose-edit {
+  position: relative;
+  /* Fills a short note's panel, so clicking the empty space below the text
+     lands in the textarea rather than on the panel behind it. */
+  min-height: 100%;
+}
+
+/* Every property here decides where a character lands, and with wrapping on
+   that now includes where a line *breaks*. Declared once across both layers so
+   they cannot drift: a different `overflow-wrap` in one of them would break its
+   lines somewhere else, and every line after the first difference sits off its
+   own text. */
+.prose-ink,
+.prose-input {
+  margin: 0;
+  padding: 12px 16px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  /* Looser than the code editors. This is prose, read in paragraphs. */
+  line-height: 1.7;
+  letter-spacing: normal;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: none;
+  background: transparent;
+}
+.prose-ink {
+  position: absolute;
+  inset: 0;
+  /* Behind the textarea and unclickable: every pointer event belongs to the
+     real control on top. */
+  pointer-events: none;
+  color: var(--text);
+}
+.prose-input {
+  /* In flow, and the thing that gives the panel its height — see `ProseEditor`.
+     A scrollbar inside it would narrow its content box and move where its text
+     wraps, leaving the painted layer wrapping somewhere else. */
+  position: relative;
+  display: block;
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  color: var(--text);
+  caret-color: var(--accent);
+  outline: none;
+}
+/* Transparent only when there is a painted layer under it to be read instead.
+   A note too long to paint keeps its own text visible rather than becoming an
+   invisible one. */
+.prose-ink + .prose-input {
+  color: transparent;
+}
+.prose-input::selection {
+  background: var(--sel, color-mix(in srgb, var(--accent) 26%, transparent));
+}
+.prose-input::placeholder {
+  color: var(--text-faint);
 }
 
 /* ----------------------------------------------------------- ask about this

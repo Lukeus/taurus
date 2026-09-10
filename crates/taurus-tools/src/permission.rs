@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use ts_rs::TS;
@@ -32,7 +33,13 @@ const GLOBAL_ALLOWLIST_FILE: &str = "permissions.json";
 /// The same two layers the config files use. It is defined here because this
 /// is the lowest crate that needs the distinction; `taurus-host` re-exports it
 /// so there is one `Scope` and one TypeScript type across the whole harness.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+///
+/// `JsonSchema` as well as `TS`, because `read_note` takes one: which notebook a
+/// note is in is the same distinction, and a second enum spelling it for the
+/// model would be a third place for these two words to drift.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, TS,
+)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum Scope {

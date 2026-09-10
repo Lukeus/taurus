@@ -542,6 +542,39 @@ Markdown, config) up to 4 MB. There is no folding, no in-editor find, and one
 cursor. A file changed outside a turn — a `git checkout` in the dock — is
 noticed when you save rather than when it happens. See `docs/known-gaps.md`.
 
+## Notes
+
+Markdown files you write yourself, in two notebooks, with a pane of their own.
+
+```
+.taurus/notes/           project notes, committed with the repository
+~/.taurus/notes/         global notes, yours across every project
+```
+
+A note is a file and nothing else — no frontmatter, no index, no format only
+this app reads. The name in the list is the filename, so the two cannot drift,
+and a note added by hand in an editor shows up in the pane with no import step.
+
+Nothing merges between the notebooks. Two notes with the same name in the two
+scopes are two notes; unlike config, where the workspace layer wins, there is no
+sensible way to merge prose.
+
+**Write** is the source and **Read** is what it renders as, including a
+```` ```mermaid ```` fence, which is drawn by the app's own diagram engines
+rather than by the Mermaid library. Editing saves itself a moment after typing
+stops and never overwrites a version it has not seen — a turn that writes the
+same note while you type in it leaves both versions on screen and neither
+chosen, which is the canvas's rule and the canvas's implementation of it.
+
+The model reaches a note with `read_note`, by notebook and name. Not by path:
+a global note is outside the workspace, and `read_file` will not go above the
+root. Nothing else is reachable through it.
+
+These are separate from [Memory](#memory) above, and the difference is worth
+keeping straight. Memory is written by the model, capped at a couple of
+sentences, and read into every later conversation's prompt. A note is written by
+you, is as long as you like, and costs nothing until you ask about it.
+
 ## Terminal
 
 <kbd>Ctrl</kbd>+<kbd>`</kbd> opens a shell in the bottom of the window, in the

@@ -197,7 +197,7 @@ const withProviders = (ids: string[], lastProvider: string | null = null) => {
  * lands. A tab that was always there would be a permanent advertisement for a
  * feature most workspaces have nothing to put in.
  */
-describe("the Data switch", () => {
+describe("the pane switch", () => {
   const render = (datasets: unknown[]) => {
     state.datasets = datasets;
     state.status = {
@@ -220,11 +220,17 @@ describe("the Data switch", () => {
     return html;
   };
 
-  it("is absent in a workspace that has loaded nothing", () => {
-    expect(render([])).not.toContain("pane-switch");
+  it("offers Notes in a workspace where nothing has happened yet", () => {
+    // The tab *is* how the first note gets written, so hiding it until one
+    // exists would hide the only door into the room. The Data tab is the other
+    // case and is checked below.
+    const html = render([]);
+    expect(html).toContain("pane-switch");
+    expect(html).toContain(">Notes<");
+    expect(html).not.toContain(">Data<");
   });
 
-  it("appears once there is something behind it, and counts it", () => {
+  it("adds Data once there is something behind it, and counts it", () => {
     const html = render([
       { name: "events", path: "data/events.csv", format: "csv" },
       { name: "items", path: "data/items.parquet", format: "parquet" },
@@ -271,11 +277,11 @@ describe("what a message carries from the pane it was sent in", () => {
 
   it("carries nothing from the conversation", () => {
     // A question asked while reading a conversation is about the conversation.
-    expect(onScreenFor("conversation", events, "SELECT 1", null)).toBeNull();
+    expect(onScreenFor("conversation", events, "SELECT 1", null, null)).toBeNull();
   });
 
   it("carries the dataset and its file from the pane", () => {
-    expect(onScreenFor("data", events, "", null)).toEqual({
+    expect(onScreenFor("data", events, "", null, null)).toEqual({
       data: { dataset: "events", path: "data/events.csv" },
     });
   });
@@ -283,16 +289,16 @@ describe("what a message carries from the pane it was sent in", () => {
   /** "Why does this not work?" is a question about the text in the box. */
   it("carries the query box when there is something in it", () => {
     expect(
-      onScreenFor("data", events, " SELECT count(*) FROM events ", null)?.data?.sql,
+      onScreenFor("data", events, " SELECT count(*) FROM events ", null, null)?.data?.sql,
     ).toBe("SELECT count(*) FROM events");
   });
 
   it("leaves an empty box out rather than sending an empty string", () => {
-    expect(onScreenFor("data", events, "   \n ", null)?.data).not.toHaveProperty("sql");
+    expect(onScreenFor("data", events, "   \n ", null, null)?.data).not.toHaveProperty("sql");
   });
 
   it("carries nothing when the pane is open on nothing", () => {
-    expect(onScreenFor("data", null, "SELECT 1", null)).toBeNull();
+    expect(onScreenFor("data", null, "SELECT 1", null, null)).toBeNull();
   });
 
   /*
@@ -301,13 +307,13 @@ describe("what a message carries from the pane it was sent in", () => {
    * being read, so a question asked there is still a question about it.
    */
   it("carries the open file from the conversation, unlike a dataset", () => {
-    expect(onScreenFor("conversation", events, "", open)).toEqual({
+    expect(onScreenFor("conversation", events, "", open, null)).toEqual({
       document: { path: "docs/known-gaps.md", unsaved: false },
     });
   });
 
   it("carries both halves when both are on screen", () => {
-    const on = onScreenFor("data", events, "", open);
+    const on = onScreenFor("data", events, "", open, null);
     expect(on?.data?.dataset).toBe("events");
     expect(on?.document?.path).toBe("docs/known-gaps.md");
   });
@@ -319,7 +325,7 @@ describe("what a message carries from the pane it was sent in", () => {
       path: "src/lib.rs",
       unsaved: false,
       selection: { from: 40, to: 58, text: "fn retry() {}" },
-    });
+    }, null);
     expect(on?.document?.selection).toEqual({
       from: 40,
       to: 58,
@@ -331,15 +337,35 @@ describe("what a message carries from the pane it was sent in", () => {
    *  holding different things until somebody decides. */
   it("carries whether the editor holds something the file does not", () => {
     expect(
-      onScreenFor("conversation", null, "", { ...open, unsaved: true })?.document
+      onScreenFor("conversation", null, "", { ...open, unsaved: true }, null)?.document
         ?.unsaved,
     ).toBe(true);
   });
 
   it("leaves an empty selection out rather than sending a null", () => {
-    expect(onScreenFor("conversation", null, "", open)?.document).not.toHaveProperty(
+    expect(onScreenFor("conversation", null, "", open, null)?.document).not.toHaveProperty(
       "selection",
     );
+  });
+
+  const note = { scope: "workspace" as const, name: "Auth redesign", unsaved: false };
+
+  it("carries the note only while the notes pane is the one showing", () => {
+    // Like the dataset and unlike the canvas: this pane replaces the transcript
+    // rather than sitting beside it, so a question typed on the conversation is
+    // about the conversation.
+    expect(onScreenFor("notes", null, "", null, note)?.note).toEqual(note);
+    expect(onScreenFor("conversation", null, "", null, note)).toBeNull();
+  });
+
+  it("carries a note and a file at once, since one of them is a split", () => {
+    const on = onScreenFor("notes", null, "", open, note);
+    expect(on?.note?.name).toBe("Auth redesign");
+    expect(on?.document?.path).toBe("docs/known-gaps.md");
+  });
+
+  it("carries nothing when the pane is open on no note at all", () => {
+    expect(onScreenFor("notes", null, "", null, null)).toBeNull();
   });
 });
 

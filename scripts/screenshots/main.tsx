@@ -22,6 +22,8 @@ import {
   CHECKPOINTS,
   CONVERSATION_CHANGES,
   MCP_CATALOG,
+  NOTE,
+  NOTES,
   REPO,
   DATASETS,
   DATA_EVENTS,
@@ -143,6 +145,11 @@ const ANSWERS: Record<string, unknown> = {
   // — see `taurus_host::document` — so the shot needs this as well as the
   // event that opened it.
   open_document: DOCUMENT,
+  // The notes pane reads its list on mount and the note itself when one is
+  // chosen, for the reason the canvas reads its file: the list carries no text,
+  // so a remembered copy can never be shown in place of what is on disk.
+  list_pages: NOTES,
+  read_page: NOTE,
   list_mcp_servers: MCP_SERVERS,
   // The catalogue is shipped in the binary, so the real one is what the shot
   // should show — read off disk at build time rather than restated here, which
@@ -403,6 +410,31 @@ requestAnimationFrame(() => {
         typeInto(area, DOCUMENT.text.replace("exponentially", "with a jittered backoff"));
         await until(() => window.document.querySelector(".canvas-conflict"), 400);
         scrollTo(transcript, window.document.querySelector(".document-card"));
+      },
+      // The pane, on a note. Two clicks rather than seeded state: which pane is
+      // showing and which note is open are both local, and the picture is more
+      // honest for being of a note somebody opened. Waited on, because the note
+      // arrives a round trip after the row is pressed.
+      notes: async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
+        (await click(".notes-row b", (b) => b === "Auth redesign"))();
+        await until(() => document.querySelector(".prose-input"));
+      },
+      // The same note in Read, which is the only picture of a Mermaid fence
+      // drawn — and the only check of most of the reader there is. jsdom
+      // measures nothing, so the mount tests can prove the diagram has the right
+      // boxes in it and nothing about whether a box sits where its arrow points.
+      "notes-diagram": async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
+        (await click(".notes-row b", (b) => b === "Auth redesign"))();
+        // Gated on the editor before the mode is switched. The note arrives a
+        // round trip after the row is pressed, and pressing Read while it is
+        // still in flight leaves both waits spinning out the virtual-time budget
+        // between them — which photographs as an empty pane rather than as a
+        // failure.
+        await until(() => document.querySelector(".prose-input"));
+        (await click(".notes-modes .seg", (b) => b === "Read"))();
+        await until(() => document.querySelector("svg.flow"));
       },
       // The Changes panel, beside the conversation it is about — which is the
       // whole of what moved, so the shot has to hold both. Opened by pressing

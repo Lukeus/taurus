@@ -286,6 +286,39 @@ A save never overwrites something it has not seen — the editor holds the
 fingerprint of the file as it read it, and a save that no longer matches is
 refused rather than applied. The race is closed at the write, not papered over.
 
+**[Notes](docs/working-with-it.md#notes)** — somewhere to write things down, in
+the repository or in your own home.
+
+A **Notes** tab beside the conversation, holding Markdown files you write
+yourself. A *project* note lives in `.taurus/notes/` and is committed with the
+repository, so a design note reaches whoever clones it. A *global* note lives in
+`~/.taurus/notes/` and follows you between projects. There is no frontmatter and
+no database: the name in the list is the filename, and the file is exactly what
+you typed.
+
+![The notes pane: both notebooks in the list, one note open in an editor that
+wraps](docs/screenshots/notes.png)
+
+A ```` ```mermaid ```` block draws as a diagram. It is drawn by the same two
+engines that draw `show_flow` and `show_sequence` rather than by the Mermaid
+library — so it is in the app's own palette, needs no network, and adds nothing
+to the bundle. The app has been able to *write* Mermaid since those cards
+shipped; this is the other half of the round trip, and a diagram copied out of a
+card and pasted into a note comes back as the same picture.
+
+![The same note in Read, with its Mermaid fence drawn as a
+diagram](docs/screenshots/notes-diagram.png)
+
+What it cannot draw, it names. A `gantt` or an `erDiagram` is shown as its
+source with a sentence saying so, rather than as a broken picture or an empty
+box — and a diagram it *did* draw says what it left out. Notes save themselves
+and never overwrite a version they have not seen, which is the canvas's rule and
+the canvas's code.
+
+Ask about one and the model reads it with `read_note`, by notebook and name
+rather than by path — a global note is outside the workspace, where `read_file`
+will not go.
+
 **[Configuration](docs/configuration.md)** — providers, keys, MCP servers, and
 web search.
 

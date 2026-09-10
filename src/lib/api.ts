@@ -73,8 +73,12 @@ import type { Message } from "../bindings/Message";
 import type { MessageKind } from "../bindings/MessageKind";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { Note } from "../bindings/Note";
+import type { Page } from "../bindings/Page";
+import type { PageRef } from "../bindings/PageRef";
+import type { PageSaved } from "../bindings/PageSaved";
 import type { DataOnScreen } from "../bindings/DataOnScreen";
 import type { DocumentOnScreen } from "../bindings/DocumentOnScreen";
+import type { NoteOnScreen } from "../bindings/NoteOnScreen";
 import type { OnScreen } from "../bindings/OnScreen";
 import type { Selection } from "../bindings/Selection";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
@@ -209,8 +213,12 @@ export type {
   ModelEntry,
   ModelInfo,
   Note,
+  Page,
+  PageRef,
+  PageSaved,
   DataOnScreen,
   DocumentOnScreen,
+  NoteOnScreen,
   OnScreen,
   Selection,
   PermissionDecision,
@@ -1020,6 +1028,53 @@ export const openDocument = (path: string) =>
  */
 export const saveDocument = (path: string, text: string, fingerprint: string) =>
   invoke<Saved>("save_document", { path, text, fingerprint });
+
+/* --------------------------------------------------------------- notebook */
+
+/**
+ * Every note somebody has written here, in both scopes.
+ *
+ * Not [`listNotes`] above, which is the model's memory. These are Markdown
+ * files in `.taurus/notes/` and `~/.taurus/notes/`, written by hand and
+ * committed with the project.
+ *
+ * Carries no text, for the reason a dataset is a handle rather than a payload: a
+ * list of every note's contents would be the most expensive read in the app, and
+ * a remembered copy is wrong the moment anything else writes the file.
+ */
+export const listPages = () => invoke<PageRef[]>("list_pages");
+
+/** One note, as it is on disk right now. */
+export const readPage = (scope: Scope, name: string) =>
+  invoke<Page>("read_page", { scope, name });
+
+/**
+ * Writes what the editor holds back to the note.
+ *
+ * `fingerprint` is the one the last read handed over, and the whole of the
+ * guarantee: a save that no longer matches the file writes nothing and comes
+ * back as `stale` carrying what is there instead. Both versions are then kept
+ * and neither is chosen — the same trade the canvas makes.
+ */
+export const savePage = (
+  scope: Scope,
+  name: string,
+  text: string,
+  fingerprint: string,
+) => invoke<PageSaved>("save_page", { scope, name, text, fingerprint });
+
+/** Starts a note. Refuses a name that is taken rather than picking another. */
+export const createPage = (scope: Scope, name: string) =>
+  invoke<Page>("create_page", { scope, name });
+
+/** Renames a note, which moves its file: the name is the filename. */
+export const renamePage = (scope: Scope, name: string, to: string) =>
+  invoke<Page>("rename_page", { scope, name, to });
+
+/** Deletes a note and answers with what is left, so the pane redraws from the
+ *  directory rather than from its own guess about it. */
+export const forgetPage = (scope: Scope, name: string) =>
+  invoke<PageRef[]>("forget_page", { scope, name });
 
 /* ------------------------------------------------------------- background */
 

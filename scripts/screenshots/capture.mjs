@@ -78,6 +78,16 @@ const SHOTS = [
   // photograph can check — that the split is a split, and that a line number
   // lands on the line it counts.
   { name: "canvas", shot: "canvas", theme: "dark" },
+  // The notebook: both scopes in the list, one note open in the editor that
+  // wraps. The only picture of the pane, and the only check of the prose editor
+  // there is — jsdom measures nothing, so a mount test can prove the text is in
+  // the box and nothing about where its lines break.
+  { name: "notes", shot: "notes", theme: "dark" },
+  // The same note in Read, with its Mermaid fence drawn. The only picture of the
+  // reader, and the only check that a diagram read out of a fence lands where
+  // its own arrows say — the boxes and the stages are what the unit tests can
+  // hold, and the geometry is not.
+  { name: "notes-diagram", shot: "notes-diagram", theme: "dark" },
   // The moment the two writers meet: Taurus wrote the file while there was
   // typing in it, so both versions exist and neither has been chosen. The only
   // picture of the rule the whole write slice is built around.

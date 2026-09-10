@@ -1154,3 +1154,84 @@ export const PERMISSION_RULES = [
   { rule: "cargo test --workspace --all-targets", scope: "workspace" },
   { rule: "git status", scope: "global" },
 ];
+
+/* ------------------------------------------------------------------- notes */
+
+/**
+ * A notebook with something in both scopes.
+ *
+ * A project note and a global one, because the difference between them is half
+ * of what the pane is for and a picture of one group says nothing about it.
+ */
+export const NOTES = [
+  {
+    scope: "workspace" as const,
+    name: "Auth redesign",
+    at: 1_760_000_000,
+    bytes: 612,
+  },
+  {
+    scope: "workspace" as const,
+    name: "Release checklist",
+    at: 1_759_000_000,
+    bytes: 284,
+  },
+  {
+    scope: "global" as const,
+    name: "How I like reviews",
+    at: 1_758_000_000,
+    bytes: 190,
+  },
+];
+
+/**
+ * The note the shots open.
+ *
+ * Prose, a list, and a `mermaid` fence — because the fence is the thing worth
+ * photographing and it has to be in a note that reads like one rather than in a
+ * note that exists to hold a diagram. Written as a flowchart with two named
+ * subgraphs and a retry loop, which is the case the reader and the layout engine
+ * both have the most to get wrong: stages carried across, and one edge pointing
+ * backwards.
+ */
+export const NOTE = {
+  scope: "workspace" as const,
+  name: "Auth redesign",
+  fingerprint: "612-1",
+  text: `# Auth redesign
+
+The refresh token moves out of the session table and into its own store, so a
+sign-out can revoke one without writing to a row three services read.
+
+## What changes
+
+- \`POST /token\` mints a pair rather than a single token.
+- The gateway checks the access token and never sees the refresh one.
+- A revoked refresh token is a row deleted, not a flag set.
+
+## How a sign-in goes
+
+\`\`\`mermaid
+flowchart LR
+  subgraph Edge
+    client["Client"]
+  end
+  subgraph Service
+    gateway["Gateway<br/>envoy"]
+    auth["Auth<br/>axum"]
+  end
+  subgraph Storage
+    tokens["Token store<br/>redis"]
+  end
+  client -->|POST /token| gateway
+  gateway --> auth
+  auth -->|write pair| tokens
+  tokens -->|expired| auth
+  auth -->|401, refresh| client
+\`\`\`
+
+The loop back from the token store is the case worth being careful about: an
+expired pair is not an error, it is the ordinary path a long-lived session takes
+every hour.
+`,
+};

@@ -47,6 +47,7 @@ use crate::freshness::Freshness;
 use crate::instructions::{self, Instructions};
 use crate::mcp_view::{LayerOf, McpServerView};
 use crate::memory;
+use crate::notebook;
 use crate::problem::{self, Problem, ProblemSource};
 use crate::prompt;
 use crate::secrets;
@@ -395,6 +396,13 @@ impl Host {
                 &workspace,
             )));
         }
+
+        // The notebook. Into the shared registry rather than per turn, for the
+        // reason the data tools give: a delegate asked what the design says is
+        // exactly who wants it, and the per-turn set is the one sub-agents do not
+        // get. Nothing to configure and nothing to be unreachable — a person with
+        // no notes gets an empty read and a message saying so.
+        registry.register(Arc::new(notebook::ReadNote::new(&workspace)));
 
         // Semantic search, when an embedding model is named. Off by default and
         // on the same rule the web tools follow: a tool the model can see is a
@@ -2144,6 +2152,64 @@ impl Host {
         let mut left = memory::forget(&self.workspace.read().await.clone(), id)?;
         left.reverse();
         Ok(left)
+    }
+
+    /* ----------------------------------------------------------- notebook */
+
+    /// Every note somebody has written, in both scopes.
+    ///
+    /// A different thing entirely from [`Self::notes`] one screen up, and the
+    /// two are worth telling apart: those are written by the model, capped, and
+    /// read into the next conversation's prompt. These are written by a person,
+    /// live in `.taurus/notes/` where they can be committed, and reach the model
+    /// only when somebody asks about one.
+    pub async fn notebook(&self) -> Vec<notebook::PageRef> {
+        notebook::list(Some(&self.workspace().await))
+    }
+
+    pub async fn read_page(&self, scope: Scope, name: &str) -> Result<notebook::Page, String> {
+        notebook::read(scope, Some(&self.workspace().await), name)
+    }
+
+    /// Writes a note, unless it has changed since the editor read it.
+    ///
+    /// The same guarantee the canvas has and the same implementation of it — see
+    /// [`crate::document::write_if_current`].
+    pub async fn save_page(
+        &self,
+        scope: Scope,
+        name: &str,
+        text: &str,
+        fingerprint: &str,
+    ) -> Result<notebook::PageSaved, String> {
+        notebook::save(
+            scope,
+            Some(&self.workspace().await),
+            name,
+            text,
+            fingerprint,
+        )
+    }
+
+    pub async fn create_page(&self, scope: Scope, name: &str) -> Result<notebook::Page, String> {
+        notebook::create(scope, Some(&self.workspace().await), name)
+    }
+
+    pub async fn rename_page(
+        &self,
+        scope: Scope,
+        name: &str,
+        to: &str,
+    ) -> Result<notebook::Page, String> {
+        notebook::rename(scope, Some(&self.workspace().await), name, to)
+    }
+
+    pub async fn forget_page(
+        &self,
+        scope: Scope,
+        name: &str,
+    ) -> Result<Vec<notebook::PageRef>, String> {
+        notebook::forget(scope, Some(&self.workspace().await), name)
     }
 
     /* ------------------------------------------------------------- canvas */

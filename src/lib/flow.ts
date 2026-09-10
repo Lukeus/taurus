@@ -90,7 +90,14 @@ export type Arrow = {
   head: string;
   label: string | null;
   labelAt: { x: number; y: number; anchor?: "start" | "middle" | "end" };
-  /** Points at its own stage or an earlier one — a retry, a callback. */
+  /**
+   * Certainly a loop: an arrow to an earlier stage, or a box to itself.
+   *
+   * Not "routed the long way round" — a same-stage edge is too, and is not
+   * drawn as a loop. This is the flag that dashes the line, so it says only what
+   * can be known: an arrow that goes back is a retry, a failure path or a
+   * callback, and an arrow between two things at the same depth might be a step.
+   */
   back: boolean;
   /**
    * How far this arrow's routing reaches past the boxes.
@@ -282,7 +289,8 @@ type Route = { from: Box; to: Box; label: string | null; kind: Kind };
  * An edge **within one stage** cannot use the bottom route at all: both boxes
  * are in the same column, so "down, across, up" has no across, and the line
  * would go down and come straight back over itself. It goes around the left of
- * the column instead.
+ * the column instead — routed like a loop, but not drawn as one, since being at
+ * the same depth says nothing about whether the arrow is a step or a retry.
  *
  * An edge **from a box to itself** has neither an across nor a height to travel
  * over, so it is a ring over the top face. It goes above rather than below or
@@ -342,7 +350,15 @@ function arrow(route: Route, at: { floor: number; lane: number }): Arrow {
       head: head(to.x, y2, "right"),
       label,
       labelAt: { x: out - 4, y: (y1 + y2) / 2, anchor: "end" },
-      back: true,
+      // Routed like a loop and **not drawn as one**. The route is geometry —
+      // two boxes in one column have no "across" to run along, so the line has
+      // to go around. The dash is a claim, and here it would be the wrong one:
+      // an edge between two things at the same depth is as often the next step
+      // as it is a retry. `show_flow` only ever promised the loop treatment for
+      // an arrow "pointing back to an earlier stage", and a Mermaid subgraph
+      // routinely holds a chain — which arrived dashed, reading as a failure
+      // path, in the first photograph of one.
+      back: false,
       extent: { bottom: 0, left: out - labelWidth(label) - 8, right: 0 },
     };
   }

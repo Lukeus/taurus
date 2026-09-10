@@ -1010,6 +1010,13 @@ confirmation — what matters is what they put on screen.
 | `show_flow` | A staged flow diagram, copyable as Mermaid | The answer is how a system is put together — which component talks to which, what a request passes through |
 | `ask_user` | A question card, and waits for it | A decision that is genuinely yours and would change what gets built |
 
+One tool reads rather than draws, and belongs with these because it is about the
+same surface:
+
+| Tool | Reads | Reach for it when |
+| --- | --- | --- |
+| `read_note` | One of your notes, by notebook and name | A message says "my note", or the notes pane says which note is on screen |
+
 Both diagrams are drawn rather than depended on. There is no diagramming
 library in the app: the payloads are participants and messages, or stages and
 edges, and the layout is arithmetic over an order the model already declared.
@@ -1017,8 +1024,14 @@ That keeps three properties a library would have cost — a diagram is refused
 before it is drawn if an arrow names something that was never declared, it is
 painted in the app's own palette rather than a second one, and it prints in a
 terminal. **Copy as Mermaid** is on both cards because a diagram gets pasted
-into a README or an issue; the app speaks Mermaid on the way out without
-depending on it to draw anything.
+into a README or an issue.
+
+The app **reads** Mermaid as well, which is the other half of that round trip.
+A ```` ```mermaid ```` fence anywhere Markdown is rendered — a reply, a note —
+is drawn by the same two engines, so a diagram copied out of a card and pasted
+back into a note comes back as the same picture. What is read is a subset, and
+an honest one: see [Notes](#notes) for what draws and [Known
+gaps](known-gaps.md) for what does not.
 
 `show_flow` asks the model to group the nodes into stages itself rather than
 working the layering out from the edges. That is the load-bearing decision.
@@ -1101,6 +1114,91 @@ question numbers its options and reads a line, with Enter alone to skip. Where
 there is no terminal at all — a pipe, a git hook, CI — nothing hangs: the tool
 comes back saying nobody was available, and the model is told to decide and say
 which way it went.
+
+## Notes
+
+A place to write things down, beside the conversation about them. **Notes** is a
+tab above the centre column; it is always there, because writing the first note
+needs nothing to have happened first.
+
+A note is a Markdown file and nothing more. There is no frontmatter, no
+database, and no format only this app understands — the name in the list is the
+filename on disk, and the file is exactly what was typed into it. Two notebooks:
+
+| | Where | What it is for |
+| --- | --- | --- |
+| **Project** | `.taurus/notes/` in the workspace | Notes that belong to the repository, and are committed with it — a design note and its diagrams reach whoever clones it |
+| **Global** | `~/.taurus/notes/` | Notes that belong to you, and follow you between projects |
+
+Nothing merges between the two. Unlike config, where the workspace layer
+overrides the global one, two notes with the same name in the two notebooks are
+two notes: merging prose would mean choosing which paragraph wins.
+
+These are **not** the same thing as Memory in the rail. Those are written by the
+model, capped, and read into the next conversation's prompt before you say
+anything. These are written by you, are as long as you like, and reach the model
+only when you ask about one.
+
+### Writing
+
+**Write** is the Markdown; **Read** is what it renders as. The editor wraps,
+which is the one place it differs from the canvas — a note is prose all the way
+down, and there is no line number in it for anything to point at, so the gutter
+that forbids wrapping there is not here.
+
+It saves itself a moment after typing stops, and never overwrites something it
+has not seen. If a turn writes the same note while you are typing in it, the
+save is refused and both versions are kept — the same rule, and the same code,
+as the canvas.
+
+### Diagrams
+
+A ```` ```mermaid ```` fence draws in **Read**. It is drawn by the app's own two
+diagram engines rather than by the Mermaid library, which is what keeps it in
+the app's palette, off the network, and out of a dependency the size of the rest
+of the frontend put together.
+
+What draws:
+
+- `flowchart` and `graph`, in any direction — though the picture is always laid
+  out left to right, and says so under itself when you asked for another.
+  Direction in Mermaid is presentational, so nothing is lost but the axis.
+- Every node shape, though all of them draw as rectangles.
+- Every arrow — `-->`, `---`, `-.->`, `==>`, `--o`, `--x`, `<-->` — with labels
+  in both `-->|like this|` and `-- like this -->` spellings, chains, and `&`
+  fans.
+- `subgraph`s, which become the columns. A run of nodes outside one becomes a
+  column of its own, which is what makes a diagram copied out of a `show_flow`
+  card come back looking the same.
+- Layering worked out from the edges when there are no subgraphs, with the edges
+  that close a cycle drawn as the loops they are.
+- `sequenceDiagram`, with participants, actors, aliases, and lanes declared by
+  first mention.
+
+What does not draw says so rather than drawing something else. A diagram type
+this cannot read is named — *"Taurus draws Gantt charts as text, not as a
+picture"* — above the source it falls back to. A line it cannot read is quoted
+with its number, rather than the diagram quietly losing an arrow. And a diagram
+that *did* draw says what it left out, such as a `Note over` or a `loop`
+block's frame.
+
+### Asking about a note
+
+**Ask about this** fills the composer with a sentence naming the note, and does
+not send it — the same as every other button in the app that offers a draft.
+While the pane is open, a message also carries which note is on screen, so
+"this" means that one.
+
+The model reads a note with `read_note`, which takes the notebook and the name
+rather than a path. That is not a convenience: a global note is outside the
+workspace, where `read_file` refuses to go, so without it half the notebook
+would be a surface the app tells the model about and gives it no way to read.
+Nothing else is reachable through it — a name with a separator in it is refused
+before it becomes a path.
+
+![The notes pane, with a note open in the editor](screenshots/notes.png)
+
+![The same note in Read, with its Mermaid fence drawn](screenshots/notes-diagram.png)
 
 ## Working with data
 
