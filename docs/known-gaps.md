@@ -729,7 +729,16 @@ and they are the minority.
   instead are the ones already drawing `show_flow` and `show_sequence`, in the
   app's palette, under tests that need no browser. If the named-and-refused list
   is what stops people using notes for diagrams, that is the evidence for
-  importing the library behind a lazy chunk rather than growing the reader.
+  drawing fences with the library rather than growing the reader.
+- **The Mermaid library ships anyway, inside the sketch editor.** Excalidraw's
+  own **Mermaid to Excalidraw** tool — which turns a diagram into shapes you can
+  draw over — needs it, and imports it lazily. It is 3.3 MB of the app's 8.6 MB,
+  measured by building with and without it, and it is loaded only if that tool
+  is used. It cannot be taken out cleanly: the tool's menu entry has no option
+  to hide it and shares its only stable hook with the web-embed tool beside it,
+  so removing the library would leave an entry that fails when chosen. A fence
+  in a note is still drawn by the app's own engines; this changes the size of
+  the download and nothing about how a note looks.
 - **Every Mermaid diagram is laid out left to right.** `graph TD`, `TB`, `BT`
   and `RL` are read and drawn as `LR`, with a line under the picture saying so.
   Direction in Mermaid is presentational — the same nodes, arrows and labels
@@ -759,6 +768,36 @@ and they are the minority.
   note is a Markdown file in `.taurus/`, which the index skips along with the
   rest of that directory. Finding a note is scanning the list, which is fine at
   a dozen and is not at a hundred.
+- **Chinese, Japanese and Korean text in a sketch is not handwritten.**
+  Excalidraw draws those scripts in Xiaolai, a 12 MB face — more than every other
+  font, script and stylesheet in the app together. It is left out, so the text
+  draws in the system's own face instead. It still saves, exports and embeds.
+- **A sketch's library lasts as long as the window.** Shapes added to
+  Excalidraw's library are kept in memory and not written anywhere. **Browse
+  libraries** opens the public library site in your browser, and its **Add to
+  Excalidraw** button returns to excalidraw.com rather than to the app.
+- **A sketch has no export.** Excalidraw's Save to disk, Open and Export image
+  are turned off, because the file is the sketch and a second way of saving it
+  would bypass the rule that no save overwrites a version it has not seen. Copy
+  as PNG from a selection's context menu is Excalidraw's own and still there.
+- **Renaming a sketch leaves the notes that embed it pointing at the old name.**
+  The embed says the sketch is not there, and the fix is one line in the note.
+  Rewriting other notes to follow the rename would be the app editing prose
+  somebody else wrote.
+- **The model cannot see a sketch.** There is no picture of one to give it —
+  only the scene. What reaches it is the text written on each sketch a note
+  embeds, through `read_note`. A sketch on screen with no note around it tells
+  the model nothing, and there is no Ask about this on one.
+- **A global note written by the model cannot be rewound.** It is outside every
+  workspace, so the checkpoint recorder has nothing to copy it into. The
+  permission prompt shows the diff, and that is the whole of its safety.
+- **Excalidraw roughly quadruples the download.** The app was 1.8 MB without
+  source maps before sketches; it is 8.6 MB with them. None of it is in the
+  chunk that starts the app — that grew by 5 KB — and all of it is fetched from
+  disk the first time a sketch is opened, not before. Of the increase, 3.3 MB is
+  the Mermaid library above, 1.7 MB is Excalidraw's font subsetting, 1.2 MB is
+  the editor, and 0.4 MB is its fonts. Its fifty-two unused translations are
+  replaced with empty modules at build time.
 - **The canvas holds one file at a time.** Opening another replaces it. Tabs
   are a second navigation model to build and to explain, and "open the readme
   while we talk about it" does not need one. What that costs is comparing two

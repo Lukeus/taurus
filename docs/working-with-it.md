@@ -1016,6 +1016,8 @@ same surface:
 | Tool | Reads | Reach for it when |
 | --- | --- | --- |
 | `read_note` | One of your notes, by notebook and name | A message says "my note", or the notes pane says which note is on screen |
+| `write_note` | Writes a note, after asking | You asked for something to be written down, or added to a note |
+| `open_note` | A card that opens a note | The answer is in a note you should look at |
 
 Both diagrams are drawn rather than depended on. There is no diagramming
 library in the app: the payloads are participants and messages, or stages and
@@ -1123,7 +1125,9 @@ needs nothing to have happened first.
 
 A note is a Markdown file and nothing more. There is no frontmatter, no
 database, and no format only this app understands — the name in the list is the
-filename on disk, and the file is exactly what was typed into it. Two notebooks:
+filename on disk, and the file is exactly what was typed into it. Beside the
+notes are **sketches**: Excalidraw drawings, one `.excalidraw` file each, under
+the same rules. Two notebooks, holding both:
 
 | | Where | What it is for |
 | --- | --- | --- |
@@ -1182,19 +1186,63 @@ with its number, rather than the diagram quietly losing an arrow. And a diagram
 that *did* draw says what it left out, such as a `Note over` or a `loop`
 block's frame.
 
+### Sketching
+
+**+** beside either notebook makes a note or a sketch. A sketch opens in
+[Excalidraw](https://excalidraw.com), taking the whole pane: shapes, arrows,
+freehand, handwritten text, images pasted in. It saves itself the moment the
+drawing stops changing, and never over a version it has not seen — the rule a
+note keeps, in the same code.
+
+Some of Excalidraw is turned off here, each for a reason:
+
+- **Open, Save to disk and Export.** The file *is* the sketch. A second way of
+  saving it that knew nothing about the fingerprint would be a second writer
+  the rule cannot see.
+- **Its theme switch.** It follows the window's instead.
+- **Links out.** Every one — an element's link, and each in its menus and help —
+  goes to your browser. In the app's own window a link would replace the app.
+- **Its AI features**, which need a service the app is not configured for.
+
+A note shows a sketch with a Markdown image whose address is the file:
+
+```markdown
+![How a sign-in goes](<Auth flow.excalidraw>)
+```
+
+The angle brackets are what a name with a space needs. **Copy embed** on a
+sketch copies exactly that line. In **Read**, the note draws the sketch where
+the line is, with **open** to go to it; anywhere else — another Markdown viewer,
+GitHub — it is an image link with the sketch's name on it, which is the honest
+way for a note to degrade.
+
+![A sketch open in the editor](screenshots/sketch.png)
+
+![The same sketch, drawn into a note that embeds it](screenshots/notes-sketch.png)
+
 ### Asking about a note
 
 **Ask about this** fills the composer with a sentence naming the note, and does
 not send it — the same as every other button in the app that offers a draft.
 While the pane is open, a message also carries which note is on screen, so
-"this" means that one.
+"this" means that one. A sketch offers no such button: there is nothing the
+model can read in one on its own.
 
 The model reads a note with `read_note`, which takes the notebook and the name
 rather than a path. That is not a convenience: a global note is outside the
 workspace, where `read_file` refuses to go, so without it half the notebook
 would be a surface the app tells the model about and gives it no way to read.
 Nothing else is reachable through it — a name with a separator in it is refused
-before it becomes a path.
+before it becomes a path. When a note embeds sketches, `read_note` also says the
+words written on each one, and that the model cannot see the drawing itself.
+
+`write_note` writes a note, creating it if the name is new. It asks first, with
+the diff. A project note is recorded before it is written, so rewinding the turn
+puts it back and an open editor reloads; a global note is outside every
+workspace, so the diff in the prompt is the whole of its safety. `open_note`
+puts a card in the conversation that opens the note — and opens nothing by
+itself, because the notes pane replaces the transcript and a turn that swapped
+the screen out from under its own answer would be deciding where you look.
 
 ![The notes pane, with a note open in the editor](screenshots/notes.png)
 

@@ -414,7 +414,22 @@ body {
 
 /* ------------------------------------------------------------- primitives */
 
-button {
+/*
+ * Every rule below that names a bare element carries `:where(:not(.excalidraw *))`.
+ *
+ * The sketch editor is Excalidraw, and its buttons, its colour inputs and the
+ * textarea it types text into are ordinary elements. These rules sit in the
+ * `taurus` layer, which beats the `vendor` layer Excalidraw's own stylesheet is
+ * in — so without the fence every property set here and not re-set there would
+ * leak into the canvas: this border and padding on every tool, this background
+ * on its colour fields, and this padding on the textarea whose position decides
+ * where typed text lands on the drawing.
+ *
+ * `:where()` so the fence costs no specificity. Every one of these selectors
+ * matches exactly what it matched before everywhere outside a sketch, and
+ * `styles.test.ts` fails the build over a bare element rule without it.
+ */
+button:where(:not(.excalidraw *)) {
   font: inherit;
   color: var(--text-dim);
   background: transparent;
@@ -425,11 +440,11 @@ button {
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-button:hover:not(:disabled) {
+button:where(:not(.excalidraw *)):hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text);
 }
-button:disabled {
+button:where(:not(.excalidraw *)):disabled {
   opacity: 0.4;
   cursor: default;
 }
@@ -446,41 +461,41 @@ button:disabled {
  * elevated surface with dim text — no accent anywhere, which is what carries
  * "not right now" once the colour is gone.
  */
-button.primary:disabled {
+button.primary:where(:not(.excalidraw *)):disabled {
   opacity: 1;
   background: var(--bg-elevated);
   border-color: var(--border);
   color: var(--text-dim);
 }
-button.primary {
+button.primary:where(:not(.excalidraw *)) {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
   font-weight: 600;
 }
-button.primary:hover:not(:disabled) {
+button.primary:where(:not(.excalidraw *)):hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
   color: var(--on-accent);
 }
-button.danger {
+button.danger:where(:not(.excalidraw *)) {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 40%, transparent);
 }
-button.danger:hover:not(:disabled) {
+button.danger:where(:not(.excalidraw *)):hover:not(:disabled) {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
-button.quiet {
+button.quiet:where(:not(.excalidraw *)) {
   border-color: transparent;
 }
-button.quiet:hover:not(:disabled) {
+button.quiet:where(:not(.excalidraw *)):hover:not(:disabled) {
   border-color: transparent;
 }
 
-input,
-select,
-textarea {
+input:where(:not(.excalidraw *)),
+select:where(:not(.excalidraw *)),
+textarea:where(:not(.excalidraw *)) {
   font: inherit;
   color: var(--text);
   background: var(--bg-elevated);
@@ -492,7 +507,7 @@ textarea {
   padding: 6px 10px;
   font-size: 13px;
 }
-textarea {
+textarea:where(:not(.excalidraw *)) {
   resize: none;
 }
 /*
@@ -511,7 +526,7 @@ textarea {
  * what the tightest run of controls in the app can afford: --r-sm gaps of 6px
  * in a pill row leave 4px of ring on each side and 2px still between them.
  */
-:focus-visible {
+:where(:not(.excalidraw *)):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -526,7 +541,7 @@ textarea {
   outline-offset: -2px;
 }
 
-code {
+code:where(:not(.excalidraw *)) {
   font-family: var(--mono);
   font-size: 0.92em;
 }
@@ -3746,7 +3761,7 @@ body.resizing-y * {
 .section-head .micro {
   flex: 1;
 }
-button.link {
+button.link:where(:not(.excalidraw *)) {
   flex: none;
   background: none;
   border: 0;
@@ -3758,7 +3773,7 @@ button.link {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-button.link:hover {
+button.link:where(:not(.excalidraw *)):hover {
   color: var(--text);
 }
 .section-row {
@@ -3839,7 +3854,9 @@ button.link:hover {
  * belongs by kind, it read a point larger and a shade brighter and every row
  * under it moved three pixels down the screen.
  */
-.hint {
+/* Fenced like the element rules in "primitives": Excalidraw puts a `hint` class
+   on its own markup, and this rule is in a layer its stylesheet cannot beat. */
+.hint:where(:not(.excalidraw *)) {
   display: block;
   font-size: 11.5px;
   color: var(--text-faint);
@@ -6501,6 +6518,92 @@ button.link:hover {
 }
 .prose-input::placeholder {
   color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------- the sketch
+
+   Excalidraw sizes itself to its parent and nothing else, so the parent has to
+   have a size: without an explicit height the canvas is zero pixels tall and
+   renders as a toolbar floating over nothing. */
+
+.sketch-edit {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Where a sketch that could not be read goes instead of a canvas. The file is
+   left alone, and this says so — an empty canvas in its place would save
+   itself over the file a moment later. */
+.sketch-problem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.sketch-problem b {
+  font-weight: 500;
+  color: var(--danger);
+}
+
+/* The panel a sketch fills. It does not scroll: Excalidraw pans its own canvas,
+   and a scrollbar around it would be a second way to move the same drawing. */
+.notes-body.sketch {
+  overflow: hidden;
+  background: transparent;
+}
+/* Where the canvas will be while its chunk arrives — the size it is going to
+   be, so the pane does not jump when it lands. */
+.sketch-loading {
+  height: 100%;
+}
+
+/* Which of the two a new name is for, above the box that takes it. */
+.notes-kind {
+  display: flex;
+  gap: 4px;
+}
+
+/* A sketch drawn into a note being read. Spans all the way down, because
+   Markdown puts an image inside a paragraph — so these are made blocks here
+   rather than being written as divs the browser would rearrange. */
+.sketch-embed {
+  display: block;
+  margin: 0 0 0.7em;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.sketch-embed-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+/* The word "sketch" takes only its own width here. `.md-code-lang` grows to
+   fill a code fence's head, which in this row would push the caption into the
+   middle of it. */
+.sketch-embed-head .md-code-lang {
+  flex: none;
+}
+.sketch-embed-name {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+/* Scrolls rather than scales, for the reason the diagram boxes give: a drawing
+   squeezed to fit shrinks its handwriting out of legibility. */
+.sketch-embed-body {
+  display: block;
+  padding: 12px;
+  overflow-x: auto;
+  text-align: center;
+}
+.sketch-embed-body svg {
+  max-width: none;
 }
 
 /* ----------------------------------------------------------- ask about this

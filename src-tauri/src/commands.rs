@@ -36,7 +36,7 @@ use taurus_host::trust::TrustStatus;
 use taurus_host::usage::{self, UsageReport};
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, CustomTheme, Document, Host, KeyStatus,
-    McpServerDraft, McpServerRef, McpServerView, Note, Page, PageRef, PageSaved, Problem,
+    McpServerDraft, McpServerRef, McpServerView, Note, Page, PageKind, PageRef, PageSaved, Problem,
     ProviderConfig, Repo, RepoStatus, Rewind, Saved, SessionLog, SessionMeta, Settings, Switch,
     Theme, ThemeFile, TurnChange, TurnRef,
 };
@@ -1502,7 +1502,7 @@ pub async fn dataset_page(
     state.host.dataset_page(&name, offset, limit).await
 }
 
-/// Every note somebody has written here, in both scopes.
+/// Every note and sketch somebody has written here, in both scopes.
 ///
 /// Not the same thing as `list_notes` above, and the difference is worth keeping
 /// straight: those are the model's, capped and read into the next conversation's
@@ -1523,9 +1523,10 @@ pub async fn list_pages(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<PageRe
 pub async fn read_page(
     state: State<'_, Arc<AppState>>,
     scope: Scope,
+    kind: PageKind,
     name: String,
 ) -> CmdResult<Page> {
-    state.host.read_page(scope, &name).await
+    state.host.read_page(scope, kind, &name).await
 }
 
 /// Writes what the editor holds back to the note.
@@ -1538,13 +1539,14 @@ pub async fn read_page(
 pub async fn save_page(
     state: State<'_, Arc<AppState>>,
     scope: Scope,
+    kind: PageKind,
     name: String,
     text: String,
     fingerprint: String,
 ) -> CmdResult<PageSaved> {
     state
         .host
-        .save_page(scope, &name, &text, &fingerprint)
+        .save_page(scope, kind, &name, &text, &fingerprint)
         .await
 }
 
@@ -1553,9 +1555,10 @@ pub async fn save_page(
 pub async fn create_page(
     state: State<'_, Arc<AppState>>,
     scope: Scope,
+    kind: PageKind,
     name: String,
 ) -> CmdResult<Page> {
-    state.host.create_page(scope, &name).await
+    state.host.create_page(scope, kind, &name).await
 }
 
 /// Renames a note, which moves its file: the name *is* the filename.
@@ -1563,10 +1566,11 @@ pub async fn create_page(
 pub async fn rename_page(
     state: State<'_, Arc<AppState>>,
     scope: Scope,
+    kind: PageKind,
     name: String,
     to: String,
 ) -> CmdResult<Page> {
-    state.host.rename_page(scope, &name, &to).await
+    state.host.rename_page(scope, kind, &name, &to).await
 }
 
 /// Deletes a note and gives back what is left, so the pane can redraw from the
@@ -1575,9 +1579,10 @@ pub async fn rename_page(
 pub async fn forget_page(
     state: State<'_, Arc<AppState>>,
     scope: Scope,
+    kind: PageKind,
     name: String,
 ) -> CmdResult<Vec<PageRef>> {
-    state.host.forget_page(scope, &name).await
+    state.host.forget_page(scope, kind, &name).await
 }
 
 /// One text file, read for the canvas.

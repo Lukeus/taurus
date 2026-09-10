@@ -54,7 +54,11 @@ describe("the stylesheet", () => {
   /** The body of the first top-level rule whose selector group contains `sel`. */
   function block(sel: string): string | undefined {
     for (const [, group, body] of css.matchAll(/^([^\s@}][^{]*)\{([^}]*)\}/gm)) {
-      if (group.includes(sel)) return body;
+      // Read past the fence that keeps a rule out of a sketch — see the
+      // "sketch editor's boundary" tests below. It changes where a rule
+      // applies, never which rule a check here is about, so a selector written
+      // as `button.primary:disabled` still finds the rule for it.
+      if (group.replaceAll(":where(:not(.excalidraw *))", "").includes(sel)) return body;
     }
   }
 
@@ -586,6 +590,86 @@ describe("the utility layer", () => {
       })
       .map(({ file, name }) => `${file} — ${name}`);
 
+    expect(strays).toEqual([]);
+  });
+});
+
+describe("the sketch editor's boundary", () => {
+  // The file-level `css`, with its comments already stripped — a selector
+  // matched through a comment block is the failure the top of this file warns
+  // about.
+  it("keeps every bare element rule out of a sketch", () => {
+    /*
+     * Excalidraw's buttons, colour fields and text box are ordinary elements,
+     * and its stylesheet is in the `vendor` layer, which every rule in this file
+     * beats. A bare `button { }` here therefore restyles every tool in the
+     * canvas — and a bare `textarea { padding }` moves the box Excalidraw types
+     * text into off the point on the drawing it belongs to.
+     *
+     * So each one carries `:where(:not(.excalidraw *))`, which costs no
+     * specificity. This is what stops the next `button { }` somebody adds from
+     * quietly reaching into the canvas; nothing else would notice, because the
+     * rest of the app looks exactly the same either way.
+     *
+     * Top-level rules only. `*`, `html`, `body` and `#root` are about the window
+     * rather than about a control, and `body.resizing` is a cursor held while a
+     * pane is dragged.
+     */
+    const strays: string[] = [];
+    for (const [, group] of css.matchAll(/^([^\s@}][^{]*)\{/gm)) {
+      for (const raw of group.split(",")) {
+        const part = raw.trim();
+        const bare = /^[a-z][a-z0-9]*(?![a-z0-9-])/.test(part) || part.startsWith(":focus");
+        if (!bare) continue;
+        if (/^(html|body|#root)\b/.test(part)) continue;
+        if (!part.includes(":not(.excalidraw *)")) strays.push(part);
+      }
+    }
+    expect(strays).toEqual([]);
+  });
+
+  it("gives no class Excalidraw uses a bare rule of its own", () => {
+    /*
+     * The same leak by a different door. Excalidraw puts ordinary class names on
+     * its own markup — `hint`, `active`, `error`, `name` among them — and a rule
+     * here that starts with one of those, unfenced, reaches every element in the
+     * canvas that carries it. `.hint` was the one that did, and it was found by
+     * an audit rather than by anything looking at the screen.
+     *
+     * Read from the package itself, both the classes its stylesheet names and
+     * the ones its markup sets, so an upgrade that starts using a new name is
+     * checked against this file without anybody remembering to.
+     */
+    const dist = new URL("../node_modules/@excalidraw/excalidraw/dist/prod/", import.meta.url);
+    const theirs = new Set<string>();
+    for (const entry of readdirSync(dist, { withFileTypes: true })) {
+      // The fonts, the locales and the data chunks are directories beside the
+      // two kinds of file that name classes.
+      if (entry.isDirectory()) continue;
+      const file = entry.name;
+      if (!file.endsWith(".css") && !file.endsWith(".js")) continue;
+      const text = readFileSync(new URL(file, dist), "utf8");
+      if (file.endsWith(".css")) {
+        for (const [, name] of text.matchAll(/\.([A-Za-z_][\w-]*)/g)) theirs.add(name);
+      } else if (file.endsWith(".js")) {
+        for (const [, names] of text.matchAll(/className:"([^"]+)"/g)) {
+          for (const name of names.split(/\s+/)) if (name) theirs.add(name);
+        }
+      }
+    }
+
+    const strays: string[] = [];
+    for (const [, group] of css.matchAll(/^([^\s@}][^{]*)\{/gm)) {
+      for (const raw of group.split(",")) {
+        const part = raw.trim();
+        // The first compound, and only when it is one class with its states —
+        // `.data-pane.empty` needs both classes, so an Excalidraw element that
+        // carries only `empty` is not matched by it.
+        const first = /^\.([\w-]+)(?::[^\s>+~]*)?(?=[\s>+~]|$)/.exec(part);
+        if (!first || !theirs.has(first[1])) continue;
+        if (!part.includes(":not(.excalidraw *)")) strays.push(part);
+      }
+    }
     expect(strays).toEqual([]);
   });
 });

@@ -403,6 +403,8 @@ impl Host {
         // get. Nothing to configure and nothing to be unreachable — a person with
         // no notes gets an empty read and a message saying so.
         registry.register(Arc::new(notebook::ReadNote::new(&workspace)));
+        registry.register(Arc::new(notebook::WriteNote::new(&workspace)));
+        registry.register(Arc::new(notebook::OpenNote::new(&workspace)));
 
         // Semantic search, when an embedding model is named. Off by default and
         // on the same rule the web tools follow: a tool the model can see is a
@@ -2167,8 +2169,13 @@ impl Host {
         notebook::list(Some(&self.workspace().await))
     }
 
-    pub async fn read_page(&self, scope: Scope, name: &str) -> Result<notebook::Page, String> {
-        notebook::read(scope, Some(&self.workspace().await), name)
+    pub async fn read_page(
+        &self,
+        scope: Scope,
+        kind: notebook::PageKind,
+        name: &str,
+    ) -> Result<notebook::Page, String> {
+        notebook::read(scope, Some(&self.workspace().await), kind, name)
     }
 
     /// Writes a note, unless it has changed since the editor read it.
@@ -2178,6 +2185,7 @@ impl Host {
     pub async fn save_page(
         &self,
         scope: Scope,
+        kind: notebook::PageKind,
         name: &str,
         text: &str,
         fingerprint: &str,
@@ -2185,31 +2193,39 @@ impl Host {
         notebook::save(
             scope,
             Some(&self.workspace().await),
+            kind,
             name,
             text,
             fingerprint,
         )
     }
 
-    pub async fn create_page(&self, scope: Scope, name: &str) -> Result<notebook::Page, String> {
-        notebook::create(scope, Some(&self.workspace().await), name)
+    pub async fn create_page(
+        &self,
+        scope: Scope,
+        kind: notebook::PageKind,
+        name: &str,
+    ) -> Result<notebook::Page, String> {
+        notebook::create(scope, Some(&self.workspace().await), kind, name)
     }
 
     pub async fn rename_page(
         &self,
         scope: Scope,
+        kind: notebook::PageKind,
         name: &str,
         to: &str,
     ) -> Result<notebook::Page, String> {
-        notebook::rename(scope, Some(&self.workspace().await), name, to)
+        notebook::rename(scope, Some(&self.workspace().await), kind, name, to)
     }
 
     pub async fn forget_page(
         &self,
         scope: Scope,
+        kind: notebook::PageKind,
         name: &str,
     ) -> Result<Vec<notebook::PageRef>, String> {
-        notebook::forget(scope, Some(&self.workspace().await), name)
+        notebook::forget(scope, Some(&self.workspace().await), kind, name)
     }
 
     /* ------------------------------------------------------------- canvas */

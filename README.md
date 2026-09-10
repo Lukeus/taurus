@@ -301,8 +301,8 @@ wraps](docs/screenshots/notes.png)
 
 A ```` ```mermaid ```` block draws as a diagram. It is drawn by the same two
 engines that draw `show_flow` and `show_sequence` rather than by the Mermaid
-library — so it is in the app's own palette, needs no network, and adds nothing
-to the bundle. The app has been able to *write* Mermaid since those cards
+library — so it is in the app's own palette, needs no network, and draws the same
+way every time it is drawn. The app has been able to *write* Mermaid since those cards
 shipped; this is the other half of the round trip, and a diagram copied out of a
 card and pasted into a note comes back as the same picture.
 
@@ -315,9 +315,22 @@ box — and a diagram it *did* draw says what it left out. Notes save themselves
 and never overwrite a version they have not seen, which is the canvas's rule and
 the canvas's code.
 
-Ask about one and the model reads it with `read_note`, by notebook and name
+A **sketch** is a drawing kept beside the notes, in
+[Excalidraw](https://excalidraw.com) — freehand, shapes, arrows, handwritten
+text. It is a `.excalidraw` file in the same notebook, saved the same way, and a
+note shows one with a line of Markdown: `![How a sign-in goes](<Auth flow.excalidraw>)`.
+**Copy embed** on the sketch is that line.
+
+![A sketch open in the editor beside the list of notes](docs/screenshots/sketch.png)
+
+![The sketch drawn into a note that embeds it](docs/screenshots/notes-sketch.png)
+
+Ask about a note and the model reads it with `read_note`, by notebook and name
 rather than by path — a global note is outside the workspace, where `read_file`
-will not go.
+will not go. It can write one with `write_note`, which asks first and shows the
+diff, and put one in front of you with `open_note`, which draws a card you open
+yourself. It cannot see a sketch; it is told the words written on one a note
+embeds.
 
 **[Configuration](docs/configuration.md)** — providers, keys, MCP servers, and
 web search.

@@ -74,6 +74,7 @@ import type { MessageKind } from "../bindings/MessageKind";
 import type { ModelInfo } from "../bindings/ModelInfo";
 import type { Note } from "../bindings/Note";
 import type { Page } from "../bindings/Page";
+import type { PageKind } from "../bindings/PageKind";
 import type { PageRef } from "../bindings/PageRef";
 import type { PageSaved } from "../bindings/PageSaved";
 import type { DataOnScreen } from "../bindings/DataOnScreen";
@@ -214,6 +215,7 @@ export type {
   ModelInfo,
   Note,
   Page,
+  PageKind,
   PageRef,
   PageSaved,
   DataOnScreen,
@@ -1032,7 +1034,7 @@ export const saveDocument = (path: string, text: string, fingerprint: string) =>
 /* --------------------------------------------------------------- notebook */
 
 /**
- * Every note somebody has written here, in both scopes.
+ * Every note and sketch somebody has written here, in both scopes.
  *
  * Not [`listNotes`] above, which is the model's memory. These are Markdown
  * files in `.taurus/notes/` and `~/.taurus/notes/`, written by hand and
@@ -1045,8 +1047,8 @@ export const saveDocument = (path: string, text: string, fingerprint: string) =>
 export const listPages = () => invoke<PageRef[]>("list_pages");
 
 /** One note, as it is on disk right now. */
-export const readPage = (scope: Scope, name: string) =>
-  invoke<Page>("read_page", { scope, name });
+export const readPage = (scope: Scope, kind: PageKind, name: string) =>
+  invoke<Page>("read_page", { scope, kind, name });
 
 /**
  * Writes what the editor holds back to the note.
@@ -1058,23 +1060,25 @@ export const readPage = (scope: Scope, name: string) =>
  */
 export const savePage = (
   scope: Scope,
+  kind: PageKind,
   name: string,
   text: string,
   fingerprint: string,
-) => invoke<PageSaved>("save_page", { scope, name, text, fingerprint });
+) => invoke<PageSaved>("save_page", { scope, kind, name, text, fingerprint });
 
-/** Starts a note. Refuses a name that is taken rather than picking another. */
-export const createPage = (scope: Scope, name: string) =>
-  invoke<Page>("create_page", { scope, name });
+/** Starts a note or a sketch. Refuses a name that is taken rather than picking
+ *  another — a note and a sketch may share one, two of either may not. */
+export const createPage = (scope: Scope, kind: PageKind, name: string) =>
+  invoke<Page>("create_page", { scope, kind, name });
 
 /** Renames a note, which moves its file: the name is the filename. */
-export const renamePage = (scope: Scope, name: string, to: string) =>
-  invoke<Page>("rename_page", { scope, name, to });
+export const renamePage = (scope: Scope, kind: PageKind, name: string, to: string) =>
+  invoke<Page>("rename_page", { scope, kind, name, to });
 
 /** Deletes a note and answers with what is left, so the pane redraws from the
  *  directory rather than from its own guess about it. */
-export const forgetPage = (scope: Scope, name: string) =>
-  invoke<PageRef[]>("forget_page", { scope, name });
+export const forgetPage = (scope: Scope, kind: PageKind, name: string) =>
+  invoke<PageRef[]>("forget_page", { scope, kind, name });
 
 /* ------------------------------------------------------------- background */
 

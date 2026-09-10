@@ -30,7 +30,7 @@
 use std::path::{Path, PathBuf};
 
 use taurus_host::config::Scope;
-use taurus_host::notebook::{self, PageSaved};
+use taurus_host::notebook::{self, PageKind, PageSaved};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -76,7 +76,7 @@ fn list(workspace: Option<&Path>) {
     }
 
     println!(
-        "\n{} note(s), newest first within each notebook:",
+        "\n{} note(s) and sketch(es), newest first within each notebook:",
         pages.len()
     );
     for page in &pages {
@@ -87,8 +87,11 @@ fn list(workspace: Option<&Path>) {
         // The two things a listing cannot get from the filename, and the reason
         // `PageRef` carries them: how big it is and when it last changed.
         println!(
-            "  {scope}  {:<40}  {:>7} bytes  {}",
-            page.name, page.bytes, page.at
+            "  {scope}  {:<6}  {:<40}  {:>7} bytes  {}",
+            page.kind.word(),
+            page.name,
+            page.bytes,
+            page.at
         );
     }
 
@@ -108,7 +111,7 @@ fn list(workspace: Option<&Path>) {
 
 fn read(workspace: Option<&Path>, name: &str) {
     for scope in [Scope::Workspace, Scope::Global] {
-        match notebook::read(scope, workspace, name) {
+        match notebook::read(scope, workspace, PageKind::Note, name) {
             Ok(page) => {
                 println!(
                     "\n--- {name} ({}) fingerprint {} ---\n{}",
@@ -133,7 +136,8 @@ fn check() {
     std::env::set_var("TAURUS_HOME", &home);
     println!("Writing only inside {}\n", home.display());
 
-    let made = notebook::create(Scope::Global, None, "Check").expect("start a note");
+    let made =
+        notebook::create(Scope::Global, None, PageKind::Note, "Check").expect("start a note");
     println!("created  '{}'  fingerprint {}", made.name, made.fingerprint);
     assert_eq!(
         made.text, "# Check\n\n",
@@ -150,6 +154,7 @@ fn check() {
     match notebook::save(
         Scope::Global,
         None,
+        PageKind::Note,
         "Check",
         "# Check\n\nmine\n",
         &made.fingerprint,
@@ -168,6 +173,7 @@ fn check() {
             match notebook::save(
                 Scope::Global,
                 None,
+                PageKind::Note,
                 "Check",
                 "# Check\n\nmine\n",
                 &current.fingerprint,
@@ -184,7 +190,7 @@ fn check() {
 
     // And the guard, which is the reason a name is checked before it is a path.
     for name in ["../escape", "../../escape", "Bad/name"] {
-        let why = notebook::read(Scope::Global, None, name).unwrap_err();
+        let why = notebook::read(Scope::Global, None, PageKind::Note, name).unwrap_err();
         println!("\nrefused '{name}': {why}");
     }
 

@@ -6,6 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { grammarFor, paint } from "../lib/ink";
 import { CopyButton } from "./CopyButton";
 import { MermaidBlock } from "./MermaidBlock";
+import { SketchEmbed, sketchName } from "./SketchEmbed";
 
 /**
  * Markdown rendering for assistant output.
@@ -42,6 +43,7 @@ export const Markdown = memo(function Markdown({
       a: Anchor,
       code: (props: CodeProps) => <Code {...props} streaming={streaming} />,
       pre: Pre,
+      img: Image,
       table: ({ node: _node, ...props }: { node?: unknown }) => (
         // Wide tables scroll inside their own box rather than stretching
         // the transcript.
@@ -206,6 +208,26 @@ function Painted({
       ))}
     </code>
   );
+}
+
+/**
+ * An image, unless it is a sketch.
+ *
+ * A note embeds a sketch the way Markdown embeds anything, as an image whose
+ * address is the file — so a note stays ordinary Markdown that any other viewer
+ * shows as a broken image with its name on, which is the honest degradation
+ * rather than a syntax only this app reads. Every other image is exactly the
+ * `<img>` it was before.
+ */
+function Image({
+  src,
+  alt,
+  node: _node,
+  ...rest
+}: React.ImgHTMLAttributes<HTMLImageElement> & { node?: unknown }) {
+  const sketch = sketchName(typeof src === "string" ? src : undefined);
+  if (sketch !== null) return <SketchEmbed name={sketch} alt={alt} />;
+  return <img src={src} alt={alt} {...rest} />;
 }
 
 /** The `pre` wrapper is supplied by `Code`, so this one just passes through. */

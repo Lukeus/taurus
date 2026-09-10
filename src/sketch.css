@@ -1,0 +1,21 @@
+/*
+ * Excalidraw's own stylesheet, placed under this app's.
+ *
+ * In `vendor`, beside xterm's, and for the opposite half of the same reason.
+ * xterm's was layered so the dock's rules could win without `!important`.
+ * Excalidraw's is layered so that it cannot win *outside* the canvas: its
+ * selectors are scoped to `.excalidraw`, its one `:root` rule sets only its own
+ * z-index and safe-area properties, and the one custom property it shares a
+ * name with an app token — `--border` — is declared under `.excalidraw` rather
+ * than on the root. Layered, none of that can reach the rest of the window.
+ *
+ * What stops the app reaching *into* the canvas is the other half, and it is in
+ * `styles.css`: every bare element rule there is fenced with
+ * `:where(:not(.excalidraw *))`.
+ *
+ * Imported by the sketch editor's module rather than by `main.tsx`, so it
+ * arrives with the lazy chunk and costs a window with no sketch open nothing.
+ * The layer order it slots into is declared once, in `tailwind.css`, by the
+ * stylesheet that loads first.
+ */
+@import "@excalidraw/excalidraw/index.css" layer(vendor);

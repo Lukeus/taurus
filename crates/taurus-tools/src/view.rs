@@ -160,6 +160,15 @@ pub enum TranscriptView {
         #[ts(optional)]
         lines: Option<LineRange>,
     },
+    /// A note in the notebook, put in front of the person as a card.
+    ///
+    /// `Document`'s argument, carried to the notes pane: the card holds the
+    /// notebook and the name and never the note, so a conversation reopened next
+    /// month opens next month's note. It opens nothing by itself — the notes
+    /// pane replaces the transcript rather than sitting beside it, and a turn
+    /// that swapped the screen out from under its own answer would be deciding
+    /// where somebody looks.
+    Note { scope: crate::Scope, name: String },
 }
 
 /// A span of lines in a file, 1-based and inclusive at both ends.

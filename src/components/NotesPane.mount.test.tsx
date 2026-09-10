@@ -17,21 +17,71 @@ vi.mock("@tauri-apps/api/core", () => ({
 // clicks one.
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
+/*
+ * Excalidraw cannot mount here — jsdom has no canvas — so the editor is a stand-in
+ * that shows what it was given and has one button that "draws". What is under
+ * test is everything around it: that a sketch is made, opened, saved and
+ * reloaded by the same machinery as a note. The real canvas is photographed in
+ * the `sketch` screenshot, which is its only check.
+ */
+const strokes = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./SketchEditor", () => ({
+  default: ({
+    text,
+    generation,
+    onChange,
+  }: {
+    text: string;
+    generation: number;
+    onChange: (text: string) => void;
+  }) => (
+    <div className="stub-sketch" data-generation={generation}>
+      <pre>{text}</pre>
+      <button
+        onClick={() =>
+          onChange(`{"type":"excalidraw","elements":[{"id":"s${++strokes.count}"}]}`)
+        }
+      >
+        draw
+      </button>
+    </div>
+  ),
+}));
+// And the picture an embed draws, for the same reason.
+vi.mock("../lib/sketchSvg", () => ({
+  draw: async () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("data-drawn", "yes");
+    return svg;
+  },
+}));
+
 const { NotesPane } = await import("./NotesPane");
 const { useNotebook } = await import("../state/notebook");
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
-const ref = (name: string, scope: "workspace" | "global" = "workspace") => ({
+const ref = (
+  name: string,
+  scope: "workspace" | "global" = "workspace",
+  kind: "note" | "sketch" = "note",
+) => ({
   scope,
+  kind,
   name,
   at: Math.floor(Date.now() / 1000) - 60,
   bytes: 32,
 });
 
-const page = (name: string, text: string, scope: "workspace" | "global" = "workspace") => ({
+const page = (
+  name: string,
+  text: string,
+  scope: "workspace" | "global" = "workspace",
+  kind: "note" | "sketch" = "note",
+) => ({
   scope,
+  kind,
   name,
   text,
   fingerprint: "32-1000",
@@ -47,12 +97,15 @@ const page = (name: string, text: string, scope: "workspace" | "global" = "works
 function Harness({
   hasWorkspace = true,
   onAsk = () => {},
+  busy = false,
 }: {
   hasWorkspace?: boolean;
   onAsk?: (draft: string) => void;
+  /** Whether a turn is running — moved from true to false to finish one. */
+  busy?: boolean;
 }) {
   const [wrote] = useState<{ at: number; paths: string[] } | null>(null);
-  const notebook = useNotebook({ wrote, onError: () => {} });
+  const notebook = useNotebook({ wrote, busy, onError: () => {} });
   return <NotesPane notebook={notebook} onAsk={onAsk} hasWorkspace={hasWorkspace} />;
 }
 
@@ -65,6 +118,12 @@ async function mount(props: Parameters<typeof Harness>[0] = {}) {
   });
   return {
     host,
+    /** Renders again with new props, the way `App` does when the store moves. */
+    rerender: async (next: Parameters<typeof Harness>[0]) => {
+      await act(async () => {
+        root.render(<Harness {...props} {...next} />);
+      });
+    },
     click: async (element: Element | null | undefined) => {
       await act(async () => {
         (element as HTMLElement).click();
@@ -194,6 +253,7 @@ describe("a note that is open", () => {
 
     expect(invoke).toHaveBeenCalledWith("read_page", {
       scope: "workspace",
+      kind: "note",
       name: "Auth redesign",
     });
     expect(host.querySelector("textarea")?.value).toContain("Use a refresh token.");
@@ -260,6 +320,7 @@ describe("a note that is open", () => {
     await click(saying(host, "Delete it"));
     expect(invoke).toHaveBeenCalledWith("forget_page", {
       scope: "workspace",
+      kind: "note",
       name: "Auth redesign",
     });
     // And the pane goes back to the list rather than showing a note that is gone.
@@ -292,6 +353,7 @@ describe("saving a note", () => {
 
     expect(invoke).toHaveBeenCalledWith("save_page", {
       scope: "workspace",
+      kind: "note",
       name: "Notes",
       text: "# Notes\n\nmore\n",
       fingerprint: "32-1000",
@@ -320,7 +382,7 @@ describe("saving a note", () => {
     const bar = host.querySelector(".notes-conflict");
     expect(bar).not.toBeNull();
     // Not "overwrote": nothing was, which is the entire point.
-    expect(bar?.textContent).toContain("changed while you were typing");
+    expect(bar?.textContent).toContain("changed while you were working on it");
     // And what was typed is still in the editor.
     expect(host.querySelector("textarea")?.value).toContain("mine");
   });
@@ -360,6 +422,7 @@ describe("saving a note", () => {
     // the timestamp shown in it.
     expect(invoke).toHaveBeenCalledWith("save_page", {
       scope: "workspace",
+      kind: "note",
       name: "Notes",
       text: "mine\n",
       fingerprint: "44-3000",
@@ -386,5 +449,176 @@ describe("saving a note", () => {
 
     expect(host.querySelector("textarea")?.value).toBe("theirs\n");
     expect(host.querySelector(".notes-conflict")).toBeNull();
+  });
+});
+
+const EMPTY = '{"type":"excalidraw","version":2,"elements":[],"appState":{},"files":{}}';
+
+describe("a sketch", () => {
+  it("is made instead of a note when that is chosen", async () => {
+    answering({
+      list_pages: () => [],
+      create_page: (args: never) =>
+        page((args as { name: string }).name, EMPTY, "workspace", "sketch"),
+      read_page: (args: never) =>
+        page((args as { name: string }).name, EMPTY, "workspace", "sketch"),
+    });
+    const { host, click, type, press } = await mount();
+
+    await click(host.querySelector(".notes-new"));
+    await click(saying(host, "Sketch"));
+    const field = host.querySelector(".notes-make-name");
+    await type(field, "Flow");
+    await press(field, "Enter");
+
+    expect(invoke).toHaveBeenCalledWith("create_page", {
+      scope: "workspace",
+      kind: "sketch",
+      name: "Flow",
+    });
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
+    // Nothing in a sketch is Markdown, and nothing in it is something the model
+    // could read — so neither control is offered. The line that embeds it is.
+    expect(saying(host, "Write")).toBeUndefined();
+    expect(saying(host, "Ask about this")).toBeUndefined();
+    expect(host.querySelector(".notes-head")?.textContent).toContain("Copy embed");
+    expect(host.querySelector(".notes-where")?.textContent).toBe(".taurus/notes/Flow.excalidraw");
+  });
+
+  it("is saved the way a note is, against the fingerprint it was read with", async () => {
+    answering({
+      list_pages: () => [ref("Flow", "workspace", "sketch")],
+      read_page: () => page("Flow", EMPTY, "workspace", "sketch"),
+      save_page: (args: never) => ({
+        type: "written",
+        page: {
+          ...page("Flow", (args as { text: string }).text, "workspace", "sketch"),
+          fingerprint: "60-2000",
+        },
+      }),
+    });
+    const { host, click } = await mount();
+    await click(host.querySelector(".notes-row"));
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
+    const before = host.querySelector(".stub-sketch")?.getAttribute("data-generation");
+
+    vi.useFakeTimers();
+    await click(saying(host, "draw"));
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      "save_page",
+      expect.objectContaining({
+        scope: "workspace",
+        kind: "sketch",
+        name: "Flow",
+        fingerprint: "32-1000",
+      }),
+    );
+    // And the canvas was not reloaded by its own save. Excalidraw holds the undo
+    // history and the tool in hand; a save that reset them would make the editor
+    // unusable in exactly the moment somebody was using it.
+    expect(host.querySelector(".stub-sketch")?.getAttribute("data-generation")).toBe(before);
+  });
+
+  it("is read into the canvas again when the other version is taken", async () => {
+    answering({
+      list_pages: () => [ref("Flow", "workspace", "sketch")],
+      read_page: () => page("Flow", EMPTY, "workspace", "sketch"),
+      save_page: () => ({
+        type: "stale",
+        current: { ...page("Flow", '{"elements":["theirs"]}', "workspace", "sketch"), fingerprint: "70-3000" },
+      }),
+    });
+    const { host, click } = await mount();
+    await click(host.querySelector(".notes-row"));
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
+    const before = Number(host.querySelector(".stub-sketch")?.getAttribute("data-generation"));
+
+    vi.useFakeTimers();
+    await click(saying(host, "draw"));
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+    expect(host.querySelector(".notes-conflict")?.textContent).toContain(
+      "This sketch changed while you were working on it",
+    );
+    await click(saying(host, "Take theirs"));
+
+    const canvas = host.querySelector(".stub-sketch");
+    expect(Number(canvas?.getAttribute("data-generation"))).toBeGreaterThan(before);
+    expect(canvas?.textContent).toContain("theirs");
+  });
+});
+
+describe("a sketch embedded in a note", () => {
+  it("is drawn in Read, and opens from there", async () => {
+    answering({
+      list_pages: () => [ref("Auth")],
+      read_page: (args: never) => {
+        const asked = args as { kind: string; name: string };
+        return asked.kind === "sketch"
+          ? page(asked.name, EMPTY, "workspace", "sketch")
+          : page("Auth", "# Auth\n\n![The flow](<Flow.excalidraw>)\n");
+      },
+    });
+    const { host, click } = await mount();
+    await click(host.querySelector(".notes-row"));
+    await click(saying(host, "Read"));
+
+    await vi.waitFor(() =>
+      expect(host.querySelector(".sketch-embed-body [data-drawn]")).not.toBeNull(),
+    );
+    // Found beside the note, in the note's own notebook.
+    expect(invoke).toHaveBeenCalledWith("read_page", {
+      scope: "workspace",
+      kind: "sketch",
+      name: "Flow",
+    });
+    // The alt text is the caption, and the file's name is what opens.
+    expect(host.querySelector(".sketch-embed-name")?.textContent).toBe("The flow");
+    await click(saying(host, "open"));
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
+  });
+
+  it("says a sketch that is not there is not there, and offers nothing to open", async () => {
+    answering({
+      list_pages: () => [ref("Auth")],
+      read_page: (args: never) =>
+        (args as { kind: string }).kind === "sketch"
+          ? new Error("There is no sketch called 'Gone' any more.")
+          : page("Auth", "# Auth\n\n![Gone](<Gone.excalidraw>)\n"),
+    });
+    const { host, click } = await mount();
+    await click(host.querySelector(".notes-row"));
+    await click(saying(host, "Read"));
+
+    await vi.waitFor(() =>
+      expect(host.textContent).toContain("There is no sketch called 'Gone' in this notebook"),
+    );
+    expect(saying(host, "open")).toBeUndefined();
+  });
+});
+
+describe("when a turn finishes", () => {
+  it("lists what the turn made and re-reads a global note it changed", async () => {
+    // A global note is outside the workspace, so the turn's `files_changed`
+    // never names it — the end of the turn is the only moment to look again.
+    let listed = [ref("Reading list", "global")];
+    let version = page("Reading list", "# Reading list\n", "global");
+    answering({ list_pages: () => listed, read_page: () => version });
+    const { host, click, rerender } = await mount();
+    await click(host.querySelector(".notes-row"));
+    expect(host.querySelector("textarea")?.value).toBe("# Reading list\n");
+
+    await rerender({ busy: true });
+    listed = [ref("Made by the turn"), ref("Reading list", "global")];
+    version = { ...page("Reading list", "# Reading list\n\nSICP\n", "global"), fingerprint: "48-2000" };
+    await rerender({ busy: false });
+
+    await vi.waitFor(() => expect(host.querySelector("textarea")?.value).toContain("SICP"));
+    expect(host.textContent).toContain("Made by the turn");
   });
 });

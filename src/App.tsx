@@ -21,7 +21,7 @@ import { Canvas, type SaveState } from "./components/Canvas";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { changedLines, FLASH_MS, reconcile, SAVE_AFTER_MS } from "./lib/document";
 import { NotesPane } from "./components/NotesPane";
-import { useNotebook } from "./state/notebook";
+import { useNotebook, type Which } from "./state/notebook";
 import { TrustBanner } from "./components/TrustBanner";
 import { PlanPanel } from "./components/PlanPanel";
 import { Rail, type ProviderHealth } from "./components/Rail";
@@ -308,6 +308,7 @@ export default function App() {
    */
   const notebook = useNotebook({
     wrote: store.wrote,
+    busy: store.busy,
     onError: (message) => store.noteError(message),
   });
   /**
@@ -959,6 +960,19 @@ export default function App() {
     setSelection(null);
   };
 
+  /**
+   * Opens a note in the notes pane, from a card in the transcript.
+   *
+   * Switches panes, unlike `showDocument`, because the notes pane replaces the
+   * transcript rather than sitting beside it — and this is the person pressing
+   * **Open**, which is the one case where changing what fills the screen is the
+   * thing that was asked for. The tool that drew the card does not do this.
+   */
+  const showNote = (scope: Which["scope"], name: string) => {
+    setPane("notes");
+    notebook.choose({ scope, kind: "note", name });
+  };
+
   /*
    * Reads whatever the canvas is open on.
    *
@@ -1397,6 +1411,7 @@ export default function App() {
               onOpenDelegate={setDelegate}
               onOpenDataset={showDataset}
               onOpenDocument={showDocument}
+              onOpenNote={showNote}
               onRunQuery={showQuery}
               find={find}
               onRetry={store.retry}

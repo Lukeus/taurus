@@ -24,6 +24,8 @@ import {
   MCP_CATALOG,
   NOTE,
   NOTES,
+  NOTE_EMBEDDING,
+  SKETCH,
   REPO,
   DATASETS,
   DATA_EVENTS,
@@ -149,7 +151,6 @@ const ANSWERS: Record<string, unknown> = {
   // chosen, for the reason the canvas reads its file: the list carries no text,
   // so a remembered copy can never be shown in place of what is on disk.
   list_pages: NOTES,
-  read_page: NOTE,
   list_mcp_servers: MCP_SERVERS,
   // The catalogue is shipped in the binary, so the real one is what the shot
   // should show — read off disk at build time rather than restated here, which
@@ -228,6 +229,14 @@ window.__TAURI_INTERNALS__ = {
             },
           }
         : { type: "written", document: { ...DOCUMENT, fingerprint: "2-2" } };
+    }
+    // The notebook's read has to know what it was asked for: a note, a second
+    // note that embeds a sketch, and the sketch itself all open in these scenes.
+    // The list carries no text, so this is the one place each file's text is.
+    if (cmd === "read_page") {
+      const asked = args as { kind?: string; name?: string };
+      if (asked.kind === "sketch") return SKETCH;
+      return asked.name === NOTE_EMBEDDING.name ? NOTE_EMBEDDING : NOTE;
     }
     if (cmd in ANSWERS) return ANSWERS[cmd];
     // Anything else is a command a screenshot does not need. Answering null
@@ -435,6 +444,27 @@ requestAnimationFrame(() => {
         await until(() => document.querySelector(".prose-input"));
         (await click(".notes-modes .seg", (b) => b === "Read"))();
         await until(() => document.querySelector("svg.flow"));
+      },
+      // A sketch, open in Excalidraw. The only picture of the editor inside the
+      // app, and the only check of three things nothing else can see: that its
+      // fonts arrived from this origin rather than a fallback face, that the
+      // app's own button and input rules stayed out of its toolbar, and that
+      // its menu is the trimmed one. Waited on the canvas itself, which is
+      // drawn only after the lazy chunk and the scene have both arrived.
+      sketch: async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
+        (await click(".notes-row b", (b) => b === "Auth flow"))();
+        await until(() => document.querySelector(".excalidraw__canvas"));
+      },
+      // A sketch drawn into a note being read — the other half of the same
+      // file, rendered by Excalidraw's own exporter rather than by its editor.
+      // Gated step by step, for the reason `notes-diagram` gives.
+      "notes-sketch": async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
+        (await click(".notes-row b", (b) => b === "Token store"))();
+        await until(() => document.querySelector(".prose-input"));
+        (await click(".notes-modes .seg", (b) => b === "Read"))();
+        await until(() => document.querySelector(".sketch-embed-body svg"));
       },
       // The Changes panel, beside the conversation it is about — which is the
       // whole of what moved, so the shot has to hold both. Opened by pressing

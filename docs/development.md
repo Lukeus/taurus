@@ -353,7 +353,24 @@ The second shot was worth its cost immediately: it is what showed that an edge
 inside one subgraph arrived dashed, so a Mermaid chain drew its happy path in the
 treatment reserved for failures.
 
-Both scenes wait for the editor to appear before pressing **Read**. That is the
+`sketch` and `notes-sketch` are the only pictures of Excalidraw inside the app,
+and the only check of three things that look like nothing to a test: that its
+fonts arrived from this origin rather than a fallback face, that none of the
+app's own `button` and `input` rules reached its toolbar, and that its menu is
+the trimmed one. `notes-sketch` found a bug on its first run — every embed drew
+at twice its size, because Excalidraw's exporter fills a missing `exportScale`
+from the device pixel ratio, and the harness renders at 2× the way a Retina
+screen does.
+
+Excalidraw's fonts and its translations go through
+`scripts/excalidraw-assets.mjs`, in both Vite configs. It serves the fonts from
+`node_modules` in the dev server and copies them into `dist/excalidraw/fonts/`
+in a build, because the CSP refuses the CDN they would otherwise come from; and
+it replaces every translation but English with an empty module, because the
+editor is pinned to English and the other fifty-two were a megabyte of files
+nothing reads.
+
+These scenes wait for the editor to appear before pressing **Read**. That is the
 same virtual-time trap in a second form: two waits that both spin, one after the
 other, exhaust the budget between them, and the shot comes out as an empty pane
 rather than as a failure anybody would notice. Gate each step on what the last

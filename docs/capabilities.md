@@ -544,7 +544,8 @@ noticed when you save rather than when it happens. See `docs/known-gaps.md`.
 
 ## Notes
 
-Markdown files you write yourself, in two notebooks, with a pane of their own.
+Markdown files you write yourself, and sketches beside them, in two notebooks
+with a pane of their own.
 
 ```
 .taurus/notes/           project notes, committed with the repository
@@ -566,9 +567,18 @@ stops and never overwrites a version it has not seen — a turn that writes the
 same note while you type in it leaves both versions on screen and neither
 chosen, which is the canvas's rule and the canvas's implementation of it.
 
+A **sketch** is an Excalidraw drawing — a `.excalidraw` file in the same
+notebook, under the same rules, opened full-pane in the editor. A note draws one
+in Read with a Markdown image line, `![caption](<Name.excalidraw>)`, which is
+also what **Copy embed** gives you.
+
 The model reaches a note with `read_note`, by notebook and name. Not by path:
 a global note is outside the workspace, and `read_file` will not go above the
-root. Nothing else is reachable through it.
+root. Nothing else is reachable through it. It writes one with `write_note`,
+which is a write like any other — asked first, with the diff, and rewindable for
+a project note — and shows you one with `open_note`, a card you open yourself.
+A sketch it cannot see; what reaches it is the text written on the sketches a
+note embeds.
 
 These are separate from [Memory](#memory) above, and the difference is worth
 keeping straight. Memory is written by the model, capped at a couple of

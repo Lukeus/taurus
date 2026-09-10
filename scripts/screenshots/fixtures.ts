@@ -1166,18 +1166,35 @@ export const PERMISSION_RULES = [
 export const NOTES = [
   {
     scope: "workspace" as const,
+    kind: "note" as const,
     name: "Auth redesign",
     at: 1_760_000_000,
     bytes: 612,
   },
   {
     scope: "workspace" as const,
+    kind: "sketch" as const,
+    name: "Auth flow",
+    at: 1_759_900_000,
+    bytes: 2_048,
+  },
+  {
+    scope: "workspace" as const,
+    kind: "note" as const,
+    name: "Token store",
+    at: 1_759_500_000,
+    bytes: 402,
+  },
+  {
+    scope: "workspace" as const,
+    kind: "note" as const,
     name: "Release checklist",
     at: 1_759_000_000,
     bytes: 284,
   },
   {
     scope: "global" as const,
+    kind: "note" as const,
     name: "How I like reviews",
     at: 1_758_000_000,
     bytes: 190,
@@ -1196,6 +1213,7 @@ export const NOTES = [
  */
 export const NOTE = {
   scope: "workspace" as const,
+  kind: "note" as const,
   name: "Auth redesign",
   fingerprint: "612-1",
   text: `# Auth redesign
@@ -1234,4 +1252,127 @@ The loop back from the token store is the case worth being careful about: an
 expired pair is not an error, it is the ordinary path a long-lived session takes
 every hour.
 `,
+};
+
+/**
+ * A note that shows a sketch.
+ *
+ * Its own note rather than a line added to `NOTE`, because `notes-diagram` is a
+ * picture of that note's Mermaid block and an embed above it would push the
+ * block off the bottom of the frame.
+ */
+export const NOTE_EMBEDDING = {
+  scope: "workspace" as const,
+  kind: "note" as const,
+  name: "Token store",
+  fingerprint: "402-1",
+  text: `# Token store
+
+What the store holds, drawn rather than described — the sign-in it serves is in
+the sketch beside this note.
+
+![How a sign-in reaches the store](<Auth flow.excalidraw>)
+
+A row per refresh token, keyed by its hash, so a leaked table is a list of
+hashes and not a list of sessions.
+`,
+};
+
+/**
+ * The sketch both sketch shots open: three boxes, two arrows and a margin note.
+ *
+ * Written the way a hand-edited file would be, with only the fields that say
+ * something — Excalidraw fills in the rest when it restores a scene, and so does
+ * the embed's renderer. That is also the case worth photographing: a sketch
+ * that is not exactly what Excalidraw itself would have written still opens.
+ */
+const box = (id: string, x: number, fill: string, seed: number) => ({
+  id,
+  type: "rectangle",
+  x,
+  y: 0,
+  width: 170,
+  height: 80,
+  strokeColor: "#1e1e1e",
+  backgroundColor: fill,
+  fillStyle: "hachure",
+  roughness: 1,
+  roundness: { type: 3 },
+  seed,
+});
+const label = (id: string, x: number, width: number, text: string, seed: number) => ({
+  id,
+  type: "text",
+  x,
+  y: 27,
+  width,
+  height: 25,
+  text,
+  originalText: text,
+  fontSize: 20,
+  fontFamily: 5,
+  textAlign: "center",
+  verticalAlign: "middle",
+  strokeColor: "#1e1e1e",
+  seed,
+});
+const arrow = (id: string, x: number, seed: number) => ({
+  id,
+  type: "arrow",
+  x,
+  y: 40,
+  width: 80,
+  height: 0,
+  points: [
+    [0, 0],
+    [80, 0],
+  ],
+  endArrowhead: "arrow",
+  strokeColor: "#1e1e1e",
+  roughness: 1,
+  seed,
+});
+
+export const SKETCH = {
+  scope: "workspace" as const,
+  kind: "sketch" as const,
+  name: "Auth flow",
+  fingerprint: "2048-1",
+  text: JSON.stringify(
+    {
+      type: "excalidraw",
+      version: 2,
+      source: "taurus",
+      elements: [
+        box("client", 0, "#a5d8ff", 11),
+        label("client-label", 45, 80, "Client", 12),
+        arrow("to-gateway", 175, 13),
+        box("gateway", 260, "#ffec99", 14),
+        label("gateway-label", 295, 100, "Gateway", 15),
+        arrow("to-store", 435, 16),
+        box("store", 520, "#b2f2bb", 17),
+        label("store-label", 540, 130, "Token store", 18),
+        {
+          id: "margin",
+          type: "text",
+          x: 540,
+          y: 110,
+          width: 140,
+          height: 44,
+          text: "refresh pairs\nexpire hourly",
+          originalText: "refresh pairs\nexpire hourly",
+          fontSize: 17,
+          fontFamily: 5,
+          textAlign: "left",
+          verticalAlign: "top",
+          strokeColor: "#e03131",
+          seed: 19,
+        },
+      ],
+      appState: { viewBackgroundColor: "#ffffff" },
+      files: {},
+    },
+    null,
+    2,
+  ),
 };
