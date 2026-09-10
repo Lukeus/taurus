@@ -922,7 +922,14 @@ mod tests {
             std::fs::write(
                 &inner,
                 format!(
-                    "@echo off\r\necho x> \"{}\"\r\nping -n 9 127.0.0.1 >NUL\r\necho alive> \"{}\"\r\n",
+                    // `&&`, not a new line. `taskkill /T /F` ends a tree one
+                    // process at a time, and when it reached `ping` before the
+                    // `cmd` running this, the `cmd` woke in the gap and wrote
+                    // the marker on its way out — a tree the kill had ended,
+                    // reported as one it had spared. A `ping` that is killed
+                    // exits 1, so only one that ran its full eight seconds, in
+                    // a tree the kill missed, gets as far as the write.
+                    "@echo off\r\necho x> \"{}\"\r\nping -n 9 127.0.0.1 >NUL && echo alive> \"{}\"\r\n",
                     started.display(),
                     alive.display()
                 ),
