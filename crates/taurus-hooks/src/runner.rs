@@ -531,10 +531,7 @@ pub fn relative<'a>(workspace: &Path, path: &'a Path) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::HookEvent;
-    // Only the matching tests use it, and those are Unix-only.
-    #[cfg(unix)]
-    use crate::config::Match;
+    use crate::config::{HookEvent, Match};
 
     /// A hook that is a shell one-liner, written to a file so it can be run.
     #[cfg(unix)]
@@ -546,33 +543,30 @@ mod tests {
         path.display().to_string()
     }
 
-    /// Whether a process still exists, without signalling it.
-    #[cfg(unix)]
-    fn alive(pid: &str) -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", pid])
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false)
-    }
-
-    /// Waits for a process to actually be gone, up to a generous ceiling.
+    /// A hook whose program is a script with this body, in the platform's own
+    /// shell.
     ///
-    /// Polled rather than slept once. Delivering a signal and reaping the
-    /// child is fast but not instant, and this crate's tests run alongside
-    /// every other test binary in the workspace — a fixed wait tuned on an
-    /// idle machine is a test that fails a few times a week on a busy one and
-    /// teaches everybody to rerun rather than to read. The ceiling is long
-    /// enough that reaching it means the kill genuinely did not happen.
-    #[cfg(unix)]
-    async fn gone(pid: &str) -> bool {
-        for _ in 0..100 {
-            if !alive(pid) {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        false
+    /// Two bodies because `sh` and `cmd` share almost nothing, and every
+    /// promise a hook makes — refusing in its own words, passing a note on,
+    /// being stopped when it hangs, being told what it decides about — has to
+    /// hold on both. On Windows the hook names the batch file itself, the way a
+    /// `hooks.json` there would, rather than `cmd`: a Windows user's first hook
+    /// is a `.bat`, and whether one starts at all is part of what is tested.
+    fn scripted(dir: &Path, name: &str, unix: &str, windows: &str, on: HookEvent) -> Hook {
+        #[cfg(unix)]
+        let command = {
+            let _ = windows;
+            script(dir, name, unix)
+        };
+        #[cfg(windows)]
+        let command = {
+            let _ = unix;
+            let path = dir.join(format!("{name}.bat"));
+            let body = windows.replace('\n', "\r\n");
+            std::fs::write(&path, format!("@echo off\r\n{body}\r\n")).unwrap();
+            path.display().to_string()
+        };
+        hook(&command, on)
     }
 
     fn hook(command: &str, on: HookEvent) -> Hook {
@@ -586,12 +580,17 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_that_exits_two_refuses_the_call_in_its_own_words() {
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "guard", "echo 'not on main' >&2; exit 2");
-        let runner = HookRunner::new(vec![("guard".into(), hook(&path, HookEvent::PreToolUse))]);
+        let guard = scripted(
+            dir.path(),
+            "guard",
+            "echo 'not on main' >&2; exit 2",
+            "echo not on main 1>&2\nexit 2",
+            HookEvent::PreToolUse,
+        );
+        let runner = HookRunner::new(vec![("guard".into(), guard)]);
 
         let payload = HookPayload::new(HookEvent::PreToolUse, dir.path());
         let outcome = runner.run(&payload).await;
@@ -604,7 +603,6 @@ mod tests {
         assert!(reason.contains("guard"), "{reason}");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_that_cannot_run_refuses_rather_than_waving_the_call_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -623,7 +621,6 @@ mod tests {
         assert!(outcome.denied.unwrap().contains("/nonexistent/guard"));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_broken_hook_on_an_event_with_nothing_left_to_stop_only_reports() {
         let dir = tempfile::tempdir().unwrap();
@@ -641,12 +638,17 @@ mod tests {
         assert_eq!(outcome.notes.len(), 1);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_passing_hook_hands_its_output_to_the_model() {
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "note", "echo 'formatted 2 files'");
-        let runner = HookRunner::new(vec![("fmt".into(), hook(&path, HookEvent::PostToolUse))]);
+        let note = scripted(
+            dir.path(),
+            "note",
+            "echo 'formatted 2 files'",
+            "echo formatted 2 files",
+            HookEvent::PostToolUse,
+        );
+        let runner = HookRunner::new(vec![("fmt".into(), note)]);
 
         let outcome = runner
             .run(&HookPayload::new(HookEvent::PostToolUse, dir.path()))
@@ -659,7 +661,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_that_hangs_is_stopped_rather_than_hanging_the_turn() {
         /*
@@ -671,16 +672,31 @@ mod tests {
          * turn saying the opposite of what had happened. Nothing caught it,
          * because the only thing being checked was a string this file also
          * wrote.
+         *
+         * So the hook says when it has started, and says it is still alive
+         * four seconds later — which it only gets to say if the stop missed
+         * it. A marker rather than a pid, because a batch file has no way to
+         * learn its own.
          */
         let dir = tempfile::tempdir().unwrap();
-        let pidfile = dir.path().join("pid");
-        let path = script(
+        let started = dir.path().join("started");
+        let alive = dir.path().join("alive");
+        let mut slow = scripted(
             dir.path(),
             "slow",
-            &format!("echo $$ > {}\nsleep 30", pidfile.display()),
+            &format!(
+                "echo x > \"{}\"; sleep 4; echo alive > \"{}\"",
+                started.display(),
+                alive.display()
+            ),
+            &format!(
+                "echo x> \"{}\"\nping -n 5 127.0.0.1 >NUL && echo alive> \"{}\"",
+                started.display(),
+                alive.display()
+            ),
+            HookEvent::PreToolUse,
         );
-        let mut slow = hook(&path, HookEvent::PreToolUse);
-        slow.timeout_seconds = 1;
+        slow.timeout_seconds = 2;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
 
         let outcome = runner
@@ -689,15 +705,18 @@ mod tests {
 
         assert!(outcome.is_denied());
         assert!(outcome.denied.unwrap().contains("did not finish"));
-
-        let pid = std::fs::read_to_string(&pidfile).expect("the hook never started");
-        assert!(
-            gone(pid.trim()).await,
-            "the hook is still running after the runner said it was stopped"
-        );
+        // Or stopping it proved nothing.
+        assert!(started.exists(), "the hook never started");
+        // Comfortably past when it would have written, had it lived.
+        for _ in 0..120 {
+            assert!(
+                !alive.exists(),
+                "the hook is still running after the runner said it was stopped"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_that_ignores_a_large_payload_still_hits_its_timeout() {
         /*
@@ -714,8 +733,13 @@ mod tests {
          * refuses" is the whole of its safety argument.
          */
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "deaf", "sleep 20");
-        let mut deaf = hook(&path, HookEvent::PreToolUse);
+        let mut deaf = scripted(
+            dir.path(),
+            "deaf",
+            "sleep 20",
+            "ping -n 21 127.0.0.1 >NUL",
+            HookEvent::PreToolUse,
+        );
         deaf.timeout_seconds = 1;
         let runner = HookRunner::new(vec![("deaf".into(), deaf)]);
 
@@ -813,7 +837,9 @@ mod tests {
                 format!("@echo off\r\n{first}\r\nping -n 31 127.0.0.1 >NUL\r\n"),
             )
             .unwrap();
-            // `CreateProcess` cannot run a .bat, so the hook names the shell.
+            // The hook names the shell rather than the file. Either works —
+            // see `scripted` — and this is the spelling the tree tests were
+            // measured with.
             (
                 "cmd".to_string(),
                 vec!["/C".to_string(), outer.display().to_string()],
@@ -1051,14 +1077,20 @@ mod tests {
         assert!(!set.is_match("docs/readme.md"));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_is_told_what_it_is_deciding_about() {
         let dir = tempfile::tempdir().unwrap();
         // Reads the payload off stdin and refuses with it, which is the only
-        // way to assert what the hook actually received.
-        let path = script(dir.path(), "echoer", "cat >&2; exit 2");
-        let runner = HookRunner::new(vec![("echoer".into(), hook(&path, HookEvent::PreToolUse))]);
+        // way to assert what the hook actually received. `sort` is the `cat`
+        // every Windows has: it reads to the end and prints what it read.
+        let echoer = scripted(
+            dir.path(),
+            "echoer",
+            "cat >&2; exit 2",
+            "sort 1>&2\nexit 2",
+            HookEvent::PreToolUse,
+        );
+        let runner = HookRunner::new(vec![("echoer".into(), echoer)]);
 
         let payload = HookPayload::new(HookEvent::PreToolUse, dir.path())
             .with_call(
@@ -1075,21 +1107,25 @@ mod tests {
         assert!(reason.contains("src/widget.rs"), "{reason}");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn the_first_refusal_stops_the_rest_from_running() {
         let dir = tempfile::tempdir().unwrap();
-        let deny = script(dir.path(), "a-deny", "exit 2");
+        let deny = scripted(
+            dir.path(),
+            "a-deny",
+            "exit 2",
+            "exit 2",
+            HookEvent::PreToolUse,
+        );
         let marker = dir.path().join("ran");
-        let second = script(
+        let second = scripted(
             dir.path(),
             "b-second",
-            &format!("touch {}", marker.display()),
+            &format!("touch \"{}\"", marker.display()),
+            &format!("echo x> \"{}\"", marker.display()),
+            HookEvent::PreToolUse,
         );
-        let runner = HookRunner::new(vec![
-            ("a-deny".into(), hook(&deny, HookEvent::PreToolUse)),
-            ("b-second".into(), hook(&second, HookEvent::PreToolUse)),
-        ]);
+        let runner = HookRunner::new(vec![("a-deny".into(), deny), ("b-second".into(), second)]);
 
         let outcome = runner
             .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
@@ -1101,12 +1137,16 @@ mod tests {
         assert!(!marker.exists(), "later hooks must not run after a refusal");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_only_runs_for_the_calls_it_names() {
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "guard", "exit 2");
-        let mut guard = hook(&path, HookEvent::PreToolUse);
+        let mut guard = scripted(
+            dir.path(),
+            "guard",
+            "exit 2",
+            "exit 2",
+            HookEvent::PreToolUse,
+        );
         guard.matches = Some(Match {
             commands: vec!["git".into()],
             ..Default::default()
@@ -1131,12 +1171,16 @@ mod tests {
         assert!(!runner.run(&other).await.is_denied());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_path_glob_selects_which_writes_a_hook_is_about() {
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "guard", "exit 2");
-        let mut guard = hook(&path, HookEvent::PreToolUse);
+        let mut guard = scripted(
+            dir.path(),
+            "guard",
+            "exit 2",
+            "exit 2",
+            HookEvent::PreToolUse,
+        );
         guard.matches = Some(Match {
             paths: vec!["**/*.rs".into()],
             ..Default::default()
