@@ -1252,7 +1252,8 @@ and they are the minority.
   `/bin/sh` or `cmd.exe` and left the linter, the build or the watcher running,
   while the app reported the thing as stopped. Now the tree goes: a process
   group and `kill -KILL -- -<pgid>` on Unix, `taskkill /T /F` on Windows, both
-  tested against a real process tree on both platforms in CI. What it costs is
+  tested against a real process tree in CI — the background command on every
+  platform, the hook on macOS and Linux only (see below). What it costs is
   a fork on the way past, and only on a path where something has already hung
   or been stopped by hand. The shape of both commands is a scar, and neither
   is guessable: `taskkill` takes its switches *after* the target, and with
@@ -1276,8 +1277,20 @@ and they are the minority.
   walks parent-child links, so a process whose parent died before the kill is
   out of its reach, where a Job Object would still catch it. Closing that last
   gap means `windows-sys` and an `unsafe` block, and `unsafe_code` is
-  `forbid` across this workspace — a policy worth more than the remaining
-  sliver, given the kill now runs while the parent is deliberately still alive.
+  `forbid` across this workspace.
+- **On Windows, a timed-out hook's grandchild can outlive the kill.** The hook
+  test — a batch file that starts a second one with `start /B` — fails on
+  about half of Windows CI runs: `taskkill /T /F` reports success, the parent
+  is alive when it runs, and the grandchild still finishes its eight seconds
+  and writes its marker. The identical fixture, stopped through a background
+  command, is ended cleanly on the same runner every time, and nothing yet
+  found in the two code paths accounts for the difference. The test is skipped
+  on Windows until it is found, so a hook that hangs there may leave what it
+  started running while the turn reports it stopped. Chaining the marker's
+  write with `&&` was tried first, on the theory that the kill woke the batch
+  file between its processes; the next run failed the same way, so that theory
+  is wrong. A Job Object would end this whole class of escape, at the cost the
+  entry above names.
 - **Two other children are still killed one process at a time.** A *foreground*
   `run_command` is left in the parent's process group on purpose — a terminal's
   own Ctrl-C then reaches the whole tree without anything in this code having
