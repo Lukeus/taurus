@@ -633,6 +633,7 @@ mod tests {
         dir: &std::path::Path,
         started: &std::path::Path,
         alive: &std::path::Path,
+        orphaned: bool,
     ) -> String {
         if cfg!(windows) {
             /*
@@ -662,22 +663,36 @@ mod tests {
                 ),
             )
             .unwrap();
+            let starts_it = format!("start \"\" /B cmd /C \"{}\"", inner.display());
+            // Through a `cmd` of its own that exits once `start` returns, so
+            // the grandchild's parent is gone before anything looks for it.
+            let first = if orphaned {
+                let middle = dir.join("middle.bat");
+                std::fs::write(&middle, format!("@echo off\r\n{starts_it}\r\n")).unwrap();
+                format!("cmd /C \"{}\"", middle.display())
+            } else {
+                starts_it
+            };
             let outer = dir.join("outer.bat");
             std::fs::write(
                 &outer,
-                format!(
-                    "@echo off\r\nstart \"\" /B cmd /C \"{}\"\r\nping -n 31 127.0.0.1 >NUL\r\n",
-                    inner.display()
-                ),
+                format!("@echo off\r\n{first}\r\nping -n 31 127.0.0.1 >NUL\r\n"),
             )
             .unwrap();
             outer.display().to_string()
         } else {
-            format!(
-                "sh -c 'echo x > \"{}\"; sleep 8; echo alive > \"{}\"' & sleep 30",
+            let grandchild = format!(
+                "sh -c 'echo x > \"{}\"; sleep 8; echo alive > \"{}\"' &",
                 started.display(),
                 alive.display()
-            )
+            );
+            // A subshell that exits as soon as it has started the grandchild,
+            // so its parent is gone before anything looks for it.
+            if orphaned {
+                format!("({grandchild}); sleep 30")
+            } else {
+                format!("{grandchild} sleep 30")
+            }
         }
     }
 
@@ -694,6 +709,17 @@ mod tests {
 
     #[tokio::test]
     async fn stopping_a_command_ends_what_it_started_and_not_only_the_shell() {
+        stopping_ends_the_tree(false).await;
+    }
+
+    /// The same, where the process between the shell and the grandchild has
+    /// already exited. See the sibling test in `taurus_hooks`.
+    #[tokio::test]
+    async fn stopping_a_command_reaches_a_grandchild_whose_parent_already_exited() {
+        stopping_ends_the_tree(true).await;
+    }
+
+    async fn stopping_ends_the_tree(orphaned: bool) {
         /*
          * A background command is a shell, so the child is `sh` or `cmd` and
          * the work is its child. `start_kill` reaches the shell alone — which
@@ -708,7 +734,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let started = dir.path().join("started");
         let alive = dir.path().join("alive");
-        let line = leaves_a_grandchild(dir.path(), &started, &alive);
+        let line = leaves_a_grandchild(dir.path(), &started, &alive, orphaned);
 
         let jobs = Jobs::new();
         let id = jobs.adopt(line.clone(), sh(&line), None).await;

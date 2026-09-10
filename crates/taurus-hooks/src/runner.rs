@@ -899,19 +899,27 @@ mod tests {
     /// Detected by a file rather than by listing processes. `pgrep` is not on
     /// Windows, `tasklist` cannot filter on a command line, and a marker that
     /// never appears is the same evidence on both.
-    fn leaves_a_grandchild(dir: &Path, started: &Path, alive: &Path) -> (String, Vec<String>) {
+    fn leaves_a_grandchild(
+        dir: &Path,
+        started: &Path,
+        alive: &Path,
+        orphaned: bool,
+    ) -> (String, Vec<String>) {
         #[cfg(unix)]
         {
-            let path = script(
-                dir,
-                "outer",
-                &format!(
-                    "sh -c 'echo x > \"{}\"; sleep 8; echo alive > \"{}\"' &\nsleep 30",
-                    started.display(),
-                    alive.display()
-                ),
+            let grandchild = format!(
+                "sh -c 'echo x > \"{}\"; sleep 8; echo alive > \"{}\"' &",
+                started.display(),
+                alive.display()
             );
-            (path, vec![])
+            // A subshell that exits as soon as it has started the grandchild,
+            // so its parent is gone before anything looks for it.
+            let first = if orphaned {
+                format!("({grandchild})")
+            } else {
+                grandchild
+            };
+            (script(dir, "outer", &format!("{first}\nsleep 30")), vec![])
         }
         #[cfg(windows)]
         {
@@ -932,13 +940,20 @@ mod tests {
                 ),
             )
             .unwrap();
+            let starts_it = format!("start \"\" /B cmd /C \"{}\"", inner.display());
+            // Through a `cmd` of its own that exits once `start` returns, so
+            // the grandchild's parent is gone before anything looks for it.
+            let first = if orphaned {
+                let middle = dir.join("middle.bat");
+                std::fs::write(&middle, format!("@echo off\r\n{starts_it}\r\n")).unwrap();
+                format!("cmd /C \"{}\"", middle.display())
+            } else {
+                starts_it
+            };
             let outer = dir.join("outer.bat");
             std::fs::write(
                 &outer,
-                format!(
-                    "@echo off\r\nstart \"\" /B cmd /C \"{}\"\r\nping -n 31 127.0.0.1 >NUL\r\n",
-                    inner.display()
-                ),
+                format!("@echo off\r\n{first}\r\nping -n 31 127.0.0.1 >NUL\r\n"),
             )
             .unwrap();
             // `CreateProcess` cannot run a .bat, so the hook names the shell.
@@ -1006,6 +1021,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_timeout_reaches_what_the_hook_started_and_not_only_the_hook() {
+        a_timeout_reaches(false).await;
+    }
+
+    /// The same, where the process between the hook and the grandchild has
+    /// already exited. A tree found by walking parent links down from the hook
+    /// cannot reach it, because the link it would follow is gone — so this is
+    /// the case that separates following links from ending a container the
+    /// whole tree is inside.
+    #[tokio::test]
+    async fn a_timeout_reaches_a_grandchild_whose_parent_already_exited() {
+        a_timeout_reaches(true).await;
+    }
+
+    async fn a_timeout_reaches(orphaned: bool) {
         /*
          * A hook is nearly always a script, so the child is a shell and the
          * work is *its* child. Killing the child alone left that work running
@@ -1021,7 +1050,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let started = dir.path().join("started");
         let alive = dir.path().join("alive");
-        let (command, args) = leaves_a_grandchild(dir.path(), &started, &alive);
+        let (command, args) = leaves_a_grandchild(dir.path(), &started, &alive, orphaned);
 
         let mut slow = hook(&command, HookEvent::PreToolUse);
         slow.args = args;
