@@ -365,10 +365,12 @@ screen does.
 Excalidraw's fonts and its translations go through
 `scripts/excalidraw-assets.mjs`, in both Vite configs. It serves the fonts from
 `node_modules` in the dev server and copies them into `dist/excalidraw/fonts/`
-in a build, because the CSP refuses the CDN they would otherwise come from; and
-it replaces every translation but English with an empty module, because the
-editor is pinned to English and the other fifty-two were a megabyte of files
-nothing reads.
+in a build, because the CSP refuses the CDN they would otherwise come from; it
+points Excalidraw's fallback for every face at this origin too, because each
+CDN fallback was reported as a refused font on every sketch; and it replaces
+every translation but English with an empty module, because the editor is
+pinned to English and the other fifty-two were a megabyte of files nothing
+reads.
 
 These scenes wait for the editor to appear before pressing **Read**. That is the
 same virtual-time trap in a second form: two waits that both spin, one after the

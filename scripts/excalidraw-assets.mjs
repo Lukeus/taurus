@@ -64,6 +64,26 @@ const UNUSED_LOCALE =
   /[\\/]@excalidraw[\\/]excalidraw[\\/]dist[\\/](?:prod|dev)[\\/]locales[\\/](?!en-)[^\\/]+\.js$/;
 
 /**
+ * Where Excalidraw falls back to for a font, pointed at this origin too.
+ *
+ * Every face it registers lists two sources: the asset path `excalidrawEnv`
+ * sets, then a CDN — `esm.sh` — as the fallback. The fallback is never wanted:
+ * every face but Xiaolai is served from here, and Xiaolai is left out on
+ * purpose. But it is still a URL in the page, and under the app's CSP Chrome
+ * reports each one as a refused font the moment the faces are registered —
+ * eight refusals on every sketch, none about a real problem, and enough of
+ * them that a real one would be lost in the list. Found by serving a build
+ * under the app's policy and reading what it refused.
+ *
+ * So the fallback is this origin's asset path as well: the same URL twice,
+ * which a browser tries once. Build only — the dev server pre-bundles
+ * Excalidraw with esbuild before any plugin sees it. The build fails rather
+ * than shipping the CDN if a new Excalidraw moves the declaration.
+ */
+const FALLBACK = /(["']ASSETS_FALLBACK_URL["'],\s*)`https:\/\/esm\.sh\/[\s\S]*?\/dist\/prod\/`/;
+const EXCALIDRAW_PROD = /[\\/]@excalidraw[\\/]excalidraw[\\/]dist[\\/]prod[\\/]/;
+
+/**
  * The package's `fonts/` directory.
  *
  * Found by resolving the package entry and walking to its sibling, because the
@@ -100,6 +120,22 @@ export function excalidrawAssets() {
     load(id) {
       if (UNUSED_LOCALE.test(id)) return "export default {};";
       return null;
+    },
+
+    transform(code, id) {
+      if (!EXCALIDRAW_PROD.test(id) || !code.includes('"ASSETS_FALLBACK_URL"')) return null;
+      const next = code.replace(
+        FALLBACK,
+        (_, head) => `${head}new URL(${JSON.stringify(ASSET_BASE)}, window.location.href).href`,
+      );
+      if (next === code) {
+        this.error(
+          `Excalidraw's font fallback is not declared where scripts/excalidraw-assets.mjs expects it in ${id}. ` +
+            "Update FALLBACK for this version, or every sketch will list a CDN the CSP refuses.",
+        );
+      }
+      // Positions move only on the one minified line that changed.
+      return { code: next, map: null };
     },
 
     configureServer(server) {
