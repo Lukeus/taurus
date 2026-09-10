@@ -4,6 +4,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChartCard } from "./ChartCard";
 import { DatasetCard } from "./DatasetCard";
 import { DocumentCard } from "./DocumentCard";
+import { NoteCard } from "./NoteCard";
+import type { Scope } from "../bindings/Scope";
 import { QueryCard } from "./QueryCard";
 import { Waveform, waveFor } from "./Waveform";
 import { FlowCard } from "./FlowCard";
@@ -119,6 +121,9 @@ export type TranscriptProps = {
   /** Opens a file in the canvas. Threaded exactly where `onOpenDataset` is,
    *  and absent in the same place — a delegate's transcript has no canvas. */
   onOpenDocument?: (path: string, lines: LineRange | null) => void;
+  /** Opens a note in the notes pane. Threaded exactly where `onOpenDocument`
+   *  is, and absent in the same place. */
+  onOpenNote?: (scope: Scope, name: string) => void;
   /** Takes a query the model ran to the pane's box and runs it there. Absent
    *  wherever `onOpenDataset` is, and for the same reason. */
   onRunQuery?: (sql: string) => void;
@@ -174,6 +179,7 @@ export function Transcript({
   onOpenDelegate,
   onOpenDataset,
   onOpenDocument,
+  onOpenNote,
   onRunQuery,
   follow = true,
   find = null,
@@ -208,6 +214,7 @@ export function Transcript({
   const openDelegate = useStable(onOpenDelegate);
   const openDataset = useStable(onOpenDataset);
   const openDocument = useStable(onOpenDocument);
+  const openNote = useStable(onOpenNote);
   const runQuery = useStable(onRunQuery);
 
   // Follow the stream, but stop fighting the user the moment they scroll up.
@@ -284,6 +291,7 @@ export function Transcript({
           onOpenDelegate={openDelegate}
           onOpenDataset={openDataset}
           onOpenDocument={openDocument}
+          onOpenNote={openNote}
           onRunQuery={runQuery}
           // The newest turn and nothing else. See the prop.
           onRetry={i === conversation.length - 1 ? onRetry : undefined}
@@ -510,6 +518,7 @@ const TurnView = memo(function TurnView({
   onOpenDelegate,
   onOpenDataset,
   onOpenDocument,
+  onOpenNote,
   onRunQuery,
   onRetry,
   onEditPrompt,
@@ -535,6 +544,9 @@ const TurnView = memo(function TurnView({
   /** Opens a file in the canvas. Threaded exactly where `onOpenDataset` is,
    *  and absent in the same place — a delegate's transcript has no canvas. */
   onOpenDocument?: (path: string, lines: LineRange | null) => void;
+  /** Opens a note in the notes pane. Threaded exactly where `onOpenDocument`
+   *  is, and absent in the same place. */
+  onOpenNote?: (scope: Scope, name: string) => void;
   onRunQuery?: (sql: string) => void;
   /** Present only on the newest turn. See `Transcript`. */
   onRetry?: () => void;
@@ -569,6 +581,7 @@ const TurnView = memo(function TurnView({
               onOpenDelegate={onOpenDelegate}
               onOpenDataset={onOpenDataset}
               onOpenDocument={onOpenDocument}
+              onOpenNote={onOpenNote}
               onRunQuery={onRunQuery}
               // Only where the failure is the last word. A turn that broke and
               // then carried on to say something else is not one waiting to be
@@ -681,6 +694,7 @@ const EntryView = memo(function EntryView({
   onOpenDelegate,
   onOpenDataset,
   onOpenDocument,
+  onOpenNote,
   onRunQuery,
   onRetry,
 }: {
@@ -691,6 +705,9 @@ const EntryView = memo(function EntryView({
   /** Opens a file in the canvas. Threaded exactly where `onOpenDataset` is,
    *  and absent in the same place — a delegate's transcript has no canvas. */
   onOpenDocument?: (path: string, lines: LineRange | null) => void;
+  /** Opens a note in the notes pane. Threaded exactly where `onOpenDocument`
+   *  is, and absent in the same place. */
+  onOpenNote?: (scope: Scope, name: string) => void;
   onRunQuery?: (sql: string) => void;
   /** Present only on the last entry of the newest turn. See `Transcript`. */
   onRetry?: () => void;
@@ -709,6 +726,8 @@ const EntryView = memo(function EntryView({
         return <DatasetCard view={entry.view} onOpen={onOpenDataset} />;
       case "document":
         return <DocumentCard view={entry.view} onOpen={onOpenDocument} />;
+      case "note":
+        return <NoteCard view={entry.view} onOpen={onOpenNote} />;
       case "query":
         return <QueryCard view={entry.view} onRun={onRunQuery} />;
       case "questions":

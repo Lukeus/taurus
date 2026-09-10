@@ -1,6 +1,6 @@
 //! Live smoke test against any OpenAI-compatible endpoint.
 //!
-//! `cargo run -p taurus-provider-openai --example smoke -- <model> [base_url]`
+//! `cargo run -p taurus-provider-openai --example openai-smoke -- <model> [base_url]`
 //!
 //! Ollama serves an OpenAI-compatible API at /v1, so this runs against the
 //! same local server as the Ollama adapter — a direct comparison of the two

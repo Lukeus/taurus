@@ -20,7 +20,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# Only the `probe` example needs a real backend; the tests embed with a fake.
+# Only the `index-probe` example needs a real backend; the tests embed with a fake.
 taurus-provider-ollama.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }

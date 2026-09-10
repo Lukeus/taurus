@@ -652,7 +652,12 @@ mod tests {
             std::fs::write(
                 &inner,
                 format!(
-                    "@echo off\r\necho x> \"{}\"\r\nping -n 9 127.0.0.1 >NUL\r\necho alive> \"{}\"\r\n",
+                    // `&&`, not a new line — see the sibling fixture in
+                    // `taurus_hooks`. `taskkill /T /F` ends a tree one process
+                    // at a time, and a `cmd` whose `ping` went first woke in the
+                    // gap and wrote the marker; a killed `ping` exits 1, so only
+                    // one the kill missed gets as far as the write.
+                    "@echo off\r\necho x> \"{}\"\r\nping -n 9 127.0.0.1 >NUL && echo alive> \"{}\"\r\n",
                     started.display(),
                     alive.display()
                 ),

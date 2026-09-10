@@ -1,6 +1,6 @@
 //! Connects to the MCP servers in a config file and lists what they expose.
 //!
-//! `cargo run -p taurus-mcp --example probe -- <path-to-mcp.json>`
+//! `cargo run -p taurus-mcp --example mcp-probe -- <path-to-mcp.json>`
 
 use std::sync::Arc;
 

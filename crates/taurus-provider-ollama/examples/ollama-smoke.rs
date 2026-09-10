@@ -1,6 +1,6 @@
 //! Live smoke test against a running Ollama server.
 //!
-//! `cargo run -p taurus-provider-ollama --example smoke -- <model>`
+//! `cargo run -p taurus-provider-ollama --example ollama-smoke -- <model>`
 //!
 //! Exercises the whole adapter against a real model: capability probe, tool
 //! definition, streaming, and reassembly. Point it at a model with native tool

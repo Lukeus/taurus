@@ -343,6 +343,41 @@ of the box's auto-sizing or of where the list lands would be asserting numbers
 the browser never produces. The mount tests prove the list has the right rows
 in it; the PNG is what proves it is in the right place.
 
+`notes` and `notes-diagram` are the only pictures of the notes pane, and the
+only check of two things underneath it. The prose editor wraps, which is what
+separates it from the canvas's — and jsdom, having no layout, can prove the text
+is in the box and nothing at all about where its lines break. And the Mermaid
+reader is checked by unit tests down to the last stage and edge, none of which
+can say whether the picture those describe is *drawn* where its own arrows point.
+The second shot was worth its cost immediately: it is what showed that an edge
+inside one subgraph arrived dashed, so a Mermaid chain drew its happy path in the
+treatment reserved for failures.
+
+`sketch` and `notes-sketch` are the only pictures of Excalidraw inside the app,
+and the only check of three things that look like nothing to a test: that its
+fonts arrived from this origin rather than a fallback face, that none of the
+app's own `button` and `input` rules reached its toolbar, and that its menu is
+the trimmed one. `notes-sketch` found a bug on its first run — every embed drew
+at twice its size, because Excalidraw's exporter fills a missing `exportScale`
+from the device pixel ratio, and the harness renders at 2× the way a Retina
+screen does.
+
+Excalidraw's fonts and its translations go through
+`scripts/excalidraw-assets.mjs`, in both Vite configs. It serves the fonts from
+`node_modules` in the dev server and copies them into `dist/excalidraw/fonts/`
+in a build, because the CSP refuses the CDN they would otherwise come from; it
+points Excalidraw's fallback for every face at this origin too, because each
+CDN fallback was reported as a refused font on every sketch; and it replaces
+every translation but English with an empty module, because the editor is
+pinned to English and the other fifty-two were a megabyte of files nothing
+reads.
+
+These scenes wait for the editor to appear before pressing **Read**. That is the
+same virtual-time trap in a second form: two waits that both spin, one after the
+other, exhaust the budget between them, and the shot comes out as an empty pane
+rather than as a failure anybody would notice. Gate each step on what the last
+one fetched.
+
 `palette` is the only check that a keyboard shortcut is bound at all. It opens
 the box by dispatching the chord on `window` rather than by pressing anything,
 which is the half no unit test can reach: jsdom can prove `isChord` agrees with
@@ -380,16 +415,16 @@ change did not break the parts that unit tests cannot reach.
 
 ```bash
 # One provider, one turn, one tool call.
-cargo run -p taurus-provider-ollama --example smoke -- qwen3.6:27b
-cargo run -p taurus-provider-ollama --example smoke -- gemma3      # prompted fallback
+cargo run -p taurus-provider-ollama --example ollama-smoke -- qwen3.6:27b
+cargo run -p taurus-provider-ollama --example ollama-smoke -- gemma3      # prompted fallback
 
 # The OpenAI adapter, against Ollama's own /v1 endpoint.
-cargo run -p taurus-provider-openai --example smoke -- llama3.2:latest
+cargo run -p taurus-provider-openai --example openai-smoke -- llama3.2:latest
 
 # The hosted adapters. Each prints the capabilities it probed before the turn,
 # which is the half of these two that has no local equivalent.
-ANTHROPIC_API_KEY=… cargo run -p taurus-provider-anthropic --example smoke -- claude-opus-5
-GEMINI_API_KEY=…    cargo run -p taurus-provider-gemini    --example smoke -- gemini-2.5-pro
+ANTHROPIC_API_KEY=… cargo run -p taurus-provider-anthropic --example anthropic-smoke -- claude-opus-5
+GEMINI_API_KEY=…    cargo run -p taurus-provider-gemini    --example gemini-smoke -- gemini-2.5-pro
 
 # The whole harness: read files, write a file, report what happened.
 cargo run -p taurus-core --example e2e -- qwen3.6:27b
@@ -403,10 +438,10 @@ cargo run -p taurus-agents --example delegate -- qwen3.6:27b
 # MCP: repair the PATH the way the app does, connect, list tools, call one
 # through the registry. Reports entries that would not parse, so a typo is named
 # rather than passing in silence or taking its neighbours down with it.
-cargo run -p taurus-mcp --example probe -- path/to/mcp.json
+cargo run -p taurus-mcp --example mcp-probe -- path/to/mcp.json
 
 # Web: one real search, then fetch the first result it returns.
-cargo run -p taurus-web --example probe -- ~/.taurus/search.json "rust async book"
+cargo run -p taurus-web --example web-probe -- ~/.taurus/search.json "rust async book"
 
 # Reading a turn back to an agent that did not write it. Needs Ollama; writes
 # only inside a temp directory. It plants a defect that is invisible from the
@@ -434,6 +469,20 @@ cargo run -p taurus-host --example inspect -- ~/src/some-fresh-clone
 # of them at once, without starting the app.
 cargo run -p taurus-host --example theme        # global themes
 cargo run -p taurus-host --example theme -- .   # and this workspace's
+
+# Notes: what the app makes of the notebooks on your disk, and what a save does
+# under a race. Listing and reading need no provider and write nothing;
+# `--check` writes, and only inside a temp directory it makes and reports.
+# The listing is the half a test cannot have — a real directory somebody else
+# edits, holding a note added by hand, a file with the wrong extension, or a
+# name the filesystem took and this would refuse, which is how a note ends up
+# listed and unopenable. `--check` runs the compare-and-swap for real: read,
+# write behind the editor's back, save with the stale stamp, watch it refused
+# with the other version in hand, then save with the stamp the refusal returned.
+cargo run -p taurus-host --example notes                     # both notebooks
+cargo run -p taurus-host --example notes -- .                # and this workspace's
+cargo run -p taurus-host --example notes -- . 'Auth redesign'
+cargo run -p taurus-host --example notes -- --check
 
 # What a sweep costs on a real workspace, and that it stays quiet when nothing
 # changed. Needs no provider. Run it on something large before touching the
@@ -509,15 +558,15 @@ cargo run -p taurus-host --example vision -- llama3.2:latest   # refused, and wh
 # `schema` must stay flat as the file grows, `profile` is a full pass and is
 # allowed to be slow, and `page` must be flat in the *offset* — which is why it
 # is measured at row 0 and again at the end.
-cargo run -p taurus-data --example probe -- ~/data/interactions.csv
+cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv
 
 # With a query, which is the other half. The table is named the way
 # `load_dataset` names it, so the SQL here is the SQL you would type in the
 # pane — and handing it a write is how the refusal gets checked against a real
 # file rather than a fixture.
-cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv \
   "SELECT category, count(*) AS n FROM interactions GROUP BY 1 ORDER BY n DESC"
-cargo run -p taurus-data --example probe -- ~/data/interactions.csv \
+cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv \
   "COPY interactions TO '/tmp/escaped.parquet'"   # must refuse, and write nothing
 
 # A recipe, which is the only thing in this crate that writes a file the user
@@ -560,7 +609,7 @@ taurus run -w ~/data "Build me a purchases table: drop duplicates, keep only \
 # rankings a reader of this repository can check by eye. Run it on something
 # large before changing the caps in `store.rs`.
 ollama pull nomic-embed-text
-cargo run -p taurus-index --example probe -- . nomic-embed-text
+cargo run -p taurus-index --example index-probe -- . nomic-embed-text
 ```
 
 The drawn results have no example of their own, because the check worth making

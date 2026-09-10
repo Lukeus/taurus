@@ -1,6 +1,6 @@
 //! Live smoke test against the Gemini generateContent API.
 //!
-//! `GEMINI_API_KEY=… cargo run -p taurus-provider-gemini --example smoke -- <model>`
+//! `GEMINI_API_KEY=… cargo run -p taurus-provider-gemini --example gemini-smoke -- <model>`
 //!
 //! Exercises the parts unit tests cannot: that a real model's function call
 //! reassembles through an adapter that has to synthesize the id the wire format

@@ -122,3 +122,60 @@ describe("markdown rendering", () => {
     });
   });
 });
+
+describe("a mermaid fence", () => {
+  it("draws a flowchart rather than printing its source", () => {
+    const html = render(
+      "```mermaid\nflowchart LR\n  a[Client] --> b[API]\n```",
+    );
+    expect(html).toContain('role="img"');
+    expect(html).toContain('class="flow"');
+    expect(shown(html)).toContain("Client");
+    // And the description a screen reader gets, since the picture says nothing.
+    expect(html).toContain("Flow diagram");
+  });
+
+  it("draws a sequence diagram", () => {
+    const html = render(
+      "```mermaid\nsequenceDiagram\n  c->>api: POST /orders\n  api-->>c: 201\n```",
+    );
+    expect(html).toContain('class="sequence"');
+    expect(html).toContain("Sequence diagram");
+    expect(shown(html)).toContain("POST /orders");
+  });
+
+  it("shows the source and says why, for a diagram it cannot draw", () => {
+    // Not an error state. A fence is text somebody wrote and the text is never
+    // wrong, so the source stays and a sentence goes over it.
+    const html = render("```mermaid\ngantt\n  title A schedule\n```");
+    expect(html).not.toContain("<svg");
+    expect(html).toContain("md-mermaid-note");
+    expect(shown(html)).toContain("Gantt charts");
+    expect(shown(html)).toContain("title A schedule");
+  });
+
+  it("says what it left out of a diagram it did draw", () => {
+    const html = render(
+      "```mermaid\ngraph TD\n  a --> b\n```",
+    );
+    expect(html).toContain('class="flow"');
+    expect(shown(html)).toContain("Laid out left to right rather than top to bottom.");
+  });
+
+  it("leaves a half-written fence as source while the turn streams", () => {
+    // A fence three lines into being written parses as a refusal, and flickering
+    // through one on the way to a picture is worse than waiting for the text to
+    // stop moving.
+    const half = "```mermaid\nflowchart LR\n  a[Client] --> ";
+    expect(renderStreaming(half)).not.toContain("<svg");
+    expect(renderStreaming(half)).not.toContain("md-mermaid-note");
+    // The same text, once it is finished and no longer streaming.
+    expect(render(`${half}b[API]\n\`\`\``)).toContain('class="flow"');
+  });
+
+  it("leaves every other fence alone", () => {
+    const html = render("```rust\nfn main() {}\n```");
+    expect(html).not.toContain("<svg");
+    expect(html).toContain("md-code-lang");
+  });
+});

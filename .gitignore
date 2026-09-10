@@ -9,14 +9,18 @@ target/
 bindings/
 
 # Per-developer workspace state: the model last used here, and permissions
-# granted for this project only. Project skills and data recipes are meant to
-# be committed — both are instructions the agent follows, reviewed in a diff
-# like anything else that decides what the software does.
+# granted for this project only. Project skills, data recipes and notes are
+# meant to be committed — the first two are instructions the agent follows,
+# reviewed in a diff like anything else that decides what the software does, and
+# a note is prose somebody wrote for whoever reads the repository next. A
+# project note that this file swallowed would be a note nobody else ever sees,
+# which is the whole of what separates it from a global one.
 # Matched at any depth: a `.taurus` appears wherever the app is run from, and
 # an anchored pattern silently misses `src-tauri/.taurus`.
 **/.taurus/*
 !**/.taurus/skills/
 !**/.taurus/recipes/
+!**/.taurus/notes/
 
 # Microsoft's redistributable ConPTY, fetched by `scripts/conpty.mjs` during a
 # Windows build and bundled beside the executable. Not committed: 2.2 MB of

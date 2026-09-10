@@ -716,6 +716,94 @@ and they are the minority.
   shows it for the length of the session. The fix is the same — the two files
   the Windows bundle ships beside the executable — and the startup log line
   saying whether they were found is still the only warning available.
+- **A Mermaid fence draws two diagram types, and names the rest.** A
+  ```` ```mermaid ```` block draws when it is a `flowchart`/`graph` or a
+  `sequenceDiagram`. `classDiagram`, `stateDiagram`, `erDiagram`, `gantt`,
+  `pie`, `mindmap`, `gitGraph` and the rest are shown as their source with a
+  sentence naming what stopped them. This is the price of drawing these with the
+  app's own two diagram engines rather than the Mermaid library — see
+  [Notes](working-with-it.md#notes) — and it is the whole of that price. The
+  library is 80 MB unpacked across d3, three cytoscape packages, katex and
+  marked; it themes itself, loads its own fonts, and generates element ids per
+  render that every screenshot would have to tolerate. The engines this uses
+  instead are the ones already drawing `show_flow` and `show_sequence`, in the
+  app's palette, under tests that need no browser. If the named-and-refused list
+  is what stops people using notes for diagrams, that is the evidence for
+  drawing fences with the library rather than growing the reader.
+- **The Mermaid library ships anyway, inside the sketch editor.** Excalidraw's
+  own **Mermaid to Excalidraw** tool — which turns a diagram into shapes you can
+  draw over — needs it, and imports it lazily. It is 3.3 MB of the app's 8.6 MB,
+  measured by building with and without it, and it is loaded only if that tool
+  is used. It cannot be taken out cleanly: the tool's menu entry has no option
+  to hide it and shares its only stable hook with the web-embed tool beside it,
+  so removing the library would leave an entry that fails when chosen. A fence
+  in a note is still drawn by the app's own engines; this changes the size of
+  the download and nothing about how a note looks.
+- **Every Mermaid diagram is laid out left to right.** `graph TD`, `TB`, `BT`
+  and `RL` are read and drawn as `LR`, with a line under the picture saying so.
+  Direction in Mermaid is presentational — the same nodes, arrows and labels
+  either way — so this re-orients rather than loses anything, but `TD` is the
+  most common thing people type and the picture is not the shape they drew.
+  Stages as rows is a second geometry for the layout engine, with its own
+  routing for all four kinds of edge, rather than a flag on the one that exists.
+- **Node shapes are read and then drawn as rectangles.** `a{Is it cached?}` and
+  `a[(store)]` come out as boxes with the right text in them. The text is the
+  part that carries the meaning and is parsed properly; the diamond that says
+  "this is where it branches" is not drawn, which is a real loss on a flowchart
+  about a decision. Arrow *heads* are flattened the same way: `--o` and `--x`
+  draw as ordinary arrows.
+- **A `Note over` or a block frame in a sequence diagram is dropped.** The
+  messages inside a `loop`, `alt`, `opt` or `par` still draw, in order — the
+  frame around them and its label do not, and the diagram says how many it left
+  out. Activation bars are ignored silently, because `show_sequence` decided
+  before any of this that a picture somebody reads once carries two kinds of
+  arrow and not four.
+- **Notes are files, so two people editing one is git's problem.** A note saves
+  itself and refuses to overwrite a version it has not seen, which covers the
+  case this app can see: you and a running turn. Two checkouts, or two windows
+  on the same folder, meet in the file and are reconciled the way any other file
+  in the repository is.
+- **A version kept for a note you left lasts as long as the window.** Leaving a
+  note while it shows two versions, or while its last save is refused or fails,
+  keeps yours in memory and marks the note in the list until you open it again.
+  Closing the window first loses it. Writing it to disk instead would be a second
+  copy of every contested note, somewhere nobody looks, outliving the question
+  it was kept for.
+- **A note's diagram is not searchable and its text is not indexed.** Transcript
+  search does not look in notes, and the code index does not either — a project
+  note is a Markdown file in `.taurus/`, which the index skips along with the
+  rest of that directory. Finding a note is scanning the list, which is fine at
+  a dozen and is not at a hundred.
+- **Chinese, Japanese and Korean text in a sketch is not handwritten.**
+  Excalidraw draws those scripts in Xiaolai, a 12 MB face — more than every other
+  font, script and stylesheet in the app together. It is left out, so the text
+  draws in the system's own face instead. It still saves, exports and embeds.
+- **A sketch's library lasts as long as the window.** Shapes added to
+  Excalidraw's library are kept in memory and not written anywhere. **Browse
+  libraries** opens the public library site in your browser, and its **Add to
+  Excalidraw** button returns to excalidraw.com rather than to the app.
+- **A sketch has no export.** Excalidraw's Save to disk, Open and Export image
+  are turned off, because the file is the sketch and a second way of saving it
+  would bypass the rule that no save overwrites a version it has not seen. Copy
+  as PNG from a selection's context menu is Excalidraw's own and still there.
+- **Renaming a sketch leaves the notes that embed it pointing at the old name.**
+  The embed says the sketch is not there, and the fix is one line in the note.
+  Rewriting other notes to follow the rename would be the app editing prose
+  somebody else wrote.
+- **The model cannot see a sketch.** There is no picture of one to give it —
+  only the scene. What reaches it is the text written on each sketch a note
+  embeds, through `read_note`. A sketch on screen with no note around it tells
+  the model nothing, and there is no Ask about this on one.
+- **A global note written by the model cannot be rewound.** It is outside every
+  workspace, so the checkpoint recorder has nothing to copy it into. The
+  permission prompt shows the diff, and that is the whole of its safety.
+- **Excalidraw roughly quadruples the download.** The app was 1.8 MB without
+  source maps before sketches; it is 8.6 MB with them. None of it is in the
+  chunk that starts the app — that grew by 5 KB — and all of it is fetched from
+  disk the first time a sketch is opened, not before. Of the increase, 3.3 MB is
+  the Mermaid library above, 1.7 MB is Excalidraw's font subsetting, 1.2 MB is
+  the editor, and 0.4 MB is its fonts. Its fifty-two unused translations are
+  replaced with empty modules at build time.
 - **The canvas holds one file at a time.** Opening another replaces it. Tabs
   are a second navigation model to build and to explain, and "open the readme
   while we talk about it" does not need one. What that costs is comparing two
@@ -1164,7 +1252,8 @@ and they are the minority.
   `/bin/sh` or `cmd.exe` and left the linter, the build or the watcher running,
   while the app reported the thing as stopped. Now the tree goes: a process
   group and `kill -KILL -- -<pgid>` on Unix, `taskkill /T /F` on Windows, both
-  tested against a real process tree on both platforms in CI. What it costs is
+  tested against a real process tree in CI — the background command on every
+  platform, the hook on macOS and Linux only (see below). What it costs is
   a fork on the way past, and only on a path where something has already hung
   or been stopped by hand. The shape of both commands is a scar, and neither
   is guessable: `taskkill` takes its switches *after* the target, and with
@@ -1188,8 +1277,20 @@ and they are the minority.
   walks parent-child links, so a process whose parent died before the kill is
   out of its reach, where a Job Object would still catch it. Closing that last
   gap means `windows-sys` and an `unsafe` block, and `unsafe_code` is
-  `forbid` across this workspace — a policy worth more than the remaining
-  sliver, given the kill now runs while the parent is deliberately still alive.
+  `forbid` across this workspace.
+- **On Windows, a timed-out hook's grandchild can outlive the kill.** The hook
+  test — a batch file that starts a second one with `start /B` — fails on
+  about half of Windows CI runs: `taskkill /T /F` reports success, the parent
+  is alive when it runs, and the grandchild still finishes its eight seconds
+  and writes its marker. The identical fixture, stopped through a background
+  command, is ended cleanly on the same runner every time, and nothing yet
+  found in the two code paths accounts for the difference. The test is skipped
+  on Windows until it is found, so a hook that hangs there may leave what it
+  started running while the turn reports it stopped. Chaining the marker's
+  write with `&&` was tried first, on the theory that the kill woke the batch
+  file between its processes; the next run failed the same way, so that theory
+  is wrong. A Job Object would end this whole class of escape, at the cost the
+  entry above names.
 - **Two other children are still killed one process at a time.** A *foreground*
   `run_command` is left in the parent's process group on purpose — a terminal's
   own Ctrl-C then reaches the whole tree without anything in this code having

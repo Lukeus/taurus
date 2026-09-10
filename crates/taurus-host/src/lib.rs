@@ -16,6 +16,7 @@ pub mod inspect;
 pub mod instructions;
 pub mod mcp_view;
 pub mod memory;
+pub mod notebook;
 pub mod onscreen;
 pub mod problem;
 pub mod prompt;
@@ -39,7 +40,8 @@ pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS}
 pub use instructions::{Instructions, InstructionsOrigin, InstructionsSource, InstructionsTier};
 pub use mcp_view::{McpServerDraft, McpServerRef, McpServerView, McpTransport, McpValue};
 pub use memory::Note;
-pub use onscreen::{DataOnScreen, DocumentOnScreen, OnScreen, Selection};
+pub use notebook::{Page, PageKind, PageRef, PageSaved};
+pub use onscreen::{DataOnScreen, DocumentOnScreen, NoteOnScreen, OnScreen, Selection};
 pub use problem::{Problem, ProblemSource};
 pub use search::{Match, SearchResults, SessionHit};
 pub use secrets::KeyStatus;

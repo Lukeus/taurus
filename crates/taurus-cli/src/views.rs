@@ -171,6 +171,11 @@ pub fn render(view: &TranscriptView, color: bool) -> String {
         // opened and where — that sentence is the whole of what a reader here
         // can use, and `less +40 README.md` is what they will do with it.
         TranscriptView::Document { .. } => String::new(),
+
+        // A note is a file in `.taurus/notes/` or `~/.taurus/notes/`, and a
+        // terminal's answer to "open it" is `$EDITOR` rather than a pane. The
+        // tool's own row names the note, which is all a reader here can use.
+        TranscriptView::Note { .. } => String::new(),
     }
 }
 

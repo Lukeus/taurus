@@ -470,7 +470,9 @@ pub struct ShowFlowInput {
     pub stages: Vec<FlowStage>,
     /// The arrows. `from` and `to` are node labels, spelled exactly as in the
     /// stages. An arrow pointing back to an earlier stage is fine and is drawn
-    /// as a loop — that is what a retry or a callback looks like.
+    /// as a loop — that is what a retry or a callback looks like. So is an
+    /// arrow from a node to itself, drawn as a ring over its top face: that is
+    /// what polling or a retry in place looks like.
     pub edges: Vec<FlowEdge>,
 }
 

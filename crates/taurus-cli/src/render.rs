@@ -155,13 +155,14 @@ impl Renderer {
                 // follows draws questions itself, and printing them twice
                 // would ask everything before asking anything. A dataset card
                 // and a query card both point at a pane that exists only in
-                // the app, and the call's own text is the better answer here —
-                // so all three keep their ordinary row.
+                // the app, and so does a note card — the call's own text is the
+                // better answer here, so all four keep their ordinary row.
                 match view {
                     Some(
                         TranscriptView::Questions { .. }
                         | TranscriptView::Dataset { .. }
-                        | TranscriptView::Query { .. },
+                        | TranscriptView::Query { .. }
+                        | TranscriptView::Note { .. },
                     )
                     | None => {
                         self.dim(&format!("  {} {}", glyph(name), preview));

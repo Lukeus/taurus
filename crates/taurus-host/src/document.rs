@@ -140,7 +140,60 @@ pub enum Saved {
     Stale { current: Document },
 }
 
-/// Writes a file, unless it has moved since it was read.
+/// Writes a workspace file, unless it has moved since it was read.
+///
+/// The rule and the line-ending care are in [`write_if_current`], which the
+/// notebook shares; this is the canvas's half — resolving a workspace-relative
+/// path through the guard, and naming it the way the rest of the app does.
+pub fn save(workspace: &Path, path: &str, text: &str, fingerprint: &str) -> Result<Saved, String> {
+    let resolved = taurus_tools::path_guard::resolve(workspace, path).map_err(|e| e.to_string())?;
+    let shown = taurus_tools::path_guard::display(workspace, &resolved);
+
+    let document = |w: Written| Document {
+        lines: w.lines,
+        fingerprint: w.fingerprint,
+        path: shown.clone(),
+        text: w.text,
+    };
+    Ok(
+        match write_if_current(&resolved, &shown, text, fingerprint)? {
+            Wrote::Written(w) => Saved::Written {
+                document: document(w),
+            },
+            Wrote::Stale(w) => Saved::Stale {
+                current: document(w),
+            },
+        },
+    )
+}
+
+/// A file, as it stands after a save was taken or refused.
+///
+/// Not a `Document` and not a `Page`: this is the part of both that the rule
+/// below actually produces, and which of the two it becomes is the caller's
+/// business.
+pub struct Written {
+    pub text: String,
+    pub lines: u32,
+    pub fingerprint: String,
+}
+
+/// Which of the two happened.
+pub enum Wrote {
+    Written(Written),
+    Stale(Written),
+}
+
+/// Writes an already-resolved path, unless it has moved since it was read.
+///
+/// The rule itself, shared by the canvas and the notebook. Two writers, neither
+/// waiting for the other, and a save that never overwrites something it has not
+/// seen — stated once, because the alternative is two implementations of it
+/// drifting apart while both look right.
+///
+/// `shown` is how the path is named in a message: a workspace-relative path for
+/// the canvas, a quoted note name for the notebook. Nothing here derives it,
+/// because the two callers do not agree on what a person calls this file.
 ///
 /// # Line endings
 ///
@@ -154,26 +207,25 @@ pub enum Saved {
 /// So the endings of the file on disk win, using the same [`to_crlf`] the
 /// `write_file` tool uses, because two rules about line endings is one rule too
 /// many.
-pub fn save(workspace: &Path, path: &str, text: &str, fingerprint: &str) -> Result<Saved, String> {
-    let resolved = taurus_tools::path_guard::resolve(workspace, path).map_err(|e| e.to_string())?;
-    let shown = taurus_tools::path_guard::display(workspace, &resolved);
-
-    let existing = std::fs::read_to_string(&resolved)
+pub fn write_if_current(
+    resolved: &Path,
+    shown: &str,
+    text: &str,
+    fingerprint: &str,
+) -> Result<Wrote, String> {
+    let existing = std::fs::read_to_string(resolved)
         .map_err(|e| format!("Could not read {shown} before saving it: {e}"))?;
-    let now = fingerprint_of(&resolved).ok_or_else(|| format!("{shown} is no longer there."))?;
+    let now = fingerprint_of(resolved).ok_or_else(|| format!("{shown} is no longer there."))?;
 
     // The whole of the guarantee. Checked against the file as it is rather than
     // against anything remembered here, so a write from any source — the model,
     // git, another editor — is caught by the same comparison.
     if now != fingerprint {
-        return Ok(Saved::Stale {
-            current: Document {
-                lines: existing.lines().count() as u32,
-                fingerprint: now,
-                path: shown,
-                text: existing,
-            },
-        });
+        return Ok(Wrote::Stale(Written {
+            lines: existing.lines().count() as u32,
+            fingerprint: now,
+            text: existing,
+        }));
     }
 
     let body = if existing.contains("\r\n") {
@@ -187,18 +239,15 @@ pub fn save(workspace: &Path, path: &str, text: &str, fingerprint: &str) -> Resu
     // file's permissions, hard links and the editor another program has open on
     // it are all attached to that — a cost worth paying for a config file the
     // app owns, and not for one in somebody's repository.
-    std::fs::write(&resolved, &body).map_err(|e| format!("Could not save {shown}: {e}"))?;
+    std::fs::write(resolved, &body).map_err(|e| format!("Could not save {shown}: {e}"))?;
 
-    let after = fingerprint_of(&resolved)
+    let after = fingerprint_of(resolved)
         .ok_or_else(|| format!("{shown} went missing as it was written."))?;
-    Ok(Saved::Written {
-        document: Document {
-            lines: body.lines().count() as u32,
-            fingerprint: after,
-            path: shown,
-            text: body,
-        },
-    })
+    Ok(Wrote::Written(Written {
+        lines: body.lines().count() as u32,
+        fingerprint: after,
+        text: body,
+    }))
 }
 
 /// Marks a moment as "now" for a fingerprint, for tests that need two of them.

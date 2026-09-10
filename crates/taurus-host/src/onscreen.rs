@@ -44,6 +44,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::config::Scope;
+
 /// The SQL in the query box, at most this many characters.
 ///
 /// Generous, because the case this exists for is "why does this not work?" and
@@ -76,6 +78,9 @@ pub struct OnScreen {
     /// The canvas, when a file was open in it.
     #[ts(optional)]
     pub document: Option<DocumentOnScreen>,
+    /// The notes pane, when a note was open in it.
+    #[ts(optional)]
+    pub note: Option<NoteOnScreen>,
 }
 
 /// What the Data pane was showing.
@@ -147,11 +152,63 @@ impl OnScreen {
         let parts: Vec<String> = [
             self.data.as_ref().and_then(DataOnScreen::describe),
             self.document.as_ref().and_then(DocumentOnScreen::describe),
+            self.note.as_ref().and_then(NoteOnScreen::describe),
         ]
         .into_iter()
         .flatten()
         .collect();
         (!parts.is_empty()).then(|| parts.join("\n\n"))
+    }
+}
+
+/// What the notes pane was showing.
+///
+/// The name and the scope, and deliberately not the note. `read_note` reads it
+/// off the same disk the pane does, so a whole note on every message from a pane
+/// somebody leaves open would be the habit `DocumentOnScreen` refuses for the
+/// same reason — and it is worse here, because a note is prose that a model would
+/// then be carrying a stale copy of for the rest of the conversation.
+///
+/// No selection, unlike the canvas. That field exists there because nothing on
+/// disk records which forty lines somebody had highlighted, and a four-thousand
+/// line file has forty lines worth pointing at. A note is short and is read
+/// whole; pointing inside one is what the sentence somebody types does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NoteOnScreen {
+    pub scope: Scope,
+    /// What the note is called, which is also its filename.
+    pub name: String,
+    /// Whether the editor holds something the file does not.
+    ///
+    /// Nearly always false, because the pane saves itself a moment after typing
+    /// stops. What makes it worth a field is the case where it stays true
+    /// indefinitely: a save refused because somebody else wrote the note, where
+    /// the screen and the disk hold different things until a person decides.
+    pub unsaved: bool,
+}
+
+impl NoteOnScreen {
+    fn describe(&self) -> Option<String> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        let which = match self.scope {
+            Scope::Workspace => "project",
+            Scope::Global => "global",
+        };
+        let stale = if self.unsaved {
+            " The editor holds unsaved changes, so what read_note returns is **not** what is on \
+             screen — say so rather than answering from the file."
+        } else {
+            ""
+        };
+        Some(format!(
+            "The notes pane was open on the {which} note '{name}' when this message was sent. \
+             Unless the message names another, \"this note\" and \"the note\" mean that one. Read \
+             it with read_note rather than guessing what it says.{stale}"
+        ))
     }
 }
 
@@ -263,6 +320,7 @@ mod tests {
                 sql: None,
             }),
             document: None,
+            note: None,
         }
     }
 
@@ -278,6 +336,7 @@ mod tests {
                 selection: None,
                 unsaved: false,
             }),
+            note: None,
         }
     }
 
@@ -475,6 +534,53 @@ mod tests {
         assert!(on.describe().is_none());
     }
 
+    fn noting() -> OnScreen {
+        OnScreen {
+            data: None,
+            document: None,
+            note: Some(NoteOnScreen {
+                scope: Scope::Workspace,
+                name: "Auth redesign".into(),
+                unsaved: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_note_on_screen_is_named_with_the_notebook_it_is_in() {
+        let text = noting().describe().unwrap();
+        assert!(text.contains("project note 'Auth redesign'"), "{text}");
+        // Pointed at the tool that can read it, since guessing the path is the
+        // mistake this description exists to prevent — and for a global note the
+        // guess cannot work at all.
+        assert!(text.contains("read_note"), "{text}");
+    }
+
+    #[test]
+    fn a_global_note_says_which_notebook_it_came_from() {
+        let mut on = noting();
+        on.note.as_mut().unwrap().scope = Scope::Global;
+        assert!(on.describe().unwrap().contains("global note"));
+    }
+
+    /// The case the field exists for: a save refused because somebody else wrote
+    /// the note, where the screen and the disk disagree until a person decides.
+    #[test]
+    fn an_unsaved_note_warns_that_the_file_is_not_what_is_on_screen() {
+        let mut on = noting();
+        on.note.as_mut().unwrap().unsaved = true;
+        let text = on.describe().unwrap();
+        assert!(text.contains("unsaved"), "{text}");
+        assert!(text.contains("**not**"), "{text}");
+    }
+
+    #[test]
+    fn a_note_with_no_name_describes_nothing_rather_than_a_sentence_about_nothing() {
+        let mut on = noting();
+        on.note.as_mut().unwrap().name = "  ".into();
+        assert_eq!(on.describe(), None);
+    }
+
     /// The panes are a split, so both can genuinely be on screen. Picking one
     /// would be the app guessing which the question was about.
     #[test]
@@ -482,6 +588,7 @@ mod tests {
         let on = OnScreen {
             data: looking().data,
             document: reading().document,
+            note: None,
         };
         let text = on.describe().unwrap();
         assert!(text.contains("Data pane was open"), "{text}");
