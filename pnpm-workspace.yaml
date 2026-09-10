@@ -1,0 +1,9 @@
+# One package. Listed so that pnpm 9, which CI installs with, reads this file as
+# a workspace — without `packages` it refuses the install outright ("packages
+# field missing or empty"). pnpm 10 and later read the setting below from here:
+# they run no dependency's build script unless it is named, and esbuild's
+# postinstall is the one this repository needs.
+packages:
+  - "."
+onlyBuiltDependencies:
+  - esbuild
