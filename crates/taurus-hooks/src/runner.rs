@@ -922,13 +922,10 @@ mod tests {
             std::fs::write(
                 &inner,
                 format!(
-                    // `&&`, not a new line. `taskkill /T /F` ends a tree one
-                    // process at a time, and when it reached `ping` before the
-                    // `cmd` running this, the `cmd` woke in the gap and wrote
-                    // the marker on its way out — a tree the kill had ended,
-                    // reported as one it had spared. A `ping` that is killed
-                    // exits 1, so only one that ran its full eight seconds, in
-                    // a tree the kill missed, gets as far as the write.
+                    // `&&`, not a new line, so the marker means exactly "ran
+                    // its full eight seconds": a `ping` that is killed exits 1
+                    // and never gets as far as the write, whatever order a
+                    // kill ends the tree in.
                     "@echo off\r\necho x> \"{}\"\r\nping -n 9 127.0.0.1 >NUL && echo alive> \"{}\"\r\n",
                     started.display(),
                     alive.display()
@@ -1008,14 +1005,6 @@ mod tests {
     }
 
     #[tokio::test]
-    // Skipped on Windows because it fails there, on about half of CI runs, for
-    // a reason not yet found: `taskkill /T` reports success and the grandchild
-    // survives to write its marker. The same fixture is ended cleanly through
-    // `taurus_tools::jobs`. See the hooks entry in `docs/known-gaps.md`.
-    #[cfg_attr(
-        windows,
-        ignore = "on Windows a timed-out hook's grandchild can survive `taskkill /T`; see docs/known-gaps.md"
-    )]
     async fn a_timeout_reaches_what_the_hook_started_and_not_only_the_hook() {
         /*
          * A hook is nearly always a script, so the child is a shell and the
@@ -1052,28 +1041,41 @@ mod tests {
         let slow_timeout = slow.timeout_seconds;
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
 
-        // Read while the hook is still inside its timeout, because the kill
-        // reported the hook's own shell already gone and the question that
-        // answers is whether it ever lived that long.
         // Read while the hook is still inside its timeout. Two things at that
         // moment, not one: the tree, and — the question every failure of this
         // test has actually turned on — whether the grandchild had started
         // *yet*. Asserting `started.exists()` afterwards cannot tell a kill
         // that missed from a fixture that had not finished growing, and those
         // want opposite fixes.
+        //
+        // The marker first, and the listing on the blocking pool, because this
+        // test has one thread and the listing is a process it waits for. Run
+        // on that thread, it held the runtime for as long as PowerShell took to
+        // start — seconds, on a cold Windows runner — and the hook's timeout
+        // could not fire until it returned. Past eight seconds, the grandchild
+        // finished before the kill began: its marker appeared, the tree after
+        // the kill was empty, and the failure read as a kill that had missed.
+        // That was every Windows failure of this test from 28 August to 10
+        // September. Slowing the Unix listing by six seconds fails the same
+        // assertion with the same empty tree.
         let watch = started.clone();
         let midway = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(3000)).await;
-            (tree(), watch.exists())
+            let up = watch.exists();
+            let listing = tokio::task::spawn_blocking(tree)
+                .await
+                .unwrap_or_else(|e| format!("({e})"));
+            (listing, up)
         });
 
         let began = std::time::Instant::now();
         let outcome = runner
             .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
             .await;
+        // Before the listing is waited for, so this is the hook's time alone.
+        let took = began.elapsed();
         let (midway, up_before_the_kill) =
             midway.await.unwrap_or_else(|e| (format!("({e})"), false));
-        let took = began.elapsed();
         // The moment that matters: what the kill left standing, read before
         // anything has had time to exit on its own. The tree at *failure* time
         // cannot tell a process that was spared from one that finished.
@@ -1094,6 +1096,17 @@ mod tests {
             "ended for some other reason than its timeout: {reason:?} after {took:?}\n{}",
             tree()
         );
+        // And ended in time for the marker below to mean anything. The
+        // grandchild starts after `began` and writes eight seconds later, so a
+        // kill not finished by then may have come after the write — and the
+        // marker would blame the kill for a delay somewhere else, which is the
+        // failure the comment on `midway` above describes.
+        assert!(
+            took < Duration::from_secs(8),
+            "the hook was not stopped until {took:?} in, after the grandchild could have \
+             finished on its own, so the marker below cannot say whether the kill reached it. \
+             Something held up the timeout."
+        );
         // The kill runs on a path where the tree was alive a moment ago, so it
         // reporting trouble is a defect and not a race. Checked here because
         // it names the cause directly, where the marker below only says that
@@ -1101,7 +1114,7 @@ mod tests {
         assert!(
             !reason.contains("may still be running"),
             "the kill did not do its job: {reason}\
-             \n== 1.2s in, before the timeout ==\n{midway}\
+             \n== 3s in, before the timeout ==\n{midway}\
              \n== a moment after the kill ==\n{after_the_kill}"
         );
         // Asserted rather than assumed: a test that stopped something before it
