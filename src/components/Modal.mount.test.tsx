@@ -97,6 +97,27 @@ describe("a modal", () => {
     expect(closed).toBe(1);
   });
 
+  it("closes on a click on the scrim, and not on a drag that ends there", () => {
+    // A selection begun in the panel and let go past its edge: the browser
+    // sends the click to the nearest element holding both ends, which is the
+    // scrim, and the drawer shut on whoever was selecting text in it.
+    let closed = 0;
+    const { host, buttons } = mount(() => closed++);
+    const scrim = host.firstElementChild as HTMLElement;
+    const fire = (target: Element, type: string) =>
+      act(() => {
+        target.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+      });
+
+    fire(buttons[0], "pointerdown");
+    fire(scrim, "click");
+    expect(closed, "a drag out of the panel closed it").toBe(0);
+
+    fire(scrim, "pointerdown");
+    fire(scrim, "click");
+    expect(closed).toBe(1);
+  });
+
   it("has no Escape for a panel that has to be answered", () => {
     // The permission prompt. Escape is neither "allow" nor "deny", so it is
     // not a decision this can make on the user's behalf.
