@@ -792,7 +792,7 @@ export const useStore = create<Store>((set, get) => ({
     // a second render behind every one of these.
     const stream = batchEvents((events) => {
       set((s) => ({
-        entries: events.reduce(reduce, s.entries),
+        entries: foldEvents(events, s.entries),
         changed: events.reduce(mergeChanged, s.changed),
         context: events.reduce(mergeContext, s.context),
       }));
@@ -852,9 +852,7 @@ export const useStore = create<Store>((set, get) => ({
         // go nowhere.
         permission: null,
         // Close the open assistant entry so the next turn starts a new bubble.
-        entries: s.entries.map((e) =>
-          e.kind === "assistant" ? { ...e, open: false } : e,
-        ),
+        entries: closeOpen(s.entries),
       }));
 
       /*
@@ -1902,9 +1900,7 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
     case "tool_call_started":
       return supersedePlans([
         // Any streaming text before a tool call is finished text.
-        ...entries.map((e) =>
-          e.kind === "assistant" ? { ...e, open: false } : e,
-        ),
+        ...closeOpen(entries),
         {
           kind: "tool",
           id: event.id,
@@ -1925,11 +1921,7 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
       );
 
     case "tool_progress":
-      return entries.map((e) =>
-        e.kind === "tool" && e.id === event.id
-          ? { ...e, steps: trimScrollback([...e.steps, event.label]) }
-          : e,
-      );
+      return addProgress(entries, event.id, [event.label]);
 
     case "tool_call_finished":
       return entries.map((e) =>
@@ -2023,6 +2015,61 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
     case "context_used":
       return entries;
   }
+}
+
+/**
+ * The same entries with the open answer closed, and nothing else touched.
+ *
+ * Only the open one is replaced, and the list itself comes back when there is
+ * none. Closing every assistant entry, which is what this did, gave each
+ * finished answer in the conversation a new object on every tool call and at
+ * the end of every turn — and a new object is what the transcript's memo reads
+ * as "draw this again". Only the last entry is ever open; see
+ * `appendAssistant`.
+ */
+export function closeOpen(entries: Entry[]): Entry[] {
+  if (!entries.some((e) => e.kind === "assistant" && e.open)) return entries;
+  return entries.map((e) =>
+    e.kind === "assistant" && e.open ? { ...e, open: false } : e,
+  );
+}
+
+/** A call's new progress lines, on its card and nowhere else. */
+function addProgress(entries: Entry[], id: string, labels: string[]): Entry[] {
+  return entries.map((e) =>
+    e.kind === "tool" && e.id === id
+      ? { ...e, steps: trimScrollback([...e.steps, ...labels]) }
+      : e,
+  );
+}
+
+/**
+ * A frame's events folded into the entries, as `reduce` would one at a time.
+ *
+ * With one difference, in cost only: a run of progress events for the same
+ * call is applied as one. A build streams many lines a frame, and each used to
+ * walk the whole conversation to find its card and copy the card again, so a
+ * long conversation made every line of output dearer. The steps come out the
+ * same, because `trimScrollback` keeps the tail however many times it runs.
+ */
+export function foldEvents(events: UiEvent[], entries: Entry[]): Entry[] {
+  let out = entries;
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i];
+    if (event.type !== "tool_progress") {
+      out = reduce(out, event);
+      continue;
+    }
+    const labels = [event.label];
+    while (i + 1 < events.length) {
+      const next = events[i + 1];
+      if (next.type !== "tool_progress" || next.id !== event.id) break;
+      labels.push(next.label);
+      i += 1;
+    }
+    out = addProgress(out, event.id, labels);
+  }
+  return out;
 }
 
 /** Appends to the open assistant entry, opening one if needed. */
