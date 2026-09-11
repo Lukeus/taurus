@@ -511,10 +511,11 @@ cargo run -p taurus-host --example notes -- --check
 
 # What a sweep costs on a real workspace, and that it stays quiet when nothing
 # changed. Needs no provider. Run it on something large before touching the
-# caps in `sweep.rs` — every command pays this twice. It reports a turn's first
-# command, its second, and a turn keeping no cache between them: the second
-# should open almost nothing, and two numbers that match mean the cache is not
-# working. `READ_THREADS` is a measured ceiling and not a core count — past a
+# caps in `sweep.rs` — every command pays this twice. It reports the first
+# command in a workspace, the one after it, and a sweep keeping no cache: the
+# second should open almost nothing, and two numbers that match mean the cache
+# is not working. The second is also what the next turn's first command costs,
+# because the host holds the cache for the workspace rather than for a turn. `READ_THREADS` is a measured ceiling and not a core count — past a
 # handful of readers a sweep gets slower, and by eight it is slower than one
 # thread.
 cargo run -p taurus-tools --example sweep -- .

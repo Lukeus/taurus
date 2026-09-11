@@ -215,17 +215,18 @@ and they are the minority.
   rewrites a file to the same length within the same tick would slip through.
   Closing it means reading every file twice per command.
 
-  The commands after the first in a turn reuse what the previous one read,
-  keyed on that same length and modification time, so a workspace is read once
-  per turn rather than once per command. That is the same comparison and so the
+  Every command after the first in a workspace reuses what the previous one
+  read, keyed on that same length and modification time — across turns, since
+  the host holds the cache for the workspace — so a workspace is read once
+  rather than before every command. That is the same comparison and so the
   same blind spot, but it reaches one case further. Where a sweep on its own
   would merely fail to *notice* an invisible change, a reused read can also
   carry the wrong pre-image: if a file is rewritten to the same length and
   timestamp between two commands, and a later command in the same turn changes
   it visibly, what a rewind puts back is the version from before the invisible
   edit. It is bounded on both ends — reaching it needs a deliberate
-  same-length, same-tick rewrite in the window between two commands of one
-  turn, and a file the turn already recorded is unaffected, because the first
+  same-length, same-tick rewrite in the window between two commands, and a
+  file the turn already recorded is unaffected, because the first
   pre-image of a turn is the one that is kept. Closing it is the same read
   every file twice, in the same place.
 - **A pty command's stdout and stderr cannot be told apart.** A terminal has one

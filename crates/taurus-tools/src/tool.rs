@@ -177,12 +177,15 @@ pub struct ToolContext {
     /// recorder, which is how a sub-agent's writes land in the turn that
     /// spawned it.
     pub checkpoints: Option<Arc<crate::checkpoint::TurnRecorder>>,
-    /// What the last command in this turn read of the workspace, so the next
-    /// one need not read it again. See [`crate::sweep::SweepCache`].
+    /// What the last command read of the workspace, so the next one need not
+    /// read it again. See [`crate::sweep::SweepCache`].
     ///
-    /// Opened and closed with `checkpoints` because it has no other use: a
-    /// sweep only runs when there is a turn to record it into. Shared by a
-    /// clone of this context for the same reason the recorder is — a
+    /// The host hands every turn the one it holds for the workspace, so a
+    /// turn's first command reuses what the last turn's commands read. Where
+    /// nothing outlives the turn — an example, a test — `with_checkpoints`
+    /// opens one for the turn alone, because a sweep only runs when there is a
+    /// turn to record it into. Shared by a clone of this context for the same
+    /// reason the recorder is — a
     /// sub-agent's commands sweep the same workspace, and reading it a second
     /// time on their behalf would answer the same question twice.
     pub sweeps: Option<Arc<crate::sweep::SweepCache>>,
@@ -319,8 +322,23 @@ impl ToolContext {
         self.checkpoints = Some(recorder);
         // Together, always. Every caller that opens a turn wants both, and one
         // without the other is either a sweep with nowhere to record or a turn
-        // that re-reads the workspace before every command it runs.
-        self.sweeps = Some(Arc::new(crate::sweep::SweepCache::new()));
+        // that re-reads the workspace before every command it runs. A cache
+        // the caller already handed over is kept — see `with_sweep_cache`.
+        if self.sweeps.is_none() {
+            self.sweeps = Some(Arc::new(crate::sweep::SweepCache::new()));
+        }
+        self
+    }
+
+    /// Shares a cache of what earlier commands read, held by the caller for
+    /// longer than one turn.
+    ///
+    /// The host holds one per workspace, so a turn's first command costs what
+    /// its second does. See [`crate::sweep::SweepCache`] for what that keeps
+    /// resident.
+    #[must_use]
+    pub fn with_sweep_cache(mut self, cache: Arc<crate::sweep::SweepCache>) -> Self {
+        self.sweeps = Some(cache);
         self
     }
 

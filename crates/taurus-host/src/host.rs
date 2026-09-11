@@ -216,6 +216,12 @@ pub struct Host {
     /// changes, and by the window on its way out — see
     /// [`taurus_tools::Jobs::stop_all`].
     jobs: Arc<taurus_tools::Jobs>,
+    /// What the last command read of the workspace, shared by every turn in
+    /// it. See [`taurus_tools::SweepCache`]: held here, a turn's first command
+    /// reads only what changed since the last turn's commands, where one per
+    /// turn read the whole workspace again first. Cleared when the workspace
+    /// changes.
+    sweeps: Arc<taurus_tools::SweepCache>,
     /// Shared rather than owned so sub-agents can be handed the same registry:
     /// it has no spawn tool, which is what caps delegation depth.
     registry: Arc<RwLock<ToolRegistry>>,
@@ -287,6 +293,7 @@ impl Host {
             engine: Arc::new(taurus_data::DataFusionEngine::new()),
             catalog: Arc::new(RwLock::new(SkillCatalog::default())),
             jobs: Arc::new(taurus_tools::Jobs::new()),
+            sweeps: Arc::new(taurus_tools::SweepCache::new()),
             indexing: Arc::new(taurus_index::Indexing::new()),
             instructions: RwLock::new(Vec::new()),
             instructions_seen: RwLock::new(Freshness::default()),
@@ -986,6 +993,9 @@ impl Host {
         // cwd is about to stop meaning what it meant, and its changes would be
         // swept against a workspace it never ran in.
         self.jobs.forget_all();
+        // What the last workspace's commands read is keyed by its paths and
+        // useless here, and holding it would keep that workspace in memory.
+        self.sweeps.clear();
 
         *self.workspace.write().await = canonical.clone();
         // Rebuilt with this workspace's trust state, so a committed allowlist
@@ -1543,6 +1553,10 @@ impl Host {
             // that started it, so a fresh set per turn would lose every one of
             // them.
             .with_jobs(self.jobs.clone())
+            // The same for what earlier commands read of the workspace. Held
+            // here rather than per turn, a turn's first command costs what its
+            // second does.
+            .with_sweep_cache(self.sweeps.clone())
     }
 
     /// Ends every background command, for a window closing.
@@ -3412,6 +3426,29 @@ mod tests {
             Arc::new(NoProposals),
         );
         (host, home)
+    }
+
+    #[tokio::test]
+    async fn every_turn_in_a_workspace_shares_what_its_commands_read() {
+        // Built the way `build_agent` builds a turn's context. A cache per
+        // turn read the whole workspace again before each turn's first
+        // command; the host holds one for the workspace instead, and opening
+        // a turn's checkpoints must not swap in a fresh one.
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _home) = host(dir.path());
+        let mut caches = Vec::new();
+        for (session, prompt) in [("s1", "first turn"), ("s2", "second turn")] {
+            let recorder = host
+                .checkpoints()
+                .await
+                .begin_turn(session, dir.path(), prompt);
+            let context = host
+                .tool_context(CancellationToken::new())
+                .await
+                .with_checkpoints(recorder);
+            caches.push(context.sweeps.expect("a turn's context sweeps"));
+        }
+        assert!(Arc::ptr_eq(&caches[0], &caches[1]));
     }
 
     fn keyed_provider(id: &str, base_url: &str) -> ProviderConfig {
