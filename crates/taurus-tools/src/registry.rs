@@ -148,16 +148,16 @@ impl ToolRegistry {
         // ordering is the whole security argument for honoring a hook file at
         // all — see `taurus_hooks`.
         let pre = hook_payload(&tool, &input, ctx, taurus_hooks::HookEvent::PreToolUse);
+        // What a passing pre hook printed, held until the call has a result to
+        // carry it. A guard that warns "you are on main" and exits 0 is saying
+        // something the model needs, and there is nothing to attach it to yet.
+        let mut pre_notes = Vec::new();
         if let (Some(runner), Some(payload)) = (&ctx.hooks, &pre) {
             let outcome = runner.run(payload).await;
             if let Some(reason) = outcome.denied {
                 return Err(ToolError::Failed(reason));
             }
-            // A passing hook's output is not dropped: a formatter that says
-            // what it changed is telling the model something it needs.
-            if !outcome.notes.is_empty() {
-                debug!(tool = name, notes = outcome.notes.len(), "hook notes");
-            }
+            pre_notes = outcome.notes;
         }
 
         // After the permission check, so a denied call leaves no trace, and
@@ -199,6 +199,12 @@ impl ToolRegistry {
         // about which of its calls produced it.
         if let Ok(output) = &mut result {
             vet_images(name, output);
+        }
+
+        // First among the notes, because it was said first: before the call
+        // ran, about the call.
+        for note in &pre_notes {
+            annotate(&mut result, note);
         }
 
         // Unconditionally: a command that failed, timed out, or was canceled
@@ -540,6 +546,31 @@ mod tests {
 
         // The model has to be told, or it reads the file back to find out.
         assert!(output.to_text().contains("reformatted 1 file"), "{output}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pre_call_hook_that_passes_is_still_heard() {
+        let (ctx, _dir) = test_ctx();
+        let scripts = TempDir::new().unwrap();
+        let warn = hook_script(scripts.path(), "branch", "echo 'you are on main'");
+        let ctx = ctx.with_hooks(Arc::new(taurus_hooks::HookRunner::new(vec![(
+            "branch".into(),
+            hook(warn, taurus_hooks::HookEvent::PreToolUse),
+        )])));
+
+        let output = ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "hi"}),
+                &ctx,
+            )
+            .await
+            .expect("a hook that exits 0 lets the call through");
+
+        // Exit 0 means "go ahead". What it printed on the way is the reason
+        // somebody wrote it, and the model is the one who needs to read it.
+        assert!(output.to_text().contains("you are on main"), "{output}");
     }
 
     #[cfg(unix)]
