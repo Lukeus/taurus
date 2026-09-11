@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DataTable } from "../lib/api";
 import { ink, suggest, type Suggestion } from "../lib/sql";
@@ -145,7 +145,9 @@ export function SqlEditor({
     });
   };
 
-  const painted = ink(value);
+  // Only when the text moves. Walking the completion list re-renders this box
+  // on every arrow and every hover, and none of that changes a character.
+  const painted = useMemo(() => ink(value), [value]);
 
   return (
     <div className="sql-editor">

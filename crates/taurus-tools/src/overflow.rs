@@ -13,6 +13,7 @@
 //! window, and it had none of this. The safeguards should not be weakest around
 //! the least trusted thing in the process.
 
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use crate::tool::ToolContext;
@@ -44,12 +45,13 @@ pub fn cut(text: &str, cap: usize, gap: impl FnOnce(usize) -> String) -> String 
     let head = floor_boundary(text, head_len);
     let tail_start = text.len() - (cap - head_len);
     let tail = ceil_boundary(text, tail_start);
-    format!(
-        "{}\n\n[… {} …]\n\n{}",
-        &text[..head],
-        gap(text.len() - cap),
-        &text[tail..]
-    )
+    join_ends(&text[..head], &gap(text.len() - cap), &text[tail..])
+}
+
+/// A head and a tail, with the sentence that stands for what went between
+/// them, laid out the one way every cut here is.
+pub fn join_ends(head: &str, gap: &str, tail: &str) -> String {
+    format!("{head}\n\n[… {gap} …]\n\n{tail}")
 }
 
 /// Writes text out whole and says where it went.
@@ -62,29 +64,88 @@ pub fn cut(text: &str, cap: usize, gap: impl FnOnce(usize) -> String) -> String 
 /// `label` distinguishes two spills from one call — the shell writes `stdout`
 /// and `stderr` separately — and becomes part of the filename.
 pub fn spill(text: &str, label: &str, ctx: &ToolContext) -> Option<PathBuf> {
-    let dir = ctx.command_output.as_ref()?;
-    let path = dir.join(format!(
-        "{}-{}-{}.txt",
-        slug(ctx.session_id.as_deref().unwrap_or("session")),
-        slug(ctx.call_id.as_deref().unwrap_or("command")),
-        slug(label)
-    ));
-    // Megabytes written and a directory listed and pruned, at the end of every
-    // command whose output was cut — from inside the shell's, an MCP server's,
-    // or a skill script's tool, none of which can hand it to a blocking thread
-    // of its own. See [`blocking`].
+    let mut spilling = SpillTo::new(label, ctx)?.open()?;
+    // Megabytes written, at the end of every command whose output was cut —
+    // from inside the shell's, an MCP server's, or a skill script's tool, none
+    // of which can hand it to a blocking thread of its own. See [`blocking`].
     blocking(|| {
-        std::fs::create_dir_all(dir).ok()?;
-        // Before the write rather than after, so the directory is at its bound
-        // once this one lands rather than one over it until the next command
-        // runs.
-        prune(dir, KEPT.saturating_sub(1));
-        std::fs::write(&path, text).ok()?;
-        // Canonicalized because this is about to be handed back as a path to
-        // read, and the guard that decides whether it may be read
-        // canonicalizes both sides before comparing them.
-        path.canonicalize().ok()
+        spilling.write(text.as_bytes());
+        spilling.finish()
     })
+}
+
+/// Where a stream will be written whole, settled before any of it exists.
+///
+/// For a stream too long to hold, which is written as it arrives rather than
+/// all at once at the end — see [`crate::capture`]. [`spill`] is the same
+/// thing for text already in hand.
+#[derive(Debug)]
+pub struct SpillTo {
+    dir: PathBuf,
+    path: PathBuf,
+}
+
+impl SpillTo {
+    /// `None` when there is nowhere to put it, which is every caller outside a
+    /// session. `label` becomes part of the filename, as it does for [`spill`].
+    pub fn new(label: &str, ctx: &ToolContext) -> Option<Self> {
+        let dir = ctx.command_output.clone()?;
+        let path = dir.join(format!(
+            "{}-{}-{}.txt",
+            slug(ctx.session_id.as_deref().unwrap_or("session")),
+            slug(ctx.call_id.as_deref().unwrap_or("command")),
+            slug(label)
+        ));
+        Some(Self { dir, path })
+    }
+
+    /// Starts the file. `None`, silently, when it cannot be: the tool ran, and
+    /// losing the copy costs the model a second look at the middle rather than
+    /// the result.
+    pub fn open(&self) -> Option<Spilling> {
+        blocking(|| {
+            std::fs::create_dir_all(&self.dir).ok()?;
+            // Before the write rather than after, so the directory is at its
+            // bound once this one lands rather than one over it until the next
+            // command runs.
+            prune(&self.dir, KEPT.saturating_sub(1));
+            let file = std::fs::File::create(&self.path).ok()?;
+            Some(Spilling {
+                file: Some(BufWriter::with_capacity(256 * 1024, file)),
+                path: self.path.clone(),
+            })
+        })
+    }
+}
+
+/// A spill being written.
+#[derive(Debug)]
+pub struct Spilling {
+    /// Gone after a failed write, so the rest are skipped and the gap says only
+    /// how much went — never a path to a file that stops partway.
+    file: Option<BufWriter<std::fs::File>>,
+    path: PathBuf,
+}
+
+impl Spilling {
+    pub fn write(&mut self, bytes: &[u8]) {
+        if let Some(file) = &mut self.file {
+            if file.write_all(bytes).is_err() {
+                self.file = None;
+            }
+        }
+    }
+
+    /// The path to hand back as one to read, if every byte made it there.
+    pub fn finish(self) -> Option<PathBuf> {
+        let mut file = self.file?;
+        file.flush().ok()?;
+        drop(file);
+        // Canonicalized because this is about to be handed back as a path to
+        // read, and the guard that decides whether it may be read canonicalizes
+        // both sides before comparing them.
+        self.path.canonicalize().ok()
+    }
 }
 
 /// Runs blocking file work without stalling the async runtime's other tasks.

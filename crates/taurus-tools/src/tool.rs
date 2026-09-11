@@ -168,6 +168,9 @@ pub struct ToolContext {
     /// nothing here widens what may be written, and the workspace remains the
     /// only place this agent changes.
     pub readable_roots: Vec<PathBuf>,
+    /// The workspace in canonical form, resolved on the first path check and
+    /// shared by every clone. See [`crate::path_guard::HeldRoot`].
+    root: crate::path_guard::HeldRoot,
     pub permissions: Arc<PermissionEngine>,
     pub cancel: CancellationToken,
     /// The open turn that file changes are checkpointed into.
@@ -177,12 +180,15 @@ pub struct ToolContext {
     /// recorder, which is how a sub-agent's writes land in the turn that
     /// spawned it.
     pub checkpoints: Option<Arc<crate::checkpoint::TurnRecorder>>,
-    /// What the last command in this turn read of the workspace, so the next
-    /// one need not read it again. See [`crate::sweep::SweepCache`].
+    /// What the last command read of the workspace, so the next one need not
+    /// read it again. See [`crate::sweep::SweepCache`].
     ///
-    /// Opened and closed with `checkpoints` because it has no other use: a
-    /// sweep only runs when there is a turn to record it into. Shared by a
-    /// clone of this context for the same reason the recorder is — a
+    /// The host hands every turn the one it holds for the workspace, so a
+    /// turn's first command reuses what the last turn's commands read. Where
+    /// nothing outlives the turn — an example, a test — `with_checkpoints`
+    /// opens one for the turn alone, because a sweep only runs when there is a
+    /// turn to record it into. Shared by a clone of this context for the same
+    /// reason the recorder is — a
     /// sub-agent's commands sweep the same workspace, and reading it a second
     /// time on their behalf would answer the same question twice.
     pub sweeps: Option<Arc<crate::sweep::SweepCache>>,
@@ -250,6 +256,7 @@ impl ToolContext {
         Self {
             workspace: workspace.into(),
             readable_roots: Vec::new(),
+            root: crate::path_guard::HeldRoot::default(),
             permissions,
             cancel,
             checkpoints: None,
@@ -319,8 +326,23 @@ impl ToolContext {
         self.checkpoints = Some(recorder);
         // Together, always. Every caller that opens a turn wants both, and one
         // without the other is either a sweep with nowhere to record or a turn
-        // that re-reads the workspace before every command it runs.
-        self.sweeps = Some(Arc::new(crate::sweep::SweepCache::new()));
+        // that re-reads the workspace before every command it runs. A cache
+        // the caller already handed over is kept — see `with_sweep_cache`.
+        if self.sweeps.is_none() {
+            self.sweeps = Some(Arc::new(crate::sweep::SweepCache::new()));
+        }
+        self
+    }
+
+    /// Shares a cache of what earlier commands read, held by the caller for
+    /// longer than one turn.
+    ///
+    /// The host holds one per workspace, so a turn's first command costs what
+    /// its second does. See [`crate::sweep::SweepCache`] for what that keeps
+    /// resident.
+    #[must_use]
+    pub fn with_sweep_cache(mut self, cache: Arc<crate::sweep::SweepCache>) -> Self {
+        self.sweeps = Some(cache);
         self
     }
 
@@ -353,17 +375,30 @@ impl ToolContext {
 
     /// Resolves a path a tool is about to change. Workspace only.
     pub fn resolve(&self, candidate: &str) -> Result<PathBuf, ToolError> {
-        crate::path_guard::resolve(&self.workspace, candidate)
+        let root = self.root.resolve(&self.workspace)?;
+        crate::path_guard::resolve_under(&root, &[], candidate)
     }
 
     /// Resolves a path a tool is only going to read, which may also sit in one
     /// of the skill directories the session loaded.
     pub fn resolve_read(&self, candidate: &str) -> Result<PathBuf, ToolError> {
-        crate::path_guard::resolve_within(&self.workspace, &self.readable_roots, candidate)
+        let root = self.root.resolve(&self.workspace)?;
+        crate::path_guard::resolve_under(&root, &self.readable_roots, candidate)
+    }
+
+    /// The workspace in the canonical form every path check compares against.
+    ///
+    /// For a caller that shows paths from where a context cannot follow — a
+    /// search's worker threads — through [`crate::path_guard::display_under`].
+    pub(crate) fn canonical_workspace(&self) -> Result<PathBuf, ToolError> {
+        self.root.resolve(&self.workspace)
     }
 
     pub fn display(&self, path: &Path) -> String {
-        crate::path_guard::display(&self.workspace, path)
+        match self.root.resolve(&self.workspace) {
+            Ok(root) => crate::path_guard::display_under(&root, path),
+            Err(_) => crate::path_guard::display(&self.workspace, path),
+        }
     }
 }
 

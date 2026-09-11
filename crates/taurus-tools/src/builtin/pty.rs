@@ -40,6 +40,8 @@ use std::time::Duration;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::mpsc;
 
+use crate::capture::{Capture, Captured, Utf8Carry};
+use crate::overflow::SpillTo;
 use crate::tool::{ToolError, ToolProgress};
 
 /// The window a program is told it has.
@@ -71,16 +73,24 @@ pub enum PtyError {
     /// The command ran out its time and was killed. `printed` is what it had
     /// said by then, for the caller to fit to the model and report. Displayed
     /// as the whole message, advice included, for a caller that does not.
-    #[error("{}", super::shell::timed_out(*.after, true, .printed))]
-    TimedOut { after: Duration, printed: String },
+    #[error("{}", super::shell::timed_out(*.after, true, &.printed.lossy_text()))]
+    TimedOut { after: Duration, printed: Captured },
 }
 
 /// What a finished pty command produced.
 #[derive(Debug)]
 pub struct PtyOutput {
-    /// stdout and stderr interleaved, as a terminal would show them.
-    pub text: String,
+    /// stdout and stderr interleaved, as a terminal would show them, with the
+    /// terminal's escape sequences taken off.
+    pub output: Captured,
     pub exit_code: Option<i32>,
+}
+
+/// Where a pty command's output goes besides the answer: the screen, and the
+/// file a stream too long to hold is written to. See [`crate::capture`].
+pub struct Outputs {
+    pub progress: Option<Arc<dyn ToolProgress>>,
+    pub spill_to: Option<SpillTo>,
 }
 
 /// Runs `command` under a pseudo-terminal.
@@ -96,7 +106,7 @@ pub async fn run(
     stdin: Option<String>,
     timeout: Duration,
     cancel: tokio_util::sync::CancellationToken,
-    progress: Option<Arc<dyn ToolProgress>>,
+    outputs: Outputs,
 ) -> Result<PtyOutput, PtyError> {
     let mut builder = CommandBuilder::new(program.as_ref());
     for arg in args {
@@ -110,8 +120,9 @@ pub async fn run(
     builder.env("TERM", "xterm-256color");
 
     let (tx, rx) = mpsc::channel::<String>(super::shell::STREAM_BACKLOG);
-    let forward =
-        progress.map(|progress| tokio::spawn(super::shell::batch_to_progress(rx, progress)));
+    let forward = outputs
+        .progress
+        .map(|progress| tokio::spawn(super::shell::batch_to_progress(rx, progress)));
 
     // Handed back before the worker blocks, and the reason this is not simply
     // an `abort()` on the task: a blocking task cannot be cancelled. Left to
@@ -123,7 +134,7 @@ pub async fn run(
     // What the command has printed, held here as well as by the worker so it
     // outlives a worker that is given up on. A timeout is that case, and the
     // output up to a hang is usually the part that says what it waited for.
-    let printed: Arc<Mutex<Vec<u8>>> = Arc::default();
+    let printed = Arc::new(Mutex::new(Some(Capture::new(outputs.spill_to))));
     let mut worker = tokio::task::spawn_blocking({
         let printed = printed.clone();
         move || pump(builder, stdin, tx, killer_tx, printed)
@@ -161,13 +172,10 @@ pub async fn run(
             // it reading, so the wait has a bound, and what was read by then
             // is reported instead.
             let text = match tokio::time::timeout(super::shell::KILL_GRACE, &mut worker).await {
-                Ok(Ok(Ok(output))) => output.text,
+                Ok(Ok(Ok(output))) => output.output,
                 _ => {
                     handle.abort();
-                    let raw = std::mem::take(
-                        &mut *printed.lock().unwrap_or_else(PoisonError::into_inner),
-                    );
-                    strip_ansi(&String::from_utf8_lossy(&raw))
+                    finished(&printed)
                 }
             };
             Err(PtyError::TimedOut {
@@ -248,7 +256,7 @@ fn pump(
     stdin: Option<String>,
     tx: mpsc::Sender<String>,
     killer_tx: tokio::sync::oneshot::Sender<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
-    printed: Arc<Mutex<Vec<u8>>>,
+    printed: Arc<Mutex<Option<Capture>>>,
 ) -> Result<PtyOutput, PtyError> {
     // The one failure that means "this machine cannot do ptys" rather than
     // "this command went wrong". On Windows it is what a missing or unusable
@@ -302,18 +310,22 @@ fn pump(
     drop(pair.slave);
 
     let mut buf = [0u8; 8192];
+    let mut carry = Utf8Carry::default();
     loop {
         match reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                printed
+                if let Some(capture) = printed
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .extend_from_slice(&buf[..n]);
+                    .as_mut()
+                {
+                    capture.push(&buf[..n]);
+                }
                 // Never blocks: a display that has fallen behind loses lines
                 // rather than stalling the child, the same bargain the piped
                 // path makes.
-                let _ = tx.try_send(strip_ansi(&String::from_utf8_lossy(&buf[..n])));
+                let _ = tx.try_send(strip_ansi(&carry.text(&buf[..n])));
             }
         }
     }
@@ -322,13 +334,27 @@ fn pump(
         .wait()
         .map_err(|e| ToolError::Failed(format!("cannot wait for the command: {e}")))?;
 
-    let raw = std::mem::take(&mut *printed.lock().unwrap_or_else(PoisonError::into_inner));
     Ok(PtyOutput {
-        text: strip_ansi(&String::from_utf8_lossy(&raw)),
+        output: finished(&printed),
         // `portable-pty` reports one unsigned code on every platform rather
         // than a signal, so a killed child arrives here as its shell's code.
         exit_code: Some(status.exit_code() as i32),
     })
+}
+
+/// What a pty command printed, with its escape sequences off the part the
+/// model reads.
+///
+/// Taken rather than copied: whichever of the worker and the timeout gets here
+/// first has it, and a worker still reading afterwards has nothing to add to.
+fn finished(printed: &Mutex<Option<Capture>>) -> Captured {
+    printed
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .map(Capture::finish)
+        .unwrap_or(Captured::Whole(Vec::new()))
+        .map_text(strip_ansi)
 }
 
 /// Removes terminal control sequences from output.
@@ -426,6 +452,13 @@ pub fn strip_ansi(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_of(captured: &Captured) -> String {
+        match captured {
+            Captured::Whole(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+            Captured::Ends { .. } => panic!("a test's output is held whole"),
+        }
+    }
 
     #[test]
     fn colour_codes_are_removed_but_the_words_are_not() {
@@ -528,11 +561,18 @@ mod tests {
             None,
             Duration::from_secs(10),
             tokio_util::sync::CancellationToken::new(),
-            None,
+            Outputs {
+                progress: None,
+                spill_to: None,
+            },
         )
         .await
         .expect("the command runs");
-        assert!(out.text.contains("tty"), "{:?}", out.text);
+        assert!(
+            text_of(&out.output).contains("tty"),
+            "{:?}",
+            text_of(&out.output)
+        );
         assert_eq!(out.exit_code, Some(0));
     }
 
@@ -550,11 +590,18 @@ mod tests {
             Some("yes\n".into()),
             Duration::from_secs(10),
             tokio_util::sync::CancellationToken::new(),
-            None,
+            Outputs {
+                progress: None,
+                spill_to: None,
+            },
         )
         .await
         .expect("the command runs");
-        assert!(out.text.contains("got:yes"), "{:?}", out.text);
+        assert!(
+            text_of(&out.output).contains("got:yes"),
+            "{:?}",
+            text_of(&out.output)
+        );
     }
 
     #[tokio::test]
@@ -571,7 +618,10 @@ mod tests {
             None,
             Duration::from_secs(10),
             tokio_util::sync::CancellationToken::new(),
-            None,
+            Outputs {
+                progress: None,
+                spill_to: None,
+            },
         )
         .await
         .expect("a non-zero exit is not an error here");
@@ -593,7 +643,10 @@ mod tests {
             None,
             Duration::from_millis(400),
             tokio_util::sync::CancellationToken::new(),
-            None,
+            Outputs {
+                progress: None,
+                spill_to: None,
+            },
         )
         .await
         .expect_err("waiting for input must not hang the session");

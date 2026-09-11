@@ -2,6 +2,7 @@
 
 pub mod budget;
 pub mod builtin;
+pub mod capture;
 pub mod checkpoint;
 pub mod coerce;
 pub mod diff;

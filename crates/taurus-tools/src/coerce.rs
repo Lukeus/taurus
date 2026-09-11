@@ -43,18 +43,18 @@ fn coerce_inner(value: Value, schema: &Value, root: &Value, depth: usize) -> Val
         }
     }
 
-    match type_names(&schema) {
+    match type_names(schema) {
         types if types.iter().any(|t| t == "object") => match value {
-            Value::Object(map) => Value::Object(coerce_object(map, &schema, root, depth)),
+            Value::Object(map) => Value::Object(coerce_object(map, schema, root, depth)),
             other => other,
         },
         types if types.iter().any(|t| t == "array") => match value {
             Value::Array(items) => {
-                let item_schema = schema.get("items").cloned().unwrap_or(Value::Null);
+                let item_schema = schema.get("items").unwrap_or(&Value::Null);
                 Value::Array(
                     items
                         .into_iter()
-                        .map(|item| coerce_inner(item, &item_schema, root, depth + 1))
+                        .map(|item| coerce_inner(item, item_schema, root, depth + 1))
                         .collect(),
                 )
             }
@@ -135,21 +135,26 @@ fn type_names(schema: &Value) -> Vec<String> {
 }
 
 /// Follows a local `#/$defs/Name` or `#/definitions/Name` reference.
-fn resolve_ref(schema: &Value, root: &Value) -> Value {
+///
+/// Borrowed, not copied: the answer is either the node it was handed or one
+/// inside `root`, and both outlive the walk. Copying it cloned every node the
+/// walk visited — for an MCP tool with a large schema, the whole schema again
+/// on every call.
+fn resolve_ref<'a>(schema: &'a Value, root: &'a Value) -> &'a Value {
     let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
-        return schema.clone();
+        return schema;
     };
     let Some(path) = reference.strip_prefix("#/") else {
-        return schema.clone();
+        return schema;
     };
     let mut cursor = root;
     for segment in path.split('/') {
         match cursor.get(segment) {
             Some(next) => cursor = next,
-            None => return schema.clone(),
+            None => return schema,
         }
     }
-    cursor.clone()
+    cursor
 }
 
 #[cfg(test)]

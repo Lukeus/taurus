@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 
 import { ChartCard } from "./ChartCard";
@@ -15,6 +15,7 @@ import { Attachments } from "./Attachments";
 import { QuestionsCard } from "./QuestionsCard";
 import { TableCard } from "./TableCard";
 import { duration, plural } from "../lib/format";
+import { useStable } from "../lib/stable";
 import type { Answer, LineRange } from "../lib/api";
 import type { Entry } from "../state/store";
 
@@ -216,6 +217,7 @@ export function Transcript({
   const openDocument = useStable(onOpenDocument);
   const openNote = useStable(onOpenNote);
   const runQuery = useStable(onRunQuery);
+  const editPrompt = useStable(onEditPrompt);
 
   // Follow the stream, but stop fighting the user the moment they scroll up.
   useEffect(() => {
@@ -295,7 +297,7 @@ export function Transcript({
           onRunQuery={runQuery}
           // The newest turn and nothing else. See the prop.
           onRetry={i === conversation.length - 1 ? onRetry : undefined}
-          onEditPrompt={onEditPrompt}
+          onEditPrompt={editPrompt}
         />
       ))}
       <div ref={bottom} />
@@ -374,35 +376,6 @@ export function turns(entries: Entry[]): Turn[] {
 }
 
 /**
- * One function identity for the life of the component, always calling the
- * newest one it was given.
- *
- * The identity is what the memos compare; the freshness is what keeps a
- * callback from closing over a stale render. Without the second half this would
- * be a cache that answers questions with last week's answer.
- */
-function useStable<A extends unknown[]>(
-  fn: (...args: A) => void,
-): (...args: A) => void;
-function useStable<A extends unknown[]>(
-  fn: ((...args: A) => void) | undefined,
-): ((...args: A) => void) | undefined;
-function useStable<A extends unknown[]>(
-  fn: ((...args: A) => void) | undefined,
-): ((...args: A) => void) | undefined {
-  const held = useRef(fn);
-  held.current = fn;
-
-  const stable = useCallback((...args: A) => held.current?.(...args), []);
-
-  // Absence is meaningful further down — a row offers to open a delegate's
-  // conversation only where there is somewhere to open one — so an absent
-  // callback has to stay absent rather than becoming a function that does
-  // nothing.
-  return fn === undefined ? undefined : stable;
-}
-
-/**
  * `turns(entries)`, carrying forward the objects it built last time for the
  * turns that did not change.
  *
@@ -436,18 +409,27 @@ function useStableTurns(entries: Entry[]): Turn[] {
 
 /**
  * `next`, with every turn that matches the one `previous` held at the same
- * position replaced by that one.
+ * position replaced by that one — and `previous` itself when every turn did.
  *
  * Pulled out of the hook because this is the whole property the memo depends
  * on, and a property worth a test of its own: a refactor that stops turns
  * carrying their identity forward would cost nothing visible and quietly
  * restore the behaviour this replaced.
+ *
+ * The list keeps its identity as well as the turns in it, because the list is
+ * what the search memo compares. A fresh array around the same turns reads as a
+ * different conversation, and while a search mark is up that meant every prompt
+ * and answer lowercased again on every render.
  */
 export function reuse(previous: Turn[], next: Turn[]): Turn[] {
-  return next.map((turn, i) => {
+  let same = previous.length === next.length;
+  const out = next.map((turn, i) => {
     const held = previous[i];
-    return held && unchanged(held, turn) ? held : turn;
+    if (held && unchanged(held, turn)) return held;
+    same = false;
+    return turn;
   });
+  return same ? previous : out;
 }
 
 /**

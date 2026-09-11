@@ -634,8 +634,8 @@ fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
 /// file and hold its true contents, so a later, visible change to it would be
 /// recorded against a correct pre-image. With the cache that pre-image is the
 /// older one. It takes a same-length, same-timestamp rewrite between two
-/// commands of the same turn to reach, which needs deliberate effort on a
-/// filesystem with fine-grained timestamps. See `docs/known-gaps.md`.
+/// commands to reach, which needs deliberate effort on a filesystem with
+/// fine-grained timestamps. See `docs/known-gaps.md`.
 ///
 /// # What it costs
 ///
@@ -643,8 +643,11 @@ fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
 /// [`MAX_TOTAL_BYTES`]. They are shared rather than copied — this holds the
 /// same [`Arc`]s the live sweep does — so the cache is a map of pointers, and
 /// the memory is the one copy of the workspace a sweep was going to make
-/// anyway. What changes is that it stays held until the turn ends rather than
-/// being dropped and rebuilt between commands.
+/// anyway. What changes is that it stays held rather than being dropped and
+/// rebuilt between commands — and where the host holds it, for as long as the
+/// workspace is open. So up to [`MAX_TOTAL_BYTES`] of pre-images stays resident
+/// between turns, which is the price of a turn's first command reading only
+/// what changed since the last one instead of the whole workspace again.
 #[derive(Default)]
 pub struct SweepCache {
     held: Mutex<HashMap<PathBuf, Cached>>,
@@ -660,6 +663,18 @@ struct Cached {
 impl SweepCache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Lets go of everything held, for a workspace being left.
+    ///
+    /// Its paths are absolute, so nothing here could match the next
+    /// workspace's files; holding them would only keep the last one's
+    /// contents in memory.
+    pub fn clear(&self) {
+        match self.held.lock() {
+            Ok(mut held) => held.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
     }
 
     /// Fills in every wanted slot the cache can still vouch for.
@@ -1388,6 +1403,21 @@ mod tests {
                 matches!(wanted[0].as_deref(), Some(State::Text { content }) if content == "one"),
                 "an unchanged file is what the cache is for"
             );
+        }
+
+        #[test]
+        fn a_cleared_cache_vouches_for_nothing() {
+            // What leaving a workspace does to it. The last workspace's reads
+            // are keyed by its paths, and carrying them on would only keep its
+            // contents in memory.
+            let cache = SweepCache::new();
+            let held = vec![stamp("a.txt", 3, 100)];
+            cache.keep(&held, &[text("one")]);
+            cache.clear();
+
+            let mut wanted = vec![None];
+            cache.fill(&held, &mut wanted);
+            assert!(wanted[0].is_none());
         }
 
         #[test]

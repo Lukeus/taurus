@@ -43,7 +43,10 @@ and they are the minority.
   — said in the pane where the gap is, rather than skipped over. A long test run
   is comfortably inside it; `cargo build -vv` on a cold cache is not. Raising it
   is a number, and the reason it is not higher is that this is held per command
-  for as long as the workspace is open, times eight.
+  for as long as the command is kept: the eight that may run at once, and the
+  sixteen newest that have finished. An older finished command is forgotten —
+  its output with it — once what it changed has been recorded, and asking for it
+  by number says so.
 - **A background command's tab cannot be typed into.** It is text and not a
   terminal, which follows from the gap below: there is no pseudo-terminal behind
   one of these, so there is nothing to type into and nothing drawing a screen. A
@@ -212,17 +215,18 @@ and they are the minority.
   rewrites a file to the same length within the same tick would slip through.
   Closing it means reading every file twice per command.
 
-  The commands after the first in a turn reuse what the previous one read,
-  keyed on that same length and modification time, so a workspace is read once
-  per turn rather than once per command. That is the same comparison and so the
+  Every command after the first in a workspace reuses what the previous one
+  read, keyed on that same length and modification time — across turns, since
+  the host holds the cache for the workspace — so a workspace is read once
+  rather than before every command. That is the same comparison and so the
   same blind spot, but it reaches one case further. Where a sweep on its own
   would merely fail to *notice* an invisible change, a reused read can also
   carry the wrong pre-image: if a file is rewritten to the same length and
   timestamp between two commands, and a later command in the same turn changes
   it visibly, what a rewind puts back is the version from before the invisible
   edit. It is bounded on both ends — reaching it needs a deliberate
-  same-length, same-tick rewrite in the window between two commands of one
-  turn, and a file the turn already recorded is unaffected, because the first
+  same-length, same-tick rewrite in the window between two commands, and a
+  file the turn already recorded is unaffected, because the first
   pre-image of a turn is the one that is kept. Closing it is the same read
   every file twice, in the same place.
 - **A pty command's stdout and stderr cannot be told apart.** A terminal has one
@@ -1027,16 +1031,21 @@ and they are the minority.
   joins against — which is what makes a committed recipe run on a fresh clone.
   A recipe that names loaded datasets instead still does not, and nothing warns
   you which kind you have written.
-- **A profile is a full scan every time, and it cannot be cancelled.** Nothing
-  is cached: a dataset entry points at a file anything can rewrite, and a
-  remembered row count is the kind of number that is right for a week and then
-  quietly wrong. So opening the pane on a multi-gigabyte file reads it again,
-  and clicking away leaves that read running to completion rather than stopping
-  it. Caching it properly means invalidating on the file's length and
-  modification time — the same rule the search index already uses — and
+- **A profile is a full scan every time, and it cannot be cancelled.** Its
+  result is not cached: a dataset entry points at a file anything can rewrite,
+  and a remembered profile is the kind of answer that is right for a week and
+  then quietly wrong. So opening the pane on a multi-gigabyte file reads it
+  again, and clicking away leaves that read running to completion rather than
+  stopping it. Caching it properly means invalidating on the file's length and
+  modification time — which is how a page's row count is now kept — and
   cancelling means threading a token through the engine trait. Neither is
-  written. What keeps this bearable today is that the scan is the *only*
-  expensive operation: loading reads a header, and paging is flat in the offset.
+  written for the profile. What keeps this bearable is that a profile is the
+  one thing that must read everything: loading reads a header, and paging
+  counts a file once per version of it. A page deep into a CSV or NDJSON file
+  still reads every row in front of it, because those formats have no index to
+  seek by. On an 80 MB file of two million rows, measured: 14.1 ms for the
+  first page and 16.3 ms for one at row 1,999,900 — against 14.4 and 29.0 ms
+  when every page counted the whole file again.
 - **`.json` means newline-delimited JSON, not a JSON array.** A file holding one
   big `[ {...}, {...} ]` is refused with a message rather than read, because
   reading it would mean parsing the whole thing into memory before any of the

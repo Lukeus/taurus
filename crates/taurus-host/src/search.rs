@@ -129,8 +129,8 @@ pub fn search(workspace: Option<&Path>, query: &str) -> SearchResults {
 
     let mut found = Vec::new();
     let mut more = 0;
-    for meta in sessions::list(workspace) {
-        let Some(hit) = search_one(meta, &needle, raw_ok) else {
+    for (meta, path) in sessions::listed(workspace) {
+        let Some(hit) = search_one(meta, &path, &needle, raw_ok) else {
             continue;
         };
         if found.len() < MAX_SESSIONS {
@@ -146,19 +146,19 @@ pub fn search(workspace: Option<&Path>, query: &str) -> SearchResults {
     }
 }
 
-fn search_one(meta: SessionMeta, needle: &str, raw_ok: bool) -> Option<SessionHit> {
+fn search_one(meta: SessionMeta, path: &Path, needle: &str, raw_ok: bool) -> Option<SessionHit> {
     // The prefilter, and the reason this runs on a keystroke: a conversation
     // that does not mention the query anywhere is one file read and nothing
     // else. Only when the query would survive JSON encoding unchanged — see
     // `needs_parsing` — because otherwise a raw miss is not a real miss.
-    if raw_ok && !sessions::mentions(&meta.id, needle) {
+    if raw_ok && !sessions::mentions_at(path, needle) {
         return None;
     }
     // Past the prefilter, the whole conversation is rebuilt. More than is
     // needed to decide *whether* it matches, but it is the one place that
     // knows how a transcript is laid out, and a second reader here would be a
     // second thing to keep in step with the format.
-    let loaded = sessions::load(&meta.id).ok()?;
+    let loaded = sessions::load_at(path).ok()?;
 
     let mut matches = Vec::new();
     let mut hits = 0;
@@ -260,6 +260,18 @@ mod tests {
         }
         let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
+    }
+
+    #[test]
+    fn it_finds_a_word_written_with_a_character_that_lowercases_into_it() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/kelvin");
+        record(
+            "k1",
+            workspace,
+            &[("the reading was 300 \u{212A}elvin", "noted")],
+        );
+        assert_eq!(ids(&search(Some(workspace), "kelvin")), vec!["k1"]);
     }
 
     fn ids(results: &SearchResults) -> Vec<&str> {

@@ -9,8 +9,10 @@ import type {
 } from "../lib/api";
 import {
   batchEvents,
+  closeOpen,
   datasetName,
   entriesFromMessages,
+  foldEvents,
   mergeChanged,
   mergeContext,
   mergeSession,
@@ -112,6 +114,56 @@ describe("transcript reducer", () => {
     const [a, b] = entries as Extract<Entry, { kind: "tool" }>[];
     expect(a.steps).toEqual([]);
     expect(b.steps).toEqual(["only B did this"]);
+  });
+
+  it("closes the open answer and leaves the finished ones as they were", () => {
+    // Every assistant entry used to be copied to close the one that was open,
+    // so each finished answer came out a new object on every tool call — and
+    // a new object is what the transcript's memo redraws.
+    const before = run(
+      text("first answer"),
+      { type: "tool_call_started", id: "t1", name: "read_file", preview: "Read a" },
+      { type: "tool_call_finished", id: "t1", ok: true, output: "a" },
+      text("second answer"),
+    );
+    const after = reduce(before, {
+      type: "tool_call_started",
+      id: "t2",
+      name: "read_file",
+      preview: "Read b",
+    });
+    expect(after[0]).toBe(before[0]);
+    expect(after[2]).toMatchObject({ kind: "assistant", text: "second answer", open: false });
+  });
+
+  it("hands back the same list when there is no open answer to close", () => {
+    const closed = run(text("done"), {
+      type: "tool_call_started",
+      id: "t1",
+      name: "read_file",
+      preview: "Read a",
+    });
+    expect(closeOpen(closed)).toBe(closed);
+  });
+
+  it("folds a frame of events to what they reduce to one at a time", () => {
+    const events: UiEvent[] = [
+      { type: "tool_call_started", id: "t1", name: "run_command", preview: "Run: build" },
+      ...Array.from({ length: 300 }, (_, i) => ({
+        type: "tool_progress" as const,
+        id: "t1",
+        label: `line ${i}\n`,
+      })),
+      { type: "tool_call_started", id: "t2", name: "run_command", preview: "Run: test" },
+      { type: "tool_progress", id: "t2", label: "t2 line\n" },
+      { type: "tool_progress", id: "t1", label: "t1 again\n" },
+      { type: "tool_call_finished", id: "t1", ok: true, output: "" },
+    ];
+    const shape = (entries: Entry[]) =>
+      entries.map((e) =>
+        e.kind === "tool" ? { id: e.id, status: e.status, steps: e.steps } : { kind: e.kind },
+      );
+    expect(shape(foldEvents(events, []))).toEqual(shape(events.reduce(reduce, [])));
   });
 
   it("leaves a resumed call untimed rather than inventing a duration", () => {

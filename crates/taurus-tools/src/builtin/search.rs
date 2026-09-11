@@ -2,8 +2,11 @@
 //! `target` out of the model's context without the model having to know to
 //! exclude them.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
 use async_trait::async_trait;
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -62,11 +65,27 @@ pub(crate) fn walker_skipping(
     root: &std::path::Path,
     skip: &'static [&'static str],
 ) -> ignore::Walk {
-    WalkBuilder::new(root)
+    walk_builder(root, skip).build()
+}
+
+/// The same traversal, spread over threads, for [`Grep`].
+///
+/// Grep's alone. Reading and matching every file is the part of a search that
+/// grows with the tree, and it is the part that runs in parallel. The sweep
+/// keeps its own measured ceiling on readers — see `READ_THREADS` in
+/// [`crate::sweep`] — and glob reads nothing but directory entries.
+fn parallel_walker(root: &std::path::Path) -> ignore::WalkParallel {
+    walk_builder(root, &[".git"]).build_parallel()
+}
+
+/// The one set of rules every traversal here is built from.
+fn walk_builder(root: &std::path::Path, skip: &'static [&'static str]) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(root);
+    builder
         .hidden(false)
         .require_git(false)
-        .filter_entry(move |entry| !skip.iter().any(|name| entry.file_name() == *name))
-        .build()
+        .filter_entry(move |entry| !skip.iter().any(|name| entry.file_name() == *name));
+    builder
 }
 
 /// How long a search may walk before it answers with what it has.
@@ -237,7 +256,7 @@ impl Tool for Grep {
             .case_insensitive(input.case_insensitive)
             .build()
             .map_err(|e| ToolError::InvalidInput(format!("bad regex: {e}")))?;
-        let whole_file_first = !is_anchored(&input.pattern);
+        let anchored = is_anchored(&input.pattern);
         let include = compile_glob(input.include.as_deref(), "include")?;
         let exclude = compile_glob(input.exclude.as_deref(), "exclude")?;
         let context = input.context.unwrap_or(0).min(MAX_CONTEXT);
@@ -246,60 +265,91 @@ impl Tool for Grep {
         let budget = ctx.budget;
         let files_only = input.files_only;
 
-        let paths = ctx.clone();
+        // Resolved once here rather than per hit, and handed to the walk's
+        // threads as a path: a context has no business crossing into them.
+        let shown_from = ctx.canonical_workspace()?;
         let ((files, capped), partial) = walk_within(ctx, move |stop| {
-            let mut files: Vec<FileMatches> = Vec::new();
-            let mut found = 0usize;
-            for entry in walker(&root).flatten() {
-                if found >= limit || stop.is_cancelled() {
-                    break;
-                }
-                if !entry.file_type().is_some_and(|t| t.is_file()) {
-                    continue;
-                }
-                let path = entry.path();
-                let rel = path.strip_prefix(&root).unwrap_or(path);
-                if let Some(m) = &include {
-                    if !m.is_match(rel) && !m.is_match(path) {
-                        continue;
+            let kept: Mutex<Vec<FileMatches>> = Mutex::new(Vec::new());
+            let found = AtomicUsize::new(0);
+            parallel_walker(&root).run(|| {
+                let (kept, found, regex, root, shown_from) =
+                    (&kept, &found, &regex, &root, &shown_from);
+                let (include, exclude) = (&include, &exclude);
+                Box::new(move |entry| {
+                    if found.load(Ordering::Relaxed) >= limit || stop.is_cancelled() {
+                        return WalkState::Quit;
                     }
-                }
-                if let Some(m) = &exclude {
-                    if m.is_match(rel) || m.is_match(path) {
-                        continue;
+                    let Ok(entry) = entry else {
+                        return WalkState::Continue;
+                    };
+                    if !entry.file_type().is_some_and(|t| t.is_file()) {
+                        return WalkState::Continue;
                     }
-                }
-                if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_GREP_FILE_BYTES {
-                    continue;
-                }
-                let Ok(bytes) = std::fs::read(path) else {
-                    continue;
-                };
-                // Binary by the rule ripgrep uses, and skipped silently because
-                // the model asked about text. Not "is this valid UTF-8": one
-                // Latin-1 byte in a comment fails that, and a file that fails
-                // it is one whose every match is reported as absent.
-                if looks_binary(&bytes) {
-                    continue;
-                }
-                let text = String::from_utf8_lossy(&bytes);
-                // One pass over the file answers "is there anything here at
-                // all", and in a repository most files are a no. Asking the
-                // same question line by line pays the match machinery's setup
-                // once per line to reach the same answer. Only safe for a
-                // pattern that cannot tell a line from a file — see
-                // [`is_anchored`].
-                if whole_file_first && !regex.is_match(&text) {
-                    continue;
-                }
-                if let Some(matched) =
-                    matches_in(paths.display(path), &text, &regex, context, limit - found)
-                {
-                    found += matched.count;
-                    files.push(matched);
-                }
-            }
-            (files, found >= limit)
+                    let path = entry.path();
+                    let rel = path.strip_prefix(root).unwrap_or(path);
+                    if let Some(m) = include {
+                        if !m.is_match(rel) && !m.is_match(path) {
+                            return WalkState::Continue;
+                        }
+                    }
+                    if let Some(m) = exclude {
+                        if m.is_match(rel) || m.is_match(path) {
+                            return WalkState::Continue;
+                        }
+                    }
+                    if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_GREP_FILE_BYTES {
+                        return WalkState::Continue;
+                    }
+                    let Ok(bytes) = std::fs::read(path) else {
+                        return WalkState::Continue;
+                    };
+                    // Binary by the rule ripgrep uses, and skipped silently
+                    // because the model asked about text. Not "is this valid
+                    // UTF-8": one Latin-1 byte in a comment fails that, and a
+                    // file that fails it is one whose every match is reported
+                    // as absent.
+                    if looks_binary(&bytes) {
+                        return WalkState::Continue;
+                    }
+                    let text = String::from_utf8_lossy(&bytes);
+                    let shown = crate::path_guard::display_under(shown_from, path);
+                    let room = limit.saturating_sub(found.load(Ordering::Relaxed));
+                    let Some(matched) = matches_in(shown, &text, regex, anchored, context, room)
+                    else {
+                        return WalkState::Continue;
+                    };
+                    // Counted as it is kept, so two threads finishing together
+                    // cannot both believe the last of the limit was theirs. The
+                    // file that crosses it is cut to what was left, and one
+                    // arriving after is dropped: the answer holds exactly the
+                    // limit, from whichever files got there first.
+                    let before = found.fetch_add(matched.count, Ordering::Relaxed);
+                    if before >= limit {
+                        return WalkState::Quit;
+                    }
+                    let matched = if before + matched.count > limit {
+                        match matches_in(
+                            matched.path,
+                            &text,
+                            regex,
+                            anchored,
+                            context,
+                            limit - before,
+                        ) {
+                            Some(cut) => cut,
+                            None => return WalkState::Continue,
+                        }
+                    } else {
+                        matched
+                    };
+                    kept.lock().unwrap().push(matched);
+                    WalkState::Continue
+                })
+            });
+            let files = kept
+                .into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (files, found.into_inner() >= limit)
         })
         .await?;
 
@@ -337,22 +387,19 @@ fn matches_in(
     path: String,
     text: &str,
     regex: &regex::Regex,
+    anchored: bool,
     context: usize,
     remaining: usize,
 ) -> Option<FileMatches> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut hits: Vec<usize> = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        if regex.is_match(line) {
-            hits.push(i);
-            if hits.len() >= remaining {
-                break;
-            }
-        }
-    }
+    let hits = if anchored {
+        hits_by_line(text, regex, remaining)
+    } else {
+        hits_by_search(text, regex, remaining)
+    };
     if hits.is_empty() {
         return None;
     }
+    let lines: Vec<&str> = text.lines().collect();
 
     let mut rows = Vec::new();
     // Where the next window may start, so two matches close enough for their
@@ -377,6 +424,68 @@ fn matches_in(
         rows,
         count: hits.len(),
     })
+}
+
+/// The matching lines, by testing each line on its own.
+///
+/// For a pattern that anchors, where `^` and `$` mean the ends of a line only
+/// when a line is what they are run over. See [`is_anchored`].
+fn hits_by_line(text: &str, regex: &regex::Regex, remaining: usize) -> Vec<usize> {
+    let mut hits = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if regex.is_match(line) {
+            hits.push(i);
+            if hits.len() >= remaining {
+                break;
+            }
+        }
+    }
+    hits
+}
+
+/// The matching lines, by searching the file once and going from match to
+/// match.
+///
+/// Testing every line pays the regex's setup once per line, so a file whose
+/// one match sits at the bottom was tested the whole way down it, and every
+/// file with no match at all was searched a second time line by line after
+/// the first search had already said no. Searching the text finds each match
+/// directly, and the line it sits in is counted rather than split out.
+///
+/// It finds exactly the lines [`hits_by_line`] would, for a pattern with no
+/// anchor. `.` does not cross a newline, so a match inside one line is a match
+/// of that line alone. A match that runs across a line break — a `\s` or a
+/// `[\s\S]` can — says nothing about the line it starts on, so that line is
+/// tested on its own, and the search goes on from the next line rather than
+/// from the end of the match, so a match it swallowed is still found.
+fn hits_by_search(text: &str, regex: &regex::Regex, remaining: usize) -> Vec<usize> {
+    let mut hits = Vec::new();
+    let mut line = 0usize;
+    let mut start = 0usize;
+    while start < text.len() && hits.len() < remaining {
+        let Some(found) = regex.find_at(text, start) else {
+            break;
+        };
+        let skipped = &text[start..found.start()];
+        line += skipped.bytes().filter(|&b| b == b'\n').count();
+        let begins = skipped.rfind('\n').map_or(start, |i| start + i + 1);
+        let ends = text[found.start()..]
+            .find('\n')
+            .map_or(text.len(), |i| found.start() + i);
+        // What `str::lines` hands the line-by-line test: no newline, and no
+        // carriage return in front of one.
+        let content = if ends < text.len() && text[..ends].ends_with('\r') {
+            ends - 1
+        } else {
+            ends
+        };
+        if found.end() <= content || regex.is_match(&text[begins..content]) {
+            hits.push(line);
+        }
+        start = ends + 1;
+        line += 1;
+    }
+    hits
 }
 
 /// Turns the walk's findings into what the model reads.
@@ -457,12 +566,11 @@ fn cap_note(limit: usize) -> String {
 
 /// Whether the pattern can tell a line from the file it is in.
 ///
-/// [`Grep`] matches line by line, so `^` is the start of every line. Run over
-/// a whole file the same pattern means the start of the file, and the two
-/// disagree — which the prefilter may only do in the direction of extra work.
-/// An unanchored pattern cannot disagree at all: `.` does not cross a newline,
-/// so a whole-file match lies inside one line, and that line matches on its
-/// own. Anchored patterns skip the prefilter rather than lose matches to it.
+/// [`Grep`] reports lines, so `^` is the start of every line. Run over a whole
+/// file the same pattern means the start of the file, and the two disagree. An
+/// anchored pattern is therefore tested a line at a time, and everything else
+/// is searched for across the file — see [`hits_by_search`]. A `^` inside a
+/// class counts too: that only costs the faster path, never a match.
 fn is_anchored(pattern: &str) -> bool {
     pattern.contains('^')
         || pattern.contains('$')
@@ -741,6 +849,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grep_stops_at_exactly_the_limit_across_many_files() {
+        // The walk runs on several threads, and two can find their last match
+        // at once. The answer holds exactly the limit either way.
+        let (ctx, dir) = test_ctx();
+        for f in 0..40 {
+            std::fs::write(dir.path().join(format!("f{f}.txt")), "hit\n").unwrap();
+        }
+        for _ in 0..10 {
+            let out = Grep
+                .execute(serde_json::json!({"pattern": "hit", "limit": 7}), &ctx)
+                .await
+                .unwrap();
+            let text = out.to_text();
+            assert_eq!(text.matches(":1: hit").count(), 7, "{text}");
+            assert!(text.contains("stopped at 7 matches"), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn grep_does_not_lose_a_line_to_a_match_that_ran_across_the_one_above() {
+        // `[\s\S]*` crosses a newline in a search over the whole file, so
+        // the match that starts on line 1 swallows line 2's. Line 1 does not
+        // match on its own and line 2 does, and that is the answer.
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("a.txt"), "a\nab\n").unwrap();
+        let out = Grep
+            .execute(serde_json::json!({"pattern": "a[\\s\\S]*b"}), &ctx)
+            .await
+            .unwrap();
+        let text = out.to_text();
+        assert!(text.contains("a.txt:2: ab"), "{text}");
+        assert!(!text.contains("a.txt:1:"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn grep_does_not_match_a_line_by_its_carriage_return() {
+        // A line is what comes before `\r\n`, as it is when the file is read
+        // a line at a time. `foo\s` must not match `foo` by the `\r`.
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("a.txt"), "foo\r\nfoo bar\r\n").unwrap();
+        let out = Grep
+            .execute(serde_json::json!({"pattern": "foo\\s"}), &ctx)
+            .await
+            .unwrap();
+        let text = out.to_text();
+        assert!(text.contains("a.txt:2: foo bar"), "{text}");
+        assert!(!text.contains("a.txt:1:"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn grep_with_a_pattern_that_matches_nothing_at_all_reports_real_lines() {
+        // `x*` matches the empty string, so every line matches — and there is
+        // no line after the last newline to report.
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("a.txt"), "a\nb\n").unwrap();
+        let out = Grep
+            .execute(serde_json::json!({"pattern": "x*"}), &ctx)
+            .await
+            .unwrap();
+        let text = out.to_text();
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            ["a.txt:1: a", "a.txt:2: b"],
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
     async fn grep_exclude_skips_matching_files() {
         let (ctx, dir) = test_ctx();
         seed(dir.path());
@@ -805,5 +981,66 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidInput(_)));
+    }
+    /// What grep costs on a tree too big to judge by eye.
+    ///
+    /// Ignored, because it writes about 70 MB into a temp directory and its
+    /// numbers only mean something from a release build — the regex crate
+    /// compiled for debug is a different program. Three cases: a pattern found
+    /// nowhere, which reads every file; one capped at the result limit; and
+    /// big files whose one match is on their last line. See
+    /// `docs/development.md`.
+    #[tokio::test]
+    #[ignore]
+    async fn grep_cost_on_a_generated_tree() {
+        let (ctx, dir) = test_ctx();
+        for d in 0..50 {
+            let sub = dir.path().join(format!("d{d}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            for f in 0..100 {
+                let i = d * 100 + f;
+                let mut body = String::new();
+                for k in 0..200 {
+                    body.push_str(&format!("    let value_{k} = compute({i}, {k});\n"));
+                }
+                body.push_str(&format!("fn tail_{i}() {{}}\n"));
+                std::fs::write(sub.join(format!("f{f}.rs")), body).unwrap();
+            }
+        }
+        let big = dir.path().join("big");
+        std::fs::create_dir_all(&big).unwrap();
+        for f in 0..20 {
+            let mut body = String::new();
+            for k in 0..50_000 {
+                body.push_str(&format!("    let value_{k} = compute({f}, {k});\n"));
+            }
+            body.push_str(&format!("fn late_{f}() {{}}\n"));
+            std::fs::write(big.join(format!("b{f}.rs")), body).unwrap();
+        }
+        for (label, input) in [
+            (
+                "rare, full scan        ",
+                serde_json::json!({"pattern": "needle_never_here"}),
+            ),
+            (
+                "last line, capped      ",
+                serde_json::json!({"pattern": "fn tail_", "limit": 100000}),
+            ),
+            (
+                "late match in big files",
+                serde_json::json!({"pattern": "fn late_", "path": "big"}),
+            ),
+        ] {
+            let _ = Grep.execute(input.clone(), &ctx).await.unwrap();
+            let mut best = std::time::Duration::MAX;
+            let mut lines = 0;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                let out = Grep.execute(input.clone(), &ctx).await.unwrap();
+                best = best.min(t.elapsed());
+                lines = out.to_text().lines().count();
+            }
+            eprintln!("{label}  best of 5 {best:>10.1?}  ({lines} lines out)");
+        }
     }
 }

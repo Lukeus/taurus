@@ -123,6 +123,17 @@ enum Record {
     Entry(Entry),
 }
 
+/// [`Record`], borrowed, for writing: the same tag and the same shape, so what
+/// [`Index::save`] writes reads back through [`Record`] unchanged. Saving used
+/// to clone every entry, vector and all, only to wrap it in the owned enum for
+/// the length of one line.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RecordRef<'a> {
+    Header(&'a Header),
+    Entry(&'a Entry),
+}
+
 /// One hit, with enough around it to be worth reading.
 #[derive(Clone, Debug)]
 pub struct Hit {
@@ -246,29 +257,28 @@ impl Index {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
 
         let temporary = self.path.with_extension("jsonl.new");
-        let mut file = std::fs::File::create(&temporary)
+        let file = std::fs::File::create(&temporary)
             .map_err(|e| format!("{}: {e}", temporary.display()))?;
 
-        let write = |file: &mut std::fs::File, record: &Record| -> std::io::Result<()> {
-            let line = serde_json::to_string(record)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            file.write_all(line.as_bytes())?;
-            file.write_all(b"\n")
-        };
-
+        // Buffered, and borrowed through `RecordRef`, rather than a clone of
+        // every entry written out one unbuffered line at a time.
         let result = (|| {
-            write(
-                &mut file,
-                &Record::Header(Header {
-                    version: FORMAT_VERSION,
-                    model: model.to_string(),
-                    workspace: self.workspace.display().to_string(),
-                }),
-            )?;
+            let mut out = std::io::BufWriter::new(file);
+            let header = Header {
+                version: FORMAT_VERSION,
+                model: model.to_string(),
+                workspace: self.workspace.display().to_string(),
+            };
+            let mut write = |record: &RecordRef| -> std::io::Result<()> {
+                serde_json::to_writer(&mut out, record)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                out.write_all(b"\n")
+            };
+            write(&RecordRef::Header(&header))?;
             for entry in entries {
-                write(&mut file, &Record::Entry(entry.clone()))?;
+                write(&RecordRef::Entry(entry))?;
             }
-            file.sync_all()
+            out.into_inner().map_err(|e| e.into_error())?.sync_all()
         })();
 
         if let Err(e) = result {
@@ -464,6 +474,76 @@ pub fn stamp(path: &Path) -> Option<(u64, u64)> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// What `search_code` spends in this process on a large index — 6,000
+    /// passages of 768 dimensions, about 24 MB — and on what. Ignored, because
+    /// only a release build's numbers mean anything.
+    ///
+    /// Four numbers: reading the index off disk, copying its entries, decoding
+    /// every vector, and the search that decodes and scores them. They are why
+    /// the decoded vectors are not kept between searches. See
+    /// `docs/development.md` before adding a cache for them.
+    #[test]
+    #[ignore]
+    fn search_code_cost_on_a_large_index() {
+        let dir = TempDir::new().unwrap();
+        let index = Index::new(dir.path(), dir.path());
+        let entries: Vec<Entry> = (0..6000)
+            .map(|i| {
+                let vector: Vec<f32> = (0..768)
+                    .map(|k| ((i * 31 + k) % 97) as f32 / 97.0)
+                    .collect();
+                entry(&format!("src/f{}.rs", i / 3), &vector)
+            })
+            .collect();
+        index.save("m", &entries).unwrap();
+        let query: Vec<f32> = (0..768).map(|k| (k % 13) as f32 / 13.0).collect();
+        let time = |label: &str, f: &mut dyn FnMut()| {
+            f();
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                f();
+                best = best.min(t.elapsed());
+            }
+            eprintln!("{label}  best of 5 {best:>10.1?}");
+        };
+        time("load the index         ", &mut || {
+            std::hint::black_box(index.load("m"));
+        });
+        let loaded = index.load("m");
+        time("clone every entry      ", &mut || {
+            std::hint::black_box(loaded.clone());
+        });
+        time("decode every vector    ", &mut || {
+            for e in &loaded {
+                std::hint::black_box(e.decode());
+            }
+        });
+        time("search: decode + score ", &mut || {
+            std::hint::black_box(search(&loaded, &query, 20, dir.path()));
+        });
+    }
+
+    #[test]
+    fn a_borrowed_record_writes_what_the_owned_one_did() {
+        // `save` writes through `RecordRef` so it need not clone every entry,
+        // and `load` reads through `Record`. The two have to agree to the byte.
+        let e = entry("src/lib.rs", &[0.25, -1.0, 3.5]);
+        let header = || Header {
+            version: FORMAT_VERSION,
+            model: "nomic-embed-text".into(),
+            workspace: "/w".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&RecordRef::Entry(&e)).unwrap(),
+            serde_json::to_string(&Record::Entry(e.clone())).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_string(&RecordRef::Header(&header())).unwrap(),
+            serde_json::to_string(&Record::Header(header())).unwrap()
+        );
+    }
 
     use taurus_provider::RerankScore;
 

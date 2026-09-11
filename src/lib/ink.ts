@@ -532,6 +532,10 @@ function kindOfWord(
   if (g.keywords.has(key) || g.types.has(key)) return "keyword";
   // Only when it is actually being called, in either language: the `(` may be
   // preceded by whitespace but not by anything else.
+  //
+  // The slice looks like a copy of the rest of the source for every word, and
+  // is not one: V8 keeps it as a view on the original. Measured on 544 KB of
+  // Rust, painting took the same time with and without it, and grew linearly.
   const called = source.slice(after).trimStart().startsWith("(");
   if (!called) return "plain";
   if (g.calls === "any") return "fn";
@@ -615,8 +619,9 @@ function number(source: string, start: number): number {
   return j;
 }
 
-/** A painted run, and whether it falls inside a region worth marking. */
-export type Marked = Ink & { changed: boolean };
+/** A painted run, and whether it falls inside a region worth marking. Absent
+ *  reads as not, which is what every run of an unmarked line is. */
+export type Marked = Ink & { changed?: boolean };
 
 /**
  * Splits painted runs at a character range, so a region can be marked without
@@ -633,7 +638,10 @@ export type Marked = Ink & { changed: boolean };
  * which is the ordinary case and stays free.
  */
 export function mark(runs: Ink[], span: { from: number; to: number } | null): Marked[] {
-  if (!span || span.to <= span.from) return runs.map((run) => ({ ...run, changed: false }));
+  // The runs themselves, not a copy of each with `changed: false` added. Most
+  // lines of a diff have no refined span, so this is the path nearly every
+  // line takes.
+  if (!span || span.to <= span.from) return runs;
 
   const out: Marked[] = [];
   let at = 0;

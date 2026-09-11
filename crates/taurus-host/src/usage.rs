@@ -170,12 +170,12 @@ pub fn report(
     let mut tally = Tally::default();
 
     if all {
-        for meta in sessions::list(Some(workspace)) {
+        for (_, path) in sessions::listed(Some(workspace)) {
             // A transcript that will not load is skipped rather than fatal:
             // one unreadable file in a workspace of forty should not cost the
             // answer about the other thirty-nine. It is left out of the count
             // as well, so the sessions figure means "read" and not "found".
-            if let Ok(loaded) = sessions::load(&meta.id) {
+            if let Ok(loaded) = sessions::load_at(&path) {
                 tally.absorb(&loaded.session);
             }
         }
