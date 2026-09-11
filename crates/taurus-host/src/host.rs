@@ -111,6 +111,17 @@ pub struct TurnRef<'a> {
     pub prompt: &'a str,
 }
 
+/// The active theme, and what resolving it depended on. See
+/// [`Host::active_theme`].
+struct ResolvedTheme {
+    id: String,
+    /// The workspace whose layer it was read with, which trust decides.
+    reading: Option<PathBuf>,
+    seen: Freshness,
+    theme: Option<CustomTheme>,
+    problems: Vec<String>,
+}
+
 /// The providers built so far, and how many times they have been forgotten.
 /// See [`Host::provider`].
 #[derive(Default)]
@@ -183,6 +194,14 @@ pub struct Host {
     /// already made: a hook edited in an editor takes effect on the next
     /// message rather than the next launch.
     hooks_seen: RwLock<Freshness>,
+    /// The active theme as last resolved, and the files it was resolved from.
+    ///
+    /// It rides on every status push, and resolving it reads the theme file
+    /// and reads and base64-encodes its logo — up to 256 KB — for an answer
+    /// that moves when somebody edits a theme. Held, and checked with a `stat`
+    /// per file: the bargain the roster and the skills make. See
+    /// [`Self::active_theme`].
+    theme_seen: RwLock<Option<ResolvedTheme>>,
     /// The one index refresh that may be running for this workspace.
     ///
     /// Held here because all three things that start one pass through this
@@ -276,6 +295,7 @@ impl Host {
             agents_seen: RwLock::new(Freshness::default()),
             skills_seen: RwLock::new(Freshness::default()),
             hooks_seen: RwLock::new(Freshness::default()),
+            theme_seen: RwLock::new(None),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             hooks: RwLock::new(Arc::new(taurus_hooks::HookRunner::default())),
             permissions: RwLock::new(permissions),
@@ -1846,14 +1866,45 @@ impl Host {
     /// The custom theme in force, if there is one.
     ///
     /// This is what rides on every status the window is pushed, so it reads
-    /// the one file rather than the directory — see [`theme::load_theme`]. Its
-    /// problems are recorded on the way past, which is what makes a theme that
-    /// was deleted out from under the setting say so instead of the app just
-    /// quietly losing its brand.
+    /// the one file rather than the directory — see [`theme::load_theme`] —
+    /// and only when that file, the layer above it, or its logo has moved since
+    /// the last read. See [`Self::theme_seen`]. Its problems are recorded on
+    /// the way past, which is what makes a theme that was deleted out from
+    /// under the setting say so instead of the app just quietly losing its
+    /// brand.
     pub async fn active_theme(&self) -> Option<CustomTheme> {
         let id = self.settings.read().await.theme_id.clone();
         let workspace = self.workspace.read().await.clone();
-        let (theme, problems) = theme::load_theme(Some(&workspace), &id);
+        let reading = crate::trust::for_reading(Some(&workspace)).map(Path::to_path_buf);
+
+        // The one held, if nothing it was read from has moved: the same id,
+        // the same trusted layers, and every file as it was.
+        let held = self
+            .theme_seen
+            .read()
+            .await
+            .as_ref()
+            .filter(|held| {
+                held.id == id && held.reading == reading && held.seen == held.seen.refreshed()
+            })
+            .map(|held| (held.theme.clone(), held.problems.clone()));
+        let (theme, problems) = match held {
+            Some(held) => held,
+            None => {
+                let (theme, problems, watched) = theme::load_theme_watched(Some(&workspace), &id);
+                *self.theme_seen.write().await = Some(ResolvedTheme {
+                    id,
+                    reading,
+                    seen: Freshness::of_files(watched.iter().map(PathBuf::as_path)),
+                    theme: theme.clone(),
+                    problems: problems.clone(),
+                });
+                (theme, problems)
+            }
+        };
+        // Restated when the theme came from the cache as well: a reload
+        // replaces the problem list, and the theme's would otherwise vanish
+        // until its file next moved.
         self.replace_problems(
             ProblemSource::Themes,
             Problem::tag(ProblemSource::Themes, problems),
@@ -1889,7 +1940,12 @@ impl Host {
         file: &theme::ThemeFile,
     ) -> Result<String, String> {
         let workspace = self.workspace.read().await.clone();
-        theme::save_theme(scope, Some(&workspace), id, file).map(|p| p.display().to_string())
+        let saved = theme::save_theme(scope, Some(&workspace), id, file)?;
+        // Forgotten outright rather than left to the file's stamp: the editor
+        // saves on every change, and two saves of the same length inside one
+        // tick of the filesystem's clock would look like no change at all.
+        *self.theme_seen.write().await = None;
+        Ok(saved.display().to_string())
     }
 
     /// Removes a theme file.
@@ -3323,6 +3379,42 @@ mod tests {
             .await;
         let edited = host.provider(id).await.unwrap();
         assert!(!Arc::ptr_eq(&rekeyed, &edited));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_theme_in_force_is_read_again_only_when_its_file_moves() {
+        // It rides on every status push, and reading it means reading and
+        // encoding its logo. Made unreadable after the first read — which moves
+        // neither its length nor its time — it must still be served, because
+        // nothing it was read from has changed.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        let themes = theme::ensure_themes_dir(Scope::Global, None).unwrap();
+        let file = themes.join("brand.json");
+        std::fs::write(&file, r##"{"name":"Brand","dark":{"ink":"#000"}}"##).unwrap();
+        host.set_theme_id("brand".into()).await;
+        let name = |theme: Option<CustomTheme>| theme.map(|t| t.name);
+
+        assert_eq!(name(host.active_theme().await).as_deref(), Some("Brand"));
+
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let served = name(host.active_theme().await);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            served.as_deref(),
+            Some("Brand"),
+            "the theme was read again though nothing it came from had moved"
+        );
+
+        // Edited, it is read again.
+        std::fs::write(&file, r##"{"name":"Rebranded","dark":{"ink":"#000"}}"##).unwrap();
+        assert_eq!(
+            name(host.active_theme().await).as_deref(),
+            Some("Rebranded")
+        );
     }
 
     #[tokio::test]
