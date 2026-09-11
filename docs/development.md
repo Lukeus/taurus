@@ -529,6 +529,15 @@ cargo run -p taurus-tools --example sweep -- .
 # to 49.8, 3.8 to 3.1, and 28.3 to 6.3.
 cargo test --release -p taurus-tools --lib grep_cost -- --ignored --nocapture
 
+# What read_file costs on a log too large to read whole, which is where a
+# spilled command's output sends the model. Same rules as the one above: no
+# provider, a temp directory, release. Four reads of one 200 MB file — its
+# first window, its middle, near its end, and past its end — and they should
+# cost the same, because each still counts every line for the range note.
+# Measured when reads began streaming and keeping only the window: 64 to 67 ms
+# each, to 25 or 26, and a read holds the window rather than the file.
+cargo test --release -p taurus-tools --lib read_file_cost -- --ignored --nocapture
+
 # How well the index answers a question, as a number rather than by eye.
 # Needs Ollama and an embedding model; reads the workspace and writes nothing.
 # Fifteen questions phrased the way somebody asks them, each with the file that
