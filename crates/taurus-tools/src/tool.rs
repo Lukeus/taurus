@@ -168,6 +168,9 @@ pub struct ToolContext {
     /// nothing here widens what may be written, and the workspace remains the
     /// only place this agent changes.
     pub readable_roots: Vec<PathBuf>,
+    /// The workspace in canonical form, resolved on the first path check and
+    /// shared by every clone. See [`crate::path_guard::HeldRoot`].
+    root: crate::path_guard::HeldRoot,
     pub permissions: Arc<PermissionEngine>,
     pub cancel: CancellationToken,
     /// The open turn that file changes are checkpointed into.
@@ -253,6 +256,7 @@ impl ToolContext {
         Self {
             workspace: workspace.into(),
             readable_roots: Vec::new(),
+            root: crate::path_guard::HeldRoot::default(),
             permissions,
             cancel,
             checkpoints: None,
@@ -371,17 +375,22 @@ impl ToolContext {
 
     /// Resolves a path a tool is about to change. Workspace only.
     pub fn resolve(&self, candidate: &str) -> Result<PathBuf, ToolError> {
-        crate::path_guard::resolve(&self.workspace, candidate)
+        let root = self.root.resolve(&self.workspace)?;
+        crate::path_guard::resolve_under(&root, &[], candidate)
     }
 
     /// Resolves a path a tool is only going to read, which may also sit in one
     /// of the skill directories the session loaded.
     pub fn resolve_read(&self, candidate: &str) -> Result<PathBuf, ToolError> {
-        crate::path_guard::resolve_within(&self.workspace, &self.readable_roots, candidate)
+        let root = self.root.resolve(&self.workspace)?;
+        crate::path_guard::resolve_under(&root, &self.readable_roots, candidate)
     }
 
     pub fn display(&self, path: &Path) -> String {
-        crate::path_guard::display(&self.workspace, path)
+        match self.root.resolve(&self.workspace) {
+            Ok(root) => crate::path_guard::display_under(&root, path),
+            Err(_) => crate::path_guard::display(&self.workspace, path),
+        }
     }
 }
 
