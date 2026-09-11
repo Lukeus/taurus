@@ -50,6 +50,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, PoisonError};
+use std::time::Duration;
 
 use serde::Serialize;
 use taurus_process::Tree;
@@ -426,8 +428,8 @@ async fn execute(
     };
 
     let stdin = child.take_stdin();
-    let stdout = child.take_stdout();
-    let stderr = child.take_stderr();
+    let mut stdout = Captured::read(child.take_stdout());
+    let mut stderr = Captured::read(child.take_stderr());
     let timeout = hook.timeout();
 
     /*
@@ -463,9 +465,13 @@ async fn execute(
      * with it — and with the child, the only handle on the tree there is.
      */
     let run = async {
-        let (_, stdout, stderr, status) =
-            tokio::join!(feed, read_all(stdout), read_all(stderr), child.wait());
-        status.map(|status| (status, stdout, stderr))
+        let ((), status) = tokio::join!(feed, child.wait());
+        // The hook's answer is its exit code, and it has given it. What it
+        // started may still hold its pipes — a formatter that forks a daemon —
+        // and waiting for those to close ran a hook that passed out to its
+        // timeout and denied it. What it printed by now is what it said.
+        tokio::join!(stdout.settle(PIPE_GRACE), stderr.settle(PIPE_GRACE));
+        status
     };
     // The wait is polled before the clock, so a hook that finishes exactly on
     // the deadline is finished rather than killed. Stop is polled last, for
@@ -483,8 +489,8 @@ async fn execute(
             return Verdict::Stopped;
         }
     };
-    let (status, stdout, stderr) = match finished {
-        Ok(Ok(done)) => done,
+    let status = match finished {
+        Ok(Ok(status)) => status,
         Ok(Err(e)) => return Verdict::Denied(format!("could not be run: {e}")),
         Err(_) => {
             // A kill that could not be carried out is the user's business
@@ -504,8 +510,8 @@ async fn execute(
         }
     };
 
-    let stdout = String::from_utf8_lossy(&stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&stderr).into_owned();
+    let stdout = stdout.text();
+    let stderr = stderr.text();
     let code = status.code();
     debug!(hook = name, ?code, "hook finished");
 
@@ -555,12 +561,65 @@ pub fn environment(payload: &HookPayload) -> BTreeMap<&'static str, String> {
 ///
 /// A read that fails ends the read rather than the hook: what arrived is kept,
 /// and the exit code is still what decides.
-async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    if let Some(mut pipe) = pipe {
-        let _ = pipe.read_to_end(&mut bytes).await;
+/// Most of a hook's stdout or of its stderr that is kept.
+///
+/// What a passing hook prints reaches the model as a note, and a formatter
+/// that lists every file it touched can print megabytes. Past this the pipe is
+/// still read — a hook blocked on a full pipe would hang until its timeout —
+/// but only counted.
+const MAX_OUTPUT_BYTES: usize = 32 * 1024;
+
+/// How long a hook's output is waited for once the hook has exited.
+///
+/// Its pipes close when the last process holding them does, and that can be
+/// something the hook started and left running. The hook itself has answered.
+const PIPE_GRACE: Duration = Duration::from_millis(500);
+
+/// A pipe read in the background, keeping the first [`MAX_OUTPUT_BYTES`].
+struct Captured {
+    reading: tokio::task::JoinHandle<()>,
+    /// What was kept, and how many bytes past it were not.
+    kept: Arc<std::sync::Mutex<(Vec<u8>, usize)>>,
+}
+
+impl Captured {
+    fn read(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>) -> Self {
+        let kept = Arc::new(std::sync::Mutex::new((Vec::new(), 0usize)));
+        let reading = tokio::spawn({
+            let kept = kept.clone();
+            async move {
+                let Some(mut pipe) = pipe else {
+                    return;
+                };
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = pipe.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let mut kept = kept.lock().unwrap_or_else(PoisonError::into_inner);
+                    let room = MAX_OUTPUT_BYTES.saturating_sub(kept.0.len());
+                    kept.0.extend_from_slice(&buf[..n.min(room)]);
+                    kept.1 += n.saturating_sub(room);
+                }
+            }
+        });
+        Self { reading, kept }
     }
-    bytes
+
+    /// Waits for the pipe to close, for at most `grace`.
+    async fn settle(&mut self, grace: Duration) {
+        let _ = tokio::time::timeout(grace, &mut self.reading).await;
+    }
+
+    /// What was kept, with a line saying how much was not.
+    fn text(&self) -> String {
+        let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut text = String::from_utf8_lossy(&kept.0).into_owned();
+        if kept.1 > 0 {
+            text.push_str(&format!("\n[… {} more bytes not shown]", kept.1));
+        }
+        text
+    }
 }
 
 /// Where a hook's own paths are resolved from, for callers building a payload.
@@ -768,6 +827,63 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hook_that_leaves_something_holding_its_output_is_not_held_by_it() {
+        // A formatter that forks a daemon and exits 0 has answered. Waiting on
+        // the pipe its daemon still holds ran the hook out to its timeout, and
+        // a hook that passed was denied for hanging.
+        let dir = tempfile::tempdir().unwrap();
+        let mut forks = hook(
+            &script(dir.path(), "forks", "sleep 5 & echo fine"),
+            HookEvent::PreToolUse,
+        );
+        forks.timeout_seconds = 10;
+        let runner = HookRunner::new(vec![("forks".into(), forks)]);
+
+        let started = std::time::Instant::now();
+        let outcome = runner
+            .run(
+                &HookPayload::new(HookEvent::PreToolUse, dir.path()),
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert!(!outcome.is_denied(), "{:?}", outcome.denied);
+        assert!(
+            outcome.notes.iter().any(|n| n.contains("fine")),
+            "{:?}",
+            outcome.notes
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hook_that_prints_a_lot_is_cut_down_to_a_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let loud = hook(
+            &script(dir.path(), "loud", "head -c 1000000 /dev/zero | tr '\\0' x"),
+            HookEvent::PostToolUse,
+        );
+        let runner = HookRunner::new(vec![("loud".into(), loud)]);
+
+        let outcome = runner
+            .run(
+                &HookPayload::new(HookEvent::PostToolUse, dir.path()),
+                &CancellationToken::new(),
+            )
+            .await;
+
+        let note = outcome.notes.first().expect("a note");
+        assert!(note.len() < MAX_OUTPUT_BYTES + 200, "{} bytes", note.len());
+        assert!(note.contains("more bytes not shown"));
     }
 
     #[tokio::test]
