@@ -893,17 +893,24 @@ pub async fn rename_session(
     // The write is serialized against the log for this conversation when there
     // is one, so a rewrite cannot land between a turn's append and the next.
     // A conversation that is only on disk has nothing to serialize against.
-    let held = state
+    //
+    // Off the runtime either way: a rename rewrites the whole transcript and
+    // syncs it, and it is allowed mid-turn — so it must hold neither a worker
+    // nor the lock the turn's next record waits on any longer than the write.
+    let log = state
         .session(&session_id)
         .ok()
         .map(|entry| entry.log.clone());
-    let meta = match &held {
-        Some(log) => {
-            let _guard = log.lock().await;
-            sessions::rename(&session_id, Some(&title))
-        }
-        None => sessions::rename(&session_id, Some(&title)),
-    }?;
+    let held = match log {
+        Some(log) => Some(log.lock_owned().await),
+        None => None,
+    };
+    let (id, name) = (session_id.clone(), title.clone());
+    let meta = off_runtime(move || {
+        let _held = held;
+        sessions::rename(&id, Some(&name))
+    })
+    .await?;
 
     info!(session = %session_id, title = %meta.title, "conversation renamed");
     emit_session(&state, &session_id).await;

@@ -229,13 +229,25 @@ impl UiSessionLog {
 #[async_trait]
 impl TurnRecorder for UiSessionLog {
     async fn record(&self, session: &Session) {
-        if !self.log.lock().await.record(session) {
-            return;
-        }
-        // Read back rather than assembled here, so what the rail shows is what
-        // a later listing will show — including how the title was derived and
-        // shortened, which is the transcript layer's rule and not this one's.
-        let Some(meta) = sessions::meta(&self.id) else {
+        // Held by an owned guard so it can go with the write to a blocking
+        // thread. The write is disk I/O once per tool round, and the runtime it
+        // would otherwise run on is the one carrying the stream.
+        let mut log = self.log.clone().lock_owned().await;
+        let pending = log.unrecorded(session);
+        let id = self.id.clone();
+        let announced = tokio::task::spawn_blocking(move || {
+            // Read back rather than assembled here, so what the rail shows is
+            // what a later listing will show — including how the title was
+            // derived and shortened, which is the transcript layer's rule and
+            // not this one's.
+            log.record_unrecorded(pending)
+                .then(|| sessions::meta(&id))
+                .flatten()
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(meta) = announced else {
             return;
         };
         if let Err(e) = self.app.emit(EVENT_SESSION, &meta) {

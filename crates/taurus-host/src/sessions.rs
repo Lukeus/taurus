@@ -251,6 +251,15 @@ pub struct SessionMeta {
     pub agent: Option<String>,
 }
 
+/// What a transcript has not yet written of a session: the messages past what
+/// is on disk, and the usage to record after them. See
+/// [`SessionLog::unrecorded`].
+pub struct Unrecorded {
+    from: usize,
+    messages: Vec<Message>,
+    usage: TokenUsage,
+}
+
 /// An open transcript, appended to as turns complete.
 ///
 /// Writes never fail a turn: persistence is a side effect of work the user
@@ -402,6 +411,38 @@ impl SessionLog {
     /// existed: the question being answered is "is this conversation new to
     /// disk", not "did anything get written".
     pub fn record(&mut self, session: &Session) -> bool {
+        let pending = self.unrecorded(session);
+        self.record_unrecorded(pending)
+    }
+
+    /// What [`Self::record`] would write for `session`, taken out of it.
+    ///
+    /// The messages past what is already on disk — this round's, ordinarily a
+    /// reply and its tool results — cloned, which writing them did one at a
+    /// time anyway. Taken out so the write can happen where the session cannot
+    /// follow: a blocking thread, while the turn that owns it goes on. See
+    /// [`Self::record_unrecorded`].
+    pub fn unrecorded(&self, session: &Session) -> Unrecorded {
+        if self.off {
+            return Unrecorded {
+                from: self.persisted,
+                messages: Vec::new(),
+                usage: session.usage,
+            };
+        }
+        // Guards a resumed or replaced session whose history is shorter than
+        // what has been written; appending from a stale offset would duplicate.
+        let from = self.persisted.min(session.messages.len());
+        Unrecorded {
+            from,
+            messages: session.messages[from..].to_vec(),
+            usage: session.usage,
+        }
+    }
+
+    /// Writes what [`Self::unrecorded`] took out. Answers as [`Self::record`]
+    /// does.
+    pub fn record_unrecorded(&mut self, pending: Unrecorded) -> bool {
         if self.off {
             return false;
         }
@@ -417,19 +458,16 @@ impl SessionLog {
             return false;
         }
 
-        // Guards a resumed or replaced session whose history is shorter than
-        // what has been written; appending from a stale offset would duplicate.
-        let start = self.persisted.min(session.messages.len());
-        self.persisted = start;
-        for message in &session.messages[start..] {
-            if !self.write(&Record::Message(message.clone())) {
+        self.persisted = pending.from;
+        for message in pending.messages {
+            if !self.write(&Record::Message(message)) {
                 // Left pointing at the message that did not land, so the next
                 // turn writes it rather than skipping past it.
                 return created;
             }
             self.persisted += 1;
         }
-        self.write(&Record::Usage(session.usage));
+        self.write(&Record::Usage(pending.usage));
         created
     }
 
@@ -1102,12 +1140,12 @@ impl SubagentRecorder for SubagentLogs {
             return None;
         }
         Some(Arc::new(SubagentLog {
-            log: Mutex::new(SessionLog::for_subagent(
+            log: Arc::new(Mutex::new(SessionLog::for_subagent(
                 child,
                 &self.workspace,
                 &self.parent,
                 agent_type,
-            )),
+            ))),
         }))
     }
 }
@@ -1118,15 +1156,19 @@ impl SubagentRecorder for SubagentLogs {
 /// concurrently, they write to separate files, and a shared lock would make
 /// each one wait on the others' disks for nothing.
 struct SubagentLog {
-    log: Mutex<SessionLog>,
+    log: Arc<Mutex<SessionLog>>,
 }
 
 #[async_trait]
 impl TurnRecorder for SubagentLog {
     async fn record(&self, session: &Session) {
         // Nothing watches a delegate's transcript while it is being written, so
-        // there is nobody to tell that it now exists.
-        let _ = self.log.lock().await.record(session);
+        // there is nobody to tell that it now exists. Written on a blocking
+        // thread, as the conversation's own is: a delegate runs inside a turn,
+        // on the runtime that turn's stream shares.
+        let mut log = self.log.clone().lock_owned().await;
+        let pending = log.unrecorded(session);
+        let _ = tokio::task::spawn_blocking(move || log.record_unrecorded(pending)).await;
     }
 }
 
