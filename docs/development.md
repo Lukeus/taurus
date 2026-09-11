@@ -538,6 +538,20 @@ cargo test --release -p taurus-tools --lib grep_cost -- --ignored --nocapture
 # each, to 25 or 26, and a read holds the window rather than the file.
 cargo test --release -p taurus-tools --lib read_file_cost -- --ignored --nocapture
 
+# What a command's output costs the process running it. Needs no provider, and
+# writes only inside temp directories it makes. Two commands that each print
+# 100 MB — ordinary lines, and one line with no newline in it — through
+# run_command with a screen attached. The number to watch is the maximum
+# resident set `time` reports (`-l` on macOS, `-v` with GNU time): output the
+# model will only ever see the two ends of should not be held whole. Measured
+# when output began to be read in pieces and written out past 8 MB: 228 MB to
+# 16 MB for the lines, and 406 MB to 15 MB for the single line, whose screen
+# was sent one 100 MB message before and nothing over 8 KB after. Most of the
+# single line's three seconds is `tr` itself.
+cargo build --release -p taurus-tools --example output
+/usr/bin/time -l target/release/examples/output lines
+/usr/bin/time -l target/release/examples/output one-line
+
 # How well the index answers a question, as a number rather than by eye.
 # Needs Ollama and an embedding model; reads the workspace and writes nothing.
 # Fifteen questions phrased the way somebody asks them, each with the file that
