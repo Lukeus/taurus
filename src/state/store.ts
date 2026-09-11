@@ -354,6 +354,16 @@ interface Store {
    */
   refresh: () => Promise<void>;
   /**
+   * Re-asks what nothing can push: the trust question, and the dataset list.
+   *
+   * What returning to the window calls. Not the status — that is pushed
+   * whenever any part of it moves, and asking for it on every focus rebuilt
+   * all of it, git and the theme included, to say what the window already
+   * showed. Trust is different: what changes it is a file appearing in a
+   * directory nobody watches, and a `git pull` arrives with no event.
+   */
+  recheck: () => Promise<void>;
+  /**
    * Answers the trust question for this workspace.
    *
    * The reload that follows on the backend — saying yes is what loads this
@@ -361,8 +371,20 @@ interface Store {
    * banner cannot vanish while the drawers still show the old set.
    */
   decideTrust: (trusted: boolean) => Promise<void>;
-  /** Re-reads the conversation list and this conversation's changed files. */
+  /**
+   * Re-reads the conversation list and this conversation's changed files, both
+   * at once.
+   */
   reload: () => Promise<void>;
+  /**
+   * Re-reads this conversation's changed files, and not the conversation list.
+   *
+   * What opening a conversation needs. The list arrives by event whenever a
+   * conversation in it moves, and re-reading it opens and partly parses every
+   * transcript in the workspace — on every switch, to say what the rail
+   * already shows.
+   */
+  refreshChanged: () => Promise<void>;
   /**
    * Re-reads what datasets this workspace has.
    *
@@ -423,6 +445,36 @@ async function release(session: CreatedSession | null, replacement?: string) {
  * listeners, so every permission prompt would arrive duplicated.
  */
 let initialized = false;
+
+/**
+ * A pushed status, keeping whatever did not move.
+ *
+ * Every push is the whole status, and most change one field or none — a note
+ * saved, a count gone up by one. Taken wholesale, each handed every drawer
+ * reading `status` a new object, and each drawer redrew to show the same
+ * thing. The held object comes back when nothing moved; otherwise each field
+ * that did not move keeps the value it had, so a selector on one part of the
+ * status sees a change only when that part changed.
+ */
+export function settle(held: AppStatus | null, pushed: AppStatus): AppStatus {
+  if (!held) return pushed;
+  const keys = Object.keys(pushed) as (keyof AppStatus)[];
+  let moved = keys.length !== Object.keys(held).length;
+  const next = { ...pushed };
+  for (const key of keys) {
+    if (unchanged(held[key], pushed[key])) {
+      (next as Record<string, unknown>)[key] = held[key];
+    } else {
+      moved = true;
+    }
+  }
+  return moved ? next : held;
+}
+
+/** The same value, for plain data that came over IPC. */
+function unchanged(a: unknown, b: unknown): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
 
 export const useStore = create<Store>((set, get) => ({
   status: null,
@@ -485,7 +537,7 @@ export const useStore = create<Store>((set, get) => ({
     // it is pushed — a reload, a workspace switch, a settings write, a turn
     // that left a note behind — so the rail's counts stop being as old as
     // whatever the user last happened to click.
-    api.onStatus((status) => set({ status }));
+    api.onStatus((status) => set((s) => ({ status: settle(s.status, status) })));
 
     // One conversation at a time, merged into the list already held. This is
     // what puts a new conversation in the rail the moment its first question
@@ -564,7 +616,9 @@ export const useStore = create<Store>((set, get) => ({
       proposals: [],
       agentProposals: [],
     });
-    void get().reload();
+    // Nothing to re-read. A new conversation has changed no files, and it is
+    // not in the list until its first question reaches disk — which the list
+    // is told about by event.
     if (!session.native_tools) {
       set((s) => ({
         entries: [
@@ -604,7 +658,8 @@ export const useStore = create<Store>((set, get) => ({
         proposals: [],
         agentProposals: [],
       });
-      void get().reload();
+      // Its changed files, and not the list it was opened from.
+      void get().refreshChanged();
     } finally {
       set({ resuming: false });
     }
@@ -986,6 +1041,11 @@ export const useStore = create<Store>((set, get) => ({
     void get().refreshDatasets();
   },
 
+  recheck: async () => {
+    set({ trust: await api.workspaceTrust() });
+    void get().refreshDatasets();
+  },
+
   decideTrust: async (trusted) => {
     set({
       trust: trusted
@@ -995,17 +1055,26 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   reload: async () => {
-    const { session } = get();
     // Neither list is load-bearing: a rail with a stale entry beats an error
-    // banner over a working conversation, so both failures are swallowed.
-    try {
-      set({ sessions: await api.listSessions() });
-    } catch (e) {
-      console.warn("could not list conversations", e);
-    }
+    // banner over a working conversation, so both failures are swallowed. And
+    // neither waits on the other — they are two requests to two files.
+    await Promise.all([
+      api.listSessions().then(
+        (sessions) => set({ sessions }),
+        (e) => console.warn("could not list conversations", e),
+      ),
+      get().refreshChanged(),
+    ]);
+  },
+
+  refreshChanged: async () => {
+    const { session } = get();
     if (!session) return set({ changed: [] });
     try {
       const turns = await api.listCheckpoints(session.id);
+      // An answer about a conversation that is no longer on screen describes
+      // somebody else's files.
+      if (get().session?.id !== session.id) return;
       set({ changed: [...new Set(turns.flatMap((t) => t.files))] });
     } catch (e) {
       console.warn("could not list changed files", e);

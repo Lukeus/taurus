@@ -309,7 +309,7 @@ pub fn load_themes(workspace: Option<&Path>) -> (Vec<CustomTheme>, Vec<String>) 
 
         for path in paths {
             match read_theme(&path, scope) {
-                Ok((theme, mut file_problems)) => {
+                Ok((theme, mut file_problems, _)) => {
                     problems.append(&mut file_problems);
                     found.insert(theme.id.clone(), theme);
                 }
@@ -332,20 +332,40 @@ pub fn load_themes(workspace: Option<&Path>) -> (Vec<CustomTheme>, Vec<String>) 
 /// Workspace before global, the same precedence [`load_themes`] applies when
 /// two layers offer the same id.
 pub fn load_theme(workspace: Option<&Path>, id: &str) -> (Option<CustomTheme>, Vec<String>) {
+    let (theme, problems, _) = load_theme_watched(workspace, id);
+    (theme, problems)
+}
+
+/// [`load_theme`], and every file its answer depended on.
+///
+/// Every place the theme could have been, present or not — a workspace theme
+/// appearing has to displace the global one the answer came from — and the
+/// logo the resolved theme names. What the host stamps to learn whether
+/// resolving again would give a different answer: the active theme is asked
+/// for on every status push, and resolving it reads and encodes the logo.
+pub fn load_theme_watched(
+    workspace: Option<&Path>,
+    id: &str,
+) -> (Option<CustomTheme>, Vec<String>, Vec<PathBuf>) {
     if id.is_empty() {
-        return (None, Vec::new());
+        return (None, Vec::new(), Vec::new());
     }
     let workspace = crate::trust::for_reading(workspace);
+    let mut watched = Vec::new();
     for scope in [Scope::Workspace, Scope::Global] {
         let Ok(path) = theme_path(scope, workspace, id) else {
             continue;
         };
+        watched.push(path.clone());
         if !path.is_file() {
             continue;
         }
         return match read_theme(&path, scope) {
-            Ok((theme, problems)) => (Some(theme), problems),
-            Err(e) => (None, vec![e]),
+            Ok((theme, problems, logo)) => {
+                watched.extend(logo);
+                (Some(theme), problems, watched)
+            }
+            Err(e) => (None, vec![e], watched),
         };
     }
     // Named in settings and not on disk — deleted by hand, or a workspace
@@ -356,6 +376,7 @@ pub fn load_theme(workspace: Option<&Path>, id: &str) -> (Option<CustomTheme>, V
         vec![format!(
             "The theme \"{id}\" is set but there is no themes/{id}.json to read."
         )],
+        watched,
     )
 }
 
@@ -364,8 +385,12 @@ pub fn load_theme(workspace: Option<&Path>, id: &str) -> (Option<CustomTheme>, V
 /// Returns the theme *and* its non-fatal problems: a colour that is not a
 /// colour is dropped and reported, because a theme that is ninety per cent
 /// right should paint the ninety per cent. Only a file that cannot be parsed
-/// or named at all fails outright.
-fn read_theme(path: &Path, scope: Scope) -> Result<(CustomTheme, Vec<String>), String> {
+/// or named at all fails outright. Also the logo file it names, when it names
+/// one, for a caller that watches what the answer was read from.
+fn read_theme(
+    path: &Path,
+    scope: Scope,
+) -> Result<(CustomTheme, Vec<String>, Option<PathBuf>), String> {
     let id = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -387,6 +412,7 @@ fn read_theme(path: &Path, scope: Scope) -> Result<(CustomTheme, Vec<String>), S
     let dark = clean(&file.dark, path, "dark", &mut problems);
     let light = clean(&file.light, path, "light", &mut problems);
 
+    let logo_file = file.brand.logo.as_deref().map(|logo| logo_path(logo, path));
     let (logo, logo_problem) = match file.brand.logo.as_deref() {
         None => (None, None),
         Some(logo) => match inline_logo(logo, path) {
@@ -425,6 +451,7 @@ fn read_theme(path: &Path, scope: Scope) -> Result<(CustomTheme, Vec<String>), S
             modes,
         },
         problems,
+        logo_file,
     ))
 }
 
@@ -497,22 +524,28 @@ fn clamp_shape(mut shape: Shape, path: &Path, problems: &mut Vec<String>) -> Sha
     shape
 }
 
-/// Reads a logo and returns it as a `data:` URI.
-fn inline_logo(logo: &str, theme_path: &Path) -> Result<String, String> {
-    use base64::Engine;
-
+/// Where a theme's `logo` points.
+///
+/// Relative to the theme file rather than to the process's working directory,
+/// so a repository can commit `.taurus/themes/logo.svg` beside the theme that
+/// names it and have the pair travel together.
+fn logo_path(logo: &str, theme_path: &Path) -> PathBuf {
     let path = Path::new(logo);
-    // Relative to the theme file rather than to the process's working
-    // directory, so a repository can commit `.taurus/themes/logo.svg` beside
-    // the theme that names it and have the pair travel together.
-    let resolved = if path.is_absolute() {
+    if path.is_absolute() {
         path.to_path_buf()
     } else {
         theme_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(path)
-    };
+    }
+}
+
+/// Reads a logo and returns it as a `data:` URI.
+fn inline_logo(logo: &str, theme_path: &Path) -> Result<String, String> {
+    use base64::Engine;
+
+    let resolved = logo_path(logo, theme_path);
 
     let mime = match resolved
         .extension()

@@ -129,10 +129,32 @@ pub async fn send(
 /// charset sniffing `text()` does for pages in legacy encodings — a rare page
 /// rendered with replacement characters, against a bounded buffer on every one.
 pub async fn text(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     ctx: &ToolContext,
     max_bytes: usize,
 ) -> Result<String, ToolError> {
+    let url = response.url().to_string();
+    let (body, cut) = text_up_to(response, ctx, max_bytes).await?;
+    if cut {
+        return Err(ToolError::Failed(format!(
+            "{url} sent more than {} MB; too large to read",
+            max_bytes / (1024 * 1024)
+        )));
+    }
+    Ok(body)
+}
+
+/// Reads a body up to `max_bytes`, and says whether there was more.
+///
+/// [`text`] refuses a body past its cap, which is right for something that has
+/// to be parsed whole. This is for a reader that can use the start of
+/// something too large — a page whose text is cut to a few thousand characters
+/// anyway — and stops reading at the cap rather than refusing.
+pub async fn text_up_to(
+    mut response: reqwest::Response,
+    ctx: &ToolContext,
+    max_bytes: usize,
+) -> Result<(String, bool), ToolError> {
     let mut body: Vec<u8> = Vec::new();
     loop {
         let chunk = tokio::select! {
@@ -140,17 +162,16 @@ pub async fn text(
             _ = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
             chunk = response.chunk() => chunk.map_err(|e| ToolError::Failed(describe(&e)))?,
         };
-        let Some(chunk) = chunk else { break };
-        if body.len() + chunk.len() > max_bytes {
-            return Err(ToolError::Failed(format!(
-                "{} sent more than {} MB; too large to read",
-                response.url(),
-                max_bytes / (1024 * 1024)
-            )));
+        let Some(chunk) = chunk else {
+            return Ok((String::from_utf8_lossy(&body).into_owned(), false));
+        };
+        let room = max_bytes - body.len();
+        if chunk.len() > room {
+            body.extend_from_slice(&chunk[..room]);
+            return Ok((String::from_utf8_lossy(&body).into_owned(), true));
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 /// Turns a transport failure into something the model can act on.

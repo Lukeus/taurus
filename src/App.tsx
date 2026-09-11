@@ -202,7 +202,7 @@ export default function App() {
       resume: s.resume,
       remove: s.remove,
       rename: s.rename,
-      refresh: s.refresh,
+      recheck: s.recheck,
       startSession: s.startSession,
       switchModel: s.switchModel,
       setWorkspace: s.setWorkspace,
@@ -502,11 +502,11 @@ export default function App() {
    * than a poll: no timer, and nothing happens while the window is not looked
    * at.
    */
-  const refresh = store.refresh;
+  const recheck = store.recheck;
   const busy = store.busy;
   useEffect(() => {
     const ask = () => {
-      void refresh();
+      void recheck();
       // The other thing that changed while the window was not looked at: a
       // skill or an agent written in an editor. Skipped mid-turn, because a
       // turn runs against the catalog and roster it started with — and the
@@ -515,7 +515,7 @@ export default function App() {
     };
     window.addEventListener("focus", ask);
     return () => window.removeEventListener("focus", ask);
-  }, [refresh, busy]);
+  }, [recheck, busy]);
 
   // A new tab is a new stream. Cleared before the poll below re-reads it, so
   // the pane never shows one command's lines under another's heading — the two

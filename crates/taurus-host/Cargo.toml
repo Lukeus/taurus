@@ -25,6 +25,7 @@ taurus-web.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 directories.workspace = true
+futures.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

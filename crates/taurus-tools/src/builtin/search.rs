@@ -69,6 +69,59 @@ pub(crate) fn walker_skipping(
         .build()
 }
 
+/// How long a search may walk before it answers with what it has.
+///
+/// A walk of a large tree, or a pattern that reads most of it, can run for
+/// minutes, and nothing on the blocking thread doing it would stop — not Stop,
+/// which only threw the answer away, and not a clock. Past this the walk is
+/// told to finish, and what it found comes back with a line saying it is not
+/// every match.
+const SEARCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs a search's walk on a blocking thread, where Stop and the deadline can
+/// reach it.
+///
+/// `walk` is handed a token to check once per entry, cancelled either by the
+/// turn's Stop, which cancels its parent, or by [`SEARCH_DEADLINE`] passing;
+/// it returns what it had found by then. Stop is an error, because nobody is
+/// waiting for the answer any more. The deadline is not: part of a search is
+/// still an answer, and it comes back marked as part.
+async fn walk_within<T: Send + 'static>(
+    ctx: &ToolContext,
+    walk: impl FnOnce(&tokio_util::sync::CancellationToken) -> T + Send + 'static,
+) -> Result<(T, bool), ToolError> {
+    let stop = ctx.cancel.child_token();
+    let mut walking = {
+        let stop = stop.clone();
+        tokio::task::spawn_blocking(move || walk(&stop))
+    };
+    let (joined, partial) = match tokio::time::timeout(SEARCH_DEADLINE, &mut walking).await {
+        Ok(joined) => (joined, false),
+        Err(_) => {
+            stop.cancel();
+            (walking.await, true)
+        }
+    };
+    let found = joined.map_err(|e| ToolError::Failed(e.to_string()))?;
+    if ctx.cancel.is_cancelled() {
+        return Err(ToolError::Canceled);
+    }
+    Ok((found, partial))
+}
+
+/// An answer, with a line saying so when the deadline stopped the walk behind
+/// it first.
+fn stopped_early(answer: String, partial: bool) -> String {
+    if !partial {
+        return answer;
+    }
+    format!(
+        "{answer}\n\n(Stopped after {} seconds with the walk unfinished, so this is not \
+         every match. Narrow it with `path`, or a tighter pattern.)",
+        SEARCH_DEADLINE.as_secs()
+    )
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct GlobInput {
     /// Glob pattern, e.g. `**/*.rs` or `src/**/test_*.py`.
@@ -104,26 +157,25 @@ impl Tool for Glob {
             .compile_matcher();
 
         let cap = result_cap(ctx);
-        let ctx = ctx.clone();
-        let hits = tokio::task::spawn_blocking(move || {
+        let paths = ctx.clone();
+        let (hits, partial) = walk_within(ctx, move |stop| {
             let mut hits = Vec::new();
             for entry in walker(&root).flatten() {
-                if hits.len() >= cap {
+                if hits.len() >= cap || stop.is_cancelled() {
                     break;
                 }
                 if entry.file_type().is_some_and(|t| t.is_file()) {
                     let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
                     if matcher.is_match(rel) || matcher.is_match(entry.path()) {
-                        hits.push(ctx.display(entry.path()));
+                        hits.push(paths.display(entry.path()));
                     }
                 }
             }
             hits
         })
-        .await
-        .map_err(|e| ToolError::Failed(e.to_string()))?;
+        .await?;
 
-        Ok(format_hits(hits, "files", cap).into())
+        Ok(stopped_early(format_hits(hits, "files", cap), partial).into())
     }
 }
 
@@ -194,12 +246,12 @@ impl Tool for Grep {
         let budget = ctx.budget;
         let files_only = input.files_only;
 
-        let ctx = ctx.clone();
-        let (files, capped) = tokio::task::spawn_blocking(move || {
+        let paths = ctx.clone();
+        let ((files, capped), partial) = walk_within(ctx, move |stop| {
             let mut files: Vec<FileMatches> = Vec::new();
             let mut found = 0usize;
             for entry in walker(&root).flatten() {
-                if found >= limit {
+                if found >= limit || stop.is_cancelled() {
                     break;
                 }
                 if !entry.file_type().is_some_and(|t| t.is_file()) {
@@ -235,7 +287,7 @@ impl Tool for Grep {
                     continue;
                 }
                 if let Some(matched) =
-                    matches_in(ctx.display(path), &text, &regex, context, limit - found)
+                    matches_in(paths.display(path), &text, &regex, context, limit - found)
                 {
                     found += matched.count;
                     files.push(matched);
@@ -243,10 +295,9 @@ impl Tool for Grep {
             }
             (files, found >= limit)
         })
-        .await
-        .map_err(|e| ToolError::Failed(e.to_string()))?;
+        .await?;
 
-        Ok(render(files, capped, files_only, limit, budget).into())
+        Ok(stopped_early(render(files, capped, files_only, limit, budget), partial).into())
     }
 }
 
@@ -458,6 +509,25 @@ mod tests {
         std::fs::write(dir.join("src/main.rs"), "fn main() {\n    let x = 1;\n}\n").unwrap();
         std::fs::write(dir.join("src/lib.rs"), "pub fn helper() {}\n").unwrap();
         std::fs::write(dir.join("notes.md"), "some fn text\n").unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_ends_a_search_rather_than_waiting_for_its_answer() {
+        // Stop threw the answer away and left the walk running on its thread.
+        // The walk watches the turn's token now, and the model is told the call
+        // was stopped rather than handed results nobody is waiting for.
+        let (ctx, dir) = test_ctx();
+        seed(dir.path());
+        ctx.cancel.cancel();
+
+        let grep = Grep
+            .execute(serde_json::json!({"pattern": "fn"}), &ctx)
+            .await;
+        assert!(matches!(grep, Err(ToolError::Canceled)));
+        let glob = Glob
+            .execute(serde_json::json!({"pattern": "**/*.rs"}), &ctx)
+            .await;
+        assert!(matches!(glob, Err(ToolError::Canceled)));
     }
 
     #[tokio::test]

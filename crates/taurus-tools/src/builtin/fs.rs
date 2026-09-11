@@ -113,7 +113,10 @@ impl Tool for ReadFile {
         let input: ReadFileInput = parse_input(input)?;
         let path = ctx.resolve_read(&input.path)?;
 
-        if path.is_dir() {
+        if tokio::fs::metadata(&path)
+            .await
+            .is_ok_and(|meta| meta.is_dir())
+        {
             return Err(ToolError::InvalidInput(format!(
                 "{} is a directory; use list_dir",
                 input.path
@@ -308,7 +311,9 @@ impl Tool for WriteFile {
         // Resolved through the same guard the call itself will use, so a path
         // the write would refuse is never read to draw a picture of it.
         let resolved = crate::path_guard::resolve(workspace, path).ok()?;
-        crate::diff::against_disk(workspace, &resolved, content)
+        // Read without holding the runtime, for the reason `edit_file`'s is.
+        let on_disk = tokio::fs::read(&resolved).await;
+        crate::diff::against_read(workspace, &resolved, on_disk, content)
     }
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
@@ -386,7 +391,9 @@ impl Tool for EditFile {
     async fn diff(&self, input: &serde_json::Value, workspace: &Path) -> Option<FileDiff> {
         let input: EditFileInput = serde_json::from_value(input.clone()).ok()?;
         let path = crate::path_guard::resolve(workspace, &input.path).ok()?;
-        let original = std::fs::read_to_string(&path).ok()?;
+        // Read without holding the runtime: this runs inside the permission
+        // prompt, beside the stream it is interrupting.
+        let original = tokio::fs::read_to_string(&path).await.ok()?;
         let (updated, _) = apply_edit(&original, &input).ok()?;
         Some(crate::diff::between(
             crate::path_guard::display(workspace, &path),

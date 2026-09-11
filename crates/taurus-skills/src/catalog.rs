@@ -39,6 +39,9 @@ impl SkillCatalog {
     pub fn discover(sources: &[SkillSource]) -> (Self, Vec<SkillError>) {
         let mut catalog = Self::default();
         let mut problems = Vec::new();
+        // One PATH lookup per interpreter for the whole scan, rather than one
+        // per skill that declares it. See `missing_interpreters_in`.
+        let mut interpreters = interpreter::Interpreters::default();
 
         for source in sources {
             if !source.dir.is_dir() {
@@ -56,7 +59,7 @@ impl SkillCatalog {
                 if !dir.is_dir() {
                     continue;
                 }
-                match load_skill(&dir, source.tier, source.origin) {
+                match load_skill(&dir, source.tier, source.origin, &mut interpreters) {
                     Ok(skill) => {
                         debug!(name = skill.name(), ?source.tier, ?source.origin, "loaded skill");
                         let name = skill.name().to_string();
@@ -166,7 +169,12 @@ const RESOURCE_DIRS: [&str; 3] = ["scripts", "references", "assets"];
 /// them.
 const MAX_RESOURCES: usize = 40;
 
-fn load_skill(dir: &Path, tier: SkillTier, origin: SkillOrigin) -> Result<Skill, SkillError> {
+fn load_skill(
+    dir: &Path,
+    tier: SkillTier,
+    origin: SkillOrigin,
+    interpreters: &mut interpreter::Interpreters,
+) -> Result<Skill, SkillError> {
     let path = dir.join(SKILL_FILE);
     let text = std::fs::read_to_string(&path)?;
     let parsed = parse_skill_md(&text, &path)?;
@@ -194,8 +202,9 @@ fn load_skill(dir: &Path, tier: SkillTier, origin: SkillOrigin) -> Result<Skill,
 
     // Resolve interpreters once, at load time: the alternative is discovering
     // that python is missing halfway through a task.
-    let missing = interpreter::missing_interpreters(
+    let missing = interpreter::missing_interpreters_in(
         frontmatter.scripts.iter().map(|s| s.interpreter.as_str()),
+        interpreters,
     );
     let degraded = (!missing.is_empty()).then(|| missing.join("; "));
 

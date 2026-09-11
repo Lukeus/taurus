@@ -111,6 +111,25 @@ pub struct TurnRef<'a> {
     pub prompt: &'a str,
 }
 
+/// The active theme, and what resolving it depended on. See
+/// [`Host::active_theme`].
+struct ResolvedTheme {
+    id: String,
+    /// The workspace whose layer it was read with, which trust decides.
+    reading: Option<PathBuf>,
+    seen: Freshness,
+    theme: Option<CustomTheme>,
+    problems: Vec<String>,
+}
+
+/// The providers built so far, and how many times they have been forgotten.
+/// See [`Host::provider`].
+#[derive(Default)]
+struct BuiltProviders {
+    generation: u64,
+    providers: std::collections::HashMap<String, Arc<dyn Provider>>,
+}
+
 pub struct Host {
     workspace: RwLock<PathBuf>,
     /// What reads tabular files.
@@ -122,6 +141,15 @@ pub struct Host {
     /// choice is still open.
     engine: Arc<dyn taurus_data::Engine>,
     providers: RwLock<Vec<ProviderConfig>>,
+    /// Each provider, built once from its config and kept.
+    ///
+    /// Building one resolves its API key, and on macOS, Windows and a Linux
+    /// desktop that is a call into the OS credential store: tens of
+    /// milliseconds when it is unlocked, and as long as a dialog stays open
+    /// when it is not. Every message asks for its conversation's provider, so
+    /// building one per call put that read on every turn. See
+    /// [`Self::provider`].
+    built: std::sync::Mutex<BuiltProviders>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
     /// The standing brief for this machine and this workspace. Held rather
@@ -141,9 +169,11 @@ pub struct Host {
     /// snapshot; a duplicate check has to see the live set.
     agents: SharedAgentCatalog,
     /// Each agent's `(provider, model)`, resolved when the roster is scanned.
-    /// Resolving it there rather than per turn keeps a keychain read off the
-    /// hot path — which is also why a turn checks the roster's fingerprint
-    /// before rescanning it. See [`Self::refresh_for_turn`].
+    /// Resolved there rather than per turn because resolving can build a
+    /// provider, and the first build of each reads its key out of the OS
+    /// keychain — see [`Self::built`]. That is also why a turn checks the
+    /// roster's fingerprint before rescanning it. See
+    /// [`Self::refresh_for_turn`].
     agent_models: RwLock<ModelOverrides>,
     /// What the held roster was scanned from. Compared per turn; the scan it
     /// guards parses every agent file, cross-checks each one's tools, and can
@@ -164,6 +194,14 @@ pub struct Host {
     /// already made: a hook edited in an editor takes effect on the next
     /// message rather than the next launch.
     hooks_seen: RwLock<Freshness>,
+    /// The active theme as last resolved, and the files it was resolved from.
+    ///
+    /// It rides on every status push, and resolving it reads the theme file
+    /// and reads and base64-encodes its logo — up to 256 KB — for an answer
+    /// that moves when somebody edits a theme. Held, and checked with a `stat`
+    /// per file: the bargain the roster and the skills make. See
+    /// [`Self::active_theme`].
+    theme_seen: RwLock<Option<ResolvedTheme>>,
     /// The one index refresh that may be running for this workspace.
     ///
     /// Held here because all three things that start one pass through this
@@ -189,6 +227,19 @@ pub struct Host {
     hooks: RwLock<Arc<taurus_hooks::HookRunner>>,
     permissions: RwLock<Arc<PermissionEngine>>,
     mcp: McpManager,
+    /// Held for the whole of an MCP reload, so two cannot interleave.
+    ///
+    /// A reload shuts every server down, spends seconds starting them again,
+    /// then swaps their tools into the registry — and the MCP panel starts one
+    /// on every save. Two at once let the second's shutdown drop connections
+    /// the first had just made, while the first went on to register tools
+    /// pointing at them: tools that failed on every call, under a panel that
+    /// said connected.
+    ///
+    /// The local half never takes this. It carries the MCP tools across at the
+    /// moment it swaps the registry — see [`Self::reload_local`] — so a
+    /// settings save does not wait behind a server that is still starting.
+    mcp_reload: tokio::sync::Mutex<()>,
     problems: RwLock<Vec<Problem>>,
     prompts: Arc<dyn PermissionPromptFactory>,
     /// Where `ask_user` puts its questions. Not a factory like `prompts`: it is
@@ -228,6 +279,7 @@ impl Host {
         let settings = config::load_settings(Some(&workspace));
         Self {
             providers: RwLock::new(providers),
+            built: std::sync::Mutex::new(BuiltProviders::default()),
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
             // The one line in the harness that names a data engine. Everything
@@ -243,12 +295,14 @@ impl Host {
             agents_seen: RwLock::new(Freshness::default()),
             skills_seen: RwLock::new(Freshness::default()),
             hooks_seen: RwLock::new(Freshness::default()),
+            theme_seen: RwLock::new(None),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             hooks: RwLock::new(Arc::new(taurus_hooks::HookRunner::default())),
             permissions: RwLock::new(permissions),
             // Handed the keychain, so a server that wants OAuth can be signed
             // in to. See `secrets::Keychain`.
             mcp: McpManager::with_vault(Arc::new(crate::secrets::Keychain)),
+            mcp_reload: tokio::sync::Mutex::new(()),
             problems: RwLock::new(Vec::new()),
             prompts,
             asker,
@@ -298,15 +352,18 @@ impl Host {
     /// opened the app onto a shell with no providers, no model picker and no
     /// rail until every one of those servers had answered.
     ///
-    /// Startup calls the two in order, marking itself loaded in between. A
-    /// caller with nothing to gain from that should call [`Host::reload`] and
-    /// get both.
+    /// Startup calls the two in order, marking itself loaded in between. The
+    /// MCP tools that are running survive this half — it carries them across
+    /// rather than rebuilding them — so a change that cannot affect a server
+    /// calls this alone, and [`Host::reload`] is for when the servers should
+    /// restart too.
     pub async fn reload_local(&self) {
         let workspace = self.workspace.read().await.clone();
 
         let (providers, provider_problems) = config::load_providers(Some(&workspace));
         let mut problems = Problem::tag(ProblemSource::Providers, provider_problems);
         *self.providers.write().await = providers;
+        self.forget_providers();
         *self.settings.write().await = config::load_settings(Some(&workspace));
 
         // Through the same two loaders a turn calls, so a reload and a turn
@@ -506,7 +563,8 @@ impl Host {
         //
         // The per-turn tools are not in this registry to be removed from — a
         // turn adds them to its own copy, and takes them away there. The MCP
-        // tools are not here *yet*, and `reload_mcp` never registers one the
+        // tools are not here *yet* — they are carried across at the swap below,
+        // through the same list — and `reload_mcp` never registers one the
         // settings disable, so the effect is identical; what would differ is a
         // warning about the user's own working config, appearing or not
         // depending on whether a server happened to be up this second.
@@ -524,11 +582,47 @@ impl Host {
 
         // After the registry is finished, and deliberately so: an agent scoped
         // to tools the user has since disabled is exactly the case this catches.
-        let available: Vec<String> = registry.names().map(str::to_string).collect();
+        // With the MCP tools that are running, which the swap below carries
+        // across: an agent scoped to a server's tools must not be refused by a
+        // reload that leaves the server up.
+        let running =
+            |name: &str| taurus_mcp::is_mcp_tool(name) && !disabled.iter().any(|off| off == name);
+        let mut available: Vec<String> = registry.names().map(str::to_string).collect();
+        available.extend(
+            self.registry
+                .read()
+                .await
+                .names()
+                .filter(|name| running(name))
+                .map(str::to_string),
+        );
         problems.extend(self.load_agents(&workspace, &available).await);
 
-        *self.registry.write().await = registry;
-        *self.problems.write().await = problems;
+        // The MCP tools come across from the registry this replaces. They are
+        // `reload_mcp`'s to change, and rebuilding without them would leave
+        // every caller choosing between no MCP tools and a restart of every
+        // server. Read under the write lock that swaps, so a reconnect finishing
+        // alongside cannot have its new tools replaced with the old ones; and
+        // filtered by the settings just read, so a tool switched off since does
+        // not come back.
+        let mut live = self.registry.write().await;
+        let carried: Vec<_> = live
+            .names()
+            .filter(|name| running(name))
+            .filter_map(|name| live.get(name))
+            .collect();
+        for tool in carried {
+            registry.register(tool);
+        }
+        *live = registry;
+        drop(live);
+
+        // Every source but MCP's, which `reload_mcp` reports and this half
+        // never looks at. Replacing the list wholesale would clear a server's
+        // problem until something next reconnected it.
+        let mut held = self.problems.write().await;
+        problems.extend(held.drain(..).filter(|p| p.source == ProblemSource::Mcp));
+        *held = problems;
     }
 
     /// Reads the standing brief and installs it, returning what to report.
@@ -579,7 +673,15 @@ impl Host {
         // fingerprint stale rather than be recorded as already seen.
         *self.skills_seen.write().await = skill_freshness(&sources);
 
-        let (catalog, skill_problems) = SkillCatalog::discover(&sources);
+        // On a blocking thread: a scan lists every source directory and reads
+        // and validates a `SKILL.md` for every skill installed, and it runs at
+        // each turn boundary where the library moved.
+        let scanned = {
+            let sources = sources.clone();
+            tokio::task::spawn_blocking(move || SkillCatalog::discover(&sources)).await
+        };
+        let (catalog, skill_problems) =
+            scanned.unwrap_or_else(|_| SkillCatalog::discover(&sources));
         info!(
             skills = catalog.len(),
             problems = skill_problems.len(),
@@ -607,10 +709,23 @@ impl Host {
     /// exists: a drawer showing the catalog as it was at startup is not showing
     /// the feature working. Narrower than [`Host::reload`] — scanning a
     /// directory should not restart every MCP server.
-    pub async fn rescan_skills(&self) {
+    ///
+    /// Answers whether what the shell shows about skills moved — the count, or
+    /// a problem with one — so a caller pushes a status only when there is
+    /// something new in it.
+    pub async fn rescan_skills(&self) -> bool {
+        let before = (
+            self.skill_count().await,
+            self.problem_text(ProblemSource::Skills).await,
+        );
         let workspace = self.workspace.read().await.clone();
         let found = self.load_skills(&workspace).await;
         self.replace_problems(ProblemSource::Skills, found).await;
+        before
+            != (
+                self.skill_count().await,
+                self.problem_text(ProblemSource::Skills).await,
+            )
     }
 
     /// The check a turn makes, asked for outside one.
@@ -624,8 +739,11 @@ impl Host {
     /// Not safe mid-turn, for the reason the whole design is at turn
     /// boundaries: a turn runs against the brief, roster and catalog it started
     /// with. The caller is the one that knows whether a turn is running.
-    pub async fn refresh_config(&self) {
-        self.refresh_for_turn().await;
+    ///
+    /// Answers whether anything was re-read, so returning to the window pushes
+    /// a status only when something on disk actually moved.
+    pub async fn refresh_config(&self) -> bool {
+        self.refresh_for_turn().await
     }
 
     /// Re-reads the config this turn is about to be built from.
@@ -651,40 +769,66 @@ impl Host {
     /// because both cost more than a `stat`: instructions are a handful of file
     /// reads and an import resolution, and a roster scan parses every agent
     /// file, cross-checks its tools, and can reach the OS keychain.
-    async fn refresh_for_turn(&self) {
+    ///
+    /// Answers whether anything the status reports may have moved: a brief or
+    /// a hook file re-read, or a roster or catalog whose count or problems
+    /// changed.
+    async fn refresh_for_turn(&self) -> bool {
         let workspace = self.workspace.read().await.clone();
+        let mut moved = false;
+
+        // Every fingerprint at once, on a blocking thread. Each is a `stat` per
+        // file and a directory listing or two, which with a large skill library
+        // is a few hundred blocking calls — made twice a turn, on the runtime
+        // that carries every other command.
+        let seen = self.instructions_seen.read().await.clone();
+        let taken = {
+            let (seen, workspace) = (seen.clone(), workspace.clone());
+            tokio::task::spawn_blocking(move || TurnStamps::take(&seen, &workspace)).await
+        };
+        let now = taken.unwrap_or_else(|_| TurnStamps::take(&seen, &workspace));
 
         // Against the files the last read depended on, restated — not against
         // the source list. The two are different sets whenever a brief imports
         // anything, and comparing across them would never be equal, which is a
         // gate that is always open rather than a gate.
-        let seen = self.instructions_seen.read().await.clone();
-        if seen != seen.refreshed() {
+        if seen != now.instructions {
             let found = self.load_instructions(&workspace).await;
             self.replace_problems(ProblemSource::Instructions, found)
                 .await;
+            moved = true;
         }
 
-        if *self.agents_seen.read().await
-            != agent_freshness(&config::agent_sources(Some(&workspace)))
-        {
-            self.rescan_agents().await;
+        if *self.agents_seen.read().await != now.agents {
+            moved |= self.rescan_agents().await;
         }
 
-        if *self.skills_seen.read().await
-            != skill_freshness(&config::skill_sources(Some(&workspace)))
-        {
-            self.rescan_skills().await;
+        if *self.skills_seen.read().await != now.skills {
+            moved |= self.rescan_skills().await;
         }
 
         // Rebuilt rather than restated, unlike instructions: a hook file has no
         // imports, so the set to watch is knowable from the config layer — and
         // rebuilding it is what also notices the set *changing*, which is what
         // trusting a workspace does.
-        if *self.hooks_seen.read().await != hook_freshness(&workspace) {
+        if *self.hooks_seen.read().await != now.hooks {
             let found = self.load_hooks(&workspace).await;
             self.replace_problems(ProblemSource::Hooks, found).await;
+            moved = true;
         }
+        moved
+    }
+
+    /// One source's problems, as text: what a rescan compares to tell whether
+    /// it moved anything the shell shows.
+    async fn problem_text(&self, source: ProblemSource) -> Vec<String> {
+        self.problems
+            .read()
+            .await
+            .iter()
+            .filter(|p| p.source == source)
+            .map(|p| p.message.clone())
+            .collect()
     }
 
     /// Swaps out every problem from one source, leaving the others alone.
@@ -701,7 +845,14 @@ impl Host {
     /// working. This is what opening it calls. It is deliberately narrower than
     /// [`Host::reload`]: rescanning a directory should not restart every MCP
     /// server, which a full reload does.
-    pub async fn rescan_agents(&self) {
+    ///
+    /// Answers whether the count or the agents' problems moved, the way
+    /// [`Self::rescan_skills`] does and for the same reason.
+    pub async fn rescan_agents(&self) -> bool {
+        let before = (
+            self.agents().await.len(),
+            self.problem_text(ProblemSource::Agents).await,
+        );
         let workspace = self.workspace.read().await.clone();
         let available: Vec<String> = self
             .registry
@@ -712,6 +863,11 @@ impl Host {
             .collect();
         let found = self.load_agents(&workspace, &available).await;
         self.replace_problems(ProblemSource::Agents, found).await;
+        before
+            != (
+                self.agents().await.len(),
+                self.problem_text(ProblemSource::Agents).await,
+            )
     }
 
     /// Discovers the roster, checks it against `available`, resolves its
@@ -852,8 +1008,11 @@ impl Host {
         config::edit_settings(Scope::Global, None, |s| s.last_workspace = Some(remembered));
 
         // Reload re-resolves both layers, so the in-memory settings pick up the
-        // new workspace's file without a second write.
-        self.reload().await;
+        // new workspace's file without a second write. The local half only: the
+        // new folder's servers are the caller's to reconnect, and not to wait
+        // for — a folder with three `npx` servers would otherwise hold the
+        // window on the old folder until the last of them answered.
+        self.reload_local().await;
         Ok(canonical)
     }
 
@@ -874,24 +1033,28 @@ impl Host {
     /// response is to contribute it. That is also what rebuilds the permission
     /// engine — the workspace allowlist was not read at startup, and there is
     /// no other moment it would be picked up.
+    ///
+    /// The local half of a reload, as [`Self::set_workspace`] does: the servers
+    /// this project names are the caller's to start, after it has redrawn.
     pub async fn trust_workspace(&self) -> Result<(), String> {
         let workspace = self.workspace.read().await.clone();
         crate::trust::trust(&workspace)?;
         self.rebuild_permissions(&workspace).await;
-        self.reload().await;
+        self.reload_local().await;
         Ok(())
     }
 
     /// Stops reading this workspace's config.
     ///
     /// The reload is what makes it take effect immediately: a skill loaded
-    /// under the old decision is dropped from the catalog, and an MCP server
-    /// started under it is shut down rather than left running.
+    /// under the old decision is dropped from the catalog before this returns.
+    /// An MCP server started under it is shut down by the caller's reconnect,
+    /// which it starts once it has redrawn — see [`Self::trust_workspace`].
     pub async fn revoke_trust(&self) -> Result<(), String> {
         let workspace = self.workspace.read().await.clone();
         crate::trust::revoke(&workspace)?;
         self.rebuild_permissions(&workspace).await;
-        self.reload().await;
+        self.reload_local().await;
         Ok(())
     }
 
@@ -908,17 +1071,63 @@ impl Host {
         );
     }
 
-    /// Instantiates a provider from its config.
+    /// The provider configured under `id`, built on first use and kept.
     ///
-    /// Built per call rather than cached: they are cheap, hold no session
-    /// state, and this way an edited base URL takes effect without a restart.
+    /// Kept rather than built per call, because building one reads its API key
+    /// and that is a call into the OS credential store — see [`Self::built`].
+    /// An edited base URL or a new key still takes effect without a restart:
+    /// everything that changes either forgets what was built from the old one.
     pub async fn provider(&self, id: &str) -> Result<Arc<dyn Provider>, String> {
+        let generation = {
+            let built = self.built();
+            if let Some(provider) = built.providers.get(id) {
+                return Ok(provider.clone());
+            }
+            built.generation
+        };
+
         let config = self
             .provider_config(id)
             .await
             .ok_or_else(|| format!("no provider configured with id '{id}'"))?;
+        // The keychain read itself, and so off the runtime: it blocks for as
+        // long as the OS takes to answer, which with a locked keychain is as
+        // long as its dialog stays open.
+        let lookup = config.clone();
+        let key = tokio::task::spawn_blocking(move || lookup.api_key())
+            .await
+            .map_err(|e| format!("reading the API key for '{id}' failed: {e}"))?;
+        let provider = Self::build_provider(config, key);
 
-        Ok(match config.kind {
+        let mut built = self.built();
+        // Kept only if nothing was forgotten while it was being built: one
+        // built from a config a reload has just replaced must not outlive it.
+        if built.generation == generation {
+            built.providers.insert(id.to_string(), provider.clone());
+        }
+        Ok(provider)
+    }
+
+    /// Forgets every provider built so far, so the next call builds afresh.
+    ///
+    /// Called wherever what they were built from can change: the provider
+    /// list, and any provider's key.
+    fn forget_providers(&self) {
+        let mut built = self.built();
+        built.generation += 1;
+        built.providers.clear();
+    }
+
+    fn built(&self) -> std::sync::MutexGuard<'_, BuiltProviders> {
+        // A panic while this was held leaves a map, not a broken invariant.
+        self.built
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// What [`Self::provider`] builds, from a config and the key it resolved.
+    fn build_provider(config: ProviderConfig, key: Option<String>) -> Arc<dyn Provider> {
+        match config.kind {
             ProviderKind::Ollama => Arc::new(
                 OllamaProvider::new(config.base_url).with_context_limit(config.context_length),
             ),
@@ -928,7 +1137,7 @@ impl Host {
                     OpenAiProvider::new(
                         config.id.clone(),
                         config.base_url.clone(),
-                        config.api_key(),
+                        key,
                         OpenAiCapabilities {
                             native_tools: config.native_tools.unwrap_or(defaults.native_tools),
                             vision: config.vision.unwrap_or(defaults.vision),
@@ -962,37 +1171,33 @@ impl Host {
             // backend, and a configured value that disagrees with the model is
             // how a conversation compacts at the wrong moment.
             ProviderKind::Anthropic => Arc::new(
-                AnthropicProvider::new(
-                    config.id.clone(),
-                    config.base_url.clone(),
-                    config.api_key(),
-                )
-                // Both of these were read from config and handed only to the
-                // OpenAI adapter, which made this API unusable through a
-                // gateway: the subscription key had nowhere to ride but
-                // `x-api-key`, and the path was forced to `/v1` whatever the
-                // route was published under. The fields always parsed, so
-                // setting them was silently ignored rather than refused.
-                .with_api_prefix(config.api_prefix.clone())
-                .with_api_key_header(config.api_key_header.clone())
-                .with_thinking(
-                    config
-                        .thinking
-                        .as_deref()
-                        .map(AnthropicThinking::parse)
-                        .unwrap_or_default(),
-                )
-                .with_fallback_capabilities(AnthropicCapabilities {
-                    vision: AnthropicCapabilities::default().vision,
-                    context_length: config
-                        .context_length
-                        .unwrap_or(AnthropicCapabilities::default().context_length),
-                })
-                .with_models(config.models.iter().map(|m| m.id.clone()).collect()),
+                AnthropicProvider::new(config.id.clone(), config.base_url.clone(), key)
+                    // Both of these were read from config and handed only to the
+                    // OpenAI adapter, which made this API unusable through a
+                    // gateway: the subscription key had nowhere to ride but
+                    // `x-api-key`, and the path was forced to `/v1` whatever the
+                    // route was published under. The fields always parsed, so
+                    // setting them was silently ignored rather than refused.
+                    .with_api_prefix(config.api_prefix.clone())
+                    .with_api_key_header(config.api_key_header.clone())
+                    .with_thinking(
+                        config
+                            .thinking
+                            .as_deref()
+                            .map(AnthropicThinking::parse)
+                            .unwrap_or_default(),
+                    )
+                    .with_fallback_capabilities(AnthropicCapabilities {
+                        vision: AnthropicCapabilities::default().vision,
+                        context_length: config
+                            .context_length
+                            .unwrap_or(AnthropicCapabilities::default().context_length),
+                    })
+                    .with_models(config.models.iter().map(|m| m.id.clone()).collect()),
             ),
 
             ProviderKind::Gemini => Arc::new(
-                GeminiProvider::new(config.id.clone(), config.base_url.clone(), config.api_key())
+                GeminiProvider::new(config.id.clone(), config.base_url.clone(), key)
                     .with_fallback_capabilities(GeminiCapabilities {
                         vision: GeminiCapabilities::default().vision,
                         context_length: config
@@ -1001,7 +1206,7 @@ impl Host {
                     })
                     .with_models(config.models.iter().map(|m| m.id.clone()).collect()),
             ),
-        })
+        }
     }
 
     /// Builds the agent for one turn.
@@ -1266,9 +1471,26 @@ impl Host {
         crate::git::Repo::status(&self.workspace.read().await.clone()).await
     }
 
-    /// The branch this workspace is on, for stamping onto a new conversation.
+    /// The branch this workspace is on, for the status and for stamping onto a
+    /// new conversation.
+    ///
+    /// Read off disk rather than asked of git — see
+    /// [`crate::git::branch_on_disk`] — because the status is pushed after
+    /// nearly everything, and asking cost two git processes every time. Git is
+    /// asked only when the disk does not settle it.
     pub async fn branch(&self) -> Option<String> {
-        self.repo_status().await.branch
+        let workspace = self.workspace.read().await.clone();
+        let on_disk = {
+            let workspace = workspace.clone();
+            tokio::task::spawn_blocking(move || crate::git::branch_on_disk(&workspace))
+                .await
+                .ok()
+                .flatten()
+        };
+        match on_disk {
+            Some(branch) => branch,
+            None => crate::git::Repo::status(&workspace).await.branch,
+        }
     }
 
     /// The hooks in force. Cloned rather than borrowed so a turn holds the set
@@ -1387,6 +1609,7 @@ impl Host {
         let workspace = self.workspace.read().await.clone();
         let (effective, _) = config::load_providers(Some(&workspace));
         *self.providers.write().await = effective;
+        self.forget_providers();
     }
 
     /// Stores a provider's API key in the OS credential store.
@@ -1404,11 +1627,16 @@ impl Host {
         {
             return Err(format!("no provider configured with id '{provider_id}'"));
         }
-        secrets::store(provider_id, key)
+        secrets::store(provider_id, key)?;
+        // The provider built with the old key would go on sending it.
+        self.forget_providers();
+        Ok(())
     }
 
     pub async fn clear_provider_key(&self, provider_id: &str) -> Result<(), String> {
-        secrets::clear(provider_id)
+        secrets::clear(provider_id)?;
+        self.forget_providers();
+        Ok(())
     }
 
     /// Where each configured provider's key is coming from.
@@ -1417,12 +1645,19 @@ impl Host {
     /// screen draws it, and asking per provider would mean one credential-store
     /// round trip per row.
     pub async fn key_statuses(&self) -> Vec<(String, secrets::KeyStatus)> {
-        self.providers
-            .read()
+        let providers = self.providers.read().await.clone();
+        let statuses = |providers: &[ProviderConfig]| -> Vec<(String, secrets::KeyStatus)> {
+            providers
+                .iter()
+                .map(|p| (p.id.clone(), p.key_status()))
+                .collect()
+        };
+        // On a blocking thread: each status is a read of the OS keychain, which
+        // with a locked keychain waits on its dialog.
+        let asked = providers.clone();
+        tokio::task::spawn_blocking(move || statuses(&asked))
             .await
-            .iter()
-            .map(|p| (p.id.clone(), p.key_status()))
-            .collect()
+            .unwrap_or_else(|_| statuses(&providers))
     }
 
     /// Whether this machine can store keys at all, so a frontend can offer the
@@ -1468,22 +1703,25 @@ impl Host {
 
     /// Saves the global search layer and rebuilds, so turning search on
     /// registers its tools without a restart.
+    ///
+    /// The local half only, here and in the two key setters below: web search
+    /// changes nothing an MCP server is running with.
     pub async fn set_search(&self, file: taurus_web::SearchFile) {
         config::save_search(&file);
-        self.reload().await;
+        self.reload_local().await;
     }
 
     pub async fn set_search_key(&self, backend_id: &str, key: &str) -> Result<(), String> {
         secrets::store(&config::search_key_id(backend_id), key)?;
         // A saved key can be the thing that makes a selected backend resolve,
         // and the tools are only registered for one that does.
-        self.reload().await;
+        self.reload_local().await;
         Ok(())
     }
 
     pub async fn clear_search_key(&self, backend_id: &str) -> Result<(), String> {
         secrets::clear(&config::search_key_id(backend_id))?;
-        self.reload().await;
+        self.reload_local().await;
         Ok(())
     }
 
@@ -1649,14 +1887,45 @@ impl Host {
     /// The custom theme in force, if there is one.
     ///
     /// This is what rides on every status the window is pushed, so it reads
-    /// the one file rather than the directory — see [`theme::load_theme`]. Its
-    /// problems are recorded on the way past, which is what makes a theme that
-    /// was deleted out from under the setting say so instead of the app just
-    /// quietly losing its brand.
+    /// the one file rather than the directory — see [`theme::load_theme`] —
+    /// and only when that file, the layer above it, or its logo has moved since
+    /// the last read. See [`Self::theme_seen`]. Its problems are recorded on
+    /// the way past, which is what makes a theme that was deleted out from
+    /// under the setting say so instead of the app just quietly losing its
+    /// brand.
     pub async fn active_theme(&self) -> Option<CustomTheme> {
         let id = self.settings.read().await.theme_id.clone();
         let workspace = self.workspace.read().await.clone();
-        let (theme, problems) = theme::load_theme(Some(&workspace), &id);
+        let reading = crate::trust::for_reading(Some(&workspace)).map(Path::to_path_buf);
+
+        // The one held, if nothing it was read from has moved: the same id,
+        // the same trusted layers, and every file as it was.
+        let held = self
+            .theme_seen
+            .read()
+            .await
+            .as_ref()
+            .filter(|held| {
+                held.id == id && held.reading == reading && held.seen == held.seen.refreshed()
+            })
+            .map(|held| (held.theme.clone(), held.problems.clone()));
+        let (theme, problems) = match held {
+            Some(held) => held,
+            None => {
+                let (theme, problems, watched) = theme::load_theme_watched(Some(&workspace), &id);
+                *self.theme_seen.write().await = Some(ResolvedTheme {
+                    id,
+                    reading,
+                    seen: Freshness::of_files(watched.iter().map(PathBuf::as_path)),
+                    theme: theme.clone(),
+                    problems: problems.clone(),
+                });
+                (theme, problems)
+            }
+        };
+        // Restated when the theme came from the cache as well: a reload
+        // replaces the problem list, and the theme's would otherwise vanish
+        // until its file next moved.
         self.replace_problems(
             ProblemSource::Themes,
             Problem::tag(ProblemSource::Themes, problems),
@@ -1692,7 +1961,12 @@ impl Host {
         file: &theme::ThemeFile,
     ) -> Result<String, String> {
         let workspace = self.workspace.read().await.clone();
-        theme::save_theme(scope, Some(&workspace), id, file).map(|p| p.display().to_string())
+        let saved = theme::save_theme(scope, Some(&workspace), id, file)?;
+        // Forgotten outright rather than left to the file's stamp: the editor
+        // saves on every change, and two saves of the same length inside one
+        // tick of the filesystem's clock would look like no change at all.
+        *self.theme_seen.write().await = None;
+        Ok(saved.display().to_string())
     }
 
     /// Removes a theme file.
@@ -2244,38 +2518,47 @@ impl Host {
     /// `../` out of the workspace.
     pub async fn open_document(&self, path: &str) -> Result<Document, String> {
         let workspace = self.workspace().await;
-        let resolved =
-            taurus_tools::path_guard::resolve(&workspace, path).map_err(|e| e.to_string())?;
-        let shown = taurus_tools::path_guard::display(&workspace, &resolved);
+        let path = path.to_string();
+        // On a blocking thread: a document is read whole, up to
+        // `MAX_DOCUMENT_BYTES`, and the canvas opens one beside a live turn.
+        tokio::task::spawn_blocking(move || {
+            let resolved =
+                taurus_tools::path_guard::resolve(&workspace, &path).map_err(|e| e.to_string())?;
+            let shown = taurus_tools::path_guard::display(&workspace, &resolved);
 
-        let meta =
-            std::fs::metadata(&resolved).map_err(|e| format!("Could not open {shown}: {e}"))?;
-        if meta.is_dir() {
-            return Err(format!("{shown} is a folder, not a file."));
-        }
-        if meta.len() > MAX_DOCUMENT_BYTES {
-            return Err(format!(
-                "{shown} is too large to open in the editor ({:.1} MB). Files up to {} MB open \
-                 here; anything bigger is better read in pieces.",
-                meta.len() as f64 / (1024.0 * 1024.0),
-                MAX_DOCUMENT_BYTES / (1024 * 1024)
-            ));
-        }
-
-        let text = std::fs::read_to_string(&resolved).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::InvalidData {
-                format!("{shown} is not a text file, so there is nothing to show in the editor.")
-            } else {
-                format!("Could not open {shown}: {e}")
+            let meta =
+                std::fs::metadata(&resolved).map_err(|e| format!("Could not open {shown}: {e}"))?;
+            if meta.is_dir() {
+                return Err(format!("{shown} is a folder, not a file."));
             }
-        })?;
+            if meta.len() > MAX_DOCUMENT_BYTES {
+                return Err(format!(
+                    "{shown} is too large to open in the editor ({:.1} MB). Files up to {} MB \
+                     open here; anything bigger is better read in pieces.",
+                    meta.len() as f64 / (1024.0 * 1024.0),
+                    MAX_DOCUMENT_BYTES / (1024 * 1024)
+                ));
+            }
 
-        Ok(Document {
-            lines: text.lines().count() as u32,
-            fingerprint: fingerprint(&meta),
-            path: shown,
-            text,
+            let text = std::fs::read_to_string(&resolved).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::InvalidData {
+                    format!(
+                        "{shown} is not a text file, so there is nothing to show in the editor."
+                    )
+                } else {
+                    format!("Could not open {shown}: {e}")
+                }
+            })?;
+
+            Ok(Document {
+                lines: text.lines().count() as u32,
+                fingerprint: fingerprint(&meta),
+                path: shown,
+                text,
+            })
         })
+        .await
+        .map_err(|e| format!("reading the file failed: {e}"))?
     }
 
     /// Writes what the editor holds, unless the file moved since it was read.
@@ -2343,22 +2626,27 @@ impl Host {
     /// the pane says so, from the read that actually needed it.
     pub async fn dataset_schemas(&self) -> Vec<(taurus_data::Dataset, taurus_data::Schema)> {
         let workspace = self.workspace().await;
-        let mut out = Vec::new();
-        for dataset in self.datasets().await {
+        // Asked for all at once rather than one after another: each is a
+        // Parquet footer read or a CSV inference pass, and the query box asks
+        // on every visit, so it waited for the sum of them rather than the
+        // slowest. `join_all` answers in the order it was given, which is the
+        // catalog's.
+        let reads = self.datasets().await.into_iter().filter_map(|dataset| {
             // Through the guard, like every other read of an entry's path. An
             // entry is a line in a file somebody can edit, so `../` in one is a
             // thing that can happen rather than a thing that cannot.
-            let Ok(path) = taurus_tools::path_guard::resolve(&workspace, &dataset.path) else {
-                continue;
-            };
-            let Ok(source) = taurus_data::Source::at(path) else {
-                continue;
-            };
-            if let Ok(schema) = self.engine.schema(&source).await {
-                out.push((dataset, schema));
-            }
-        }
-        out
+            let path = taurus_tools::path_guard::resolve(&workspace, &dataset.path).ok()?;
+            let source = taurus_data::Source::at(path).ok()?;
+            Some(async move {
+                let schema = self.engine.schema(&source).await.ok()?;
+                Some((dataset, schema))
+            })
+        });
+        futures::future::join_all(reads)
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     /// A window of a dataset's rows.
@@ -2628,6 +2916,8 @@ impl Host {
     /// without touching the built-ins, the skill tools, or the web tools beside
     /// them.
     pub async fn reload_mcp(&self) {
+        // One at a time — see the field.
+        let _reloading = self.mcp_reload.lock().await;
         let workspace = self.workspace.read().await.clone();
 
         let mut problems = Vec::new();
@@ -2643,6 +2933,23 @@ impl Host {
         let (config, merge_problems) = config::merge_mcp(layers);
         problems.extend(Problem::tag(ProblemSource::Mcp, merge_problems));
 
+        // Out of the registry before the servers go down, rather than after
+        // they come back. The other order left a turn that started in between
+        // holding tools whose connections were already closed, and those fail
+        // on every call; this way it sees no MCP tools, and works without.
+        let before: HashSet<String> = {
+            let mut registry = self.registry.write().await;
+            let before: HashSet<String> = registry
+                .names()
+                .filter(|name| taurus_mcp::is_mcp_tool(name))
+                .map(str::to_string)
+                .collect();
+            for name in &before {
+                registry.remove(name);
+            }
+            before
+        };
+
         // Reconnecting drops the previous connections, stopping the old child
         // processes; leaving them would leak one per workspace change.
         self.mcp.shutdown().await;
@@ -2653,14 +2960,6 @@ impl Host {
         // server reconnected.
         let disabled = self.settings.read().await.disabled_tools.clone();
         let mut registry = self.registry.write().await;
-        let before: HashSet<String> = registry
-            .names()
-            .filter(|name| taurus_mcp::is_mcp_tool(name))
-            .map(str::to_string)
-            .collect();
-        for name in &before {
-            registry.remove(name);
-        }
         let mut after: HashSet<String> = HashSet::new();
         for tool in tools {
             if disabled.iter().any(|off| off == tool.name()) {
@@ -2867,6 +3166,29 @@ fn agent_freshness(sources: &[taurus_agents::AgentSource]) -> Freshness {
     Freshness::of_dirs(sources.iter().map(|s| s.dir.as_path()), ".md", false)
 }
 
+/// What a turn boundary compares with what is held: the brief restated, and
+/// the roster, the skills and the hooks fingerprinted afresh. See
+/// [`Host::refresh_for_turn`].
+struct TurnStamps {
+    instructions: Freshness,
+    agents: Freshness,
+    skills: Freshness,
+    hooks: Freshness,
+}
+
+impl TurnStamps {
+    /// A `stat` per file each and a directory listing or two, every one of them
+    /// a blocking call — which is why a turn takes these on a blocking thread.
+    fn take(instructions: &Freshness, workspace: &Path) -> Self {
+        Self {
+            instructions: instructions.refreshed(),
+            agents: agent_freshness(&config::agent_sources(Some(workspace))),
+            skills: skill_freshness(&config::skill_sources(Some(workspace))),
+            hooks: hook_freshness(workspace),
+        }
+    }
+}
+
 /// Intersects every agent's `tools:` list with the finished registry, returning
 /// a message for each agent that had to be refused.
 ///
@@ -3060,6 +3382,97 @@ mod tests {
             Arc::new(NoProposals),
         );
         (host, home)
+    }
+
+    fn keyed_provider(id: &str, base_url: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: id.into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: base_url.into(),
+            models: Vec::new(),
+            default_model: None,
+            api_key_env: None,
+            api_key_header: None,
+            native_tools: None,
+            context_length: None,
+            vision: None,
+            api_prefix: None,
+            thinking: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_provider_is_built_once_so_a_turn_does_not_reach_the_keychain() {
+        // Every message asks for its conversation's provider, and building one
+        // reads its key out of the OS credential store — a keychain call on
+        // macOS, and one that waits on a dialog when the keychain is locked.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        let id = "built-once";
+        host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:9")])
+            .await;
+        host.set_provider_key(id, "sk-first").await.unwrap();
+
+        let before = secrets::reads(id);
+        let first = host.provider(id).await.unwrap();
+        let again = host.provider(id).await.unwrap();
+        assert_eq!(
+            secrets::reads(id) - before,
+            1,
+            "the key was read for every call rather than once"
+        );
+        assert!(Arc::ptr_eq(&first, &again));
+
+        // A new key is a new provider: one built with the old key would go on
+        // sending it.
+        host.set_provider_key(id, "sk-second").await.unwrap();
+        let rekeyed = host.provider(id).await.unwrap();
+        assert!(!Arc::ptr_eq(&first, &rekeyed));
+        assert_eq!(secrets::reads(id) - before, 2);
+
+        // And an edited config, for the same reason: an edited base URL takes
+        // effect on the next message, not the next launch.
+        host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:10")])
+            .await;
+        let edited = host.provider(id).await.unwrap();
+        assert!(!Arc::ptr_eq(&rekeyed, &edited));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_theme_in_force_is_read_again_only_when_its_file_moves() {
+        // It rides on every status push, and reading it means reading and
+        // encoding its logo. Made unreadable after the first read — which moves
+        // neither its length nor its time — it must still be served, because
+        // nothing it was read from has changed.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        let themes = theme::ensure_themes_dir(Scope::Global, None).unwrap();
+        let file = themes.join("brand.json");
+        std::fs::write(&file, r##"{"name":"Brand","dark":{"ink":"#000"}}"##).unwrap();
+        host.set_theme_id("brand".into()).await;
+        let name = |theme: Option<CustomTheme>| theme.map(|t| t.name);
+
+        assert_eq!(name(host.active_theme().await).as_deref(), Some("Brand"));
+
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let served = name(host.active_theme().await);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            served.as_deref(),
+            Some("Brand"),
+            "the theme was read again though nothing it came from had moved"
+        );
+
+        // Edited, it is read again.
+        std::fs::write(&file, r##"{"name":"Rebranded","dark":{"ink":"#000"}}"##).unwrap();
+        assert_eq!(
+            name(host.active_theme().await).as_deref(),
+            Some("Rebranded")
+        );
     }
 
     #[tokio::test]
@@ -3534,6 +3947,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_rescan_that_finds_nothing_new_says_so() {
+        // Opening a drawer and returning to the window both rescan, and each
+        // pushes a status only when the rescan moved something the shell
+        // shows. A rescan that always said it had would rebuild the whole
+        // status — git included — on every alt-tab.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(!host.rescan_agents().await, "the same roster, read again");
+        assert!(!host.rescan_skills().await, "the same library, read again");
+        assert!(!host.refresh_config().await, "nothing on disk moved");
+
+        write_agent(&workspace, "late-arrival", "");
+        assert!(host.rescan_agents().await, "a new agent is a new count");
+    }
+
+    #[tokio::test]
     async fn a_rescan_clears_a_problem_the_user_has_since_fixed() {
         let dir = TempDir::new().unwrap();
         let workspace = dir.path().canonicalize().unwrap();
@@ -3687,6 +4119,120 @@ mod tests {
             .any(|t| t == taurus_skills::PROPOSE_TOOL));
     }
 
+    /// An MCP tool with no server behind it: what the registry holds, without a
+    /// process to start.
+    struct StandIn(String);
+
+    #[async_trait]
+    impl Tool for StandIn {
+        fn name(&self) -> &str {
+            &self.0
+        }
+        fn description(&self) -> &str {
+            "a stand-in for a server's tool"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn effect(&self) -> taurus_tools::Effect {
+            taurus_tools::Effect::Execute
+        }
+        async fn execute(
+            &self,
+            _: serde_json::Value,
+            _: &taurus_tools::ToolContext,
+        ) -> taurus_tools::ToolResult {
+            Err(ToolError::Rejected("a stand-in has no server".into()))
+        }
+    }
+
+    /// An `mcp.json` naming one server that starts and then never answers, so a
+    /// reload that reaches it stays there for as long as a test is looking.
+    fn a_server_that_never_answers(home: &Path) {
+        let (command, args) = if cfg!(windows) {
+            (
+                "powershell",
+                r#"["-NoProfile", "-Command", "Start-Sleep -Seconds 20"]"#,
+            )
+        } else {
+            ("sleep", r#"["20"]"#)
+        };
+        std::fs::write(
+            taurus_mcp::config::config_file(home),
+            format!(
+                r#"{{"mcpServers": {{"silent": {{"command": "{command}", "args": {args}}}}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Polls `reload` until it is waiting on something, and fails if it
+    /// finishes instead.
+    async fn until_waiting(
+        reload: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+        why: &str,
+    ) {
+        tokio::select! {
+            _ = reload => panic!("{why}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_starts_while_servers_reconnect_sees_no_dead_tools() {
+        // A reload shuts the old connections down before it starts the new
+        // ones. A tool still registered in between points at a connection that
+        // is gone and fails every call; no tool at all is something a turn can
+        // work without.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        let old = taurus_mcp::namespaced("silent", "search");
+        host.registry
+            .write()
+            .await
+            .register(Arc::new(StandIn(old.clone())));
+        a_server_that_never_answers(home.path());
+
+        let reload = host.reload_mcp();
+        tokio::pin!(reload);
+        until_waiting(reload.as_mut(), "a server that never answers was answered").await;
+
+        assert!(
+            !host.tool_names().await.contains(&old),
+            "a tool whose connection is closed is still offered mid-reload"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_mcp_reload_waits_for_the_one_in_flight() {
+        // The MCP panel starts a reload on every save. One running alongside
+        // another shuts down what the first has just connected, and the first
+        // then registers tools that point at nothing.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        a_server_that_never_answers(home.path());
+
+        let first = host.reload_mcp();
+        tokio::pin!(first);
+        until_waiting(first.as_mut(), "a server that never answers was answered").await;
+
+        // Nothing to connect to this time, so on its own this one is instant.
+        std::fs::write(
+            taurus_mcp::config::config_file(home.path()),
+            r#"{"mcpServers": {}}"#,
+        )
+        .unwrap();
+        let second = host.reload_mcp();
+        tokio::pin!(second);
+        until_waiting(
+            second.as_mut(),
+            "a second reload ran alongside the one in flight",
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn reloading_mcp_leaves_every_other_tool_where_it_was() {
         // The reason this is narrower than `reload`: a change to `mcp.json`
@@ -3720,6 +4266,85 @@ mod tests {
         let servers = host.mcp_servers().await;
         assert_eq!(servers.len(), 1);
         assert!(servers[0].status.as_ref().unwrap().error.is_some());
+    }
+
+    #[tokio::test]
+    async fn reloading_locally_leaves_every_mcp_tool_where_it_was() {
+        // The twin of the test above. Settings that have nothing to do with
+        // MCP — a search key, an embedding model, an approved skill — run this
+        // half, and one that dropped the MCP tools would leave each of them a
+        // restart of every server away from having them back.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload_local().await;
+        let running = taurus_mcp::namespaced("notes", "search");
+        host.registry
+            .write()
+            .await
+            .register(Arc::new(StandIn(running.clone())));
+        host.problems.write().await.push(Problem::new(
+            ProblemSource::Mcp,
+            "notes: the token has expired".to_string(),
+        ));
+
+        host.reload_local().await;
+
+        assert!(
+            host.tool_names().await.contains(&running),
+            "a settings reload dropped a running server's tool"
+        );
+        assert_eq!(
+            host.problems_from(&[ProblemSource::Mcp]).await.len(),
+            1,
+            "a settings reload cleared a server's problem"
+        );
+
+        // Switched off since, it does not come back.
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/settings.json"),
+            format!(r#"{{"disabled_tools": ["{running}"]}}"#),
+        )
+        .unwrap();
+        host.reload_local().await;
+        assert!(!host.tool_names().await.contains(&running));
+    }
+
+    #[tokio::test]
+    async fn opening_a_folder_or_deciding_its_trust_starts_no_mcp_server() {
+        // All three change which servers apply, and none may wait for them:
+        // the window redraws on what they return, and a folder with three
+        // `npx` servers kept it on the old folder until the last one answered.
+        // The servers are the caller's to reconnect once it has redrawn.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        std::fs::write(
+            taurus_mcp::config::config_file(home.path()),
+            r#"{"mcpServers": {"broken": {"command": "definitely-not-a-real-program-xyz"}}}"#,
+        )
+        .unwrap();
+        let unstarted = |servers: Vec<crate::McpServerView>| servers[0].status.is_none();
+
+        let other = TempDir::new().unwrap();
+        host.set_workspace(other.path()).await.unwrap();
+        assert!(
+            unstarted(host.mcp_servers().await),
+            "opening a folder waited on a server"
+        );
+
+        host.trust_workspace().await.unwrap();
+        assert!(
+            unstarted(host.mcp_servers().await),
+            "trusting a folder waited on a server"
+        );
+
+        host.revoke_trust().await.unwrap();
+        assert!(
+            unstarted(host.mcp_servers().await),
+            "revoking trust waited on a server"
+        );
     }
 
     #[tokio::test]

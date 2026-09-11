@@ -42,7 +42,7 @@ const TRUST_FILE: &str = "trust.json";
 /// there is no "untrusted" list: a workspace nobody has decided about and a
 /// workspace someone declined are the same state, and recording the second one
 /// would only make "ask me again" impossible to express.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct TrustFile {
     #[serde(default)]
     trusted: BTreeSet<String>,
@@ -88,17 +88,57 @@ fn read() -> Result<TrustFile, String> {
     })
 }
 
+/// The stored set as a reader last had it, and the file's stamp when it did.
+///
+/// The gate is asked by every loader of project config — three times at a turn
+/// boundary, nine times in a reload, once per status push — and the answer
+/// moves only when trust is granted or withdrawn, here or by `taurus trust`
+/// beside the window. So it is read once and then checked with a `stat`. The
+/// path is part of the key because the config home is not fixed — a test points
+/// it somewhere new — and anything this process writes forgets it outright.
+static HELD: std::sync::Mutex<Option<Held>> = std::sync::Mutex::new(None);
+
+struct Held {
+    path: PathBuf,
+    seen: crate::freshness::Freshness,
+    file: TrustFile,
+}
+
+fn held() -> std::sync::MutexGuard<'static, Option<Held>> {
+    // Nothing under this lock is left half-done by a panic: the worst a
+    // poisoned copy costs is one more read.
+    HELD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// The stored set for a reader, which can do nothing about a broken file but
 /// decline to trust what it cannot read.
 ///
 /// Said once per process rather than on every read: the gate is asked at every
 /// turn boundary, and one broken file would otherwise fill the log.
 fn read_or_nothing() -> TrustFile {
-    read().unwrap_or_else(|e| {
+    let path = trust_file();
+    let mut held = held();
+    if let Some(held) = held
+        .as_ref()
+        .filter(|held| held.path == path && held.seen == held.seen.refreshed())
+    {
+        return held.file.clone();
+    }
+    // Stamped before the read rather than after, so a write landing between
+    // the two leaves a stamp that no longer matches, and the next reader reads
+    // again rather than keeping what this read missed.
+    let seen = crate::freshness::Freshness::of_files([path.as_path()]);
+    let file = read().unwrap_or_else(|e| {
         static SAID: std::sync::Once = std::sync::Once::new();
         SAID.call_once(|| tracing::warn!("{e}"));
         TrustFile::default()
-    })
+    });
+    *held = Some(Held {
+        path,
+        seen,
+        file: file.clone(),
+    });
+    file
 }
 
 /// Written whole through the atomic replace. A torn file reads as one that does
@@ -111,8 +151,12 @@ fn write(file: &TrustFile) -> Result<(), String> {
     }
     let text = serde_json::to_string_pretty(file)
         .map_err(|e| format!("could not serialize trust decisions: {e}"))?;
-    config::replace_file(&path, &text)
-        .map_err(|e| format!("could not write {}: {e}", path.display()))
+    let written = config::replace_file(&path, &text)
+        .map_err(|e| format!("could not write {}: {e}", path.display()));
+    // Forgotten whatever the outcome, rather than left to the stamp: a decision
+    // made a moment ago must be the one the next reader sees.
+    *held() = None;
+    written
 }
 
 /// Whether this workspace's own config may be read.
@@ -452,6 +496,34 @@ mod tests {
         let workspace = tempfile::tempdir().expect("temp workspace");
 
         trust(workspace.path()).expect("trust");
+        revoke(workspace.path()).expect("revoke");
+        assert!(!is_trusted(workspace.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_trust_file_is_read_again_only_when_it_moves() {
+        // Every loader of project config asks — several times a turn, more in
+        // a reload — for an answer that moves when trust is granted or
+        // withdrawn. Made unreadable after the first read, which moves neither
+        // its length nor its time, the answer must still come back: nothing it
+        // was read from has changed.
+        use std::os::unix::fs::PermissionsExt;
+        let _home = isolated_home();
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        trust(workspace.path()).expect("trust");
+        assert!(is_trusted(workspace.path()));
+
+        let file = trust_file();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let answer = is_trusted(workspace.path());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            answer,
+            "the trust file was read again though nothing about it had moved"
+        );
+
+        // A decision made here is seen at once, stamp or no stamp.
         revoke(workspace.path()).expect("revoke");
         assert!(!is_trusted(workspace.path()));
     }

@@ -508,8 +508,10 @@ describe("a sketch", () => {
   it("is made instead of a note when that is chosen", async () => {
     answering({
       list_pages: () => [],
-      create_page: (args: never) =>
-        page((args as { name: string }).name, EMPTY, "workspace", "sketch"),
+      create_page: (args: never) => {
+        const { name } = args as { name: string };
+        return [page(name, EMPTY, "workspace", "sketch"), [ref(name, "workspace", "sketch")]];
+      },
       read_page: (args: never) =>
         page((args as { name: string }).name, EMPTY, "workspace", "sketch"),
     });
@@ -533,6 +535,34 @@ describe("a sketch", () => {
     expect(saying(host, "Ask about this")).toBeUndefined();
     expect(host.querySelector(".notes-head")?.textContent).toContain("Copy embed");
     expect(host.querySelector(".notes-where")?.textContent).toBe(".taurus/notes/Flow.excalidraw");
+  });
+
+  it("redraws the list from the answer to making it, rather than asking again", async () => {
+    // The page comes back with the list it now belongs to, the way deleting
+    // one already answers. Asking for the list straight after was a second
+    // round trip for something the first one could have said.
+    answering({
+      list_pages: () => [],
+      create_page: (args: never) => [
+        page((args as { name: string }).name, EMPTY, "workspace", "sketch"),
+        [ref("Flow", "workspace", "sketch")],
+      ],
+      read_page: (args: never) =>
+        page((args as { name: string }).name, EMPTY, "workspace", "sketch"),
+    });
+    const { host, click, type, press } = await mount();
+    const listed = () => invoke.mock.calls.filter(([name]) => name === "list_pages").length;
+    const before = listed();
+
+    await click(host.querySelector(".notes-new"));
+    await click(saying(host, "Sketch"));
+    const field = host.querySelector(".notes-make-name");
+    await type(field, "Flow");
+    await press(field, "Enter");
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
+
+    expect(listed()).toBe(before);
+    expect(rows(host)).toHaveLength(1);
   });
 
   it("is saved the way a note is, against the fingerprint it was read with", async () => {
@@ -819,7 +849,7 @@ describe("leaving a file", () => {
     twoNotes({
       rename_page: (args: never) => {
         const { to } = args as { to: string };
-        return page(to, "# One\n\nmine\n");
+        return [page(to, "# One\n\nmine\n"), [ref(to), ref("Two")]];
       },
     });
     const { host, click, type, press } = await mount();
@@ -846,7 +876,7 @@ describe("leaving a file", () => {
         type: "stale",
         current: { ...page("One", "theirs\n"), fingerprint: "44-3000" },
       }),
-      rename_page: () => page("Renamed", "theirs\n"),
+      rename_page: () => [page("Renamed", "theirs\n"), [ref("Renamed"), ref("Two")]],
     });
     const { host, click, type, press } = await mount();
     await click(rows(host)[0]);

@@ -25,7 +25,9 @@ const MAX_CHARS: usize = 200_000;
 /// Stop reading the body at this size regardless of what survives conversion —
 /// a 100 MB download that ends up truncated to 40k characters still cost the
 /// download. Enforced while reading rather than from `Content-Length`, which a
-/// chunked response does not have to send.
+/// chunked response does not have to send. A page past it is not refused: what
+/// arrived by then is converted and handed over, marked as the start of
+/// something larger, since the answer is cut far shorter than this anyway.
 const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Deserialize, JsonSchema)]
@@ -136,15 +138,6 @@ impl Tool for FetchUrl {
         if !status.is_success() {
             return Err(ToolError::Failed(format!("{final_url} returned {status}")));
         }
-        if let Some(size) = response.content_length() {
-            if size > MAX_BODY_BYTES {
-                return Err(ToolError::Failed(format!(
-                    "{final_url} is {} MB, too large to read",
-                    size / (1024 * 1024)
-                )));
-            }
-        }
-
         let kind = BodyKind::of(&content_type);
         if kind == BodyKind::Binary {
             return Err(ToolError::Failed(format!(
@@ -153,9 +146,21 @@ impl Tool for FetchUrl {
             )));
         }
 
-        let body = http::text(response, ctx, MAX_BODY_BYTES as usize).await?;
-        let text = kind.render(&body);
-        Ok(format_page(&final_url, &text, limit).into())
+        let (body, cut) = http::text_up_to(response, ctx, MAX_BODY_BYTES as usize).await?;
+        // Converted on a blocking thread: an HTML page of several megabytes is
+        // real work for the converter, and the runtime is the one the stream
+        // is on.
+        let text = tokio::task::spawn_blocking(move || kind.render(&body))
+            .await
+            .map_err(|e| ToolError::Failed(format!("converting {final_url} failed: {e}")))?;
+        let mut page = format_page(&final_url, &text, limit);
+        if cut {
+            page.push_str(&format!(
+                "\n\n[Only the first {} MB of this page were read; it is larger than that.]",
+                MAX_BODY_BYTES / (1024 * 1024)
+            ));
+        }
+        Ok(page.into())
     }
 }
 
@@ -287,6 +292,59 @@ fn format_page(url: &str, text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serves one response to the first request on a local port, and hands
+    /// back its URL.
+    async fn serve_once(body: Vec<u8>, content_type: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = socket.write_all(head.as_bytes()).await;
+            // The reader stops at its cap and goes, so the rest may have
+            // nowhere to land.
+            let _ = socket.write_all(&body).await;
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_page_past_the_cap_is_read_to_the_cap_rather_than_refused() {
+        // Its text is cut to a few thousand characters however long it is, so
+        // refusing the whole page lost its start for the sake of its tail.
+        let mut body = b"the start of a long page\n".to_vec();
+        body.resize(9 * 1024 * 1024, b'x');
+        let url = serve_once(body, "text/plain").await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let permissions = std::sync::Arc::new(taurus_tools::PermissionEngine::new(
+            &root,
+            root.join(".taurus"),
+            Box::new(taurus_tools::AllowAll),
+        ));
+        let ctx = ToolContext::new(
+            root,
+            permissions,
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        let out = FetchUrl::new(true)
+            .execute(serde_json::json!({ "url": url }), &ctx)
+            .await
+            .expect("the start of the page, not a refusal");
+        let text = out.to_text();
+        assert!(text.contains("the start of a long page"));
+        assert!(text.contains("Only the first 8 MB"));
+    }
 
     #[test]
     fn a_relative_url_is_refused() {

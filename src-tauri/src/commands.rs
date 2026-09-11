@@ -72,8 +72,10 @@ where
     }
 }
 
-async fn session_model(entry: &Arc<SessionEntry>) -> String {
-    entry.session.lock().await.model.clone()
+/// The model a conversation is on, without waiting for a turn running in it.
+/// See [`SessionEntry::model`].
+async fn session_model(entry: &SessionEntry) -> String {
+    entry.model.lock().await.clone()
 }
 
 /// Refuses a turn in a conversation that belongs to another folder.
@@ -115,7 +117,14 @@ async fn session_workspace(state: &AppState, session_id: &str) -> PathBuf {
     if let Ok(entry) = state.session(session_id) {
         return entry.workspace.clone();
     }
-    match sessions::workspace_of(session_id) {
+    // Off the runtime, cheap as it is: finding the transcript lists every
+    // workspace's directory before the header is read.
+    let id = session_id.to_string();
+    let saved = off_runtime(move || Ok(sessions::workspace_of(&id)))
+        .await
+        .ok()
+        .flatten();
+    match saved {
         Some(workspace) => workspace,
         None => state.host.workspace().await,
     }
@@ -227,7 +236,11 @@ pub struct ChangedFiles {
 /// everything else the turn is saying.
 pub async fn emit_changed(state: &AppState, session_id: &str) {
     let workspace = session_workspace(state, session_id).await;
-    let Ok(turns) = state.host.checkpoints_for(&workspace).turns(session_id) else {
+    // Off the runtime, the same read `list_checkpoints` makes and for the same
+    // reason: the whole log is parsed to learn the names in it.
+    let store = state.host.checkpoints_for(&workspace);
+    let id = session_id.to_string();
+    let Ok(turns) = off_runtime(move || store.turns(&id)).await else {
         return;
     };
 
@@ -254,7 +267,10 @@ pub async fn emit_changed(state: &AppState, session_id: &str) {
 /// transcript first reaching disk costs: one file read instead of a scan of
 /// every transcript in the workspace.
 pub async fn emit_session(state: &AppState, session_id: &str) {
-    let Some(meta) = sessions::meta(session_id) else {
+    // Off the runtime: finding the transcript lists every workspace's
+    // directory, and this follows every turn.
+    let id = session_id.to_string();
+    let Ok(Some(meta)) = off_runtime(move || Ok(sessions::meta(&id))).await else {
         return;
     };
     if let Err(e) = state.app.emit(crate::bridge::EVENT_SESSION, &meta) {
@@ -280,7 +296,24 @@ pub async fn set_workspace(state: State<'_, Arc<AppState>>, path: String) -> Cmd
     // Everything the shell shows about the app belongs to the folder, so all of
     // it has just changed at once.
     emit_status(&state).await;
+    // The new folder's servers, once the shell has everything else.
+    reconnect_mcp(&state);
     Ok(shown.display().to_string())
+}
+
+/// Reconnects the MCP servers in the background, then tells the window.
+///
+/// For the commands that change which servers apply — a folder switch, a trust
+/// decision — and that return as soon as everything else has taken effect.
+/// Startup splits a reload the same way and for the same reason: a server can
+/// take seconds to start, and a folder with three of them must not hold the
+/// rail on the old folder until the last one answers. See `lib.rs`.
+fn reconnect_mcp(state: &Arc<AppState>) {
+    let state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        state.host.reload_mcp().await;
+        emit_status(&state).await;
+    });
 }
 
 /// Whether this workspace's own config is being read, and what it holds.
@@ -300,8 +333,9 @@ pub async fn trust_workspace(state: State<'_, Arc<AppState>>) -> CmdResult<Trust
     let status = state.host.trust_status().await;
     info!(workspace = %status.workspace, "workspace trusted");
     // Saying yes is what loads this project's skills, agents and servers; the
-    // counts on the rail move with it.
+    // counts on the rail move with it, and again when its servers answer.
     emit_status(&state).await;
+    reconnect_mcp(&state);
     Ok(status)
 }
 
@@ -311,6 +345,8 @@ pub async fn revoke_workspace_trust(state: State<'_, Arc<AppState>>) -> CmdResul
     let status = state.host.trust_status().await;
     info!(workspace = %status.workspace, "workspace trust revoked");
     emit_status(&state).await;
+    // Which is what shuts down a server this project started.
+    reconnect_mcp(&state);
     Ok(status)
 }
 
@@ -364,6 +400,7 @@ pub async fn create_session(
         Arc::new(SessionEntry {
             session: Arc::new(Mutex::new(session)),
             provider_id: Mutex::new(provider_id.clone()),
+            model: Mutex::new(model.clone()),
             workspace,
             cancel: Arc::new(Mutex::new(CancellationToken::new())),
             log: Arc::new(Mutex::new(log)),
@@ -533,6 +570,7 @@ pub async fn resume_session(
             slot.insert(Arc::new(SessionEntry {
                 session: Arc::new(Mutex::new(session)),
                 provider_id: Mutex::new(provider_id),
+                model: Mutex::new(resumed.model.clone()),
                 // The conversation's own folder, out of its header — not the
                 // one open now. They are the same in the ordinary case and
                 // must not be assumed to be.
@@ -603,7 +641,11 @@ pub async fn send_message(
     // one does not. Refusing here costs the user a retry with the same text;
     // letting it through costs a round trip and comes back as a wire error
     // naming a field in the request body.
-    let model = session_model(&entry).await;
+    //
+    // Out of the session itself, and waited for rather than read off the
+    // entry: a message sent while a turn is running waits here for that turn
+    // to end, rather than building its agent underneath it.
+    let model = entry.session.lock().await.model.clone();
     let images = images.unwrap_or_default();
     let blocks = if images.is_empty() {
         Vec::new()
@@ -679,8 +721,18 @@ pub async fn send_message(
     // The conversation's listing entry has moved: its timestamp, and its title
     // if this was its first turn. The status has too — a turn can leave a note
     // behind, and can be the thing that moved the branch.
-    emit_session(&state, &session_id).await;
-    emit_status(&state).await;
+    //
+    // Pushed from a task of its own rather than awaited. The window learns the
+    // turn is over from this call returning, and awaiting a transcript read and
+    // a whole status first kept the Stop button lit after the answer had ended.
+    {
+        let state = state.inner().clone();
+        let session_id = session_id.clone();
+        tauri::async_runtime::spawn(async move {
+            emit_session(&state, &session_id).await;
+            emit_status(&state).await;
+        });
+    }
 
     match outcome {
         Ok(outcome) => {
@@ -732,9 +784,7 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
     // lock for its whole run, and deleting underneath one would leave it
     // appending to a file that is no longer anywhere.
     if let Ok(entry) = state.session(&session_id) {
-        if entry.session.try_lock().is_err() {
-            return Err("this conversation is mid-turn; stop it before deleting".into());
-        }
+        let _ = entry.idle("stop it before deleting")?;
     }
 
     // Dropped from memory before the file goes, not after. An open session's log
@@ -744,8 +794,15 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
         entry.cancel.lock().await.cancel();
     }
 
-    sessions::delete(&session_id)?;
-    state.host.checkpoints().await.forget(&session_id)?;
+    // Both off the runtime: a transcript can be megabytes, and the checkpoint
+    // log beside it more.
+    let checkpoints = state.host.checkpoints().await;
+    let id = session_id.clone();
+    off_runtime(move || {
+        sessions::delete(&id)?;
+        checkpoints.forget(&id)
+    })
+    .await?;
     state.host.forget_plan(&session_id).await;
     info!(session = %session_id, "session deleted");
     Ok(())
@@ -791,16 +848,18 @@ pub async fn switch_model(
         .await
         .map_err(|e| e.to_string())?;
 
-    {
+    let after = {
         // The same rule a rewind and a delete follow, and for a sharper reason
         // than either: a turn reads the model out of the session on every
         // attempt, so moving it underneath one would send half an answer to one
         // backend and half to another.
-        let Ok(mut session) = entry.session.try_lock() else {
-            return Err("this conversation is mid-turn; stop it before changing model".into());
-        };
+        let mut session = entry.idle("stop it before changing model")?;
         session.model = model.clone();
-    }
+        *entry.model.lock().await = model.clone();
+        // Counted now, while no turn can be running. Asked for again below, the
+        // lock would wait out a turn started in between.
+        session.messages.len()
+    };
     *entry.provider_id.lock().await = provider_id.clone();
 
     // Written down, so reopening the conversation continues it here rather than
@@ -808,9 +867,8 @@ pub async fn switch_model(
     // no transcript yet — the first turn writes a header naming this model
     // instead. See `SessionLog::record_model`.
     if entry.log.lock().await.record_model(&provider_id, &model) {
-        let session = entry.session.lock().await;
         entry.switches.lock().await.push(Switch {
-            after: session.messages.len(),
+            after,
             provider: provider_id.clone(),
             model: model.clone(),
             at: std::time::SystemTime::now()
@@ -852,17 +910,24 @@ pub async fn rename_session(
     // The write is serialized against the log for this conversation when there
     // is one, so a rewrite cannot land between a turn's append and the next.
     // A conversation that is only on disk has nothing to serialize against.
-    let held = state
+    //
+    // Off the runtime either way: a rename rewrites the whole transcript and
+    // syncs it, and it is allowed mid-turn — so it must hold neither a worker
+    // nor the lock the turn's next record waits on any longer than the write.
+    let log = state
         .session(&session_id)
         .ok()
         .map(|entry| entry.log.clone());
-    let meta = match &held {
-        Some(log) => {
-            let _guard = log.lock().await;
-            sessions::rename(&session_id, Some(&title))
-        }
-        None => sessions::rename(&session_id, Some(&title)),
-    }?;
+    let held = match log {
+        Some(log) => Some(log.lock_owned().await),
+        None => None,
+    };
+    let (id, name) = (session_id.clone(), title.clone());
+    let meta = off_runtime(move || {
+        let _held = held;
+        sessions::rename(&id, Some(&name))
+    })
+    .await?;
 
     info!(session = %session_id, title = %meta.title, "conversation renamed");
     emit_session(&state, &session_id).await;
@@ -1029,15 +1094,22 @@ pub async fn get_search_settings(state: State<'_, Arc<AppState>>) -> CmdResult<S
         })
         .collect();
 
-    let key_statuses = backends
+    // Off the runtime: each status is a read of the OS keychain, which with a
+    // locked keychain waits on its dialog.
+    let asked: Vec<(String, Option<String>)> = backends
         .iter()
-        .map(|b| {
-            (
-                b.id.clone(),
-                taurus_host::config::search_key_status(&b.id, b.api_key_env.as_deref()),
-            )
-        })
+        .map(|b| (b.id.clone(), b.api_key_env.clone()))
         .collect();
+    let key_statuses = off_runtime(move || {
+        Ok(asked
+            .into_iter()
+            .map(|(id, variable)| {
+                let status = taurus_host::config::search_key_status(&id, variable.as_deref());
+                (id, status)
+            })
+            .collect())
+    })
+    .await?;
 
     Ok(SearchSettings {
         selected: file.backend.clone(),
@@ -1325,10 +1397,14 @@ pub async fn mcp_sign_out(
 /// two or three names and wants to know which are missing.
 #[tauri::command]
 pub async fn programs_on_path(names: Vec<String>) -> CmdResult<Vec<String>> {
-    Ok(names
-        .into_iter()
-        .filter(|name| taurus_tools::login_path::which(name.trim()).is_some())
-        .collect())
+    // Off the runtime: each name is a walk of every directory on the PATH.
+    off_runtime(move || {
+        Ok(names
+            .into_iter()
+            .filter(|name| taurus_tools::login_path::which(name.trim()).is_some())
+            .collect())
+    })
+    .await
 }
 
 /// The servers the panel offers to add, and the ones it explains instead.
@@ -1372,10 +1448,14 @@ pub async fn list_skills(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Skill
     // Rescanned first, the same as `list_agents`: the whole authoring surface
     // for a skill is a text editor and a folder, so a drawer showing the
     // catalog as it was at startup is not showing the feature working.
-    state.host.rescan_skills().await;
+    //
     // The rail carries the count beside the drawer that lists them, and the two
-    // disagreeing is worse than either being slightly late.
-    emit_status(&state).await;
+    // disagreeing is worse than either being slightly late — so a rescan that
+    // moved the count, or a problem, pushes a status. One that found the same
+    // library does not: opening a drawer is not a reason to rebuild all of it.
+    if state.host.rescan_skills().await {
+        emit_status(&state).await;
+    }
     Ok(state.host.skills().await)
 }
 
@@ -1414,10 +1494,12 @@ pub async fn list_commands(
 /// editor, so a list assembled at startup is stale by the time anyone opens it.
 #[tauri::command]
 pub async fn list_agents(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<AgentSummary>> {
-    state.host.rescan_agents().await;
-    // Same reason the skills listing does it: the rail's count and the drawer's
-    // list are two views of one scan and must not disagree.
-    emit_status(&state).await;
+    // Same rule the skills listing follows: the rail's count and the drawer's
+    // list are two views of one scan and must not disagree, and a scan that
+    // moved neither has nothing to push.
+    if state.host.rescan_agents().await {
+        emit_status(&state).await;
+    }
     Ok(state.host.agents().await)
 }
 
@@ -1557,11 +1639,15 @@ pub async fn create_page(
     scope: Scope,
     kind: PageKind,
     name: String,
-) -> CmdResult<Page> {
-    state.host.create_page(scope, kind, &name).await
+) -> CmdResult<(Page, Vec<PageRef>)> {
+    let page = state.host.create_page(scope, kind, &name).await?;
+    // With the list it now belongs to, so the pane redraws from one answer
+    // rather than asking for the list again — the bargain `forget_page` makes.
+    Ok((page, state.host.notebook().await))
 }
 
-/// Renames a note, which moves its file: the name *is* the filename.
+/// Renames a note, which moves its file: the name *is* the filename. Answers
+/// with the list as well, for the reason `create_page` does.
 #[tauri::command]
 pub async fn rename_page(
     state: State<'_, Arc<AppState>>,
@@ -1569,8 +1655,9 @@ pub async fn rename_page(
     kind: PageKind,
     name: String,
     to: String,
-) -> CmdResult<Page> {
-    state.host.rename_page(scope, kind, &name, &to).await
+) -> CmdResult<(Page, Vec<PageRef>)> {
+    let page = state.host.rename_page(scope, kind, &name, &to).await?;
+    Ok((page, state.host.notebook().await))
 }
 
 /// Deletes a note and gives back what is left, so the pane can redraw from the
@@ -1999,8 +2086,10 @@ pub async fn respond_skill_proposal(
     let dir = save(&proposal, &root).map_err(|e| format!("could not save skill: {e}"))?;
     info!(skill = %proposal.name, dir = %dir.display(), "skill approved");
 
-    // Reload so the skill is usable in the session that just proposed it.
-    state.host.reload().await;
+    // Reloaded so the skill is usable in the session that just proposed it.
+    // The local half only: a skill changes nothing an MCP server is running
+    // with, so there is nothing to restart one for.
+    state.host.reload_local().await;
     // And so the count on the rail moves with it, rather than on whatever the
     // user does next.
     emit_status(&state).await;
@@ -2203,10 +2292,12 @@ pub async fn set_embedding_model(
     provider: String,
 ) -> CmdResult<()> {
     state.host.set_embedding_model(&model, &provider).await;
-    // The tool is registered by `reload`, so without this a model named here
-    // does not become a `search_code` until the next workspace change — which
-    // reads as the setting not having taken.
-    state.host.reload().await;
+    // The tool is registered by the local half of a reload, so without this a
+    // model named here does not become a `search_code` until the next
+    // workspace change — which reads as the setting not having taken. Only
+    // that half: an embedding model changes nothing an MCP server is running
+    // with.
+    state.host.reload_local().await;
     emit_status(&state).await;
     Ok(())
 }
@@ -2218,10 +2309,10 @@ pub async fn set_rerank(
     provider: String,
 ) -> CmdResult<()> {
     state.host.set_rerank(&model, &provider).await;
-    // Same reason `set_embedding_model` reloads: the reranker is attached to
-    // `search_code` when the tool is registered, so without this it does not
-    // take hold until the next workspace change.
-    state.host.reload().await;
+    // Same reason `set_embedding_model` reloads, and the same half: the
+    // reranker is attached to `search_code` when the tool is registered, so
+    // without this it does not take hold until the next workspace change.
+    state.host.reload_local().await;
     emit_status(&state).await;
     Ok(())
 }
@@ -2325,8 +2416,11 @@ pub async fn reload_config(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
 /// `Host::refresh_config`.
 #[tauri::command]
 pub async fn rescan_library(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
-    state.host.refresh_config().await;
-    emit_status(&state).await;
+    // Runs on every return to the window, and a status is a dozen reads and a
+    // git branch lookup. Pushed only when something on disk moved.
+    if state.host.refresh_config().await {
+        emit_status(&state).await;
+    }
     Ok(())
 }
 
@@ -2335,11 +2429,9 @@ pub async fn list_checkpoints(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> CmdResult<Vec<Checkpoint>> {
-    // `turns` deserializes the whole checkpoint log, and a `Before` record
-    // carries the full pre-image of every file the turn touched — all of which
-    // this then throws away, keeping only the names. The cost is (turns × files
-    // × file size) rather than anything the drawer shows, so it stays off the
-    // runtime until the log grows a lighter header to read instead.
+    // Off the runtime: `turns` reads the whole checkpoint log. It parses only
+    // the names out of it, passing over each pre-image without copying it, but
+    // a long session's log is still tens of megabytes to read through.
     let store = state
         .host
         .checkpoints_for(&session_workspace(&state, &session_id).await);
@@ -2361,9 +2453,7 @@ pub async fn rewind_to(
     // race the tool calls still writing, and the disabled button in the UI is
     // not something the backend should have to trust.
     if let Ok(entry) = state.session(&session_id) {
-        if entry.session.try_lock().is_err() {
-            return Err("this conversation is mid-turn; stop it before rewinding".into());
-        }
+        let _ = entry.idle("stop it before rewinding")?;
     }
 
     // The conversation's own folder, which is where its pre-images came from.
@@ -2371,11 +2461,14 @@ pub async fn rewind_to(
     // is not there and reported nothing to undo — and had it found one, it
     // would have restored a different project's files.
     let workspace = session_workspace(&state, &session_id).await;
-    let rewind =
-        state
-            .host
-            .checkpoints_for(&workspace)
-            .rewind(&session_id, &workspace, turn, dry_run)?;
+    // Off the runtime: a rewind reads the whole log, then every file it names,
+    // and writes them back. On a long session that is long enough to stall the
+    // stream and the permission prompt that share the runtime with it.
+    let store = state.host.checkpoints_for(&workspace);
+    let rewind = {
+        let session_id = session_id.clone();
+        off_runtime(move || store.rewind(&session_id, &workspace, turn, dry_run)).await?
+    };
 
     // The checklist is working state, and rewinding is undoing the work it
     // tracked. Kept, it would be the one thing in the session that still
@@ -2404,10 +2497,10 @@ pub async fn turn_changes(
     turn: u32,
 ) -> CmdResult<Vec<TurnChange>> {
     let workspace = session_workspace(&state, &session_id).await;
-    state
-        .host
-        .checkpoints_for(&workspace)
-        .changes(&session_id, &workspace, turn)
+    // Off the runtime, for the reason `list_checkpoints` is: the whole log is
+    // read and each file diffed, and the drawer is opened mid-turn.
+    let store = state.host.checkpoints_for(&workspace);
+    off_runtime(move || store.changes(&session_id, &workspace, turn)).await
 }
 
 /// Reads one turn back to an agent that did not write it.
@@ -2456,10 +2549,9 @@ pub async fn conversation_changes(
     session_id: String,
 ) -> CmdResult<Vec<TurnChange>> {
     let workspace = session_workspace(&state, &session_id).await;
-    state
-        .host
-        .checkpoints_for(&workspace)
-        .changes_all(&session_id, &workspace)
+    // Off the runtime, the same as a single turn's diffs — this is all of them.
+    let store = state.host.checkpoints_for(&workspace);
+    off_runtime(move || store.changes_all(&session_id, &workspace)).await
 }
 
 /// Where the workspace stands with git, for the branch label and the commit
@@ -2516,14 +2608,18 @@ pub async fn usage_report(
         state.host.tool_definitions().await,
     );
 
-    // A conversation that is open answers from memory. Reading its transcript
-    // instead would report it as it was last written down, which is behind
-    // whatever is on screen — and this panel is most often opened mid-turn, to
-    // find out what just filled the window.
+    // A conversation that is open answers from memory, which is what the
+    // window is working from — when it can. This panel is most often opened
+    // mid-turn, to find out what just filled the window, and a turn holds the
+    // session for its whole run: waiting for it would keep the panel spinning
+    // until the turn is over. Mid-turn it reads the transcript instead, which
+    // the turn writes at the end of every tool round, so it is behind by at
+    // most the round in flight. `resume_session` falls back the same way.
     if let Some(id) = &session_id {
         if let Ok(entry) = state.session(id) {
-            let session = entry.session.lock().await;
-            return Ok(usage::of_session(&session, &fixed));
+            if let Some(report) = open_usage(&entry, &fixed) {
+                return Ok(report);
+            }
         }
     }
 
@@ -2542,6 +2638,13 @@ pub async fn usage_report(
         )
     })
     .await
+}
+
+/// An open conversation's account, from memory — or `None` while a turn is
+/// running in it, for the caller to read off disk instead. See `usage_report`.
+fn open_usage(entry: &SessionEntry, fixed: &usage::Fixed) -> Option<UsageReport> {
+    let session = entry.session.try_lock().ok()?;
+    Some(usage::of_session(&session, fixed))
 }
 
 /// Where a turn's time actually went.
@@ -2592,11 +2695,7 @@ pub async fn commit_turn(
     // run, and committing underneath one would capture a tree that is still
     // being written.
     if let Ok(entry) = state.session(&session_id) {
-        if entry.session.try_lock().is_err() {
-            return Err(
-                "this conversation is mid-turn; wait for it to finish before committing".into(),
-            );
-        }
+        let _ = entry.idle("wait for it to finish before committing")?;
     }
 
     // The conversation's own folder, which is the repository its turns changed
@@ -2605,9 +2704,12 @@ pub async fn commit_turn(
     let checkpoints = state.host.checkpoints_for(&workspace);
 
     // Re-read rather than trusting a path list from the frontend, so what is
-    // committed is what was recorded.
-    let files = checkpoints
-        .turns(&session_id)?
+    // committed is what was recorded. Off the runtime, the same read
+    // `list_checkpoints` makes: the whole log, for one turn's file names.
+    let listing = state.host.checkpoints_for(&workspace);
+    let id = session_id.clone();
+    let files = off_runtime(move || listing.turns(&id))
+        .await?
         .into_iter()
         .find(|checkpoint| checkpoint.turn == turn)
         .map(|checkpoint| checkpoint.files)
@@ -2830,5 +2932,67 @@ mod tests {
             !err.contains("/work/taurus"),
             "names the way back, not the dead end: {err}"
         );
+    }
+
+    fn open(model: &str) -> SessionEntry {
+        SessionEntry {
+            session: Arc::new(Mutex::new(Session::new(model))),
+            provider_id: Mutex::new("local".into()),
+            model: Mutex::new(model.into()),
+            workspace: std::path::PathBuf::from("/src/a"),
+            cancel: Arc::new(Mutex::new(CancellationToken::new())),
+            log: Arc::new(Mutex::new(SessionLog::disabled())),
+            switches: Mutex::new(Vec::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_mid_turn_still_says_which_model_it_is_on() {
+        // The first thing a turn review asks. A turn holds the session for its
+        // whole run, so an answer read out of the session waits for all of it
+        // — and "Review this turn" sat on "Reading it over…" until it ended.
+        let entry = open("small-model");
+        let _turn = entry.session.lock().await;
+
+        let model = tokio::time::timeout(std::time::Duration::from_secs(2), session_model(&entry))
+            .await
+            .expect("waited for the running turn to finish");
+
+        assert_eq!(model, "small-model");
+    }
+
+    #[tokio::test]
+    async fn usage_mid_turn_is_left_to_the_transcript_rather_than_waited_for() {
+        let entry = open("m");
+        let fixed = usage::Fixed::new("", Vec::new());
+
+        let turn = entry.session.lock().await;
+        assert!(
+            open_usage(&entry, &fixed).is_none(),
+            "a running turn's session is not readable, and must not be waited on"
+        );
+
+        drop(turn);
+        assert!(
+            open_usage(&entry, &fixed).is_some(),
+            "between turns it answers from memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn what_cannot_happen_mid_turn_is_refused_and_told_what_to_do() {
+        let entry = open("m");
+
+        let turn = entry.session.lock().await;
+        let err = entry
+            .idle("stop it before rewinding")
+            .expect_err("a rewind must not run underneath a turn");
+        assert_eq!(
+            err,
+            "this conversation is mid-turn; stop it before rewinding"
+        );
+
+        drop(turn);
+        assert!(entry.idle("stop it before rewinding").is_ok());
     }
 }
