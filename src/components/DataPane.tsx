@@ -1039,6 +1039,7 @@ function RecipeCard({
         </p>
       )}
       {run && !problem && <RunReport run={run} output={recipe.output} />}
+      {run?.unlisted && !problem && <p className="data-problem">{run.unlisted}</p>}
     </div>
   );
 }

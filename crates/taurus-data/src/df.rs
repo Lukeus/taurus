@@ -652,6 +652,7 @@ impl Engine for InlineEngine {
             rows,
             bytes: schema.bytes,
             took_ms: whole.elapsed().as_millis() as u64,
+            unlisted: None,
         })
     }
 }

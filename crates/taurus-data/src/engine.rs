@@ -381,6 +381,15 @@ pub struct Materialized {
     /// The whole run, in milliseconds, including writing the file.
     #[ts(type = "number")]
     pub took_ms: u64,
+    /// Why the file that was written is not in the Data pane's list, when it
+    /// could not be added there.
+    ///
+    /// Not a failure of the run: the file is on disk and the report stands.
+    /// Said rather than dropped, because the only other sign is a file that
+    /// never shows up in the list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub unlisted: Option<String>,
 }
 
 /// Rows one [`Engine::query`] call may return.

@@ -2737,30 +2737,15 @@ impl Host {
             .iter()
             .map(|step| (step.title.clone(), step.sql.clone()))
             .collect();
-        let run = self
+        let mut run = self
             .engine
             .materialize(&tables, &start, &steps, &output)
             .await
             .map_err(|e| e.to_string())?;
 
         // Loaded on the way out, so the pane can show what came out without a
-        // second action. Skipped rather than forced when the name is spoken
-        // for — see the tool, which makes the same call for the same reason.
-        let dir = self.data_dir_for(&workspace);
-        let shown = taurus_tools::path_guard::display(&workspace, &output);
-        let name = taurus_data::catalog::suggest_name(&output);
-        if taurus_data::catalog::taken_by(&dir, &name, &shown).is_none() {
-            if let Ok(format) = taurus_data::Format::of(&output) {
-                let _ = taurus_data::catalog::register(
-                    &dir,
-                    taurus_data::Dataset {
-                        name,
-                        path: shown,
-                        format,
-                    },
-                );
-            }
-        }
+        // second action. See `list_output`.
+        run.unlisted = list_output(&self.data_dir_for(&workspace), &workspace, &output);
         Ok(run)
     }
 
@@ -3100,6 +3085,37 @@ impl Host {
 /// Which of those the panel shows is the caller's decision, taken from whether
 /// the server connected: a connected server exposing no tools genuinely costs
 /// nothing, and a disabled one has nothing to measure at all.
+/// Adds a recipe's output to the Data pane's list, and says why when it cannot.
+///
+/// `None` when it was added, and when its name already belongs to another
+/// file: that one is left alone on purpose — see the tool, which makes the same
+/// call for the same reason.
+fn list_output(dir: &Path, workspace: &Path, output: &Path) -> Option<String> {
+    let shown = taurus_tools::path_guard::display(workspace, output);
+    let name = taurus_data::catalog::suggest_name(output);
+    if taurus_data::catalog::taken_by(dir, &name, &shown).is_some() {
+        return None;
+    }
+    let format = match taurus_data::Format::of(output) {
+        Ok(format) => format,
+        Err(e) => {
+            return Some(format!(
+                "{shown} was written, but it is not in the list: {e}"
+            ))
+        }
+    };
+    taurus_data::catalog::register(
+        dir,
+        taurus_data::Dataset {
+            name,
+            path: shown.clone(),
+            format,
+        },
+    )
+    .err()
+    .map(|e| format!("{shown} was written, but it could not be added to the list: {e}"))
+}
+
 fn mcp_schema_tokens(
     servers: &[String],
     advertised: &[taurus_provider::ToolDef],
@@ -5507,6 +5523,22 @@ Say hello.",
             problems.iter().any(|p| p.message.contains("mcp.json")),
             "{problems:?}"
         );
+    }
+
+    #[test]
+    fn a_recipe_output_that_cannot_be_listed_says_why() {
+        // The file is written either way. Dropped, the failure left it missing
+        // from the Data pane with nothing saying why.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let blocker = workspace.join("blocker");
+        std::fs::write(&blocker, "a file where the list's directory would go").unwrap();
+        let output = workspace.join("out.csv");
+        std::fs::write(&output, "id\n1\n").unwrap();
+
+        let unlisted = list_output(&blocker.join("data"), &workspace, &output)
+            .expect("a list that cannot be written is said");
+        assert!(unlisted.contains("out.csv"), "{unlisted}");
     }
 
     #[tokio::test]

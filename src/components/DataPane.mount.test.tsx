@@ -849,6 +849,33 @@ describe("the recipes view", () => {
     expect(host.textContent).toContain("data/catalogue.parquet");
   });
 
+  it("says when the file it wrote could not be added to the list", async () => {
+    // The file is written either way. Dropped, the failure left it missing
+    // from the Data pane with nothing saying why.
+    answering({
+      list_recipes: () => Promise.resolve({ recipes: [CLEAN], problems: [] }),
+      run_recipe: () =>
+        Promise.resolve({
+          started_with: 5,
+          steps: [{ title: "drop exact duplicates", rows: 4, columns: 4, took_ms: 3 }],
+          columns: [{ name: "id", kind: "number", type_name: "Int64", nullable: false }],
+          rows: 4,
+          bytes: 120,
+          took_ms: 9,
+          unlisted:
+            "data/clean.parquet was written, but it could not be added to the list: permission denied",
+        }),
+    });
+    const host = await recipesTab([EVENTS]);
+    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+      b.textContent?.startsWith("Run"),
+    ) as HTMLButtonElement;
+    await act(async () => button.click());
+    await act(async () => {});
+
+    expect(host.textContent).toContain("could not be added to the list: permission denied");
+  });
+
   it("reports what each step did to the row count", async () => {
     answering({
       list_recipes: () =>
