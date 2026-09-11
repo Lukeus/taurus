@@ -219,6 +219,7 @@ export function TracePanel({
                         {model.failures > 0 && (
                           <span
                             className="usage-failed"
+                            tabIndex={0}
                             data-tip="Requests that came back an error. A retried request is counted twice, because it was two round trips."
                           >
                             {model.failures} failed
@@ -277,6 +278,7 @@ export function TracePanel({
                              delegate's whole turn. */
                           <span
                             className="trace-aside"
+                            tabIndex={0}
                             data-tip="This tool ran a sub-agent, so its time includes the delegate's model calls and tools"
                           >
                             includes a delegate

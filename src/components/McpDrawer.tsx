@@ -358,7 +358,7 @@ function ServerCard({
               specification says so explicitly — so a sign-in state there would
               be a control for something that cannot happen. */}
           {!stdio && server.signed_in && (
-            <span className="tag ok" data-tip="Taurus holds an OAuth sign-in for this server">
+            <span className="tag ok" tabIndex={0} data-tip="Taurus holds an OAuth sign-in for this server">
               signed in
             </span>
           )}
@@ -402,6 +402,7 @@ function ServerCard({
         {server.schema_tokens !== undefined && (
           <span
             className="card-files"
+            tabIndex={0}
             data-tip="Added to every request, whether or not it is called"
           >
             ~{short(server.schema_tokens)} tokens of every request

@@ -252,12 +252,12 @@ export function ChangesDrawer({
                     {(turn.commit || turn.moved_git) && (
                       <div className="card-row">
                         {turn.commit && (
-                          <span className="tag" data-tip="Already in this branch's history">
+                          <span className="tag" tabIndex={0} data-tip="Already in this branch's history">
                             committed {turn.commit}
                           </span>
                         )}
                         {turn.moved_git && (
-                          <span className="tag warn" data-tip="A rewind puts the files back and not HEAD">
+                          <span className="tag warn" tabIndex={0} data-tip="A rewind puts the files back and not HEAD">
                             moved git
                           </span>
                         )}

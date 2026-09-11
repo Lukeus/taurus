@@ -172,6 +172,7 @@ export function UsagePanel({
                             {tool.failures > 0 && (
                               <span
                                 className="usage-failed"
+                                tabIndex={0}
                                 data-tip="Calls that came back an error. The tokens were spent either way."
                               >
                                 {tool.failures} failed

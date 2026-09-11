@@ -1181,6 +1181,7 @@ export default function App() {
           {store.session && !store.session.native_tools && (
             <span
               className="tag warn"
+              tabIndex={0}
               data-tip="This model has no built-in tool calling; Taurus prompts for it instead."
             >
               prompted tools

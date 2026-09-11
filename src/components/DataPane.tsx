@@ -369,7 +369,7 @@ function distinct(value: DataDistinct) {
   return value.kind === "exact" ? (
     value.count.toLocaleString()
   ) : (
-    <span className="faint" data-tip="A nested column has no single value to compare">
+    <span className="faint" tabIndex={0} data-tip="A nested column has no single value to compare">
       nested
     </span>
   );
