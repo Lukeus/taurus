@@ -16,7 +16,7 @@ mod wire;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -32,7 +32,7 @@ use taurus_provider::{
 
 use wire::{
     BatchEmbedBody, BatchEmbedResponse, EmbedContent, EmbedPart, EmbedRequest, GenerateBody,
-    ModelsResponse, StreamChunk,
+    ModelEntry, ModelsResponse, StreamChunk,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -56,7 +56,7 @@ impl Default for GeminiCapabilities {
         Self {
             // Every Gemini model that serves `generateContent` takes images.
             vision: true,
-            // Only reached when the listing is unavailable. Low on purpose:
+            // Only reached when the model's own entry is unavailable. Low on purpose:
             // guessing high compacts too late and surfaces as a provider error
             // mid-turn, guessing low costs some unnecessary compaction.
             context_length: 32_768,
@@ -71,14 +71,32 @@ pub struct GeminiProvider {
     client: http::Client,
     capabilities: GeminiCapabilities,
     models: Vec<String>,
-    /// One listing per model, kept for the life of this provider.
+    /// One lookup per model, kept for the life of this provider — or, for a
+    /// lookup that failed, for [`FALLBACK_TTL`].
     ///
     /// `capabilities` is asked once per iteration of the agent loop, because
-    /// that is where compaction reads the context window — and answering it
-    /// here means listing every model the account can see. Uncached, a ten-step
-    /// turn would spend ten full listings re-learning one number that cannot
+    /// that is where compaction reads the context window. Uncached, a ten-step
+    /// turn would spend ten round trips re-learning one number that cannot
     /// change while the turn runs.
-    probed: Arc<RwLock<HashMap<String, Capabilities>>>,
+    probed: Arc<RwLock<HashMap<String, Probed>>>,
+    /// [`FALLBACK_TTL`], held here so a test can shorten it.
+    fallback_ttl: Duration,
+}
+
+/// How long a model's fallback capabilities stand after its lookup failed.
+///
+/// Long enough that a backend that did not answer is not asked again on every
+/// iteration of the same turn; short enough that one failure does not pin a
+/// wrong window on the model for the rest of the session.
+const FALLBACK_TTL: Duration = Duration::from_secs(300);
+
+/// One model's capabilities, and until when they stand.
+#[derive(Clone, Copy)]
+struct Probed {
+    capabilities: Capabilities,
+    /// `None` for an answer from the backend, which does not go stale while
+    /// this provider lives. A deadline for a fallback.
+    until: Option<Instant>,
 }
 
 impl GeminiProvider {
@@ -95,6 +113,7 @@ impl GeminiProvider {
             capabilities: GeminiCapabilities::default(),
             models: Vec::new(),
             probed: Arc::new(RwLock::new(HashMap::new())),
+            fallback_ttl: FALLBACK_TTL,
         }
     }
 
@@ -145,6 +164,20 @@ impl GeminiProvider {
 
     fn unreachable(&self, source: reqwest::Error) -> ProviderError {
         self.client.failure(&self.id, &self.base_url, source)
+    }
+
+    /// One model's own entry, or `None` if the endpoint will not give it.
+    async fn probe(&self, model: &str) -> Option<ModelEntry> {
+        let bare = model.strip_prefix("models/").unwrap_or(model);
+        let response = self
+            .authorize(self.client.get(self.url(&format!("/models/{bare}"))))
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response.json().await.ok()
     }
 
     async fn check_status(&self, response: reqwest::Response) -> Result<reqwest::Response> {
@@ -239,38 +272,38 @@ impl Provider for GeminiProvider {
 
     async fn capabilities(&self, model: &str) -> Result<Capabilities> {
         if let Some(cached) = self.probed.read().await.get(model) {
-            return Ok(*cached);
+            if cached.until.is_none_or(|until| Instant::now() < until) {
+                return Ok(cached.capabilities);
+            }
         }
 
-        // The listing carries the window, so it is asked for rather than
-        // configured — but only that. Nothing there reports tool or image
-        // support, so those two stay configuration.
-        let context_length = self
-            .models()
-            .await
-            .ok()
-            .and_then(|models| {
-                models
-                    .into_iter()
-                    .find(|m| m.id == model)
-                    .and_then(|m| m.context_length)
-            })
-            .unwrap_or(self.capabilities.context_length);
-
+        // The model's own entry carries the window, so it is asked for rather
+        // than configured — but only that. Nothing there reports tool or image
+        // support, so those two stay configuration. Asked of the model rather
+        // than looked up in the listing, which comes a page at a time: a model
+        // past the first page would read as one the backend does not describe.
+        let probed = self.probe(model).await;
+        let answered = probed.is_some();
         let capabilities = Capabilities {
             native_tools: true,
             vision: self.capabilities.vision,
             thinking: true,
-            context_length,
+            context_length: probed
+                .and_then(|m| m.input_token_limit)
+                .unwrap_or(self.capabilities.context_length),
         };
 
-        // Cached even when the listing failed and this is the fallback: a
-        // backend that would not answer once will not answer ten times in the
-        // same turn, and retrying is a stall per iteration.
-        self.probed
-            .write()
-            .await
-            .insert(model.to_string(), capabilities);
+        // A fallback is kept too, but not for good. A backend that would not
+        // answer once will not answer ten times in the same turn, and retrying
+        // is a stall per iteration; kept for the life of the app, one blip at
+        // startup would compact a million-token model at 32k until a restart.
+        self.probed.write().await.insert(
+            model.to_string(),
+            Probed {
+                capabilities,
+                until: (!answered).then(|| Instant::now() + self.fallback_ttl),
+            },
+        );
         Ok(capabilities)
     }
 
@@ -743,6 +776,73 @@ mod tests {
         let caps = provider.capabilities("gemini-2.5-pro").await.unwrap();
         assert!(caps.native_tools);
         assert_eq!(caps.context_length, 32_768);
+    }
+
+    #[tokio::test]
+    async fn a_model_past_the_first_page_of_the_listing_still_gets_its_window() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // The listing's first page, which does not reach this model.
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [{
+                    "name": "models/gemini-1.0-pro",
+                    "inputTokenLimit": 30720,
+                    "supportedGenerationMethods": ["generateContent"]
+                }],
+                "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models/gemini-2.5-pro"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "models/gemini-2.5-pro",
+                "inputTokenLimit": 1_048_576,
+                "supportedGenerationMethods": ["generateContent"]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = GeminiProvider::new("gemini", server.uri(), Some("key".into()));
+        let caps = provider.capabilities("gemini-2.5-pro").await.unwrap();
+        assert_eq!(caps.context_length, 1_048_576);
+    }
+
+    #[tokio::test]
+    async fn a_lookup_that_failed_is_asked_again_once_its_fallback_expires() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models/gemini-2.5-pro"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models/gemini-2.5-pro"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "models/gemini-2.5-pro",
+                "inputTokenLimit": 1_048_576
+            })))
+            .mount(&server)
+            .await;
+        let mut provider = GeminiProvider::new("gemini", server.uri(), Some("key".into()));
+        provider.fallback_ttl = Duration::ZERO;
+
+        let first = provider.capabilities("gemini-2.5-pro").await.unwrap();
+        assert_eq!(first.context_length, 32_768, "a failed lookup falls back");
+        let second = provider.capabilities("gemini-2.5-pro").await.unwrap();
+        assert_eq!(
+            second.context_length, 1_048_576,
+            "the fallback was kept past its time"
+        );
     }
 
     #[test]
