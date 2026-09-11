@@ -91,6 +91,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
     action().catch((e) => setError(String(e)));
   };
 
+  // Held here rather than in `CodeSearch`, which unmounts with its tab. See
+  // `useIndexBuild`.
+  const index = useIndexBuild();
+
   useEffect(() => {
     api
       .listGlobalProviders()
@@ -227,6 +231,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
             provider={status?.settings.embedding_provider ?? ""}
             rerankModel={status?.settings.rerank_model ?? ""}
             rerankProvider={status?.settings.rerank_provider ?? ""}
+            progress={index.progress}
+            outcome={index.outcome}
+            onBuild={index.onBuild}
           />
         </>
       )}
@@ -804,6 +811,34 @@ export function SearchTab() {
 }
 
 /**
+ * An index build started from the Search tab: how far it has got, what it said
+ * when it finished, and how to start one.
+ *
+ * A hook for `Settings` rather than state in `CodeSearch`, which unmounts with
+ * its tab. The build goes on in Rust either way, and a tab switch that dropped
+ * this came back to a Build button beside a build still running, with no Stop.
+ */
+export function useIndexBuild() {
+  const [progress, setProgress] = useState<IndexProgress | null>(null);
+  const [outcome, setOutcome] = useState<string | null>(null);
+  const build = async () => {
+    // Seeded before the first report, so the button switches to Stop on the
+    // click rather than whenever the first batch lands — which on a cold
+    // Ollama is several seconds of a button that looks like it did nothing.
+    setProgress({ done: 0, total: 0 });
+    setOutcome(null);
+    try {
+      setOutcome(await api.buildIndex(setProgress));
+    } catch (e) {
+      setOutcome(String(e));
+    } finally {
+      setProgress(null);
+    }
+  };
+  return { progress, outcome, onBuild: () => void build() };
+}
+
+/**
  * Semantic search over the workspace: which model embeds it, and a way to pay
  * the first index before a turn has to.
  *
@@ -821,19 +856,31 @@ export function CodeSearch({
   provider,
   rerankModel,
   rerankProvider,
+  progress,
+  outcome,
+  onBuild,
 }: {
   model: string;
   provider: string;
   rerankModel: string;
   rerankProvider: string;
+  /** A build in progress, held by `Settings` so a tab switch does not lose it. */
+  progress: IndexProgress | null;
+  outcome: string | null;
+  onBuild: () => void;
 }) {
   const refresh = useStore((s) => s.refresh);
   const [draft, setDraft] = useState(model);
-  const [providerDraft2, setProviderDraft2] = useState(provider);
+  const [embedProviderDraft, setEmbedProviderDraft] = useState(provider);
   const [rerankDraft, setRerankDraft] = useState(rerankModel);
-  const [providerDraft, setProviderDraft] = useState(rerankProvider);
-  const [progress, setProgress] = useState<IndexProgress | null>(null);
-  const [outcome, setOutcome] = useState<string | null>(null);
+  const [rerankProviderDraft, setRerankProviderDraft] = useState(rerankProvider);
+  // The store is the authority, as in `IterationLimit`: a refresh from
+  // anywhere else — another window, a hand-edited settings file — has to win
+  // over a draft seeded when this tab was opened.
+  useEffect(() => setDraft(model), [model]);
+  useEffect(() => setEmbedProviderDraft(provider), [provider]);
+  useEffect(() => setRerankDraft(rerankModel), [rerankModel]);
+  useEffect(() => setRerankProviderDraft(rerankProvider), [rerankProvider]);
   const building = progress !== null;
 
   // Model and provider save together, because the backend takes them together:
@@ -865,20 +912,6 @@ export function CodeSearch({
     await refresh();
   };
 
-  const build = async () => {
-    // Seeded before the first report so the button switches to Stop on the
-    // click rather than whenever the first batch lands — which on a cold
-    // Ollama is several seconds of a button that looks like it did nothing.
-    setProgress({ done: 0, total: 0 });
-    setOutcome(null);
-    try {
-      setOutcome(await api.buildIndex(setProgress));
-    } catch (e) {
-      setOutcome(String(e));
-    } finally {
-      setProgress(null);
-    }
-  };
 
   const pct =
     progress && progress.total > 0
@@ -902,7 +935,7 @@ export function CodeSearch({
           placeholder="nomic-embed-text"
           disabled={building}
           onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => save(draft, providerDraft2)}
+          onBlur={() => save(draft, embedProviderDraft)}
         />
       </Field>
 
@@ -912,12 +945,12 @@ export function CodeSearch({
           hint="Which backend serves it. Leave empty to use the one this conversation is on — name another if that backend has no embedding endpoint, which is the case for Anthropic."
         >
           <input
-            value={providerDraft2}
+            value={embedProviderDraft}
             spellCheck={false}
             placeholder="the one this conversation is on"
             disabled={building}
-            onChange={(e) => setProviderDraft2(e.target.value)}
-            onBlur={() => save(draft, providerDraft2)}
+            onChange={(e) => setEmbedProviderDraft(e.target.value)}
+            onBlur={() => save(draft, embedProviderDraft)}
           />
         </Field>
       )}
@@ -925,7 +958,7 @@ export function CodeSearch({
       {model.trim() && (
         <>
           <div className="index-actions flex items-center gap-3">
-            <button onClick={building ? api.stopIndexBuild : build}>
+            <button onClick={building ? api.stopIndexBuild : onBuild}>
               {building ? "Stop" : "Build index now"}
             </button>
             {building && (
@@ -962,7 +995,7 @@ export function CodeSearch({
               placeholder="bge-reranker-v2-m3"
               disabled={building}
               onChange={(e) => setRerankDraft(e.target.value)}
-              onBlur={() => saveRerank(rerankDraft, providerDraft)}
+              onBlur={() => saveRerank(rerankDraft, rerankProviderDraft)}
             />
           </Field>
 
@@ -972,12 +1005,12 @@ export function CodeSearch({
               hint="Which backend serves it. Leave empty if the same server embeds and reranks — name one of your other providers if not."
             >
               <input
-                value={providerDraft}
+                value={rerankProviderDraft}
                 spellCheck={false}
                 placeholder="the one that embeds"
                 disabled={building}
-                onChange={(e) => setProviderDraft(e.target.value)}
-                onBlur={() => saveRerank(rerankDraft, providerDraft)}
+                onChange={(e) => setRerankProviderDraft(e.target.value)}
+                onBlur={() => saveRerank(rerankDraft, rerankProviderDraft)}
               />
             </Field>
           )}

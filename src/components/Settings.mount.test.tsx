@@ -595,3 +595,56 @@ describe("the search tab", () => {
     expect(host.textContent).toContain("search.json is read-only");
   });
 });
+
+describe("searching the codebase", () => {
+  const indexing = (model: string) => {
+    const base = status(true, true);
+    return { ...base, settings: { ...base.settings, embedding_model: model } };
+  };
+  const NONE = { selected: null, backends: [], key_statuses: [], active: false, problems: [] };
+
+  it("shows the embedding model the settings say now, not the one it opened with", async () => {
+    // Seeded once and never followed, the field kept showing a model that a
+    // refresh from elsewhere had already replaced.
+    invoke.mockImplementation((...args: unknown[]) =>
+      Promise.resolve(args[0] === "get_search_settings" ? NONE : []),
+    );
+    state.status = indexing("nomic-embed-text");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<Settings onClose={() => {}} />);
+    });
+    click(host, "Search");
+    const field = () =>
+      [...host.querySelectorAll("input")].find(
+        (i) => i.placeholder === "nomic-embed-text",
+      ) as HTMLInputElement;
+    expect(field().value).toBe("nomic-embed-text");
+
+    state.status = indexing("mxbai-embed-large");
+    await act(async () => {
+      root.render(<Settings onClose={() => {}} />);
+    });
+    expect(field().value).toBe("mxbai-embed-large");
+  });
+
+  it("keeps a build it started when the tab is switched away and back", async () => {
+    invoke.mockImplementation((...args: unknown[]) => {
+      if (args[0] === "build_index") return new Promise(() => {});
+      return Promise.resolve(args[0] === "get_search_settings" ? NONE : []);
+    });
+    state.status = indexing("nomic-embed-text");
+    const host = await mount();
+    click(host, "Search");
+    click(host, "Build index now");
+    const stopShown = () =>
+      [...host.querySelectorAll("button")].some((b) => b.textContent === "Stop");
+    expect(stopShown()).toBe(true);
+
+    click(host, "Behavior");
+    click(host, "Search");
+    expect(stopShown()).toBe(true);
+  });
+});
