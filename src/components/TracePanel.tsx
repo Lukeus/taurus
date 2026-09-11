@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import * as api from "../lib/api";
 import type { TraceReport, TraceStep, TurnTrace } from "../lib/api";
@@ -49,9 +49,23 @@ export function TracePanel({
   /** Bumped to ask again. The ring fills as the app is used. */
   const [asked, setAsked] = useState(0);
 
+  /**
+   * Which question the report on screen answers.
+   *
+   * A new scope clears it, because the old answer must not stand in for a
+   * different question. The same scope asked again keeps it on screen until
+   * the new answer lands: a Refresh that blanks the panel into "Reading…"
+   * reads as one that lost everything.
+   */
+  const answering = useRef<string | null>(null);
+
   useEffect(() => {
     let current = true;
-    setReport(null);
+    const question = `${scope}:${sessionId ?? ""}`;
+    if (answering.current !== question) {
+      answering.current = question;
+      setReport(null);
+    }
     setFailed(null);
     api
       .traceReport(scope === "session" ? sessionId : null)
@@ -68,7 +82,14 @@ export function TracePanel({
   }, [scope, sessionId, asked]);
 
   const clear = async () => {
-    await api.clearTraces();
+    try {
+      await api.clearTraces();
+    } catch (e) {
+      // Said rather than swallowed: the traces are still there, and a panel
+      // that looked cleared would be wrong about what it shows.
+      setFailed(`Could not clear the traces: ${String(e)}`);
+      return;
+    }
     setOpen(null);
     setAsked((n) => n + 1);
   };
