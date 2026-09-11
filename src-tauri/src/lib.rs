@@ -352,6 +352,7 @@ pub fn run() {
             commands::commit_turn,
             commands::terminal_open,
             commands::terminal_write,
+            commands::terminal_ack,
             commands::terminal_resize,
             commands::terminal_close,
             commands::background,

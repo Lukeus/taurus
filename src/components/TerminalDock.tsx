@@ -6,7 +6,7 @@ import "../vendor.css";
 import * as api from "../lib/api";
 import type { BackgroundJob, Theme } from "../lib/api";
 import { basename } from "../lib/format";
-import { bytes, fade } from "../lib/terminal";
+import { acknowledger, bytes, fade } from "../lib/terminal";
 import { DockTabs, JobScreen } from "./JobScreen";
 
 /**
@@ -170,6 +170,7 @@ export function TerminalDock({
     });
 
     let live = true;
+    const acks = acknowledger((id, n) => void api.ackTerminal(id, n).catch(() => {}));
     api
       .openTerminal(
         emulator.rows,
@@ -181,7 +182,13 @@ export function TerminalDock({
           // "shell exited 1" over a working prompt.
           if (!live) return;
           if (event.kind === "output") {
-            emulator.write(bytes(event.data));
+            const chunk = bytes(event.data);
+            // Acknowledged once drawn, not once received: what the shell waits
+            // on is the emulator keeping up, and xterm parses on its own
+            // schedule. See `Credit` in `src-tauri/src/terminal.rs`.
+            emulator.write(chunk, () => {
+              if (live) acks.drawn(chunk.length);
+            });
             return;
           }
           // The shell is gone. The pane stays — its scrollback is the record of
@@ -203,6 +210,7 @@ export function TerminalDock({
 
         opened.current.add(id);
         session.current = id;
+        acks.bind(id);
         // The size may already have moved — the dock can be dragged during the
         // round trip — so this is the real geometry rather than the one asked
         // for.

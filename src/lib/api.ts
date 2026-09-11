@@ -1145,6 +1145,13 @@ export function openTerminal(
 export const writeTerminal = (id: string, data: string) =>
   invoke<void>("terminal_write", { id, data });
 
+/**
+ * Tells a shell the pane has drawn `bytes` of its output, so it may send more.
+ * See `Credit` in `src-tauri/src/terminal.rs` for why the pane has to say so.
+ */
+export const ackTerminal = (id: string, bytes: number) =>
+  invoke<void>("terminal_ack", { id, bytes });
+
 /** Tells a shell how big its window is now, so full-screen programs redraw. */
 export const resizeTerminal = (id: string, rows: number, cols: number) =>
   invoke<void>("terminal_resize", { id, rows, cols });

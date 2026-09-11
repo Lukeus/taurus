@@ -2872,6 +2872,15 @@ pub fn terminal_write(state: State<'_, Arc<AppState>>, id: String, data: String)
     state.terminals.write(&id, data.as_bytes())
 }
 
+/// Credits output the pane has drawn, so the shell can send more.
+///
+/// Plain rather than async because it only moves a counter. See
+/// `terminal::Credit` for why the pane has to say so at all.
+#[tauri::command]
+pub fn terminal_ack(state: State<'_, Arc<AppState>>, id: String, bytes: usize) {
+    state.terminals.ack(&id, bytes);
+}
+
 /// Tells the shell how big its window is now.
 ///
 /// This is what makes a full-screen program redraw at the new size, and it is

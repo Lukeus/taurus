@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bytes, fade } from "./terminal";
+import { acknowledger, bytes, fade } from "./terminal";
 
 describe("decoding what the shell printed", () => {
   it("hands back the bytes rather than a string", () => {
@@ -59,5 +59,34 @@ describe("the selection highlight", () => {
     for (const missing of ["", "color-mix(in srgb, red 30%, transparent)", "#nothex"]) {
       expect(fade(missing, 0.3)).toBe("rgba(124, 210, 255, 0.3)");
     }
+  });
+});
+
+describe("acknowledging what was drawn", () => {
+  it("holds what is drawn before the shell has a name, and sends it once named", () => {
+    // Output can arrive before `terminal_open` answers. A first screen that is
+    // never acknowledged is room the shell never gets back.
+    const sent: [string, number][] = [];
+    const acks = acknowledger((id, n) => sent.push([id, n]));
+    acks.drawn(100);
+    acks.drawn(20);
+    expect(sent).toEqual([]);
+
+    acks.bind("t1");
+
+    expect(sent).toEqual([["t1", 120]]);
+  });
+
+  it("acknowledges each write as it is drawn once the shell is named", () => {
+    const sent: [string, number][] = [];
+    const acks = acknowledger((id, n) => sent.push([id, n]));
+    acks.bind("t1");
+    acks.drawn(64);
+    acks.drawn(8);
+    // Nothing was held, so naming the shell sent nothing of its own.
+    expect(sent).toEqual([
+      ["t1", 64],
+      ["t1", 8],
+    ]);
   });
 });
