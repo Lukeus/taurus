@@ -1196,7 +1196,24 @@ pub async fn list_mcp_servers(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<
     // during the first load would otherwise render an empty list over a
     // `mcp.json` full of servers.
     state.loaded().await;
-    Ok(state.host.mcp_servers().await)
+    // The listing reads `mcp.json` again, and a file broken since the last
+    // reload is news only if the window is told. Pushed only when the MCP
+    // problems moved, so opening the panel does not recompute the status on
+    // every open for nothing.
+    let before = state
+        .host
+        .problems_from(&[taurus_host::ProblemSource::Mcp])
+        .await;
+    let servers = state.host.mcp_servers().await;
+    if state
+        .host
+        .problems_from(&[taurus_host::ProblemSource::Mcp])
+        .await
+        != before
+    {
+        emit_status(&state).await;
+    }
+    Ok(servers)
 }
 
 /// Where the app looks for a stdio server's program, and what it took to get

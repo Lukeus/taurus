@@ -2806,7 +2806,12 @@ impl Host {
     /// long as it takes the second call to land.
     pub async fn mcp_servers(&self) -> Vec<McpServerView> {
         let workspace = self.workspace.read().await.clone();
-        let (config, defined_in) = self.mcp_layers(&workspace);
+        let (config, defined_in, problems) = self.mcp_layers(&workspace);
+        // Recorded here as well as at a reload, because this is what the MCP
+        // panel reads when it opens. A file broken by hand since the last
+        // reload would otherwise take its servers off the list with nothing
+        // anywhere saying why.
+        self.replace_problems(ProblemSource::Mcp, problems).await;
         let statuses: BTreeMap<String, ServerStatus> = self
             .mcp
             .statuses()
@@ -2852,7 +2857,7 @@ impl Host {
     /// which is the only one that can open a window. See `taurus_mcp::oauth`.
     pub async fn begin_mcp_sign_in(&self, name: &str) -> Result<taurus_mcp::oauth::SignIn, String> {
         let workspace = self.workspace.read().await.clone();
-        let (config, _) = self.mcp_layers(&workspace);
+        let (config, _, _) = self.mcp_layers(&workspace);
         let server = config
             .servers
             .get(name)
@@ -2878,15 +2883,23 @@ impl Host {
     /// editing a server has to write to the file it came from, and a workspace
     /// entry saved into the global file would silently change every other
     /// project.
-    fn mcp_layers(&self, workspace: &Path) -> (taurus_mcp::McpConfig, LayerOf) {
+    /// And what was wrong with either: the same problems [`Self::reload_mcp`]
+    /// records, so a caller that reads the files can say what it read.
+    fn mcp_layers(&self, workspace: &Path) -> (taurus_mcp::McpConfig, LayerOf, Vec<Problem>) {
         let mut layers = Vec::new();
         let mut defined_in: LayerOf = BTreeMap::new();
+        let mut problems = Vec::new();
         for scope in [Scope::Global, Scope::Workspace] {
             let Some(dir) = config::scope_dir(scope, Some(workspace)) else {
                 continue;
             };
-            let Ok(layer) = taurus_mcp::load(&dir) else {
-                continue;
+            let layer = match taurus_mcp::load(&dir) {
+                Ok(layer) => layer,
+                // Skipped, as a reload skips it, and said, as a reload says it.
+                Err(e) => {
+                    problems.push(Problem::new(ProblemSource::Mcp, e));
+                    continue;
+                }
             };
             for (name, server) in &layer.servers {
                 // A toggle changes a server rather than defining one, so it must
@@ -2898,8 +2911,9 @@ impl Host {
             }
             layers.push(layer);
         }
-        let (merged, _) = config::merge_mcp(layers);
-        (merged, defined_in)
+        let (merged, merge_problems) = config::merge_mcp(layers);
+        problems.extend(Problem::tag(ProblemSource::Mcp, merge_problems));
+        (merged, defined_in, problems)
     }
 
     /// Reconnects the MCP servers without rebuilding anything else.
@@ -5469,6 +5483,30 @@ Say hello.",
 
         host.revoke_trust().await.expect("revoke");
         assert_eq!(host.skill_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn an_mcp_file_broken_since_the_last_reload_is_named_when_the_panel_lists() {
+        // The panel reads the files again when it opens, and skipped a layer
+        // that would not parse. Until something reloaded, its servers were
+        // simply missing, with nothing on screen saying why.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = untrusted_host(&workspace);
+        std::fs::create_dir_all(config::home_dir()).unwrap();
+        std::fs::write(
+            config::home_dir().join("mcp.json"),
+            r#"{"mcpServers":{"probe":{"command":"npx",}}}"#,
+        )
+        .unwrap();
+
+        host.mcp_servers().await;
+
+        let problems = host.problems_from(&[ProblemSource::Mcp]).await;
+        assert!(
+            problems.iter().any(|p| p.message.contains("mcp.json")),
+            "{problems:?}"
+        );
     }
 
     #[tokio::test]

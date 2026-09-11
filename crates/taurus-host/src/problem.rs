@@ -76,7 +76,7 @@ impl ProblemSource {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Problem {
     pub source: ProblemSource,
