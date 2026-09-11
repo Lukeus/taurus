@@ -74,13 +74,13 @@ function backend(replies: Record<string, unknown>) {
 }
 
 /** Mounts the drawer and flushes the effects its open fires. */
-async function open(sessionId = "s1") {
+async function open(sessionId = "s1", onClose: () => void = () => {}) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   const render = (id: string) =>
     act(async () => {
-      root.render(<ChangesDrawer sessionId={id} busy={false} onClose={() => {}} />);
+      root.render(<ChangesDrawer sessionId={id} busy={false} onClose={onClose} />);
     });
   await render(sessionId);
   return {
@@ -620,5 +620,36 @@ describe("reviewing a turn", () => {
     await drawer.unmount();
 
     expect(invoke).toHaveBeenCalledWith("stop_review", { sessionId: "s1", turn: 1 });
+  });
+});
+
+describe("closing the pane with Escape", () => {
+  it("leaves a half-typed commit message alone, and closes on the next press", async () => {
+    // Escape in the commit box is how someone leaves the field. Closing the
+    // whole pane then threw away the message they were writing.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: true, branch: "main" },
+      turn_changes: [DIFF],
+    });
+    const onClose = vi.fn();
+    const drawer = await open("s1", onClose);
+    await drawer.click("View changes");
+    await drawer.type("half a commit message");
+    const input = drawer.host.querySelector("input")!;
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(input.value).toBe("half a commit message");
+
+    await act(async () => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    drawer.unmount();
   });
 });

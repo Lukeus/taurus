@@ -145,11 +145,19 @@ export function ChangesDrawer({
 
   // Escape closes it, which `Modal` used to do on this panel's behalf. Not
   // captured, unlike the modal version: this is a pane beside the conversation
-  // rather than over it, so anything inside it with its own use for the key —
-  // a diff, a commit box — is entitled to answer first.
+  // rather than over it. And not from a field: Escape in the commit box is how
+  // someone leaves the field, and closing the pane then would throw away the
+  // message they were halfway through. It leaves the field instead, so the
+  // next press closes the pane.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.("input, textarea, select, [contenteditable='true']")) {
+        target.blur();
+        return;
+      }
+      onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
