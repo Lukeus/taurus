@@ -272,11 +272,17 @@ impl Tool for Grep {
                 if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_GREP_FILE_BYTES {
                     continue;
                 }
-                // Binary files read as garbage; skipping them silently is right
-                // because the model asked about text.
-                let Ok(text) = std::fs::read_to_string(path) else {
+                let Ok(bytes) = std::fs::read(path) else {
                     continue;
                 };
+                // Binary by the rule ripgrep uses, and skipped silently because
+                // the model asked about text. Not "is this valid UTF-8": one
+                // Latin-1 byte in a comment fails that, and a file that fails
+                // it is one whose every match is reported as absent.
+                if looks_binary(&bytes) {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&bytes);
                 // One pass over the file answers "is there anything here at
                 // all", and in a repository most files are a no. Asking the
                 // same question line by line pays the match machinery's setup
@@ -465,6 +471,16 @@ fn is_anchored(pattern: &str) -> bool {
         || pattern.contains("\\Z")
 }
 
+/// How far into a file to look for the NUL that marks it as binary.
+const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+
+/// Whether a file is binary, by the rule ripgrep uses: a NUL byte in its first
+/// few kilobytes. Text in any single-byte or UTF-8 encoding has none, and an
+/// image, an archive, or a compiled object almost always does.
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0)
+}
+
 fn compile_glob(
     pattern: Option<&str>,
     field: &str,
@@ -573,6 +589,38 @@ mod tests {
             .await
             .unwrap();
         assert!(out.to_text().contains("src/main.rs:1: fn main() {"));
+    }
+
+    #[tokio::test]
+    async fn grep_finds_a_match_in_a_file_that_is_not_strictly_utf8() {
+        // One Latin-1 byte in a comment turned the whole file into "binary",
+        // and the model was told a symbol it could see was not there.
+        let (ctx, dir) = test_ctx();
+        std::fs::write(
+            dir.path().join("latin1.rs"),
+            b"// caf\xe9 au lait\nfn find_me() {}\n",
+        )
+        .unwrap();
+        let out = Grep
+            .execute(serde_json::json!({"pattern": "find_me"}), &ctx)
+            .await
+            .unwrap();
+        let text = out.to_text();
+        assert!(text.contains("latin1.rs:2: fn find_me() {}"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn grep_still_skips_a_file_with_a_nul_byte() {
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("blob.bin"), b"find_me\0\x01\x02").unwrap();
+        std::fs::write(dir.path().join("real.txt"), "find_me here\n").unwrap();
+        let out = Grep
+            .execute(serde_json::json!({"pattern": "find_me"}), &ctx)
+            .await
+            .unwrap();
+        let text = out.to_text();
+        assert!(text.contains("real.txt"), "{text}");
+        assert!(!text.contains("blob.bin"), "{text}");
     }
 
     #[tokio::test]
