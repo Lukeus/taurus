@@ -1645,12 +1645,19 @@ impl Host {
     /// screen draws it, and asking per provider would mean one credential-store
     /// round trip per row.
     pub async fn key_statuses(&self) -> Vec<(String, secrets::KeyStatus)> {
-        self.providers
-            .read()
+        let providers = self.providers.read().await.clone();
+        let statuses = |providers: &[ProviderConfig]| -> Vec<(String, secrets::KeyStatus)> {
+            providers
+                .iter()
+                .map(|p| (p.id.clone(), p.key_status()))
+                .collect()
+        };
+        // On a blocking thread: each status is a read of the OS keychain, which
+        // with a locked keychain waits on its dialog.
+        let asked = providers.clone();
+        tokio::task::spawn_blocking(move || statuses(&asked))
             .await
-            .iter()
-            .map(|p| (p.id.clone(), p.key_status()))
-            .collect()
+            .unwrap_or_else(|_| statuses(&providers))
     }
 
     /// Whether this machine can store keys at all, so a frontend can offer the

@@ -117,7 +117,14 @@ async fn session_workspace(state: &AppState, session_id: &str) -> PathBuf {
     if let Ok(entry) = state.session(session_id) {
         return entry.workspace.clone();
     }
-    match sessions::workspace_of(session_id) {
+    // Off the runtime, cheap as it is: finding the transcript lists every
+    // workspace's directory before the header is read.
+    let id = session_id.to_string();
+    let saved = off_runtime(move || Ok(sessions::workspace_of(&id)))
+        .await
+        .ok()
+        .flatten();
+    match saved {
         Some(workspace) => workspace,
         None => state.host.workspace().await,
     }
@@ -260,7 +267,10 @@ pub async fn emit_changed(state: &AppState, session_id: &str) {
 /// transcript first reaching disk costs: one file read instead of a scan of
 /// every transcript in the workspace.
 pub async fn emit_session(state: &AppState, session_id: &str) {
-    let Some(meta) = sessions::meta(session_id) else {
+    // Off the runtime: finding the transcript lists every workspace's
+    // directory, and this follows every turn.
+    let id = session_id.to_string();
+    let Ok(Some(meta)) = off_runtime(move || Ok(sessions::meta(&id))).await else {
         return;
     };
     if let Err(e) = state.app.emit(crate::bridge::EVENT_SESSION, &meta) {
@@ -784,8 +794,15 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
         entry.cancel.lock().await.cancel();
     }
 
-    sessions::delete(&session_id)?;
-    state.host.checkpoints().await.forget(&session_id)?;
+    // Both off the runtime: a transcript can be megabytes, and the checkpoint
+    // log beside it more.
+    let checkpoints = state.host.checkpoints().await;
+    let id = session_id.clone();
+    off_runtime(move || {
+        sessions::delete(&id)?;
+        checkpoints.forget(&id)
+    })
+    .await?;
     state.host.forget_plan(&session_id).await;
     info!(session = %session_id, "session deleted");
     Ok(())
@@ -1077,15 +1094,22 @@ pub async fn get_search_settings(state: State<'_, Arc<AppState>>) -> CmdResult<S
         })
         .collect();
 
-    let key_statuses = backends
+    // Off the runtime: each status is a read of the OS keychain, which with a
+    // locked keychain waits on its dialog.
+    let asked: Vec<(String, Option<String>)> = backends
         .iter()
-        .map(|b| {
-            (
-                b.id.clone(),
-                taurus_host::config::search_key_status(&b.id, b.api_key_env.as_deref()),
-            )
-        })
+        .map(|b| (b.id.clone(), b.api_key_env.clone()))
         .collect();
+    let key_statuses = off_runtime(move || {
+        Ok(asked
+            .into_iter()
+            .map(|(id, variable)| {
+                let status = taurus_host::config::search_key_status(&id, variable.as_deref());
+                (id, status)
+            })
+            .collect())
+    })
+    .await?;
 
     Ok(SearchSettings {
         selected: file.backend.clone(),
@@ -1373,10 +1397,14 @@ pub async fn mcp_sign_out(
 /// two or three names and wants to know which are missing.
 #[tauri::command]
 pub async fn programs_on_path(names: Vec<String>) -> CmdResult<Vec<String>> {
-    Ok(names
-        .into_iter()
-        .filter(|name| taurus_tools::login_path::which(name.trim()).is_some())
-        .collect())
+    // Off the runtime: each name is a walk of every directory on the PATH.
+    off_runtime(move || {
+        Ok(names
+            .into_iter()
+            .filter(|name| taurus_tools::login_path::which(name.trim()).is_some())
+            .collect())
+    })
+    .await
 }
 
 /// The servers the panel offers to add, and the ones it explains instead.
