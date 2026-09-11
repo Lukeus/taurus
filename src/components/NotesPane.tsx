@@ -351,6 +351,10 @@ export function NotesPane({
                   key={`${page.scope}:${page.name}`}
                   text={typed}
                   onChange={(text) => edit(text, page)}
+                  // Leaving the box saves what it holds now, rather than a
+                  // debounce later that somebody who has moved on is not
+                  // watching for.
+                  onBlur={() => void notebook.flush()}
                   placeholder="Write in Markdown. A mermaid block draws as a diagram."
                 />
               )}

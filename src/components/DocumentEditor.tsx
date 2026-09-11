@@ -68,7 +68,6 @@ export function DocumentEditor({
   flash,
   onSelect,
   onChange,
-  readOnly = false,
 }: {
   /** The file, whole. */
   text: string;
@@ -101,7 +100,6 @@ export function DocumentEditor({
   onSelect: (selection: { from: number; to: number; text: string } | null) => void;
   /** What was typed. Absent while the document is not editable. */
   onChange?: (text: string) => void;
-  readOnly?: boolean;
 }) {
   const box = useRef<HTMLTextAreaElement>(null);
   const ghost = useRef<HTMLPreElement>(null);
@@ -271,7 +269,6 @@ export function DocumentEditor({
           ref={box}
           className="doc-input"
           value={text}
-          readOnly={readOnly}
           spellCheck={false}
           aria-label={path}
           onChange={(e) => onChange?.(e.target.value)}

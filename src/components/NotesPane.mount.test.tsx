@@ -379,6 +379,34 @@ describe("a note that is open", () => {
 });
 
 describe("saving a note", () => {
+  it("writes as soon as the box is left, without waiting out the pause", async () => {
+    // The editor's blur was declared and documented as saving now, and never
+    // passed: leaving a note waited out the debounce like any other pause.
+    vi.useFakeTimers();
+    answering({
+      list_pages: () => [ref("Notes")],
+      read_page: () => page("Notes", "# Notes\n"),
+      save_page: () => ({
+        type: "written",
+        page: { ...page("Notes", "# Notes\n\nmore\n"), fingerprint: "40-2000" },
+      }),
+    });
+    const { host, click, type } = await mount();
+    await click(host.querySelector(".notes-row"));
+    const box = host.querySelector("textarea")!;
+    await type(box, "# Notes\n\nmore\n");
+    expect(invoke).not.toHaveBeenCalledWith("save_page", expect.anything());
+
+    await act(async () => {
+      box.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      "save_page",
+      expect.objectContaining({ name: "Notes", text: "# Notes\n\nmore\n" }),
+    );
+  });
+
   it("writes once typing stops, against the fingerprint it read", async () => {
     vi.useFakeTimers();
     answering({

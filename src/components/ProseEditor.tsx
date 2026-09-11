@@ -71,14 +71,12 @@ export function ProseEditor({
   onChange,
   onBlur,
   placeholder,
-  readOnly,
 }: {
   text: string;
   onChange: (text: string) => void;
   /** Saves now rather than waiting out the debounce — see `NotesPane`. */
   onBlur?: () => void;
   placeholder?: string;
-  readOnly?: boolean;
 }) {
   const box = useRef<HTMLTextAreaElement>(null);
   const runs = useMemo(
@@ -144,7 +142,6 @@ export function ProseEditor({
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}
         placeholder={placeholder}
-        readOnly={readOnly}
         spellCheck
         // Prose, unlike code: the browser's own writing aids are wanted here and
         // are turned off in the other two editors for the opposite reason.
