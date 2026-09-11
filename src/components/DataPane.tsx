@@ -400,10 +400,22 @@ function Rows({ name }: { name: string }) {
     };
   }, [name, offset]);
 
-  if (problem) return <p className="data-problem">{problem}</p>;
-  if (!page) return <p className="data-reading">Reading {name}…</p>;
+  // With nothing on screen yet there is no pager to keep, so a failure is the
+  // whole answer. After that, a page that fails leaves the one before it.
+  if (!page) {
+    return problem ? (
+      <p className="data-problem">{problem}</p>
+    ) : (
+      <p className="data-reading">Reading {name}…</p>
+    );
+  }
 
-  const last = Math.min(offset + page.rows.length, page.total);
+  // Numbered from where the rows on screen were read, not from the page asked
+  // for next: until it arrives these are still the last page's rows, and the
+  // new offset would label page one's rows as 101 to 200.
+  const from = page.offset;
+  const last = Math.min(from + page.rows.length, page.total);
+  const reading = !problem && offset !== from;
 
   return (
     <div className="data-body">
@@ -412,10 +424,11 @@ function Rows({ name }: { name: string }) {
           "no rows"
         ) : (
           <>
-            rows <b>{(offset + 1).toLocaleString()}</b>–
+            rows <b>{(from + 1).toLocaleString()}</b>–
             <b>{last.toLocaleString()}</b> of {page.total.toLocaleString()}
           </>
         )}
+        {reading && <span className="data-reading"> reading…</span>}
         <span className="spacer" />
         <button
           className="pill"
@@ -426,14 +439,15 @@ function Rows({ name }: { name: string }) {
         </button>
         <button
           className="pill"
-          disabled={last >= page.total}
+          disabled={offset + PAGE >= page.total}
           onClick={() => setOffset(offset + PAGE)}
         >
           next ›
         </button>
       </p>
 
-      <Grid columns={page.columns} rows={page.rows} from={offset + 1} />
+      {problem && <p className="data-problem">{problem}</p>}
+      <Grid columns={page.columns} rows={page.rows} from={from + 1} />
     </div>
   );
 }
