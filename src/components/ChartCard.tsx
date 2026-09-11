@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { CopyButton } from "./CopyButton";
 import type { TranscriptView } from "../lib/api";
+import { csvOf } from "../lib/format";
 
 type ChartView = Extract<TranscriptView, { type: "chart" }>;
 
@@ -118,11 +119,5 @@ function csv(view: ChartView): string {
     label,
     ...view.series.map((s) => String(s.values[i] ?? "")),
   ]);
-  return [header, ...rows]
-    .map((row) => row.map(escape).join(","))
-    .join("\n");
-}
-
-function escape(cell: string): string {
-  return /[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
+  return csvOf([header, ...rows]);
 }

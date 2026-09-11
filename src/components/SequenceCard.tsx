@@ -2,6 +2,7 @@ import { CopyButton } from "./CopyButton";
 import { SequenceDiagram } from "./SequenceDiagram";
 import { describe, fromView, mermaid, plan } from "../lib/sequence";
 import type { TranscriptView } from "../lib/api";
+import { plural } from "../lib/format";
 
 type SequenceView = Extract<TranscriptView, { type: "sequence" }>;
 
@@ -48,8 +49,4 @@ export function SequenceCard({ view }: { view: SequenceView }) {
       </div>
     </div>
   );
-}
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }

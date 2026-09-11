@@ -2,6 +2,7 @@ import { CopyButton } from "./CopyButton";
 import { FlowDiagram } from "./FlowDiagram";
 import { describe, fromView, mermaid, plan } from "../lib/flow";
 import type { TranscriptView } from "../lib/api";
+import { plural } from "../lib/format";
 
 type FlowView = Extract<TranscriptView, { type: "flow" }>;
 
@@ -53,8 +54,4 @@ export function FlowCard({ view }: { view: FlowView }) {
       </div>
     </div>
   );
-}
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }

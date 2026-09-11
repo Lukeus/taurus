@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import { CopyButton } from "./CopyButton";
 import type { TranscriptView } from "../lib/api";
+import { csvOf, plural } from "../lib/format";
 
 type TableView = Extract<TranscriptView, { type: "table" }>;
 
@@ -154,17 +155,5 @@ function parseNumber(cell: string): number | null {
 }
 
 function csv(view: TableView): string {
-  const lines = [
-    view.columns.map((c) => escape(c.label)).join(","),
-    ...view.rows.map((row) => row.map(escape).join(",")),
-  ];
-  return lines.join("\n");
-}
-
-function escape(cell: string): string {
-  return /[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
-}
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+  return csvOf([view.columns.map((c) => c.label), ...view.rows]);
 }

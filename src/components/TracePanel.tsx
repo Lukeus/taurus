@@ -470,6 +470,10 @@ function Total({
  * Under a second, milliseconds are what a tool call is compared in; past it,
  * a decimal second is how long a turn *felt*; past a minute, nobody is
  * counting seconds any more.
+ *
+ * Not `duration` from `lib/format`, which rounds anything under a second to a
+ * tenth of one: that suits a turn in the rail, and here a tool call is compared
+ * in milliseconds, so the two are different answers on purpose.
  */
 export function ms(value: number): string {
   if (value < 1_000) return `${Math.round(value)}ms`;
