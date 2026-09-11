@@ -72,8 +72,10 @@ where
     }
 }
 
-async fn session_model(entry: &Arc<SessionEntry>) -> String {
-    entry.session.lock().await.model.clone()
+/// The model a conversation is on, without waiting for a turn running in it.
+/// See [`SessionEntry::model`].
+async fn session_model(entry: &SessionEntry) -> String {
+    entry.model.lock().await.clone()
 }
 
 /// Refuses a turn in a conversation that belongs to another folder.
@@ -364,6 +366,7 @@ pub async fn create_session(
         Arc::new(SessionEntry {
             session: Arc::new(Mutex::new(session)),
             provider_id: Mutex::new(provider_id.clone()),
+            model: Mutex::new(model.clone()),
             workspace,
             cancel: Arc::new(Mutex::new(CancellationToken::new())),
             log: Arc::new(Mutex::new(log)),
@@ -533,6 +536,7 @@ pub async fn resume_session(
             slot.insert(Arc::new(SessionEntry {
                 session: Arc::new(Mutex::new(session)),
                 provider_id: Mutex::new(provider_id),
+                model: Mutex::new(resumed.model.clone()),
                 // The conversation's own folder, out of its header — not the
                 // one open now. They are the same in the ordinary case and
                 // must not be assumed to be.
@@ -603,7 +607,11 @@ pub async fn send_message(
     // one does not. Refusing here costs the user a retry with the same text;
     // letting it through costs a round trip and comes back as a wire error
     // naming a field in the request body.
-    let model = session_model(&entry).await;
+    //
+    // Out of the session itself, and waited for rather than read off the
+    // entry: a message sent while a turn is running waits here for that turn
+    // to end, rather than building its agent underneath it.
+    let model = entry.session.lock().await.model.clone();
     let images = images.unwrap_or_default();
     let blocks = if images.is_empty() {
         Vec::new()
@@ -732,9 +740,7 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
     // lock for its whole run, and deleting underneath one would leave it
     // appending to a file that is no longer anywhere.
     if let Ok(entry) = state.session(&session_id) {
-        if entry.session.try_lock().is_err() {
-            return Err("this conversation is mid-turn; stop it before deleting".into());
-        }
+        let _ = entry.idle("stop it before deleting")?;
     }
 
     // Dropped from memory before the file goes, not after. An open session's log
@@ -791,16 +797,18 @@ pub async fn switch_model(
         .await
         .map_err(|e| e.to_string())?;
 
-    {
+    let after = {
         // The same rule a rewind and a delete follow, and for a sharper reason
         // than either: a turn reads the model out of the session on every
         // attempt, so moving it underneath one would send half an answer to one
         // backend and half to another.
-        let Ok(mut session) = entry.session.try_lock() else {
-            return Err("this conversation is mid-turn; stop it before changing model".into());
-        };
+        let mut session = entry.idle("stop it before changing model")?;
         session.model = model.clone();
-    }
+        *entry.model.lock().await = model.clone();
+        // Counted now, while no turn can be running. Asked for again below, the
+        // lock would wait out a turn started in between.
+        session.messages.len()
+    };
     *entry.provider_id.lock().await = provider_id.clone();
 
     // Written down, so reopening the conversation continues it here rather than
@@ -808,9 +816,8 @@ pub async fn switch_model(
     // no transcript yet — the first turn writes a header naming this model
     // instead. See `SessionLog::record_model`.
     if entry.log.lock().await.record_model(&provider_id, &model) {
-        let session = entry.session.lock().await;
         entry.switches.lock().await.push(Switch {
-            after: session.messages.len(),
+            after,
             provider: provider_id.clone(),
             model: model.clone(),
             at: std::time::SystemTime::now()
@@ -2361,9 +2368,7 @@ pub async fn rewind_to(
     // race the tool calls still writing, and the disabled button in the UI is
     // not something the backend should have to trust.
     if let Ok(entry) = state.session(&session_id) {
-        if entry.session.try_lock().is_err() {
-            return Err("this conversation is mid-turn; stop it before rewinding".into());
-        }
+        let _ = entry.idle("stop it before rewinding")?;
     }
 
     // The conversation's own folder, which is where its pre-images came from.
@@ -2516,14 +2521,18 @@ pub async fn usage_report(
         state.host.tool_definitions().await,
     );
 
-    // A conversation that is open answers from memory. Reading its transcript
-    // instead would report it as it was last written down, which is behind
-    // whatever is on screen — and this panel is most often opened mid-turn, to
-    // find out what just filled the window.
+    // A conversation that is open answers from memory, which is what the
+    // window is working from — when it can. This panel is most often opened
+    // mid-turn, to find out what just filled the window, and a turn holds the
+    // session for its whole run: waiting for it would keep the panel spinning
+    // until the turn is over. Mid-turn it reads the transcript instead, which
+    // the turn writes at the end of every tool round, so it is behind by at
+    // most the round in flight. `resume_session` falls back the same way.
     if let Some(id) = &session_id {
         if let Ok(entry) = state.session(id) {
-            let session = entry.session.lock().await;
-            return Ok(usage::of_session(&session, &fixed));
+            if let Some(report) = open_usage(&entry, &fixed) {
+                return Ok(report);
+            }
         }
     }
 
@@ -2542,6 +2551,13 @@ pub async fn usage_report(
         )
     })
     .await
+}
+
+/// An open conversation's account, from memory — or `None` while a turn is
+/// running in it, for the caller to read off disk instead. See `usage_report`.
+fn open_usage(entry: &SessionEntry, fixed: &usage::Fixed) -> Option<UsageReport> {
+    let session = entry.session.try_lock().ok()?;
+    Some(usage::of_session(&session, fixed))
 }
 
 /// Where a turn's time actually went.
@@ -2592,11 +2608,7 @@ pub async fn commit_turn(
     // run, and committing underneath one would capture a tree that is still
     // being written.
     if let Ok(entry) = state.session(&session_id) {
-        if entry.session.try_lock().is_err() {
-            return Err(
-                "this conversation is mid-turn; wait for it to finish before committing".into(),
-            );
-        }
+        let _ = entry.idle("wait for it to finish before committing")?;
     }
 
     // The conversation's own folder, which is the repository its turns changed
@@ -2830,5 +2842,67 @@ mod tests {
             !err.contains("/work/taurus"),
             "names the way back, not the dead end: {err}"
         );
+    }
+
+    fn open(model: &str) -> SessionEntry {
+        SessionEntry {
+            session: Arc::new(Mutex::new(Session::new(model))),
+            provider_id: Mutex::new("local".into()),
+            model: Mutex::new(model.into()),
+            workspace: std::path::PathBuf::from("/src/a"),
+            cancel: Arc::new(Mutex::new(CancellationToken::new())),
+            log: Arc::new(Mutex::new(SessionLog::disabled())),
+            switches: Mutex::new(Vec::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_mid_turn_still_says_which_model_it_is_on() {
+        // The first thing a turn review asks. A turn holds the session for its
+        // whole run, so an answer read out of the session waits for all of it
+        // — and "Review this turn" sat on "Reading it over…" until it ended.
+        let entry = open("small-model");
+        let _turn = entry.session.lock().await;
+
+        let model = tokio::time::timeout(std::time::Duration::from_secs(2), session_model(&entry))
+            .await
+            .expect("waited for the running turn to finish");
+
+        assert_eq!(model, "small-model");
+    }
+
+    #[tokio::test]
+    async fn usage_mid_turn_is_left_to_the_transcript_rather_than_waited_for() {
+        let entry = open("m");
+        let fixed = usage::Fixed::new("", Vec::new());
+
+        let turn = entry.session.lock().await;
+        assert!(
+            open_usage(&entry, &fixed).is_none(),
+            "a running turn's session is not readable, and must not be waited on"
+        );
+
+        drop(turn);
+        assert!(
+            open_usage(&entry, &fixed).is_some(),
+            "between turns it answers from memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn what_cannot_happen_mid_turn_is_refused_and_told_what_to_do() {
+        let entry = open("m");
+
+        let turn = entry.session.lock().await;
+        let err = entry
+            .idle("stop it before rewinding")
+            .expect_err("a rewind must not run underneath a turn");
+        assert_eq!(
+            err,
+            "this conversation is mid-turn; stop it before rewinding"
+        );
+
+        drop(turn);
+        assert!(entry.idle("stop it before rewinding").is_ok());
     }
 }
