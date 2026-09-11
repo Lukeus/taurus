@@ -650,6 +650,11 @@ pub fn load(id: &str) -> Result<Loaded, String> {
     read_transcript(find(id).ok_or_else(|| format!("no saved session '{id}'"))?)
 }
 
+/// [`load`], for a transcript whose file is already known. See [`listed`].
+pub(crate) fn load_at(path: &Path) -> Result<Loaded, String> {
+    read_transcript(path.to_path_buf())
+}
+
 /// Reads one transcript file, whoever it belongs to.
 ///
 /// Shared by [`load`] and [`load_subagent`] rather than copied, so a delegate's
@@ -750,6 +755,19 @@ pub fn meta(id: &str) -> Option<SessionMeta> {
 
 /// Sessions for one workspace, or for every workspace, newest first.
 pub fn list(workspace: Option<&Path>) -> Vec<SessionMeta> {
+    listed(workspace)
+        .into_iter()
+        .map(|(meta, _)| meta)
+        .collect()
+}
+
+/// [`list`], with where each transcript is.
+///
+/// For a caller about to read what it lists — search, and the usage report
+/// across a workspace — which otherwise found each transcript again by its id,
+/// a scan of every workspace's folder per conversation, and a second one for
+/// `load` after the prefilter said yes.
+pub(crate) fn listed(workspace: Option<&Path>) -> Vec<(SessionMeta, PathBuf)> {
     let dirs: Vec<PathBuf> = match workspace {
         Some(workspace) => vec![sessions_dir().join(workspace_key(workspace))],
         None => std::fs::read_dir(sessions_dir())
@@ -761,18 +779,18 @@ pub fn list(workspace: Option<&Path>) -> Vec<SessionMeta> {
             .collect(),
     };
 
-    let mut sessions: Vec<SessionMeta> = dirs
+    let mut sessions: Vec<(SessionMeta, PathBuf)> = dirs
         .iter()
         .filter_map(|dir| std::fs::read_dir(dir).ok())
         .flatten()
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|e| e == EXTENSION))
-        .filter_map(|path| read_meta(&path))
+        .filter_map(|path| read_meta(&path).map(|meta| (meta, path)))
         .collect();
 
     // Descending, so the newest is first and `latest` is just the head.
-    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
+    sessions.sort_by_key(|(s, _)| std::cmp::Reverse(s.updated));
     sessions
 }
 
@@ -1096,19 +1114,44 @@ fn usable_as_filename(id: &str) -> bool {
 /// A file that cannot be read answers `true`, so an unreadable transcript is
 /// passed on to `load` to fail there rather than being silently reported as
 /// not matching.
-pub fn mentions(id: &str, needle: &str) -> bool {
-    let Some(path) = find(id) else {
-        return true;
-    };
-    match std::fs::read(&path) {
-        // Lossy rather than strict: a transcript is JSON and so is valid UTF-8
-        // by construction, and a corrupt byte in one is not a reason to stop
-        // searching the other thirty-nine.
-        Ok(bytes) => String::from_utf8_lossy(&bytes)
-            .to_lowercase()
-            .contains(needle),
+pub(crate) fn mentions_at(path: &Path, needle: &str) -> bool {
+    match std::fs::read(path) {
+        Ok(bytes) => bytes
+            .split(|&byte| byte == b'\n')
+            .any(|line| line_mentions(line, needle)),
         Err(_) => true,
     }
+}
+
+/// [`mentions_at`] for a transcript known only by its id.
+pub fn mentions(id: &str, needle: &str) -> bool {
+    find(id).is_none_or(|path| mentions_at(&path, needle))
+}
+
+/// Whether one line of a transcript holds `needle`, as lowercasing the line
+/// would find it.
+///
+/// A line at a time, because a query cannot span two: a transcript line is one
+/// JSON record, and JSON writes a newline inside a string as `\n`, which a
+/// query that survives JSON unchanged cannot contain. Lowercasing the whole
+/// file made a second copy of every transcript on every keystroke. An all-ASCII
+/// line — most of them — is compared ignoring ASCII case, which for ASCII is
+/// exactly what lowercasing gives; any other line is lowercased, lossily, as
+/// the file was, since a corrupt byte in one transcript is not a reason to stop
+/// searching the rest.
+fn line_mentions(line: &[u8], needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if line.is_ascii() {
+        let needle = needle.as_bytes();
+        return line
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle));
+    }
+    String::from_utf8_lossy(line)
+        .to_lowercase()
+        .contains(needle)
 }
 
 /// Locates a transcript by id across every workspace.
@@ -1201,6 +1244,27 @@ impl TurnRecorder for SubagentLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_is_matched_as_lowercasing_it_would_match_it() {
+        assert!(line_mentions(b"Fix The TRUST banner", "trust banner"));
+        assert!(!line_mentions(b"fix the trust bar", "trust banner"));
+        assert!(line_mentions("École normale".as_bytes(), "école"));
+        // A character outside ASCII that lowercases into it.
+        assert!(line_mentions("300 \u{212A}elvin".as_bytes(), "kelvin"));
+        // An ASCII line cannot hold a needle that is not.
+        assert!(!line_mentions(b"ecole", "école"));
+    }
+
+    #[test]
+    fn a_transcript_it_cannot_read_is_passed_on_rather_than_ruled_out() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, "{\"text\":\"trust\"}\n{\"text\":\"Banner\"}\n").unwrap();
+        assert!(mentions_at(&path, "banner"));
+        assert!(!mentions_at(&path, "rail"));
+        assert!(mentions_at(&dir.path().join("missing.jsonl"), "anything"));
+    }
     use crate::testing::isolated_home;
 
     fn session_with(id: &str, turns: &[&str]) -> Session {
