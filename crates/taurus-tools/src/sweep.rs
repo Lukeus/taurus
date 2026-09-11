@@ -317,16 +317,21 @@ impl Sweep {
             .map(|(path, _)| crate::path_guard::display(root, path))
             .collect();
 
-        for (path, before) in changed {
-            // Copied here and only here. The pre-image is shared with the cache
-            // and with whatever the last command held, so the copy is paid for
-            // the files that changed rather than for the whole workspace.
-            let before = Arc::try_unwrap(before).unwrap_or_else(|held| (*held).clone());
-            // Dropped silently when an earlier tool in this turn already
-            // recorded the path, which is the behavior that wants keeping: the
-            // earlier pre-image is the older one.
-            recorder.capture_state(&path, before).await;
-        }
+        // Copied here and only here. The pre-image is shared with the cache and
+        // with whatever the last command held, so the copy is paid for the
+        // files that changed rather than for the whole workspace.
+        let held: Vec<(PathBuf, State)> = changed
+            .into_iter()
+            .map(|(path, before)| {
+                let before = Arc::try_unwrap(before).unwrap_or_else(|held| (*held).clone());
+                (path, before)
+            })
+            .collect();
+        // In one write however many there are — a formatter run changes
+        // thousands. A path an earlier tool in this turn already recorded is
+        // dropped silently, which is the behavior that wants keeping: the
+        // earlier pre-image is the older one.
+        recorder.capture_many(held).await;
 
         let mut caveats = Vec::new();
         // Narrower than the others on purpose: what was recorded is still

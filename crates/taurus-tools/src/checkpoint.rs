@@ -1038,6 +1038,65 @@ impl TurnRecorder {
         self.record(path, Some(before)).await;
     }
 
+    /// Records many pre-images the caller is already holding, in one write.
+    ///
+    /// What [`crate::sweep`] hands over after a command: every file it changed,
+    /// which after a formatter or a code generator is thousands. Recorded one at
+    /// a time, each was a directory check, an open, a permission check, a write
+    /// and a close, made on the async runtime under this turn's lock. Here the
+    /// log is opened once and written through one buffer, on a blocking thread.
+    ///
+    /// The rules are the ones [`Self::record`] keeps: a path this turn already
+    /// recorded keeps its earlier, older pre-image; the turn's header goes down
+    /// with its first file; and a write that fails turns recording off for the
+    /// rest of the turn rather than failing the command.
+    pub async fn capture_many(&self, held: Vec<(PathBuf, State)>) {
+        let Some(log) = self.path.clone() else {
+            return;
+        };
+
+        let mut state = self.state.lock().await;
+        if state.disabled {
+            return;
+        }
+        let fresh: Vec<Record> = held
+            .into_iter()
+            .filter(|(path, _)| state.seen.insert(path.clone()))
+            .map(|(path, before)| Record::Before {
+                path: crate::path_guard::display(&self.workspace, &path),
+                state: before,
+            })
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+
+        let opening = !state.opened;
+        let mut records = Vec::with_capacity(fresh.len() + 1);
+        if opening {
+            records.push(Record::Turn {
+                prompt: self.prompt.clone(),
+                at: now(),
+                branch: self.branch.clone(),
+            });
+        }
+        records.extend(fresh);
+
+        let (session, workspace) = (self.session.clone(), self.workspace.clone());
+        let landed = tokio::task::spawn_blocking(move || {
+            // Asked of the file rather than assumed, for the reason `record`
+            // gives where it does the same.
+            (!opening || ensure_header(&log, &session, &workspace)) && append_all(&log, &records)
+        })
+        .await
+        .unwrap_or(false);
+        if landed {
+            state.opened = true;
+        } else {
+            state.disabled = true;
+        }
+    }
+
     /// The one path into the log.
     ///
     /// Failing to write a checkpoint never fails the tool call. Persistence is
@@ -1164,19 +1223,32 @@ fn ensure_header(path: &Path, session: &str, workspace: &Path) -> bool {
 
 /// Appends one record. Returns whether it landed.
 fn append(path: &Path, record: &Record) -> bool {
+    append_all(path, std::slice::from_ref(record))
+}
+
+/// Appends records in order through one open file and one buffer. Returns
+/// whether every one of them landed.
+///
+/// One open for the lot rather than one each: the sweep can hand over
+/// thousands, and each open is a directory check, a permission check and a
+/// close besides the write.
+fn append_all(path: &Path, records: &[Record]) -> bool {
     let write = || -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let line = serde_json::to_string(record)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)?;
         restrict(&file);
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")
+        let mut out = std::io::BufWriter::new(file);
+        for record in records {
+            serde_json::to_writer(&mut out, record)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            out.write_all(b"\n")?;
+        }
+        out.flush()
     };
 
     match write() {
