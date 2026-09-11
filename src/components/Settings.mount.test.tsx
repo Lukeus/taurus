@@ -565,6 +565,9 @@ describe("the search tab", () => {
     const host = await mount();
     click(host, "Search");
     await act(async () => {});
+    // Which tab is current, said and not only shaded.
+    const search = [...host.querySelectorAll('[role="tab"]')].find((t) => t.textContent === "Search");
+    expect(search?.getAttribute("aria-selected")).toBe("true");
 
     expect(host.textContent).toContain("search.json is not valid JSON");
     expect(host.textContent).not.toContain("Loading…");

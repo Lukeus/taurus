@@ -413,6 +413,7 @@ function ServerCard({
           <>
             <button
               className="link tools-toggle"
+              aria-expanded={showTools}
               onClick={() => setShowTools((open) => !open)}
             >
               {showTools ? "Hide" : "Show"}{" "}

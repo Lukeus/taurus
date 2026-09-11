@@ -97,6 +97,7 @@ describe("opening the panel", () => {
     expect(host.innerHTML).toContain("filesystem");
     expect(host.innerHTML).toContain("dot ok");
     expect(host.innerHTML).toContain("Show 11 tools");
+    expect(host.querySelector(".tools-toggle")?.getAttribute("aria-expanded")).toBe("false");
     // Where the program actually is, which is the fact a working server makes
     // uninteresting and a broken one makes everything.
     expect(host.innerHTML).toContain("/opt/homebrew/bin/npx");

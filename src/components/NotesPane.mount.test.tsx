@@ -349,6 +349,8 @@ describe("a note that is open", () => {
     });
     const { host, click } = await mount({ onAsk: (d) => drafts.push(d) });
     await click(host.querySelector(".notes-row"));
+    // Which note is open, said and not only shaded.
+    expect(host.querySelector(".notes-row")?.getAttribute("aria-current")).toBe("true");
     await click(saying(host, "Ask about this"));
 
     expect(drafts).toEqual(['About my project note "Auth redesign": ']);

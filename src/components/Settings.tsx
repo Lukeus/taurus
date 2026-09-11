@@ -144,10 +144,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
   return (
     <Drawer title="Settings" onClose={onClose}>
-      <div className="pill-row">
+      <div className="pill-row" role="tablist" aria-label="Settings">
         {TABS.map(([value, label]) => (
           <button
             key={value}
+            role="tab"
+            aria-selected={tab === value}
             className={`pill${tab === value ? " on" : ""}`}
             onClick={() => setTab(value)}
           >

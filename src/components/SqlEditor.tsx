@@ -248,6 +248,8 @@ export function SqlEditor({
       {menu && (
         <ul
           className="sql-menu"
+          role="listbox"
+          aria-label="Completions"
           style={{ left: menu.at.left, top: menu.at.top }}
           // The textarea's `blur` fires before a click lands, so the list
           // would close out from under the pointer. Taking the press rather
@@ -255,8 +257,10 @@ export function SqlEditor({
           onMouseDown={(e) => e.preventDefault()}
         >
           {menu.items.map((item, i) => (
-            <li key={`${item.kind}-${item.note}-${item.insert}`}>
+            <li key={`${item.kind}-${item.note}-${item.insert}`} role="presentation">
               <button
+                role="option"
+                aria-selected={i === active}
                 className={`sql-choice${i === active ? " on" : ""}`}
                 onMouseEnter={() => setActive(i)}
                 onClick={() => take(item)}

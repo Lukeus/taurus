@@ -162,8 +162,13 @@ describe("finishing a word", () => {
         b.classList.contains("on"),
       );
     expect(chosen()).toBe(0);
+    // What Enter will take, said to a screen reader and not only in colour.
+    expect(host.querySelector(".sql-menu")?.getAttribute("role")).toBe("listbox");
     press(host, "ArrowDown");
     expect(chosen()).toBe(1);
+    const picked = host.querySelectorAll('[role="option"][aria-selected="true"]');
+    expect(picked).toHaveLength(1);
+    expect(picked[0]).toBe(host.querySelectorAll(".sql-choice")[1]);
     // Off the top wraps to the bottom, so the last item is one key away.
     press(host, "ArrowUp");
     press(host, "ArrowUp");

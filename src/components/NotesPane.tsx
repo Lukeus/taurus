@@ -468,6 +468,7 @@ function Group({
                 <button
                   className="notes-row"
                   data-current={same(open, p) ? "" : undefined}
+                  aria-current={same(open, p) ? "true" : undefined}
                   onClick={() => onChoose(p)}
                 >
                   <b>{p.name}</b>
