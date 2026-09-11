@@ -926,8 +926,11 @@ impl Host {
         config::edit_settings(Scope::Global, None, |s| s.last_workspace = Some(remembered));
 
         // Reload re-resolves both layers, so the in-memory settings pick up the
-        // new workspace's file without a second write.
-        self.reload().await;
+        // new workspace's file without a second write. The local half only: the
+        // new folder's servers are the caller's to reconnect, and not to wait
+        // for — a folder with three `npx` servers would otherwise hold the
+        // window on the old folder until the last of them answered.
+        self.reload_local().await;
         Ok(canonical)
     }
 
@@ -948,24 +951,28 @@ impl Host {
     /// response is to contribute it. That is also what rebuilds the permission
     /// engine — the workspace allowlist was not read at startup, and there is
     /// no other moment it would be picked up.
+    ///
+    /// The local half of a reload, as [`Self::set_workspace`] does: the servers
+    /// this project names are the caller's to start, after it has redrawn.
     pub async fn trust_workspace(&self) -> Result<(), String> {
         let workspace = self.workspace.read().await.clone();
         crate::trust::trust(&workspace)?;
         self.rebuild_permissions(&workspace).await;
-        self.reload().await;
+        self.reload_local().await;
         Ok(())
     }
 
     /// Stops reading this workspace's config.
     ///
     /// The reload is what makes it take effect immediately: a skill loaded
-    /// under the old decision is dropped from the catalog, and an MCP server
-    /// started under it is shut down rather than left running.
+    /// under the old decision is dropped from the catalog before this returns.
+    /// An MCP server started under it is shut down by the caller's reconnect,
+    /// which it starts once it has redrawn — see [`Self::trust_workspace`].
     pub async fn revoke_trust(&self) -> Result<(), String> {
         let workspace = self.workspace.read().await.clone();
         crate::trust::revoke(&workspace)?;
         self.rebuild_permissions(&workspace).await;
-        self.reload().await;
+        self.reload_local().await;
         Ok(())
     }
 
@@ -4068,6 +4075,42 @@ mod tests {
         .unwrap();
         host.reload_local().await;
         assert!(!host.tool_names().await.contains(&running));
+    }
+
+    #[tokio::test]
+    async fn opening_a_folder_or_deciding_its_trust_starts_no_mcp_server() {
+        // All three change which servers apply, and none may wait for them:
+        // the window redraws on what they return, and a folder with three
+        // `npx` servers kept it on the old folder until the last one answered.
+        // The servers are the caller's to reconnect once it has redrawn.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        std::fs::write(
+            taurus_mcp::config::config_file(home.path()),
+            r#"{"mcpServers": {"broken": {"command": "definitely-not-a-real-program-xyz"}}}"#,
+        )
+        .unwrap();
+        let unstarted = |servers: Vec<crate::McpServerView>| servers[0].status.is_none();
+
+        let other = TempDir::new().unwrap();
+        host.set_workspace(other.path()).await.unwrap();
+        assert!(
+            unstarted(host.mcp_servers().await),
+            "opening a folder waited on a server"
+        );
+
+        host.trust_workspace().await.unwrap();
+        assert!(
+            unstarted(host.mcp_servers().await),
+            "trusting a folder waited on a server"
+        );
+
+        host.revoke_trust().await.unwrap();
+        assert!(
+            unstarted(host.mcp_servers().await),
+            "revoking trust waited on a server"
+        );
     }
 
     #[tokio::test]
