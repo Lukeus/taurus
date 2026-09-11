@@ -561,8 +561,21 @@ explanation rather than a conversation that simply stops:
 
 A rate limit or a 5xx is not in that last group. Those are retried up to three
 times with a doubling backoff, and the wait is reported rather than silent,
-because a pause nobody explained is indistinguishable from a hang. Cancelling
-during a backoff returns immediately instead of serving out the delay.
+because a pause nobody explained is indistinguishable from a hang. When the
+backend says how long to wait — a `Retry-After` header, or the `RetryInfo`
+Gemini puts in its error body — the wait is that long or the backoff's,
+whichever is longer, and the notice says so. A backend that asks for more than
+two minutes has run out of quota rather than hit a blip, so that failure
+surfaces with its number in it instead of holding the turn. Cancelling during
+a backoff returns immediately instead of serving out the delay.
+
+A backend that goes quiet is given up on rather than waited for. A connection
+has 30 seconds to open, and a response ten minutes to send its next byte —
+longer than a reasoning model thinks before its first token, or a local model
+takes over a long prompt. TCP keepalive finds a peer that has vanished
+outright, such as a laptop that changed networks, in about two minutes. A stall
+is retried like a 5xx when nothing had reached the screen yet, and it names the
+backend and the wait, so it does not read as a network problem.
 
 One case is deliberately never retried: a request that had already begun
 streaming an answer. The user has read the first half, and a second attempt

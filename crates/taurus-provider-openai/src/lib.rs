@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use taurus_provider::http;
 use taurus_provider::prompted::{PromptedScanner, PromptedTools};
 use taurus_provider::{
     Capabilities, ChatRequest, ModelInfo, Provider, ProviderError, RerankScore, Result, StopReason,
@@ -91,7 +92,7 @@ pub struct OpenAiProvider {
     api_key: Option<String>,
     /// Header the key goes in. `None` means bearer auth.
     api_key_header: Option<String>,
-    client: reqwest::Client,
+    client: http::Client,
     capabilities: OpenAiCapabilities,
     /// Declared models. Non-empty means `/v1/models` is never called.
     models: Vec<ModelSpec>,
@@ -110,10 +111,17 @@ impl OpenAiProvider {
             api_prefix: DEFAULT_API_PREFIX.to_string(),
             api_key,
             api_key_header: None,
-            client: reqwest::Client::new(),
+            client: http::Client::new(),
             capabilities,
             models: Vec::new(),
         }
+    }
+
+    /// Talks through `client` instead of the shared one. For a test of a
+    /// backend that hangs: see [`http::Client::stalling_after`].
+    pub fn with_client(mut self, client: http::Client) -> Self {
+        self.client = client;
+        self
     }
 
     /// Declares the models this endpoint serves, instead of asking it.
@@ -222,11 +230,7 @@ impl OpenAiProvider {
     }
 
     fn unreachable(&self, source: reqwest::Error) -> ProviderError {
-        ProviderError::Unreachable {
-            provider: self.id.clone(),
-            base_url: self.base_url.clone(),
-            source: Box::new(source),
-        }
+        self.client.failure(&self.id, &self.base_url, source)
     }
 
     async fn check_status(&self, response: reqwest::Response) -> Result<reqwest::Response> {
@@ -234,6 +238,7 @@ impl OpenAiProvider {
         if status.is_success() {
             return Ok(response);
         }
+        let retry_after = http::retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
         if status.as_u16() == 401 || status.as_u16() == 403 {
             return Err(ProviderError::MissingCredentials {
@@ -244,6 +249,7 @@ impl OpenAiProvider {
             provider: self.id.clone(),
             status: status.as_u16(),
             body,
+            retry_after,
         })
     }
 }
@@ -1083,6 +1089,34 @@ mod tests {
         assert_eq!(
             placed,
             vec![Some(vec![1.0]), Some(vec![2.0]), Some(vec![3.0])]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_never_answers_ends_the_request_on_its_own() {
+        // No Stop is pressed and nothing is ever sent back: only the stall
+        // timeout can end this, and the test's own deadline is the proof.
+        let base = http::testing::silent_after(b"").await;
+        let provider = OpenAiProvider::new(
+            "openai",
+            base,
+            Some("sk-test".into()),
+            OpenAiCapabilities::default(),
+        )
+        .with_client(http::Client::stalling_after(
+            std::time::Duration::from_millis(200),
+        ));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let request = ChatRequest::new("gpt-5", vec![taurus_provider::Message::user("hi")]);
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.stream(request, tx, tokio_util::sync::CancellationToken::new()),
+        )
+        .await
+        .expect("the stall timeout must end the request, not the test's deadline");
+        assert!(
+            matches!(outcome, Err(ProviderError::Stalled { .. })),
+            "{outcome:?}"
         );
     }
 }

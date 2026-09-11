@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+use taurus_provider::http;
 use taurus_provider::prompted::{PromptedScanner, PromptedTools};
 use taurus_provider::{
     Capabilities, ChatRequest, ModelInfo, Provider, ProviderError, Result, StopReason, StreamEvent,
@@ -66,7 +67,7 @@ const UNKNOWN_CONTEXT: u32 = 8192;
 
 pub struct OllamaProvider {
     base_url: String,
-    client: reqwest::Client,
+    client: http::Client,
     /// Ceiling on the window, whatever the model says it was trained for.
     context_limit: u32,
     /// `/api/show` costs a round trip and the answer never changes for a given
@@ -79,10 +80,17 @@ impl OllamaProvider {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         Self {
             base_url,
-            client: reqwest::Client::new(),
+            client: http::Client::new(),
             context_limit: DEFAULT_CONTEXT_LIMIT,
             caps: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Talks through `client` instead of the shared one. For a test of a
+    /// backend that hangs: see [`http::Client::stalling_after`].
+    pub fn with_client(mut self, client: http::Client) -> Self {
+        self.client = client;
+        self
     }
 
     /// Raises or lowers the ceiling from [`DEFAULT_CONTEXT_LIMIT`].
@@ -103,11 +111,7 @@ impl OllamaProvider {
     }
 
     fn unreachable(&self, source: reqwest::Error) -> ProviderError {
-        ProviderError::Unreachable {
-            provider: PROVIDER_ID.into(),
-            base_url: self.base_url.clone(),
-            source: Box::new(source),
-        }
+        self.client.failure(PROVIDER_ID, &self.base_url, source)
     }
 
     async fn post_json<B: serde::Serialize>(
@@ -130,6 +134,7 @@ impl OllamaProvider {
         if status.is_success() {
             return Ok(response);
         }
+        let retry_after = http::retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
         // Ollama reports an unpulled model as a 404 with a "not found" body;
         // surfacing that as a plain HTTP error would send the user hunting for
@@ -144,6 +149,7 @@ impl OllamaProvider {
             provider: PROVIDER_ID.into(),
             status: status.as_u16(),
             body,
+            retry_after,
         })
     }
 }
@@ -345,6 +351,7 @@ impl Provider for OllamaProvider {
                     provider: PROVIDER_ID.into(),
                     status: 200,
                     body: error,
+                    retry_after: None,
                 });
             }
 
@@ -581,5 +588,27 @@ mod tests {
             .expect("a chat request");
         let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
         assert_eq!(body["options"]["num_ctx"], planned.context_length);
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_never_answers_ends_the_request_on_its_own() {
+        // No Stop is pressed and nothing is ever sent back: only the stall
+        // timeout can end this, and the test's own deadline is the proof.
+        let base = http::testing::silent_after(b"").await;
+        let provider = OllamaProvider::new(base).with_client(http::Client::stalling_after(
+            std::time::Duration::from_millis(200),
+        ));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let request = ChatRequest::new("qwen3-coder", vec![taurus_provider::Message::user("hi")]);
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.stream(request, tx, tokio_util::sync::CancellationToken::new()),
+        )
+        .await
+        .expect("the stall timeout must end the request, not the test's deadline");
+        assert!(
+            matches!(outcome, Err(ProviderError::Stalled { .. })),
+            "{outcome:?}"
+        );
     }
 }

@@ -16,6 +16,7 @@ mod wire;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -23,6 +24,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use taurus_provider::http;
 use taurus_provider::{
     Capabilities, ChatRequest, ModelInfo, Provider, ProviderError, Result, StopReason, StreamEvent,
     TokenUsage,
@@ -66,7 +68,7 @@ pub struct GeminiProvider {
     id: String,
     base_url: String,
     api_key: Option<String>,
-    client: reqwest::Client,
+    client: http::Client,
     capabilities: GeminiCapabilities,
     models: Vec<String>,
     /// One listing per model, kept for the life of this provider.
@@ -89,11 +91,18 @@ impl GeminiProvider {
             id: id.into(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
-            client: reqwest::Client::new(),
+            client: http::Client::new(),
             capabilities: GeminiCapabilities::default(),
             models: Vec::new(),
             probed: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Talks through `client` instead of the shared one. For a test of a
+    /// backend that hangs: see [`http::Client::stalling_after`].
+    pub fn with_client(mut self, client: http::Client) -> Self {
+        self.client = client;
+        self
     }
 
     pub fn with_models(mut self, models: Vec<String>) -> Self {
@@ -135,11 +144,7 @@ impl GeminiProvider {
     }
 
     fn unreachable(&self, source: reqwest::Error) -> ProviderError {
-        ProviderError::Unreachable {
-            provider: self.id.clone(),
-            base_url: self.base_url.clone(),
-            source: Box::new(source),
-        }
+        self.client.failure(&self.id, &self.base_url, source)
     }
 
     async fn check_status(&self, response: reqwest::Response) -> Result<reqwest::Response> {
@@ -147,18 +152,47 @@ impl GeminiProvider {
         if status.is_success() {
             return Ok(response);
         }
+        let retry_after = http::retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
         if matches!(status.as_u16(), 401 | 403) {
             return Err(ProviderError::MissingCredentials {
                 provider: self.id.clone(),
             });
         }
+        let retry_after = retry_after.or_else(|| retry_delay(&body));
         Err(ProviderError::Api {
             provider: self.id.clone(),
             status: status.as_u16(),
             body,
+            retry_after,
         })
     }
+}
+
+/// The wait a Gemini error asks for, which it puts in the body rather than a
+/// header.
+///
+/// A 429 carries a `google.rpc.RetryInfo` among its `details`, with the delay
+/// as a protobuf `Duration` in JSON form: seconds with an `s` suffix, like
+/// `"31s"` or `"1.5s"`.
+fn retry_delay(body: &str) -> Option<Duration> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    value["error"]["details"]
+        .as_array()?
+        .iter()
+        .filter(|detail| {
+            detail["@type"]
+                .as_str()
+                .is_some_and(|kind| kind.ends_with("google.rpc.RetryInfo"))
+        })
+        .find_map(|detail| {
+            let seconds: f64 = detail["retryDelay"]
+                .as_str()?
+                .strip_suffix('s')?
+                .parse()
+                .ok()?;
+            (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds))
+        })
 }
 
 #[async_trait]
@@ -360,6 +394,7 @@ impl Provider for GeminiProvider {
                     provider: self.id.clone(),
                     status: error.code.unwrap_or(400),
                     body: format!("{}: {}", error.status, error.message),
+                    retry_after: None,
                 });
             }
 
@@ -708,6 +743,40 @@ mod tests {
         let caps = provider.capabilities("gemini-2.5-pro").await.unwrap();
         assert!(caps.native_tools);
         assert_eq!(caps.context_length, 32_768);
+    }
+
+    #[test]
+    fn a_rate_limit_body_says_how_long_to_wait() {
+        // The shape a 429 from this API takes. It sends no Retry-After header,
+        // so without reading the body the loop would guess.
+        let body = r#"{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[
+            {"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[]},
+            {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"31.5s"}]}}"#;
+        assert_eq!(retry_delay(body), Some(Duration::from_secs_f64(31.5)));
+        assert_eq!(retry_delay(r#"{"error":{"code":500}}"#), None);
+        assert_eq!(retry_delay("not json"), None);
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_never_answers_ends_the_request_on_its_own() {
+        // No Stop is pressed and nothing is ever sent back: only the stall
+        // timeout can end this, and the test's own deadline is the proof.
+        let base = http::testing::silent_after(b"").await;
+        let provider = GeminiProvider::new("gemini", base, Some("key".into()))
+            .with_client(http::Client::stalling_after(Duration::from_millis(200)));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let request =
+            ChatRequest::new("gemini-2.5-pro", vec![taurus_provider::Message::user("hi")]);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            provider.stream(request, tx, tokio_util::sync::CancellationToken::new()),
+        )
+        .await
+        .expect("the stall timeout must end the request, not the test's deadline");
+        assert!(
+            matches!(outcome, Err(ProviderError::Stalled { .. })),
+            "{outcome:?}"
+        );
     }
 }
 

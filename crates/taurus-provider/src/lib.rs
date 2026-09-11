@@ -6,6 +6,8 @@
 //! against the trait alone.
 
 pub mod error;
+#[cfg(feature = "http")]
+pub mod http;
 pub mod image;
 pub mod message;
 pub mod prompted;

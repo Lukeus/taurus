@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -10,11 +12,29 @@ pub enum ProviderError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("{provider} returned {status}: {body}")]
+    /// The connection opened, and then nothing arrived for `after`.
+    ///
+    /// Apart from [`Self::Unreachable`] because the advice is different: the
+    /// backend was there, so the address and the network are not what to
+    /// check.
+    #[error(
+        "{provider} sent nothing for {} and the request was given up. The backend \
+         accepted it, so it is overloaded or stuck rather than unreachable.",
+        span(*.after)
+    )]
+    Stalled { provider: String, after: Duration },
+
+    #[error("{provider} returned {status}: {body}{}", wait_note(.retry_after))]
     Api {
         provider: String,
         status: u16,
         body: String,
+        /// How long the backend asked to be left alone, when it said.
+        ///
+        /// From a `Retry-After` header, or the `RetryInfo` Gemini puts in the
+        /// body. The agent loop waits for this or its own backoff, whichever
+        /// is longer.
+        retry_after: Option<Duration>,
     },
 
     #[error("model '{model}' is not available on {provider}")]
@@ -48,6 +68,7 @@ impl ProviderError {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Unreachable { .. } => "unreachable",
+            Self::Stalled { .. } => "stalled",
             // The status and not the body. `api_429` and `api_500` are the two
             // somebody actually charts, and they are worth telling apart.
             Self::Api { status, .. } if *status == 429 => "api_429",
@@ -65,11 +86,81 @@ impl ProviderError {
     /// the agent loop to decide between a retry and surfacing the failure.
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Unreachable { .. } => true,
+            // A stall is a request that got lost, and nothing about it says
+            // the next one will be. The loop still retries only when nothing
+            // reached the screen, so a stream that went quiet half-way through
+            // an answer surfaces rather than starting over.
+            Self::Unreachable { .. } | Self::Stalled { .. } => true,
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             _ => false,
+        }
+    }
+
+    /// How long the backend asked to be left alone before the next attempt.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::Api { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 }
 
 pub type Result<T> = std::result::Result<T, ProviderError>;
+
+/// A duration as a person says it: "45 seconds", "3 minutes".
+fn span(duration: Duration) -> String {
+    let seconds = duration.as_secs_f64();
+    if seconds < 1.0 {
+        return format!("{} ms", duration.as_millis());
+    }
+    let seconds = seconds.round() as u64;
+    match seconds {
+        1 => "1 second".into(),
+        s if s < 120 => format!("{s} seconds"),
+        s => format!("{} minutes", s.div_ceil(60)),
+    }
+}
+
+/// The part of an API error that says how long the backend asked to wait.
+fn wait_note(retry_after: &Option<Duration>) -> String {
+    match retry_after {
+        Some(wait) => format!(" (it asks to wait {} before trying again)", span(*wait)),
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_api_error_says_how_long_the_backend_asked_to_wait() {
+        let error = ProviderError::Api {
+            provider: "anthropic".into(),
+            status: 429,
+            body: "rate_limit_error: slow down".into(),
+            retry_after: Some(Duration::from_secs(20)),
+        };
+        assert_eq!(
+            error.to_string(),
+            "anthropic returned 429: rate_limit_error: slow down \
+             (it asks to wait 20 seconds before trying again)"
+        );
+        assert_eq!(error.retry_after(), Some(Duration::from_secs(20)));
+    }
+
+    #[test]
+    fn a_stall_names_how_long_it_waited() {
+        let error = ProviderError::Stalled {
+            provider: "openai".into(),
+            after: Duration::from_secs(600),
+        };
+        assert!(
+            error
+                .to_string()
+                .starts_with("openai sent nothing for 10 minutes"),
+            "{error}"
+        );
+        assert_eq!(error.kind(), "stalled");
+    }
+}

@@ -1212,6 +1212,66 @@ async fn canceling_during_a_backoff_does_not_wait_it_out() {
     );
 }
 
+#[tokio::test]
+async fn a_retry_waits_as_long_as_the_backend_asked() {
+    // The loop's own backoff is zero, so any wait at all is the backend's.
+    let wait = std::time::Duration::from_millis(400);
+    let h = harness_with(
+        vec![
+            ScriptedTurn::rate_limited(wait),
+            ScriptedTurn::text("Recovered."),
+        ],
+        Box::new(AllowAll),
+        instant_retries(3),
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let started = std::time::Instant::now();
+    let (outcome, events) = run(&h, &mut session, "hi").await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(
+        started.elapsed() >= wait,
+        "retried after {:?}, before the {wait:?} the backend asked for",
+        started.elapsed()
+    );
+    let reason = events.iter().find_map(|e| match e {
+        UiEvent::Retrying { reason, .. } => Some(reason.clone()),
+        _ => None,
+    });
+    assert!(
+        reason.is_some_and(|r| r.contains("asks to wait")),
+        "the notice must say why the wait is as long as it is"
+    );
+}
+
+#[tokio::test]
+async fn a_wait_longer_than_the_loop_will_sit_through_surfaces_instead() {
+    let h = harness_with(
+        vec![
+            ScriptedTurn::rate_limited(std::time::Duration::from_secs(3600)),
+            ScriptedTurn::text("never reached"),
+        ],
+        Box::new(AllowAll),
+        instant_retries(3),
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run(&h, &mut session, "hi"),
+    )
+    .await
+    .expect("an hour's wait must not be served out");
+
+    let (outcome, _) = outcome;
+    let Err(AgentError::Provider(error)) = outcome else {
+        panic!("a quota that resets in an hour must end the turn: {outcome:?}");
+    };
+    assert!(error.to_string().contains("60 minutes"), "{error}");
+    assert_eq!(h.provider.request_count().await, 1);
+}
+
 // ---------------------------------------------------------------------------
 // Stalls
 //

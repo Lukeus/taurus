@@ -32,6 +32,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use taurus_provider::http;
 use taurus_provider::{
     Capabilities, ChatRequest, ModelInfo, Provider, ProviderError, Result, StopReason, StreamEvent,
     TokenUsage,
@@ -129,7 +130,7 @@ pub struct AnthropicProvider {
     api_key: Option<String>,
     /// Header the key goes in. Defaults to `x-api-key`.
     api_key_header: String,
-    client: reqwest::Client,
+    client: http::Client,
     capabilities: AnthropicCapabilities,
     thinking: Thinking,
     /// Models the config named. Non-empty means `/v1/models` is never listed,
@@ -157,12 +158,19 @@ impl AnthropicProvider {
             api_prefix: DEFAULT_API_PREFIX.to_string(),
             api_key,
             api_key_header: DEFAULT_API_KEY_HEADER.to_string(),
-            client: reqwest::Client::new(),
+            client: http::Client::new(),
             capabilities: AnthropicCapabilities::default(),
             thinking: Thinking::default(),
             models: Vec::new(),
             probed: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Talks through `client` instead of the shared one. For a test of a
+    /// backend that hangs: see [`http::Client::stalling_after`].
+    pub fn with_client(mut self, client: http::Client) -> Self {
+        self.client = client;
+        self
     }
 
     pub fn with_thinking(mut self, thinking: Thinking) -> Self {
@@ -263,11 +271,7 @@ impl AnthropicProvider {
     }
 
     fn unreachable(&self, source: reqwest::Error) -> ProviderError {
-        ProviderError::Unreachable {
-            provider: self.id.clone(),
-            base_url: self.base_url.clone(),
-            source: Box::new(source),
-        }
+        self.client.failure(&self.id, &self.base_url, source)
     }
 
     async fn check_status(&self, response: reqwest::Response) -> Result<reqwest::Response> {
@@ -275,6 +279,7 @@ impl AnthropicProvider {
         if status.is_success() {
             return Ok(response);
         }
+        let retry_after = http::retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
         if matches!(status.as_u16(), 401 | 403) {
             return Err(ProviderError::MissingCredentials {
@@ -285,6 +290,7 @@ impl AnthropicProvider {
             provider: self.id.clone(),
             status: status.as_u16(),
             body,
+            retry_after,
         })
     }
 
@@ -519,6 +525,7 @@ impl Provider for AnthropicProvider {
                         provider: self.id.clone(),
                         status: status_for(&error.kind),
                         body: format!("{}: {}", error.kind, error.message),
+                        retry_after: None,
                     });
                 }
 
@@ -928,6 +935,7 @@ mod tests {
             provider: "anthropic".into(),
             status: status_for("overloaded_error"),
             body: "overloaded".into(),
+            retry_after: None,
         };
         assert!(error.is_transient());
 
@@ -935,6 +943,7 @@ mod tests {
             provider: "anthropic".into(),
             status: status_for("invalid_request_error"),
             body: "bad".into(),
+            retry_after: None,
         };
         assert!(!fatal.is_transient());
     }
@@ -989,5 +998,28 @@ mod tests {
         let request = ChatRequest::new("claude-opus-5", vec![Message::user("hi")]);
         let body = MessagesBody::from_request(&request, None);
         assert!(body.max_tokens > 0);
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_never_answers_ends_the_request_on_its_own() {
+        // No Stop is pressed and nothing is ever sent back: only the stall
+        // timeout can end this, and the test's own deadline is the proof.
+        let base = http::testing::silent_after(b"").await;
+        let provider = AnthropicProvider::new("anthropic", base, Some("sk-test".into()))
+            .with_client(http::Client::stalling_after(
+                std::time::Duration::from_millis(200),
+            ));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let request = ChatRequest::new("claude-opus-5", vec![taurus_provider::Message::user("hi")]);
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.stream(request, tx, tokio_util::sync::CancellationToken::new()),
+        )
+        .await
+        .expect("the stall timeout must end the request, not the test's deadline");
+        assert!(
+            matches!(outcome, Err(ProviderError::Stalled { .. })),
+            "{outcome:?}"
+        );
     }
 }

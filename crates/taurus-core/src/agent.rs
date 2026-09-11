@@ -38,6 +38,14 @@ use crate::session::{split_for_compaction, Session};
 /// smallest unit the screen can show it in either way.
 const COALESCE: Duration = Duration::from_millis(16);
 
+/// The longest a backend may ask the loop to wait before it stops retrying.
+///
+/// A rate limit that resets in twenty seconds is worth sitting out, with the
+/// wait shown on screen. One that resets in an hour is a quota, and a turn
+/// that sat through it would look hung for the whole hour. Past this the
+/// failure surfaces with the backend's number in it, and the user decides.
+const LONGEST_REQUESTED_WAIT: Duration = Duration::from_secs(120);
+
 /// Deltas of one kind, gathered but not yet handed on.
 struct Held {
     thinking: bool,
@@ -761,9 +769,11 @@ impl Agent {
             };
 
             let retries_left = attempt <= self.config.max_transient_retries;
+            let asked = failure.error.retry_after();
             if failure.produced_output
                 || !failure.error.is_transient()
                 || !retries_left
+                || asked.is_some_and(|wait| wait > LONGEST_REQUESTED_WAIT)
                 || self.tools.cancel.is_cancelled()
             {
                 return Err(failure.error.into());
@@ -778,20 +788,26 @@ impl Agent {
                 .await;
             info!(attempt, error = %failure.error, "retrying transient provider failure");
 
-            if !self.backoff(attempt).await {
+            if !self.backoff(attempt, asked).await {
                 return Err(failure.error.into());
             }
             attempt += 1;
         }
     }
 
-    /// Sleeps before the next attempt, doubling each time. Returns false if the
-    /// turn was canceled while waiting — a user who hits stop during a backoff
-    /// should not have to sit through the rest of it.
-    async fn backoff(&self, attempt: u32) -> bool {
+    /// Sleeps before the next attempt, doubling each time, and never for less
+    /// than the backend `asked` for. Returns false if the turn was canceled
+    /// while waiting — a user who hits stop during a backoff should not have
+    /// to sit through the rest of it.
+    ///
+    /// The backend's number wins when it is longer because it is the one that
+    /// knows. A rate limit that resets in twenty seconds turns three retries at
+    /// half a second, one, and two into three more refusals and a failed turn.
+    async fn backoff(&self, attempt: u32, asked: Option<Duration>) -> bool {
         // Capped so a large `max_transient_retries` cannot turn into a wait
         // measured in hours.
-        let delay = self.config.retry_backoff * 2u32.saturating_pow(attempt.min(6) - 1);
+        let computed = self.config.retry_backoff * 2u32.saturating_pow(attempt.min(6) - 1);
+        let delay = asked.map_or(computed, |asked| asked.max(computed));
         if delay.is_zero() {
             return !self.tools.cancel.is_cancelled();
         }
