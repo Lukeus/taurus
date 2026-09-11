@@ -313,11 +313,14 @@ impl CheckpointStore {
     }
 
     /// Every turn in a session that changed a file, oldest first.
+    ///
+    /// Read without the pre-images, which a listing has no use for — see
+    /// [`Preimage`].
     pub fn turns(&self, session_id: &str) -> Result<Vec<Checkpoint>, String> {
         let Some(path) = self.log_path(session_id) else {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
-        let mut log = read_log(&path)?;
+        let mut log = read_log::<()>(&path)?;
         // Taken out so the turns can be consumed while the commits they are
         // matched against stay borrowable.
         let turns = std::mem::take(&mut log.turns);
@@ -363,7 +366,7 @@ impl CheckpointStore {
         let Some(path) = self.log_path(session_id) else {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
-        let turns = read_log(&path)?.turns;
+        let turns = read_log::<State>(&path)?.turns;
 
         // A `Vec` rather than a map, because insertion order *is* the output
         // order and the lists this walks are one turn's worth of paths — a
@@ -397,7 +400,7 @@ impl CheckpointStore {
         let Some(path) = self.log_path(session_id) else {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
-        let turns = read_log(&path)?.turns;
+        let turns = read_log::<State>(&path)?.turns;
         let index = check_turn(session_id, turn, turns.len())?;
 
         // Split rather than indexed twice, so the "what came after" search
@@ -467,7 +470,7 @@ impl CheckpointStore {
         let Some(path) = self.log_path(session_id) else {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
-        let log = read_log(&path)?;
+        let log = read_log::<State>(&path)?;
         let index = check_turn(session_id, turn, log.turns.len())?;
         let undoing = &log.turns[index..];
 
@@ -726,10 +729,14 @@ fn restore(workspace: &Path, file: &str, state: &State, dry_run: bool) -> Restor
 }
 
 /// One turn as read back off disk.
-struct ReadTurn {
+///
+/// `S` is what is kept of each file's pre-image: the [`State`] itself, for
+/// anything that restores or diffs, or nothing, for a listing. See
+/// [`Preimage`].
+struct ReadTurn<S = State> {
     prompt: String,
     at: u64,
-    changes: Vec<(String, State)>,
+    changes: Vec<(String, S)>,
     branch: Option<String>,
     moved_git: bool,
 }
@@ -740,12 +747,77 @@ struct ReadTurn {
 /// they are written: a commit record lands at the end of the log naming a turn
 /// that closed long before it. Resolving it into the turn happens here, once,
 /// so nothing downstream has to know that.
-struct ReadLog {
-    turns: Vec<ReadTurn>,
+struct ReadLog<S = State> {
+    turns: Vec<ReadTurn<S>>,
     commits: Vec<(u32, String)>,
 }
 
-impl ReadLog {
+/// The first bytes of a `before` line, as [`append`] writes one. See
+/// [`HEADER_PREFIX`] for why a line can be told apart by these.
+const BEFORE_PREFIX: &[u8] = br#"{"type":"before""#;
+
+/// What a read keeps of each `before` line.
+///
+/// A listing wants a file's name and nothing else, and a `before` line is
+/// mostly the file: its whole pre-image, inline. Parsed as a [`Record`], each
+/// was copied out in full — twice, since an internally tagged enum is buffered
+/// before it is read — only to be dropped, so drawing the Changes pane cost as
+/// much as every byte the session had ever changed.
+trait Preimage: Sized {
+    /// The path and what is kept, from a line that starts as a `before`.
+    fn from_line(line: &[u8]) -> Option<(String, Self)>;
+    /// What is kept, from a `before` that arrived as a whole record.
+    fn from_state(state: State) -> Self;
+}
+
+impl Preimage for State {
+    fn from_line(line: &[u8]) -> Option<(String, Self)> {
+        match serde_json::from_slice::<Record>(line) {
+            Ok(Record::Before { path, state }) => Some((path, state)),
+            _ => None,
+        }
+    }
+
+    fn from_state(state: State) -> Self {
+        state
+    }
+}
+
+/// The name only.
+impl Preimage for () {
+    fn from_line(line: &[u8]) -> Option<(String, Self)> {
+        // Anything not in the shape `append` writes — the last line, cut short
+        // by a crash, or one written some other way — is read in full like any
+        // record, so a listing keeps and drops exactly what a rewind does.
+        name_up_front(line)
+            .or_else(|| State::from_line(line).map(|(path, _)| path))
+            .map(|path| (path, ()))
+    }
+
+    fn from_state(_: State) -> Self {}
+}
+
+/// The path of a whole `before` line in the shape [`append`] writes.
+///
+/// That shape puts the path ahead of the pre-image, so the name is decoded
+/// where it starts and the rest of the line — the file itself — is never looked
+/// at. Parsing the line as a whole, even into a struct that ignores the
+/// pre-image, still scans every byte of it to find where it ends. `None` for a
+/// line with no newline, which is one a crash cut short.
+fn name_up_front(line: &[u8]) -> Option<String> {
+    if !line.ends_with(b"\n") {
+        return None;
+    }
+    let rest = line
+        .strip_prefix(BEFORE_PREFIX)?
+        .strip_prefix(br#","path":"#)?;
+    serde_json::Deserializer::from_slice(rest)
+        .into_iter::<String>()
+        .next()?
+        .ok()
+}
+
+impl<S> ReadLog<S> {
     /// The commit a turn was kept as.
     ///
     /// Last writer wins: a turn committed, rewound, and committed again has two
@@ -764,7 +836,7 @@ impl ReadLog {
 /// A trailing line that will not parse is dropped rather than failing the
 /// read: it is the turn that was in flight when the process died, and refusing
 /// the file would lose every earlier checkpoint over it.
-fn read_log(path: &Path) -> Result<ReadLog, String> {
+fn read_log<S: Preimage>(path: &Path) -> Result<ReadLog<S>, String> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         // No log is not an error: it is a session that never changed a file.
@@ -777,15 +849,40 @@ fn read_log(path: &Path) -> Result<ReadLog, String> {
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
 
-    let mut turns: Vec<ReadTurn> = Vec::new();
+    let mut turns: Vec<ReadTurn<S>> = Vec::new();
     let mut commits: Vec<(u32, String)> = Vec::new();
     let mut header_seen = false;
 
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        if line.trim().is_empty() {
+    // Bytes rather than `lines()`: one buffer for every line instead of a new
+    // string each, no check that a pre-image is UTF-8 before it is known to be
+    // wanted, and a line that is not UTF-8 skipped like any other unreadable
+    // line rather than ending the read there.
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        match serde_json::from_str::<Record>(&line) {
+        if line.starts_with(BEFORE_PREFIX) {
+            match S::from_line(&line) {
+                // A `before` with no open turn is a torn log; there is nothing
+                // to attach it to, and inventing a turn for it would produce a
+                // checkpoint the user never made.
+                Some((path, kept)) => {
+                    if let Some(turn) = turns.last_mut() {
+                        turn.changes.push((path, kept));
+                    }
+                }
+                None => tracing::debug!("skipping an unreadable checkpoint line"),
+            }
+            continue;
+        }
+        match serde_json::from_slice::<Record>(&line) {
             Ok(Record::Header(header)) => {
                 if header.version > FORMAT_VERSION {
                     return Err(format!(
@@ -804,12 +901,11 @@ fn read_log(path: &Path) -> Result<ReadLog, String> {
                 branch,
                 moved_git: false,
             }),
+            // Written some other way than `append` writes it, so not caught by
+            // its first bytes above. The same rule applies.
             Ok(Record::Before { path, state }) => {
-                // A `before` with no open turn is a torn log; there is nothing
-                // to attach it to, and inventing a turn for it would produce a
-                // checkpoint the user never made.
                 if let Some(turn) = turns.last_mut() {
-                    turn.changes.push((path, state));
+                    turn.changes.push((path, S::from_state(state)));
                 }
             }
             // Same rule, same reason: it belongs to the turn it follows, and a
@@ -1875,6 +1971,51 @@ mod tests {
             let err = f.store.rewind("s1", &f.root, bad, false).unwrap_err();
             assert!(err.contains("checkpointed turn"), "{err}");
         }
+    }
+
+    #[test]
+    fn a_listing_reads_each_name_as_a_rewind_would() {
+        // A listing takes the name off the front of each `before` line and
+        // never reads the pre-image behind it. It has to agree with a rewind,
+        // which reads the whole record, about a name that needed escaping and
+        // about a last line a crash cut short.
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.logs.path()).unwrap();
+        let line = |record: &Record| serde_json::to_string(record).unwrap();
+        let odd = "dir/a \"quoted\" name\\é.txt";
+        let whole = line(&Record::Before {
+            path: odd.into(),
+            state: State::Text {
+                content: "x".repeat(4096),
+            },
+        });
+        let cut = line(&Record::Before {
+            path: "cut.txt".into(),
+            state: State::Text {
+                content: "y".repeat(4096),
+            },
+        });
+        std::fs::write(
+            f.log("s1"),
+            format!(
+                "{}\n{}\n{whole}\n{}",
+                line(&Record::Header(Header {
+                    version: FORMAT_VERSION,
+                    session: "s1".into(),
+                    workspace: "/w".into(),
+                })),
+                line(&Record::Turn {
+                    prompt: "one".into(),
+                    at: 1,
+                    branch: None,
+                }),
+                &cut[..cut.len() / 2],
+            ),
+        )
+        .unwrap();
+
+        let turns = f.store.turns("s1").unwrap();
+        assert_eq!(turns[0].files, vec![odd.to_string()]);
     }
 
     #[tokio::test]

@@ -2389,11 +2389,9 @@ pub async fn list_checkpoints(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> CmdResult<Vec<Checkpoint>> {
-    // `turns` deserializes the whole checkpoint log, and a `Before` record
-    // carries the full pre-image of every file the turn touched — all of which
-    // this then throws away, keeping only the names. The cost is (turns × files
-    // × file size) rather than anything the drawer shows, so it stays off the
-    // runtime until the log grows a lighter header to read instead.
+    // Off the runtime: `turns` reads the whole checkpoint log. It parses only
+    // the names out of it, passing over each pre-image without copying it, but
+    // a long session's log is still tens of megabytes to read through.
     let store = state
         .host
         .checkpoints_for(&session_workspace(&state, &session_id).await);
