@@ -83,7 +83,10 @@ into the global file by hand is still honored, because editing that file is an
 explicit act and silently ignoring it would be its own surprise.
 
 Every path argument is canonicalized and checked against the workspace root,
-which closes `../` traversal and symlink escapes alike.
+which closes `../` traversal and symlink escapes alike. A symlink that does not
+resolve — its target is missing, or it loops — is refused rather than guessed
+at, because a write through it would create the target wherever the link
+points, inside the workspace or not.
 
 **With no terminal** — a pipe, a git hook, CI — there is nobody to prompt, and
 both obvious defaults are wrong: allowing everything hands an unattended model

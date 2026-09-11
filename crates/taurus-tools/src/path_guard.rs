@@ -55,6 +55,21 @@ pub fn resolve_within(
     let resolved = loop {
         match existing.canonicalize() {
             Ok(p) => break p,
+            // A name that is there but will not resolve is not a name that is
+            // missing. `canonicalize` fails on a symlink to nothing exactly as
+            // it does on an absent file, and popping the link would re-attach
+            // its name to a resolved parent — which passes the check below —
+            // while the write that follows goes through the link and creates
+            // its target wherever that is.
+            Err(_) if is_symlink(existing) => {
+                return Err(ToolError::Rejected(format!(
+                    "cannot resolve path: {candidate}. {} is a symbolic link that does not \
+                     resolve — its target is missing, or it loops — so where it leads cannot \
+                     be checked against the workspace. Remove the link, or point it at \
+                     something that exists inside the workspace.",
+                    display(&root, existing)
+                )))
+            }
             Err(_) => match existing.parent() {
                 Some(parent) => {
                     if let Some(name) = existing.file_name() {
@@ -104,6 +119,11 @@ fn canonical_root(root: &Path) -> Result<PathBuf, ToolError> {
             root.display()
         ))
     })
+}
+
+/// Whether `path` is itself a symbolic link, without following it.
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// Removes `.` and resolves `..` textually, without touching the filesystem.
@@ -363,6 +383,37 @@ mod tests {
         std::os::unix::fs::symlink("/etc", ws.path().join("escape")).unwrap();
         let err = resolve(ws.path(), "escape/passwd").unwrap_err();
         assert!(matches!(err, ToolError::OutsideWorkspace { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_symlink_whose_target_does_not_exist() {
+        // `canonicalize` fails on a link to nothing exactly as it does on a
+        // name that is not there. Treating the two alike pops the link, passes
+        // the check on its resolved parent, and lets `write_file` go through it
+        // and create the target outside the workspace.
+        let ws = workspace();
+        let outside = workspace();
+        let target = outside.path().join("made-by-the-write.txt");
+        std::os::unix::fs::symlink(&target, ws.path().join("link")).unwrap();
+
+        for candidate in ["link", "link/below.txt"] {
+            let err = resolve(ws.path(), candidate).unwrap_err();
+            assert!(matches!(err, ToolError::Rejected(_)), "{candidate}: {err}");
+            assert!(err.to_string().contains("symbolic link"), "{err}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_symlink_loop() {
+        let ws = workspace();
+        std::os::unix::fs::symlink(ws.path().join("b"), ws.path().join("a")).unwrap();
+        std::os::unix::fs::symlink(ws.path().join("a"), ws.path().join("b")).unwrap();
+        assert!(matches!(
+            resolve(ws.path(), "a/file.txt"),
+            Err(ToolError::Rejected(_))
+        ));
     }
 
     #[cfg(unix)]
