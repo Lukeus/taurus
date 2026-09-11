@@ -59,6 +59,7 @@ import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
 import { extend, sameJobs } from "./lib/jobs";
 import { useStable } from "./lib/stable";
+import { onTabKeys } from "./lib/tabs";
 import { applyTheme, currentToken, watchSystemTheme } from "./lib/theme";
 import type { Entry, Outgoing } from "./state/store";
 import { pinnedPlan, useStore } from "./state/store";
@@ -1252,10 +1253,11 @@ export default function App() {
             MCP badge follow. A note needs nothing to have happened first: the
             tab *is* how you write the first one, and hiding it until one exists
             would hide the only door into the room. */}
-        <div className="pane-switch" role="tablist" aria-label="View">
+        <div className="pane-switch" role="tablist" aria-label="View" onKeyDown={onTabKeys}>
           <button
             role="tab"
             aria-selected={pane === "conversation"}
+            tabIndex={pane === "conversation" ? 0 : -1}
             className={`seg${pane === "conversation" ? " on" : ""}`}
             onClick={() => setPane("conversation")}
           >
@@ -1264,6 +1266,7 @@ export default function App() {
           <button
             role="tab"
             aria-selected={pane === "notes"}
+            tabIndex={pane === "notes" ? 0 : -1}
             className={`seg${pane === "notes" ? " on" : ""}`}
             onClick={() => setPane("notes")}
           >
@@ -1276,6 +1279,7 @@ export default function App() {
             <button
               role="tab"
               aria-selected={pane === "data"}
+              tabIndex={pane === "data" ? 0 : -1}
               className={`seg${pane === "data" ? " on" : ""}`}
               onClick={() => setPane("data")}
             >

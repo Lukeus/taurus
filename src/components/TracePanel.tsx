@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import * as api from "../lib/api";
 import type { TraceReport, TraceStep, TurnTrace } from "../lib/api";
+import { onTabKeys } from "../lib/tabs";
 import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
 
@@ -102,10 +103,11 @@ export function TracePanel({
         endpoint in Settings to send the same spans somewhere that keeps them.
       </p>
 
-      <div className="usage-scope" role="tablist">
+      <div className="usage-scope" role="tablist" aria-label="Which turns" onKeyDown={onTabKeys}>
         <button
           role="tab"
           aria-selected={scope === "session"}
+          tabIndex={scope === "session" ? 0 : -1}
           className={`seg${scope === "session" ? " on" : ""}`}
           disabled={!sessionId}
           data-tip={
@@ -118,6 +120,7 @@ export function TracePanel({
         <button
           role="tab"
           aria-selected={scope === "window"}
+          tabIndex={scope === "window" ? 0 : -1}
           className={`seg${scope === "window" ? " on" : ""}`}
           onClick={() => setScope("window")}
         >

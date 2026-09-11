@@ -63,6 +63,10 @@ export function ChartCard({ view }: { view: ChartView }) {
             <div
               key={`${label}-${i}`}
               className={`chart-bar${hovered === i ? " on" : ""}`}
+              // The value shows on hover and nowhere else, so a screen reader
+              // would get a row of unlabelled boxes of different heights.
+              role="img"
+              aria-label={`${label}: ${format(value)}${active.unit}`}
               onMouseEnter={() => setHovered(i)}
               onMouseLeave={() => setHovered(null)}
             >

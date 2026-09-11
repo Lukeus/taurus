@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { FORMAT_LABEL } from "./DatasetCard";
 import { SqlEditor } from "./SqlEditor";
+import { onTabKeys } from "../lib/tabs";
 import * as api from "../lib/api";
 import type {
   DataColumn,
@@ -170,26 +171,43 @@ export function DataPane({
         </button>
       </div>
 
-      <div className="data-switch">
+      <div
+        className="data-switch"
+        role="tablist"
+        aria-label="Dataset view"
+        onKeyDown={onTabKeys}
+      >
         <button
+          role="tab"
+          aria-selected={tab === "columns"}
+          tabIndex={tab === "columns" ? 0 : -1}
           className={`seg${tab === "columns" ? " on" : ""}`}
           onClick={() => onTab("columns")}
         >
           Columns
         </button>
         <button
+          role="tab"
+          aria-selected={tab === "rows"}
+          tabIndex={tab === "rows" ? 0 : -1}
           className={`seg${tab === "rows" ? " on" : ""}`}
           onClick={() => onTab("rows")}
         >
           Rows
         </button>
         <button
+          role="tab"
+          aria-selected={tab === "query"}
+          tabIndex={tab === "query" ? 0 : -1}
           className={`seg${tab === "query" ? " on" : ""}`}
           onClick={() => onTab("query")}
         >
           Query
         </button>
         <button
+          role="tab"
+          aria-selected={tab === "recipes"}
+          tabIndex={tab === "recipes" ? 0 : -1}
           className={`seg${tab === "recipes" ? " on" : ""}`}
           onClick={() => onTab("recipes")}
         >
