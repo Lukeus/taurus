@@ -410,6 +410,56 @@ describe("saving a note", () => {
     });
   });
 
+  it("waits for a save still out, so its own last keystroke is not a conflict", async () => {
+    // The debounce can fire again while a save is on its way. Sent with the
+    // fingerprint from before that save, the next one was refused as a change
+    // on disk, and the change shown was the user's own previous keystroke.
+    vi.useFakeTimers();
+    let answer: (value: unknown) => void = () => {};
+    const sent: { text: string; fingerprint: string }[] = [];
+    answering({
+      list_pages: () => [ref("Notes")],
+      read_page: () => page("Notes", "# Notes\n"),
+      save_page: (args: never) => {
+        const { text, fingerprint } = args as { text: string; fingerprint: string };
+        sent.push({ text, fingerprint });
+        if (sent.length === 1) {
+          return new Promise((resolve) => {
+            answer = resolve;
+          });
+        }
+        return { type: "written", page: { ...page("Notes", text), fingerprint: "48-3000" } };
+      },
+    });
+    const { host, click, type } = await mount();
+    await click(host.querySelector(".notes-row"));
+    await type(host.querySelector("textarea"), "# Notes\n\nfirst\n");
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+    await type(host.querySelector("textarea"), "# Notes\n\nfirst\nsecond\n");
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+
+    // The second waits for the first rather than racing it.
+    expect(sent).toHaveLength(1);
+
+    await act(async () => {
+      answer({
+        type: "written",
+        page: { ...page("Notes", "# Notes\n\nfirst\n"), fingerprint: "40-2000" },
+      });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+
+    expect(sent.map((s) => s.fingerprint)).toEqual(["32-1000", "40-2000"]);
+    expect(sent[1].text).toBe("# Notes\n\nfirst\nsecond\n");
+    expect(host.textContent).not.toContain("changed on disk");
+  });
+
   it("keeps both versions when somebody got there first", async () => {
     // The rule this exists for: the one thing that must not happen is the app
     // deciding whose work to throw away.
