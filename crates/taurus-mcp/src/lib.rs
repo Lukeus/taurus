@@ -445,7 +445,7 @@ fn handshake_failure(error: impl std::fmt::Display, offer_sign_in: bool) -> Stri
     // a service error, and the cost of a miss is the raw message rather than a
     // wrong one. Sign in is offered on every unauthenticated HTTP server
     // regardless, so nothing is unreachable if this fails to spot one.
-    let unauthorized = text.contains("401")
+    let unauthorized = names_status(&text, "401")
         || text.contains("Auth required")
         || text.to_lowercase().contains("unauthorized");
     if !unauthorized {
@@ -458,6 +458,22 @@ fn handshake_failure(error: impl std::fmt::Display, offer_sign_in: bool) -> Stri
         "the stored sign-in is no longer accepted — it has expired or been          revoked. Sign in again."
             .to_string()
     }
+}
+
+/// Whether `text` names HTTP status `code` on its own, rather than as part of
+/// something longer.
+///
+/// The error text includes the server's URL, so a bare substring test reads
+/// `http://localhost:4010/mcp` as a sign-in request and shows a server that is
+/// simply down as one that wants an account. A status is a number with no
+/// digit on either side, and not the port after a colon.
+fn names_status(text: &str, code: &str) -> bool {
+    text.match_indices(code).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + code.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_digit() || c == ':')
+            && !after.is_some_and(|c| c.is_ascii_digit())
+    })
 }
 
 /// Connects to one server, reports what it offers, and disconnects.
@@ -925,6 +941,23 @@ fn describe(rejected: taurus_provider::image::Rejected) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_port_with_401_in_it_is_not_a_sign_in_request() {
+        // A server that is simply down, on a port that happens to contain
+        // the digits, read as one that wanted an account.
+        let down = handshake_failure(
+            "error sending request for url (http://localhost:4010/mcp): connection refused",
+            true,
+        );
+        assert!(down.starts_with("handshake failed"), "{down}");
+
+        let wants_account = handshake_failure("Unexpected server response: 401", true);
+        assert!(wants_account.contains("Sign in"), "{wants_account}");
+        assert!(names_status("status 401 from the server", "401"));
+        assert!(!names_status("http://localhost:401/mcp", "401"));
+        assert!(!names_status("request 44017 failed", "401"));
+    }
+
     use super::*;
     use taurus_provider::{ToolOutput, ToolResultBlock};
 
