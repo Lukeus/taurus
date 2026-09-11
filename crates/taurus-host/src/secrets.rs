@@ -139,8 +139,30 @@ mod backend {
         STORE.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
+    fn reads_map() -> &'static Mutex<HashMap<String, usize>> {
+        static READS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+        READS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
     pub fn stored(provider_id: &str) -> Option<String> {
+        *reads_map()
+            .lock()
+            .unwrap()
+            .entry(provider_id.to_string())
+            .or_default() += 1;
         store_map().lock().unwrap().get(provider_id).cloned()
+    }
+
+    /// How many times `provider_id`'s key has been looked up — each one a
+    /// keychain call on a real store. Counted per id, because the suite runs
+    /// in parallel and shares this store.
+    pub fn reads(provider_id: &str) -> usize {
+        reads_map()
+            .lock()
+            .unwrap()
+            .get(provider_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn store(provider_id: &str, key: &str) -> Result<(), String> {
@@ -164,6 +186,12 @@ mod backend {
 /// Reads a stored key, if there is one and a store to read it from.
 pub fn stored(provider_id: &str) -> Option<String> {
     backend::stored(provider_id)
+}
+
+/// How many times a key has been looked up. See the test backend.
+#[cfg(test)]
+pub(crate) fn reads(provider_id: &str) -> usize {
+    backend::reads(provider_id)
 }
 
 /// Stores a key, replacing any previous one for this provider.

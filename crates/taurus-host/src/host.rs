@@ -111,6 +111,14 @@ pub struct TurnRef<'a> {
     pub prompt: &'a str,
 }
 
+/// The providers built so far, and how many times they have been forgotten.
+/// See [`Host::provider`].
+#[derive(Default)]
+struct BuiltProviders {
+    generation: u64,
+    providers: std::collections::HashMap<String, Arc<dyn Provider>>,
+}
+
 pub struct Host {
     workspace: RwLock<PathBuf>,
     /// What reads tabular files.
@@ -122,6 +130,15 @@ pub struct Host {
     /// choice is still open.
     engine: Arc<dyn taurus_data::Engine>,
     providers: RwLock<Vec<ProviderConfig>>,
+    /// Each provider, built once from its config and kept.
+    ///
+    /// Building one resolves its API key, and on macOS, Windows and a Linux
+    /// desktop that is a call into the OS credential store: tens of
+    /// milliseconds when it is unlocked, and as long as a dialog stays open
+    /// when it is not. Every message asks for its conversation's provider, so
+    /// building one per call put that read on every turn. See
+    /// [`Self::provider`].
+    built: std::sync::Mutex<BuiltProviders>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
     /// The standing brief for this machine and this workspace. Held rather
@@ -141,9 +158,11 @@ pub struct Host {
     /// snapshot; a duplicate check has to see the live set.
     agents: SharedAgentCatalog,
     /// Each agent's `(provider, model)`, resolved when the roster is scanned.
-    /// Resolving it there rather than per turn keeps a keychain read off the
-    /// hot path — which is also why a turn checks the roster's fingerprint
-    /// before rescanning it. See [`Self::refresh_for_turn`].
+    /// Resolved there rather than per turn because resolving can build a
+    /// provider, and the first build of each reads its key out of the OS
+    /// keychain — see [`Self::built`]. That is also why a turn checks the
+    /// roster's fingerprint before rescanning it. See
+    /// [`Self::refresh_for_turn`].
     agent_models: RwLock<ModelOverrides>,
     /// What the held roster was scanned from. Compared per turn; the scan it
     /// guards parses every agent file, cross-checks each one's tools, and can
@@ -228,6 +247,7 @@ impl Host {
         let settings = config::load_settings(Some(&workspace));
         Self {
             providers: RwLock::new(providers),
+            built: std::sync::Mutex::new(BuiltProviders::default()),
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
             // The one line in the harness that names a data engine. Everything
@@ -307,6 +327,7 @@ impl Host {
         let (providers, provider_problems) = config::load_providers(Some(&workspace));
         let mut problems = Problem::tag(ProblemSource::Providers, provider_problems);
         *self.providers.write().await = providers;
+        self.forget_providers();
         *self.settings.write().await = config::load_settings(Some(&workspace));
 
         // Through the same two loaders a turn calls, so a reload and a turn
@@ -908,17 +929,63 @@ impl Host {
         );
     }
 
-    /// Instantiates a provider from its config.
+    /// The provider configured under `id`, built on first use and kept.
     ///
-    /// Built per call rather than cached: they are cheap, hold no session
-    /// state, and this way an edited base URL takes effect without a restart.
+    /// Kept rather than built per call, because building one reads its API key
+    /// and that is a call into the OS credential store — see [`Self::built`].
+    /// An edited base URL or a new key still takes effect without a restart:
+    /// everything that changes either forgets what was built from the old one.
     pub async fn provider(&self, id: &str) -> Result<Arc<dyn Provider>, String> {
+        let generation = {
+            let built = self.built();
+            if let Some(provider) = built.providers.get(id) {
+                return Ok(provider.clone());
+            }
+            built.generation
+        };
+
         let config = self
             .provider_config(id)
             .await
             .ok_or_else(|| format!("no provider configured with id '{id}'"))?;
+        // The keychain read itself, and so off the runtime: it blocks for as
+        // long as the OS takes to answer, which with a locked keychain is as
+        // long as its dialog stays open.
+        let lookup = config.clone();
+        let key = tokio::task::spawn_blocking(move || lookup.api_key())
+            .await
+            .map_err(|e| format!("reading the API key for '{id}' failed: {e}"))?;
+        let provider = Self::build_provider(config, key);
 
-        Ok(match config.kind {
+        let mut built = self.built();
+        // Kept only if nothing was forgotten while it was being built: one
+        // built from a config a reload has just replaced must not outlive it.
+        if built.generation == generation {
+            built.providers.insert(id.to_string(), provider.clone());
+        }
+        Ok(provider)
+    }
+
+    /// Forgets every provider built so far, so the next call builds afresh.
+    ///
+    /// Called wherever what they were built from can change: the provider
+    /// list, and any provider's key.
+    fn forget_providers(&self) {
+        let mut built = self.built();
+        built.generation += 1;
+        built.providers.clear();
+    }
+
+    fn built(&self) -> std::sync::MutexGuard<'_, BuiltProviders> {
+        // A panic while this was held leaves a map, not a broken invariant.
+        self.built
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// What [`Self::provider`] builds, from a config and the key it resolved.
+    fn build_provider(config: ProviderConfig, key: Option<String>) -> Arc<dyn Provider> {
+        match config.kind {
             ProviderKind::Ollama => Arc::new(
                 OllamaProvider::new(config.base_url).with_context_limit(config.context_length),
             ),
@@ -928,7 +995,7 @@ impl Host {
                     OpenAiProvider::new(
                         config.id.clone(),
                         config.base_url.clone(),
-                        config.api_key(),
+                        key,
                         OpenAiCapabilities {
                             native_tools: config.native_tools.unwrap_or(defaults.native_tools),
                             vision: config.vision.unwrap_or(defaults.vision),
@@ -962,37 +1029,33 @@ impl Host {
             // backend, and a configured value that disagrees with the model is
             // how a conversation compacts at the wrong moment.
             ProviderKind::Anthropic => Arc::new(
-                AnthropicProvider::new(
-                    config.id.clone(),
-                    config.base_url.clone(),
-                    config.api_key(),
-                )
-                // Both of these were read from config and handed only to the
-                // OpenAI adapter, which made this API unusable through a
-                // gateway: the subscription key had nowhere to ride but
-                // `x-api-key`, and the path was forced to `/v1` whatever the
-                // route was published under. The fields always parsed, so
-                // setting them was silently ignored rather than refused.
-                .with_api_prefix(config.api_prefix.clone())
-                .with_api_key_header(config.api_key_header.clone())
-                .with_thinking(
-                    config
-                        .thinking
-                        .as_deref()
-                        .map(AnthropicThinking::parse)
-                        .unwrap_or_default(),
-                )
-                .with_fallback_capabilities(AnthropicCapabilities {
-                    vision: AnthropicCapabilities::default().vision,
-                    context_length: config
-                        .context_length
-                        .unwrap_or(AnthropicCapabilities::default().context_length),
-                })
-                .with_models(config.models.iter().map(|m| m.id.clone()).collect()),
+                AnthropicProvider::new(config.id.clone(), config.base_url.clone(), key)
+                    // Both of these were read from config and handed only to the
+                    // OpenAI adapter, which made this API unusable through a
+                    // gateway: the subscription key had nowhere to ride but
+                    // `x-api-key`, and the path was forced to `/v1` whatever the
+                    // route was published under. The fields always parsed, so
+                    // setting them was silently ignored rather than refused.
+                    .with_api_prefix(config.api_prefix.clone())
+                    .with_api_key_header(config.api_key_header.clone())
+                    .with_thinking(
+                        config
+                            .thinking
+                            .as_deref()
+                            .map(AnthropicThinking::parse)
+                            .unwrap_or_default(),
+                    )
+                    .with_fallback_capabilities(AnthropicCapabilities {
+                        vision: AnthropicCapabilities::default().vision,
+                        context_length: config
+                            .context_length
+                            .unwrap_or(AnthropicCapabilities::default().context_length),
+                    })
+                    .with_models(config.models.iter().map(|m| m.id.clone()).collect()),
             ),
 
             ProviderKind::Gemini => Arc::new(
-                GeminiProvider::new(config.id.clone(), config.base_url.clone(), config.api_key())
+                GeminiProvider::new(config.id.clone(), config.base_url.clone(), key)
                     .with_fallback_capabilities(GeminiCapabilities {
                         vision: GeminiCapabilities::default().vision,
                         context_length: config
@@ -1001,7 +1064,7 @@ impl Host {
                     })
                     .with_models(config.models.iter().map(|m| m.id.clone()).collect()),
             ),
-        })
+        }
     }
 
     /// Builds the agent for one turn.
@@ -1387,6 +1450,7 @@ impl Host {
         let workspace = self.workspace.read().await.clone();
         let (effective, _) = config::load_providers(Some(&workspace));
         *self.providers.write().await = effective;
+        self.forget_providers();
     }
 
     /// Stores a provider's API key in the OS credential store.
@@ -1404,11 +1468,16 @@ impl Host {
         {
             return Err(format!("no provider configured with id '{provider_id}'"));
         }
-        secrets::store(provider_id, key)
+        secrets::store(provider_id, key)?;
+        // The provider built with the old key would go on sending it.
+        self.forget_providers();
+        Ok(())
     }
 
     pub async fn clear_provider_key(&self, provider_id: &str) -> Result<(), String> {
-        secrets::clear(provider_id)
+        secrets::clear(provider_id)?;
+        self.forget_providers();
+        Ok(())
     }
 
     /// Where each configured provider's key is coming from.
@@ -3060,6 +3129,61 @@ mod tests {
             Arc::new(NoProposals),
         );
         (host, home)
+    }
+
+    fn keyed_provider(id: &str, base_url: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: id.into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: base_url.into(),
+            models: Vec::new(),
+            default_model: None,
+            api_key_env: None,
+            api_key_header: None,
+            native_tools: None,
+            context_length: None,
+            vision: None,
+            api_prefix: None,
+            thinking: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_provider_is_built_once_so_a_turn_does_not_reach_the_keychain() {
+        // Every message asks for its conversation's provider, and building one
+        // reads its key out of the OS credential store — a keychain call on
+        // macOS, and one that waits on a dialog when the keychain is locked.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        let id = "built-once";
+        host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:9")])
+            .await;
+        host.set_provider_key(id, "sk-first").await.unwrap();
+
+        let before = secrets::reads(id);
+        let first = host.provider(id).await.unwrap();
+        let again = host.provider(id).await.unwrap();
+        assert_eq!(
+            secrets::reads(id) - before,
+            1,
+            "the key was read for every call rather than once"
+        );
+        assert!(Arc::ptr_eq(&first, &again));
+
+        // A new key is a new provider: one built with the old key would go on
+        // sending it.
+        host.set_provider_key(id, "sk-second").await.unwrap();
+        let rekeyed = host.provider(id).await.unwrap();
+        assert!(!Arc::ptr_eq(&first, &rekeyed));
+        assert_eq!(secrets::reads(id) - before, 2);
+
+        // And an edited config, for the same reason: an edited base URL takes
+        // effect on the next message, not the next launch.
+        host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:10")])
+            .await;
+        let edited = host.provider(id).await.unwrap();
+        assert!(!Arc::ptr_eq(&rekeyed, &edited));
     }
 
     #[tokio::test]
