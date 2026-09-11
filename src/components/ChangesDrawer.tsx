@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import * as api from "../lib/api";
 import type {
@@ -59,17 +59,37 @@ export function ChangesDrawer({
   // One turn open at a time. Expanding every diff in a long conversation is
   // both a wall of text and a request per turn to build it.
   const [open, setOpen] = useState<number | null>(null);
+  // The conversation the pane is showing now, for answers that arrive after a
+  // switch. The pane is not remounted when the conversation changes, and an
+  // answer about the one it left must not land in the one it moved to — least
+  // of all a rewind plan, whose button rewinds whichever conversation is
+  // current when it is pressed.
+  const showing = useRef(sessionId);
 
-  const refresh = () =>
-    api
-      .listCheckpoints(sessionId)
-      .then(setTurns)
+  const refresh = () => {
+    const asked = sessionId;
+    return api
+      .listCheckpoints(asked)
+      .then((list) => {
+        if (showing.current === asked) setTurns(list);
+      })
       .catch((e) => {
+        if (showing.current !== asked) return;
         setError(String(e));
         setTurns([]);
       });
+  };
 
   useEffect(() => {
+    showing.current = sessionId;
+    // Everything the pane holds belongs to one conversation. A plan kept
+    // across a switch is offered against the next conversation's turn of the
+    // same number, and confirming it rewinds that conversation instead.
+    setTurns(null);
+    setPlan(null);
+    setDone(null);
+    setOpen(null);
+    setError(null);
     refresh();
     // Read on open rather than held: someone switches branches in a terminal
     // beside this window, and a stale answer would be wrong exactly at the
@@ -80,12 +100,14 @@ export function ChangesDrawer({
   }, [sessionId]);
 
   const preview = async (turn: number) => {
+    const asked = sessionId;
     setError(null);
     setDone(null);
     try {
-      setPlan({ turn, rewind: await api.rewindTo(sessionId, turn, true) });
+      const rewind = await api.rewindTo(asked, turn, true);
+      if (showing.current === asked) setPlan({ turn, rewind });
     } catch (e) {
-      setError(String(e));
+      if (showing.current === asked) setError(String(e));
     }
   };
 
