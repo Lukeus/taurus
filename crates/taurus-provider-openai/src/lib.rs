@@ -463,7 +463,12 @@ impl Provider for OpenAiProvider {
         tx: mpsc::Sender<StreamEvent>,
         cancel: CancellationToken,
     ) -> Result<StopReason> {
-        let prompted = !self.capabilities.native_tools && !request.tools.is_empty();
+        // Per model, the way `capabilities` answers it. One gateway fronting a
+        // large hosted model and a small local one declares the difference on
+        // the model, and the provider-wide flag alone would send the small one
+        // a `tools` field it cannot read.
+        let native = self.capabilities(&request.model).await?.native_tools;
+        let prompted = !native && !request.tools.is_empty();
         if prompted {
             PromptedTools::rewrite(&mut request);
         }
@@ -793,6 +798,56 @@ mod tests {
         let caps = provider.capabilities("something-else").await.unwrap();
         assert_eq!(caps.context_length, 32_000);
         assert!(!caps.native_tools);
+    }
+
+    #[tokio::test]
+    async fn a_model_declared_without_native_tools_is_prompted_for_them() {
+        // The provider says native tools; the small model behind the same
+        // gateway says not. Its request must describe the tools in the prompt,
+        // or it answers as though it had none.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let provider =
+            OpenAiProvider::new("gateway", server.uri(), None, OpenAiCapabilities::default())
+                .with_models(vec![ModelSpec {
+                    id: "llama-3.1-8b".into(),
+                    native_tools: Some(false),
+                    ..ModelSpec::default()
+                }]);
+        let request = ChatRequest::new("llama-3.1-8b", vec![taurus_provider::Message::user("go")])
+            .with_tools(vec![taurus_provider::ToolDef {
+                name: "read_file".into(),
+                description: "Reads a file.".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        provider
+            .stream(request, tx, tokio_util::sync::CancellationToken::new())
+            .await
+            .expect("the stream ends cleanly");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(
+            body["tools"]
+                .as_array()
+                .is_none_or(|tools| tools.is_empty()),
+            "a model declared without native tools was sent them natively: {body}"
+        );
+        assert!(
+            body.to_string().contains("read_file"),
+            "the tools must be described in the prompt instead: {body}"
+        );
     }
 
     #[test]
