@@ -166,6 +166,62 @@ describe("the agent editor", () => {
     expect(field(host, "Name").value).toBe("my-reviewer");
   });
 
+  it("can stop a draft, and a stopped draft is not reported as a failure", async () => {
+    const answer = invoke.getMockImplementation()!;
+    let end: (e: Error) => void = () => {};
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "generate_agent")
+        return new Promise((_, reject) => {
+          end = reject;
+        });
+      if (cmd === "stop_agent_draft") {
+        end(new Error("Drafting stopped."));
+        return null;
+      }
+      return answer(cmd);
+    });
+    try {
+      const host = await mount();
+      await type(host.querySelector("textarea")!, "reviews diffs");
+      await press(host, "Generate");
+      expect(host.textContent).toContain("Drafting…");
+
+      await press(host, "Stop drafting");
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith("stop_agent_draft");
+      expect(button(host, "Generate").textContent).toBe("Generate");
+      expect(host.textContent).not.toContain("Drafting stopped");
+    } finally {
+      invoke.mockImplementation(answer);
+    }
+  });
+
+  it("stops a draft still running when the editor closes", async () => {
+    // Nobody is left to read the answer, and on a local model it is minutes
+    // of the machine's time.
+    const answer = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === "generate_agent" ? new Promise(() => {}) : answer(cmd),
+    );
+    try {
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      await act(async () => {
+        root.render(<AgentEditor onClose={() => {}} onSaved={() => {}} />);
+      });
+      await type(host.querySelector("textarea")!, "reviews diffs");
+      await press(host, "Generate");
+
+      await act(async () => root.unmount());
+
+      expect(invoke).toHaveBeenCalledWith("stop_agent_draft");
+    } finally {
+      invoke.mockImplementation(answer);
+    }
+  });
+
   it("will not draft from an empty description", async () => {
     const host = await mount();
     expect((button(host, "Generate") as HTMLButtonElement).disabled).toBe(true);

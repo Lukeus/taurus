@@ -573,4 +573,52 @@ describe("reviewing a turn", () => {
     // The commit path is untouched and still offered.
     expect(drawer.text()).toContain("Commit this turn");
   });
+
+  it("can be stopped, and a stopped review is not reported as a failure", async () => {
+    // Minutes on a local model. Without a way out, a review started by
+    // mistake holds the provider until it finishes.
+    let end: (e: Error) => void = () => {};
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+      review_turn: new Promise((_, reject) => {
+        end = reject;
+      }),
+    });
+    const answer = invoke.getMockImplementation()!;
+    invoke.mockImplementation((command: string) => {
+      // What the backend does when the token fires: the review ends in an
+      // error, so it can never be read as a finished one.
+      if (command === "stop_review") end(new Error("Review stopped."));
+      return answer(command);
+    });
+    const drawer = await open();
+    await drawer.click("View changes");
+    await drawer.click("Review this turn");
+    expect(drawer.text()).toContain("Reading it over");
+
+    await drawer.click("Stop reviewing");
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith("stop_review", { sessionId: "s1", turn: 1 });
+    expect(drawer.text()).toContain("Review this turn");
+    expect(drawer.text()).not.toContain("Review stopped");
+  });
+
+  it("stops a review still running when the drawer closes", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+      review_turn: new Promise(() => {}),
+    });
+    const drawer = await open();
+    await drawer.click("View changes");
+    await drawer.click("Review this turn");
+
+    await drawer.unmount();
+
+    expect(invoke).toHaveBeenCalledWith("stop_review", { sessionId: "s1", turn: 1 });
+  });
 });

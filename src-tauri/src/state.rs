@@ -142,6 +142,9 @@ pub struct AppState {
     /// start of each build, the same way a session's token is — reusing a
     /// cancelled one would stop the next build before it began.
     pub index_build: Mutex<CancellationToken>,
+    /// The model calls the window starts outside a turn — a turn review, an
+    /// agent draft — so the pane that started one can stop it.
+    pub stoppable: Stoppable,
     /// Whether the first [`Host::reload`] has finished.
     ///
     /// The window paints before the filesystem has been read — skill discovery
@@ -158,6 +161,68 @@ pub struct AppState {
     /// server's startup in front of the window; so would waiting here for the
     /// first load's MCP half, which is why `run` marks this between the two.
     loaded: watch::Sender<bool>,
+}
+
+/// Jobs the window starts and can stop, each filed under a key.
+///
+/// A key per job rather than one token for all of them, the way the index
+/// build has one: a review of turn 2 and a review of turn 5 can run at once,
+/// and stopping one must not stop the other. A job is filed away again when it
+/// finishes, so this holds only what is running.
+#[derive(Default)]
+pub struct Stoppable {
+    running: DashMap<String, (u64, CancellationToken)>,
+    tickets: std::sync::atomic::AtomicU64,
+}
+
+/// A job that has started. Dropping it files the job away.
+pub struct Running<'a> {
+    /// What the job watches for Stop.
+    pub cancel: CancellationToken,
+    slot: &'a Stoppable,
+    key: String,
+    ticket: u64,
+}
+
+impl Stoppable {
+    /// A fresh token for a job starting under `key`.
+    ///
+    /// A job already running under the same key is stopped first: the same
+    /// thing asked for twice is one job, and the first answer would arrive at a
+    /// pane that is waiting for the second.
+    pub fn start(&self, key: impl Into<String>) -> Running<'_> {
+        let key = key.into();
+        let ticket = self
+            .tickets
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let cancel = CancellationToken::new();
+        if let Some((_, previous)) = self.running.insert(key.clone(), (ticket, cancel.clone())) {
+            previous.cancel();
+        }
+        Running {
+            cancel,
+            slot: self,
+            key,
+            ticket,
+        }
+    }
+
+    /// Stops the job running under `key`. Safe to call when none is: a pane
+    /// calls this on its way out without knowing whether its job finished.
+    pub fn stop(&self, key: &str) {
+        if let Some((_, (_, cancel))) = self.running.remove(key) {
+            cancel.cancel();
+        }
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        // By ticket, so a job that was replaced leaves its replacement filed.
+        self.slot
+            .running
+            .remove_if(&self.key, |_, (ticket, _)| *ticket == self.ticket);
+    }
 }
 
 /// How long a status waits for that first load before answering anyway.
@@ -200,6 +265,7 @@ impl AppState {
             terminals: Arc::new(Terminals::default()),
             traces,
             index_build: Mutex::new(CancellationToken::new()),
+            stoppable: Stoppable::default(),
             loaded: watch::channel(false).0,
         }
     }
@@ -256,5 +322,52 @@ impl AppState {
             }
         })
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopping_a_job_cancels_its_token_and_no_other() {
+        let jobs = Stoppable::default();
+        let two = jobs.start("review/s1/2");
+        let five = jobs.start("review/s1/5");
+
+        jobs.stop("review/s1/2");
+
+        assert!(two.cancel.is_cancelled());
+        assert!(
+            !five.cancel.is_cancelled(),
+            "stopping one review stopped another"
+        );
+    }
+
+    #[test]
+    fn the_same_job_asked_for_twice_stops_the_first() {
+        let jobs = Stoppable::default();
+        let first = jobs.start("agent-draft");
+        let second = jobs.start("agent-draft");
+        assert!(first.cancel.is_cancelled());
+        assert!(!second.cancel.is_cancelled());
+
+        // The first one finishing must not file the second away with it, or
+        // Stop would have nothing left to reach.
+        drop(first);
+        jobs.stop("agent-draft");
+        assert!(second.cancel.is_cancelled());
+    }
+
+    #[test]
+    fn a_finished_job_is_forgotten_and_stopping_it_is_harmless() {
+        let jobs = Stoppable::default();
+        let done = jobs.start("review/s1/1");
+        let token = done.cancel.clone();
+        drop(done);
+
+        assert!(jobs.running.is_empty(), "a finished job is still filed");
+        jobs.stop("review/s1/1");
+        assert!(!token.is_cancelled());
     }
 }

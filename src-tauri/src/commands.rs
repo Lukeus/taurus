@@ -19,7 +19,7 @@ use taurus_agents::proposal::{
 use taurus_agents::{AgentSummary, DESCRIPTION_LIMIT, MAX_ITERATIONS_LIMIT};
 use taurus_core::{Session, UiEvent};
 use taurus_mcp::ServerStatus;
-use taurus_provider::{ChatRequest, Message, ModelInfo, StreamAccumulator};
+use taurus_provider::{ChatRequest, Message, ModelInfo, StopReason, StreamAccumulator};
 use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
 use taurus_tools::{AllowedRule, Answer, BackgroundJob, JobOutput, PermissionDecision, Scope};
@@ -1859,6 +1859,17 @@ back. Several sentences."
     )
 }
 
+/// Where an agent draft is filed in [`AppState::stoppable`]. One key, because
+/// there is one editor.
+const AGENT_DRAFT: &str = "agent-draft";
+
+/// Ends a draft [`generate_agent`] is still waiting on. Safe to call when none
+/// is running.
+#[tauri::command]
+pub fn stop_agent_draft(state: State<'_, Arc<AppState>>) {
+    state.stoppable.stop(AGENT_DRAFT);
+}
+
 /// Drafts an agent from a description, for the editor to fill in.
 ///
 /// A one-shot completion rather than a turn: there are no tools to call and
@@ -1900,18 +1911,28 @@ pub async fn generate_agent(
     );
     request.system = Some(draft_system());
 
+    // Filed where the editor can reach it. A draft on a local model takes
+    // minutes, and closing the editor has to be able to end one: see
+    // `stop_agent_draft`.
+    let running = state.stoppable.start(AGENT_DRAFT);
+    let cancel = running.cancel.clone();
     let (tx, mut rx) = mpsc::channel(64);
-    let cancel = CancellationToken::new();
     let handle = tokio::spawn(async move { provider.stream(request, tx, cancel).await });
 
     let mut acc = StreamAccumulator::new();
     while let Some(event) = rx.recv().await {
         acc.push(event);
     }
-    handle
+    let stop = handle
         .await
         .map_err(|e| format!("the draft did not finish: {e}"))?
         .map_err(|e| format!("could not reach {provider_id}: {e}"))?;
+    // Before the text is read: what a stopped draft has said so far is not an
+    // answer, and reading it would report a model that "did not answer with
+    // JSON" to someone who pressed Stop.
+    if stop == StopReason::Canceled {
+        return Err("Drafting stopped.".into());
+    }
 
     let text = acc.finish().0.text();
     let json = extract_json(&text).ok_or_else(|| {
@@ -2528,13 +2549,28 @@ pub async fn review_turn(
 
     // A token of its own rather than the conversation's. Stopping a turn must
     // not kill a review of an earlier one, and closing a review must not stop
-    // the turn running beside it.
-    let cancel = CancellationToken::new();
+    // the turn running beside it. Filed under the turn it reads, so the drawer
+    // can end it: see `stop_review`.
+    let running = state.stoppable.start(review_key(&session_id, turn));
 
     state
         .host
-        .review_turn(provider, &model, &session_id, turn, cancel)
+        .review_turn(provider, &model, &session_id, turn, running.cancel.clone())
         .await
+}
+
+/// Ends a review [`review_turn`] is still waiting on.
+///
+/// Safe to call when none is running: the drawer calls it on the way out
+/// without knowing whether its review already came back.
+#[tauri::command]
+pub fn stop_review(state: State<'_, Arc<AppState>>, session_id: String, turn: u32) {
+    state.stoppable.stop(&review_key(&session_id, turn));
+}
+
+/// Where a review of one turn is filed in [`AppState::stoppable`].
+fn review_key(session_id: &str, turn: u32) -> String {
+    format!("review/{session_id}/{turn}")
 }
 
 /// What the whole conversation changed, file by file, as one diff each.

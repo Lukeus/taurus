@@ -690,6 +690,10 @@ same definition — and its context carries no checkpoint recorder, so a write i
 not something it declines to do so much as something it has no way to perform.
 It also does not run anything: no build, no tests.
 
+On a local model a review takes minutes, so **Stop reviewing** sits beside it
+while it runs, and closing the drawer ends it too — nobody is left to read the
+answer. A stopped review reports nothing, rather than half of what it found.
+
 The answer stays in the drawer. It is deliberately not put into the
 conversation, because a review in the transcript is a review in the context
 window of every request after it, which is the cost this arrangement exists to

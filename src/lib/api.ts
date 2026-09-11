@@ -618,6 +618,9 @@ export const generateAgent = (
 ) =>
   invoke<AgentProposal>("generate_agent", { description, providerId, model });
 
+/** Ends a draft `generateAgent` is still waiting on. Safe when none is. */
+export const stopAgentDraft = () => invoke<void>("stop_agent_draft");
+
 export const createAgent = (scope: Scope, name: string) =>
   invoke<string>("create_agent", { scope, name });
 
@@ -944,6 +947,10 @@ export const turnChanges = (sessionId: string, turn: number) =>
  */
 export const reviewTurn = (sessionId: string, turn: number) =>
   invoke<ReviewReport>("review_turn", { sessionId, turn });
+
+/** Ends a review `reviewTurn` is still waiting on. Safe when none is. */
+export const stopReview = (sessionId: string, turn: number) =>
+  invoke<void>("stop_review", { sessionId, turn });
 
 /**
  * What the whole conversation changed, file by file, as one diff each.
