@@ -232,20 +232,31 @@ impl Scan {
     /// Every file under `dir` whose name ends in `suffix`, recursing as the
     /// loaders do.
     fn text_tree(&mut self, dir: &Path, suffix: &str) {
+        self.text_tree_at(dir, suffix, 0);
+    }
+
+    fn text_tree_at(&mut self, dir: &Path, suffix: &str, depth: usize) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         // Sorted, so a workspace with more files than the cap reports the same
         // ones on every refresh. A banner whose contents change on their own is
-        // one nobody trusts.
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        // one nobody trusts. A directory is known by its entry, which does not
+        // follow a symlink, rather than by its path, which does: see
+        // `crate::trust::MAX_DEPTH`.
+        let mut paths: Vec<(PathBuf, bool)> = entries
+            .flatten()
+            .map(|e| (e.path(), e.file_type().is_ok_and(|t| t.is_dir())))
+            .collect();
         paths.sort();
-        for path in paths {
+        for (path, is_dir) in paths {
             if self.done() {
                 return;
             }
-            if path.is_dir() {
-                self.text_tree(&path, suffix);
+            if is_dir {
+                if depth < crate::trust::MAX_DEPTH {
+                    self.text_tree_at(&path, suffix, depth + 1);
+                }
             } else if path
                 .file_name()
                 .and_then(|n| n.to_str())
