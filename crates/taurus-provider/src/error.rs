@@ -62,8 +62,14 @@ pub enum ProviderError {
     #[error("request was canceled")]
     Canceled,
 
-    #[error("missing credentials for {provider}")]
-    MissingCredentials { provider: String },
+    /// The backend refused the key, in its own words.
+    ///
+    /// Only a 401. A 403 is a key that works and may not do this — no access
+    /// to a model, a region the account cannot use — and reads as an API error
+    /// with its reason, because telling somebody to fix a key that is fine
+    /// sends them to the wrong place.
+    #[error("{provider} did not accept the API key: {detail}")]
+    MissingCredentials { provider: String, detail: String },
 }
 
 impl ProviderError {
@@ -116,6 +122,37 @@ impl ProviderError {
 }
 
 pub type Result<T> = std::result::Result<T, ProviderError>;
+
+/// A response body, as the sentence of it a person needs.
+///
+/// Every backend here wraps its reason in JSON — `{"error": {"message": …}}`
+/// for OpenAI, Anthropic, and Gemini, `{"error": "…"}` for Ollama — and the
+/// wrapper is noise in an error message. Anything else is passed through
+/// trimmed and cut short, because the other common body is a proxy's HTML
+/// error page, and nobody reads all of one.
+pub fn brief(body: &str) -> String {
+    const MOST: usize = 300;
+    let body = body.trim();
+    let said = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            let error = &value["error"];
+            error["message"]
+                .as_str()
+                .or_else(|| error.as_str())
+                .or_else(|| value["message"].as_str())
+                .map(str::to_string)
+        });
+    let text = said.unwrap_or_else(|| body.to_string());
+    if text.trim().is_empty() {
+        return "no reason given".into();
+    }
+    if text.chars().count() <= MOST {
+        return text;
+    }
+    let cut: String = text.chars().take(MOST).collect();
+    format!("{cut}…")
+}
 
 /// A duration as a person says it: "45 seconds", "3 minutes".
 fn span(duration: Duration) -> String {
@@ -183,5 +220,25 @@ mod tests {
         assert!(error.is_transient());
         assert_eq!(error.kind(), "stream");
         assert!(error.to_string().contains("part-way"), "{error}");
+    }
+
+    #[test]
+    fn brief_reads_the_reason_out_of_each_backends_error_body() {
+        assert_eq!(
+            brief(
+                r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#
+            ),
+            "invalid x-api-key"
+        );
+        assert_eq!(
+            brief(
+                r#"{"error":{"code":401,"message":"API key not valid.","status":"UNAUTHENTICATED"}}"#
+            ),
+            "API key not valid."
+        );
+        assert_eq!(brief(r#"{"error":"unauthorized"}"#), "unauthorized");
+        assert_eq!(brief("  Bad gateway \n"), "Bad gateway");
+        assert_eq!(brief(""), "no reason given");
+        assert!(brief(&"x".repeat(1_000)).chars().count() <= 301);
     }
 }

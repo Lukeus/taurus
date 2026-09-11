@@ -240,10 +240,25 @@ impl OpenAiProvider {
         }
         let retry_after = http::retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(ProviderError::MissingCredentials {
-                provider: self.id.clone(),
-            });
+        // A key that was refused and a key that is fine but may not do this
+        // are different fixes, and the body is what says which: "invalid
+        // x-api-key" against "no access to this model".
+        match status.as_u16() {
+            401 => {
+                return Err(ProviderError::MissingCredentials {
+                    provider: self.id.clone(),
+                    detail: taurus_provider::brief(&body),
+                });
+            }
+            403 => {
+                return Err(ProviderError::Api {
+                    provider: self.id.clone(),
+                    status: 403,
+                    body: taurus_provider::brief(&body),
+                    retry_after: None,
+                });
+            }
+            _ => {}
         }
         Err(ProviderError::Api {
             provider: self.id.clone(),
@@ -1172,6 +1187,55 @@ mod tests {
         assert!(
             matches!(outcome, Err(ProviderError::Stalled { .. })),
             "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_key_and_a_refused_model_say_different_things() {
+        // Both used to read "missing credentials", so somebody with no access
+        // to one model was told to fix a key that was fine.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(
+                serde_json::json!({"error": {"message": "Incorrect API key provided"}}),
+            ))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(
+                serde_json::json!({"error": {"message": "You do not have access to this model"}}),
+            ))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new(
+            "openai",
+            server.uri(),
+            Some("sk-test".into()),
+            OpenAiCapabilities::default(),
+        );
+
+        let refused = provider.models().await.expect_err("a 401");
+        assert!(
+            matches!(refused, ProviderError::MissingCredentials { .. }),
+            "{refused:?}"
+        );
+        assert!(
+            refused.to_string().contains("Incorrect API key provided"),
+            "{refused}"
+        );
+
+        let forbidden = provider.models().await.expect_err("a 403");
+        assert_eq!(forbidden.kind(), "api_4xx");
+        assert!(
+            forbidden.to_string().contains("do not have access"),
+            "{forbidden}"
         );
     }
 }

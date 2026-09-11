@@ -187,10 +187,25 @@ impl GeminiProvider {
         }
         let retry_after = http::retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
-        if matches!(status.as_u16(), 401 | 403) {
-            return Err(ProviderError::MissingCredentials {
-                provider: self.id.clone(),
-            });
+        // A key that was refused and a key that is fine but may not do this
+        // are different fixes, and the body is what says which: "invalid
+        // x-api-key" against "no access to this model".
+        match status.as_u16() {
+            401 => {
+                return Err(ProviderError::MissingCredentials {
+                    provider: self.id.clone(),
+                    detail: taurus_provider::brief(&body),
+                });
+            }
+            403 => {
+                return Err(ProviderError::Api {
+                    provider: self.id.clone(),
+                    status: 403,
+                    body: taurus_provider::brief(&body),
+                    retry_after: None,
+                });
+            }
+            _ => {}
         }
         let retry_after = retry_after.or_else(|| retry_delay(&body));
         Err(ProviderError::Api {
