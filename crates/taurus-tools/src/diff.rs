@@ -97,11 +97,24 @@ impl FileDiff {
 /// UTF-8 text, so rendering it would be noise rather than evidence. A file that
 /// is simply absent is not a failure — it is a creation, and says so.
 pub fn against_disk(workspace: &Path, path: &Path, updated: &str) -> Option<FileDiff> {
+    against_read(workspace, path, std::fs::read(path), updated)
+}
+
+/// [`against_disk`], from a read the caller has already made.
+///
+/// For an async caller, which reads without holding the runtime and diffs
+/// what came back — the permission prompt, which runs beside a stream.
+pub fn against_read(
+    workspace: &Path,
+    path: &Path,
+    read: std::io::Result<Vec<u8>>,
+    updated: &str,
+) -> Option<FileDiff> {
     // The same rendering every tool result uses, so a path in the dialog
     // reads identically to one in the transcript.
     let display = crate::path_guard::display(workspace, path);
 
-    let original = match std::fs::read(path) {
+    let original = match read {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => Some(text),
             // Deliberately not lossy-decoded. A diff of replacement characters
