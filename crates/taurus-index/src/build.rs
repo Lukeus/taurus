@@ -25,6 +25,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use taurus_provider::Provider;
 use tokio_util::sync::CancellationToken;
 
@@ -38,6 +39,14 @@ use crate::store::{encode, stamp, Entry, Index, MAX_FILES, MAX_FILE_BYTES};
 /// a few hundred requests while making a failure cost a fraction of a second's
 /// work rather than a minute's.
 const BATCH: usize = 16;
+
+/// Batches in flight at once.
+///
+/// One at a time leaves the backend idle for every round trip between
+/// batches. More than a few only queues requests that a single local model
+/// works through one after another anyway, while each holds its texts in
+/// memory. Three keeps the backend busy across a round trip.
+const EMBED_AHEAD: usize = 3;
 
 /// How many times a refresh says where it has got to.
 ///
@@ -177,23 +186,52 @@ pub async fn refresh(
     // by definition, which is where this starts.
     let mut whole = keep.len();
     let mut current: Option<&str> = None;
-    for batch in pending.chunks(BATCH) {
-        if cancel.is_cancelled() {
-            // What is embedded is worth keeping even though the answer is an
-            // error: the caller asked for a refresh and is not getting one,
-            // but the next refresh should not start over.
-            keep.truncate(whole);
-            let _ = write_down(index, model, keep).await;
-            return Err("indexing was canceled".into());
-        }
-        let texts: Vec<String> = batch
-            .iter()
-            .map(|(_, _, _, piece)| piece.text.clone())
-            .collect();
-        let vectors = provider
-            .embed(model, &texts)
-            .await
-            .map_err(|e| e.to_string())?;
+    // Several requests in flight rather than one, and still in order:
+    // `buffered` starts up to `EMBED_AHEAD` of them and hands back each answer
+    // in the order it was asked for, so walking the batches alongside the
+    // answers pairs each batch with its own vectors.
+    //
+    // Each request owns what it sends, and the stream is of batch numbers
+    // rather than batch slices. A closure taking a slice is typed for every
+    // lifetime at once, and the compiler cannot prove a future holding one
+    // `Send` for all of them, which a tool's future has to be.
+    let batch_count = pending.len().div_ceil(BATCH);
+    let mut batches = pending.chunks(BATCH);
+    let mut answers = futures::stream::iter(0..batch_count)
+        .map(|n| {
+            let texts: Vec<String> = pending[n * BATCH..pending.len().min((n + 1) * BATCH)]
+                .iter()
+                .map(|(_, _, _, piece)| piece.text.clone())
+                .collect();
+            let provider = Arc::clone(provider);
+            let model = model.to_string();
+            let cancel = cancel.clone();
+            async move {
+                // Raced against Stop. A request in flight otherwise holds the
+                // refresh until the backend answers, however long that is.
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => None,
+                    vectors = provider.embed(&model, &texts) => Some(vectors),
+                }
+            }
+        })
+        .buffered(EMBED_AHEAD);
+    while let (Some(vectors), Some(batch)) = (answers.next().await, batches.next()) {
+        let vectors = match vectors {
+            Some(Ok(vectors)) => vectors,
+            // Either way, what is embedded is worth keeping even though the
+            // answer is an error: the caller asked for a refresh and is not
+            // getting one, but the next refresh should not start over.
+            stopped => {
+                keep.truncate(whole);
+                let _ = write_down(index, model, keep).await;
+                return Err(match stopped {
+                    Some(Err(e)) => e.to_string(),
+                    _ => "indexing was canceled".into(),
+                });
+            }
+        };
 
         for ((path, len, modified, piece), vector) in batch.iter().zip(vectors) {
             // A new file starting means the one before it is complete, and
@@ -857,6 +895,147 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resumed.embedded, 1, "the half-indexed file was skipped");
+    }
+
+    /// A backend that took the request and never answers. Only Stop can end a
+    /// refresh waiting on it.
+    struct Hanging;
+
+    #[async_trait]
+    impl Provider for Hanging {
+        fn id(&self) -> &str {
+            "hanging"
+        }
+        async fn models(&self) -> taurus_provider::Result<Vec<ModelInfo>> {
+            Ok(Vec::new())
+        }
+        async fn capabilities(&self, _: &str) -> taurus_provider::Result<Capabilities> {
+            Ok(Capabilities::default())
+        }
+        async fn stream(
+            &self,
+            _: ChatRequest,
+            _: mpsc::Sender<StreamEvent>,
+            _: CancellationToken,
+        ) -> taurus_provider::Result<StopReason> {
+            Ok(StopReason::EndTurn)
+        }
+        async fn embed(&self, _: &str, _: &[String]) -> taurus_provider::Result<Vec<Vec<f32>>> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_reaches_an_embedding_request_in_flight() {
+        let f = fixture();
+        write(&f.root, "src/a.rs", 120);
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            stop.cancel();
+        });
+
+        let hanging: Arc<dyn Provider> = Arc::new(Hanging);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            refresh(&f.index, &f.root, &hanging, "m", &cancel, None),
+        )
+        .await
+        .expect("Stop must reach a request the backend never answers");
+        assert_eq!(outcome.err().as_deref(), Some("indexing was canceled"));
+    }
+
+    /// Embeds as `Counting` does, slowly, and records the most requests that
+    /// were in flight at once.
+    #[derive(Default)]
+    struct Overlapping {
+        now: AtomicUsize,
+        most: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for Overlapping {
+        fn id(&self) -> &str {
+            "overlapping"
+        }
+        async fn models(&self) -> taurus_provider::Result<Vec<ModelInfo>> {
+            Ok(Vec::new())
+        }
+        async fn capabilities(&self, _: &str) -> taurus_provider::Result<Capabilities> {
+            Ok(Capabilities::default())
+        }
+        async fn stream(
+            &self,
+            _: ChatRequest,
+            _: mpsc::Sender<StreamEvent>,
+            _: CancellationToken,
+        ) -> taurus_provider::Result<StopReason> {
+            Ok(StopReason::EndTurn)
+        }
+        async fn embed(
+            &self,
+            _: &str,
+            inputs: &[String],
+        ) -> taurus_provider::Result<Vec<Vec<f32>>> {
+            let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            self.now.fetch_sub(1, Ordering::SeqCst);
+            Ok(inputs
+                .iter()
+                .map(|text| {
+                    let n = text.len() as f32;
+                    vec![n.sin(), n.cos(), 1.0]
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn batches_overlap_and_still_land_in_order() {
+        let overlapped = fixture();
+        let sequential = fixture();
+        for f in [&overlapped, &sequential] {
+            for n in 0..12 {
+                write(&f.root, &format!("src/f{n}.rs"), 120);
+            }
+        }
+
+        let overlapping = Arc::new(Overlapping::default());
+        let provider: Arc<dyn Provider> = overlapping.clone();
+        let never = CancellationToken::new();
+        let (entries, _) = refresh(
+            &overlapped.index,
+            &overlapped.root,
+            &provider,
+            "m",
+            &never,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            overlapping.most.load(Ordering::SeqCst) > 1,
+            "every batch waited for the one before it"
+        );
+
+        // The same index a one-at-a-time embed produces, entry for entry.
+        let (expected, _) = refresh(
+            &sequential.index,
+            &sequential.root,
+            &counting(),
+            "m",
+            &never,
+            None,
+        )
+        .await
+        .unwrap();
+        let key = |e: &Entry| (e.path.clone(), e.start_line, e.vector.clone());
+        assert_eq!(
+            entries.iter().map(key).collect::<Vec<_>>(),
+            expected.iter().map(key).collect::<Vec<_>>()
+        );
     }
 
     /// Collects what a refresh reported, so the cadence can be asserted on.
