@@ -268,13 +268,21 @@ impl Repo {
         }
 
         let dirty = self.dirty(paths).await?;
+        // One question for every path that is not dirty, rather than a process
+        // each. See `ignored`.
+        let quiet: Vec<&str> = paths
+            .iter()
+            .filter(|path| !dirty.contains(*path))
+            .map(String::as_str)
+            .collect();
+        let ignored = self.ignored(&quiet).await;
         let mut skipped = Vec::new();
         let mut staging = Vec::new();
 
         for path in paths {
             if dirty.contains(path) {
                 staging.push(path.clone());
-            } else if self.is_ignored(path).await {
+            } else if ignored.contains(path) {
                 skipped.push(Skipped {
                     path: path.clone(),
                     reason: "is ignored by git, so it is not in the repository to commit".into(),
@@ -360,17 +368,43 @@ impl Repo {
             .collect())
     }
 
-    /// Whether git is deliberately ignoring a path.
+    /// Which of `paths` git is deliberately ignoring, asked in one process.
     ///
-    /// Only ever asked about a path already known not to be dirty, so this
-    /// costs a process for the files a commit is about to leave out and nothing
-    /// for the ones it takes.
-    async fn is_ignored(&self, path: &str) -> bool {
-        // `check-ignore` exits 1 for "not ignored", which `run` reports as an
-        // error. That is the answer, not a failure to get one.
-        run(&self.workspace, &["check-ignore", "--quiet", "--", path])
-            .await
-            .is_ok()
+    /// Only ever asked about paths already known not to be dirty, so it costs
+    /// one process for the files a commit is about to leave out, however many
+    /// there are, and none when it leaves nothing out — rather than a process
+    /// start for every file a turn touched and then put back.
+    ///
+    /// The paths go in on stdin, NUL-separated. `check-ignore` refuses `-z` for
+    /// paths given as arguments, and without `-z` a path holding an unusual
+    /// character would come back quoted and no longer match the one asked
+    /// about. It names the ignored ones back and exits 1 when there are none —
+    /// an answer, not a failure — so only what it printed is read. A git that
+    /// could not be asked prints nothing, which reads as nothing ignored, the
+    /// same as a failed question always did.
+    async fn ignored(&self, paths: &[&str]) -> BTreeSet<String> {
+        if paths.is_empty() {
+            return BTreeSet::new();
+        }
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(path.as_bytes());
+            input.push(0);
+        }
+        let asked = launch_with(
+            &self.workspace,
+            &["check-ignore", "--stdin", "-z"],
+            Some(input),
+        )
+        .await;
+        let Ok(output) = asked else {
+            return BTreeSet::new();
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 }
 
@@ -415,6 +449,22 @@ async fn run(workspace: &Path, args: &[&str]) -> Result<String, String> {
 /// A git that has not answered by its deadline is one of those failures, and is
 /// ended rather than left running. See [`READ_DEADLINE`].
 async fn launch(workspace: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    launch_with(workspace, args, None).await
+}
+
+/// [`launch`], with `input` written to git's stdin and then closed.
+///
+/// Written from a task of its own rather than before the wait, so a git that
+/// answers as it reads — `check-ignore --stdin` does — cannot fill its output
+/// while this is still waiting to finish writing.
+async fn launch_with(
+    workspace: &Path,
+    args: &[&str],
+    input: Option<Vec<u8>>,
+) -> Result<std::process::Output, String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
     let mut command = Command::new("git");
     command
         .args(args)
@@ -424,7 +474,13 @@ async fn launch(workspace: &Path, args: &[&str]) -> Result<std::process::Output,
         // out with nothing to show for it.
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
-        .stdin(std::process::Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         // What ends it when the deadline below gives up on it.
         .kill_on_drop(true);
     taurus_tools::no_console(&mut command);
@@ -434,7 +490,16 @@ async fn launch(workspace: &Path, args: &[&str]) -> Result<std::process::Output,
     } else {
         READ_DEADLINE
     };
-    let Ok(finished) = tokio::time::timeout(deadline, command.output()).await else {
+    let asked = async {
+        let mut child = command.spawn()?;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            tokio::spawn(async move {
+                let _ = stdin.write_all(&input).await;
+            });
+        }
+        child.wait_with_output().await
+    };
+    let Ok(finished) = tokio::time::timeout(deadline, asked).await else {
         return Err(format!(
             "git did not answer within {} seconds. Something it waits on is not \
              responding — an fsmonitor daemon, a network mount, or a config \
@@ -651,6 +716,57 @@ mod tests {
         std::fs::create_dir_all(plain.path().join(".git")).unwrap();
         std::fs::write(plain.path().join(".git/HEAD"), "ref: refs/heads/.invalid\n").unwrap();
         assert_eq!(branch_on_disk(plain.path()), None);
+    }
+
+    #[tokio::test]
+    async fn every_skipped_path_gets_its_own_reason_from_one_question() {
+        needs_git!();
+        // Two ignored paths and one that already matches, answered by a single
+        // `check-ignore` over all three rather than a process each.
+        let f = Fixture::new().await;
+        f.write(".gitignore", ".env\nbuild/\n");
+        f.write("kept.txt", "same\n");
+        let repo = f.repo().await;
+        repo.commit(&[".gitignore".into(), "kept.txt".into()], "base")
+            .await
+            .unwrap();
+
+        f.write(".env", "SECRET=1\n");
+        f.write("build/out.bin", "x");
+        f.write("new.txt", "fresh\n");
+        let commit = repo
+            .commit(
+                &[
+                    ".env".into(),
+                    "build/out.bin".into(),
+                    "kept.txt".into(),
+                    "new.txt".into(),
+                ],
+                "second",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(commit.files, vec!["new.txt"]);
+        let reason = |path: &str| {
+            commit
+                .skipped
+                .iter()
+                .find(|s| s.path == path)
+                .map(|s| s.reason.clone())
+                .unwrap_or_default()
+        };
+        assert!(reason(".env").contains("ignored"), "{:?}", commit.skipped);
+        assert!(
+            reason("build/out.bin").contains("ignored"),
+            "{:?}",
+            commit.skipped
+        );
+        assert!(
+            reason("kept.txt").contains("already matches"),
+            "{:?}",
+            commit.skipped
+        );
     }
 
     #[tokio::test]
