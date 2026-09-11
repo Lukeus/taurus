@@ -13,8 +13,8 @@
 //! # Its output
 //!
 //! Nobody is holding the pipes open on the model's behalf, so the output is
-//! drained into a buffer as it arrives. The buffer is [`MAX_PENDING_BYTES`],
-//! and past that the oldest is dropped. Both streams go into the one buffer in
+//! drained into a buffer as it arrives. The buffer keeps the newest
+//! [`MAX_PENDING_BYTES`], and past that the oldest is dropped. Both streams go into the one buffer in
 //! the order they arrived: a background command is watched rather than parsed,
 //! and that is the order a terminal would have shown.
 //!
@@ -81,8 +81,13 @@ pub const MAX_JOBS: usize = 8;
 /// nothing else, so what falls off the front is gone from the pane as well as
 /// from the next check. A shell's scrollback lives in its own emulator and can
 /// afford to be long; this is held in the host for every job at once, so the
-/// worst case is this times [`MAX_JOBS`].
+/// worst case is [`TRIM_AT`] times [`MAX_JOBS`].
 const MAX_PENDING_BYTES: usize = 256 * 1024;
+
+/// How far past [`MAX_PENDING_BYTES`] a buffer runs before its front is
+/// trimmed back to it. See [`Tail::push`]. Every reader is still handed at
+/// most the newest [`MAX_PENDING_BYTES`].
+const TRIM_AT: usize = MAX_PENDING_BYTES + MAX_PENDING_BYTES / 4;
 
 /// The most one `check_command` will hand back.
 ///
@@ -214,10 +219,11 @@ struct Output {
 
 /// The end of a command's output, and a count of all of it.
 ///
-/// A ring in effect rather than in structure: the last [`MAX_PENDING_BYTES`]
-/// are kept, and `written` counts every byte that ever arrived — so `text`
-/// holds the stream from `written - text.len()` onwards, and a reader is one
-/// number in that space.
+/// A ring in effect rather than in structure: at least the last
+/// [`MAX_PENDING_BYTES`] are kept, and up to [`TRIM_AT`] between trims, and
+/// `written` counts every byte that ever arrived — so `text` holds the stream
+/// from `written - text.len()` onwards, and a reader is one number in that
+/// space.
 #[derive(Default)]
 struct Tail {
     text: String,
@@ -226,10 +232,17 @@ struct Tail {
 }
 
 impl Tail {
+    /// Adds a chunk, and trims the front once there is enough to be worth it.
+    ///
+    /// Trimmed in steps rather than on every push. Cutting back to the cap
+    /// each time moved the whole quarter megabyte forward for every line a
+    /// verbose build printed, under the lock the dock's polling waits on. Let
+    /// run a quarter past the cap first, a trim moves the same bytes once per
+    /// 64 KB of output instead of once per line.
     fn push(&mut self, chunk: &str) {
         self.text.push_str(chunk);
         self.written += chunk.len();
-        if self.text.len() > MAX_PENDING_BYTES {
+        if self.text.len() > TRIM_AT {
             let over = self.text.len() - MAX_PENDING_BYTES;
             let cut = ceil_boundary(&self.text, over);
             self.text.drain(..cut);
@@ -1112,5 +1125,24 @@ mod tests {
         assert_eq!(tail.since(9_000, MAX_PENDING_BYTES).0, "");
         // Inside a multi-byte character: rounded up rather than split.
         assert_eq!(tail.since(2, MAX_PENDING_BYTES).0, "llo");
+    }
+
+    #[test]
+    fn a_full_buffer_is_trimmed_in_steps_rather_than_on_every_line() {
+        // What keeps a verbose build from moving a quarter megabyte forward
+        // for every line it prints: once full, the front is cut only after a
+        // quarter more has arrived, and then back to the cap, so the lines
+        // after that cost nothing to keep.
+        let mut tail = Tail::default();
+        tail.push(&"a".repeat(TRIM_AT));
+        assert_eq!(tail.text.len(), TRIM_AT);
+        tail.push("b");
+        assert_eq!(tail.text.len(), MAX_PENDING_BYTES);
+        tail.push("c");
+        assert_eq!(tail.text.len(), MAX_PENDING_BYTES + 1);
+        // A reader is still handed the cap at most, and the newest of it.
+        let (text, _) = tail.since(0, MAX_PENDING_BYTES);
+        assert_eq!(text.len(), MAX_PENDING_BYTES);
+        assert!(text.ends_with("bc"));
     }
 }
