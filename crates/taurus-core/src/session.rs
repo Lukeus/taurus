@@ -362,6 +362,30 @@ pub fn estimate_tokens(text: &str) -> u32 {
     (text.len() / 4) as u32
 }
 
+/// How long `value` is as compact JSON, without building the string.
+///
+/// Exactly what `value.to_string().len()` says — serde_json's own formatter
+/// writes it — but to a writer that only counts. The estimates below walk the
+/// whole history two or three times an iteration, and every tool call's
+/// arguments and every structured result were serialized into a string each
+/// time only to be measured and thrown away.
+fn json_len(value: &serde_json::Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    // A writer that only counts cannot fail, and a `Value` always serializes.
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
+
 /// What a tool's answer costs, in the character units everything here budgets
 /// in.
 ///
@@ -378,7 +402,7 @@ pub fn output_chars(output: &taurus_provider::ToolOutput) -> usize {
         .iter()
         .map(|block| match block {
             ToolResultBlock::Text { text } => text.len(),
-            ToolResultBlock::Json { value } => value.to_string().len(),
+            ToolResultBlock::Json { value } => json_len(value),
             ToolResultBlock::Image { .. } => 4000,
         })
         .sum()
@@ -390,7 +414,7 @@ pub fn estimate_block(block: &ContentBlock) -> u32 {
         ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => estimate_tokens(text),
         ContentBlock::ToolResult { content, .. } => (output_chars(content) / 4) as u32,
         ContentBlock::ToolUse { name, input, .. } => {
-            estimate_tokens(name) + estimate_tokens(&input.to_string())
+            estimate_tokens(name) + (json_len(input) / 4) as u32
         }
         // Images cost far more than their base64 length suggests; a flat
         // estimate is closer than counting characters.
@@ -411,7 +435,7 @@ pub fn estimate_message(message: &Message) -> u32 {
         .map(|block| match block {
             ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => text.len(),
             ContentBlock::ToolResult { content, .. } => output_chars(content),
-            ContentBlock::ToolUse { name, input, .. } => name.len() + input.to_string().len(),
+            ContentBlock::ToolUse { name, input, .. } => name.len() + json_len(input),
             ContentBlock::Image { .. } => 4000,
         })
         .sum();
@@ -485,6 +509,85 @@ fn starts_with_tool_result(message: &Message) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the context estimate costs over a long session: 300 messages, a
+    /// hundred `write_file` calls with 1 KB of arguments and a 4 KB result
+    /// each. The loop walks the whole history two or three times an iteration,
+    /// so this grows with the session. Ignored, because only a release build's
+    /// numbers mean anything. See `docs/development.md`.
+    #[test]
+    #[ignore]
+    fn estimate_cost_on_a_long_session() {
+        use taurus_provider::{Role, ToolOutput};
+        let mut session = Session::new("m");
+        let content = "fn main() { println!(\"hello\"); }\n".repeat(28);
+        for turn in 0..100 {
+            session.push(Message::user(format!(
+                "turn {turn}: change the handler and run the tests"
+            )));
+            session.push(Message::new(
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    format!("t{turn}"),
+                    "write_file",
+                    serde_json::json!({"path": format!("src/module_{turn}.rs"), "content": content}),
+                )],
+            ));
+            let output = if turn % 2 == 0 {
+                ToolOutput::text("x".repeat(4096))
+            } else {
+                ToolOutput::json(serde_json::json!({
+                    "columns": ["name", "count", "share"],
+                    "rows": (0..40)
+                        .map(|i| serde_json::json!([format!("item {i}"), i * 7, i as f64 / 40.0]))
+                        .collect::<Vec<_>>(),
+                }))
+            };
+            session.push(Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: format!("t{turn}"),
+                    content: output,
+                    is_error: false,
+                }],
+            ));
+        }
+        let first = session.estimated_tokens();
+        let t = std::time::Instant::now();
+        for _ in 0..1000 {
+            std::hint::black_box(session.estimated_tokens());
+        }
+        eprintln!(
+            "1,000 walks over {} messages ({first} tokens): {:.1?}",
+            session.messages.len(),
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn json_len_is_what_serializing_would_have_measured() {
+        use serde_json::json;
+        for value in [
+            json!(null),
+            json!(true),
+            json!(0),
+            json!(-12),
+            json!(u64::MAX),
+            json!(i64::MIN),
+            json!(1.5),
+            json!(1e-7),
+            json!(f64::MAX),
+            json!(""),
+            json!("quote \" backslash \\ newline \n tab \t bell \u{7}"),
+            json!("ünïcödé ✓ 🦀"),
+            json!([]),
+            json!({}),
+            json!([1, "two", [3], {"four": 4}]),
+            json!({"path": "src/lib.rs", "content": "fn main() {}\n", "nested": {"a": [null, false, 2.25]}}),
+        ] {
+            assert_eq!(json_len(&value), value.to_string().len(), "{value}");
+        }
+    }
 
     fn tool_call() -> Message {
         Message::new(

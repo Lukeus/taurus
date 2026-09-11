@@ -298,6 +298,14 @@ describe("carrying turns forward", () => {
     expect(after[0]).not.toBe(before[0]);
   });
 
+  it("hands back the list it had when no turn moved", () => {
+    // The list itself is what the search memo compares. A fresh array around
+    // the same turns reads as a different conversation, and while a search
+    // mark is up every prompt and answer was lowercased again on every render.
+    const before = turns(conversation);
+    expect(reuse(before, turns([...conversation]))).toBe(before);
+  });
+
   it("has nothing to carry forward on the first render", () => {
     const built = turns(conversation);
     expect(reuse([], built)).toEqual(built);

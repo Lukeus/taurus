@@ -17,9 +17,8 @@ import { Attachments } from "./components/Attachments";
 import { CommandMenu, commandQuery, matches } from "./components/CommandMenu";
 import { ContextMeter } from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
-import { Canvas, type SaveState } from "./components/Canvas";
+import { CanvasSlot } from "./components/CanvasSlot";
 import { PermissionDialog } from "./components/PermissionDialog";
-import { changedLines, FLASH_MS, reconcile, SAVE_AFTER_MS } from "./lib/document";
 import { NotesPane } from "./components/NotesPane";
 import { useNotebook, type Which } from "./state/notebook";
 import { TrustBanner } from "./components/TrustBanner";
@@ -46,7 +45,6 @@ import type {
   CommandSummary,
   DataOnScreen,
   Dataset,
-  Document as OpenDocument,
   DocumentOnScreen,
   LineRange,
   ModelInfo,
@@ -59,7 +57,8 @@ import type {
 } from "./lib/api";
 import { basename, plural } from "./lib/format";
 import { isImage, toAttachments } from "./lib/images";
-import { extend } from "./lib/jobs";
+import { extend, sameJobs } from "./lib/jobs";
+import { useStable } from "./lib/stable";
 import { applyTheme, currentToken, watchSystemTheme } from "./lib/theme";
 import type { Entry, Outgoing } from "./state/store";
 import { pinnedPlan, useStore } from "./state/store";
@@ -337,26 +336,14 @@ export default function App() {
     path: string;
     reveal: { from: number; to: number } | null;
   } | null>(null);
-  const [doc, setDoc] = useState<OpenDocument | null>(null);
-  const [docError, setDocError] = useState<string | null>(null);
   /**
-   * What is in the editor, which is not always what is on disk.
+   * Whether the open file holds typing the disk does not.
    *
-   * Held beside `doc` rather than inside it, because they are two different
-   * facts and the difference between them *is* the unsaved state. `doc` is what
-   * was last read or written; this is what has been typed since.
-   *
-   * Not called `draft`: the composer already has one of those, and two in one
-   * component is the sort of shadowing that compiles and then goes wrong
-   * somewhere else.
+   * The document itself lives in `CanvasSlot`, which re-renders on every
+   * keystroke so that this component does not. All `App` needs of it is this
+   * one bit, for what travels with a message, and it moves only on the edge.
    */
-  const [typed, setTyped] = useState("");
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  /** The other version, when a save was refused because somebody got there
-   *  first. Both are kept; neither is chosen here. */
-  const [conflict, setConflict] = useState<OpenDocument | null>(null);
-  /** Lines somebody else just changed, to tint for a moment. */
-  const [flash, setFlash] = useState<{ from: number; to: number } | null>(null);
+  const [canvasUnsaved, setCanvasUnsaved] = useState(false);
   /** What is highlighted in the canvas right now. Travels with the next
    *  message; see `onScreenFor`. */
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -473,9 +460,8 @@ export default function App() {
       } else if (isChord(e, "n") && !e.shiftKey) {
         e.preventDefault();
         // Through the ref, not the closure. This effect is registered once,
-        // and `App` re-renders on every streamed token — a dependency on a
-        // handler rebuilt each render would add and remove a window listener
-        // thirty times a second for the life of a turn.
+        // and a dependency on a handler rebuilt on every render of `App`
+        // would add and remove a window listener each time it rendered.
         start.current();
       } else if (isChord(e, ",")) {
         e.preventDefault();
@@ -551,7 +537,8 @@ export default function App() {
           jobCursor.current,
         );
         if (!live) return;
-        setJobs(seen.jobs);
+        // Kept as it was when it says nothing new. See `sameJobs`.
+        setJobs((held) => (sameJobs(held, seen.jobs, terminalOpen) ? held : seen.jobs));
         running = seen.jobs.some((job) => job.running);
         // The command this tab was for is gone — a workspace change forgets
         // them. Back to the shell, which is the tab that is always there.
@@ -995,13 +982,6 @@ export default function App() {
   };
 
   /*
-   * Reads whatever the canvas is open on.
-   *
-   * Re-runs on the path rather than on the whole `canvas` object, so being
-   * sent to new lines in a file that is already open scrolls it instead of
-   * fetching it again.
-   */
-  /*
    * The model's own request to open something.
    *
    * An errand from the store, taken once. Not cleared afterwards — clearing it
@@ -1019,141 +999,18 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opening?.at]);
 
-  const openPath = canvas?.path ?? null;
-  useEffect(() => {
-    if (!openPath) {
-      setDoc(null);
-      setDocError(null);
-      setTyped("");
-      return;
-    }
-    let current = true;
-    setDoc(null);
-    setDocError(null);
-    setConflict(null);
-    setFlash(null);
-    setSaveState("idle");
-    api
-      .openDocument(openPath)
-      .then((read) => {
-        if (!current) return;
-        setDoc(read);
-        // The buffer starts as what was read. Everything after this point is
-        // the difference between the two.
-        setTyped(read.text);
-      })
-      .catch((e) => current && setDocError(String(e)));
-    // A file opened, then closed, then opened again before the first read
-    // landed would otherwise show the first file's contents under the second
-    // one's name.
-    return () => {
-      current = false;
-    };
-  }, [openPath, workspace]);
-
-  /*
-   * Writes what has been typed, once typing has stopped.
-   *
-   * Debounced rather than saved per keystroke, and autosaved rather than left
-   * to ⌘S, because the whole argument for the canvas is that the model is
-   * looking at the same file you are. An unsaved buffer breaks that silently:
-   * you ask about the paragraph on screen and it reads the one on disk.
-   *
-   * Nothing runs while a conflict is open — a save is exactly what is being
-   * decided about, and repeating the refusal every 800ms would bury the
-   * question under its own answer.
-   */
-  useEffect(() => {
-    if (!doc || conflict || typed === doc.text) return;
-    setSaveState("typing");
-    const timer = setTimeout(() => {
-      setSaveState("saving");
-      api
-        .saveDocument(doc.path, typed, doc.fingerprint)
-        .then((result) => {
-          if (result.type === "stale") {
-            // Not an error. Somebody wrote the file after this editor read it,
-            // so both versions exist and which one survives is not a decision
-            // this code gets to make.
-            setConflict(result.current);
-            setSaveState("typing");
-            return;
-          }
-          setDoc(result.document);
-          setSaveState("idle");
-        })
-        .catch((e) => {
-          setSaveState("failed");
-          store.noteError(String(e));
-        });
-    }, SAVE_AFTER_MS);
-    return () => clearTimeout(timer);
-    // `store` is stable; depending on it would restart the timer on every
-    // render and a fast typist would never reach the end of one.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [typed, doc, conflict]);
-
-  /*
-   * What to do when the running turn writes the file that is open.
-   *
-   * The rule is `reconcile`'s: never silently lose typing. A clean buffer takes
-   * the new version and flashes what moved, which is the model visibly editing
-   * the document. A dirty one keeps both and asks.
-   */
-  const wrote = store.wrote;
-  useEffect(() => {
-    if (!wrote || !doc) return;
-    if (!wrote.paths.includes(doc.path)) return;
-    let current = true;
-    api
-      .openDocument(doc.path)
-      .then((read) => {
-        if (!current) return;
-        const what = reconcile({ base: doc.text, draft: typed }, read.text);
-        if (what.kind === "same") {
-          // Still take the new fingerprint: the bytes match, but the file has
-          // been rewritten, and saving against the old stamp would be refused
-          // for a conflict that does not exist.
-          setDoc(read);
-          return;
-        }
-        if (what.kind === "conflict") {
-          setConflict(read);
-          return;
-        }
-        setFlash(changedLines(doc.text, read.text));
-        setDoc(read);
-        setTyped(read.text);
-      })
-      .catch(() => {
-        // A file the turn deleted or moved. Left as it was rather than blanked
-        // — what is on screen is still what was there, and saying so with an
-        // empty editor would be a lie about the file.
-      });
-    return () => {
-      current = false;
-    };
-    // Only the counter, for the reason `opening` gives.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wrote?.at]);
-
-  /* The tint is a moment, not a state. Cleared on a timer rather than by the
-     animation ending, so nothing depends on an event that does not fire when
-     motion is turned off. */
-  useEffect(() => {
-    if (!flash) return;
-    const timer = setTimeout(() => setFlash(null), FLASH_MS);
-    return () => clearTimeout(timer);
-  }, [flash]);
-
   /**
    * Puts a sentence in the composer without sending it.
    *
    * The trip the other way, and the pane's only route into a turn besides
    * typing. Nothing is sent: every one of these drafts is the first half of a
    * question, and the second half is the bit only the person knows.
+   *
+   * Stable, because the transcript hands it to every turn and the canvas takes
+   * it too. `Transcript` holds its callbacks steady itself, so this is not what
+   * keeps the turns still — it is what keeps the next reader from wondering.
    */
-  const ask = (text: string) => setDraft({ text });
+  const ask = useCallback((text: string) => setDraft({ text }), []);
 
   /**
    * Takes a conversation's unsent draft as the composer for it goes away.
@@ -1233,10 +1090,46 @@ export default function App() {
       // Nearly always false — the canvas saves a moment after typing stops.
       // What it catches is the conflict, where the screen and the disk hold
       // different things until somebody decides.
-      unsaved: !!doc && typed !== doc.text,
+      unsaved: canvasUnsaved,
     },
     notebook.onScreen,
   );
+
+  /*
+   * The rail's props, held steady.
+   *
+   * The rail is memoized, and a memo compares what it is handed: a function
+   * written inline or an object built here would be new on every render of
+   * `App`, and redraw the rail each time to say the same thing.
+   */
+  const railMcp = useMemo(
+    () => mcpCounts(store.status?.mcp_servers),
+    [store.status?.mcp_servers],
+  );
+  const railProviderCount = store.status?.providers.length;
+  const railHealth = useMemo(
+    () => health(railProviderCount, providerId, models),
+    [railProviderCount, providerId, models],
+  );
+  const railBrand = useMemo(
+    () =>
+      custom && (custom.wordmark !== null || custom.logo !== null)
+        ? { name: custom.name, wordmark: custom.wordmark, logo: custom.logo }
+        : null,
+    [custom],
+  );
+  const railJobs = jobs.filter((job) => job.running).length;
+  const railPickWorkspace = useStable(pickWorkspace);
+  const railNew = useStable(newConversation);
+  const railTheme = useStable(chooseTheme);
+  const railSkills = useCallback(() => setSkillsOpen(true), []);
+  const railAgents = useCallback(() => setAgentsOpen(true), []);
+  const railMemory = useCallback(() => setMemoryOpen(true), []);
+  const railUsage = useCallback(() => setUsageOpen(true), []);
+  const railTraces = useCallback(() => setTracesOpen(true), []);
+  const railMcpDrawer = useCallback(() => setMcpOpen(true), []);
+  const railTerminal = useCallback(() => setTerminalOpen((open) => !open), []);
+  const railSettings = useCallback(() => setSettingsOpen(true), []);
 
   const forgetDataset = (name: string) => void store.forgetDataset(name);
 
@@ -1253,28 +1146,24 @@ export default function App() {
         skillCount={store.status?.skill_count ?? null}
         agentCount={store.status?.agent_count ?? null}
         noteCount={store.status?.note_count ?? null}
-        mcp={mcpCounts(store.status?.mcp_servers)}
-        health={health(store.status?.providers.length, providerId, models)}
+        mcp={railMcp}
+        health={railHealth}
         theme={theme ?? "system"}
-        brand={
-          custom && (custom.wordmark !== null || custom.logo !== null)
-            ? { name: custom.name, wordmark: custom.wordmark, logo: custom.logo }
-            : null
-        }
-        onPickWorkspace={pickWorkspace}
-        onNew={newConversation}
+        brand={railBrand}
+        onPickWorkspace={railPickWorkspace}
+        onNew={railNew}
         onOpen={store.resume}
         onDelete={store.remove}
-        onTheme={chooseTheme}
-        onSkills={() => setSkillsOpen(true)}
-        onAgents={() => setAgentsOpen(true)}
-        onMemory={() => setMemoryOpen(true)}
-        onUsage={() => setUsageOpen(true)}
-        onTraces={() => setTracesOpen(true)}
-        onMcp={() => setMcpOpen(true)}
-        jobsRunning={jobs.filter((job) => job.running).length}
-        onTerminal={() => setTerminalOpen((open) => !open)}
-        onSettings={() => setSettingsOpen(true)}
+        onTheme={railTheme}
+        onSkills={railSkills}
+        onAgents={railAgents}
+        onMemory={railMemory}
+        onUsage={railUsage}
+        onTraces={railTraces}
+        onMcp={railMcpDrawer}
+        jobsRunning={railJobs}
+        onTerminal={railTerminal}
+        onSettings={railSettings}
       />
 
       <ResizeHandle pane={rail} label="Rail width" />
@@ -1486,7 +1375,8 @@ export default function App() {
             *
             * Changes wins while it is open, and the canvas is hidden rather
             * than closed — every piece of state a file being edited has lives
-            * up here in `App`, so it comes back with its unsaved typing and
+            * in `CanvasSlot`, which stays mounted while the file is open, so it
+            * comes back with its unsaved typing and
             * its scroll position when Changes is shut again. Closing it for
             * real would be the app throwing away work to make room for a
             * panel.
@@ -1512,46 +1402,21 @@ export default function App() {
             </>
           )}
 
-          {/* Mounted only while a file is open, like the terminal dock and for
-              the same reason: an editor laid out to nothing is not hidden, it
-              is broken, and a canvas kept alive behind a zero-width column
-              would hold a document nobody can see. */}
-          {side === "canvas" && canvas && (
-            <>
-              <ResizeHandle pane={canvasPane} label="Editor width" />
-              <div className="side-slot" style={{ width: canvasPane.size }}>
-                <Canvas
-                  path={canvas.path}
-                  reveal={canvas.reveal}
-                  document={doc}
-                  draft={typed}
-                  state={saveState}
-                  flash={flash}
-                  conflict={conflict}
-                  error={docError}
-                  onEdit={setTyped}
-                  onKeepMine={() => {
-                    // Adopt the *fingerprint* the refusal handed back while
-                    // keeping the old text as the base. The stamp is what makes
-                    // the next save succeed where the refused one did not; the
-                    // stale base is what keeps `draft !== doc.text`, so the
-                    // autosave below still has something to do.
-                    if (conflict && doc) setDoc({ ...conflict, text: doc.text });
-                    setConflict(null);
-                  }}
-                  onTakeTheirs={() => {
-                    if (!conflict) return;
-                    setDoc(conflict);
-                    setTyped(conflict.text);
-                    setConflict(null);
-                    setSaveState("idle");
-                  }}
-                  onSelect={setSelection}
-                  onAsk={ask}
-                  onClose={() => setCanvas(null)}
-                />
-              </div>
-            </>
+          {/* Mounted while a file is open, whichever panel has the column.
+              While Changes has it this draws nothing and keeps the document;
+              the editor inside is what mounts and unmounts. See `CanvasSlot`. */}
+          {canvas && (
+            <CanvasSlot
+              path={canvas.path}
+              reveal={canvas.reveal}
+              workspace={workspace}
+              showing={side === "canvas"}
+              pane={canvasPane}
+              onUnsaved={setCanvasUnsaved}
+              onSelect={setSelection}
+              onAsk={ask}
+              onClose={() => setCanvas(null)}
+            />
           )}
         </main>
 

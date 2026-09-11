@@ -19,13 +19,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::budget::OutputBudget;
-use crate::overflow;
+use crate::capture::{Capture, Captured, Utf8Carry};
+use crate::overflow::{self, SpillTo};
 use crate::tool::{
     parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult,
 };
@@ -59,9 +60,16 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 /// of output does not sit waiting on a timer.
 const FLUSH_BYTES: usize = 8 * 1024;
 
-/// Lines held for the UI while a batch is in flight. Beyond this the display
+/// Pieces held for the UI while a batch is in flight. Beyond this the display
 /// drops output rather than making the child wait — see [`spawn_stream`].
 pub(super) const STREAM_BACKLOG: usize = 512;
+
+/// How much of a pipe is read at a time.
+///
+/// A flush's worth, so a piece never makes a message to the screen larger than
+/// a batch would, and [`STREAM_BACKLOG`] of them is the most the screen's queue
+/// can hold while it is behind.
+const READ_CHUNK: usize = FLUSH_BYTES;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RunCommandInput {
@@ -170,7 +178,10 @@ impl Tool for RunCommand {
                 input.stdin.clone(),
                 timeout,
                 ctx.cancel.clone(),
-                ctx.progress.clone(),
+                crate::builtin::pty::Outputs {
+                    progress: ctx.progress.clone(),
+                    spill_to: SpillTo::new("output", ctx),
+                },
             )
             .await
             {
@@ -179,7 +190,7 @@ impl Tool for RunCommand {
                         output.exit_code,
                         // One stream, so it is named for what it is rather
                         // than for a half of the pair it does not have.
-                        &for_the_model(&output.text, "output", ctx),
+                        &for_the_model(output.output, "output", ctx),
                         // A terminal has one stream, so there is no stderr to
                         // label. Saying so keeps the model from reading its
                         // absence as the command having written nothing to it.
@@ -189,7 +200,7 @@ impl Tool for RunCommand {
                 }
                 // Ran out of time. What it printed first is still the model's.
                 Err(crate::builtin::pty::PtyError::TimedOut { after, printed }) => {
-                    let printed = combined(&for_the_model(&printed, "output", ctx), None);
+                    let printed = combined(&for_the_model(printed, "output", ctx), None);
                     return Err(ToolError::Failed(timed_out(after, true, &printed)));
                 }
                 // The command itself went wrong, or was canceled. Re-running it
@@ -217,8 +228,16 @@ impl Tool for RunCommand {
         // what a terminal shows and what the user is picturing. The split back
         // into stdout and stderr is kept for the model, which is reading the
         // result rather than watching it.
-        let drain_stdout = spawn_stream(child.stdout.take(), ctx.progress.clone());
-        let drain_stderr = spawn_stream(child.stderr.take(), ctx.progress.clone());
+        let drain_stdout = spawn_stream(
+            child.stdout.take(),
+            ctx.progress.clone(),
+            SpillTo::new("stdout", ctx),
+        );
+        let drain_stderr = spawn_stream(
+            child.stderr.take(),
+            ctx.progress.clone(),
+            SpillTo::new("stderr", ctx),
+        );
 
         // Fed alongside the wait, inside the timeout and within reach of Stop,
         // rather than before either. Written first, it would deadlock with a
@@ -253,16 +272,16 @@ impl Tool for RunCommand {
                     drain_stderr.within(KILL_GRACE)
                 );
                 let printed = combined(
-                    &for_the_model(&stdout, "stdout", ctx),
-                    Some(&for_the_model(&stderr, "stderr", ctx)),
+                    &for_the_model(stdout, "stdout", ctx),
+                    Some(&for_the_model(stderr, "stderr", ctx)),
                 );
                 return Err(ToolError::Failed(timed_out(timeout, false, &printed)));
             }
         };
 
         let code = status.code();
-        let stdout = for_the_model(&drain_stdout.all().await, "stdout", ctx);
-        let stderr = for_the_model(&drain_stderr.all().await, "stderr", ctx);
+        let stdout = for_the_model(drain_stdout.all().await, "stdout", ctx);
+        let stderr = for_the_model(drain_stderr.all().await, "stderr", ctx);
         let mut report = report_for(code, &stdout, Some(&stderr));
 
         // Said in the result rather than only in a log, because the model is
@@ -591,10 +610,18 @@ fn jobs_of(ctx: &ToolContext) -> Result<&Arc<crate::jobs::Jobs>, ToolError> {
 /// otherwise stall the reader, fill the child's pipe buffer, and hang the
 /// command. Lines are dropped from the view before that is allowed to happen.
 ///
-/// Read as bytes rather than as lines of text, because a command is free to
-/// emit something that is not UTF-8 and a build log should not end at the first
-/// byte that isn't.
-fn spawn_stream<R>(pipe: Option<R>, progress: Option<Arc<dyn ToolProgress>>) -> Drain
+/// Read as bytes, and in pieces of [`READ_CHUNK`] rather than a line at a
+/// time. A command is free to emit something that is not UTF-8, and a build log
+/// should not end at the first byte that isn't. And a line has no length a
+/// command must respect: reading to the next newline held a 100 MB line whole
+/// and sent it to the screen as one message. What the model gets is kept by a
+/// [`Capture`], which holds it whole only while that is worth it — see
+/// [`crate::capture`].
+fn spawn_stream<R>(
+    pipe: Option<R>,
+    progress: Option<Arc<dyn ToolProgress>>,
+    spill_to: Option<SpillTo>,
+) -> Drain
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -603,34 +630,35 @@ where
         tokio::spawn(batch_to_progress(rx, progress));
     }
 
-    let full: Arc<std::sync::Mutex<String>> = Arc::default();
+    let capture = Arc::new(std::sync::Mutex::new(Some(Capture::new(spill_to))));
     let handle = tokio::spawn({
-        let full = full.clone();
+        let capture = capture.clone();
         async move {
-            let Some(pipe) = pipe else {
+            let Some(mut pipe) = pipe else {
                 return;
             };
-
-            let mut reader = BufReader::new(pipe);
-            let mut buf = Vec::new();
+            let mut chunk = vec![0u8; READ_CHUNK];
+            let mut carry = Utf8Carry::default();
             loop {
-                buf.clear();
-                match reader.read_until(b'\n', &mut buf).await {
+                let n = match pipe.read(&mut chunk).await {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-                let text = String::from_utf8_lossy(&buf).into_owned();
-                full.lock()
+                    Ok(n) => n,
+                };
+                if let Some(capture) = capture
+                    .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push_str(&text);
+                    .as_mut()
+                {
+                    capture.push(&chunk[..n]);
+                }
                 // Never `send`, which would wait. A full channel means the UI
-                // is behind; the model's copy is already safe in `full`.
-                let _ = tx.try_send(text);
+                // is behind; the model's copy is already safe in the capture.
+                let _ = tx.try_send(carry.text(&chunk[..n]));
             }
         }
     });
 
-    Drain { handle, full }
+    Drain { handle, capture }
 }
 
 /// How long a killed command's output is waited for.
@@ -643,36 +671,38 @@ pub(super) const KILL_GRACE: Duration = Duration::from_secs(2);
 
 /// A pipe being read to its end, and what it has said so far.
 ///
-/// The text is kept behind a lock rather than returned by the reading task, so
-/// a caller that cannot wait for the end still has what came before it. See
+/// The capture is kept behind a lock rather than returned by the reading task,
+/// so a caller that cannot wait for the end still has what came before it. See
 /// [`KILL_GRACE`] for the caller that cannot.
 struct Drain {
     handle: tokio::task::JoinHandle<()>,
-    full: Arc<std::sync::Mutex<String>>,
+    capture: Arc<std::sync::Mutex<Option<Capture>>>,
 }
 
 impl Drain {
     /// Everything, once the pipe closes.
-    async fn all(mut self) -> String {
+    async fn all(mut self) -> Captured {
         let _ = (&mut self.handle).await;
         self.take()
     }
 
     /// What the pipe has said, waiting at most `grace` for the rest.
-    async fn within(mut self, grace: Duration) -> String {
+    async fn within(mut self, grace: Duration) -> Captured {
         if tokio::time::timeout(grace, &mut self.handle).await.is_err() {
             self.handle.abort();
         }
         self.take()
     }
 
-    fn take(&self) -> String {
-        std::mem::take(
-            &mut *self
-                .full
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+    /// Taken rather than copied, so a reader still going after an abort has
+    /// nothing left to add to.
+    fn take(&self) -> Captured {
+        self.capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(Capture::finish)
+            .unwrap_or(Captured::Whole(Vec::new()))
     }
 }
 
@@ -739,7 +769,7 @@ fn shell_invocation(command: &str) -> (String, Vec<String>) {
 /// nothing is lost by reading it — but the file is the record of what the
 /// command actually printed, and a record that had been edited first would be
 /// a worse thing to keep.
-fn for_the_model(raw: &str, stream: &str, ctx: &ToolContext) -> String {
+fn fit(raw: &str, stream: &str, ctx: &ToolContext) -> String {
     let condensed = super::condense::condense(raw, ctx.budget);
     let shown = condensed.as_deref().unwrap_or(raw);
     overflow::cut(shown, output_cap(ctx.budget), |omitted| {
@@ -747,9 +777,69 @@ fn for_the_model(raw: &str, stream: &str, ctx: &ToolContext) -> String {
     })
 }
 
+/// What the model reads of a captured stream: [`fit`] for one held whole, and
+/// its two ends for one that was too long to be — see [`from_ends`].
+fn for_the_model(captured: Captured, stream: &str, ctx: &ToolContext) -> String {
+    match captured {
+        Captured::Whole(bytes) => fit(&String::from_utf8_lossy(&bytes), stream, ctx),
+        Captured::Ends {
+            head,
+            tail,
+            total,
+            path,
+        } => from_ends(&head, &tail, total, path.as_deref(), ctx),
+    }
+}
+
+/// What the model reads of a stream too long to have been held whole.
+///
+/// Its two ends, each collapsed where it repeats and then cut the way [`fit`]
+/// cuts — the head to the first two thirds of the allowance, the tail to the
+/// last third — with the gap saying how much of the stream it stands for and
+/// where the whole of it went. The count is of the stream's own bytes: exact
+/// for an end shown whole or not collapsed, and for an end both collapsed and
+/// cut, what was shown of it is counted as what it stood for.
+fn from_ends(
+    head: &[u8],
+    tail: &[u8],
+    total: usize,
+    path: Option<&std::path::Path>,
+    ctx: &ToolContext,
+) -> String {
+    let cap = output_cap(ctx.budget);
+    let head_room = cap * 2 / 3;
+    let (head, head_stands_for) = end_of(head, head_room, true, ctx.budget);
+    let (tail, tail_stands_for) = end_of(tail, cap - head_room, false, ctx.budget);
+    let omitted = total.saturating_sub(head_stands_for + tail_stands_for);
+    overflow::join_ends(&head, &gap_sentence(omitted, path), &tail)
+}
+
+/// One end of a long stream, collapsed and then cut to `room` from the side
+/// that meets the gap, with how many of the stream's bytes it stands for.
+fn end_of(bytes: &[u8], room: usize, head: bool, budget: OutputBudget) -> (String, usize) {
+    let raw = String::from_utf8_lossy(bytes);
+    let condensed = super::condense::condense(&raw, budget);
+    let text = condensed.as_deref().unwrap_or(&raw);
+    if text.len() <= room {
+        return (text.to_string(), bytes.len());
+    }
+    let shown = if head {
+        &text[..overflow::floor_boundary(text, room)]
+    } else {
+        &text[overflow::ceil_boundary(text, text.len() - room)..]
+    };
+    (shown.to_string(), shown.len())
+}
+
 /// What one command's output may take, for the model this turn is on.
 fn output_cap(budget: OutputBudget) -> usize {
     budget.bytes(OUTPUT_SHARE, MIN_OUTPUT_BYTES, MAX_OUTPUT_BYTES)
+}
+
+/// The sentence in the gap of a stream held whole, which is spilled here, at
+/// the end, if a cut was needed at all.
+fn elision(omitted: usize, raw: &str, stream: &str, ctx: &ToolContext) -> String {
+    gap_sentence(omitted, overflow::spill(raw, stream, ctx).as_deref())
 }
 
 /// The sentence in the gap: how much went, and where it still is.
@@ -757,8 +847,8 @@ fn output_cap(budget: OutputBudget) -> usize {
 /// The path is the whole point of it. Without one the only route back to the
 /// middle of a long build is to run the build again — minutes, and a second
 /// set of side effects, to look at something that already happened.
-fn elision(omitted: usize, raw: &str, stream: &str, ctx: &ToolContext) -> String {
-    let Some(path) = overflow::spill(raw, stream, ctx) else {
+fn gap_sentence(omitted: usize, path: Option<&std::path::Path>) -> String {
+    let Some(path) = path else {
         return format!("{omitted} bytes omitted");
     };
     // `read_file` at any size: it windows around the offset it is given
@@ -1233,8 +1323,8 @@ mod tests {
         let large = ctx.clone().with_budget(OutputBudget::for_window(1_000_000));
         let text = "x".repeat(output_cap(large.budget) * 2);
 
-        let cut_small = for_the_model(&text, "stdout", &small);
-        let cut_large = for_the_model(&text, "stdout", &large);
+        let cut_small = fit(&text, "stdout", &small);
+        let cut_large = fit(&text, "stdout", &large);
 
         assert!(
             cut_small.len() < cut_large.len(),
@@ -1254,11 +1344,95 @@ mod tests {
         assert!(cut_large.contains("bytes omitted"), "{cut_large}");
     }
 
+    /// A screen that remembers only the widest thing it was sent.
+    #[derive(Default)]
+    struct Widest(std::sync::atomic::AtomicUsize);
+
+    #[async_trait]
+    impl ToolProgress for Widest {
+        async fn step(&self, text: String) {
+            self.0
+                .fetch_max(text.len(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_line_with_no_end_reaches_the_screen_in_pieces() {
+        // Read to the next newline, a 2 MB line with none went to the screen
+        // as one message — one IPC message to the webview the size of the line.
+        let (ctx, _dir) = test_ctx();
+        let widest = Arc::new(Widest::default());
+        let ctx = ctx.with_progress(widest.clone());
+        RunCommand
+            .execute(
+                serde_json::json!({"command": "head -c 2000000 /dev/zero | tr '\\0' x"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        // The screen is fed by a task of its own, so give it a moment.
+        for _ in 0..200 {
+            if widest.0.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let seen = widest.0.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            seen > 0 && seen <= 2 * FLUSH_BYTES,
+            "the widest message was {seen} bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stream_past_the_hold_is_written_out_and_shown_by_its_ends() {
+        let (mut ctx, _dir) = test_ctx();
+        let spills = TempDir::new().unwrap();
+        let dir = spills.path().canonicalize().unwrap();
+        ctx.command_output = Some(dir.clone());
+        ctx.readable_roots.push(dir);
+        let bytes = crate::capture::HOLD + 1024 * 1024;
+        let out = RunCommand
+            .execute(
+                serde_json::json!({"command": format!("head -c {bytes} /dev/zero | tr '\\0' x")}),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .to_text()
+            .to_string();
+
+        let cap = output_cap(ctx.budget);
+        assert!(out.len() <= cap + 1024, "the answer is {} bytes", out.len());
+        assert!(
+            out.contains(&format!("{} bytes omitted", bytes - cap)),
+            "{out}"
+        );
+        let path = spilled_path(&out).expect("the gap names a file");
+        assert_eq!(std::fs::metadata(path).unwrap().len(), bytes as u64);
+    }
+
+    #[test]
+    fn a_long_repeating_stream_is_collapsed_at_both_ends() {
+        // What the filters used to say in a line about a million copies of one
+        // line. Past the hold they see only the ends, and each end collapses.
+        let (ctx, _dir) = test_ctx();
+        let end = b"the same line, again\n".repeat(20_000);
+        let out = from_ends(&end, &end, 100_000_000, None, &ctx);
+        assert!(out.len() < 4096, "{} bytes", out.len());
+        assert!(
+            out.contains(&format!("{} bytes omitted", 100_000_000 - 2 * end.len())),
+            "{out}"
+        );
+    }
+
     #[test]
     fn truncation_keeps_both_ends() {
         let (ctx, _dir) = test_ctx();
         let text = format!("HEAD{}TAIL", "x".repeat(output_cap(ctx.budget) * 2));
-        let out = for_the_model(&text, "stdout", &ctx);
+        let out = fit(&text, "stdout", &ctx);
         assert!(out.starts_with("HEAD"));
         assert!(out.ends_with("TAIL"));
         assert!(out.contains("bytes omitted"));
@@ -1270,7 +1444,7 @@ mod tests {
     fn with_nowhere_to_write_a_cut_only_says_how_much_it_dropped() {
         let (ctx, _dir) = test_ctx();
         let text = "x".repeat(output_cap(ctx.budget) * 2);
-        let out = for_the_model(&text, "stdout", &ctx);
+        let out = fit(&text, "stdout", &ctx);
         assert!(out.contains("bytes omitted"), "{out}");
         assert!(!out.contains("read_file"), "{out}");
     }
@@ -1284,7 +1458,7 @@ mod tests {
         ctx.call_id = Some("toolu_01".into());
 
         let text = format!("HEAD{}TAIL", "x".repeat(output_cap(ctx.budget) * 2));
-        let out = for_the_model(&text, "stdout", &ctx);
+        let out = fit(&text, "stdout", &ctx);
 
         let path = spilled_path(&out).expect("the gap names a file");
         assert_eq!(
@@ -1309,7 +1483,7 @@ mod tests {
         ctx.readable_roots.push(dir);
 
         let text = "x".repeat(output_cap(ctx.budget) * 2);
-        let out = for_the_model(&text, "stdout", &ctx);
+        let out = fit(&text, "stdout", &ctx);
         let path = spilled_path(&out).expect("the gap names a file");
 
         ctx.resolve_read(&path.to_string_lossy())
@@ -1404,7 +1578,7 @@ mod tests {
         // asked for below is only reachable if the window followed the offset.
         let text: String = (1..=60_000).map(|i| format!("line {i}\n")).collect();
         assert!(text.len() > 600 * 1024, "the fixture has to be large");
-        let out = for_the_model(&text, "stdout", &ctx);
+        let out = fit(&text, "stdout", &ctx);
 
         assert!(out.contains("read_file it"), "{out}");
         let path = spilled_path(&out).expect("the gap names a file");

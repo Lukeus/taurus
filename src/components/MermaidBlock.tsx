@@ -48,6 +48,23 @@ export function MermaidBlock({
   const drawable =
     got !== null && got.kind !== "refused" ? got : null;
 
+  // Laid out once per source rather than once per render. The source toggle
+  // re-renders this without moving a line of the diagram.
+  const layout = useMemo(() => {
+    if (!drawable) return null;
+    return drawable.kind === "flow"
+      ? {
+          kind: "flow" as const,
+          plan: planFlow(drawable.input),
+          label: describeFlow(drawable.input),
+        }
+      : {
+          kind: "sequence" as const,
+          plan: planSequence(drawable.input),
+          label: describeSequence(drawable.input),
+        };
+  }, [drawable]);
+
   return (
     <div className="md-code">
       <div className="md-code-head">
@@ -65,22 +82,16 @@ export function MermaidBlock({
 
       {got?.kind === "refused" && <p className="md-mermaid-note">{got.why}</p>}
 
-      {drawable === null || showing === "source" ? (
+      {drawable === null || layout === null || showing === "source" ? (
         <pre>
           <code>{text}</code>
         </pre>
       ) : (
         <div className="md-mermaid">
-          {drawable.kind === "flow" ? (
-            <FlowDiagram
-              plan={planFlow(drawable.input)}
-              label={describeFlow(drawable.input)}
-            />
+          {layout.kind === "flow" ? (
+            <FlowDiagram plan={layout.plan} label={layout.label} />
           ) : (
-            <SequenceDiagram
-              plan={planSequence(drawable.input)}
-              label={describeSequence(drawable.input)}
-            />
+            <SequenceDiagram plan={layout.plan} label={layout.label} />
           )}
           {drawable.skipped.length > 0 && (
             // Under the picture rather than over it: what is here is a footnote

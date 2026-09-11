@@ -141,37 +141,40 @@ impl Tool for ReadFile {
             )));
         }
 
-        let bytes = tokio::fs::read(&path)
-            .await
-            .map_err(|e| ToolError::Failed(format!("cannot read {}: {e}", ctx.display(&path))))?;
-
-        if bytes.is_empty() {
-            return Ok(format!("{} is empty.", ctx.display(&path)).into());
-        }
-
         let start = input.offset.unwrap_or(1).max(1) - 1;
         let limit = input.limit.unwrap_or(default_read_lines(ctx.budget)).max(1);
         let answer_cap = read_answer_cap(ctx.budget);
-        // Located in the bytes rather than by decoding the file: only the
-        // window is turned into text, so a read near the end of something
-        // large costs the window instead of the file.
-        let (window, total) = line_window(&bytes, start, limit);
+        // Streamed on a blocking thread, keeping only the window. See
+        // `read_window` for what that saves, and for the walk it cannot.
+        let reading = path.clone();
+        let window = tokio::task::spawn_blocking(move || {
+            std::fs::File::open(&reading)
+                .and_then(|file| read_window(file, start, limit, answer_cap))
+        })
+        .await
+        .map_err(|e| ToolError::Failed(e.to_string()))?
+        .map_err(|e| ToolError::Failed(format!("cannot read {}: {e}", ctx.display(&path))))?;
+
+        if window.empty {
+            return Ok(format!("{} is empty.", ctx.display(&path)).into());
+        }
+        let total = window.total;
 
         // An offset past the end is a mistake worth naming, not an empty
         // result: the model asked for a region that does not exist and needs
-        // the file's length to correct itself. That length is now always
-        // known, because finding the window counts every line on the way.
-        let Some((from, to)) = window else {
+        // the file's length to correct itself. That length is always known,
+        // because finding the window counts every line on the way.
+        if !window.found {
             return Err(ToolError::InvalidInput(format!(
                 "{} has {} lines; offset {} is past the end",
                 ctx.display(&path),
                 total,
                 start + 1
             )));
-        };
+        }
 
-        let text = String::from_utf8_lossy(&bytes[from..to]);
-        let mut out = String::with_capacity((to - from) + (to - from) / 8);
+        let text = String::from_utf8_lossy(&window.bytes);
+        let mut out = String::with_capacity(window.bytes.len() + window.bytes.len() / 8);
         let mut shown = 0usize;
         let mut clipped = false;
         for line in text.lines() {
@@ -231,48 +234,85 @@ fn range_note(
 /// Room left for the number and tab each line is rendered with.
 const LINE_NUMBER_WIDTH: usize = 8;
 
-/// The byte range of `limit` lines starting at line `start`, and how many
-/// lines the whole thing has.
+/// How much of a file a read holds at once while it looks for a window.
+const READ_CHUNK: usize = 64 * 1024;
+
+/// A window of lines, and how many lines the whole file has.
+struct Window {
+    /// The window's bytes, terminators included, cut at `keep`. See
+    /// [`read_window`].
+    bytes: Vec<u8>,
+    /// Whether the window's first line exists at all.
+    found: bool,
+    total: usize,
+    /// Nothing was read — an answer of its own, not a window of nothing.
+    empty: bool,
+}
+
+/// Lines `start..start + limit` of what `reader` yields, and how many lines it
+/// has in all.
 ///
-/// `None` when `start` is past the end. Counting to the end regardless is what
-/// lets an offset past it be answered with the file's real length rather than
-/// with whatever a prefix happened to hold.
+/// Streamed, keeping only the window's bytes, and of those no more than
+/// `keep` — the most one answer shows, so nothing past it could be drawn
+/// anyway. What this replaced loaded the file whole and walked it a byte at a
+/// time, so one page of a 200 MB log held 200 MB to show two hundred lines.
+///
+/// The walk to the end is still there, and is the part a later read of the
+/// same file still pays: the count is what lets an offset past the end be
+/// answered with the file's real length, and what the range note tells the
+/// model. Outside the window a chunk is only counted, in a loop the compiler
+/// can vectorize; byte by byte happens only where the window begins or ends.
 ///
 /// Lines are counted the way [`str::lines`] splits them, so a number from here
 /// means the same thing as a number from a grep hit: on `\n`, with a final
 /// line needing no terminator and a trailing one adding no empty line.
-fn line_window(bytes: &[u8], start: usize, limit: usize) -> (Option<(usize, usize)>, usize) {
-    let wanted_end = start.saturating_add(limit);
-    let mut total = 0usize;
-    let mut from: Option<usize> = None;
-    let mut to: Option<usize> = None;
-    let mut line_start = 0usize;
-
-    for (i, byte) in bytes.iter().enumerate() {
-        if *byte != b'\n' {
+fn read_window(
+    mut reader: impl std::io::Read,
+    start: usize,
+    limit: usize,
+    keep: usize,
+) -> std::io::Result<Window> {
+    let end = start.saturating_add(limit);
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0u8; READ_CHUNK];
+    // The line the next byte belongs to.
+    let mut line = 0usize;
+    let mut last = None;
+    loop {
+        let n = match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        let chunk = &chunk[..n];
+        last = chunk.last().copied();
+        let newlines = chunk.iter().filter(|&&b| b == b'\n').count();
+        if line >= end || line + newlines < start {
+            line += newlines;
             continue;
         }
-        if total == start {
-            from = Some(line_start);
+        for &byte in chunk {
+            if line >= start && line < end && bytes.len() < keep {
+                bytes.push(byte);
+            }
+            if byte == b'\n' {
+                line += 1;
+            }
         }
-        if total == wanted_end {
-            to = Some(line_start);
-        }
-        total += 1;
-        line_start = i + 1;
     }
     // A last line that the file did not terminate.
-    if line_start < bytes.len() {
-        if total == start {
-            from = Some(line_start);
-        }
-        if total == wanted_end {
-            to = Some(line_start);
-        }
-        total += 1;
-    }
-
-    (from.map(|f| (f, to.unwrap_or(bytes.len()))), total)
+    let total = if last.is_some_and(|b| b != b'\n') {
+        line + 1
+    } else {
+        line
+    };
+    Ok(Window {
+        bytes,
+        found: start < total,
+        total,
+        empty: last.is_none(),
+    })
 }
 
 /// The largest index at or below `at` that `str` may be split on.
@@ -282,6 +322,76 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
         at -= 1;
     }
     at
+}
+
+/// How far into a file its line endings are judged from.
+const CRLF_SNIFF_BYTES: u64 = 64 * 1024;
+
+/// Whether the file at `path` writes its lines with `\r\n`, judged from its
+/// head.
+///
+/// The head rather than the whole: the question is which convention the file
+/// keeps, and its first lines answer it. Reading all of it to ask was a second
+/// full read of every file an overwrite was about to replace. A file that is LF
+/// for its first 64 KB and CRLF after is written as LF, the convention it opens
+/// with.
+fn uses_crlf(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = Vec::new();
+    if file.take(CRLF_SNIFF_BYTES).read_to_end(&mut head).is_err() {
+        return false;
+    }
+    head.windows(2).any(|pair| pair == b"\r\n")
+}
+
+/// Replaces a file's contents without ever leaving it empty or half written.
+///
+/// Written to a temporary file beside it, flushed to disk, given the old
+/// file's permissions, and renamed over it. What this replaced wrote in place:
+/// the file was emptied first, so a crash, a full disk or a killed process
+/// between the two left it empty, and anything reading it in between — a
+/// watcher, the editor beside the conversation — saw it empty or cut short.
+///
+/// A rename gives the path a new file, so a hard link to the old one keeps the
+/// old contents; that is the trade every editor that saves this way makes. A
+/// symbolic link is not replaced, because the path guard hands this the file a
+/// link resolves to. Two places still write in place, as before, rather than
+/// fail the call: a directory that will not take a new file, and a rename
+/// Windows refuses because another program holds the file open. A failed write
+/// to the temporary file is not one of them — that is the case this exists for,
+/// and the original is left as it was.
+fn replace_contents(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let permissions = match std::fs::metadata(path) {
+        Ok(meta) => {
+            // A file this process may not write is refused, as it was when the
+            // write went in place. A rename needs only the directory's
+            // permission, and a file somebody made read-only is one they
+            // meant to keep.
+            std::fs::OpenOptions::new().write(true).open(path)?;
+            Some(meta.permissions())
+        }
+        Err(_) => None,
+    };
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let Ok(mut temp) = tempfile::NamedTempFile::new_in(parent) else {
+        return std::fs::write(path, bytes);
+    };
+    temp.write_all(bytes)?;
+    temp.as_file().sync_all()?;
+    if let Some(permissions) = permissions {
+        temp.as_file().set_permissions(permissions)?;
+    }
+    match temp.persist(path) {
+        Ok(_) => Ok(()),
+        Err(refused) => {
+            drop(refused.file);
+            std::fs::write(path, bytes)
+        }
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -346,16 +456,19 @@ impl Tool for WriteFile {
 
         // Match the file's existing convention rather than imposing LF, so a
         // write into a CRLF repository does not show up as a whole-file diff.
-        let existing = tokio::fs::read_to_string(&path).await.ok();
-        let content = match existing.as_deref() {
-            Some(prior) if prior.contains("\r\n") => to_crlf(&input.content),
-            _ => input.content,
-        };
-
-        let bytes = content.len();
-        tokio::fs::write(&path, content)
-            .await
-            .map_err(|e| ToolError::Failed(format!("cannot write {}: {e}", ctx.display(&path))))?;
+        // On a blocking thread with the write, since both are the disk's.
+        let writing = path.clone();
+        let bytes = tokio::task::spawn_blocking(move || {
+            let content = if uses_crlf(&writing) {
+                to_crlf(&input.content)
+            } else {
+                input.content
+            };
+            replace_contents(&writing, content.as_bytes()).map(|()| content.len())
+        })
+        .await
+        .map_err(|e| ToolError::Failed(e.to_string()))?
+        .map_err(|e| ToolError::Failed(format!("cannot write {}: {e}", ctx.display(&path))))?;
         Ok(format!("Wrote {bytes} bytes to {}", ctx.display(&path)).into())
     }
 }
@@ -435,8 +548,10 @@ impl Tool for EditFile {
         let display = ctx.display(&path);
         let (updated, count) = apply_edit(&original, &input).map_err(|e| e.explain(&display))?;
 
-        tokio::fs::write(&path, updated)
+        let writing = path.clone();
+        tokio::task::spawn_blocking(move || replace_contents(&writing, updated.as_bytes()))
             .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?
             .map_err(|e| ToolError::Failed(format!("cannot write {display}: {e}")))?;
         Ok(match count {
             1 => format!("Edited {display}").into(),
@@ -1080,6 +1195,62 @@ mod tests {
         );
     }
 
+    /// A reader that hands over at most `step` bytes a call, so a window's
+    /// edges land inside a chunk, across one, and on one.
+    struct Trickle<'a> {
+        bytes: &'a [u8],
+        step: usize,
+    }
+
+    impl std::io::Read for Trickle<'_> {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.step.min(out.len()).min(self.bytes.len());
+            out[..n].copy_from_slice(&self.bytes[..n]);
+            self.bytes = &self.bytes[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_window_is_the_lines_asked_for_however_the_file_arrives() {
+        for text in [
+            "one\ntwo\nthree\n",
+            "one\ntwo\nthree",
+            "a\r\nb\r\n\r\nd",
+            "\n\n\n",
+            "x",
+        ] {
+            let lines: Vec<&str> = text.split_inclusive('\n').collect();
+            let total = text.lines().count();
+            for step in [1, 2, 3, READ_CHUNK] {
+                for start in 0..=total + 1 {
+                    for limit in 1..=total + 1 {
+                        let reader = Trickle {
+                            bytes: text.as_bytes(),
+                            step,
+                        };
+                        let window = read_window(reader, start, limit, usize::MAX).unwrap();
+                        let case = format!("{text:?} start {start} limit {limit} step {step}");
+                        assert_eq!(window.total, total, "{case}");
+                        assert_eq!(window.found, start < total, "{case}");
+                        let wanted: String =
+                            lines.iter().skip(start).take(limit).copied().collect();
+                        assert_eq!(String::from_utf8(window.bytes).unwrap(), wanted, "{case}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_window_holds_no_more_than_one_answer_shows() {
+        // What a page of a large log costs in memory: the page, not the log.
+        let text = "0123456789\n".repeat(100_000);
+        let window = read_window(text.as_bytes(), 0, usize::MAX, 4096).unwrap();
+        assert_eq!(window.bytes.len(), 4096);
+        assert_eq!(window.total, 100_000);
+    }
+
     #[tokio::test]
     async fn read_file_on_a_directory_points_at_list_dir() {
         let (ctx, dir) = test_ctx();
@@ -1089,6 +1260,118 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("list_dir"));
+    }
+
+    /// Unix only: a Windows rename over a file another program has open is
+    /// refused, and the write falls back to going in place — where a reader
+    /// can see it half done again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_being_overwritten_is_never_seen_empty_or_cut_short() {
+        // The window a write in place left open: the file was emptied and then
+        // filled, and anything reading it in between saw it empty or half
+        // written. A crash in that window left it that way.
+        let (ctx, dir) = test_ctx();
+        let path = dir.path().join("big.txt");
+        let size = 4 * 1024 * 1024;
+        std::fs::write(&path, "a".repeat(size)).unwrap();
+
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = std::thread::spawn({
+            let (path, done) = (path.clone(), done.clone());
+            move || {
+                let mut short = Vec::new();
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        if bytes.len() != size {
+                            short.push(bytes.len());
+                        }
+                    }
+                }
+                short
+            }
+        });
+        for round in 0..20 {
+            let content = if round % 2 == 0 { "b" } else { "a" }.repeat(size);
+            WriteFile
+                .execute(
+                    serde_json::json!({"path": "big.txt", "content": content}),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let short = reader.join().unwrap();
+        assert!(
+            short.is_empty(),
+            "a reader saw the file short {} times, e.g. {:?}",
+            short.len(),
+            &short[..short.len().min(5)]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_overwrite_keeps_the_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (ctx, dir) = test_ctx();
+        let path = dir.path().join("run.sh");
+        std::fs::write(&path, "echo one\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        WriteFile
+            .execute(
+                serde_json::json!({"path": "run.sh", "content": "echo two\n"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "echo two\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_read_only_file_is_refused_rather_than_replaced() {
+        // A rename needs only the directory's permission. A file somebody
+        // made read-only is one they meant to keep, so the write is refused
+        // as it was when it went in place.
+        use std::os::unix::fs::PermissionsExt;
+        let (ctx, dir) = test_ctx();
+        let path = dir.path().join("keep.txt");
+        std::fs::write(&path, "keep\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let err = WriteFile
+            .execute(
+                serde_json::json!({"path": "keep.txt", "content": "gone\n"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot write"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");
+    }
+
+    #[tokio::test]
+    async fn a_write_leaves_nothing_beside_the_file() {
+        let (ctx, dir) = test_ctx();
+        for content in ["one\n", "two\n"] {
+            WriteFile
+                .execute(
+                    serde_json::json!({"path": "only.txt", "content": content}),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+        }
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != ".taurus")
+            .collect();
+        assert_eq!(names, ["only.txt"]);
     }
 
     #[tokio::test]
@@ -1382,5 +1665,46 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::OutsideWorkspace { .. }));
+    }
+    /// What `read_file` costs on a log too large to read whole.
+    ///
+    /// Ignored, because it writes 200 MB into a temp directory and its numbers
+    /// only mean something from a release build. Four reads of the one file:
+    /// the first window, one from the middle, one from near the end, and an
+    /// offset past the end, which has to count every line to say how many
+    /// there are. See `docs/development.md`.
+    #[tokio::test]
+    #[ignore]
+    async fn read_file_cost_on_a_large_log() {
+        let (ctx, dir) = test_ctx();
+        let lines = 2_500_000usize;
+        {
+            use std::io::Write;
+            let file = std::fs::File::create(dir.path().join("big.log")).unwrap();
+            let mut out = std::io::BufWriter::new(file);
+            for i in 0..lines {
+                writeln!(
+                    out,
+                    "{i:>10} INFO request served in 12 ms from a pool of workers"
+                )
+                .unwrap();
+            }
+        }
+        for (label, offset) in [
+            ("first window      ", 1usize),
+            ("middle            ", lines / 2),
+            ("near the end      ", lines - 100),
+            ("past the end      ", lines + 10),
+        ] {
+            let input = serde_json::json!({"path": "big.log", "offset": offset, "limit": 200});
+            let _ = ReadFile.execute(input.clone(), &ctx).await;
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                let _ = ReadFile.execute(input.clone(), &ctx).await;
+                best = best.min(t.elapsed());
+            }
+            eprintln!("{label}  best of 5 {best:>10.1?}");
+        }
     }
 }

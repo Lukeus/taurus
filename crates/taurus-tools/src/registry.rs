@@ -13,7 +13,25 @@ use crate::tool::{Tool, ToolContext, ToolError, ToolResult};
 
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
-    tools: BTreeMap<String, Arc<dyn Tool>>,
+    tools: BTreeMap<String, Registered>,
+}
+
+/// A tool, with its schema read once, when it was registered.
+///
+/// A builtin answers `input_schema` by running schemars, which builds the
+/// schema afresh each time it is asked — and it was asked for every tool on
+/// every request, and again on every call to coerce the arguments. What a tool
+/// accepts does not change while it is registered: a tool whose schema is made
+/// from something that can change — an MCP server's list, the roster the
+/// delegate tool names — is built again when that changes, and registered
+/// again.
+#[derive(Clone)]
+struct Registered {
+    tool: Arc<dyn Tool>,
+    /// The whole schema, which [`crate::coerce`] works from.
+    schema: Arc<serde_json::Value>,
+    /// What the model is shown. See [`ToolRegistry::definitions`].
+    definition: Arc<ToolDef>,
 }
 
 impl ToolRegistry {
@@ -38,7 +56,18 @@ impl ToolRegistry {
 
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
         let name = tool.name().to_string();
-        if self.tools.insert(name.clone(), tool).is_some() {
+        let schema = tool.input_schema();
+        let definition = ToolDef {
+            name: name.clone(),
+            description: tool.description().to_string(),
+            input_schema: crate::schema::slim(&schema),
+        };
+        let registered = Registered {
+            tool,
+            schema: Arc::new(schema),
+            definition: Arc::new(definition),
+        };
+        if self.tools.insert(name.clone(), registered).is_some() {
             // Later registration wins, but a silent shadow would be a very
             // confusing bug to chase later.
             warn!(tool = %name, "tool was re-registered and now shadows the previous one");
@@ -65,7 +94,9 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.get(name).cloned()
+        self.tools
+            .get(name)
+            .map(|registered| registered.tool.clone())
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -82,28 +113,25 @@ impl ToolRegistry {
 
     /// Tool definitions to advertise to the model.
     ///
-    /// Schemas are slimmed on the way out. This is the one place every tool's
-    /// definition passes through — built-in, skill, and MCP alike — so it is
-    /// also the one place that has to know the difference between what a
-    /// validator needs and what a model reads. Dispatch still sees the full
-    /// schema: [`crate::coerce`] works from the real types.
+    /// Schemas are slimmed, once, when a tool is registered. This is the one
+    /// place every tool's definition passes through — built-in, skill, and MCP
+    /// alike — so it is also the one place that has to know the difference
+    /// between what a validator needs and what a model reads. Dispatch still
+    /// sees the full schema: [`crate::coerce`] works from the real types.
     pub fn definitions(&self) -> Vec<ToolDef> {
         self.tools
             .values()
-            .map(|t| ToolDef {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                input_schema: crate::schema::slim(&t.input_schema()),
-            })
+            .map(|registered| (*registered.definition).clone())
             .collect()
     }
 
     /// Definitions restricted to `allowed`, for sub-agents and skills that
     /// declare a narrower tool set.
     pub fn definitions_for(&self, allowed: &[String]) -> Vec<ToolDef> {
-        self.definitions()
-            .into_iter()
-            .filter(|d| allowed.iter().any(|a| a == &d.name))
+        self.tools
+            .iter()
+            .filter(|(name, _)| allowed.iter().any(|a| a == *name))
+            .map(|(_, registered)| (*registered.definition).clone())
             .collect()
     }
 
@@ -118,9 +146,10 @@ impl ToolRegistry {
         input: serde_json::Value,
         ctx: &ToolContext,
     ) -> ToolResult {
-        let Some(tool) = self.get(name) else {
+        let Some(registered) = self.tools.get(name) else {
             return Err(ToolError::NotFound(name.to_string()));
         };
+        let (tool, schema) = (registered.tool.clone(), registered.schema.clone());
 
         if ctx.cancel.is_cancelled() {
             return Err(ToolError::Canceled);
@@ -129,7 +158,7 @@ impl ToolRegistry {
         // Small models stringify scalars (`"replace_all": "false"`). Fixing that
         // here rather than in each tool means every tool benefits, including
         // ones registered by skills and MCP servers.
-        let input = crate::coerce::coerce(input, &tool.input_schema());
+        let input = crate::coerce::coerce(input, &schema);
 
         // Raced against Stop, because it can wait on a person for as long as
         // they leave a dialog up. Unraced, a question nobody answers holds the
@@ -1248,5 +1277,47 @@ mod tests {
             .await
             .unwrap();
         assert!(out.to_text().contains("hi"));
+    }
+    /// A tool that counts how often it is asked for its schema.
+    struct Counted(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl Tool for Counted {
+        fn name(&self) -> &str {
+            "counted"
+        }
+        fn description(&self) -> &str {
+            "counts how often its schema is read"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            serde_json::json!({"type": "object", "properties": {"n": {"type": "integer"}}})
+        }
+        fn effect(&self) -> crate::tool::Effect {
+            crate::tool::Effect::Read
+        }
+        async fn execute(&self, _input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+            Ok("done".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_is_asked_for_its_schema_once_however_often_it_is_used() {
+        // A builtin answers with schemars, which builds the schema afresh each
+        // time. Every request asked every tool, and every call asked its tool
+        // again to coerce the arguments.
+        let counted = Arc::new(Counted(Default::default()));
+        let mut registry = ToolRegistry::new();
+        registry.register(counted.clone());
+        let (ctx, _dir) = test_ctx();
+        for _ in 0..3 {
+            let _ = registry.definitions();
+            let _ = registry.definitions_for(&["counted".into()]);
+            registry
+                .execute("counted", serde_json::json!({"n": "4"}), &ctx)
+                .await
+                .unwrap();
+        }
+        assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

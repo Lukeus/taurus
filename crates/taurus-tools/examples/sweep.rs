@@ -8,10 +8,11 @@
 //! cargo run -p taurus-tools --example sweep -- [path]
 //! ```
 //!
-//! It reports two commands rather than one, because a turn is rarely one
-//! command and the second is the one that shows what the cache is for: the
-//! first read the workspace, and the second should open almost none of it. If
-//! the two are the same number, the cache is not working.
+//! It reports two commands rather than one, because the second is the one that
+//! shows what the cache is for: the first read the workspace, and the second
+//! should open almost none of it — which is also what the next turn's first
+//! command costs, since the host holds the cache for the workspace. If the two
+//! are the same number, the cache is not working.
 //!
 //! It writes nothing to the workspace. The checkpoint log it records into is a
 //! temporary directory that goes away when the process does.
@@ -45,7 +46,7 @@ async fn main() {
     // with no cache at all — which is the opposite of what is true.
     Sweep::before(&root, None).await;
 
-    // As a turn holds one: shared by every command in it.
+    // As the host holds one: shared by every command in the workspace.
     let cache = Arc::new(SweepCache::new());
 
     let mut change = None;

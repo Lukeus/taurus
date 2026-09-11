@@ -7,6 +7,7 @@
 //! reads of existing paths and writes of new ones.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use crate::tool::ToolError;
 
@@ -34,11 +35,21 @@ pub fn resolve_within(
     also: &[PathBuf],
     candidate: &str,
 ) -> Result<PathBuf, ToolError> {
-    if candidate.trim().is_empty() {
-        return Err(ToolError::InvalidInput("path must not be empty".into()));
-    }
-
+    not_empty(candidate)?;
     let root = canonical_root(root)?;
+    resolve_under(&root, also, candidate)
+}
+
+/// [`resolve_within`] for a caller that already holds the workspace root in
+/// canonical form, so the check does not resolve it again. See [`HeldRoot`].
+///
+/// `root` has to be canonical: every comparison below is made in that form.
+pub(crate) fn resolve_under(
+    root: &Path,
+    also: &[PathBuf],
+    candidate: &str,
+) -> Result<PathBuf, ToolError> {
+    not_empty(candidate)?;
     let raw = Path::new(candidate);
     let joined = if raw.is_absolute() {
         raw.to_path_buf()
@@ -67,7 +78,7 @@ pub fn resolve_within(
                      resolve — its target is missing, or it loops — so where it leads cannot \
                      be checked against the workspace. Remove the link, or point it at \
                      something that exists inside the workspace.",
-                    display(&root, existing)
+                    display_under(root, existing)
                 )))
             }
             Err(_) => match existing.parent() {
@@ -94,7 +105,7 @@ pub fn resolve_within(
 
     // Each allowed root is canonicalized too, or a symlinked skill directory
     // would never match the resolved path it is supposed to permit.
-    let permitted = full.starts_with(&root)
+    let permitted = full.starts_with(root)
         || also
             .iter()
             .filter_map(|dir| dir.canonicalize().ok())
@@ -107,6 +118,46 @@ pub fn resolve_within(
         });
     }
     Ok(full)
+}
+
+fn not_empty(candidate: &str) -> Result<(), ToolError> {
+    if candidate.trim().is_empty() {
+        return Err(ToolError::InvalidInput("path must not be empty".into()));
+    }
+    Ok(())
+}
+
+/// The workspace root, resolved once and trusted after that for as long as it
+/// is still there.
+///
+/// Canonicalizing the root was most of what a path check cost — about 8 µs a
+/// call on a local disk, against well under one for the `stat` that confirms
+/// the resolved form still exists — and a glob that hit two thousand files
+/// paid it two thousand times over. Held by a [`crate::ToolContext`], shared by
+/// its clones, and keyed by the workspace it was resolved from.
+///
+/// The `stat` is what keeps [`canonical_root`]'s sentence: a workspace deleted
+/// or unmounted mid-turn still fails with the message that says so, rather
+/// than with a bare error from whatever the tool tried next. What it gives up
+/// is a workspace that is itself a symlink retargeted mid-turn, which keeps
+/// resolving to where it pointed when the context was made — the directory
+/// the turn was confined to from its start.
+#[derive(Clone, Default)]
+pub struct HeldRoot(Arc<OnceLock<(PathBuf, PathBuf)>>);
+
+impl HeldRoot {
+    /// `root` in canonical form, from what is held when it still stands.
+    pub fn resolve(&self, root: &Path) -> Result<PathBuf, ToolError> {
+        if let Some((given, canonical)) = self.0.get() {
+            if given == root && std::fs::metadata(canonical).is_ok() {
+                return Ok(canonical.clone());
+            }
+            return canonical_root(root);
+        }
+        let canonical = canonical_root(root)?;
+        let _ = self.0.set((root.to_path_buf(), canonical.clone()));
+        Ok(canonical)
+    }
 }
 
 fn canonical_root(root: &Path) -> Result<PathBuf, ToolError> {
@@ -174,6 +225,18 @@ pub fn plain(path: &Path) -> &Path {
 /// platform-specific for no gain, and would collide with JSON escaping on the
 /// way through.
 pub fn display(root: &Path, path: &Path) -> String {
+    match root.canonicalize() {
+        Ok(root) => display_under(&root, path),
+        Err(_) => with_forward_slashes(
+            &plain(path).display().to_string(),
+            std::path::MAIN_SEPARATOR,
+        ),
+    }
+}
+
+/// [`display`] for a caller that already holds the root in canonical form. See
+/// [`HeldRoot`].
+pub(crate) fn display_under(root: &Path, path: &Path) -> String {
     /*
      * Both sides through `plain` first, and this is the one call that is not
      * cosmetic.
@@ -193,12 +256,10 @@ pub fn display(root: &Path, path: &Path) -> String {
      * So the prefix comes off here, at the edge, which is what `plain` is for.
      */
     let path = plain(path);
-    let shown = root
-        .canonicalize()
-        .ok()
-        .and_then(|r| path.strip_prefix(plain(&r)).ok())
+    let shown = path
+        .strip_prefix(plain(root))
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|| path.display().to_string());
+        .unwrap_or_else(|_| path.display().to_string());
     with_forward_slashes(&shown, std::path::MAIN_SEPARATOR)
 }
 
@@ -433,6 +494,33 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("no longer exists"), "{message}");
         assert!(message.contains("Choose another workspace"), "{message}");
+    }
+
+    #[test]
+    fn a_held_root_still_notices_the_workspace_going() {
+        // What the `stat` in `HeldRoot::resolve` is for. Without it a turn
+        // whose workspace was deleted would go on handing out paths under a
+        // directory that is not there, and the tool after would fail with a
+        // bare errno instead of this sentence.
+        let ws = workspace();
+        let root = ws.path().to_path_buf();
+        let held = HeldRoot::default();
+        held.resolve(&root).expect("held while it stands");
+        drop(ws);
+        let message = held.resolve(&root).unwrap_err().to_string();
+        assert!(message.contains("no longer exists"), "{message}");
+    }
+
+    #[test]
+    fn a_held_root_answers_only_for_the_workspace_it_was_resolved_from() {
+        let (a, b) = (workspace(), workspace());
+        let held = HeldRoot::default();
+        let first = held.resolve(a.path()).unwrap();
+        assert_eq!(
+            held.resolve(b.path()).unwrap(),
+            b.path().canonicalize().unwrap()
+        );
+        assert_eq!(held.resolve(a.path()).unwrap(), first);
     }
 
     #[test]

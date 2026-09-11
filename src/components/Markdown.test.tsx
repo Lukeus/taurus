@@ -1,11 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { describe, expect, it, vi } from "vitest";
 
 // The opener plugin reaches into Tauri internals that do not exist outside the
 // webview; only the click handler uses it, and these tests never click.
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
-const { Markdown } = await import("./Markdown");
+const { Markdown, blocks } = await import("./Markdown");
 
 /** Renders as the transcript would once a turn has finished. */
 const render = (text: string) =>
@@ -120,6 +122,75 @@ describe("markdown rendering", () => {
     it("renders nothing for empty text", () => {
       expect(renderStreaming("")).toBe('<div class="markdown"></div>');
     });
+  });
+});
+
+describe("cutting an answer into stretches", () => {
+  const cuts = (text: string) => blocks(text).map((b) => b.text);
+
+  it("cuts before a paragraph that follows a blank line", () => {
+    expect(cuts("One.\n\nTwo.\n\nThree")).toEqual(["One.\n\n", "Two.\n\n", "Three"]);
+  });
+
+  it("gives back every character, each stretch starting where the last ended", () => {
+    const text = "# Head\n\nprose\n\n```rust\nfn a() {}\n```\n\n- x\n- y\n\ntail";
+    const pieces = blocks(text);
+    expect(pieces.map((b) => b.text).join("")).toBe(text);
+    pieces.forEach((b) => expect(text.startsWith(b.text, b.at)).toBe(true));
+  });
+
+  it("never cuts inside a fence, blank lines and all", () => {
+    expect(cuts("```\na\n\nb\n```\n\nc")).toEqual(["```\na\n\nb\n```\n\n", "c"]);
+    // Closed only by a run as long as the one that opened it.
+    expect(cuts("````\n```\n\nx\n````\n\ny")).toEqual(["````\n```\n\nx\n````\n\n", "y"]);
+    expect(cuts("~~~\n\n```\n\n~~~\n\nz")).toEqual(["~~~\n\n```\n\n~~~\n\n", "z"]);
+  });
+
+  it("does not cut inside a fence that has not closed yet", () => {
+    expect(cuts("Intro.\n\n```rust\nfn a() {\n\n    b();")).toEqual([
+      "Intro.\n\n",
+      "```rust\nfn a() {\n\n    b();",
+    ]);
+  });
+
+  it("does not cut before what could continue a list, or an indented line", () => {
+    expect(cuts("- a\n\n- b")).toHaveLength(1);
+    expect(cuts("1. a\n\n2. b")).toHaveLength(1);
+    expect(cuts("- a\n\n  still a")).toHaveLength(1);
+    expect(cuts("text\n\n    code")).toHaveLength(1);
+  });
+
+  it("leaves whole what a definition or a raw block could reach across", () => {
+    expect(cuts("see [x]\n\n[x]: https://example.com")).toHaveLength(1);
+    expect(cuts("a[^1]\n\n[^1]: note")).toHaveLength(1);
+    expect(cuts("<!--\n\nhidden\n\n-->\n\nafter")).toHaveLength(1);
+  });
+
+  /*
+   * The property the cutting is allowed to rely on and nothing else: parsed
+   * apart, the pieces draw what the whole would have. Compared with the blank
+   * text between block elements taken out, since the whole document separates
+   * its blocks with a newline the pieces do not have — whitespace between
+   * blocks, which draws nothing.
+   */
+  it("draws what parsing the whole would have", () => {
+    const draw = (text: string) =>
+      renderToStaticMarkup(<ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>)
+        .replace(/>\n+</g, "><");
+    const documents = [
+      "Here is what I found.\n\n## Summary\n\n- **a** — one\n- `b` — two\n\n```rust\nfn main() {\n\n    x();\n}\n```\n\nSee [docs](https://example.com).\n",
+      "- loose\n\n- list\n\nAfter it.\n",
+      "1. one\n\n2. two\n\n3. three\n",
+      "> quoted\n\n> again\n\nplain\n",
+      "| a | b |\n| - | - |\n| 1 | 2 |\n\nUnder the table.\n",
+      "Title\n---\n\n***\n\n    indented code\n\n    more\n\ntext\n",
+      "- item\n\n  continued in the item\n\nout of it\n",
+      "~~~md\n# not a heading\n\n~~~\n\nafter\n",
+      "see [the docs][d]\n\n[d]: https://example.com\n",
+    ];
+    for (const text of documents) {
+      expect(blocks(text).map((b) => draw(b.text)).join(""), text).toBe(draw(text));
+    }
   });
 });
 

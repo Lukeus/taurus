@@ -207,6 +207,61 @@ fn data_runtime() -> Option<&'static tokio::runtime::Runtime> {
         .as_ref()
 }
 
+/// Row counts already paid for, by file.
+///
+/// Every page of the Data pane asked for the file's row count, so the grid
+/// could say where in it the page was, and for a CSV or NDJSON file a count is
+/// a full scan — a multi-gigabyte file read end to end on every click of the
+/// pager. The count is kept here instead, against the file's length and
+/// modification time, the rule the search index already uses: a file appended
+/// to, rewritten or replaced is counted again. What that cannot see is a
+/// rewrite that keeps both, the blind spot every fingerprint here shares.
+///
+/// Process-wide beside [`data_runtime`], because the key is the file rather
+/// than whoever asked about it.
+fn counted() -> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Counted>> {
+    static COUNTED: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Counted>>,
+    > = std::sync::OnceLock::new();
+    COUNTED.get_or_init(Default::default)
+}
+
+/// How many counts are kept. Past it the lot is dropped: a pager moves between
+/// a handful of files, and the next page of each is one count away.
+const COUNTED_KEPT: usize = 64;
+
+/// A file's length and modification time.
+type Stamp = (u64, Option<std::time::SystemTime>);
+
+struct Counted {
+    stamp: Stamp,
+    rows: u64,
+}
+
+fn stamp_of(path: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()))
+}
+
+fn known_rows(path: &Path, stamp: Stamp) -> Option<u64> {
+    let held = counted()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.get(path)
+        .filter(|kept| kept.stamp == stamp)
+        .map(|kept| kept.rows)
+}
+
+fn remember_rows(path: &Path, stamp: Stamp, rows: u64) {
+    let mut held = counted()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if held.len() >= COUNTED_KEPT && !held.contains_key(path) {
+        held.clear();
+    }
+    held.insert(path.to_path_buf(), Counted { stamp, rows });
+}
+
 /// Runs `work` on [`data_runtime`] and waits for it here.
 async fn elsewhere<T: Send + 'static>(
     work: impl std::future::Future<Output = Result<T, DataError>> + Send + 'static,
@@ -430,15 +485,28 @@ impl Engine for InlineEngine {
         let ctx = self.open(source).await?;
         let columns = self.heads(&ctx, source).await?;
 
-        let total = one_row(&ctx, source, &format!("SELECT count(*) FROM {TABLE}"))
-            .await
-            .ok()
-            .and_then(|b| as_u64(&b, 0))
-            .unwrap_or(0);
+        // Counted once per version of the file rather than once per page. See
+        // `counted`.
+        let stamp = stamp_of(&source.path);
+        let total = match stamp.and_then(|stamp| known_rows(&source.path, stamp)) {
+            Some(rows) => rows,
+            None => {
+                let rows = one_row(&ctx, source, &format!("SELECT count(*) FROM {TABLE}"))
+                    .await
+                    .ok()
+                    .and_then(|b| as_u64(&b, 0));
+                if let (Some(rows), Some(stamp)) = (rows, stamp) {
+                    remember_rows(&source.path, stamp, rows);
+                }
+                rows.unwrap_or(0)
+            }
+        };
 
         // `OFFSET` before `LIMIT` is the order DataFusion's parser wants, and
-        // both are inside the query rather than applied to collected batches so
-        // that a page past the tenth costs the same as the first.
+        // both are inside the query rather than applied to collected batches,
+        // so a page holds its own rows and no more. A page deep into a CSV or
+        // NDJSON file still reads every row in front of it: those formats have
+        // no index to seek by. The data probe measures it.
         let sql = format!("SELECT * FROM {TABLE} LIMIT {limit} OFFSET {offset}");
         let batches = collect(&ctx, source, &sql).await?;
 
@@ -607,6 +675,10 @@ impl Engine for InlineEngine {
                 detail: e.to_string(),
             })?;
 
+        // One session for every step, with only `input` swapped between them,
+        // for the reason `check` gives.
+        let run = self.session_for(tables).await?;
+
         let mut stats = Vec::with_capacity(steps.len());
         let mut current = start_source;
         for (index, (title, sql)) in steps.iter().enumerate() {
@@ -625,7 +697,7 @@ impl Engine for InlineEngine {
 
             let started = Instant::now();
             let columns = self
-                .run_step(tables, &current, sql, &destination, format, number, title)
+                .run_step(&run, &current, sql, &destination, format, number, title)
                 .await?;
             let took_ms = started.elapsed().as_millis() as u64;
 
@@ -674,10 +746,15 @@ impl InlineEngine {
         // `None` until the first step has been planned, because until then the
         // real file is what `input` is.
         let mut shape: Option<ArrowSchemaRef> = None;
+        // One session for the whole plan, with only `input` swapped between
+        // steps. A session per step registered every named table again for
+        // each one, and a CSV infers its schema from its rows every time it is
+        // registered.
+        let ctx = self.session_for(tables).await?;
 
         for (index, (title, sql)) in steps.iter().enumerate() {
             let number = index + 1;
-            let ctx = self.session_for(tables).await?;
+            forget_input(&ctx)?;
             match &shape {
                 None => self.register(&ctx, INPUT, start).await?,
                 // An empty table with the right columns. Planning asks a table
@@ -731,7 +808,7 @@ impl InlineEngine {
     #[allow(clippy::too_many_arguments)]
     async fn run_step(
         &self,
-        tables: &[(String, Source)],
+        ctx: &SessionContext,
         input: &Source,
         sql: &str,
         destination: &Path,
@@ -739,11 +816,11 @@ impl InlineEngine {
         number: usize,
         title: &str,
     ) -> Result<usize, DataError> {
-        let ctx = self.session_for(tables).await?;
+        forget_input(ctx)?;
         // Registered last, so it wins. A dataset genuinely called `input` is
         // shadowed inside a recipe rather than fought with — see the note at
         // the top of `recipe.rs`.
-        self.register(&ctx, INPUT, input).await?;
+        self.register(ctx, INPUT, input).await?;
 
         let plan = ctx
             .state()
@@ -815,6 +892,14 @@ impl InlineEngine {
         let batch = one_row(&ctx, source, &format!("SELECT count(*) FROM {TABLE}")).await?;
         Ok(as_u64(&batch, 0).unwrap_or(0))
     }
+}
+
+/// Takes the previous step's `input` out of a session, so the next step's can
+/// be registered under the same name.
+fn forget_input(ctx: &SessionContext) -> Result<(), DataError> {
+    ctx.deregister_table(INPUT)
+        .map(|_| ())
+        .map_err(|e| DataError::Failed(e.to_string()))
 }
 
 /// Whether this plan reads the previous step's rows at all.
@@ -1502,6 +1587,40 @@ id,event,price,active
         let page = InlineEngine.page(&source, 0, MAX_PAGE * 4).await.unwrap();
         assert_eq!(page.rows.len() as u64, MAX_PAGE);
         assert_eq!(page.total, MAX_PAGE + 50);
+    }
+
+    #[tokio::test]
+    async fn a_page_counts_the_file_again_once_it_changes() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "grows.csv", EVENTS);
+        assert_eq!(InlineEngine.page(&source, 0, 2).await.unwrap().total, 5);
+
+        let grown = format!("{}\n6,view,1.0,true\n7,view,2.0,false\n", EVENTS.trim_end());
+        std::fs::write(&source.path, grown).unwrap();
+        // A count kept past a change is the week-old number the known-gaps
+        // entry warns about.
+        assert_eq!(InlineEngine.page(&source, 0, 2).await.unwrap().total, 7);
+    }
+
+    #[tokio::test]
+    async fn a_second_page_of_an_unchanged_file_is_not_counted_again() {
+        // What shows the count is kept at all. A rewrite that keeps the
+        // file's length and its modification time is the one change the
+        // stamp cannot see, so a total that comes back unchanged across one
+        // is a total that was not counted again.
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "same.csv", "id\n1\n2\n");
+        let modified = std::fs::metadata(&source.path).unwrap().modified().unwrap();
+        assert_eq!(InlineEngine.page(&source, 0, 10).await.unwrap().total, 2);
+
+        std::fs::write(&source.path, "id\n123\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&source.path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(InlineEngine.page(&source, 0, 10).await.unwrap().total, 2);
     }
 
     /// Tab-separated files, and the reason `file_extension` is set at all: the

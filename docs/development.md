@@ -257,6 +257,31 @@ Underneath both, the store batches a frame of stream events at a time rather
 than writing once per token (`batchEvents`), so a fast local model produces
 thirty-odd renders a second instead of hundreds.
 
+The other axis is the answer itself. A renderer that parses the whole reply on
+every frame makes each frame dearer than the last, and the reply as a whole
+costs the square of its length. So `blocks` in `Markdown.tsx` cuts the text at
+blank lines that nothing can reach across, each piece is memoized on its own
+text, and a frame parses only the paragraph being written. The bench's second
+group is one frame at three lengths of reply:
+
+```
+· 10 paragraphs in      1.10 ms
+· 50 paragraphs in      1.08 ms
+· 200 paragraphs in     1.40 ms
+```
+
+Parsed whole, the same three measured 3.93, 14.78, and 58.63 ms. The bench
+draws a finished entry rather than an open one, because an open one is
+throttled to a parse every 60 ms and a bench never waits that long — but each
+tick of the throttle pays exactly what one of these iterations pays.
+
+The cut is allowed to rely on one property and nothing else: parsed apart, the
+pieces draw what the whole would have. `Markdown.test.tsx` checks it over
+documents chosen for the constructs that reach furthest — loose lists, fences
+with blank lines inside them, indented code, a reference definition — and
+`blocks` refuses to cut at all where a definition or a raw HTML block could
+reach across a blank line.
+
 jsdom lays nothing out and paints nothing, so the absolute numbers here are a
 fraction of what a webview pays. The ratio between them is the part that
 carries over, and the ratio is the thing being tested.
@@ -486,13 +511,73 @@ cargo run -p taurus-host --example notes -- --check
 
 # What a sweep costs on a real workspace, and that it stays quiet when nothing
 # changed. Needs no provider. Run it on something large before touching the
-# caps in `sweep.rs` — every command pays this twice. It reports a turn's first
-# command, its second, and a turn keeping no cache between them: the second
-# should open almost nothing, and two numbers that match mean the cache is not
-# working. `READ_THREADS` is a measured ceiling and not a core count — past a
+# caps in `sweep.rs` — every command pays this twice. It reports the first
+# command in a workspace, the one after it, and a sweep keeping no cache: the
+# second should open almost nothing, and two numbers that match mean the cache
+# is not working. The second is also what the next turn's first command costs,
+# because the host holds the cache for the workspace rather than for a turn. `READ_THREADS` is a measured ceiling and not a core count — past a
 # handful of readers a sweep gets slower, and by eight it is slower than one
 # thread.
 cargo run -p taurus-tools --example sweep -- .
+
+# What grep costs on a tree too big to judge by eye. Needs no provider, and
+# writes only inside a temp directory it makes and removes. Release, because
+# the regex crate built for debug is a different program. Three numbers: a
+# pattern found nowhere, which reads every file; one capped at the result
+# limit; and big files whose one match sits on their last line. Measured when
+# grep went parallel and stopped testing a matched file line by line: 94.8 ms
+# to 49.8, 3.8 to 3.1, and 28.3 to 6.3.
+cargo test --release -p taurus-tools --lib grep_cost -- --ignored --nocapture
+
+# What read_file costs on a log too large to read whole, which is where a
+# spilled command's output sends the model. Same rules as the one above: no
+# provider, a temp directory, release. Four reads of one 200 MB file — its
+# first window, its middle, near its end, and past its end — and they should
+# cost the same, because each still counts every line for the range note.
+# Measured when reads began streaming and keeping only the window: 64 to 67 ms
+# each, to 25 or 26, and a read holds the window rather than the file.
+cargo test --release -p taurus-tools --lib read_file_cost -- --ignored --nocapture
+
+# What a command's output costs the process running it. Needs no provider, and
+# writes only inside temp directories it makes. Two commands that each print
+# 100 MB — ordinary lines, and one line with no newline in it — through
+# run_command with a screen attached. The number to watch is the maximum
+# resident set `time` reports (`-l` on macOS, `-v` with GNU time): output the
+# model will only ever see the two ends of should not be held whole. Measured
+# when output began to be read in pieces and written out past 8 MB: 228 MB to
+# 16 MB for the lines, and 406 MB to 15 MB for the single line, whose screen
+# was sent one 100 MB message before and nothing over 8 KB after. Most of the
+# single line's three seconds is `tr` itself.
+cargo build --release -p taurus-tools --example output
+/usr/bin/time -l target/release/examples/output lines
+/usr/bin/time -l target/release/examples/output one-line
+
+# What building one request costs on a long conversation with pictures in it:
+# sixty messages, three 2 MB screenshots and twenty 8 KB tool results, about
+# 6 MB. Release, for the reason grep's is. One number per copy the request
+# makes: the history cloned for the attempt, 110 µs; the wire body built from
+# it, 240 µs; and the body serialized, 2.04 ms. The first two look avoidable
+# and are a sixth of the whole — about 9 ms over a 25-iteration turn — so the
+# adapters still build their wire bodies as JSON trees rather than borrowing
+# from the history. Run this before deciding otherwise.
+cargo test --release -p taurus-provider-anthropic --lib request_build_cost -- --ignored --nocapture
+
+# What search_code spends in this process on a large index: 6,000 passages of
+# 768 dimensions, about 24 MB. Release, as above. Measured: reading the index
+# off disk 7.6 ms, copying its entries 0.7 ms, decoding every vector 6.6 ms,
+# and the search that decodes and scores them 9.6 ms. That is why the decoded
+# vectors are not kept between searches: keeping them would save about 14 ms of
+# a search, and cost a cache threaded through the refresh and invalidated on
+# every save.
+cargo test --release -p taurus-index --lib search_code_cost -- --ignored --nocapture
+
+# What the context estimate costs over a long session: 300 messages, a hundred
+# write_file calls with 1 KB of arguments and a 4 KB result each. The loop
+# walks the whole history two or three times an iteration, so this grows with
+# the session. Measured when tool arguments stopped being serialized into a
+# string only to be measured: 1,000 walks went from 286.7 ms to 73.6 ms, with
+# every estimate unchanged.
+cargo test --release -p taurus-core --lib estimate_cost -- --ignored --nocapture
 
 # How well the index answers a question, as a number rather than by eye.
 # Needs Ollama and an embedding model; reads the workspace and writes nothing.
@@ -556,8 +641,9 @@ cargo run -p taurus-host --example vision -- llama3.2:latest   # refused, and wh
 #
 # Three numbers, and what each one means is in the example's own header:
 # `schema` must stay flat as the file grows, `profile` is a full pass and is
-# allowed to be slow, and `page` must be flat in the *offset* — which is why it
-# is measured at row 0 and again at the end.
+# allowed to be slow, and `page` is measured at row 0 and again at the end —
+# the first counts the file once per version of it, and the gap to the second
+# is the offset, which a CSV or NDJSON file reads its way to.
 cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv
 
 # With a query, which is the other half. The table is named the way

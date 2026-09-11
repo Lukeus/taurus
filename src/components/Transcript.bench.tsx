@@ -99,6 +99,75 @@ function streaming(turns: number) {
   };
 }
 
+/**
+ * An answer of `paragraphs` paragraphs, in the shape a model writes one:
+ * prose, with a list and a fenced block every few paragraphs.
+ */
+function answer(paragraphs: number): string {
+  const out: string[] = [];
+  for (let p = 0; p < paragraphs; p++) {
+    out.push(
+      `Paragraph ${p} explains a **step** with \`code\` in it, and says why ` +
+        "the step is needed before the next one can run.",
+    );
+    if (p % 5 === 2) out.push("- one\n- two\n- three");
+    if (p % 5 === 4) out.push("```rust\nfn main() {\n    println!(\"hi\");\n}\n```");
+  }
+  return out.join("\n\n") + "\n\n";
+}
+
+/**
+ * A long answer, and a way to push one more word into its last paragraph.
+ *
+ * The entry is drawn as finished rather than open. An open one is throttled to
+ * one parse per 60 ms, and a bench that never waits would see the throttle
+ * rather than the parse — but each of those ticks pays exactly what one
+ * iteration here pays, so this is the cost of a frame of a long answer.
+ */
+function answering(paragraphs: number) {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root: Root = createRoot(host);
+  const base = history(1);
+  let text = answer(paragraphs);
+
+  return {
+    token() {
+      text += "word ";
+      act(() => {
+        root.render(
+          <Transcript
+            entries={[
+              ...base,
+              { kind: "assistant", id: "live", open: false, thinking: "", text },
+            ]}
+            busy={true}
+            empty={null}
+            onAnswer={() => {}}
+            onOpenDelegate={() => {}}
+          />,
+        );
+      });
+    },
+    stop() {
+      act(() => root.unmount());
+      host.remove();
+    },
+  };
+}
+
+describe("one frame of a long answer", () => {
+  for (const paragraphs of [10, 50, 200]) {
+    let live: ReturnType<typeof answering>;
+    bench(`${paragraphs} paragraphs in`, () => live.token(), {
+      setup: () => {
+        live = answering(paragraphs);
+      },
+      teardown: () => live.stop(),
+    });
+  }
+});
+
 describe("one token, drawn", () => {
   for (const turns of [1, 5, 20, 50]) {
     let live: ReturnType<typeof streaming>;
