@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -34,35 +34,37 @@ export const Markdown = memo(function Markdown({
 }) {
   const throttled = useThrottled(text, streaming ? STREAM_FRAME_MS : 0);
 
-  // Rebuilt when `streaming` changes rather than declared once, because a
-  // ```mermaid fence has to know: half a diagram is not one, and a fence three
-  // lines into being written would otherwise flicker through refusals on the
-  // way to a picture. Cheap, since the document is being re-parsed anyway.
-  const components = useMemo(
-    () => ({
-      a: Anchor,
-      code: (props: CodeProps) => <Code {...props} streaming={streaming} />,
-      pre: Pre,
-      img: Image,
-      table: ({ node: _node, ...props }: { node?: unknown }) => (
-        // Wide tables scroll inside their own box rather than stretching
-        // the transcript.
-        <div className="md-table-wrap">
-          <table {...props} />
-        </div>
-      ),
-    }),
-    [streaming],
-  );
-
   return (
-    <div className="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {text.length === 0 ? "" : throttled}
-      </ReactMarkdown>
-    </div>
+    <Streaming.Provider value={streaming}>
+      <div className="markdown">
+        <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>
+          {text.length === 0 ? "" : throttled}
+        </ReactMarkdown>
+      </div>
+    </Streaming.Provider>
   );
 });
+
+/**
+ * Whether the text a block sits in is still arriving.
+ *
+ * A ```mermaid fence has to know: half a diagram is not one, and a fence three
+ * lines into being written would otherwise flicker through refusals on the way
+ * to a picture.
+ *
+ * Handed down through context rather than closed over by the `code` renderer.
+ * A renderer that closes over it is a new component every time it changes, and
+ * React remounts whatever a new component draws — so the moment an answer
+ * finished, every code block in it re-highlighted and every diagram lost the
+ * view it was showing.
+ */
+const Streaming = createContext(false);
+
+const PLUGINS = [remarkGfm];
+
+/** One set of renderers for the life of the module. Their identity is what
+ *  React uses to decide a block is the same block, so it must never move. */
+const COMPONENTS = { a: Anchor, code: Code, pre: Pre, img: Image, table: Table };
 
 /** Returns `value`, but changing at most once per `ms`. */
 function useThrottled(value: string, ms: number): string {
@@ -138,13 +140,8 @@ type CodeProps = {
   node?: unknown;
 };
 
-function Code({
-  className,
-  children,
-  node: _node,
-  streaming,
-  ...rest
-}: CodeProps & { streaming: boolean }) {
+function Code({ className, children, node: _node, ...rest }: CodeProps) {
+  const streaming = useContext(Streaming);
   // `react-markdown` routes both inline spans and fenced blocks here; only the
   // fenced ones carry a `language-*` class, and inline code has no newline.
   const language = /language-(\w+)/.exec(className ?? "")?.[1];
@@ -228,6 +225,16 @@ function Image({
   const sketch = sketchName(typeof src === "string" ? src : undefined);
   if (sketch !== null) return <SketchEmbed name={sketch} alt={alt} />;
   return <img src={src} alt={alt} {...rest} />;
+}
+
+/** Wide tables scroll inside their own box rather than stretching the
+ *  transcript. */
+function Table({ node: _node, ...props }: { node?: unknown }) {
+  return (
+    <div className="md-table-wrap">
+      <table {...props} />
+    </div>
+  );
 }
 
 /** The `pre` wrapper is supplied by `Code`, so this one just passes through. */
