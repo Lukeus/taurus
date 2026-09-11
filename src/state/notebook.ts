@@ -386,7 +386,16 @@ export function useNotebook({
       return "conflict";
     }
     if (typed === page.text) return "clean";
-    return write(page, typed);
+    const outcome = await write(page, typed);
+    // Refused or failed on the way out. `write` keeps the text when its answer
+    // arrives after the editor has moved on; this answer arrived before, while
+    // the file was still on screen, and the caller is about to move it — to
+    // another note, or to another folder, where this one's editor is closed.
+    // Nothing would be left holding the text, so it is kept the same way.
+    if (leaving && (outcome === "stale" || outcome === "failed")) {
+      hold(page, typed, outcome === "stale");
+    }
+    return outcome;
   }, [write, hold]);
 
   /** Opens a file, having written what was typed into the one being left. */
