@@ -386,6 +386,14 @@ impl ToolContext {
         crate::path_guard::resolve_under(&root, &self.readable_roots, candidate)
     }
 
+    /// The workspace in the canonical form every path check compares against.
+    ///
+    /// For a caller that shows paths from where a context cannot follow — a
+    /// search's worker threads — through [`crate::path_guard::display_under`].
+    pub(crate) fn canonical_workspace(&self) -> Result<PathBuf, ToolError> {
+        self.root.resolve(&self.workspace)
+    }
+
     pub fn display(&self, path: &Path) -> String {
         match self.root.resolve(&self.workspace) {
             Ok(root) => crate::path_guard::display_under(&root, path),

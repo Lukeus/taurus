@@ -520,6 +520,15 @@ cargo run -p taurus-host --example notes -- --check
 # thread.
 cargo run -p taurus-tools --example sweep -- .
 
+# What grep costs on a tree too big to judge by eye. Needs no provider, and
+# writes only inside a temp directory it makes and removes. Release, because
+# the regex crate built for debug is a different program. Three numbers: a
+# pattern found nowhere, which reads every file; one capped at the result
+# limit; and big files whose one match sits on their last line. Measured when
+# grep went parallel and stopped testing a matched file line by line: 94.8 ms
+# to 49.8, 3.8 to 3.1, and 28.3 to 6.3.
+cargo test --release -p taurus-tools --lib grep_cost -- --ignored --nocapture
+
 # How well the index answers a question, as a number rather than by eye.
 # Needs Ollama and an embedding model; reads the workspace and writes nothing.
 # Fifteen questions phrased the way somebody asks them, each with the file that
