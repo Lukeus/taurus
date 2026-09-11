@@ -203,7 +203,6 @@ impl Tool for RunCommand {
         let mut child = piped(program, args, &cwd, input.stdin.is_some())
             .spawn()
             .map_err(cannot_start)?;
-        feed_stdin(child.stdin.take(), input.stdin.as_deref()).await;
 
         // Drain the pipes concurrently with the wait. A child that fills its
         // stdout buffer blocks forever if nobody is reading, which would turn
@@ -216,13 +215,23 @@ impl Tool for RunCommand {
         let drain_stdout = spawn_stream(child.stdout.take(), ctx.progress.clone());
         let drain_stderr = spawn_stream(child.stderr.take(), ctx.progress.clone());
 
+        // Fed alongside the wait, inside the timeout and within reach of Stop,
+        // rather than before either. Written first, it would deadlock with a
+        // child that prints more than a pipe holds before it reads more than a
+        // pipe holds: the child waits for its output to be read, and nothing
+        // reads it until every byte of its input has gone in — a wait no
+        // timeout could end, because the timeout had not started.
+        let feed = feed_stdin(child.stdin.take(), input.stdin.as_deref());
         let status = tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => {
                 let _ = child.start_kill();
                 return Err(ToolError::Canceled);
             }
-            result = tokio::time::timeout(timeout, child.wait()) => result,
+            result = tokio::time::timeout(timeout, async {
+                let ((), status) = tokio::join!(feed, child.wait());
+                status
+            }) => result,
         };
 
         let status = match status {
@@ -738,6 +747,53 @@ mod tests {
             .await
             .unwrap();
         assert!(out.to_text().contains("got:yes"), "{out}");
+    }
+
+    /// Prints more than a pipe holds before it reads anything.
+    #[cfg(unix)]
+    const PRINTS_THEN_READS: &str =
+        "head -c 200000 /dev/zero | tr '\\0' x; cat > /dev/null; echo done";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn input_is_fed_while_the_output_is_read_not_before_it() {
+        // Written before the drains started, and outside the timeout, this
+        // deadlocked: the child waited for its output to be read, and nothing
+        // read it until all of its input had gone in.
+        let (ctx, _dir) = test_ctx();
+        let run = RunCommand.execute(
+            serde_json::json!({
+                "command": PRINTS_THEN_READS,
+                "stdin": "y\n".repeat(100_000),
+                "timeout_secs": 10,
+            }),
+            &ctx,
+        );
+        let out = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .expect("the command and its input waited on each other");
+        assert!(out.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn input_to_a_terminal_is_written_while_its_output_is_read() {
+        // A terminal's input queue is a few kilobytes, so the same shape
+        // deadlocks there with far less input — and the write held the slave
+        // open, so not even the timeout's kill could end it.
+        let (ctx, _dir) = test_ctx();
+        let out = RunCommand
+            .execute(
+                serde_json::json!({
+                    "command": PRINTS_THEN_READS,
+                    "stdin": "y\n".repeat(10_000),
+                    "pty": true,
+                    "timeout_secs": 10,
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(out.is_ok(), "{:?}", out.err());
     }
 
     #[test]
