@@ -487,8 +487,8 @@ function asTheme(draft: Draft): CustomTheme {
     name: draft.name,
     path: "",
     scope: "global",
-    dark: draft.dark,
-    light: draft.light,
+    dark: paintable(draft.dark),
+    light: paintable(draft.light),
     fonts: {
       display: draft.fonts.display || null,
       body: draft.fonts.body || null,
@@ -501,6 +501,20 @@ function asTheme(draft: Draft): CustomTheme {
     // draft that pinned one would stop the switch above from working.
     modes: "both",
   };
+}
+
+/**
+ * Only the colours that are colours.
+ *
+ * A hex field is previewed as it is typed, and painting `#1a2b3` on the way to
+ * `#1a2b3c` across the whole window flickered it on every keystroke. A value
+ * that does not parse keeps the colour underneath until it does; the contrast
+ * panel, which reads the draft itself, is what says it is not one yet.
+ */
+function paintable(palette: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(palette).filter(([, value]) => parseHex(value) !== null),
+  );
 }
 
 /** The draft as the file that gets written. */

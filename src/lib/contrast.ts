@@ -212,11 +212,18 @@ export type Result = Pair & {
  * rather than failing. That case is a caller that has not resolved its palette
  * — a bug in this app, not in somebody's theme — and answering it with a red
  * warning on somebody's screen would be blaming them for it.
+ *
+ * A colour that is there but is not a colour — `#1a2b3`, half typed — also
+ * scores `null`, and fails. It is exactly the value nobody can read, and a
+ * warning that went quiet for it would be looking away at the worst moment.
  */
 export function check(palette: Record<string, string>): Result[] {
   return PAIRS.map((pair) => {
-    const measured = ratio(palette[pair.fg] ?? "", palette[pair.bg] ?? "");
-    return { ...pair, ratio: measured, ok: measured === null || measured >= pair.needs };
+    const fg = palette[pair.fg];
+    const bg = palette[pair.bg];
+    const measured = ratio(fg ?? "", bg ?? "");
+    const missing = fg === undefined || bg === undefined;
+    return { ...pair, ratio: measured, ok: measured === null ? missing : measured >= pair.needs };
   });
 }
 
