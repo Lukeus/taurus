@@ -2419,11 +2419,14 @@ pub async fn rewind_to(
     // is not there and reported nothing to undo — and had it found one, it
     // would have restored a different project's files.
     let workspace = session_workspace(&state, &session_id).await;
-    let rewind =
-        state
-            .host
-            .checkpoints_for(&workspace)
-            .rewind(&session_id, &workspace, turn, dry_run)?;
+    // Off the runtime: a rewind reads the whole log, then every file it names,
+    // and writes them back. On a long session that is long enough to stall the
+    // stream and the permission prompt that share the runtime with it.
+    let store = state.host.checkpoints_for(&workspace);
+    let rewind = {
+        let session_id = session_id.clone();
+        off_runtime(move || store.rewind(&session_id, &workspace, turn, dry_run)).await?
+    };
 
     // The checklist is working state, and rewinding is undoing the work it
     // tracked. Kept, it would be the one thing in the session that still
@@ -2452,10 +2455,10 @@ pub async fn turn_changes(
     turn: u32,
 ) -> CmdResult<Vec<TurnChange>> {
     let workspace = session_workspace(&state, &session_id).await;
-    state
-        .host
-        .checkpoints_for(&workspace)
-        .changes(&session_id, &workspace, turn)
+    // Off the runtime, for the reason `list_checkpoints` is: the whole log is
+    // read and each file diffed, and the drawer is opened mid-turn.
+    let store = state.host.checkpoints_for(&workspace);
+    off_runtime(move || store.changes(&session_id, &workspace, turn)).await
 }
 
 /// Reads one turn back to an agent that did not write it.
@@ -2504,10 +2507,9 @@ pub async fn conversation_changes(
     session_id: String,
 ) -> CmdResult<Vec<TurnChange>> {
     let workspace = session_workspace(&state, &session_id).await;
-    state
-        .host
-        .checkpoints_for(&workspace)
-        .changes_all(&session_id, &workspace)
+    // Off the runtime, the same as a single turn's diffs — this is all of them.
+    let store = state.host.checkpoints_for(&workspace);
+    off_runtime(move || store.changes_all(&session_id, &workspace)).await
 }
 
 /// Where the workspace stands with git, for the branch label and the commit
