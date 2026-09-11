@@ -376,12 +376,15 @@ and a check does not blank the pane.
 makes a command undoable reads the workspace before it starts and again when it
 finishes ([Rewinding a turn](#rewinding-a-turn)). For a background command those
 are minutes apart and usually in different turns, so the command carries its own
-pre-image from the moment it started and spends it when the process exits. The
-changes land in the turn that was running when it finished, not the one that
-started it — which by then is history — and they land whether or not anybody
-checked: every tool call collects the commands that have finished since the last
-one. A command still running when a turn ends is in no turn's changed-file list
-yet, which is the honest answer, because it has not finished changing them.
+pre-image from the moment it started and compares it the moment the process
+exits. The changes land in the turn running at the next tool call after it
+finished, not the one that started it — which by then is history — and they
+land whether or not anybody checked: every tool call collects the commands that
+have finished since the last one. Files other calls changed while it ran are
+left to their own turns, so undoing a dev server's turn never undoes the edits
+made while it served. A command still running when a turn ends is in no turn's
+changed-file list yet, which is the honest answer, because it has not finished
+changing them.
 
 **Two arguments are refused rather than ignored.** `pty` has nothing watching
 the terminal it would open, and `timeout_secs` has nothing waiting to enforce

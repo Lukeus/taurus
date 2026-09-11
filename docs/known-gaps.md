@@ -58,13 +58,21 @@ and they are the minority.
   cannot be backgrounded at all — it has to be run in the foreground, where the
   timeout applies again.
 - **A command still running when a turn ends is in no turn's changed-file
-  list.** Its pre-image is held from the moment it started and spent when it
-  exits, so nothing is lost — the changes land in whichever turn is running
-  when it finishes. But a rewind offered while a build is still writing cannot
-  include what the build has not written yet, and the list the user reads
-  before deciding says nothing about the command that is about to add to it.
-  Covering it means the changed-file list growing under the reader's eye, which
-  is a UI question rather than a recording one.
+  list.** Its pre-image is held from the moment it started and compared the
+  moment it exits, so nothing is lost — the changes land in the turn running
+  at the next tool call after it finishes. But a rewind offered while a build
+  is still writing cannot include what the build has not written yet, and the
+  list the user reads before deciding says nothing about the command that is
+  about to add to it. Covering it means the changed-file list growing under the
+  reader's eye, which is a UI question rather than a recording one.
+- **A file a background command and another call both changed belongs to the
+  other call.** The command's comparison runs from its start to its exit, so it
+  sees every edit made in that time, and the edits other calls record are left
+  to their own turns rather than recorded a second time with the command's
+  older pre-image. What that costs is the command's own change to such a file:
+  undoing the command's turn does not touch it, and undoing the other call's
+  turn puts the file back as it stood then, the command's change up to that
+  point included.
 - **What a message costs is still estimated, at four characters a token.** The
   fixed part of a request is measured — a response reports the whole prompt's
   size, and the difference from the estimate for the same messages is the

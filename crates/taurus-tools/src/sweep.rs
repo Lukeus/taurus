@@ -236,11 +236,18 @@ impl Sweep {
     /// canceled. A command killed halfway through has still written whatever it
     /// wrote, and that is exactly the turn a user reaches for undo on.
     pub async fn after(self, root: &Path, recorder: &TurnRecorder) -> Change {
+        self.diff(root).await.record(recorder).await
+    }
+
+    /// Walks again and works out what changed, without writing any of it down.
+    ///
+    /// Apart from [`Diffed::record`] for a background command, whose changes
+    /// are read the moment it exits and can only be written down at the next
+    /// tool call. Read then instead, they would take in whatever else changed
+    /// in between and record it with this command's pre-image.
+    pub async fn diff(self, root: &Path) -> Diffed {
         if let Some(reason) = self.abandoned {
-            return Change {
-                caveat: Some(reason),
-                ..Change::nothing()
-            };
+            return Diffed::abandoned(reason);
         }
 
         let scan = {
@@ -248,14 +255,11 @@ impl Sweep {
             tokio::task::spawn_blocking(move || (current(&root), git_state(&root))).await
         };
         let Ok((Some(now), git_now)) = scan else {
-            return Change {
-                caveat: Some(
-                    "The workspace could not be read after this command, so whatever it changed \
-                     was not recorded and cannot be undone."
-                        .into(),
-                ),
-                ..Change::nothing()
-            };
+            return Diffed::abandoned(
+                "The workspace could not be read after this command, so whatever it changed was \
+                 not recorded and cannot be undone."
+                    .into(),
+            );
         };
 
         // Whether the ignore rules still say what they said. A command that
@@ -307,26 +311,80 @@ impl Sweep {
         // of it — would come back in a different order every run.
         changed.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        let unrestorable = changed
-            .iter()
-            .filter(|(_, state)| matches!(**state, State::Opaque { .. }))
-            .count();
-
-        let files: Vec<String> = changed
-            .iter()
-            .map(|(path, _)| crate::path_guard::display(root, path))
-            .collect();
-
         // Copied here and only here. The pre-image is shared with the cache and
         // with whatever the last command held, so the copy is paid for the
         // files that changed rather than for the whole workspace.
-        let held: Vec<(PathBuf, State)> = changed
+        let changed = changed
             .into_iter()
             .map(|(path, before)| {
+                let shown = crate::path_guard::display(root, &path);
                 let before = Arc::try_unwrap(before).unwrap_or_else(|held| (*held).clone());
-                (path, before)
+                (path, shown, before)
             })
             .collect();
+
+        Diffed {
+            changed,
+            abandoned: None,
+            rules_moved: !rules_held,
+            git_moved: self.git != git_now,
+        }
+    }
+}
+
+/// What a sweep found changed, not yet written down. See [`Sweep::diff`].
+pub struct Diffed {
+    /// Each changed file: where it is, the name it is shown under, and what it
+    /// held before.
+    changed: Vec<(PathBuf, String, State)>,
+    /// Why nothing could be compared at all, when that happened.
+    abandoned: Option<String>,
+    /// Whether an ignore rule changed between the two walks.
+    rules_moved: bool,
+    /// Whether git's own state moved between the two walks.
+    git_moved: bool,
+}
+
+impl Diffed {
+    fn abandoned(reason: String) -> Self {
+        Self {
+            changed: Vec::new(),
+            abandoned: Some(reason),
+            rules_moved: false,
+            git_moved: false,
+        }
+    }
+
+    /// Leaves out files something else has recorded since the first walk, by
+    /// the name they are shown under. See [`crate::jobs::Jobs::claim`].
+    pub fn without(mut self, claimed: &HashSet<String>) -> Self {
+        if !claimed.is_empty() {
+            self.changed
+                .retain(|(_, shown, _)| !claimed.contains(shown));
+        }
+        self
+    }
+
+    /// Writes the pre-images down, and reports what was recorded.
+    pub async fn record(self, recorder: &TurnRecorder) -> Change {
+        if let Some(reason) = self.abandoned {
+            return Change {
+                caveat: Some(reason),
+                ..Change::nothing()
+            };
+        }
+
+        let unrestorable = self
+            .changed
+            .iter()
+            .filter(|(_, _, state)| matches!(state, State::Opaque { .. }))
+            .count();
+        let mut files = Vec::with_capacity(self.changed.len());
+        let mut held = Vec::with_capacity(self.changed.len());
+        for (path, shown, before) in self.changed {
+            files.push(shown);
+            held.push((path, before));
+        }
         // In one write however many there are — a formatter run changes
         // thousands. A path an earlier tool in this turn already recorded is
         // dropped silently, which is the behavior that wants keeping: the
@@ -336,7 +394,7 @@ impl Sweep {
         let mut caveats = Vec::new();
         // Narrower than the others on purpose: what was recorded is still
         // sound, and saying otherwise would be its own kind of wrong.
-        if !rules_held {
+        if self.rules_moved {
             caveats.push(
                 "An ignore rule changed while this command ran, so any file it stopped ignoring \
                  was left out and a rewind will not touch it."
@@ -349,7 +407,7 @@ impl Sweep {
         // undoable and there is nothing to correct. A `git checkout` that
         // rewrote half the tree is the opposite: the files come back, `HEAD`
         // does not, and the result matches neither commit.
-        if !files.is_empty() && self.git != git_now {
+        if !files.is_empty() && self.git_moved {
             caveats.push(
                 "This command moved git's own state as well. A rewind puts the files back but \
                  leaves HEAD and the index where the command left them, so the result would match \

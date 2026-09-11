@@ -445,15 +445,18 @@ async fn start_in_background(
     // changes is minutes away and in some later turn, and a pre-image read
     // then would be of a file the command had already written. See
     // [`crate::jobs`].
-    let sweep = match &ctx.checkpoints {
-        Some(_) => Some(crate::sweep::Sweep::before(&ctx.workspace, ctx.sweeps.clone()).await),
+    let before = match &ctx.checkpoints {
+        Some(_) => Some(crate::jobs::Before {
+            sweep: crate::sweep::Sweep::before(&ctx.workspace, ctx.sweeps.clone()).await,
+            workspace: ctx.workspace.clone(),
+        }),
         None => None,
     };
 
     let mut child = taurus_process::Tree::spawn(piped(program, args, &cwd, input.stdin.is_some()))
         .map_err(cannot_start)?;
     feed_stdin(child.take_stdin(), input.stdin.as_deref()).await;
-    let id = jobs.adopt(input.command.clone(), child, sweep).await;
+    let id = jobs.adopt(input.command.clone(), child, before).await;
 
     Ok(format!(
         "Started #{id} in the background: {}\nRead what it says with check_command (id {id}), \

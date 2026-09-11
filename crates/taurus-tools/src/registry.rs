@@ -166,12 +166,19 @@ impl ToolRegistry {
         // After the permission check, so a denied call leaves no trace, and
         // before execution, so what is recorded is what was there first.
         if let Some(recorder) = &ctx.checkpoints {
+            let mut recorded = Vec::new();
             for candidate in tool.touches(&input) {
                 // An unresolvable path is left to the tool to reject with its
                 // own message; there is nothing to snapshot either way.
                 if let Ok(path) = ctx.resolve(&candidate) {
                     recorder.capture(&path).await;
+                    recorded.push(crate::path_guard::display(&ctx.workspace, &path));
                 }
+            }
+            // A background command still running will see this file change
+            // too. It is this call's to undo. See `Jobs::claim`.
+            if let Some(jobs) = &ctx.jobs {
+                jobs.claim(recorded.iter().map(String::as_str));
             }
         }
 
@@ -215,6 +222,9 @@ impl ToolRegistry {
         // precisely the turn someone reaches for undo on.
         if let (Some(sweep), Some(recorder)) = (sweep, &ctx.checkpoints) {
             let change = sweep.after(&ctx.workspace, recorder).await;
+            if let Some(jobs) = &ctx.jobs {
+                jobs.claim(change.files.iter().map(String::as_str));
+            }
 
             // What it *did* record needs no announcement: the changed-file
             // count in the header and the Changes drawer are both read straight
@@ -236,7 +246,7 @@ impl ToolRegistry {
         // where the changes would otherwise go unrecorded. See
         // [`crate::jobs::Jobs::reap`].
         if let (Some(jobs), Some(recorder)) = (&ctx.jobs, &ctx.checkpoints) {
-            for warning in jobs.reap(&ctx.workspace, recorder).await {
+            for warning in jobs.reap(recorder).await {
                 annotate(&mut result, &warning);
             }
         }
@@ -864,6 +874,114 @@ mod tests {
             std::fs::read_to_string(root.join("a.txt")).unwrap(),
             "original"
         );
+    }
+
+    /// A command that outlives the turn it starts in, writing a file of its
+    /// own at the end.
+    #[cfg(windows)]
+    const OUTLIVES_ITS_TURN: &str = "ping -n 2 127.0.0.1 > nul & echo built > out.txt";
+    #[cfg(not(windows))]
+    const OUTLIVES_ITS_TURN: &str = "sleep 1; echo built > out.txt";
+
+    #[tokio::test]
+    async fn a_background_command_leaves_what_other_turns_changed_to_them() {
+        // A dev server started in one turn and stopped in a later one: its
+        // sweep sees every edit made in between, and recording those with its
+        // own pre-image would let a rewind of its turn undo them.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        std::fs::write(root.join("model.txt"), "before").unwrap();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let jobs = Arc::new(crate::Jobs::new());
+        let turn = |prompt: &str| {
+            ctx.clone()
+                .with_jobs(jobs.clone())
+                .with_checkpoints(store.begin_turn("s1", &root, prompt))
+        };
+        let registry = ToolRegistry::with_builtins();
+
+        registry
+            .execute(
+                "run_command",
+                serde_json::json!({"command": OUTLIVES_ITS_TURN, "background": true}),
+                &turn("start it"),
+            )
+            .await
+            .unwrap();
+        registry
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "model.txt", "content": "after"}),
+                &turn("edit while it runs"),
+            )
+            .await
+            .unwrap();
+        let checked = registry
+            .execute(
+                "check_command",
+                serde_json::json!({"id": 1, "wait_secs": 30}),
+                &turn("collect it"),
+            )
+            .await
+            .unwrap();
+        assert!(checked.to_text().contains("finished"), "{checked}");
+
+        let turns = store.turns("s1").unwrap();
+        let collected = turns
+            .iter()
+            .find(|t| t.files.iter().any(|f| f == "out.txt"))
+            .expect("the command's own file was not recorded");
+        assert_eq!(
+            collected.files,
+            vec!["out.txt"],
+            "another turn's edit was recorded as the command's"
+        );
+
+        store.rewind("s1", &root, collected.turn, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("model.txt")).unwrap(),
+            "after",
+            "undoing the command's turn undid another turn's edit"
+        );
+        assert!(!root.join("out.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_background_command_is_read_when_it_exits_not_when_it_is_collected() {
+        // Collected at the first tool call after it exits, which can be a turn
+        // later. What changed in between is not the command's.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let jobs = Arc::new(crate::Jobs::new());
+        let started = ctx
+            .with_jobs(jobs.clone())
+            .with_checkpoints(store.begin_turn("s1", &root, "start it"));
+        ToolRegistry::with_builtins()
+            .execute(
+                "run_command",
+                serde_json::json!({"command": "echo built > out.txt", "background": true}),
+                &started,
+            )
+            .await
+            .unwrap();
+
+        // Waited for without a tool call, so nothing has collected it yet.
+        let report = jobs
+            .check(Some(1), std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(report.contains("finished"), "{report}");
+        // Changed after it exited, by something no turn recorded.
+        std::fs::write(root.join("later.txt"), "not the command's").unwrap();
+
+        let recorder = store.begin_turn("s1", &root, "collect it");
+        jobs.reap(&recorder).await;
+
+        let turns = store.turns("s1").unwrap();
+        assert_eq!(turns.last().unwrap().files, vec!["out.txt"]);
     }
 
     #[tokio::test]
