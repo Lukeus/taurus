@@ -552,6 +552,16 @@ cargo build --release -p taurus-tools --example output
 /usr/bin/time -l target/release/examples/output lines
 /usr/bin/time -l target/release/examples/output one-line
 
+# What building one request costs on a long conversation with pictures in it:
+# sixty messages, three 2 MB screenshots and twenty 8 KB tool results, about
+# 6 MB. Release, for the reason grep's is. One number per copy the request
+# makes: the history cloned for the attempt, 110 µs; the wire body built from
+# it, 240 µs; and the body serialized, 2.04 ms. The first two look avoidable
+# and are a sixth of the whole — about 9 ms over a 25-iteration turn — so the
+# adapters still build their wire bodies as JSON trees rather than borrowing
+# from the history. Run this before deciding otherwise.
+cargo test --release -p taurus-provider-anthropic --lib request_build_cost -- --ignored --nocapture
+
 # How well the index answers a question, as a number rather than by eye.
 # Needs Ollama and an embedding model; reads the workspace and writes nothing.
 # Fifteen questions phrased the way somebody asks them, each with the file that

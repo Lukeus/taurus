@@ -429,4 +429,67 @@ mod image_tests {
         assert_eq!(content[0]["type"], "text");
         assert!(content[0]["text"].as_str().unwrap().contains("rows"));
     }
+    /// What building one request costs on a long conversation with pictures
+    /// in it: sixty messages, three 2 MB screenshots, and twenty 8 KB tool
+    /// results. Ignored, because only a release build's numbers mean anything.
+    ///
+    /// Three numbers, one per copy the request makes: the history cloned for
+    /// the attempt, the wire body built from it, and the body serialized. The
+    /// first two are the ones that look avoidable, and measured they are about
+    /// a sixth of the whole — serialization is the rest, and every design pays
+    /// it, because those are the bytes that go on the wire. See
+    /// `docs/development.md` before rewriting the adapters to save them.
+    #[test]
+    #[ignore]
+    fn request_build_cost_on_a_long_conversation() {
+        let image = "A".repeat(2 * 1024 * 1024);
+        let mut messages = Vec::new();
+        for turn in 0..20 {
+            let mut asked = vec![ContentBlock::text(format!(
+                "question {turn}: what does this part of the code do, and why"
+            ))];
+            if turn % 7 == 0 {
+                asked.push(ContentBlock::Image {
+                    mime_type: "image/png".into(),
+                    data: image.clone(),
+                });
+            }
+            messages.push(Message::new(Role::User, asked));
+            messages.push(Message::new(
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    format!("toolu_{turn}"),
+                    "read_file",
+                    serde_json::json!({"path": "src/lib.rs"}),
+                )],
+            ));
+            messages.push(Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: format!("toolu_{turn}"),
+                    content: taurus_provider::ToolOutput::text("x".repeat(8 * 1024)),
+                    is_error: false,
+                }],
+            ));
+        }
+        let request = ChatRequest::new("claude-opus-5", messages);
+        let time = |label: &str, f: &mut dyn FnMut()| {
+            f();
+            let t = std::time::Instant::now();
+            for _ in 0..20 {
+                f();
+            }
+            eprintln!("{label}  {:>10.1?} per request", t.elapsed() / 20);
+        };
+        time("clone the messages     ", &mut || {
+            std::hint::black_box(request.messages.clone());
+        });
+        time("build the wire body    ", &mut || {
+            std::hint::black_box(crate::wire::MessagesBody::from_request(&request, None));
+        });
+        let body = crate::wire::MessagesBody::from_request(&request, None);
+        time("serialize the wire body", &mut || {
+            std::hint::black_box(serde_json::to_vec(&body).unwrap());
+        });
+    }
 }
