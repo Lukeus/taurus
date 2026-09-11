@@ -189,6 +189,12 @@ pub fn run() {
             }
             if let Some(state) = webview.app_handle().try_state::<Arc<state::AppState>>() {
                 state.terminals.close_all();
+                // The same for the turns the old page started and the dialogs
+                // it was showing for them: nothing is left to answer either,
+                // and a turn parked on one holds its conversation until the app
+                // restarts. See `AppState::abandon_turns`.
+                let state = state.inner().clone();
+                tauri::async_runtime::spawn(async move { state.abandon_turns().await });
             }
         })
         .on_window_event(|window, event| {

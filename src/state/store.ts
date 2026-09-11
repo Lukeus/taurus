@@ -792,6 +792,10 @@ export const useStore = create<Store>((set, get) => ({
       set((s) => ({
         busy: false,
         stopping: false,
+        // A turn that has ended has nothing waiting on a permission prompt:
+        // Stop withdraws the question, and an answer to a dialog left up would
+        // go nowhere.
+        permission: null,
         // Close the open assistant entry so the next turn starts a new bubble.
         entries: s.entries.map((e) =>
           e.kind === "assistant" ? { ...e, open: false } : e,
