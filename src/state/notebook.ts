@@ -550,8 +550,10 @@ export function useNotebook({
       // Refused names come back from the host, which is the only place that can
       // know whether one is taken. Thrown rather than swallowed: the box that
       // asked for the name is where the message belongs.
-      const made = await api.createPage(scope, kind, name);
-      setPages(await api.listPages());
+      // The list comes back with the page, as it does after a delete, so the
+      // pane redraws from one answer rather than asking again.
+      const [made, pages] = await api.createPage(scope, kind, name);
+      setPages(pages);
       void flush(true);
       go(made);
       setMode("write");
@@ -579,8 +581,8 @@ export function useNotebook({
           throw new Error("It was not renamed, because your latest changes to it could not be saved.");
         }
       }
-      const moved = await api.renamePage(from.scope, from.kind, from.name, to);
-      setPages(await api.listPages());
+      const [moved, pages] = await api.renamePage(from.scope, from.kind, from.name, to);
+      setPages(pages);
       go(moved);
       return moved;
     },

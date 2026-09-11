@@ -1639,11 +1639,15 @@ pub async fn create_page(
     scope: Scope,
     kind: PageKind,
     name: String,
-) -> CmdResult<Page> {
-    state.host.create_page(scope, kind, &name).await
+) -> CmdResult<(Page, Vec<PageRef>)> {
+    let page = state.host.create_page(scope, kind, &name).await?;
+    // With the list it now belongs to, so the pane redraws from one answer
+    // rather than asking for the list again — the bargain `forget_page` makes.
+    Ok((page, state.host.notebook().await))
 }
 
-/// Renames a note, which moves its file: the name *is* the filename.
+/// Renames a note, which moves its file: the name *is* the filename. Answers
+/// with the list as well, for the reason `create_page` does.
 #[tauri::command]
 pub async fn rename_page(
     state: State<'_, Arc<AppState>>,
@@ -1651,8 +1655,9 @@ pub async fn rename_page(
     kind: PageKind,
     name: String,
     to: String,
-) -> CmdResult<Page> {
-    state.host.rename_page(scope, kind, &name, &to).await
+) -> CmdResult<(Page, Vec<PageRef>)> {
+    let page = state.host.rename_page(scope, kind, &name, &to).await?;
+    Ok((page, state.host.notebook().await))
 }
 
 /// Deletes a note and gives back what is left, so the pane can redraw from the

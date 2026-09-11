@@ -1067,13 +1067,17 @@ export const savePage = (
 ) => invoke<PageSaved>("save_page", { scope, kind, name, text, fingerprint });
 
 /** Starts a note or a sketch. Refuses a name that is taken rather than picking
- *  another — a note and a sketch may share one, two of either may not. */
+ *  another — a note and a sketch may share one, two of either may not.
+ *  Answers with the page and the list it now belongs to, so the pane redraws
+ *  from one answer rather than asking for the list again — as `forgetPage`
+ *  does. */
 export const createPage = (scope: Scope, kind: PageKind, name: string) =>
-  invoke<Page>("create_page", { scope, kind, name });
+  invoke<[Page, PageRef[]]>("create_page", { scope, kind, name });
 
-/** Renames a note, which moves its file: the name is the filename. */
+/** Renames a note, which moves its file: the name is the filename. Answers
+ *  with the page under its new name and the list, as `createPage` does. */
 export const renamePage = (scope: Scope, kind: PageKind, name: string, to: string) =>
-  invoke<Page>("rename_page", { scope, kind, name, to });
+  invoke<[Page, PageRef[]]>("rename_page", { scope, kind, name, to });
 
 /** Deletes a note and answers with what is left, so the pane redraws from the
  *  directory rather than from its own guess about it. */
