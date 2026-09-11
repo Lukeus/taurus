@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 
 import { ChartCard } from "./ChartCard";
@@ -15,6 +15,7 @@ import { Attachments } from "./Attachments";
 import { QuestionsCard } from "./QuestionsCard";
 import { TableCard } from "./TableCard";
 import { duration, plural } from "../lib/format";
+import { useStable } from "../lib/stable";
 import type { Answer, LineRange } from "../lib/api";
 import type { Entry } from "../state/store";
 
@@ -372,35 +373,6 @@ export function turns(entries: Entry[]): Turn[] {
   // They could not have spanned two anyway — a user message ends whatever was
   // running — and folding here keeps the two groupings from having to agree.
   return out.map(({ prompt, body }) => ({ prompt, body: group(body) }));
-}
-
-/**
- * One function identity for the life of the component, always calling the
- * newest one it was given.
- *
- * The identity is what the memos compare; the freshness is what keeps a
- * callback from closing over a stale render. Without the second half this would
- * be a cache that answers questions with last week's answer.
- */
-function useStable<A extends unknown[]>(
-  fn: (...args: A) => void,
-): (...args: A) => void;
-function useStable<A extends unknown[]>(
-  fn: ((...args: A) => void) | undefined,
-): ((...args: A) => void) | undefined;
-function useStable<A extends unknown[]>(
-  fn: ((...args: A) => void) | undefined,
-): ((...args: A) => void) | undefined {
-  const held = useRef(fn);
-  held.current = fn;
-
-  const stable = useCallback((...args: A) => held.current?.(...args), []);
-
-  // Absence is meaningful further down — a row offers to open a delegate's
-  // conversation only where there is somewhere to open one — so an absent
-  // callback has to stay absent rather than becoming a function that does
-  // nothing.
-  return fn === undefined ? undefined : stable;
 }
 
 /**

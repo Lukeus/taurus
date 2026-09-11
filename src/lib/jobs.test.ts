@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { BackgroundJob, JobOutput } from "./api";
-import { extend, mark, PANE_LIMIT, size, title, tone } from "./jobs";
+import { extend, mark, PANE_LIMIT, sameJobs, size, title, tone } from "./jobs";
 
 const job = (patch: Partial<BackgroundJob> = {}): BackgroundJob => ({
   id: 3,
@@ -106,6 +106,24 @@ describe("collecting the output", () => {
   it("keeps everything that fits", () => {
     const text = "a\n".repeat(100);
     expect(extend("", said({ text }))).toBe(text);
+  });
+});
+
+describe("whether a poll says anything new", () => {
+  it("finds two empty lists the same, which is what most turns poll", () => {
+    expect(sameJobs([], [], true)).toBe(true);
+  });
+
+  it("sees a job start, finish, or go", () => {
+    expect(sameJobs([], [job()], false)).toBe(false);
+    expect(sameJobs([job()], [job({ running: false, code: 0 })], false)).toBe(false);
+    expect(sameJobs([job()], [], false)).toBe(false);
+  });
+
+  it("ignores the clock only while nothing on screen reads it", () => {
+    const later = job({ ran_for: 14, status: "still running after 14s" });
+    expect(sameJobs([job()], [later], false)).toBe(true);
+    expect(sameJobs([job()], [later], true)).toBe(false);
   });
 });
 

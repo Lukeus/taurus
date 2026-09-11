@@ -78,6 +78,40 @@ export function extend(held: string, output: JobOutput): string {
 }
 
 /**
+ * Whether a poll says nothing new about the jobs.
+ *
+ * The poll runs every couple of seconds for as long as a turn does, and the
+ * host builds a fresh list every time — so storing each one redrew the window
+ * on every tick to say nothing had changed, which during most turns is exactly
+ * the answer: an empty list, again.
+ *
+ * `clock` is whether anything on screen reads the half that moves by itself:
+ * the seconds a job has run and the sentence built from them. Only the dock
+ * does, and it polls afresh the moment it opens, so while it is shut a job
+ * ticking over from twelve seconds to fourteen is not news.
+ */
+export function sameJobs(
+  held: BackgroundJob[],
+  polled: BackgroundJob[],
+  clock: boolean,
+): boolean {
+  return (
+    held.length === polled.length &&
+    held.every((a, i) => {
+      const b = polled[i];
+      return (
+        a.id === b.id &&
+        a.command === b.command &&
+        a.running === b.running &&
+        a.stopped === b.stopped &&
+        a.code === b.code &&
+        (!clock || (a.ran_for === b.ran_for && a.status === b.status))
+      );
+    })
+  );
+}
+
+/**
  * How a finished command ended, in one character.
  *
  * Beside the colour rather than instead of it, for the reason the diff marks

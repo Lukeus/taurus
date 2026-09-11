@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { memo, type ReactNode, useState } from "react";
 
 import type { SessionMeta, Theme } from "../lib/api";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
@@ -62,8 +62,13 @@ export type ProviderHealth =
  * times an hour, and every click of indirection is paid every time. The rest
  * of the rail is the things that are true of the workspace as a whole — which
  * folder, which skills, whether the model is answering.
+ *
+ * Memoized, because `App` renders for plenty the rail does not show — a
+ * drawer opening, a model list landing — and filtering every conversation to
+ * redraw an unchanged list is the cost of each of those. `App` holds the props
+ * it hands in steady for the same reason.
  */
-export function Rail({
+export const Rail = memo(function Rail({
   width,
   workspace,
   sessions,
@@ -589,7 +594,7 @@ export function Rail({
       </div>
     </aside>
   );
-}
+});
 
 /**
  * A foldable run of rows, with a label that is also the control.
