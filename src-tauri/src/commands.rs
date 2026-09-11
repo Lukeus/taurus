@@ -229,7 +229,11 @@ pub struct ChangedFiles {
 /// everything else the turn is saying.
 pub async fn emit_changed(state: &AppState, session_id: &str) {
     let workspace = session_workspace(state, session_id).await;
-    let Ok(turns) = state.host.checkpoints_for(&workspace).turns(session_id) else {
+    // Off the runtime, the same read `list_checkpoints` makes and for the same
+    // reason: the whole log is parsed to learn the names in it.
+    let store = state.host.checkpoints_for(&workspace);
+    let id = session_id.to_string();
+    let Ok(turns) = off_runtime(move || store.turns(&id)).await else {
         return;
     };
 
@@ -2662,9 +2666,12 @@ pub async fn commit_turn(
     let checkpoints = state.host.checkpoints_for(&workspace);
 
     // Re-read rather than trusting a path list from the frontend, so what is
-    // committed is what was recorded.
-    let files = checkpoints
-        .turns(&session_id)?
+    // committed is what was recorded. Off the runtime, the same read
+    // `list_checkpoints` makes: the whole log, for one turn's file names.
+    let listing = state.host.checkpoints_for(&workspace);
+    let id = session_id.clone();
+    let files = off_runtime(move || listing.turns(&id))
+        .await?
         .into_iter()
         .find(|checkpoint| checkpoint.turn == turn)
         .map(|checkpoint| checkpoint.files)
