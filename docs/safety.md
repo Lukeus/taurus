@@ -353,8 +353,10 @@ paragraphs above cannot do. The timeout is ten minutes at the outside, and a
 turn spent waiting is a turn spending nothing else — so `run_command` takes a
 third argument, **`background: true`**, which starts the command and comes
 straight back with a number for it. `check_command` reads what it has said
-since the last check, and can wait for it to finish; `stop_command` ends it.
-Eight may run at once.
+since the last check, and can wait for it to finish; `stop_command` ends it,
+and answers only once it is gone — a kill that has not landed ten seconds
+later comes back as a command still running, not as a stop. Eight may run at
+once.
 
 Output arrives once *per reader*. Nobody is holding the pipes open on the
 model's behalf, so what a background command writes is drained into a buffer as

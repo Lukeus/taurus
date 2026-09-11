@@ -246,6 +246,13 @@ impl Tail {
     }
 }
 
+/// How long [`Jobs::stop`] waits for a killed command to be gone.
+///
+/// Ending a tree is a signal to a process group or the close of a Job Object,
+/// and either lands in milliseconds. Ten seconds is for a machine under load;
+/// past it the command is reported as still running rather than as stopped.
+const STOP_WAIT: Duration = Duration::from_secs(10);
+
 /// Rounds an index up to a character boundary, so a drained buffer stays valid
 /// UTF-8 when the cut lands inside a multi-byte character.
 fn ceil_boundary(s: &str, mut i: usize) -> usize {
@@ -381,6 +388,10 @@ impl Jobs {
 
     /// Ends a command, and waits for it to actually be gone.
     pub async fn stop(&self, id: u32) -> Result<String, String> {
+        self.stop_within(id, STOP_WAIT).await
+    }
+
+    async fn stop_within(&self, id: u32, wait: Duration) -> Result<String, String> {
         let job = self.get(id)?;
         if job.outcome.lock().unwrap().is_some() {
             return Ok(format!(
@@ -394,7 +405,18 @@ impl Jobs {
         job.stop.cancel();
         // A kill the OS has not carried out yet is not a stopped command, and
         // the next call would sweep a workspace something is still writing to.
-        let _ = tokio::time::timeout(Duration::from_secs(10), finished).await;
+        let _ = tokio::time::timeout(wait, finished).await;
+        // So the answer is read off the job rather than assumed from having
+        // waited: a wait that ran out is a command that is still running.
+        if job.outcome.lock().unwrap().is_none() {
+            return Err(format!(
+                "#{} {} is still running {} seconds after it was sent a kill, so it may still be \
+                 changing files. check_command says when it has ended.",
+                job.id,
+                job.command,
+                wait.as_secs()
+            ));
+        }
         Ok(format!("Stopped #{} {}", job.id, job.command))
     }
 
@@ -816,6 +838,38 @@ mod tests {
         assert_eq!(jobs.running(), 0);
         let after = jobs.check(Some(id), Duration::ZERO).await.unwrap();
         assert!(after.contains("stopped after"), "{after}");
+    }
+
+    /// A job with nothing behind it. Stop is sent to nobody and it never ends,
+    /// which is what a kill that has not landed looks like from here.
+    fn unending(jobs: &Jobs) -> u32 {
+        let id = jobs.next.fetch_add(1, Ordering::Relaxed) + 1;
+        let job = Arc::new(Job {
+            id,
+            command: "npm run dev".into(),
+            started: Instant::now(),
+            output: Mutex::new(Output::default()),
+            outcome: Mutex::new(None),
+            finished: Notify::new(),
+            stop: CancellationToken::new(),
+            sweep: Mutex::new(None),
+        });
+        jobs.jobs.lock().unwrap().insert(id, job);
+        id
+    }
+
+    #[tokio::test]
+    async fn a_kill_that_has_not_landed_is_not_reported_as_a_stop() {
+        // The next sweep would read a workspace the command is still writing
+        // to, which is the case the wait in `stop` exists to prevent.
+        let jobs = Jobs::new();
+        let id = unending(&jobs);
+
+        let answer = jobs.stop_within(id, Duration::from_millis(100)).await;
+
+        let refusal = answer.expect_err("a command still running was reported as stopped");
+        assert!(refusal.contains("still running"), "{refusal}");
+        assert_eq!(jobs.running(), 1);
     }
 
     #[tokio::test]
