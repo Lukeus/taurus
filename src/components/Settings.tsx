@@ -64,11 +64,31 @@ export function Settings({ onClose }: { onClose: () => void }) {
   // row reports — an environment variable that was the only source becomes an
   // override — and a status the frontend guessed at would be a status that
   // disagrees with the one the request will actually use.
+  /** Why the stored keys could not be listed, when they could not. */
+  const [keysUnreadable, setKeysUnreadable] = useState<string | null>(null);
   const refreshKeys = () => {
     api
       .listKeyStatuses()
-      .then((entries) => setKeys(new Map(entries)))
-      .catch(() => setKeys(new Map()));
+      .then((entries) => {
+        setKeys(new Map(entries));
+        setKeysUnreadable(null);
+      })
+      .catch((e) => {
+        setKeys(new Map());
+        setKeysUnreadable(String(e));
+      });
+  };
+
+  /**
+   * Runs a one-shot write from this drawer, and says why when it did not take.
+   *
+   * The Revoke button and the switches each awaited a write with nothing to
+   * catch it: a failure was an unhandled rejection, and the control simply did
+   * not move.
+   */
+  const run = (action: () => Promise<unknown>) => {
+    setError(null);
+    action().catch((e) => setError(String(e)));
   };
 
   useEffect(() => {
@@ -156,6 +176,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
                 overriddenBy={overrideOf(provider, status?.providers ?? [])}
                 keyStatus={keys.get(provider.id)}
                 keychainAvailable={keychain}
+                keysUnreadable={keysUnreadable}
                 onKeyChanged={refreshKeys}
                 onChange={(patch) => update(row, patch)}
                 onRemove={() => {
@@ -237,13 +258,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
                       <div className="spacer" />
                       <button
                         className="danger"
-                        onClick={async () => {
-                          await api.revokePermissionRule(
-                            allowed.rule,
-                            allowed.scope,
-                          );
-                          setRules(await api.listPermissionRules());
-                        }}
+                        onClick={() =>
+                          run(async () => {
+                            await api.revokePermissionRule(allowed.rule, allowed.scope);
+                            setRules(await api.listPermissionRules());
+                          })
+                        }
                       >
                         Revoke
                       </button>
@@ -253,6 +273,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
               ))}
             </ul>
           )}
+          {error && <Problem>{error}</Problem>}
         </>
       )}
 
@@ -262,9 +283,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <input
               type="checkbox"
               checked={status?.settings.skill_synthesis_enabled ?? true}
-              onChange={async (e) => {
-                await api.setSkillSynthesis(e.target.checked);
-                await refresh();
+              onChange={(e) => {
+                const on = e.target.checked;
+                run(async () => {
+                  await api.setSkillSynthesis(on);
+                  await refresh();
+                });
               }}
             />
             <span>
@@ -280,9 +304,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <input
               type="checkbox"
               checked={status?.settings.agent_synthesis_enabled ?? true}
-              onChange={async (e) => {
-                await api.setAgentSynthesis(e.target.checked);
-                await refresh();
+              onChange={(e) => {
+                const on = e.target.checked;
+                run(async () => {
+                  await api.setAgentSynthesis(on);
+                  await refresh();
+                });
               }}
             />
             <span>
@@ -298,6 +325,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
           <IterationLimit
             limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
           />
+          {error && <Problem>{error}</Problem>}
         </>
       )}
 
@@ -1107,6 +1135,7 @@ function ApiKeyField({
   onClear,
   onChanged,
   unsavedHint,
+  unreadable = null,
 }: {
   status: KeyStatus | undefined;
   available: boolean;
@@ -1114,6 +1143,8 @@ function ApiKeyField({
   onClear: () => Promise<void>;
   onChanged: () => void;
   unsavedHint: string;
+  /** Why the stored keys could not be listed, when they could not. */
+  unreadable?: string | null;
 }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1133,6 +1164,15 @@ function ApiKeyField({
   // No status means this provider is not in the saved list: either it was just
   // added, or its id was edited and the old key still belongs to the old id.
   if (!status) {
+    // Or the list of stored keys could not be read at all, and then "save it
+    // first" sends somebody to fix a provider that is already saved.
+    if (unreadable) {
+      return (
+        <Field label="API key" hint={`Could not read which keys are stored: ${unreadable}`}>
+          <div className={KEY_NONE}>unknown</div>
+        </Field>
+      );
+    }
     return (
       <Field label="API key" hint={unsavedHint}>
         <div className={KEY_NONE}>not saved yet</div>
@@ -1251,6 +1291,7 @@ function ProviderForm({
   overriddenBy,
   keyStatus,
   keychainAvailable,
+  keysUnreadable,
   onKeyChanged,
   onChange,
   onRemove,
@@ -1261,6 +1302,8 @@ function ProviderForm({
   overriddenBy: string[];
   keyStatus: KeyStatus | undefined;
   keychainAvailable: boolean;
+  /** Why the stored keys could not be listed, when they could not. */
+  keysUnreadable: string | null;
   onKeyChanged: () => void;
   onChange: (patch: Partial<ProviderConfig>) => void;
   onRemove: () => void;
@@ -1373,6 +1416,7 @@ function ProviderForm({
             onStore={(key) => api.setProviderKey(provider.id, key)}
             onClear={() => api.clearProviderKey(provider.id)}
             onChanged={onKeyChanged}
+            unreadable={keysUnreadable}
             unsavedHint="Save this provider before storing a key for it."
           />
 

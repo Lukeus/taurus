@@ -477,3 +477,63 @@ describe("the iteration limit", () => {
     );
   });
 });
+
+describe("a write that does not take", () => {
+  it("says why a revoke failed, rather than leaving the rule there in silence", async () => {
+    invoke.mockImplementation((...args: unknown[]) => {
+      switch (args[0]) {
+        case "list_permission_rules":
+          return Promise.resolve([{ rule: "write_file", scope: "global" }]);
+        case "revoke_permission_rule":
+          return Promise.reject("permissions.json is read-only");
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    const host = await mount();
+    click(host, "Permissions");
+    await act(async () => {
+      [...host.querySelectorAll("button")]
+        .find((b) => b.textContent === "Revoke")!
+        .click();
+    });
+
+    expect(host.textContent).toContain("permissions.json is read-only");
+  });
+
+  it("says why a switch did not move", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "set_skill_synthesis"
+        ? Promise.reject("settings.json is read-only")
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    click(host, "Behavior");
+    await flip(checkbox(host, "propose skills"));
+
+    expect(host.textContent).toContain("settings.json is read-only");
+  });
+
+  it("says the stored keys could not be read, rather than asking for a saved provider to be saved", async () => {
+    // A locked keychain read as "nothing stored", and every saved provider
+    // then said to save it before storing a key.
+    invoke.mockImplementation((...args: unknown[]) => {
+      switch (args[0]) {
+        case "list_global_providers":
+          return Promise.resolve(SAVED);
+        case "keychain_available":
+          return Promise.resolve(true);
+        case "list_key_statuses":
+          return Promise.reject("the keychain is locked");
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    const host = await mount();
+    await toggle(cards(host)[1]);
+    const card = cards(host)[1];
+
+    expect(card.textContent).toContain("the keychain is locked");
+    expect(card.textContent).not.toContain("Save this provider before storing a key");
+  });
+});
