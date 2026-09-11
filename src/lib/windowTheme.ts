@@ -25,3 +25,31 @@ export function useWindowTheme(): "light" | "dark" {
     () => "dark",
   );
 }
+
+/**
+ * Something that changes whenever the window's colours do: the mode, or any
+ * token a custom theme paints over it.
+ *
+ * For the terminal, which is handed its colours rather than reading them out of
+ * the stylesheet. The mode alone misses a custom theme swapped for another in
+ * the same mode; the preference misses the system turning dark at dusk under
+ * "system". Both land on the root element, as `data-theme` and as the tokens in
+ * its `style`, so watching the two misses neither.
+ */
+export function useWindowPalette(): string {
+  return useSyncExternalStore(
+    (notify) => {
+      const watch = new MutationObserver(notify);
+      watch.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme", "style"],
+      });
+      return () => watch.disconnect();
+    },
+    () => {
+      const root = document.documentElement;
+      return `${root.dataset.theme ?? ""}|${root.style.cssText}`;
+    },
+    () => "",
+  );
+}

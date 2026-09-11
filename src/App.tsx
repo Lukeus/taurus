@@ -1510,7 +1510,6 @@ export default function App() {
                   // with it.
                   key={workspace ?? "none"}
                   workspace={workspace}
-                  theme={theme ?? "system"}
                   jobs={jobs}
                   watching={watching}
                   output={jobOutput}
