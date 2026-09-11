@@ -562,6 +562,15 @@ cargo build --release -p taurus-tools --example output
 # from the history. Run this before deciding otherwise.
 cargo test --release -p taurus-provider-anthropic --lib request_build_cost -- --ignored --nocapture
 
+# What search_code spends in this process on a large index: 6,000 passages of
+# 768 dimensions, about 24 MB. Release, as above. Measured: reading the index
+# off disk 7.6 ms, copying its entries 0.7 ms, decoding every vector 6.6 ms,
+# and the search that decodes and scores them 9.6 ms. That is why the decoded
+# vectors are not kept between searches: keeping them would save about 14 ms of
+# a search, and cost a cache threaded through the refresh and invalidated on
+# every save.
+cargo test --release -p taurus-index --lib search_code_cost -- --ignored --nocapture
+
 # How well the index answers a question, as a number rather than by eye.
 # Needs Ollama and an embedding model; reads the workspace and writes nothing.
 # Fifteen questions phrased the way somebody asks them, each with the file that

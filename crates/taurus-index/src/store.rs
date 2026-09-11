@@ -475,6 +475,56 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// What `search_code` spends in this process on a large index — 6,000
+    /// passages of 768 dimensions, about 24 MB — and on what. Ignored, because
+    /// only a release build's numbers mean anything.
+    ///
+    /// Four numbers: reading the index off disk, copying its entries, decoding
+    /// every vector, and the search that decodes and scores them. They are why
+    /// the decoded vectors are not kept between searches. See
+    /// `docs/development.md` before adding a cache for them.
+    #[test]
+    #[ignore]
+    fn search_code_cost_on_a_large_index() {
+        let dir = TempDir::new().unwrap();
+        let index = Index::new(dir.path(), dir.path());
+        let entries: Vec<Entry> = (0..6000)
+            .map(|i| {
+                let vector: Vec<f32> = (0..768)
+                    .map(|k| ((i * 31 + k) % 97) as f32 / 97.0)
+                    .collect();
+                entry(&format!("src/f{}.rs", i / 3), &vector)
+            })
+            .collect();
+        index.save("m", &entries).unwrap();
+        let query: Vec<f32> = (0..768).map(|k| (k % 13) as f32 / 13.0).collect();
+        let time = |label: &str, f: &mut dyn FnMut()| {
+            f();
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                f();
+                best = best.min(t.elapsed());
+            }
+            eprintln!("{label}  best of 5 {best:>10.1?}");
+        };
+        time("load the index         ", &mut || {
+            std::hint::black_box(index.load("m"));
+        });
+        let loaded = index.load("m");
+        time("clone every entry      ", &mut || {
+            std::hint::black_box(loaded.clone());
+        });
+        time("decode every vector    ", &mut || {
+            for e in &loaded {
+                std::hint::black_box(e.decode());
+            }
+        });
+        time("search: decode + score ", &mut || {
+            std::hint::black_box(search(&loaded, &query, 20, dir.path()));
+        });
+    }
+
     #[test]
     fn a_borrowed_record_writes_what_the_owned_one_did() {
         // `save` writes through `RecordRef` so it need not clone every entry,
