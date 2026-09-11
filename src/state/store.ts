@@ -371,8 +371,20 @@ interface Store {
    * banner cannot vanish while the drawers still show the old set.
    */
   decideTrust: (trusted: boolean) => Promise<void>;
-  /** Re-reads the conversation list and this conversation's changed files. */
+  /**
+   * Re-reads the conversation list and this conversation's changed files, both
+   * at once.
+   */
   reload: () => Promise<void>;
+  /**
+   * Re-reads this conversation's changed files, and not the conversation list.
+   *
+   * What opening a conversation needs. The list arrives by event whenever a
+   * conversation in it moves, and re-reading it opens and partly parses every
+   * transcript in the workspace — on every switch, to say what the rail
+   * already shows.
+   */
+  refreshChanged: () => Promise<void>;
   /**
    * Re-reads what datasets this workspace has.
    *
@@ -604,7 +616,9 @@ export const useStore = create<Store>((set, get) => ({
       proposals: [],
       agentProposals: [],
     });
-    void get().reload();
+    // Nothing to re-read. A new conversation has changed no files, and it is
+    // not in the list until its first question reaches disk — which the list
+    // is told about by event.
     if (!session.native_tools) {
       set((s) => ({
         entries: [
@@ -644,7 +658,8 @@ export const useStore = create<Store>((set, get) => ({
         proposals: [],
         agentProposals: [],
       });
-      void get().reload();
+      // Its changed files, and not the list it was opened from.
+      void get().refreshChanged();
     } finally {
       set({ resuming: false });
     }
@@ -1040,17 +1055,26 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   reload: async () => {
-    const { session } = get();
     // Neither list is load-bearing: a rail with a stale entry beats an error
-    // banner over a working conversation, so both failures are swallowed.
-    try {
-      set({ sessions: await api.listSessions() });
-    } catch (e) {
-      console.warn("could not list conversations", e);
-    }
+    // banner over a working conversation, so both failures are swallowed. And
+    // neither waits on the other — they are two requests to two files.
+    await Promise.all([
+      api.listSessions().then(
+        (sessions) => set({ sessions }),
+        (e) => console.warn("could not list conversations", e),
+      ),
+      get().refreshChanged(),
+    ]);
+  },
+
+  refreshChanged: async () => {
+    const { session } = get();
     if (!session) return set({ changed: [] });
     try {
       const turns = await api.listCheckpoints(session.id);
+      // An answer about a conversation that is no longer on screen describes
+      // somebody else's files.
+      if (get().session?.id !== session.id) return;
       set({ changed: [...new Set(turns.flatMap((t) => t.files))] });
     } catch (e) {
       console.warn("could not list changed files", e);
