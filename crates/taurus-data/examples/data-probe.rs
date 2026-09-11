@@ -28,10 +28,13 @@
 //!   climbs with file size, something is scanning that should not be.
 //! - **profile** is a full pass and is allowed to be slow. It is the number to
 //!   watch when changing how the aggregate query is built.
-//! - **page** must be flat in the *offset*, which is why it is measured twice:
-//!   once at the top of the file and once deep into it. A page a thousand rows
-//!   in that costs more than the first is a `LIMIT` being applied after the
-//!   rows were collected rather than inside the query.
+//! - **page** is measured twice: once at the top of the file and once deep
+//!   into it. The first also counts the file, once per version of it; the deep
+//!   one is answered from that count, so the gap between them is the offset.
+//!   For a CSV or NDJSON file it grows with the offset — those formats cannot
+//!   seek to a row — and a gap far wider than the rows skipped would take to
+//!   read is a `LIMIT` applied after the rows were collected rather than inside
+//!   the query.
 //! - **query**, when one is given, is the only number here that depends on
 //!   what was asked. It also proves the refusal: hand it a `COPY … TO` and it
 //!   should print the refusal rather than a file.
@@ -93,8 +96,8 @@ async fn main() {
         profile.rows
     );
 
-    // Flat in the offset. A deep page that costs more than the first one means
-    // the limit is being applied after the rows were collected.
+    // The first page counts the file; the deep one reuses that count, so what
+    // separates them is reading up to the offset. See the header.
     let started = Instant::now();
     let first = engine.page(&source, 0, 100).await.expect("the first page");
     let near = started.elapsed();

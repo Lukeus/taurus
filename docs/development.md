@@ -624,8 +624,9 @@ cargo run -p taurus-host --example vision -- llama3.2:latest   # refused, and wh
 #
 # Three numbers, and what each one means is in the example's own header:
 # `schema` must stay flat as the file grows, `profile` is a full pass and is
-# allowed to be slow, and `page` must be flat in the *offset* — which is why it
-# is measured at row 0 and again at the end.
+# allowed to be slow, and `page` is measured at row 0 and again at the end —
+# the first counts the file once per version of it, and the gap to the second
+# is the offset, which a CSV or NDJSON file reads its way to.
 cargo run -p taurus-data --example data-probe -- ~/data/interactions.csv
 
 # With a query, which is the other half. The table is named the way

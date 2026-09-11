@@ -1031,16 +1031,21 @@ and they are the minority.
   joins against — which is what makes a committed recipe run on a fresh clone.
   A recipe that names loaded datasets instead still does not, and nothing warns
   you which kind you have written.
-- **A profile is a full scan every time, and it cannot be cancelled.** Nothing
-  is cached: a dataset entry points at a file anything can rewrite, and a
-  remembered row count is the kind of number that is right for a week and then
-  quietly wrong. So opening the pane on a multi-gigabyte file reads it again,
-  and clicking away leaves that read running to completion rather than stopping
-  it. Caching it properly means invalidating on the file's length and
-  modification time — the same rule the search index already uses — and
+- **A profile is a full scan every time, and it cannot be cancelled.** Its
+  result is not cached: a dataset entry points at a file anything can rewrite,
+  and a remembered profile is the kind of answer that is right for a week and
+  then quietly wrong. So opening the pane on a multi-gigabyte file reads it
+  again, and clicking away leaves that read running to completion rather than
+  stopping it. Caching it properly means invalidating on the file's length and
+  modification time — which is how a page's row count is now kept — and
   cancelling means threading a token through the engine trait. Neither is
-  written. What keeps this bearable today is that the scan is the *only*
-  expensive operation: loading reads a header, and paging is flat in the offset.
+  written for the profile. What keeps this bearable is that a profile is the
+  one thing that must read everything: loading reads a header, and paging
+  counts a file once per version of it. A page deep into a CSV or NDJSON file
+  still reads every row in front of it, because those formats have no index to
+  seek by. On an 80 MB file of two million rows, measured: 14.1 ms for the
+  first page and 16.3 ms for one at row 1,999,900 — against 14.4 and 29.0 ms
+  when every page counted the whole file again.
 - **`.json` means newline-delimited JSON, not a JSON array.** A file holding one
   big `[ {...}, {...} ]` is refused with a message rather than read, because
   reading it would mean parsing the whole thing into memory before any of the
