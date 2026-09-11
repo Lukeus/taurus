@@ -109,7 +109,23 @@ const QUERY_MEMORY_BYTES: usize = 512 * 1024 * 1024;
 /// string.
 const TABLE: &str = "src";
 
-/// Reads and describes tabular files with DataFusion.
+/// Reads and describes tabular files with DataFusion, on whatever runtime polls
+/// it. The engine the rest of the app is handed is [`DataFusionEngine`], which
+/// runs this on a runtime of its own.
+#[derive(Debug, Default, Clone, Copy)]
+struct InlineEngine;
+
+/// Reads and describes tabular files with DataFusion, on a runtime of its own.
+///
+/// DataFusion plans a query as about one partition per core and runs each as a
+/// task on whatever runtime polls it. Polled from the app's, a profile of a
+/// large file took every worker the window's IPC and token forwarding run on,
+/// and the stream stuttered until it finished. DataFusion's own advice is a
+/// separate runtime for CPU-bound work, and this is that: each call is handed
+/// to [`data_runtime`], and the caller's runtime only waits for the answer. A
+/// caller that stops waiting — a turn stopped mid-profile — ends the work
+/// rather than leaving it to finish for nobody. What the work is, is
+/// [`InlineEngine`]'s.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DataFusionEngine;
 
@@ -117,7 +133,106 @@ impl DataFusionEngine {
     pub fn new() -> Self {
         Self
     }
+}
 
+#[async_trait]
+impl Engine for DataFusionEngine {
+    fn name(&self) -> &'static str {
+        InlineEngine.name()
+    }
+
+    async fn schema(&self, source: &Source) -> Result<Schema, DataError> {
+        let source = source.clone();
+        elsewhere(async move { InlineEngine.schema(&source).await }).await
+    }
+
+    async fn profile(&self, source: &Source) -> Result<Profile, DataError> {
+        let source = source.clone();
+        elsewhere(async move { InlineEngine.profile(&source).await }).await
+    }
+
+    async fn page(&self, source: &Source, offset: u64, limit: u64) -> Result<Page, DataError> {
+        let source = source.clone();
+        elsewhere(async move { InlineEngine.page(&source, offset, limit).await }).await
+    }
+
+    async fn query(
+        &self,
+        tables: &[(String, Source)],
+        sql: &str,
+        limit: u64,
+    ) -> Result<QueryResult, DataError> {
+        let (tables, sql) = (tables.to_vec(), sql.to_string());
+        elsewhere(async move { InlineEngine.query(&tables, &sql, limit).await }).await
+    }
+
+    async fn materialize(
+        &self,
+        tables: &[(String, Source)],
+        start: &str,
+        steps: &[(String, String)],
+        output: &Path,
+    ) -> Result<Materialized, DataError> {
+        let (tables, start, steps, output) = (
+            tables.to_vec(),
+            start.to_string(),
+            steps.to_vec(),
+            output.to_path_buf(),
+        );
+        elsewhere(async move {
+            InlineEngine
+                .materialize(&tables, &start, &steps, &output)
+                .await
+        })
+        .await
+    }
+}
+
+/// The runtime DataFusion's work runs on, started on first use.
+///
+/// `None` when it could not be started — a machine refusing another thread —
+/// and then the work runs where it was asked for, as it did before this
+/// existed, rather than not at all.
+fn data_runtime() -> Option<&'static tokio::runtime::Runtime> {
+    static RUNTIME: std::sync::OnceLock<Option<tokio::runtime::Runtime>> =
+        std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .thread_name("taurus-data")
+                .enable_all()
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
+/// Runs `work` on [`data_runtime`] and waits for it here.
+async fn elsewhere<T: Send + 'static>(
+    work: impl std::future::Future<Output = Result<T, DataError>> + Send + 'static,
+) -> Result<T, DataError> {
+    let Some(runtime) = data_runtime() else {
+        return work.await;
+    };
+    let task = runtime.spawn(work);
+    // Ended with its caller, whose answer this is.
+    let _abandon = Abandon(task.abort_handle());
+    task.await.map_err(|e| {
+        DataError::Failed(format!("the data engine stopped before it answered: {e}"))
+    })?
+}
+
+/// Aborts a task when dropped — which, for the task behind [`elsewhere`], is
+/// when its caller stops waiting.
+struct Abandon(tokio::task::AbortHandle);
+
+impl Drop for Abandon {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl InlineEngine {
     /// A session with this source registered as [`TABLE`].
     ///
     /// Built per call rather than cached. A cached context would hold the
@@ -219,7 +334,7 @@ impl DataFusionEngine {
 }
 
 #[async_trait]
-impl Engine for DataFusionEngine {
+impl Engine for InlineEngine {
     fn name(&self) -> &'static str {
         "DataFusion"
     }
@@ -541,7 +656,7 @@ impl Engine for DataFusionEngine {
     }
 }
 
-impl DataFusionEngine {
+impl InlineEngine {
     /// Plans the whole chain without running any of it.
     ///
     /// Each step is planned against the *schema* the step before it would
@@ -1187,10 +1302,35 @@ id,event,price,active
     }
 
     #[tokio::test]
+    async fn the_engine_does_its_work_on_a_runtime_of_its_own() {
+        // DataFusion's partitions are tasks on whatever runtime polls them, and
+        // the app's is the one carrying the stream. The engine the app is
+        // handed does its work elsewhere and only waits here.
+        let ran_on = elsewhere(async { Ok(std::thread::current().name().map(str::to_string)) })
+            .await
+            .unwrap();
+        assert_eq!(ran_on.as_deref(), Some("taurus-data"));
+    }
+
+    #[tokio::test]
+    async fn the_engine_answers_as_the_work_it_hands_off_does() {
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "events.csv", EVENTS);
+        let names = |schema: Schema| -> Vec<String> {
+            schema.columns.into_iter().map(|c| c.name).collect()
+        };
+
+        let handed_off = DataFusionEngine::new().schema(&source).await.unwrap();
+        let inline = InlineEngine.schema(&source).await.unwrap();
+
+        assert_eq!(names(handed_off), names(inline));
+    }
+
+    #[tokio::test]
     async fn a_csv_reports_its_columns_and_refuses_to_guess_its_row_count() {
         let dir = TempDir::new().unwrap();
         let source = file(&dir, "events.csv", EVENTS);
-        let schema = DataFusionEngine::new().schema(&source).await.unwrap();
+        let schema = InlineEngine.schema(&source).await.unwrap();
 
         let names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["id", "event", "price", "active"]);
@@ -1213,7 +1353,7 @@ id,event,price,active
     async fn a_profile_counts_rows_nulls_distincts_and_extremes() {
         let dir = TempDir::new().unwrap();
         let source = file(&dir, "events.csv", EVENTS);
-        let profile = DataFusionEngine::new().profile(&source).await.unwrap();
+        let profile = InlineEngine.profile(&source).await.unwrap();
 
         assert_eq!(profile.rows, 5);
         assert_eq!(profile.engine, "DataFusion");
@@ -1242,7 +1382,7 @@ id,event,price,active
     async fn the_common_values_are_counted_and_ordered() {
         let dir = TempDir::new().unwrap();
         let source = file(&dir, "events.csv", EVENTS);
-        let profile = DataFusionEngine::new().profile(&source).await.unwrap();
+        let profile = InlineEngine.profile(&source).await.unwrap();
 
         let event = column(&profile, "event");
         assert_eq!(
@@ -1285,7 +1425,7 @@ id,event,price,active
             csv.push_str(&format!("k{i}\n"));
         }
         let source = file(&dir, "ids.csv", &csv);
-        let profile = DataFusionEngine::new().profile(&source).await.unwrap();
+        let profile = InlineEngine.profile(&source).await.unwrap();
 
         let id = column(&profile, "id");
         // The count is still exact — the ceiling withholds the list, never the
@@ -1311,7 +1451,7 @@ id,event,price,active
             "rows.ndjson",
             "{\"id\":1,\"name\":\"alice\"}\n{\"id\":2,\"name\":null}\n{\"id\":3,\"name\":\"\"}\n",
         );
-        let page = DataFusionEngine::new().page(&source, 0, 10).await.unwrap();
+        let page = InlineEngine.page(&source, 0, 10).await.unwrap();
 
         assert_eq!(page.total, 3);
         let names: Vec<Option<String>> = page
@@ -1333,7 +1473,7 @@ id,event,price,active
     async fn a_page_windows_the_rows_and_says_how_many_there_are_in_all() {
         let dir = TempDir::new().unwrap();
         let source = file(&dir, "events.csv", EVENTS);
-        let engine = DataFusionEngine::new();
+        let engine = InlineEngine;
 
         let page = engine.page(&source, 1, 2).await.unwrap();
         assert_eq!(page.total, 5, "the total is the file's, not the page's");
@@ -1358,10 +1498,7 @@ id,event,price,active
             csv.push_str(&format!("{i}\n"));
         }
         let source = file(&dir, "many.csv", &csv);
-        let page = DataFusionEngine::new()
-            .page(&source, 0, MAX_PAGE * 4)
-            .await
-            .unwrap();
+        let page = InlineEngine.page(&source, 0, MAX_PAGE * 4).await.unwrap();
         assert_eq!(page.rows.len() as u64, MAX_PAGE);
         assert_eq!(page.total, MAX_PAGE + 50);
     }
@@ -1374,7 +1511,7 @@ id,event,price,active
     async fn a_tsv_reads_with_its_own_delimiter_and_its_own_extension() {
         let dir = TempDir::new().unwrap();
         let source = file(&dir, "events.tsv", "id\tevent\n1\tview\n2\tclick\n");
-        let profile = DataFusionEngine::new().profile(&source).await.unwrap();
+        let profile = InlineEngine.profile(&source).await.unwrap();
 
         assert_eq!(profile.rows, 2, "an empty table would report 0 rows here");
         let names: Vec<&str> = profile
@@ -1417,7 +1554,7 @@ id,event,price,active
         std::fs::write(&path, EVENTS).unwrap();
         let source = Source::at(path).unwrap();
 
-        let profile = DataFusionEngine::new().profile(&source).await.unwrap();
+        let profile = InlineEngine.profile(&source).await.unwrap();
         assert_eq!(profile.rows, 5, "the file globbed instead of being opened");
     }
 
@@ -1432,7 +1569,7 @@ id,event,price,active
         let path = odd.join("events.csv");
         std::fs::write(&path, EVENTS).unwrap();
 
-        let profile = DataFusionEngine::new()
+        let profile = InlineEngine
             .profile(&Source::at(path).unwrap())
             .await
             .unwrap();
@@ -1448,7 +1585,7 @@ id,event,price,active
         let source = file(&dir, "events.csv", EVENTS);
         let out = dir.path().join("out [v2]").join("clean.parquet");
 
-        let run = DataFusionEngine::new()
+        let run = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -1507,7 +1644,7 @@ id,event,price,active
         let dir = TempDir::new().unwrap();
         for name in ["rows.ndjson", "rows.jsonl", "rows.json"] {
             let source = file(&dir, name, "{\"a\":1}\n{\"a\":2}\n");
-            let profile = DataFusionEngine::new().profile(&source).await.unwrap();
+            let profile = InlineEngine.profile(&source).await.unwrap();
             assert_eq!(profile.rows, 2, "{name} read as an empty table");
         }
     }
@@ -1518,12 +1655,12 @@ id,event,price,active
         let csv = file(&dir, "events.csv", EVENTS);
         let parquet = write_parquet(&dir, &csv).await;
 
-        let schema = DataFusionEngine::new().schema(&parquet).await.unwrap();
+        let schema = InlineEngine.schema(&parquet).await.unwrap();
         // The half a CSV cannot answer. It is in the footer, so it costs
         // nothing, and `load_dataset` reports it straight away.
         assert_eq!(schema.rows, Some(5));
 
-        let profile = DataFusionEngine::new().profile(&parquet).await.unwrap();
+        let profile = InlineEngine.profile(&parquet).await.unwrap();
         assert_eq!(profile.rows, 5);
         assert_eq!(column(&profile, "price").nulls, 1);
     }
@@ -1531,7 +1668,7 @@ id,event,price,active
     /// Round-trips the CSV through DataFusion's own writer, so the test does
     /// not have to hand-assemble a Parquet file to read one back.
     async fn write_parquet(dir: &TempDir, from: &Source) -> Source {
-        let engine = DataFusionEngine::new();
+        let engine = InlineEngine;
         let ctx = engine.open(from).await.unwrap();
         let out: PathBuf = dir.path().join("events.parquet");
         ctx.sql(&format!("SELECT * FROM {TABLE}"))
@@ -1549,11 +1686,7 @@ id,event,price,active
         // mentions which of the four files in the folder it was.
         let dir = TempDir::new().unwrap();
         let source = file(&dir, "broken.parquet", "this is not a parquet file");
-        let error = DataFusionEngine::new()
-            .schema(&source)
-            .await
-            .unwrap_err()
-            .to_string();
+        let error = InlineEngine.schema(&source).await.unwrap_err().to_string();
         assert!(error.contains("broken.parquet"), "{error}");
         assert!(error.contains("Parquet"), "{error}");
     }
@@ -1565,7 +1698,7 @@ id,event,price,active
     async fn a_column_name_holding_a_quote_does_not_break_the_query() {
         let dir = TempDir::new().unwrap();
         let source = file(&dir, "odd.csv", "\"we\"\"ird\",b\n1,2\n");
-        let profile = DataFusionEngine::new().profile(&source).await.unwrap();
+        let profile = InlineEngine.profile(&source).await.unwrap();
         assert_eq!(profile.rows, 1);
         assert!(
             profile.columns.iter().any(|c| c.head.name.contains('"')),
@@ -1575,7 +1708,7 @@ id,event,price,active
     }
 
     async fn ask(source: &Source, sql: &str) -> Result<QueryResult, DataError> {
-        DataFusionEngine::new()
+        InlineEngine
             .query(
                 &[("events".to_string(), source.clone())],
                 sql,
@@ -1611,7 +1744,7 @@ id,event,price,active
         let events = file(&dir, "events.csv", EVENTS);
         let items = file(&dir, "items.csv", "id,label\n1,alpha\n2,beta\n3,gamma\n");
 
-        let result = DataFusionEngine::new()
+        let result = InlineEngine
             .query(
                 &[
                     ("events".to_string(), events),
@@ -1716,7 +1849,7 @@ id,event,price,active
         );
         let out = dir.path().join("clean/events.parquet");
 
-        let run = DataFusionEngine::new()
+        let run = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -1758,7 +1891,7 @@ id,event,price,active
         let source = file(&dir, "events.csv", EVENTS);
         let out = dir.path().join("clean.parquet");
 
-        DataFusionEngine::new()
+        InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -1768,7 +1901,7 @@ id,event,price,active
             .await
             .unwrap();
 
-        let profile = DataFusionEngine::new()
+        let profile = InlineEngine
             .profile(&Source::at(&out).unwrap())
             .await
             .unwrap();
@@ -1786,7 +1919,7 @@ id,event,price,active
         let items = file(&dir, "items.csv", "id,label\n1,alpha\n2,beta\n3,gamma\n");
         let out = dir.path().join("labelled.parquet");
 
-        let run = DataFusionEngine::new()
+        let run = InlineEngine
             .materialize(
                 &[("events".to_string(), events), ("items".to_string(), items)],
                 "events",
@@ -1813,7 +1946,7 @@ id,event,price,active
         let source = file(&dir, "events.csv", EVENTS);
         let out = dir.path().join("compared.parquet");
 
-        let run = DataFusionEngine::new()
+        let run = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -1850,7 +1983,7 @@ id,event,price,active
         let out = dir.path().join("clean.parquet");
         let escaped = dir.path().join("escaped.parquet");
 
-        let error = DataFusionEngine::new()
+        let error = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -1893,7 +2026,7 @@ id,event,price,active
         );
         let tables = [("scope".to_string(), source)];
 
-        let result = DataFusionEngine::new()
+        let result = InlineEngine
             .query(
                 &tables,
                 "SELECT Material, Price_Per_Unit FROM scope ORDER BY Material",
@@ -1905,7 +2038,7 @@ id,event,price,active
 
         // And a function keeps resolving in whatever case it is written, which
         // is the thing turning normalization off could plausibly have broken.
-        let counted = DataFusionEngine::new()
+        let counted = InlineEngine
             .query(&tables, "SELECT COUNT(*) AS N FROM scope", MAX_QUERY_ROWS)
             .await
             .unwrap();
@@ -1919,7 +2052,7 @@ id,event,price,active
     async fn the_wrong_case_still_fails_and_says_what_the_right_one_is() {
         let dir = TempDir::new().unwrap();
         let source = file(&dir, "scope.csv", "Scenario,Material\nbase,Steel\n");
-        let error = DataFusionEngine::new()
+        let error = InlineEngine
             .query(
                 &[("scope".to_string(), source)],
                 "SELECT material FROM scope",
@@ -1945,7 +2078,7 @@ id,event,price,active
         let source = file(&dir, "events.csv", EVENTS);
         let out = dir.path().join("out.parquet");
 
-        let error = DataFusionEngine::new()
+        let error = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -1982,7 +2115,7 @@ id,event,price,active
         let source = file(&dir, "events.csv", EVENTS);
         let out = dir.path().join("out.parquet");
 
-        let run = DataFusionEngine::new()
+        let run = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -2005,7 +2138,7 @@ id,event,price,active
         let source = file(&dir, "events.csv", EVENTS);
         let out = dir.path().join("out.parquet");
 
-        let error = DataFusionEngine::new()
+        let error = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -2055,7 +2188,7 @@ id,event,price,active
         let source = file(&dir, "events.csv", EVENTS);
         let out = dir.path().join("clean.parquet");
 
-        let error = DataFusionEngine::new()
+        let error = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -2087,7 +2220,7 @@ id,event,price,active
         let source = file(&dir, "events.csv", EVENTS);
         let out = work.join("clean.parquet");
 
-        DataFusionEngine::new()
+        InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",
@@ -2113,7 +2246,7 @@ id,event,price,active
     async fn a_source_that_is_not_loaded_lists_what_is() {
         let dir = TempDir::new().unwrap();
         let source = file(&dir, "events.csv", EVENTS);
-        let error = DataFusionEngine::new()
+        let error = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "evnts",
@@ -2135,7 +2268,7 @@ id,event,price,active
         let source = file(&dir, "events.csv", EVENTS);
         let out = dir.path().join("clean.csv");
 
-        let run = DataFusionEngine::new()
+        let run = InlineEngine
             .materialize(
                 &[("events".to_string(), source)],
                 "events",

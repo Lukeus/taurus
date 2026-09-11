@@ -251,14 +251,23 @@ fn pump(
         .try_clone_reader()
         .map_err(|e| ToolError::Failed(format!("cannot read the pseudo-terminal: {e}")))?;
 
-    // Written before reading starts, and the writer dropped immediately after.
-    // A program waiting on input needs the end-of-file as much as the bytes:
-    // holding the write side open is how a `cat` with nothing more to read
-    // hangs until the timeout.
+    // Written from a thread of its own, so the reading below starts at once. A
+    // terminal's input queue holds a few kilobytes, so a program that prints
+    // before it reads fills the output side while a write here waits for it to
+    // read — each waiting on the other, with the slave still held open by this
+    // thread, so that not even killing the child would end the write.
+    //
+    // The writer is dropped as soon as the text is in. A program waiting on
+    // input needs the end-of-file as much as the bytes: holding the write side
+    // open is how a `cat` with nothing more to read hangs until the timeout.
     if let Some(text) = stdin {
         if let Ok(mut writer) = pair.master.take_writer() {
-            let _ = writer.write_all(text.as_bytes());
-            let _ = writer.flush();
+            let _ = std::thread::Builder::new()
+                .name("pty-stdin".into())
+                .spawn(move || {
+                    let _ = writer.write_all(text.as_bytes());
+                    let _ = writer.flush();
+                });
         }
     }
 

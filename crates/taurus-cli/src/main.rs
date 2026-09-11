@@ -298,6 +298,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<ExitCode, String> {
+    let servers = Servers::for_command(&cli.command);
     match cli.command {
         Command::Run(args) => {
             let task = args.task.join(" ");
@@ -305,7 +306,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 return Err("no task given. Try: taurus run \"list the rust files\"".into());
             }
             let policy = Policy::from(&args.policy);
-            let runtime = build_host(&args.session, policy).await?;
+            let runtime = build_host(&args.session, policy, servers).await?;
             let format = if args.json {
                 Format::Json
             } else {
@@ -326,7 +327,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Repl(args) => {
             // A REPL always has a person at it, so it prompts rather than
             // taking a policy up front.
-            let runtime = build_host(&args.session, Policy::default()).await?;
+            let runtime = build_host(&args.session, Policy::default(), servers).await?;
             session::repl(&runtime, &args.session, args.resume.resume.as_ref()).await
         }
 
@@ -335,7 +336,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             all,
             agents,
         } => {
-            let host = build_host(&session, Policy::default()).await?.host;
+            let host = build_host(&session, Policy::default(), servers).await?.host;
             let workspace = host.workspace().await;
 
             if let Some(parent) = agents {
@@ -377,7 +378,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         Command::Review { session, id, turn } => {
             let provider = session.provider.clone();
             let model = session.model.clone();
-            let host = build_host(&session, Policy::default()).await?.host;
+            let host = build_host(&session, Policy::default(), servers).await?.host;
             review_cmd::run(
                 &host,
                 id.as_deref(),
@@ -395,46 +396,48 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             dry_run,
             yes,
         } => {
-            let host = build_host(&session, Policy::default()).await?.host;
+            let host = build_host(&session, Policy::default(), servers).await?.host;
             rewind_cmd::run(&host, id.as_deref(), to.as_deref(), dry_run, yes).await
         }
 
         Command::Trust { args, session } => {
-            let host = build_host_quietly(&session, Policy::default()).await?.host;
+            let host = build_host_quietly(&session, Policy::default(), servers)
+                .await?
+                .host;
             trust_cmd::run(&host, args).await
         }
 
         Command::Hooks { command, session } => {
-            let host = build_host(&session, Policy::default()).await?.host;
+            let host = build_host(&session, Policy::default(), servers).await?.host;
             hooks_cmd::run(&host, command).await
         }
 
         Command::Skills { command, session } => {
-            let runtime = build_host(&session, Policy::default()).await?;
+            let runtime = build_host(&session, Policy::default(), servers).await?;
             skills_cmd::run(&runtime.host, command).await
         }
 
         Command::Notes { command, session } => {
-            let runtime = build_host(&session, Policy::default()).await?;
+            let runtime = build_host(&session, Policy::default(), servers).await?;
             notes_cmd::run(&runtime.host, command).await
         }
 
         Command::Agents { command, session } => {
-            let runtime = build_host(&session, Policy::default()).await?;
+            let runtime = build_host(&session, Policy::default(), servers).await?;
             agents_cmd::run(&runtime.host, command).await
         }
         Command::Data { command, session } => {
-            let runtime = build_host(&session, Policy::default()).await?;
+            let runtime = build_host(&session, Policy::default(), servers).await?;
             data_cmd::run(&runtime.host, command).await
         }
 
         Command::Key { command, session } => {
-            let host = build_host(&session, Policy::default()).await?.host;
+            let host = build_host(&session, Policy::default(), servers).await?.host;
             key_cmd::run(&host, command).await
         }
 
         Command::Mcp { session } => {
-            let host = build_host(&session, Policy::default()).await?.host;
+            let host = build_host(&session, Policy::default(), servers).await?.host;
             let statuses = host.mcp_statuses().await;
             // An entry that will not parse has no server to hang a status off,
             // so it is only reachable here. It is a failure — the user asked for
@@ -481,7 +484,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         }
 
         Command::Models { session } => {
-            let host = build_host(&session, Policy::default()).await?.host;
+            let host = build_host(&session, Policy::default(), servers).await?.host;
             let (provider_id, _) = host
                 .resolve_model(session.provider.as_deref(), None)
                 .await?;
@@ -497,7 +500,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         }
 
         Command::Tools { session } => {
-            let host = build_host(&session, Policy::default()).await?.host;
+            let host = build_host(&session, Policy::default(), servers).await?.host;
             for name in host.tool_names().await {
                 println!("{name}");
             }
@@ -512,11 +515,48 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         }
 
         Command::Usage { session, id, all } => {
-            let host = build_host(&session, Policy::default()).await?.host;
+            let host = build_host(&session, Policy::default(), servers).await?.host;
             let workspace = host.workspace().await;
             let fixed =
                 usage_cmd::Fixed::new(&host.system_prompt().await, host.tool_definitions().await);
             usage_cmd::run(&workspace, id.as_deref(), all, &fixed)
+        }
+    }
+}
+
+/// Whether a command starts the MCP servers.
+///
+/// A full reload starts every configured server and waits for each — up to a
+/// minute apiece for an `npx` package being unpacked — and a command that only
+/// lists notes, skills or conversations has no use for any of them. The ones
+/// that do start them are the ones that run a turn, which may call a server's
+/// tools, and the ones that report on what the servers offer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Servers {
+    Start,
+    Leave,
+}
+
+impl Servers {
+    /// Every command named, so a new one has to say which it is.
+    fn for_command(command: &Command) -> Self {
+        match command {
+            // A turn may call a server's tools.
+            Command::Run(_) | Command::Repl(_) => Self::Start,
+            // What the servers offer: their status, the tools they add, and
+            // what those tools' schemas cost the context window.
+            Command::Mcp { .. } | Command::Tools { .. } | Command::Usage { .. } => Self::Start,
+            Command::Sessions { .. }
+            | Command::Review { .. }
+            | Command::Rewind { .. }
+            | Command::Trust { .. }
+            | Command::Hooks { .. }
+            | Command::Skills { .. }
+            | Command::Notes { .. }
+            | Command::Agents { .. }
+            | Command::Data { .. }
+            | Command::Key { .. }
+            | Command::Models { .. } => Self::Leave,
         }
     }
 }
@@ -538,8 +578,12 @@ pub struct Runtime {
 /// permission allowlist come from the right place.
 /// A host, plus the one-line notice when this workspace has config going
 /// unread. Every command builds its host through here.
-async fn build_host(args: &SessionArgs, policy: Policy) -> Result<Runtime, String> {
-    let runtime = build_host_quietly(args, policy).await?;
+async fn build_host(
+    args: &SessionArgs,
+    policy: Policy,
+    servers: Servers,
+) -> Result<Runtime, String> {
+    let runtime = build_host_quietly(args, policy, servers).await?;
     // After the reload, so it reports the state the session actually starts in.
     trust_cmd::notice(&runtime.host.workspace().await);
     Ok(runtime)
@@ -547,7 +591,11 @@ async fn build_host(args: &SessionArgs, policy: Policy) -> Result<Runtime, Strin
 
 /// The same, without the notice — for `taurus trust`, which is about to say
 /// all of it at greater length and would otherwise say it twice.
-async fn build_host_quietly(args: &SessionArgs, policy: Policy) -> Result<Runtime, String> {
+async fn build_host_quietly(
+    args: &SessionArgs,
+    policy: Policy,
+    servers: Servers,
+) -> Result<Runtime, String> {
     let workspace = match &args.workspace {
         Some(path) => path.canonicalize().map_err(|_| {
             format!(
@@ -573,11 +621,44 @@ async fn build_host_quietly(args: &SessionArgs, policy: Policy) -> Result<Runtim
         proposals.clone(),
         agent_proposals.clone(),
     ));
-    host.reload().await;
+    match servers {
+        Servers::Start => host.reload().await,
+        // The local half only: this command has no use for a server, and each
+        // one started can take up to a minute to answer. See `Servers`.
+        Servers::Leave => host.reload_local().await,
+    }
     Ok(Runtime {
         host,
         proposals,
         agent_proposals,
         interactive,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_command_that_needs_the_servers_starts_them() {
+        // Each server can take up to a minute to start, and a one-line listing
+        // has no use for any of them. Which half of a reload runs is tested in
+        // the host; this is which commands ask for it.
+        let servers = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args.iter().copied())
+                .expect("a command line this build accepts");
+            Servers::for_command(&cli.command)
+        };
+
+        assert_eq!(servers(&["taurus", "sessions"]), Servers::Leave);
+        assert_eq!(servers(&["taurus", "models"]), Servers::Leave);
+        assert_eq!(servers(&["taurus", "trust"]), Servers::Leave);
+
+        assert_eq!(
+            servers(&["taurus", "run", "list the files"]),
+            Servers::Start
+        );
+        assert_eq!(servers(&["taurus", "tools"]), Servers::Start);
+        assert_eq!(servers(&["taurus", "mcp"]), Servers::Start);
+    }
 }

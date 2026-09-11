@@ -63,21 +63,44 @@ pub fn cut(text: &str, cap: usize, gap: impl FnOnce(usize) -> String) -> String 
 /// and `stderr` separately — and becomes part of the filename.
 pub fn spill(text: &str, label: &str, ctx: &ToolContext) -> Option<PathBuf> {
     let dir = ctx.command_output.as_ref()?;
-    std::fs::create_dir_all(dir).ok()?;
-    // Before the write rather than after, so the directory is at its bound
-    // once this one lands rather than one over it until the next command runs.
-    prune(dir, KEPT.saturating_sub(1));
     let path = dir.join(format!(
         "{}-{}-{}.txt",
         slug(ctx.session_id.as_deref().unwrap_or("session")),
         slug(ctx.call_id.as_deref().unwrap_or("command")),
         slug(label)
     ));
-    std::fs::write(&path, text).ok()?;
-    // Canonicalized because this is about to be handed back as a path to read,
-    // and the guard that decides whether it may be read canonicalizes both
-    // sides before comparing them.
-    path.canonicalize().ok()
+    // Megabytes written and a directory listed and pruned, at the end of every
+    // command whose output was cut — from inside the shell's, an MCP server's,
+    // or a skill script's tool, none of which can hand it to a blocking thread
+    // of its own. See [`blocking`].
+    blocking(|| {
+        std::fs::create_dir_all(dir).ok()?;
+        // Before the write rather than after, so the directory is at its bound
+        // once this one lands rather than one over it until the next command
+        // runs.
+        prune(dir, KEPT.saturating_sub(1));
+        std::fs::write(&path, text).ok()?;
+        // Canonicalized because this is about to be handed back as a path to
+        // read, and the guard that decides whether it may be read
+        // canonicalizes both sides before comparing them.
+        path.canonicalize().ok()
+    })
+}
+
+/// Runs blocking file work without stalling the async runtime's other tasks.
+///
+/// On a multi-threaded runtime this is `block_in_place`, which hands the work
+/// queued on this worker to the others before it starts, so the stream and the
+/// permission prompt keep moving while a spill is written. Anywhere else — a
+/// single-threaded runtime, or none — it simply runs: there is no other worker
+/// to hand anything to.
+fn blocking<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
 }
 
 /// Keeps the newest `keep` files in a directory and deletes the rest.

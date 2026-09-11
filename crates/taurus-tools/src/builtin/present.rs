@@ -897,7 +897,10 @@ impl Tool for OpenFile {
         // Checked here rather than left to the canvas, because the canvas
         // opens on the *announcement* — so a failure that only surfaced when
         // the file was fetched would arrive after the empty editor did.
-        let meta = std::fs::metadata(&path)
+        // Through `tokio::fs`, here and for the read below: a document is up to
+        // `MAX_DOCUMENT_BYTES`, read whole, inside a turn.
+        let meta = tokio::fs::metadata(&path)
+            .await
             .map_err(|e| ToolError::Failed(format!("could not open {shown}: {e}")))?;
         if meta.is_dir() {
             return Err(ToolError::InvalidInput(format!(
@@ -914,7 +917,7 @@ impl Tool for OpenFile {
             )));
         }
 
-        let text = std::fs::read_to_string(&path).map_err(|e| {
+        let text = tokio::fs::read_to_string(&path).await.map_err(|e| {
             // The error a binary file gives is `InvalidData`, and "stream did
             // not contain valid UTF-8" is not a sentence that tells anybody
             // what to do next.

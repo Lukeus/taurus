@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tauri::AppHandle;
-use tokio::sync::{oneshot, watch, Mutex};
+use tokio::sync::{oneshot, watch, Mutex, MutexGuard};
 use tokio_util::sync::CancellationToken;
 
 use taurus_agents::proposal::AgentProposal;
@@ -33,6 +33,14 @@ pub struct SessionEntry {
     /// conversation — see `switch_model`. Read at the start of every turn, so
     /// what a turn is sent to is whatever this said when it began.
     pub provider_id: Mutex<String>,
+    /// The model this conversation is on, mirrored out of the session.
+    ///
+    /// The session holds it too, but a turn holds the session's lock for its
+    /// whole run, and asking which model a conversation is on — the first
+    /// thing a turn review does — must not wait minutes for the answer.
+    /// Written wherever the session's own copy is: at creation, on resume, and
+    /// by `switch_model`.
+    pub model: Mutex<String>,
     /// The workspace this conversation belongs to, which is not always the one
     /// open.
     ///
@@ -57,6 +65,24 @@ pub struct SessionEntry {
     /// Without it the two paths disagree: the file has the switches and the
     /// session in memory does not.
     pub switches: Mutex<Vec<Switch>>,
+}
+
+impl SessionEntry {
+    /// The conversation, if no turn is running in it.
+    ///
+    /// A turn holds the session's lock for its whole run, which is minutes for
+    /// a long one. What must not happen underneath a turn — a rewind, a commit,
+    /// a delete, a change of model — asks through this and is refused at once,
+    /// rather than left waiting behind the turn or run alongside it. `refusal`
+    /// finishes the sentence with what to do instead.
+    ///
+    /// A caller that only needs the answer lets the guard go at once; one that
+    /// changes the session keeps it for as long as the change takes.
+    pub fn idle(&self, refusal: &str) -> Result<MutexGuard<'_, Session>, String> {
+        self.session
+            .try_lock()
+            .map_err(|_| format!("this conversation is mid-turn; {refusal}"))
+    }
 }
 
 /// Makes UI-backed permission prompts as the host rebuilds its engine.

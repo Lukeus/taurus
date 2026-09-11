@@ -26,8 +26,12 @@
 //! already gets right, because it is the one the user's own aliases and hooks
 //! are written against.
 //!
-//! What that costs is a process per question. The two reads are cheap enough to
-//! run on a drawer opening; nothing here polls.
+//! What that costs is a process per question, so the one question asked often
+//! is not put to git at all. The branch the shell shows is part of a status
+//! pushed after nearly everything, and it is read off `HEAD` on disk — see
+//! [`branch_on_disk`]. The drawer's questions do start git, side by side, and
+//! each has a deadline: a git waiting on an fsmonitor daemon or a network mount
+//! is reported as not answering rather than waited on. Nothing here polls.
 //!
 //! # Committing only what the turn touched
 //!
@@ -43,10 +47,27 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use ts_rs::TS;
+
+/// How long a question may take before git is reported as not answering.
+///
+/// A working git answers every read here in milliseconds. One that does not is
+/// waiting on something — an fsmonitor daemon starting, a network mount, a
+/// config include that blocks — and without a deadline the drawer asking waits
+/// with it, with nothing on screen to say why. Shorter under test, so the test
+/// of it does not take this long.
+#[cfg(not(test))]
+const READ_DEADLINE: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const READ_DEADLINE: Duration = Duration::from_secs(2);
+
+/// How long a commit may take: far longer than a read, because a commit runs
+/// the repository's own hooks, and a pre-commit hook can be a test suite.
+const COMMIT_DEADLINE: Duration = Duration::from_secs(300);
 
 /// Longest commit subject built from a turn's prompt.
 ///
@@ -170,19 +191,23 @@ impl Repo {
         }))
     }
 
-    /// Where the workspace stands, in one round trip per question.
+    /// Where the workspace stands, in one round trip per question — the two
+    /// after the first asked side by side.
     ///
     /// Never fails: this is drawn beside a conversation, and a status line that
     /// could throw would have to be handled at every call site to say the one
     /// thing it already knows how to say.
     pub async fn status(workspace: &Path) -> RepoStatus {
         match Self::discover(workspace).await {
-            Ok(Some(repo)) => RepoStatus {
-                repository: true,
-                branch: repo.branch().await,
-                head: repo.head().await,
-                unavailable: None,
-            },
+            Ok(Some(repo)) => {
+                let (branch, head) = tokio::join!(repo.branch(), repo.head());
+                RepoStatus {
+                    repository: true,
+                    branch,
+                    head,
+                    unavailable: None,
+                }
+            }
             Ok(None) => RepoStatus::none(),
             Err(reason) => RepoStatus {
                 unavailable: Some(reason),
@@ -243,13 +268,21 @@ impl Repo {
         }
 
         let dirty = self.dirty(paths).await?;
+        // One question for every path that is not dirty, rather than a process
+        // each. See `ignored`.
+        let quiet: Vec<&str> = paths
+            .iter()
+            .filter(|path| !dirty.contains(*path))
+            .map(String::as_str)
+            .collect();
+        let ignored = self.ignored(&quiet).await;
         let mut skipped = Vec::new();
         let mut staging = Vec::new();
 
         for path in paths {
             if dirty.contains(path) {
                 staging.push(path.clone());
-            } else if self.is_ignored(path).await {
+            } else if ignored.contains(path) {
                 skipped.push(Skipped {
                     path: path.clone(),
                     reason: "is ignored by git, so it is not in the repository to commit".into(),
@@ -335,17 +368,43 @@ impl Repo {
             .collect())
     }
 
-    /// Whether git is deliberately ignoring a path.
+    /// Which of `paths` git is deliberately ignoring, asked in one process.
     ///
-    /// Only ever asked about a path already known not to be dirty, so this
-    /// costs a process for the files a commit is about to leave out and nothing
-    /// for the ones it takes.
-    async fn is_ignored(&self, path: &str) -> bool {
-        // `check-ignore` exits 1 for "not ignored", which `run` reports as an
-        // error. That is the answer, not a failure to get one.
-        run(&self.workspace, &["check-ignore", "--quiet", "--", path])
-            .await
-            .is_ok()
+    /// Only ever asked about paths already known not to be dirty, so it costs
+    /// one process for the files a commit is about to leave out, however many
+    /// there are, and none when it leaves nothing out — rather than a process
+    /// start for every file a turn touched and then put back.
+    ///
+    /// The paths go in on stdin, NUL-separated. `check-ignore` refuses `-z` for
+    /// paths given as arguments, and without `-z` a path holding an unusual
+    /// character would come back quoted and no longer match the one asked
+    /// about. It names the ignored ones back and exits 1 when there are none —
+    /// an answer, not a failure — so only what it printed is read. A git that
+    /// could not be asked prints nothing, which reads as nothing ignored, the
+    /// same as a failed question always did.
+    async fn ignored(&self, paths: &[&str]) -> BTreeSet<String> {
+        if paths.is_empty() {
+            return BTreeSet::new();
+        }
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(path.as_bytes());
+            input.push(0);
+        }
+        let asked = launch_with(
+            &self.workspace,
+            &["check-ignore", "--stdin", "-z"],
+            Some(input),
+        )
+        .await;
+        let Ok(output) = asked else {
+            return BTreeSet::new();
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 }
 
@@ -386,7 +445,26 @@ async fn run(workspace: &Path, args: &[&str]) -> Result<String, String> {
 /// the answer rather than a fault: `check-ignore` exits 1 for "no", and
 /// `rev-parse --is-inside-work-tree` exits 128 for "not here". Callers that want
 /// the usual reading use [`run`].
+///
+/// A git that has not answered by its deadline is one of those failures, and is
+/// ended rather than left running. See [`READ_DEADLINE`].
 async fn launch(workspace: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    launch_with(workspace, args, None).await
+}
+
+/// [`launch`], with `input` written to git's stdin and then closed.
+///
+/// Written from a task of its own rather than before the wait, so a git that
+/// answers as it reads — `check-ignore --stdin` does — cannot fill its output
+/// while this is still waiting to finish writing.
+async fn launch_with(
+    workspace: &Path,
+    args: &[&str],
+    input: Option<Vec<u8>>,
+) -> Result<std::process::Output, String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
     let mut command = Command::new("git");
     command
         .args(args)
@@ -396,10 +474,40 @@ async fn launch(workspace: &Path, args: &[&str]) -> Result<std::process::Output,
         // out with nothing to show for it.
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
-        .stdin(std::process::Stdio::null());
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // What ends it when the deadline below gives up on it.
+        .kill_on_drop(true);
     taurus_tools::no_console(&mut command);
 
-    command.output().await.map_err(|e| {
+    let deadline = if args.first() == Some(&"commit") {
+        COMMIT_DEADLINE
+    } else {
+        READ_DEADLINE
+    };
+    let asked = async {
+        let mut child = command.spawn()?;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            tokio::spawn(async move {
+                let _ = stdin.write_all(&input).await;
+            });
+        }
+        child.wait_with_output().await
+    };
+    let Ok(finished) = tokio::time::timeout(deadline, asked).await else {
+        return Err(format!(
+            "git did not answer within {} seconds. Something it waits on is not \
+             responding — an fsmonitor daemon, a network mount, or a config \
+             include — and `git status` in a terminal here will show which.",
+            deadline.as_secs()
+        ));
+    };
+    finished.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             // The one failure with a fix the user can act on, and the one most
             // likely on a fresh machine.
@@ -408,6 +516,46 @@ async fn launch(workspace: &Path, args: &[&str]) -> Result<std::process::Output,
             format!("could not run git: {e}")
         }
     })
+}
+
+/// The checked-out branch, read off `HEAD` on disk without starting git.
+///
+/// What the status the shell shows uses. That status is pushed after nearly
+/// everything, and asking git cost two processes each time; this is a file
+/// read or two, and cannot hang. Found the way git finds a repository — the
+/// nearest `.git` above the workspace — and through a `.git` *file* for a
+/// worktree or submodule, which names the directory holding the real `HEAD`.
+///
+/// `Some(None)` is an answer: not a repository, or a detached `HEAD`. `None`
+/// means the disk did not settle it and git has to be asked — a `HEAD` that
+/// could not be read, one naming something other than a branch, or a reftable
+/// repository, whose `HEAD` is a stub kept for readers like this one.
+pub fn branch_on_disk(workspace: &Path) -> Option<Option<String>> {
+    let Some(dot_git) = workspace
+        .ancestors()
+        .map(|dir| dir.join(".git"))
+        .find(|candidate| candidate.exists())
+    else {
+        return Some(None);
+    };
+    let git_dir = if dot_git.is_file() {
+        let pointer = std::fs::read_to_string(&dot_git).ok()?;
+        let target = pointer.trim().strip_prefix("gitdir:")?.trim().to_string();
+        // Relative to the file that names it, for a submodule; absolute, which
+        // `join` keeps as it is, for a worktree.
+        dot_git.parent()?.join(target)
+    } else {
+        dot_git
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    match head.trim().strip_prefix("ref:") {
+        Some(reference) => {
+            let branch = reference.trim().strip_prefix("refs/heads/")?;
+            (branch != ".invalid").then(|| Some(branch.to_string()))
+        }
+        // A hash: detached.
+        None => Some(None),
+    }
 }
 
 #[cfg(test)]
@@ -482,6 +630,143 @@ mod tests {
         let status = Repo::status(&dir.path().canonicalize().unwrap()).await;
         assert!(!status.repository);
         assert_eq!(status.unavailable, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_git_that_never_answers_is_reported_rather_than_waited_on() {
+        needs_git!();
+        // Every git command reads the repository's config before anything
+        // else, and an include naming a pipe nobody writes to blocks that read
+        // for ever — the shape of an fsmonitor daemon or a network mount that
+        // never comes back. With no deadline, the drawer asking waited with it.
+        let f = Fixture::new().await;
+        let pipe = f.root.join("never");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success());
+        let config = f.root.join(".git/config");
+        let mut text = std::fs::read_to_string(&config).unwrap();
+        text.push_str(&format!("[include]\n\tpath = {}\n", pipe.display()));
+        std::fs::write(&config, text).unwrap();
+
+        let status = tokio::time::timeout(Duration::from_secs(20), Repo::status(&f.root))
+            .await
+            .expect("waited on a git that never answers");
+
+        assert!(!status.repository);
+        let reason = status.unavailable.expect("says why git could not be asked");
+        assert!(reason.contains("did not answer"), "{reason}");
+        // And the branch the shell shows on every status push is not asked of
+        // git at all, so it is still there.
+        assert_eq!(branch_on_disk(&f.root), Some(Some("main".to_string())));
+    }
+
+    #[tokio::test]
+    async fn the_branch_read_off_disk_is_the_one_git_names() {
+        needs_git!();
+        let f = Fixture::new().await;
+        f.write("a.txt", "one\n");
+        let repo = f.repo().await;
+        repo.commit(&["a.txt".into()], "first").await.unwrap();
+
+        // At the root, and from a package directory below it.
+        std::fs::create_dir_all(f.root.join("pkg")).unwrap();
+        assert_eq!(branch_on_disk(&f.root), Some(Some("main".into())));
+        assert_eq!(
+            branch_on_disk(&f.root.join("pkg")),
+            Some(Some("main".into()))
+        );
+
+        // A name with a slash in it, which git's own short form keeps whole.
+        run(&f.root, &["checkout", "-b", "feature/x"])
+            .await
+            .unwrap();
+        assert_eq!(branch_on_disk(&f.root), Some(repo.branch().await));
+
+        // A worktree, whose `.git` is a file naming the directory its HEAD is in.
+        let elsewhere = TempDir::new().unwrap();
+        let tree = elsewhere.path().join("tree");
+        run(
+            &f.root,
+            &["worktree", "add", "-b", "elsewhere", tree.to_str().unwrap()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(branch_on_disk(&tree), Some(Some("elsewhere".into())));
+
+        // Detached is an answer, and the answer is no branch.
+        let head = repo.head().await.unwrap();
+        run(&f.root, &["checkout", "--detach", &head])
+            .await
+            .unwrap();
+        assert_eq!(branch_on_disk(&f.root), Some(None));
+    }
+
+    #[test]
+    fn a_head_the_disk_cannot_settle_is_left_to_git() {
+        let plain = TempDir::new().unwrap();
+        // No repository above it: an answer, not a question for git.
+        assert_eq!(branch_on_disk(plain.path()), Some(None));
+
+        // A reftable repository keeps a stub `HEAD` for readers like this one,
+        // and its real branch in the table.
+        std::fs::create_dir_all(plain.path().join(".git")).unwrap();
+        std::fs::write(plain.path().join(".git/HEAD"), "ref: refs/heads/.invalid\n").unwrap();
+        assert_eq!(branch_on_disk(plain.path()), None);
+    }
+
+    #[tokio::test]
+    async fn every_skipped_path_gets_its_own_reason_from_one_question() {
+        needs_git!();
+        // Two ignored paths and one that already matches, answered by a single
+        // `check-ignore` over all three rather than a process each.
+        let f = Fixture::new().await;
+        f.write(".gitignore", ".env\nbuild/\n");
+        f.write("kept.txt", "same\n");
+        let repo = f.repo().await;
+        repo.commit(&[".gitignore".into(), "kept.txt".into()], "base")
+            .await
+            .unwrap();
+
+        f.write(".env", "SECRET=1\n");
+        f.write("build/out.bin", "x");
+        f.write("new.txt", "fresh\n");
+        let commit = repo
+            .commit(
+                &[
+                    ".env".into(),
+                    "build/out.bin".into(),
+                    "kept.txt".into(),
+                    "new.txt".into(),
+                ],
+                "second",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(commit.files, vec!["new.txt"]);
+        let reason = |path: &str| {
+            commit
+                .skipped
+                .iter()
+                .find(|s| s.path == path)
+                .map(|s| s.reason.clone())
+                .unwrap_or_default()
+        };
+        assert!(reason(".env").contains("ignored"), "{:?}", commit.skipped);
+        assert!(
+            reason("build/out.bin").contains("ignored"),
+            "{:?}",
+            commit.skipped
+        );
+        assert!(
+            reason("kept.txt").contains("already matches"),
+            "{:?}",
+            commit.skipped
+        );
     }
 
     #[tokio::test]
