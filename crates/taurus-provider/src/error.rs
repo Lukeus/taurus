@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -10,12 +12,39 @@ pub enum ProviderError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("{provider} returned {status}: {body}")]
+    /// The connection opened, and then nothing arrived for `after`.
+    ///
+    /// Apart from [`Self::Unreachable`] because the advice is different: the
+    /// backend was there, so the address and the network are not what to
+    /// check.
+    #[error(
+        "{provider} sent nothing for {} and the request was given up. The backend \
+         accepted it, so it is overloaded or stuck rather than unreachable.",
+        span(*.after)
+    )]
+    Stalled { provider: String, after: Duration },
+
+    #[error("{provider} returned {status}: {body}{}", wait_note(.retry_after))]
     Api {
         provider: String,
         status: u16,
         body: String,
+        /// How long the backend asked to be left alone, when it said.
+        ///
+        /// From a `Retry-After` header, or the `RetryInfo` Gemini puts in the
+        /// body. The agent loop waits for this or its own backoff, whichever
+        /// is longer.
+        retry_after: Option<Duration>,
     },
+
+    /// The backend failed part-way through an answer it had already begun,
+    /// and said so inside the stream rather than with a status code.
+    ///
+    /// Its own kind rather than an API error with a made-up status: a status
+    /// of 200 would file a server-side failure as a client error, and one
+    /// that is never retried.
+    #[error("{provider} failed part-way through its answer: {message}")]
+    Stream { provider: String, message: String },
 
     #[error("model '{model}' is not available on {provider}")]
     ModelNotFound { provider: String, model: String },
@@ -33,8 +62,14 @@ pub enum ProviderError {
     #[error("request was canceled")]
     Canceled,
 
-    #[error("missing credentials for {provider}")]
-    MissingCredentials { provider: String },
+    /// The backend refused the key, in its own words.
+    ///
+    /// Only a 401. A 403 is a key that works and may not do this — no access
+    /// to a model, a region the account cannot use — and reads as an API error
+    /// with its reason, because telling somebody to fix a key that is fine
+    /// sends them to the wrong place.
+    #[error("{provider} did not accept the API key: {detail}")]
+    MissingCredentials { provider: String, detail: String },
 }
 
 impl ProviderError {
@@ -48,6 +83,8 @@ impl ProviderError {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Unreachable { .. } => "unreachable",
+            Self::Stalled { .. } => "stalled",
+            Self::Stream { .. } => "stream",
             // The status and not the body. `api_429` and `api_500` are the two
             // somebody actually charts, and they are worth telling apart.
             Self::Api { status, .. } if *status == 429 => "api_429",
@@ -65,11 +102,143 @@ impl ProviderError {
     /// the agent loop to decide between a retry and surfacing the failure.
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Unreachable { .. } => true,
+            // A stall is a request that got lost, and nothing about it says
+            // the next one will be. The loop still retries only when nothing
+            // reached the screen, so a stream that went quiet half-way through
+            // an answer surfaces rather than starting over.
+            Self::Unreachable { .. } | Self::Stalled { .. } | Self::Stream { .. } => true,
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             _ => false,
+        }
+    }
+
+    /// How long the backend asked to be left alone before the next attempt.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::Api { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 }
 
 pub type Result<T> = std::result::Result<T, ProviderError>;
+
+/// A response body, as the sentence of it a person needs.
+///
+/// Every backend here wraps its reason in JSON — `{"error": {"message": …}}`
+/// for OpenAI, Anthropic, and Gemini, `{"error": "…"}` for Ollama — and the
+/// wrapper is noise in an error message. Anything else is passed through
+/// trimmed and cut short, because the other common body is a proxy's HTML
+/// error page, and nobody reads all of one.
+pub fn brief(body: &str) -> String {
+    const MOST: usize = 300;
+    let body = body.trim();
+    let said = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            let error = &value["error"];
+            error["message"]
+                .as_str()
+                .or_else(|| error.as_str())
+                .or_else(|| value["message"].as_str())
+                .map(str::to_string)
+        });
+    let text = said.unwrap_or_else(|| body.to_string());
+    if text.trim().is_empty() {
+        return "no reason given".into();
+    }
+    if text.chars().count() <= MOST {
+        return text;
+    }
+    let cut: String = text.chars().take(MOST).collect();
+    format!("{cut}…")
+}
+
+/// A duration as a person says it: "45 seconds", "3 minutes".
+fn span(duration: Duration) -> String {
+    let seconds = duration.as_secs_f64();
+    if seconds < 1.0 {
+        return format!("{} ms", duration.as_millis());
+    }
+    let seconds = seconds.round() as u64;
+    match seconds {
+        1 => "1 second".into(),
+        s if s < 120 => format!("{s} seconds"),
+        s => format!("{} minutes", s.div_ceil(60)),
+    }
+}
+
+/// The part of an API error that says how long the backend asked to wait.
+fn wait_note(retry_after: &Option<Duration>) -> String {
+    match retry_after {
+        Some(wait) => format!(" (it asks to wait {} before trying again)", span(*wait)),
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_api_error_says_how_long_the_backend_asked_to_wait() {
+        let error = ProviderError::Api {
+            provider: "anthropic".into(),
+            status: 429,
+            body: "rate_limit_error: slow down".into(),
+            retry_after: Some(Duration::from_secs(20)),
+        };
+        assert_eq!(
+            error.to_string(),
+            "anthropic returned 429: rate_limit_error: slow down \
+             (it asks to wait 20 seconds before trying again)"
+        );
+        assert_eq!(error.retry_after(), Some(Duration::from_secs(20)));
+    }
+
+    #[test]
+    fn a_stall_names_how_long_it_waited() {
+        let error = ProviderError::Stalled {
+            provider: "openai".into(),
+            after: Duration::from_secs(600),
+        };
+        assert!(
+            error
+                .to_string()
+                .starts_with("openai sent nothing for 10 minutes"),
+            "{error}"
+        );
+        assert_eq!(error.kind(), "stalled");
+    }
+
+    #[test]
+    fn a_failure_inside_a_stream_is_a_server_failure_worth_retrying() {
+        let error = ProviderError::Stream {
+            provider: "ollama".into(),
+            message: "model runner has unexpectedly stopped".into(),
+        };
+        assert!(error.is_transient());
+        assert_eq!(error.kind(), "stream");
+        assert!(error.to_string().contains("part-way"), "{error}");
+    }
+
+    #[test]
+    fn brief_reads_the_reason_out_of_each_backends_error_body() {
+        assert_eq!(
+            brief(
+                r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#
+            ),
+            "invalid x-api-key"
+        );
+        assert_eq!(
+            brief(
+                r#"{"error":{"code":401,"message":"API key not valid.","status":"UNAUTHENTICATED"}}"#
+            ),
+            "API key not valid."
+        );
+        assert_eq!(brief(r#"{"error":"unauthorized"}"#), "unauthorized");
+        assert_eq!(brief("  Bad gateway \n"), "Bad gateway");
+        assert_eq!(brief(""), "no reason given");
+        assert!(brief(&"x".repeat(1_000)).chars().count() <= 301);
+    }
+}

@@ -455,24 +455,38 @@ fn count_entries(dir: &Path) -> usize {
 }
 
 /// Files under `dir` whose name ends in `suffix`, recursing as the loaders do.
+/// How deep a walk of a workspace's config directories goes.
+///
+/// Symlinks are not followed, which is what ends a cycle: a link under
+/// `.claude/agents` that points back at its own directory. This is what ends a
+/// tree built deep on purpose, in a clone nobody has decided to trust yet.
+/// Eight levels is past any layout a loader reads.
+pub(crate) const MAX_DEPTH: usize = 8;
+
 fn count_files(dir: &Path, suffix: &str) -> usize {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    let mut count = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            count += count_files(&path, suffix);
-        } else if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.ends_with(suffix))
-        {
-            count += 1;
+    fn walk(dir: &Path, suffix: &str, depth: usize) -> usize {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        let mut count = 0;
+        for entry in entries.flatten() {
+            // By the entry, which does not follow a symlink, rather than by
+            // the path, which does. See `MAX_DEPTH`.
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                if depth < MAX_DEPTH {
+                    count += walk(&entry.path(), suffix, depth + 1);
+                }
+            } else if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with(suffix))
+            {
+                count += 1;
+            }
         }
+        count
     }
-    count
+    walk(dir, suffix, 0)
 }
 
 #[cfg(test)]
@@ -646,6 +660,36 @@ mod tests {
         let finding = &pending.findings[0];
         assert_eq!(finding.kind, crate::inspect::FindingKind::HiddenCharacters);
         assert!(finding.path.ends_with("SKILL.md"), "{}", finding.path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_cycle_in_a_clone_is_counted_once_and_not_walked_again() {
+        // An untrusted clone can ship a link that points back at its own
+        // directory, and every trust refresh walks it.
+        let _home = isolated_home();
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let agents = workspace.path().join(".claude").join("agents");
+        std::fs::create_dir_all(&agents).expect("agents dir");
+        std::fs::write(
+            agents.join("helper.md"),
+            "---\nname: helper\n---\nhelp \u{202E}quietly",
+        )
+        .expect("write the agent");
+        std::os::unix::fs::symlink(&agents, agents.join("loop")).expect("link");
+
+        let pending = pending(workspace.path());
+
+        assert_eq!(
+            pending.agents, 1,
+            "the file behind the loop was counted again"
+        );
+        assert_eq!(
+            pending.findings.len(),
+            1,
+            "the file behind the loop was read again: {:?}",
+            pending.findings
+        );
     }
 
     #[test]

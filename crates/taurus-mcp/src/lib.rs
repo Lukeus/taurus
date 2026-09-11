@@ -24,7 +24,7 @@ use rmcp::service::{
     Peer, PeerRequestOptions, RoleClient, RunningService, ServiceError, ServiceExt,
 };
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
+use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -90,6 +90,10 @@ pub fn is_mcp_tool(name: &str) -> bool {
 /// tools are registered.
 struct Connection {
     _service: RunningService<RoleClient, ()>,
+    /// A stdio server's process, which ends when this is dropped: spawned with
+    /// `kill_on_drop`, and after the service so its pipes close first. `None`
+    /// for an HTTP server, which has no process here to end.
+    _child: Option<tokio::process::Child>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]
@@ -250,7 +254,7 @@ impl McpManager {
         name: &str,
         server: &ServerConfig,
     ) -> Result<Vec<Arc<dyn Tool>>, String> {
-        let (service, listed) = handshake(name, server, self.vault.clone()).await?;
+        let (service, listed, child) = handshake(name, server, self.vault.clone()).await?;
         let peer = service.peer().clone();
 
         let tools: Vec<Arc<dyn Tool>> = listed
@@ -284,10 +288,13 @@ impl McpManager {
                 tools: listed.iter().map(|t| t.name.to_string()).collect(),
             },
         );
-        self.connections
-            .write()
-            .await
-            .insert(name.to_string(), Arc::new(Connection { _service: service }));
+        self.connections.write().await.insert(
+            name.to_string(),
+            Arc::new(Connection {
+                _service: service,
+                _child: child,
+            }),
+        );
 
         Ok(tools)
     }
@@ -316,8 +323,16 @@ async fn handshake(
     // every HTTP server unauthenticated, which is what the CLI and the probe
     // example do.
     vault: Option<Arc<dyn SecretVault>>,
-) -> Result<(RunningService<RoleClient, ()>, Vec<rmcp::model::Tool>), String> {
+) -> Result<
+    (
+        RunningService<RoleClient, ()>,
+        Vec<rmcp::model::Tool>,
+        Option<tokio::process::Child>,
+    ),
+    String,
+> {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let mut child = None;
         let service = match server {
             ServerConfig::Stdio {
                 command, args, env, ..
@@ -341,16 +356,47 @@ async fn handshake(
                     ));
                 }
 
-                let transport = TokioChildProcess::new(spawn_command(&command).configure(|c| {
+                let mut process = spawn_command(&command).configure(|c| {
                     c.args(&expanded_args);
                     for (key, value) in &expanded_env {
                         c.env(key, value);
                     }
-                }))
-                .map_err(|e| start_failure(&command, &e))?;
-                ().serve(transport)
-                    .await
-                    .map_err(|e| format!("handshake failed: {e}"))?
+                });
+                process
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    // Piped rather than inherited: launched from the Dock the
+                    // app has nowhere for an inherited stderr to go, and that
+                    // is where a server says why it will not start. See
+                    // `StderrTail`.
+                    .stderr(std::process::Stdio::piped())
+                    // Held by the connection and ended with it. See
+                    // `Connection`.
+                    .kill_on_drop(true);
+                let mut spawned = process.spawn().map_err(|e| start_failure(&command, &e))?;
+                let (Some(stdout), Some(stdin)) = (spawned.stdout.take(), spawned.stdin.take())
+                else {
+                    return Err("the server started without the pipes it was given".into());
+                };
+                let heard = spawned.stderr.take().map(StderrTail::drain);
+                child = Some(spawned);
+                // Spoken to through its pipes rather than rmcp's own child
+                // transport, so every line is capped on the way in. See
+                // `LineCap`.
+                match ().serve((LineCap::new(stdout, MAX_LINE_BYTES), stdin)).await {
+                    Ok(service) => service,
+                    Err(e) => {
+                        let said = match heard {
+                            Some(heard) => heard.said(STDERR_SETTLE).await,
+                            None => String::new(),
+                        };
+                        return Err(if said.is_empty() {
+                            format!("handshake failed: {e}")
+                        } else {
+                            format!("handshake failed: {e}. The server said: {said}")
+                        });
+                    }
+                }
             }
             ServerConfig::Http { url, headers, .. } => {
                 let url = expand_env(url).map_err(|e| format!("url: {e}"))?;
@@ -401,7 +447,7 @@ async fn handshake(
             .list_all_tools()
             .await
             .map_err(|e| format!("could not list tools: {e}"))?;
-        Ok((service, listed))
+        Ok((service, listed, child))
     })
     .await
     .map_err(|_| {
@@ -445,7 +491,7 @@ fn handshake_failure(error: impl std::fmt::Display, offer_sign_in: bool) -> Stri
     // a service error, and the cost of a miss is the raw message rather than a
     // wrong one. Sign in is offered on every unauthenticated HTTP server
     // regardless, so nothing is unreachable if this fails to spot one.
-    let unauthorized = text.contains("401")
+    let unauthorized = names_status(&text, "401")
         || text.contains("Auth required")
         || text.to_lowercase().contains("unauthorized");
     if !unauthorized {
@@ -458,6 +504,141 @@ fn handshake_failure(error: impl std::fmt::Display, offer_sign_in: bool) -> Stri
         "the stored sign-in is no longer accepted — it has expired or been          revoked. Sign in again."
             .to_string()
     }
+}
+
+/// The longest line a stdio server may send.
+///
+/// A line is one JSON-RPC message, and rmcp reads a line whole, with no limit
+/// of its own, before it parses it. A server that floods one line — a bug, or a
+/// package that means harm — would be held in memory in full before [`fit`]
+/// ever saw it. Past this the connection is closed instead: an answer that
+/// large is one no model could read anyway.
+const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
+
+/// A reader that fails once a line runs past `limit` bytes. See
+/// [`MAX_LINE_BYTES`].
+struct LineCap<R> {
+    inner: R,
+    since_newline: usize,
+    limit: usize,
+}
+
+impl<R> LineCap<R> {
+    fn new(inner: R, limit: usize) -> Self {
+        Self {
+            inner,
+            since_newline: 0,
+            limit,
+        }
+    }
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for LineCap<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let this = &mut *self;
+        std::task::ready!(std::pin::Pin::new(&mut this.inner).poll_read(cx, buf))?;
+        for &byte in &buf.filled()[before..] {
+            this.since_newline = if byte == b'\n' {
+                0
+            } else {
+                this.since_newline + 1
+            };
+        }
+        if this.since_newline > this.limit {
+            // Handed back as nothing read: a reader told of an error has read
+            // none of the call, and the line past the cap is what is refused.
+            buf.set_filled(before);
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "the server sent a message longer than {} MB, so the connection was closed",
+                    this.limit / (1024 * 1024)
+                ),
+            )));
+        }
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// How much of a stdio server's stderr is kept.
+const STDERR_TAIL_BYTES: usize = 4 * 1024;
+
+/// How long a failed handshake waits for the server's last words.
+///
+/// A server that gives up usually exits a moment before its stderr has been
+/// read to the end, and the reason is in that last moment.
+const STDERR_SETTLE: Duration = Duration::from_millis(500);
+
+/// The end of what a stdio server has said on stderr.
+///
+/// Launched from the Dock, the app has nowhere for an inherited stderr to go,
+/// so "GITHUB_TOKEN not set" became "handshake failed". The pipe is drained for
+/// the life of the process, so a server that talks there never blocks on a
+/// full pipe, and only the last [`STDERR_TAIL_BYTES`] are kept.
+struct StderrTail {
+    text: Arc<std::sync::Mutex<String>>,
+    done: tokio::task::JoinHandle<()>,
+}
+
+impl StderrTail {
+    fn drain(mut pipe: tokio::process::ChildStderr) -> Self {
+        use tokio::io::AsyncReadExt;
+        let text = Arc::new(std::sync::Mutex::new(String::new()));
+        let done = tokio::spawn({
+            let text = text.clone();
+            async move {
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = pipe.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let mut text = text
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    text.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if text.len() > STDERR_TAIL_BYTES {
+                        let mut cut = text.len() - STDERR_TAIL_BYTES;
+                        while !text.is_char_boundary(cut) {
+                            cut += 1;
+                        }
+                        text.drain(..cut);
+                    }
+                }
+            }
+        });
+        Self { text, done }
+    }
+
+    /// What it has said, once the pipe closes or `wait` has passed.
+    async fn said(self, wait: Duration) -> String {
+        let _ = tokio::time::timeout(wait, self.done).await;
+        let text = self
+            .text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        text.trim().to_string()
+    }
+}
+
+/// Whether `text` names HTTP status `code` on its own, rather than as part of
+/// something longer.
+///
+/// The error text includes the server's URL, so a bare substring test reads
+/// `http://localhost:4010/mcp` as a sign-in request and shows a server that is
+/// simply down as one that wants an account. A status is a number with no
+/// digit on either side, and not the port after a colon.
+fn names_status(text: &str, code: &str) -> bool {
+    text.match_indices(code).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + code.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_digit() || c == ':')
+            && !after.is_some_and(|c| c.is_ascii_digit())
+    })
 }
 
 /// Connects to one server, reports what it offers, and disconnects.
@@ -478,11 +659,12 @@ pub async fn probe(
         // it on — so this is a note rather than a refusal.
         info!(server = %name, "probing a disabled server");
     }
-    let (service, listed) = handshake(name, server, vault).await?;
+    let (service, listed, child) = handshake(name, server, vault).await?;
     let tools = listed.iter().map(|t| t.name.to_string()).collect();
     // Explicit rather than left to the drop glue, so the child is gone before
     // this returns and a run of tests cannot pile them up.
     let _ = service.cancel().await;
+    drop(child);
     Ok(tools)
 }
 
@@ -925,6 +1107,61 @@ fn describe(rejected: taurus_provider::image::Rejected) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn a_line_past_the_cap_ends_the_read_instead_of_filling_memory() {
+        use tokio::io::AsyncReadExt;
+        let flood = [b'x'; 100];
+        let error = LineCap::new(&flood[..], 10)
+            .read_to_end(&mut Vec::new())
+            .await
+            .expect_err("a line past the cap");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+
+        // Lines under it pass through untouched, however many there are.
+        let lines = b"short\nlines\nonly\n".to_vec();
+        let mut read = Vec::new();
+        LineCap::new(&lines[..], 10)
+            .read_to_end(&mut read)
+            .await
+            .unwrap();
+        assert_eq!(read, lines);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_that_will_not_start_is_heard_saying_why() {
+        // Launched from the Dock, its stderr went nowhere, and the one line
+        // that said what to fix became "handshake failed".
+        let server = ServerConfig::Stdio {
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo 'GITHUB_TOKEN not set' >&2; exit 1".into(),
+            ],
+            env: BTreeMap::new(),
+            disabled: false,
+        };
+        let error = probe("t", &server, None).await.unwrap_err();
+        assert!(error.contains("GITHUB_TOKEN not set"), "{error}");
+    }
+
+    #[test]
+    fn a_port_with_401_in_it_is_not_a_sign_in_request() {
+        // A server that is simply down, on a port that happens to contain
+        // the digits, read as one that wanted an account.
+        let down = handshake_failure(
+            "error sending request for url (http://localhost:4010/mcp): connection refused",
+            true,
+        );
+        assert!(down.starts_with("handshake failed"), "{down}");
+
+        let wants_account = handshake_failure("Unexpected server response: 401", true);
+        assert!(wants_account.contains("Sign in"), "{wants_account}");
+        assert!(names_status("status 401 from the server", "401"));
+        assert!(!names_status("http://localhost:401/mcp", "401"));
+        assert!(!names_status("request 44017 failed", "401"));
+    }
+
     use super::*;
     use taurus_provider::{ToolOutput, ToolResultBlock};
 

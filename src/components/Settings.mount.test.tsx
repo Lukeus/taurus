@@ -477,3 +477,174 @@ describe("the iteration limit", () => {
     );
   });
 });
+
+describe("a write that does not take", () => {
+  it("says why a revoke failed, rather than leaving the rule there in silence", async () => {
+    invoke.mockImplementation((...args: unknown[]) => {
+      switch (args[0]) {
+        case "list_permission_rules":
+          return Promise.resolve([{ rule: "write_file", scope: "global" }]);
+        case "revoke_permission_rule":
+          return Promise.reject("permissions.json is read-only");
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    const host = await mount();
+    click(host, "Permissions");
+    await act(async () => {
+      [...host.querySelectorAll("button")]
+        .find((b) => b.textContent === "Revoke")!
+        .click();
+    });
+
+    expect(host.textContent).toContain("permissions.json is read-only");
+  });
+
+  it("says why a switch did not move", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "set_skill_synthesis"
+        ? Promise.reject("settings.json is read-only")
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    click(host, "Behavior");
+    await flip(checkbox(host, "propose skills"));
+
+    expect(host.textContent).toContain("settings.json is read-only");
+  });
+
+  it("says the stored keys could not be read, rather than asking for a saved provider to be saved", async () => {
+    // A locked keychain read as "nothing stored", and every saved provider
+    // then said to save it before storing a key.
+    invoke.mockImplementation((...args: unknown[]) => {
+      switch (args[0]) {
+        case "list_global_providers":
+          return Promise.resolve(SAVED);
+        case "keychain_available":
+          return Promise.resolve(true);
+        case "list_key_statuses":
+          return Promise.reject("the keychain is locked");
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    const host = await mount();
+    await toggle(cards(host)[1]);
+    const card = cards(host)[1];
+
+    expect(card.textContent).toContain("the keychain is locked");
+    expect(card.textContent).not.toContain("Save this provider before storing a key");
+  });
+});
+
+describe("the search tab", () => {
+  const BRAVE = {
+    selected: null,
+    backends: [
+      {
+        id: "brave",
+        kind: "brave",
+        base_url: "https://api.search.brave.com",
+        api_key_env: null,
+        max_results: null,
+        needs_key: true,
+      },
+    ],
+    key_statuses: [],
+    active: false,
+    problems: [],
+  };
+
+  it("says why its settings could not be read, rather than loading forever", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "get_search_settings"
+        ? Promise.reject("search.json is not valid JSON")
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    click(host, "Search");
+    await act(async () => {});
+
+    expect(host.textContent).toContain("search.json is not valid JSON");
+    expect(host.textContent).not.toContain("Loading…");
+  });
+
+  it("says why a save did not take", async () => {
+    invoke.mockImplementation((...args: unknown[]) => {
+      switch (args[0]) {
+        case "get_search_settings":
+          return Promise.resolve(BRAVE);
+        case "save_search_settings":
+          return Promise.reject("search.json is read-only");
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    const host = await mount();
+    click(host, "Search");
+    await act(async () => {});
+    const select = [...host.querySelectorAll("select")].find((s) =>
+      s.querySelector('option[value="brave"]'),
+    ) as HTMLSelectElement;
+    await act(async () => {
+      select.value = "brave";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(host.textContent).toContain("search.json is read-only");
+  });
+});
+
+describe("searching the codebase", () => {
+  const indexing = (model: string) => {
+    const base = status(true, true);
+    return { ...base, settings: { ...base.settings, embedding_model: model } };
+  };
+  const NONE = { selected: null, backends: [], key_statuses: [], active: false, problems: [] };
+
+  it("shows the embedding model the settings say now, not the one it opened with", async () => {
+    // Seeded once and never followed, the field kept showing a model that a
+    // refresh from elsewhere had already replaced.
+    invoke.mockImplementation((...args: unknown[]) =>
+      Promise.resolve(args[0] === "get_search_settings" ? NONE : []),
+    );
+    state.status = indexing("nomic-embed-text");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<Settings onClose={() => {}} />);
+    });
+    click(host, "Search");
+    const field = () =>
+      [...host.querySelectorAll("input")].find(
+        (i) => i.placeholder === "nomic-embed-text",
+      ) as HTMLInputElement;
+    expect(field().value).toBe("nomic-embed-text");
+
+    state.status = indexing("mxbai-embed-large");
+    await act(async () => {
+      root.render(<Settings onClose={() => {}} />);
+    });
+    expect(field().value).toBe("mxbai-embed-large");
+  });
+
+  it("keeps a build it started when the tab is switched away and back", async () => {
+    invoke.mockImplementation((...args: unknown[]) => {
+      if (args[0] === "build_index") return new Promise(() => {});
+      return Promise.resolve(args[0] === "get_search_settings" ? NONE : []);
+    });
+    state.status = indexing("nomic-embed-text");
+    const host = await mount();
+    click(host, "Search");
+    click(host, "Build index now");
+    const stopShown = () =>
+      [...host.querySelectorAll("button")].some((b) => b.textContent === "Stop");
+    expect(stopShown()).toBe(true);
+
+    click(host, "Behavior");
+    click(host, "Search");
+    expect(stopShown()).toBe(true);
+  });
+});

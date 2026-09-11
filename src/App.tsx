@@ -746,6 +746,17 @@ export default function App() {
 
   /** The latest `newConversation`, for the window shortcut. See the effect. */
   const start = useRef(() => {});
+  /**
+   * The latest `pickWorkspace` and `chooseTheme`, for the palette.
+   *
+   * Filled in where `chooseTheme` is defined, further down: the palette's list
+   * is built before that line runs, and reading the function itself there
+   * would be reading it before it exists.
+   */
+  const latest = useRef<{
+    pickWorkspace: () => Promise<void>;
+    chooseTheme: (next: Theme) => Promise<void>;
+  } | null>(null);
 
   const newConversation = () => {
     const model =
@@ -792,7 +803,7 @@ export default function App() {
         group: "Do",
         keywords: "start chat session",
         shortcut: chord("N"),
-        run: newConversation,
+        run: () => start.current(),
       },
       {
         id: "stop",
@@ -815,7 +826,7 @@ export default function App() {
         label: "Open another folder",
         group: "Do",
         keywords: "workspace project directory switch",
-        run: pickWorkspace,
+        run: () => void latest.current?.pickWorkspace(),
       },
       {
         id: "terminal",
@@ -893,12 +904,14 @@ export default function App() {
         // being left out, so the list of three does not change shape
         // depending on which is on.
         unavailable: theme === next ? "Already in use" : undefined,
-        run: () => void chooseTheme(next),
+        run: () => void latest.current?.chooseTheme(next),
       })),
     ],
-    // Rebuilt when what they can do changes, not when the conversation moves:
-    // `newConversation`, `pickWorkspace` and `chooseTheme` close over values
-    // that are stable for as long as the palette is open.
+    // Rebuilt when whether each one can run changes. What each one does is
+    // read at the moment it runs, through `start` and `latest`: this list is
+    // built long before the palette opens, and a handler held from then would
+    // start a conversation against the model list as it stood before the
+    // models arrived, or paint with the custom theme that was in force then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [store.busy, store.session, theme],
   );
@@ -931,6 +944,7 @@ export default function App() {
     applyTheme(next, custom);
     await api.setTheme(next);
   };
+  latest.current = { pickWorkspace, chooseTheme };
 
   /** Opens a dataset in the Data pane, from a card in the transcript. */
   const showDataset = (name: string) => {

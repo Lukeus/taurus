@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import * as api from "../lib/api";
 import type { AgentProposal } from "../lib/api";
@@ -63,17 +63,39 @@ export function AgentEditor({
     setTools(draft.tools);
   };
 
+  /** Whether a draft is in flight, for the cleanup below to read. */
+  const drafting = useRef(false);
+  /** Set by Stop, so the error that ends a stopped draft is not shown. */
+  const stopped = useRef(false);
+
+  // Closing the editor ends a draft nobody is waiting for any more: on a
+  // local model it is minutes of the machine's time.
+  useEffect(
+    () => () => {
+      if (drafting.current) void api.stopAgentDraft().catch(() => {});
+    },
+    [],
+  );
+
   const generate = async () => {
     if (!session) return setError("Start a conversation first — drafting needs a model.");
     setGenerating(true);
+    drafting.current = true;
+    stopped.current = false;
     setError(null);
     try {
       apply(await api.generateAgent(ask, session.provider_id, session.model));
     } catch (e) {
-      setError(String(e));
+      if (!stopped.current) setError(String(e));
     } finally {
+      drafting.current = false;
       setGenerating(false);
     }
+  };
+
+  const stopDraft = () => {
+    stopped.current = true;
+    api.stopAgentDraft().catch((e) => setError(String(e)));
   };
 
   const save = async () => {
@@ -133,6 +155,11 @@ export function AgentEditor({
             >
               {generating ? "Drafting…" : "Generate"}
             </button>
+            {generating && (
+              <button className="quiet" onClick={stopDraft}>
+                Stop drafting
+              </button>
+            )}
           </div>
         </section>
 

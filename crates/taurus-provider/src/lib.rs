@@ -6,6 +6,8 @@
 //! against the trait alone.
 
 pub mod error;
+#[cfg(feature = "http")]
+pub mod http;
 pub mod image;
 pub mod message;
 pub mod prompted;
@@ -13,7 +15,7 @@ pub mod provider;
 pub mod request;
 pub mod stream;
 
-pub use error::{ProviderError, Result};
+pub use error::{brief, ProviderError, Result};
 pub use message::{relocated_note, ContentBlock, Message, Role, ToolOutput, ToolResultBlock};
 pub use prompted::PromptedTools;
 pub use provider::{Capabilities, ModelInfo, Provider, RerankScore};

@@ -153,6 +153,8 @@ mod tests {
         assert_eq!(at.count(0.10, 40, 200, 10_000), 2_000);
         // `search_index`, five excerpts.
         assert_eq!(at.count(0.006, 960, 3, 24), 5);
+        // `list_dir`, a thousand entries: the most `glob` returns.
+        assert_eq!(at.count(0.03, 24, 100, 5_000), 1_000);
     }
 
     #[test]

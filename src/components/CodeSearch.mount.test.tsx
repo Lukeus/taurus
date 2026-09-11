@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The section exists to make a forty-four-second job something you can start,
+// The section exists to make a minutes-long job something you can start,
 // watch, and stop. All three are behaviour rather than markup, so a string
 // render would prove none of them.
 import { act } from "react";
@@ -21,7 +21,18 @@ vi.mock("../state/store", () => ({
     select({ refresh }),
 }));
 
-import { CodeSearch } from "./Settings";
+import { CodeSearch, useIndexBuild } from "./Settings";
+
+/** `CodeSearch` the way `Settings` holds it: the build lives a level up. */
+function Harness(props: {
+  model: string;
+  provider: string;
+  rerankModel: string;
+  rerankProvider: string;
+}) {
+  const index = useIndexBuild();
+  return <CodeSearch {...props} {...index} />;
+}
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -36,7 +47,7 @@ const mount = async (
   document.body.appendChild(host);
   await act(async () => {
     createRoot(host).render(
-      <CodeSearch
+      <Harness
         model={model}
         provider={provider}
         rerankModel={rerank}

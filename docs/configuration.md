@@ -172,11 +172,18 @@ is fixed in seconds; a guard that silently stops guarding is not fixed at all,
 because nobody knows. On `post_tool_use` and `stop` there is nothing left to
 stop, so a failure there is reported and the turn continues.
 
-`timeout_seconds` defaults to 30. A hook runs inside a turn, so a hook that
-hangs is a turn that hangs — and a hook that reaches its limit is killed and
-counted as a refusal, on the events that can still refuse. The limit covers the
-whole of it, including the payload being handed to a hook that never reads its
-stdin.
+`timeout_seconds` defaults to 30 and stops at 600. A larger number is brought
+down to ten minutes rather than refused, because a hook refused at load does
+not run at all, and `taurus hooks list` shows the limit a hook actually gets. A
+hook runs inside a turn, so a hook that hangs is a turn that hangs — and a hook
+that reaches its limit is killed and counted as a refusal, on the events that
+can still refuse. The limit covers the whole of it, including the payload being
+handed to a hook that never reads its stdin.
+
+Stop reaches a running hook the same way: it is ended, and the call it was
+guarding is canceled rather than refused. `stop` hooks are the exception. They
+run once the turn is over, stopped or not, so Stop has nothing left to end, and
+their own limit is what bounds them.
 
 The kill reaches the whole tree, not just the program the hook names: a script
 that calls a linter takes the linter with it. On Unix the hook runs in a process

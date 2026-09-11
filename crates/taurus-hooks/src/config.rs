@@ -126,7 +126,8 @@ pub struct Hook {
     /// Which calls this applies to. Absent means every call on this event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matches: Option<Match>,
-    /// How long it may run before it is killed, in seconds.
+    /// How long it may run before it is killed, in seconds, up to
+    /// [`MAX_TIMEOUT_SECONDS`]. Read it through [`Hook::timeout`].
     ///
     /// A hook runs inside a turn, so a hook that hangs is a turn that hangs.
     /// The default is short on purpose: this is a check, not a build.
@@ -167,11 +168,24 @@ fn default_timeout() -> u64 {
     30
 }
 
+/// The longest a hook may run, whatever its `timeout_seconds` says.
+///
+/// A hook holds its tool call, and with it the turn, for as long as it runs.
+/// Ten minutes is past any check worth running inline. A larger number is
+/// brought down to this rather than refused, because a hook refused at load
+/// does not run at all: the file asking for a longer guard would get none.
+pub const MAX_TIMEOUT_SECONDS: u64 = 600;
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
 
 impl Hook {
+    /// How long this hook may run before it is killed.
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.timeout_seconds.min(MAX_TIMEOUT_SECONDS))
+    }
+
     /// What is wrong with this entry, if anything.
     pub fn validate(&self) -> Result<(), String> {
         if self.command.trim().is_empty() {

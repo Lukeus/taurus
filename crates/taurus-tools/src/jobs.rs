@@ -34,15 +34,23 @@
 //! The sweep that makes a command rewindable reads the workspace before it
 //! runs and again when it finishes ([`crate::sweep`]). Here those are minutes
 //! apart and in different turns, so the job carries its own pre-image from the
-//! moment it started and spends it when the process exits. [`Jobs::reap`] is
-//! called after every tool call, so the changes land in the turn that was
-//! running when the command finished — not the one that started it, which by
-//! then is history. A command still running when a turn ends is in no turn's
-//! changed-file list yet, which is the honest answer: it has not finished
-//! changing them.
+//! moment it started and reads the workspace again the moment the process
+//! exits. [`Jobs::reap`] is called after every tool call and writes that
+//! difference down, so the changes land in the turn running when the command
+//! finished — not the one that started it, which by then is history. A command
+//! still running when a turn ends is in no turn's changed-file list yet, which
+//! is the honest answer: it has not finished changing them.
+//!
+//! The difference is between two moments rather than two authors, so it holds
+//! every file anything changed while the command ran. What other calls record
+//! in that time is theirs to undo, and [`Jobs::claim`] takes it out of the
+//! command's list. Left in, a dev server started in the first turn and stopped
+//! in the twentieth would record every edit of the nineteen between, each with
+//! its content from before the first, and rewinding its turn would undo them
+//! all.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -57,7 +65,7 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::checkpoint::TurnRecorder;
-use crate::sweep::Sweep;
+use crate::sweep::{Diffed, Sweep};
 
 /// How many commands may be running in the background at once.
 ///
@@ -166,11 +174,24 @@ struct Job {
     outcome: Mutex<Option<Outcome>>,
     finished: Notify,
     stop: CancellationToken,
-    /// The workspace as it stood when this started, spent when it exits.
+    /// The workspace as it stood when this started, until it exits.
     ///
     /// `None` when the caller keeps no checkpoints — a piped run, an example,
     /// a test — where there is no turn for a change to be recorded into.
-    sweep: Mutex<Option<Sweep>>,
+    sweep: Mutex<Option<Before>>,
+    /// What it changed, read the moment it exited and written down at the
+    /// next tool call. See [`Jobs::reap`].
+    diffed: Mutex<Option<Diffed>>,
+    /// Files something else recorded while this ran. See [`Jobs::claim`].
+    claimed: Mutex<HashSet<String>>,
+}
+
+/// What makes a background command undoable: the workspace as it stood when
+/// the command started, and where that workspace is, so the command's own
+/// task can look again the moment it exits.
+pub struct Before {
+    pub sweep: Sweep,
+    pub workspace: PathBuf,
 }
 
 struct Outcome {
@@ -246,6 +267,13 @@ impl Tail {
     }
 }
 
+/// How long [`Jobs::stop`] waits for a killed command to be gone.
+///
+/// Ending a tree is a signal to a process group or the close of a Job Object,
+/// and either lands in milliseconds. Ten seconds is for a machine under load;
+/// past it the command is reported as still running rather than as stopped.
+const STOP_WAIT: Duration = Duration::from_secs(10);
+
 /// Rounds an index up to a character boundary, so a drained buffer stays valid
 /// UTF-8 when the cut lands inside a multi-byte character.
 fn ceil_boundary(s: &str, mut i: usize) -> usize {
@@ -278,7 +306,7 @@ impl Jobs {
     /// The child is moved rather than shared: one owner may wait on it, and
     /// stopping goes through [`Job::stop`] so that owner is the only one that
     /// ever reaps it.
-    pub async fn adopt(&self, command: String, mut child: Tree, sweep: Option<Sweep>) -> u32 {
+    pub async fn adopt(&self, command: String, mut child: Tree, before: Option<Before>) -> u32 {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Arc::new(Job {
             id,
@@ -288,7 +316,9 @@ impl Jobs {
             outcome: Mutex::new(None),
             finished: Notify::new(),
             stop: CancellationToken::new(),
-            sweep: Mutex::new(sweep),
+            sweep: Mutex::new(before),
+            diffed: Mutex::new(None),
+            claimed: Mutex::new(HashSet::new()),
         });
         self.jobs.lock().unwrap().insert(id, job.clone());
 
@@ -325,6 +355,16 @@ impl Jobs {
                 }
             })
             .await;
+            // Read now and written down at the next tool call. Read then
+            // instead, it would take in whatever changed in between and record
+            // it with this command's pre-image. Before the outcome is
+            // published, so a reap that sees the command finished also finds
+            // what it changed.
+            let before = job.sweep.lock().unwrap().take();
+            if let Some(Before { sweep, workspace }) = before {
+                let diffed = sweep.diff(&workspace).await;
+                *job.diffed.lock().unwrap() = Some(diffed);
+            }
             *job.outcome.lock().unwrap() = Some(Outcome {
                 code: status.ok().and_then(|s| s.code()),
                 stopped: stop.is_cancelled(),
@@ -381,6 +421,10 @@ impl Jobs {
 
     /// Ends a command, and waits for it to actually be gone.
     pub async fn stop(&self, id: u32) -> Result<String, String> {
+        self.stop_within(id, STOP_WAIT).await
+    }
+
+    async fn stop_within(&self, id: u32, wait: Duration) -> Result<String, String> {
         let job = self.get(id)?;
         if job.outcome.lock().unwrap().is_some() {
             return Ok(format!(
@@ -394,7 +438,18 @@ impl Jobs {
         job.stop.cancel();
         // A kill the OS has not carried out yet is not a stopped command, and
         // the next call would sweep a workspace something is still writing to.
-        let _ = tokio::time::timeout(Duration::from_secs(10), finished).await;
+        let _ = tokio::time::timeout(wait, finished).await;
+        // So the answer is read off the job rather than assumed from having
+        // waited: a wait that ran out is a command that is still running.
+        if job.outcome.lock().unwrap().is_none() {
+            return Err(format!(
+                "#{} {} is still running {} seconds after it was sent a kill, so it may still be \
+                 changing files. check_command says when it has ended.",
+                job.id,
+                job.command,
+                wait.as_secs()
+            ));
+        }
         Ok(format!("Stopped #{} {}", job.id, job.command))
     }
 
@@ -404,21 +459,53 @@ impl Jobs {
     /// Called after every tool call rather than only from `check_command`,
     /// because a model that never checks is exactly the case where the changes
     /// would otherwise go unrecorded.
-    pub async fn reap(&self, workspace: &Path, recorder: &TurnRecorder) -> Vec<String> {
+    pub async fn reap(&self, recorder: &TurnRecorder) -> Vec<String> {
         let mut warnings = Vec::new();
         for job in self.all() {
             if job.outcome.lock().unwrap().is_none() {
                 continue;
             }
-            // Taken, so a job is swept once however often this runs.
-            let Some(sweep) = job.sweep.lock().unwrap().take() else {
+            // Taken, so a job is recorded once however often this runs.
+            let Some(diffed) = job.diffed.lock().unwrap().take() else {
                 continue;
             };
-            if let Some(warning) = sweep.after(workspace, recorder).await.warning() {
+            let claimed = std::mem::take(&mut *job.claimed.lock().unwrap());
+            let change = diffed.without(&claimed).record(recorder).await;
+            // A command still running saw these change too, and they are
+            // recorded now.
+            self.claim(change.files.iter().map(String::as_str));
+            if let Some(warning) = change.warning() {
                 warnings.push(warning);
             }
         }
         warnings
+    }
+
+    /// Tells every command still running that `files` have been recorded by
+    /// something else, so it leaves them out of what it records.
+    ///
+    /// A command's sweep compares the workspace at its exit with the workspace
+    /// at its start, and whatever else changed in between is in that
+    /// comparison too. Left in, a dev server started in the first turn and
+    /// stopped in the twentieth would record every edit of the nineteen
+    /// between, each with its content from before the first, and rewinding its
+    /// turn would undo them all. `files` are named the way a change names them.
+    pub fn claim<'a>(&self, files: impl IntoIterator<Item = &'a str>) {
+        let running: Vec<Arc<Job>> = self
+            .all()
+            .into_iter()
+            .filter(|job| job.sweep.lock().unwrap().is_some())
+            .collect();
+        if running.is_empty() {
+            return;
+        }
+        let files: Vec<&str> = files.into_iter().collect();
+        for job in running {
+            job.claimed
+                .lock()
+                .unwrap()
+                .extend(files.iter().map(|file| (*file).to_string()));
+        }
     }
 
     /// Ends everything, for a window closing or a workspace being left.
@@ -816,6 +903,40 @@ mod tests {
         assert_eq!(jobs.running(), 0);
         let after = jobs.check(Some(id), Duration::ZERO).await.unwrap();
         assert!(after.contains("stopped after"), "{after}");
+    }
+
+    /// A job with nothing behind it. Stop is sent to nobody and it never ends,
+    /// which is what a kill that has not landed looks like from here.
+    fn unending(jobs: &Jobs) -> u32 {
+        let id = jobs.next.fetch_add(1, Ordering::Relaxed) + 1;
+        let job = Arc::new(Job {
+            id,
+            command: "npm run dev".into(),
+            started: Instant::now(),
+            output: Mutex::new(Output::default()),
+            outcome: Mutex::new(None),
+            finished: Notify::new(),
+            stop: CancellationToken::new(),
+            sweep: Mutex::new(None),
+            diffed: Mutex::new(None),
+            claimed: Mutex::new(HashSet::new()),
+        });
+        jobs.jobs.lock().unwrap().insert(id, job);
+        id
+    }
+
+    #[tokio::test]
+    async fn a_kill_that_has_not_landed_is_not_reported_as_a_stop() {
+        // The next sweep would read a workspace the command is still writing
+        // to, which is the case the wait in `stop` exists to prevent.
+        let jobs = Jobs::new();
+        let id = unending(&jobs);
+
+        let answer = jobs.stop_within(id, Duration::from_millis(100)).await;
+
+        let refusal = answer.expect_err("a command still running was reported as stopped");
+        assert!(refusal.contains("still running"), "{refusal}");
+        assert_eq!(jobs.running(), 1);
     }
 
     #[tokio::test]

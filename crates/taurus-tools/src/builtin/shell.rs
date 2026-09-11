@@ -187,8 +187,13 @@ impl Tool for RunCommand {
                     )
                     .into());
                 }
-                // The command itself went wrong, or was canceled, or timed out.
-                // Re-running it with pipes would run it twice.
+                // Ran out of time. What it printed first is still the model's.
+                Err(crate::builtin::pty::PtyError::TimedOut { after, printed }) => {
+                    let printed = combined(&for_the_model(&printed, "output", ctx), None);
+                    return Err(ToolError::Failed(timed_out(after, true, &printed)));
+                }
+                // The command itself went wrong, or was canceled. Re-running it
+                // with pipes would run it twice.
                 Err(crate::builtin::pty::PtyError::Failed(error)) => return Err(error),
                 // No terminal to be had on this machine. Fall through and run
                 // the command the ordinary way rather than failing a call that
@@ -239,17 +244,25 @@ impl Tool for RunCommand {
             Ok(Err(e)) => return Err(ToolError::Failed(e.to_string())),
             Err(_) => {
                 let _ = child.start_kill();
-                return Err(ToolError::Failed(format!(
-                    "Command timed out after {}s and was killed. If it needs longer, raise \
-                     timeout_secs; if it was waiting for input, rerun it non-interactively.",
-                    timeout.as_secs()
-                )));
+                // What it printed is kept. A test run that hangs on its last
+                // test has already said which ones passed, and a bare "timed
+                // out" sends the model to run the whole thing again and pay
+                // the timeout twice.
+                let (stdout, stderr) = tokio::join!(
+                    drain_stdout.within(KILL_GRACE),
+                    drain_stderr.within(KILL_GRACE)
+                );
+                let printed = combined(
+                    &for_the_model(&stdout, "stdout", ctx),
+                    Some(&for_the_model(&stderr, "stderr", ctx)),
+                );
+                return Err(ToolError::Failed(timed_out(timeout, false, &printed)));
             }
         };
 
         let code = status.code();
-        let stdout = for_the_model(&drain_stdout.await, "stdout", ctx);
-        let stderr = for_the_model(&drain_stderr.await, "stderr", ctx);
+        let stdout = for_the_model(&drain_stdout.all().await, "stdout", ctx);
+        let stderr = for_the_model(&drain_stderr.all().await, "stderr", ctx);
         let mut report = report_for(code, &stdout, Some(&stderr));
 
         // Said in the result rather than only in a log, because the model is
@@ -287,6 +300,16 @@ fn with_no_terminal_note(reason: &str, report: &str) -> String {
 /// returning it as `Ok` lets the model read the compiler errors it just asked
 /// for instead of a bare error string.
 fn report_for(code: Option<i32>, stdout: &str, stderr: Option<&str>) -> String {
+    let report = combined(stdout, stderr);
+    match code {
+        Some(0) => report,
+        Some(code) => format!("Exit code {code}\n{report}"),
+        None => format!("Killed by signal\n{report}"),
+    }
+}
+
+/// stdout and stderr as the model reads them, or a note that there was none.
+fn combined(stdout: &str, stderr: Option<&str>) -> String {
     let mut report = String::new();
     if !stdout.trim().is_empty() {
         report.push_str(stdout);
@@ -301,12 +324,32 @@ fn report_for(code: Option<i32>, stdout: &str, stderr: Option<&str>) -> String {
     if report.trim().is_empty() {
         report.push_str("(no output)");
     }
+    report
+}
 
-    match code {
-        Some(0) => report,
-        Some(code) => format!("Exit code {code}\n{report}"),
-        None => format!("Killed by signal\n{report}"),
-    }
+/// What a command that ran out of time comes back as.
+///
+/// With what it printed before it was stopped, because the output up to a
+/// hang is usually the part that says what it was waiting for.
+pub(super) fn timed_out(after: Duration, pty: bool, printed: &str) -> String {
+    let (under, advice) = if pty {
+        (
+            " under a pseudo-terminal",
+            "If it was waiting for input, pass what it should read as `stdin`; if it simply \
+             needs longer, raise timeout_secs.",
+        )
+    } else {
+        (
+            "",
+            "If it needs longer, raise timeout_secs; if it was waiting for input, rerun it \
+             non-interactively.",
+        )
+    };
+    format!(
+        "Command timed out after {}s{under} and was killed. {advice}\n\nWhat it printed before \
+         then:\n{printed}",
+        after.as_secs()
+    )
 }
 
 /// A command with three pipes, the way both paths want it.
@@ -402,15 +445,18 @@ async fn start_in_background(
     // changes is minutes away and in some later turn, and a pre-image read
     // then would be of a file the command had already written. See
     // [`crate::jobs`].
-    let sweep = match &ctx.checkpoints {
-        Some(_) => Some(crate::sweep::Sweep::before(&ctx.workspace, ctx.sweeps.clone()).await),
+    let before = match &ctx.checkpoints {
+        Some(_) => Some(crate::jobs::Before {
+            sweep: crate::sweep::Sweep::before(&ctx.workspace, ctx.sweeps.clone()).await,
+            workspace: ctx.workspace.clone(),
+        }),
         None => None,
     };
 
     let mut child = taurus_process::Tree::spawn(piped(program, args, &cwd, input.stdin.is_some()))
         .map_err(cannot_start)?;
     feed_stdin(child.take_stdin(), input.stdin.as_deref()).await;
-    let id = jobs.adopt(input.command.clone(), child, sweep).await;
+    let id = jobs.adopt(input.command.clone(), child, before).await;
 
     Ok(format!(
         "Started #{id} in the background: {}\nRead what it says with check_command (id {id}), \
@@ -548,10 +594,7 @@ fn jobs_of(ctx: &ToolContext) -> Result<&Arc<crate::jobs::Jobs>, ToolError> {
 /// Read as bytes rather than as lines of text, because a command is free to
 /// emit something that is not UTF-8 and a build log should not end at the first
 /// byte that isn't.
-fn spawn_stream<R>(
-    pipe: Option<R>,
-    progress: Option<Arc<dyn ToolProgress>>,
-) -> impl std::future::Future<Output = String>
+fn spawn_stream<R>(pipe: Option<R>, progress: Option<Arc<dyn ToolProgress>>) -> Drain
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -560,30 +603,77 @@ where
         tokio::spawn(batch_to_progress(rx, progress));
     }
 
-    let handle = tokio::spawn(async move {
-        let mut full = String::new();
-        let Some(pipe) = pipe else {
-            return full;
-        };
+    let full: Arc<std::sync::Mutex<String>> = Arc::default();
+    let handle = tokio::spawn({
+        let full = full.clone();
+        async move {
+            let Some(pipe) = pipe else {
+                return;
+            };
 
-        let mut reader = BufReader::new(pipe);
-        let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
+            let mut reader = BufReader::new(pipe);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                full.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_str(&text);
+                // Never `send`, which would wait. A full channel means the UI
+                // is behind; the model's copy is already safe in `full`.
+                let _ = tx.try_send(text);
             }
-            let text = String::from_utf8_lossy(&buf).into_owned();
-            full.push_str(&text);
-            // Never `send`, which would wait. A full channel means the UI is
-            // behind; the model's copy is already safe in `full`.
-            let _ = tx.try_send(text);
         }
-        full
     });
 
-    async move { handle.await.unwrap_or_default() }
+    Drain { handle, full }
+}
+
+/// How long a killed command's output is waited for.
+///
+/// The kill ends the process, but its pipes or its terminal close only when
+/// the last process holding them goes, and that may be a grandchild the kill
+/// did not reach: `sh -c` is killed, and the program it ran keeps the pipe.
+/// Output read by then is reported; the rest is not worth holding the turn for.
+pub(super) const KILL_GRACE: Duration = Duration::from_secs(2);
+
+/// A pipe being read to its end, and what it has said so far.
+///
+/// The text is kept behind a lock rather than returned by the reading task, so
+/// a caller that cannot wait for the end still has what came before it. See
+/// [`KILL_GRACE`] for the caller that cannot.
+struct Drain {
+    handle: tokio::task::JoinHandle<()>,
+    full: Arc<std::sync::Mutex<String>>,
+}
+
+impl Drain {
+    /// Everything, once the pipe closes.
+    async fn all(mut self) -> String {
+        let _ = (&mut self.handle).await;
+        self.take()
+    }
+
+    /// What the pipe has said, waiting at most `grace` for the rest.
+    async fn within(mut self, grace: Duration) -> String {
+        if tokio::time::timeout(grace, &mut self.handle).await.is_err() {
+            self.handle.abort();
+        }
+        self.take()
+    }
+
+    fn take(&self) -> String {
+        std::mem::take(
+            &mut *self
+                .full
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
 }
 
 /// Collects streamed lines into batches and reports each one.
@@ -1025,6 +1115,58 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("timed out"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_that_times_out_still_reports_what_it_printed() {
+        // The last line of a hung test run says which test it hung on. Lose
+        // it, and the model runs the whole thing again and pays the timeout
+        // twice.
+        let (ctx, _dir) = test_ctx();
+        let started = std::time::Instant::now();
+        let err = RunCommand
+            .execute(
+                serde_json::json!({
+                    "command": "echo 'test b ... ok'; sleep 30",
+                    "timeout_secs": 1
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("timed out"), "{err}");
+        assert!(err.contains("test b ... ok"), "{err}");
+        // `sleep` still holds the pipe once `sh` is killed, so what ends the
+        // wait is the grace period rather than the pipe closing.
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pty_command_that_times_out_still_reports_what_it_printed() {
+        let (ctx, _dir) = test_ctx();
+        let err = RunCommand
+            .execute(
+                serde_json::json!({
+                    "command": "echo 'test b ... ok'; sleep 30",
+                    "pty": true,
+                    "timeout_secs": 1
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("timed out"), "{err}");
+        assert!(err.contains("test b ... ok"), "{err}");
     }
 
     #[tokio::test]

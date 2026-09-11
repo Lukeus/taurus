@@ -153,6 +153,8 @@ export function useNotebook({
   /** The save in flight, so a flush asking for the same one waits for it rather
    *  than sending it again against a fingerprint it is about to change. */
   const saving = useRef<{ page: Page; text: string; done: Promise<Flushed> } | null>(null);
+  /** The page the last save of this editor wrote, with the fingerprint it came back with. */
+  const landed = useRef<Page | null>(null);
   /** Set by the sketch editor while it is mounted — see its `drain`. */
   const drain = useRef<(() => void) | null>(null);
   // Held rather than depended on. `App` passes a new function on every render,
@@ -305,7 +307,23 @@ export function useNotebook({
   const write = useCallback(
     (target: Page, text: string): Promise<Flushed> => {
       const underway = saving.current;
-      if (underway && underway.page === target && underway.text === text) return underway.done;
+      if (underway && same(underway.page, target) && underway.text === text) return underway.done;
+      // Another save of this file is still out. Sent now, this one would carry
+      // the fingerprint from before it, and the host would refuse it as the
+      // file having changed on disk — which it has, by this editor's own hand,
+      // and the conflict shown would be against the last keystroke. So it goes
+      // once the first has answered, with the fingerprint that one brought back.
+      if (underway && same(underway.page, target)) {
+        const after: Promise<Flushed> = underway.done.then((first) => {
+          if (saving.current?.done === after) saving.current = null;
+          if (first !== "written") return first;
+          const base =
+            landed.current && same(landed.current, target) ? landed.current : target;
+          return write(base, text);
+        });
+        saving.current = { page: target, text, done: after };
+        return after;
+      }
       const mine = session.current;
       const here = () => session.current === mine;
       setSaveState("saving");
@@ -330,6 +348,7 @@ export function useNotebook({
             }
             return "stale";
           }
+          landed.current = result.page;
           if (here()) {
             setPage(result.page);
             setSaveState("idle");

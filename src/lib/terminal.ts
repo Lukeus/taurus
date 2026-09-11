@@ -1,5 +1,5 @@
 /**
- * The two pieces of the terminal dock that are arithmetic rather than emulator.
+ * The pieces of the terminal dock that are arithmetic rather than emulator.
  *
  * Kept out of `TerminalDock` so that testing them does not mean loading a
  * terminal emulator: that module carries the largest import in the frontend,
@@ -43,4 +43,32 @@ export function fade(color: string, alpha: number): string {
   if (!/^[0-9a-f]{6}$/i.test(full)) return `rgba(124, 210, 255, ${alpha})`;
   const n = parseInt(full, 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/**
+ * Acknowledges output once the emulator has drawn it, so the shell can send
+ * more. See `Credit` in `src-tauri/src/terminal.rs`.
+ *
+ * Output can arrive before the pane knows which shell it came from: the
+ * channel is live before `terminal_open` answers with the id. What is drawn in
+ * that window is held and acknowledged in one go once `bind` names the shell,
+ * because a shell whose first screen is never acknowledged has that much less
+ * room for the rest of its life.
+ */
+export function acknowledger(ack: (id: string, bytes: number) => void) {
+  let shell: string | null = null;
+  let held = 0;
+  return {
+    /** The emulator has finished with `bytes` of output. */
+    drawn(bytes: number) {
+      if (shell) ack(shell, bytes);
+      else held += bytes;
+    },
+    /** Names the shell, and acknowledges what was drawn before it had one. */
+    bind(id: string) {
+      shell = id;
+      if (held > 0) ack(id, held);
+      held = 0;
+    },
+  };
 }

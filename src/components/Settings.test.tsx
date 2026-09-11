@@ -13,6 +13,7 @@ import {
   FIELDS,
   Settings,
   ModelList,
+  keepEdits,
   blankProvider,
   keyHint,
   overrideOf,
@@ -341,5 +342,38 @@ describe("which settings each provider kind shows", () => {
     expect(FIELDS.anthropic.thinking).toBe(true);
     expect(FIELDS.gemini.thinking).toBe(false);
     expect(FIELDS.ollama.thinking).toBe(false);
+  });
+});
+
+describe("keeping what was typed while a save was out", () => {
+  type Backend = SearchSettings["backends"][number];
+  const brave = {
+    id: "brave",
+    kind: "brave",
+    base_url: "https://api.search.brave.com",
+    api_key_env: null,
+    max_results: null,
+    needs_key: true,
+  } as Backend;
+  const settings = (backends: Backend[]): SearchSettings => ({
+    selected: "brave",
+    backends,
+    key_statuses: [],
+    active: true,
+    problems: [],
+  });
+
+  it("keeps a field typed into after the save was sent", () => {
+    const now = settings([{ ...brave, api_key_env: "BRAVE_KEY" }]);
+    const fresh = settings([{ ...brave }]);
+    expect(keepEdits(fresh, now, [brave]).backends[0].api_key_env).toBe("BRAVE_KEY");
+  });
+
+  it("takes the saved answer for a field nobody touched since", () => {
+    const sent = [{ ...brave, base_url: "https://proxy.example" }];
+    const fresh = settings([{ ...brave, base_url: "https://proxy.example/" }]);
+    expect(keepEdits(fresh, settings(sent), sent).backends[0].base_url).toBe(
+      "https://proxy.example/",
+    );
   });
 });

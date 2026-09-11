@@ -145,11 +145,19 @@ export function ChangesDrawer({
 
   // Escape closes it, which `Modal` used to do on this panel's behalf. Not
   // captured, unlike the modal version: this is a pane beside the conversation
-  // rather than over it, so anything inside it with its own use for the key —
-  // a diff, a commit box — is entitled to answer first.
+  // rather than over it. And not from a field: Escape in the commit box is how
+  // someone leaves the field, and closing the pane then would throw away the
+  // message they were halfway through. It leaves the field instead, so the
+  // next press closes the pane.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.("input, textarea, select, [contenteditable='true']")) {
+        target.blur();
+        return;
+      }
+      onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -470,6 +478,23 @@ export function TurnDetail({
       });
   }, [sessionId, turn.turn]);
 
+  /** Whether a review is in flight, for the cleanup below to read. */
+  const reviewingNow = useRef(false);
+  /** Set by Stop, so the error that ends a stopped review is not shown. */
+  const stopped = useRef(false);
+
+  // A review outlives the card that asked for it unless something ends it:
+  // it is minutes of model time on the conversation's own provider, with
+  // nobody left to read the answer.
+  useEffect(
+    () => () => {
+      if (reviewingNow.current) {
+        void api.stopReview(sessionId, turn.turn).catch(() => {});
+      }
+    },
+    [sessionId, turn.turn],
+  );
+
   /**
    * Hands the diff to an agent that has never seen this conversation.
    *
@@ -480,13 +505,23 @@ export function TurnDetail({
   const runReview = async () => {
     setReviewError(null);
     setReviewing(true);
+    reviewingNow.current = true;
+    stopped.current = false;
     try {
       setReview(await api.reviewTurn(sessionId, turn.turn));
     } catch (e) {
-      setReviewError(String(e));
+      // A stopped review ends in an error on purpose, so it can never be
+      // mistaken for a finished one. It is not news to whoever pressed Stop.
+      if (!stopped.current) setReviewError(String(e));
     } finally {
+      reviewingNow.current = false;
       setReviewing(false);
     }
+  };
+
+  const stopReview = () => {
+    stopped.current = true;
+    api.stopReview(sessionId, turn.turn).catch((e) => setReviewError(String(e)));
   };
 
   const commit = async () => {
@@ -540,6 +575,11 @@ export function TurnDetail({
             >
               {reviewing ? "Reading it over…" : "Review this turn"}
             </button>
+            {reviewing && (
+              <button className="quiet" onClick={stopReview}>
+                Stop reviewing
+              </button>
+            )}
           </div>
           {reviewError && <Problem>{reviewError}</Problem>}
           {review && (

@@ -261,6 +261,31 @@ describe("the trace panel", () => {
     expect(ui.text()).toContain("Nothing has been timed yet");
   });
 
+  it("says so when Clear could not clear, and keeps what it is showing", async () => {
+    invoke.mockImplementation((name: string) =>
+      name === "clear_traces"
+        ? Promise.reject("the span ring is busy")
+        : Promise.resolve(report()),
+    );
+    const ui = await mount();
+
+    await ui.click("Clear");
+
+    expect(ui.text()).toContain("the span ring is busy");
+    expect(ui.text()).toContain("Median turn");
+  });
+
+  it("keeps the report on screen while Refresh reads it again", async () => {
+    invoke.mockResolvedValue(report());
+    const ui = await mount();
+    invoke.mockImplementation(() => new Promise(() => {}));
+
+    await ui.click("Refresh");
+
+    expect(ui.text()).not.toContain("Reading…");
+    expect(ui.text()).toContain("Median turn");
+  });
+
   it("reports a backend that could not answer rather than staying blank", async () => {
     invoke.mockRejectedValue("no such session");
     const ui = await mount("gone");

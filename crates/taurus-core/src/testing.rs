@@ -92,6 +92,22 @@ impl ScriptedTurn {
                 provider: "fake".into(),
                 status: 503,
                 body: "upstream is briefly unavailable".into(),
+                retry_after: None,
+            }),
+            stopped: false,
+        }
+    }
+
+    /// A rate limit that asks for `wait` before the next attempt.
+    pub fn rate_limited(wait: std::time::Duration) -> Self {
+        Self {
+            events: Vec::new(),
+            stop: StopReason::EndTurn,
+            failure: Some(ProviderError::Api {
+                provider: "fake".into(),
+                status: 429,
+                body: "rate_limit_error: slow down".into(),
+                retry_after: Some(wait),
             }),
             stopped: false,
         }
@@ -107,6 +123,7 @@ impl ScriptedTurn {
                 provider: "fake".into(),
                 status: 503,
                 body: "died mid-answer".into(),
+                retry_after: None,
             }),
             stopped: false,
         }
@@ -121,6 +138,7 @@ impl ScriptedTurn {
                 provider: "fake".into(),
                 status: 401,
                 body: "invalid api key".into(),
+                retry_after: None,
             }),
             stopped: false,
         }

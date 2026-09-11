@@ -11,6 +11,7 @@ taurus-provider.workspace = true
 taurus-tools.workspace = true
 async-trait.workspace = true
 base64.workspace = true
+futures.workspace = true
 ignore.workspace = true
 schemars.workspace = true
 serde.workspace = true

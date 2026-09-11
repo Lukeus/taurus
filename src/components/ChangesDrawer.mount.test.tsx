@@ -74,13 +74,13 @@ function backend(replies: Record<string, unknown>) {
 }
 
 /** Mounts the drawer and flushes the effects its open fires. */
-async function open(sessionId = "s1") {
+async function open(sessionId = "s1", onClose: () => void = () => {}) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   const render = (id: string) =>
     act(async () => {
-      root.render(<ChangesDrawer sessionId={id} busy={false} onClose={() => {}} />);
+      root.render(<ChangesDrawer sessionId={id} busy={false} onClose={onClose} />);
     });
   await render(sessionId);
   return {
@@ -572,5 +572,84 @@ describe("reviewing a turn", () => {
     expect(drawer.text()).toContain("provider unreachable");
     // The commit path is untouched and still offered.
     expect(drawer.text()).toContain("Commit this turn");
+  });
+
+  it("can be stopped, and a stopped review is not reported as a failure", async () => {
+    // Minutes on a local model. Without a way out, a review started by
+    // mistake holds the provider until it finishes.
+    let end: (e: Error) => void = () => {};
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+      review_turn: new Promise((_, reject) => {
+        end = reject;
+      }),
+    });
+    const answer = invoke.getMockImplementation()!;
+    invoke.mockImplementation((command: string) => {
+      // What the backend does when the token fires: the review ends in an
+      // error, so it can never be read as a finished one.
+      if (command === "stop_review") end(new Error("Review stopped."));
+      return answer(command);
+    });
+    const drawer = await open();
+    await drawer.click("View changes");
+    await drawer.click("Review this turn");
+    expect(drawer.text()).toContain("Reading it over");
+
+    await drawer.click("Stop reviewing");
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith("stop_review", { sessionId: "s1", turn: 1 });
+    expect(drawer.text()).toContain("Review this turn");
+    expect(drawer.text()).not.toContain("Review stopped");
+  });
+
+  it("stops a review still running when the drawer closes", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+      review_turn: new Promise(() => {}),
+    });
+    const drawer = await open();
+    await drawer.click("View changes");
+    await drawer.click("Review this turn");
+
+    await drawer.unmount();
+
+    expect(invoke).toHaveBeenCalledWith("stop_review", { sessionId: "s1", turn: 1 });
+  });
+});
+
+describe("closing the pane with Escape", () => {
+  it("leaves a half-typed commit message alone, and closes on the next press", async () => {
+    // Escape in the commit box is how someone leaves the field. Closing the
+    // whole pane then threw away the message they were writing.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: true, branch: "main" },
+      turn_changes: [DIFF],
+    });
+    const onClose = vi.fn();
+    const drawer = await open("s1", onClose);
+    await drawer.click("View changes");
+    await drawer.type("half a commit message");
+    const input = drawer.host.querySelector("input")!;
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(input.value).toBe("half a commit message");
+
+    await act(async () => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    drawer.unmount();
   });
 });

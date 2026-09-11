@@ -34,7 +34,7 @@
 //! terminal for. See the known-gaps entry.
 
 use std::io::{Read, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -68,6 +68,11 @@ pub enum PtyError {
     /// The command was attempted and something else went wrong.
     #[error(transparent)]
     Failed(#[from] ToolError),
+    /// The command ran out its time and was killed. `printed` is what it had
+    /// said by then, for the caller to fit to the model and report. Displayed
+    /// as the whole message, advice included, for a caller that does not.
+    #[error("{}", super::shell::timed_out(*.after, true, .printed))]
+    TimedOut { after: Duration, printed: String },
 }
 
 /// What a finished pty command produced.
@@ -115,11 +120,19 @@ pub async fn run(
     // it does, so a single hung command outlives the session that started it.
     // Killing the child is what ends the read.
     let (killer_tx, killer_rx) = tokio::sync::oneshot::channel();
-    let worker = tokio::task::spawn_blocking(move || pump(builder, stdin, tx, killer_tx));
+    // What the command has printed, held here as well as by the worker so it
+    // outlives a worker that is given up on. A timeout is that case, and the
+    // output up to a hang is usually the part that says what it waited for.
+    let printed: Arc<Mutex<Vec<u8>>> = Arc::default();
+    let mut worker = tokio::task::spawn_blocking({
+        let printed = printed.clone();
+        move || pump(builder, stdin, tx, killer_tx, printed)
+    });
 
-    // `worker` is consumed by the timeout arm, so cancellation cannot also
-    // await it. Aborting the handle detaches this task from the thread; the
-    // kill is what actually stops the work behind it.
+    // Polled through a borrow, so the timeout arm still has it: after a kill
+    // the worker finishes on its own, and is worth a moment's wait. Aborting
+    // the handle detaches this task from the thread; the kill is what
+    // actually stops the work behind it.
     let handle = worker.abort_handle();
     let outcome = tokio::select! {
         biased;
@@ -131,7 +144,7 @@ pub async fn run(
             }
             return Err(ToolError::Canceled.into());
         }
-        result = tokio::time::timeout(timeout, worker) => result,
+        result = tokio::time::timeout(timeout, &mut worker) => result,
     };
 
     if let Some(forward) = forward {
@@ -143,13 +156,24 @@ pub async fn run(
         Ok(Err(e)) => Err(ToolError::Failed(format!("pty task failed: {e}")).into()),
         Err(_) => {
             stop(killer_rx).await;
-            Err(ToolError::Failed(format!(
-                "Command timed out after {}s under a pseudo-terminal and was killed. If it was \
-                 waiting for input, pass what it should read as `stdin`; if it simply needs \
-                 longer, raise timeout_secs.",
-                timeout.as_secs()
-            ))
-            .into())
+            // The kill ends the read and the worker returns on its own, with
+            // everything. A grandchild still holding the terminal would keep
+            // it reading, so the wait has a bound, and what was read by then
+            // is reported instead.
+            let text = match tokio::time::timeout(super::shell::KILL_GRACE, &mut worker).await {
+                Ok(Ok(Ok(output))) => output.text,
+                _ => {
+                    handle.abort();
+                    let raw = std::mem::take(
+                        &mut *printed.lock().unwrap_or_else(PoisonError::into_inner),
+                    );
+                    strip_ansi(&String::from_utf8_lossy(&raw))
+                }
+            };
+            Err(PtyError::TimedOut {
+                after: timeout,
+                printed: text,
+            })
         }
     }
 }
@@ -224,6 +248,7 @@ fn pump(
     stdin: Option<String>,
     tx: mpsc::Sender<String>,
     killer_tx: tokio::sync::oneshot::Sender<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
+    printed: Arc<Mutex<Vec<u8>>>,
 ) -> Result<PtyOutput, PtyError> {
     // The one failure that means "this machine cannot do ptys" rather than
     // "this command went wrong". On Windows it is what a missing or unusable
@@ -276,13 +301,15 @@ fn pump(
     // was using it exited.
     drop(pair.slave);
 
-    let mut raw = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
         match reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                raw.extend_from_slice(&buf[..n]);
+                printed
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .extend_from_slice(&buf[..n]);
                 // Never blocks: a display that has fallen behind loses lines
                 // rather than stalling the child, the same bargain the piped
                 // path makes.
@@ -295,6 +322,7 @@ fn pump(
         .wait()
         .map_err(|e| ToolError::Failed(format!("cannot wait for the command: {e}")))?;
 
+    let raw = std::mem::take(&mut *printed.lock().unwrap_or_else(PoisonError::into_inner));
     Ok(PtyOutput {
         text: strip_ansi(&String::from_utf8_lossy(&raw)),
         // `portable-pty` reports one unsigned code on every platform rather

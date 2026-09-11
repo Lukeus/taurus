@@ -64,12 +64,36 @@ export function Settings({ onClose }: { onClose: () => void }) {
   // row reports — an environment variable that was the only source becomes an
   // override — and a status the frontend guessed at would be a status that
   // disagrees with the one the request will actually use.
+  /** Why the stored keys could not be listed, when they could not. */
+  const [keysUnreadable, setKeysUnreadable] = useState<string | null>(null);
   const refreshKeys = () => {
     api
       .listKeyStatuses()
-      .then((entries) => setKeys(new Map(entries)))
-      .catch(() => setKeys(new Map()));
+      .then((entries) => {
+        setKeys(new Map(entries));
+        setKeysUnreadable(null);
+      })
+      .catch((e) => {
+        setKeys(new Map());
+        setKeysUnreadable(String(e));
+      });
   };
+
+  /**
+   * Runs a one-shot write from this drawer, and says why when it did not take.
+   *
+   * The Revoke button and the switches each awaited a write with nothing to
+   * catch it: a failure was an unhandled rejection, and the control simply did
+   * not move.
+   */
+  const run = (action: () => Promise<unknown>) => {
+    setError(null);
+    action().catch((e) => setError(String(e)));
+  };
+
+  // Held here rather than in `CodeSearch`, which unmounts with its tab. See
+  // `useIndexBuild`.
+  const index = useIndexBuild();
 
   useEffect(() => {
     api
@@ -156,6 +180,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
                 overriddenBy={overrideOf(provider, status?.providers ?? [])}
                 keyStatus={keys.get(provider.id)}
                 keychainAvailable={keychain}
+                keysUnreadable={keysUnreadable}
                 onKeyChanged={refreshKeys}
                 onChange={(patch) => update(row, patch)}
                 onRemove={() => {
@@ -206,6 +231,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
             provider={status?.settings.embedding_provider ?? ""}
             rerankModel={status?.settings.rerank_model ?? ""}
             rerankProvider={status?.settings.rerank_provider ?? ""}
+            progress={index.progress}
+            outcome={index.outcome}
+            onBuild={index.onBuild}
           />
         </>
       )}
@@ -237,13 +265,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
                       <div className="spacer" />
                       <button
                         className="danger"
-                        onClick={async () => {
-                          await api.revokePermissionRule(
-                            allowed.rule,
-                            allowed.scope,
-                          );
-                          setRules(await api.listPermissionRules());
-                        }}
+                        onClick={() =>
+                          run(async () => {
+                            await api.revokePermissionRule(allowed.rule, allowed.scope);
+                            setRules(await api.listPermissionRules());
+                          })
+                        }
                       >
                         Revoke
                       </button>
@@ -253,6 +280,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
               ))}
             </ul>
           )}
+          {error && <Problem>{error}</Problem>}
         </>
       )}
 
@@ -262,9 +290,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <input
               type="checkbox"
               checked={status?.settings.skill_synthesis_enabled ?? true}
-              onChange={async (e) => {
-                await api.setSkillSynthesis(e.target.checked);
-                await refresh();
+              onChange={(e) => {
+                const on = e.target.checked;
+                run(async () => {
+                  await api.setSkillSynthesis(on);
+                  await refresh();
+                });
               }}
             />
             <span>
@@ -280,9 +311,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <input
               type="checkbox"
               checked={status?.settings.agent_synthesis_enabled ?? true}
-              onChange={async (e) => {
-                await api.setAgentSynthesis(e.target.checked);
-                await refresh();
+              onChange={(e) => {
+                const on = e.target.checked;
+                run(async () => {
+                  await api.setAgentSynthesis(on);
+                  await refresh();
+                });
               }}
             />
             <span>
@@ -298,6 +332,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
           <IterationLimit
             limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
           />
+          {error && <Problem>{error}</Problem>}
         </>
       )}
 
@@ -585,6 +620,35 @@ const THEMES: [Theme, string][] = [
 ];
 
 /**
+ * The settings a save came back with, keeping anything typed since it was sent.
+ *
+ * Replaced whole, the reload after a save on blur overwrote whatever had been
+ * typed during the round trip. A field that differs from what was sent was
+ * edited since, and that edit is newer than the answer.
+ */
+export function keepEdits(
+  fresh: SearchSettings,
+  now: SearchSettings | null,
+  sent: SearchBackend[],
+): SearchSettings {
+  if (!now) return fresh;
+  return {
+    ...fresh,
+    backends: fresh.backends.map((backend) => {
+      const mine = now.backends.find((b) => b.id === backend.id);
+      const was = sent.find((b) => b.id === backend.id);
+      if (!mine || !was) return backend;
+      return {
+        ...backend,
+        base_url: mine.base_url !== was.base_url ? mine.base_url : backend.base_url,
+        api_key_env:
+          mine.api_key_env !== was.api_key_env ? mine.api_key_env : backend.api_key_env,
+      };
+    }),
+  };
+}
+
+/**
  * Web search: which backend, and the key it needs.
  *
  * Everything behind this was built and shipped some time ago — the backends,
@@ -599,24 +663,42 @@ export function SearchTab() {
   const [settings, setSettings] = useState<SearchSettings | null>(null);
   const [keychain, setKeychain] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** Why the last read or write did not work, when it did not. */
+  const [error, setError] = useState<string | null>(null);
 
-  const load = () => api.getSearchSettings().then(setSettings).catch(() => {});
+  // Said rather than swallowed: a read that failed in silence left the tab on
+  // "Loading…" for good, which looks like a hang rather than a broken file.
+  const load = () =>
+    api
+      .getSearchSettings()
+      .then((fresh) => {
+        setSettings(fresh);
+        setError(null);
+      })
+      .catch((e) => setError(String(e)));
 
   useEffect(() => {
     load();
     api.keychainAvailable().then(setKeychain).catch(() => setKeychain(false));
   }, []);
 
-  if (!settings) return <p className="drawer-intro">Loading…</p>;
+  if (!settings) {
+    return error ? <Problem>{error}</Problem> : <p className="drawer-intro">Loading…</p>;
+  }
 
   const keys = new Map(settings.key_statuses);
   const selected = settings.backends.find((b) => b.id === settings.selected);
 
   const save = async (id: string | null, backends = settings.backends) => {
     setBusy(true);
+    setError(null);
     try {
       await api.saveSearchSettings(id, backends);
-      await load();
+      const fresh = await api.getSearchSettings();
+      // Merged rather than replaced: see `keepEdits`.
+      setSettings((now) => keepEdits(fresh, now, backends));
+    } catch (e) {
+      setError(String(e));
     } finally {
       setBusy(false);
     }
@@ -631,6 +713,8 @@ export function SearchTab() {
         Lets Taurus look things up on the web. Your prompt goes to whichever
         service you pick, so it stays off until you choose one.
       </p>
+
+      {error && <Problem>{error}</Problem>}
 
       {settings.problems.length > 0 && (
         <section className="section">
@@ -727,6 +811,34 @@ export function SearchTab() {
 }
 
 /**
+ * An index build started from the Search tab: how far it has got, what it said
+ * when it finished, and how to start one.
+ *
+ * A hook for `Settings` rather than state in `CodeSearch`, which unmounts with
+ * its tab. The build goes on in Rust either way, and a tab switch that dropped
+ * this came back to a Build button beside a build still running, with no Stop.
+ */
+export function useIndexBuild() {
+  const [progress, setProgress] = useState<IndexProgress | null>(null);
+  const [outcome, setOutcome] = useState<string | null>(null);
+  const build = async () => {
+    // Seeded before the first report, so the button switches to Stop on the
+    // click rather than whenever the first batch lands — which on a cold
+    // Ollama is several seconds of a button that looks like it did nothing.
+    setProgress({ done: 0, total: 0 });
+    setOutcome(null);
+    try {
+      setOutcome(await api.buildIndex(setProgress));
+    } catch (e) {
+      setOutcome(String(e));
+    } finally {
+      setProgress(null);
+    }
+  };
+  return { progress, outcome, onBuild: () => void build() };
+}
+
+/**
  * Semantic search over the workspace: which model embeds it, and a way to pay
  * the first index before a turn has to.
  *
@@ -744,19 +856,31 @@ export function CodeSearch({
   provider,
   rerankModel,
   rerankProvider,
+  progress,
+  outcome,
+  onBuild,
 }: {
   model: string;
   provider: string;
   rerankModel: string;
   rerankProvider: string;
+  /** A build in progress, held by `Settings` so a tab switch does not lose it. */
+  progress: IndexProgress | null;
+  outcome: string | null;
+  onBuild: () => void;
 }) {
   const refresh = useStore((s) => s.refresh);
   const [draft, setDraft] = useState(model);
-  const [providerDraft2, setProviderDraft2] = useState(provider);
+  const [embedProviderDraft, setEmbedProviderDraft] = useState(provider);
   const [rerankDraft, setRerankDraft] = useState(rerankModel);
-  const [providerDraft, setProviderDraft] = useState(rerankProvider);
-  const [progress, setProgress] = useState<IndexProgress | null>(null);
-  const [outcome, setOutcome] = useState<string | null>(null);
+  const [rerankProviderDraft, setRerankProviderDraft] = useState(rerankProvider);
+  // The store is the authority, as in `IterationLimit`: a refresh from
+  // anywhere else — another window, a hand-edited settings file — has to win
+  // over a draft seeded when this tab was opened.
+  useEffect(() => setDraft(model), [model]);
+  useEffect(() => setEmbedProviderDraft(provider), [provider]);
+  useEffect(() => setRerankDraft(rerankModel), [rerankModel]);
+  useEffect(() => setRerankProviderDraft(rerankProvider), [rerankProvider]);
   const building = progress !== null;
 
   // Model and provider save together, because the backend takes them together:
@@ -788,20 +912,6 @@ export function CodeSearch({
     await refresh();
   };
 
-  const build = async () => {
-    // Seeded before the first report so the button switches to Stop on the
-    // click rather than whenever the first batch lands — which on a cold
-    // Ollama is several seconds of a button that looks like it did nothing.
-    setProgress({ done: 0, total: 0 });
-    setOutcome(null);
-    try {
-      setOutcome(await api.buildIndex(setProgress));
-    } catch (e) {
-      setOutcome(String(e));
-    } finally {
-      setProgress(null);
-    }
-  };
 
   const pct =
     progress && progress.total > 0
@@ -825,7 +935,7 @@ export function CodeSearch({
           placeholder="nomic-embed-text"
           disabled={building}
           onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => save(draft, providerDraft2)}
+          onBlur={() => save(draft, embedProviderDraft)}
         />
       </Field>
 
@@ -835,12 +945,12 @@ export function CodeSearch({
           hint="Which backend serves it. Leave empty to use the one this conversation is on — name another if that backend has no embedding endpoint, which is the case for Anthropic."
         >
           <input
-            value={providerDraft2}
+            value={embedProviderDraft}
             spellCheck={false}
             placeholder="the one this conversation is on"
             disabled={building}
-            onChange={(e) => setProviderDraft2(e.target.value)}
-            onBlur={() => save(draft, providerDraft2)}
+            onChange={(e) => setEmbedProviderDraft(e.target.value)}
+            onBlur={() => save(draft, embedProviderDraft)}
           />
         </Field>
       )}
@@ -848,7 +958,7 @@ export function CodeSearch({
       {model.trim() && (
         <>
           <div className="index-actions flex items-center gap-3">
-            <button onClick={building ? api.stopIndexBuild : build}>
+            <button onClick={building ? api.stopIndexBuild : onBuild}>
               {building ? "Stop" : "Build index now"}
             </button>
             {building && (
@@ -885,7 +995,7 @@ export function CodeSearch({
               placeholder="bge-reranker-v2-m3"
               disabled={building}
               onChange={(e) => setRerankDraft(e.target.value)}
-              onBlur={() => saveRerank(rerankDraft, providerDraft)}
+              onBlur={() => saveRerank(rerankDraft, rerankProviderDraft)}
             />
           </Field>
 
@@ -895,12 +1005,12 @@ export function CodeSearch({
               hint="Which backend serves it. Leave empty if the same server embeds and reranks — name one of your other providers if not."
             >
               <input
-                value={providerDraft}
+                value={rerankProviderDraft}
                 spellCheck={false}
                 placeholder="the one that embeds"
                 disabled={building}
-                onChange={(e) => setProviderDraft(e.target.value)}
-                onBlur={() => saveRerank(rerankDraft, providerDraft)}
+                onChange={(e) => setRerankProviderDraft(e.target.value)}
+                onBlur={() => saveRerank(rerankDraft, rerankProviderDraft)}
               />
             </Field>
           )}
@@ -1107,6 +1217,7 @@ function ApiKeyField({
   onClear,
   onChanged,
   unsavedHint,
+  unreadable = null,
 }: {
   status: KeyStatus | undefined;
   available: boolean;
@@ -1114,6 +1225,8 @@ function ApiKeyField({
   onClear: () => Promise<void>;
   onChanged: () => void;
   unsavedHint: string;
+  /** Why the stored keys could not be listed, when they could not. */
+  unreadable?: string | null;
 }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1133,6 +1246,15 @@ function ApiKeyField({
   // No status means this provider is not in the saved list: either it was just
   // added, or its id was edited and the old key still belongs to the old id.
   if (!status) {
+    // Or the list of stored keys could not be read at all, and then "save it
+    // first" sends somebody to fix a provider that is already saved.
+    if (unreadable) {
+      return (
+        <Field label="API key" hint={`Could not read which keys are stored: ${unreadable}`}>
+          <div className={KEY_NONE}>unknown</div>
+        </Field>
+      );
+    }
     return (
       <Field label="API key" hint={unsavedHint}>
         <div className={KEY_NONE}>not saved yet</div>
@@ -1251,6 +1373,7 @@ function ProviderForm({
   overriddenBy,
   keyStatus,
   keychainAvailable,
+  keysUnreadable,
   onKeyChanged,
   onChange,
   onRemove,
@@ -1261,6 +1384,8 @@ function ProviderForm({
   overriddenBy: string[];
   keyStatus: KeyStatus | undefined;
   keychainAvailable: boolean;
+  /** Why the stored keys could not be listed, when they could not. */
+  keysUnreadable: string | null;
   onKeyChanged: () => void;
   onChange: (patch: Partial<ProviderConfig>) => void;
   onRemove: () => void;
@@ -1373,6 +1498,7 @@ function ProviderForm({
             onStore={(key) => api.setProviderKey(provider.id, key)}
             onClear={() => api.clearProviderKey(provider.id)}
             onChanged={onKeyChanged}
+            unreadable={keysUnreadable}
             unsavedHint="Save this provider before storing a key for it."
           />
 

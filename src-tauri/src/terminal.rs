@@ -33,6 +33,11 @@
 //! is lost is not one frame but every frame after it. This applies
 //! backpressure instead. A reader that cannot keep up slows the shell down,
 //! which is exactly what a real terminal does.
+//!
+//! The reader that counts is the emulator, not the forwarder. A message to the
+//! webview is handed over and forgotten — nothing waits for it to be drawn —
+//! so the pane says what it has drawn, and the forwarder stops sending while
+//! more than a megabyte of output is outstanding. See [`Credit`].
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -68,6 +73,83 @@ const READ_BACKLOG: usize = 32;
 /// picks up what was already queued behind it — which is nothing at all while
 /// someone is typing, and thousands of lines during a build.
 const COALESCE_BYTES: usize = 64 * 1024;
+
+/// Undrawn output past which the forwarder stops sending.
+///
+/// A megabyte is a few screens of anything a person reads and a fraction of a
+/// second of a build. xterm discards writes once 50 MB is queued, so this is
+/// far below where output could be lost.
+const HIGH_WATER: usize = 1024 * 1024;
+
+/// Undrawn output the forwarder waits to fall back to before it sends again.
+///
+/// Apart from [`HIGH_WATER`] so a pane drawing steadily resumes the stream in
+/// large steps, rather than trading one acknowledgement for one message.
+const LOW_WATER: usize = 256 * 1024;
+
+/// Output sent to the pane and not yet drawn, and the wait on it.
+///
+/// Tauri's `Channel::send` hands a message to the webview and returns, so the
+/// bounded read queue stops the shell only as far as the forwarder. Past it,
+/// output would pile up in the webview until xterm started discarding writes.
+/// Instead the pane acknowledges what xterm has drawn, and the forwarder stops
+/// taking from the read queue while too much is outstanding: the queue fills,
+/// the reader blocks on it, and the shell blocks on the reader.
+#[derive(Default)]
+struct Credit {
+    in_flight: std::sync::atomic::AtomicUsize,
+    closed: std::sync::atomic::AtomicBool,
+    changed: tokio::sync::Notify,
+}
+
+impl Credit {
+    /// Waits until there is room to send.
+    ///
+    /// Ends at once for a shell that has been closed. A forwarder parked here
+    /// for a pane that has gone would otherwise hold the reader, and the
+    /// reader the shell, for as long as the process lived. Released, it
+    /// forwards what is left — the shell's last output and its exit — as far
+    /// as the channel will take them, which is what a closing pane is still
+    /// listening for.
+    async fn room(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.in_flight.load(SeqCst) < HIGH_WATER {
+            return;
+        }
+        loop {
+            // Registered before the check, which is the ordering `Notify`
+            // needs: an acknowledgement landing between the two still wakes it.
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.closed.load(SeqCst) || self.in_flight.load(SeqCst) <= LOW_WATER {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    fn sent(&self, bytes: usize) {
+        self.in_flight
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn ack(&self, bytes: usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        // Saturating, so a pane that acknowledges more than it was sent frees
+        // what it was sent and no more, rather than wrapping to "nothing owed"
+        // forever.
+        let _ = self
+            .in_flight
+            .fetch_update(SeqCst, SeqCst, |n| Some(n.saturating_sub(bytes)));
+        self.changed.notify_waiters();
+    }
+
+    fn close(&self) {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.changed.notify_waiters();
+    }
+}
 
 /// What the shell tells the pane.
 #[derive(Clone, Serialize, TS)]
@@ -113,6 +195,8 @@ struct Shell {
     /// its input — and a blocking read cannot be cancelled, so killing the
     /// child is the only thing that ends one.
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    /// Output sent to the pane and not yet drawn. Shared with the forwarder.
+    credit: Arc<Credit>,
 }
 
 impl Shell {
@@ -120,11 +204,13 @@ impl Shell {
         master: Box<dyn MasterPty + Send>,
         writer: Box<dyn Write + Send>,
         killer: Box<dyn ChildKiller + Send + Sync>,
+        credit: Arc<Credit>,
     ) -> Result<Self, String> {
         Ok(Self {
             master: Mutex::new(master),
             input: pump_input(writer)?,
             killer: Mutex::new(killer),
+            credit,
         })
     }
 
@@ -260,7 +346,8 @@ impl Terminals {
         drop(pair.slave);
 
         let id = uuid::Uuid::new_v4().to_string();
-        let shell = Shell::new(pair.master, writer, killer)?;
+        let credit = Arc::new(Credit::default());
+        let shell = Shell::new(pair.master, writer, killer, credit.clone())?;
         self.open.insert(id.clone(), Arc::new(shell));
 
         let (tx, rx) = mpsc::channel::<Pump>(READ_BACKLOG);
@@ -289,7 +376,7 @@ impl Terminals {
         let terminals = self.clone();
         let closing = id.clone();
         tokio::spawn(async move {
-            forward(rx, events).await;
+            forward(rx, events, credit).await;
             // Whether the shell exited or the channel went away, this session
             // can no longer be written to. Left in the map it would be an id
             // that accepts input and swallows it.
@@ -308,6 +395,15 @@ impl Terminals {
         self.get(id)?.resize(rows.max(1), cols.max(1))
     }
 
+    /// Credits `bytes` of output the pane has drawn, so the shell can send
+    /// more. Quiet about an id that has gone: a shell's last output is drawn
+    /// after it has exited.
+    pub fn ack(&self, id: &str, bytes: usize) {
+        if let Some(shell) = self.open.get(id) {
+            shell.credit.ack(bytes);
+        }
+    }
+
     /// Ends a shell. Quiet about an id that is already gone, because the two
     /// ways a pane closes — the user closing it, and the shell exiting under it
     /// — race, and neither is a failure.
@@ -317,6 +413,9 @@ impl Terminals {
             // leaked shell — one opened and never closed — visible in a log
             // rather than only in a process list.
             info!(terminal = %id, "shell closed");
+            // Before the kill: a forwarder parked on a pane that will never
+            // draw again is holding the reader, which is what the kill ends.
+            shell.credit.close();
             shell.kill();
         }
     }
@@ -404,7 +503,11 @@ enum Pump {
 /// produces output far faster than a webview can be messaged, and one message
 /// per read would put tens of thousands of them through the IPC channel to draw
 /// text that arrives in the same frame regardless.
-async fn forward(mut rx: mpsc::Receiver<Pump>, events: Channel<TerminalEvent>) {
+async fn forward(
+    mut rx: mpsc::Receiver<Pump>,
+    events: Channel<TerminalEvent>,
+    credit: Arc<Credit>,
+) {
     let mut held: Vec<u8> = Vec::new();
     while let Some(next) = rx.recv().await {
         match next {
@@ -415,19 +518,22 @@ async fn forward(mut rx: mpsc::Receiver<Pump>, events: Channel<TerminalEvent>) {
                     match rx.try_recv() {
                         Ok(Pump::Data(more)) => held.extend_from_slice(&more),
                         Ok(Pump::Exit(code)) => {
-                            send(&events, &mut held);
+                            send(&events, &mut held, &credit);
                             let _ = events.send(TerminalEvent::Exited { code });
                             return;
                         }
                         Err(_) => break,
                     }
                 }
-                if !send(&events, &mut held) {
+                // Not taking from the read queue while this waits is the
+                // whole mechanism. See `Credit`.
+                credit.room().await;
+                if !send(&events, &mut held, &credit) {
                     return;
                 }
             }
             Pump::Exit(code) => {
-                send(&events, &mut held);
+                send(&events, &mut held, &credit);
                 let _ = events.send(TerminalEvent::Exited { code });
                 return;
             }
@@ -436,14 +542,18 @@ async fn forward(mut rx: mpsc::Receiver<Pump>, events: Channel<TerminalEvent>) {
 }
 
 /// Sends what has been gathered, and says whether anyone was listening.
-fn send(events: &Channel<TerminalEvent>, held: &mut Vec<u8>) -> bool {
+fn send(events: &Channel<TerminalEvent>, held: &mut Vec<u8>, credit: &Credit) -> bool {
     if held.is_empty() {
         return true;
     }
     let data = base64::engine::general_purpose::STANDARD.encode(&held[..]);
+    let bytes = held.len();
     held.clear();
     match events.send(TerminalEvent::Output { data }) {
-        Ok(()) => true,
+        Ok(()) => {
+            credit.sent(bytes);
+            true
+        }
         Err(e) => {
             // The window closed, or the pane was torn down with output still
             // in flight. The shell is killed by whoever removed it; there is
@@ -527,6 +637,108 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("a shell that has exited is still taking keystrokes");
+    }
+
+    #[tokio::test]
+    async fn the_forwarder_waits_for_the_pane_once_too_much_is_undrawn() {
+        let credit = Arc::new(Credit::default());
+        credit.sent(HIGH_WATER);
+        let waiting = tokio::spawn({
+            let credit = credit.clone();
+            async move { credit.room().await }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished(), "sent past the high mark");
+        // Drawn down to just above the low mark: still not enough.
+        credit.ack(HIGH_WATER - LOW_WATER - 1);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished(), "resumed before the pane caught up");
+
+        credit.ack(2);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("the pane caught up and nothing woke the forwarder")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_a_shell_releases_a_forwarder_waiting_on_its_pane() {
+        // The pane is gone and will never draw again. Left waiting, the
+        // forwarder holds the reader and the reader holds the shell.
+        let credit = Arc::new(Credit::default());
+        credit.sent(HIGH_WATER);
+        let waiting = tokio::spawn({
+            let credit = credit.clone();
+            async move { credit.room().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        credit.close();
+
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("a closed shell left its forwarder waiting")
+            .unwrap();
+    }
+
+    /// Bytes of output the channel has carried, decoded.
+    fn output_bytes(seen: &Arc<Mutex<Vec<String>>>) -> usize {
+        lock(seen)
+            .iter()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|event| event["kind"] == "output")
+            .filter_map(|event| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(event["data"].as_str()?)
+                    .ok()
+            })
+            .map(|decoded| decoded.len())
+            .sum()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_the_pane_has_not_drawn_holds_the_shell_back() {
+        let terminals = Arc::new(Terminals::default());
+        let (channel, seen) = recorder();
+        let id = terminals
+            .open(&std::env::temp_dir(), 24, 80, channel)
+            .expect("a shell must start");
+        // Four times the high mark, from a program that ends when it is done.
+        terminals
+            .write(&id, b"head -c 4194304 /dev/zero | tr '\\0' x; exit\n")
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let sent = output_bytes(&seen);
+        assert!(
+            sent <= HIGH_WATER + COALESCE_BYTES,
+            "{sent} bytes went to a pane that drew none of them"
+        );
+        assert!(
+            !lock(&seen)
+                .iter()
+                .any(|line| line.contains("\"kind\":\"exited\"")),
+            "the shell finished without waiting for the pane"
+        );
+
+        // A pane that draws what it is sent lets the rest through.
+        let mut drawn = 0;
+        for _ in 0..200 {
+            let sent = output_bytes(&seen);
+            terminals.ack(&id, sent - drawn);
+            drawn = sent;
+            if lock(&seen)
+                .iter()
+                .any(|line| line.contains("\"kind\":\"exited\""))
+            {
+                assert!(drawn >= 4_194_304, "only {drawn} bytes arrived");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the shell never finished, with {drawn} bytes drawn");
     }
 
     #[tokio::test]
@@ -675,8 +887,13 @@ mod tests {
             })
             .expect("a pty must open");
         let writer = pair.master.take_writer().expect("a pty has a writer");
-        let shell =
-            Shell::new(pair.master, writer, Box::new(NoChild)).expect("the input thread starts");
+        let shell = Shell::new(
+            pair.master,
+            writer,
+            Box::new(NoChild),
+            Arc::new(Credit::default()),
+        )
+        .expect("the input thread starts");
         let terminals = Arc::new(Terminals::default());
         terminals.open.insert("stalled".into(), Arc::new(shell));
 

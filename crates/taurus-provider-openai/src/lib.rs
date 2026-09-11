@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use taurus_provider::http;
 use taurus_provider::prompted::{PromptedScanner, PromptedTools};
 use taurus_provider::{
     Capabilities, ChatRequest, ModelInfo, Provider, ProviderError, RerankScore, Result, StopReason,
@@ -91,7 +92,7 @@ pub struct OpenAiProvider {
     api_key: Option<String>,
     /// Header the key goes in. `None` means bearer auth.
     api_key_header: Option<String>,
-    client: reqwest::Client,
+    client: http::Client,
     capabilities: OpenAiCapabilities,
     /// Declared models. Non-empty means `/v1/models` is never called.
     models: Vec<ModelSpec>,
@@ -110,10 +111,17 @@ impl OpenAiProvider {
             api_prefix: DEFAULT_API_PREFIX.to_string(),
             api_key,
             api_key_header: None,
-            client: reqwest::Client::new(),
+            client: http::Client::new(),
             capabilities,
             models: Vec::new(),
         }
+    }
+
+    /// Talks through `client` instead of the shared one. For a test of a
+    /// backend that hangs: see [`http::Client::stalling_after`].
+    pub fn with_client(mut self, client: http::Client) -> Self {
+        self.client = client;
+        self
     }
 
     /// Declares the models this endpoint serves, instead of asking it.
@@ -222,11 +230,7 @@ impl OpenAiProvider {
     }
 
     fn unreachable(&self, source: reqwest::Error) -> ProviderError {
-        ProviderError::Unreachable {
-            provider: self.id.clone(),
-            base_url: self.base_url.clone(),
-            source: Box::new(source),
-        }
+        self.client.failure(&self.id, &self.base_url, source)
     }
 
     async fn check_status(&self, response: reqwest::Response) -> Result<reqwest::Response> {
@@ -234,16 +238,33 @@ impl OpenAiProvider {
         if status.is_success() {
             return Ok(response);
         }
+        let retry_after = http::retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(ProviderError::MissingCredentials {
-                provider: self.id.clone(),
-            });
+        // A key that was refused and a key that is fine but may not do this
+        // are different fixes, and the body is what says which: "invalid
+        // x-api-key" against "no access to this model".
+        match status.as_u16() {
+            401 => {
+                return Err(ProviderError::MissingCredentials {
+                    provider: self.id.clone(),
+                    detail: taurus_provider::brief(&body),
+                });
+            }
+            403 => {
+                return Err(ProviderError::Api {
+                    provider: self.id.clone(),
+                    status: 403,
+                    body: taurus_provider::brief(&body),
+                    retry_after: None,
+                });
+            }
+            _ => {}
         }
         Err(ProviderError::Api {
             provider: self.id.clone(),
             status: status.as_u16(),
             body,
+            retry_after,
         })
     }
 }
@@ -457,7 +478,12 @@ impl Provider for OpenAiProvider {
         tx: mpsc::Sender<StreamEvent>,
         cancel: CancellationToken,
     ) -> Result<StopReason> {
-        let prompted = !self.capabilities.native_tools && !request.tools.is_empty();
+        // Per model, the way `capabilities` answers it. One gateway fronting a
+        // large hosted model and a small local one declares the difference on
+        // the model, and the provider-wide flag alone would send the small one
+        // a `tools` field it cannot read.
+        let native = self.capabilities(&request.model).await?.native_tools;
+        let prompted = !native && !request.tools.is_empty();
         if prompted {
             PromptedTools::rewrite(&mut request);
         }
@@ -789,6 +815,56 @@ mod tests {
         assert!(!caps.native_tools);
     }
 
+    #[tokio::test]
+    async fn a_model_declared_without_native_tools_is_prompted_for_them() {
+        // The provider says native tools; the small model behind the same
+        // gateway says not. Its request must describe the tools in the prompt,
+        // or it answers as though it had none.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let provider =
+            OpenAiProvider::new("gateway", server.uri(), None, OpenAiCapabilities::default())
+                .with_models(vec![ModelSpec {
+                    id: "llama-3.1-8b".into(),
+                    native_tools: Some(false),
+                    ..ModelSpec::default()
+                }]);
+        let request = ChatRequest::new("llama-3.1-8b", vec![taurus_provider::Message::user("go")])
+            .with_tools(vec![taurus_provider::ToolDef {
+                name: "read_file".into(),
+                description: "Reads a file.".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        provider
+            .stream(request, tx, tokio_util::sync::CancellationToken::new())
+            .await
+            .expect("the stream ends cleanly");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(
+            body["tools"]
+                .as_array()
+                .is_none_or(|tools| tools.is_empty()),
+            "a model declared without native tools was sent them natively: {body}"
+        );
+        assert!(
+            body.to_string().contains("read_file"),
+            "the tools must be described in the prompt instead: {body}"
+        );
+    }
+
     #[test]
     fn a_key_with_no_header_named_is_still_a_bearer_token() {
         // The default has to stay byte-identical: every existing config relies
@@ -1083,6 +1159,83 @@ mod tests {
         assert_eq!(
             placed,
             vec![Some(vec![1.0]), Some(vec![2.0]), Some(vec![3.0])]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_never_answers_ends_the_request_on_its_own() {
+        // No Stop is pressed and nothing is ever sent back: only the stall
+        // timeout can end this, and the test's own deadline is the proof.
+        let base = http::testing::silent_after(b"").await;
+        let provider = OpenAiProvider::new(
+            "openai",
+            base,
+            Some("sk-test".into()),
+            OpenAiCapabilities::default(),
+        )
+        .with_client(http::Client::stalling_after(
+            std::time::Duration::from_millis(200),
+        ));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let request = ChatRequest::new("gpt-5", vec![taurus_provider::Message::user("hi")]);
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.stream(request, tx, tokio_util::sync::CancellationToken::new()),
+        )
+        .await
+        .expect("the stall timeout must end the request, not the test's deadline");
+        assert!(
+            matches!(outcome, Err(ProviderError::Stalled { .. })),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_key_and_a_refused_model_say_different_things() {
+        // Both used to read "missing credentials", so somebody with no access
+        // to one model was told to fix a key that was fine.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(
+                serde_json::json!({"error": {"message": "Incorrect API key provided"}}),
+            ))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(
+                serde_json::json!({"error": {"message": "You do not have access to this model"}}),
+            ))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new(
+            "openai",
+            server.uri(),
+            Some("sk-test".into()),
+            OpenAiCapabilities::default(),
+        );
+
+        let refused = provider.models().await.expect_err("a 401");
+        assert!(
+            matches!(refused, ProviderError::MissingCredentials { .. }),
+            "{refused:?}"
+        );
+        assert!(
+            refused.to_string().contains("Incorrect API key provided"),
+            "{refused}"
+        );
+
+        let forbidden = provider.models().await.expect_err("a 403");
+        assert_eq!(forbidden.kind(), "api_4xx");
+        assert!(
+            forbidden.to_string().contains("do not have access"),
+            "{forbidden}"
         );
     }
 }

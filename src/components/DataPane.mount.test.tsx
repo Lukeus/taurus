@@ -280,6 +280,57 @@ describe("the rows view", () => {
     expect((next as HTMLButtonElement).disabled).toBe(false);
   });
 
+  /** The Rows tab, with `page` answering each request in turn. */
+  async function paging(page: (call: number) => Promise<unknown>) {
+    let call = 0;
+    invoke.mockImplementation((name: string) =>
+      name === "dataset_page"
+        ? page(++call)
+        : Promise.resolve({ rows: 3, engine: "DataFusion", columns: [] }),
+    );
+    const host = await mount();
+    const tab = [...host.querySelectorAll("button.seg")].find(
+      (b) => b.textContent === "Rows",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      tab.click();
+    });
+    return host;
+  }
+
+  const FIRST = {
+    columns: [{ name: "id", kind: "number", type_name: "Int64", nullable: false }],
+    rows: [["1"], ["2"]],
+    offset: 0,
+    total: 1_000,
+  };
+
+  it("numbers the rows on screen from where they were read while the next page loads", async () => {
+    // Until the next page arrives the rows on screen are still the first
+    // page's, and numbering them from the new offset labelled rows 1 and 2
+    // as 101 and 102.
+    const host = await paging((call) =>
+      call === 1 ? Promise.resolve(FIRST) : new Promise(() => {}),
+    );
+    const [, next] = [...host.querySelectorAll(".data-summary .pill")];
+    await act(async () => (next as HTMLButtonElement).click());
+
+    expect(host.querySelector(".data-summary")!.textContent).toContain("rows 1–2");
+  });
+
+  it("keeps the pager when a page fails, and says why in the body", async () => {
+    const host = await paging((call) =>
+      call === 1 ? Promise.resolve(FIRST) : Promise.reject("the file moved"),
+    );
+    const [, next] = [...host.querySelectorAll(".data-summary .pill")];
+    await act(async () => (next as HTMLButtonElement).click());
+
+    expect(host.textContent).toContain("the file moved");
+    const [back] = [...host.querySelectorAll(".data-summary .pill")];
+    expect(back).toBeDefined();
+    expect((back as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("cannot page past the end of a short file", async () => {
     const host = await rowsTab({
       columns: [{ name: "id", kind: "number", type_name: "Int64", nullable: false }],
@@ -796,6 +847,33 @@ describe("the recipes view", () => {
     });
     expect(host.textContent).toContain("also reads");
     expect(host.textContent).toContain("data/catalogue.parquet");
+  });
+
+  it("says when the file it wrote could not be added to the list", async () => {
+    // The file is written either way. Dropped, the failure left it missing
+    // from the Data pane with nothing saying why.
+    answering({
+      list_recipes: () => Promise.resolve({ recipes: [CLEAN], problems: [] }),
+      run_recipe: () =>
+        Promise.resolve({
+          started_with: 5,
+          steps: [{ title: "drop exact duplicates", rows: 4, columns: 4, took_ms: 3 }],
+          columns: [{ name: "id", kind: "number", type_name: "Int64", nullable: false }],
+          rows: 4,
+          bytes: 120,
+          took_ms: 9,
+          unlisted:
+            "data/clean.parquet was written, but it could not be added to the list: permission denied",
+        }),
+    });
+    const host = await recipesTab([EVENTS]);
+    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+      b.textContent?.startsWith("Run"),
+    ) as HTMLButtonElement;
+    await act(async () => button.click());
+    await act(async () => {});
+
+    expect(host.textContent).toContain("could not be added to the list: permission denied");
   });
 
   it("reports what each step did to the row count", async () => {

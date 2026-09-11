@@ -16,6 +16,7 @@ mod wire;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -23,6 +24,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use taurus_provider::http;
 use taurus_provider::{
     Capabilities, ChatRequest, ModelInfo, Provider, ProviderError, Result, StopReason, StreamEvent,
     TokenUsage,
@@ -30,7 +32,7 @@ use taurus_provider::{
 
 use wire::{
     BatchEmbedBody, BatchEmbedResponse, EmbedContent, EmbedPart, EmbedRequest, GenerateBody,
-    ModelsResponse, StreamChunk,
+    ModelEntry, ModelsResponse, StreamChunk,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -54,7 +56,7 @@ impl Default for GeminiCapabilities {
         Self {
             // Every Gemini model that serves `generateContent` takes images.
             vision: true,
-            // Only reached when the listing is unavailable. Low on purpose:
+            // Only reached when the model's own entry is unavailable. Low on purpose:
             // guessing high compacts too late and surfaces as a provider error
             // mid-turn, guessing low costs some unnecessary compaction.
             context_length: 32_768,
@@ -66,17 +68,35 @@ pub struct GeminiProvider {
     id: String,
     base_url: String,
     api_key: Option<String>,
-    client: reqwest::Client,
+    client: http::Client,
     capabilities: GeminiCapabilities,
     models: Vec<String>,
-    /// One listing per model, kept for the life of this provider.
+    /// One lookup per model, kept for the life of this provider — or, for a
+    /// lookup that failed, for [`FALLBACK_TTL`].
     ///
     /// `capabilities` is asked once per iteration of the agent loop, because
-    /// that is where compaction reads the context window — and answering it
-    /// here means listing every model the account can see. Uncached, a ten-step
-    /// turn would spend ten full listings re-learning one number that cannot
+    /// that is where compaction reads the context window. Uncached, a ten-step
+    /// turn would spend ten round trips re-learning one number that cannot
     /// change while the turn runs.
-    probed: Arc<RwLock<HashMap<String, Capabilities>>>,
+    probed: Arc<RwLock<HashMap<String, Probed>>>,
+    /// [`FALLBACK_TTL`], held here so a test can shorten it.
+    fallback_ttl: Duration,
+}
+
+/// How long a model's fallback capabilities stand after its lookup failed.
+///
+/// Long enough that a backend that did not answer is not asked again on every
+/// iteration of the same turn; short enough that one failure does not pin a
+/// wrong window on the model for the rest of the session.
+const FALLBACK_TTL: Duration = Duration::from_secs(300);
+
+/// One model's capabilities, and until when they stand.
+#[derive(Clone, Copy)]
+struct Probed {
+    capabilities: Capabilities,
+    /// `None` for an answer from the backend, which does not go stale while
+    /// this provider lives. A deadline for a fallback.
+    until: Option<Instant>,
 }
 
 impl GeminiProvider {
@@ -89,11 +109,19 @@ impl GeminiProvider {
             id: id.into(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
-            client: reqwest::Client::new(),
+            client: http::Client::new(),
             capabilities: GeminiCapabilities::default(),
             models: Vec::new(),
             probed: Arc::new(RwLock::new(HashMap::new())),
+            fallback_ttl: FALLBACK_TTL,
         }
+    }
+
+    /// Talks through `client` instead of the shared one. For a test of a
+    /// backend that hangs: see [`http::Client::stalling_after`].
+    pub fn with_client(mut self, client: http::Client) -> Self {
+        self.client = client;
+        self
     }
 
     pub fn with_models(mut self, models: Vec<String>) -> Self {
@@ -135,11 +163,21 @@ impl GeminiProvider {
     }
 
     fn unreachable(&self, source: reqwest::Error) -> ProviderError {
-        ProviderError::Unreachable {
-            provider: self.id.clone(),
-            base_url: self.base_url.clone(),
-            source: Box::new(source),
+        self.client.failure(&self.id, &self.base_url, source)
+    }
+
+    /// One model's own entry, or `None` if the endpoint will not give it.
+    async fn probe(&self, model: &str) -> Option<ModelEntry> {
+        let bare = model.strip_prefix("models/").unwrap_or(model);
+        let response = self
+            .authorize(self.client.get(self.url(&format!("/models/{bare}"))))
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
         }
+        response.json().await.ok()
     }
 
     async fn check_status(&self, response: reqwest::Response) -> Result<reqwest::Response> {
@@ -147,18 +185,62 @@ impl GeminiProvider {
         if status.is_success() {
             return Ok(response);
         }
+        let retry_after = http::retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
-        if matches!(status.as_u16(), 401 | 403) {
-            return Err(ProviderError::MissingCredentials {
-                provider: self.id.clone(),
-            });
+        // A key that was refused and a key that is fine but may not do this
+        // are different fixes, and the body is what says which: "invalid
+        // x-api-key" against "no access to this model".
+        match status.as_u16() {
+            401 => {
+                return Err(ProviderError::MissingCredentials {
+                    provider: self.id.clone(),
+                    detail: taurus_provider::brief(&body),
+                });
+            }
+            403 => {
+                return Err(ProviderError::Api {
+                    provider: self.id.clone(),
+                    status: 403,
+                    body: taurus_provider::brief(&body),
+                    retry_after: None,
+                });
+            }
+            _ => {}
         }
+        let retry_after = retry_after.or_else(|| retry_delay(&body));
         Err(ProviderError::Api {
             provider: self.id.clone(),
             status: status.as_u16(),
             body,
+            retry_after,
         })
     }
+}
+
+/// The wait a Gemini error asks for, which it puts in the body rather than a
+/// header.
+///
+/// A 429 carries a `google.rpc.RetryInfo` among its `details`, with the delay
+/// as a protobuf `Duration` in JSON form: seconds with an `s` suffix, like
+/// `"31s"` or `"1.5s"`.
+fn retry_delay(body: &str) -> Option<Duration> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    value["error"]["details"]
+        .as_array()?
+        .iter()
+        .filter(|detail| {
+            detail["@type"]
+                .as_str()
+                .is_some_and(|kind| kind.ends_with("google.rpc.RetryInfo"))
+        })
+        .find_map(|detail| {
+            let seconds: f64 = detail["retryDelay"]
+                .as_str()?
+                .strip_suffix('s')?
+                .parse()
+                .ok()?;
+            (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds))
+        })
 }
 
 #[async_trait]
@@ -205,38 +287,38 @@ impl Provider for GeminiProvider {
 
     async fn capabilities(&self, model: &str) -> Result<Capabilities> {
         if let Some(cached) = self.probed.read().await.get(model) {
-            return Ok(*cached);
+            if cached.until.is_none_or(|until| Instant::now() < until) {
+                return Ok(cached.capabilities);
+            }
         }
 
-        // The listing carries the window, so it is asked for rather than
-        // configured — but only that. Nothing there reports tool or image
-        // support, so those two stay configuration.
-        let context_length = self
-            .models()
-            .await
-            .ok()
-            .and_then(|models| {
-                models
-                    .into_iter()
-                    .find(|m| m.id == model)
-                    .and_then(|m| m.context_length)
-            })
-            .unwrap_or(self.capabilities.context_length);
-
+        // The model's own entry carries the window, so it is asked for rather
+        // than configured — but only that. Nothing there reports tool or image
+        // support, so those two stay configuration. Asked of the model rather
+        // than looked up in the listing, which comes a page at a time: a model
+        // past the first page would read as one the backend does not describe.
+        let probed = self.probe(model).await;
+        let answered = probed.is_some();
         let capabilities = Capabilities {
             native_tools: true,
             vision: self.capabilities.vision,
             thinking: true,
-            context_length,
+            context_length: probed
+                .and_then(|m| m.input_token_limit)
+                .unwrap_or(self.capabilities.context_length),
         };
 
-        // Cached even when the listing failed and this is the fallback: a
-        // backend that would not answer once will not answer ten times in the
-        // same turn, and retrying is a stall per iteration.
-        self.probed
-            .write()
-            .await
-            .insert(model.to_string(), capabilities);
+        // A fallback is kept too, but not for good. A backend that would not
+        // answer once will not answer ten times in the same turn, and retrying
+        // is a stall per iteration; kept for the life of the app, one blip at
+        // startup would compact a million-token model at 32k until a restart.
+        self.probed.write().await.insert(
+            model.to_string(),
+            Probed {
+                capabilities,
+                until: (!answered).then(|| Instant::now() + self.fallback_ttl),
+            },
+        );
         Ok(capabilities)
     }
 
@@ -360,6 +442,7 @@ impl Provider for GeminiProvider {
                     provider: self.id.clone(),
                     status: error.code.unwrap_or(400),
                     body: format!("{}: {}", error.status, error.message),
+                    retry_after: None,
                 });
             }
 
@@ -708,6 +791,107 @@ mod tests {
         let caps = provider.capabilities("gemini-2.5-pro").await.unwrap();
         assert!(caps.native_tools);
         assert_eq!(caps.context_length, 32_768);
+    }
+
+    #[tokio::test]
+    async fn a_model_past_the_first_page_of_the_listing_still_gets_its_window() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // The listing's first page, which does not reach this model.
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [{
+                    "name": "models/gemini-1.0-pro",
+                    "inputTokenLimit": 30720,
+                    "supportedGenerationMethods": ["generateContent"]
+                }],
+                "nextPageToken": "page-2"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models/gemini-2.5-pro"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "models/gemini-2.5-pro",
+                "inputTokenLimit": 1_048_576,
+                "supportedGenerationMethods": ["generateContent"]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = GeminiProvider::new("gemini", server.uri(), Some("key".into()));
+        let caps = provider.capabilities("gemini-2.5-pro").await.unwrap();
+        assert_eq!(caps.context_length, 1_048_576);
+    }
+
+    #[tokio::test]
+    async fn a_lookup_that_failed_is_asked_again_once_its_fallback_expires() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models/gemini-2.5-pro"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models/gemini-2.5-pro"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "models/gemini-2.5-pro",
+                "inputTokenLimit": 1_048_576
+            })))
+            .mount(&server)
+            .await;
+        let mut provider = GeminiProvider::new("gemini", server.uri(), Some("key".into()));
+        provider.fallback_ttl = Duration::ZERO;
+
+        let first = provider.capabilities("gemini-2.5-pro").await.unwrap();
+        assert_eq!(first.context_length, 32_768, "a failed lookup falls back");
+        let second = provider.capabilities("gemini-2.5-pro").await.unwrap();
+        assert_eq!(
+            second.context_length, 1_048_576,
+            "the fallback was kept past its time"
+        );
+    }
+
+    #[test]
+    fn a_rate_limit_body_says_how_long_to_wait() {
+        // The shape a 429 from this API takes. It sends no Retry-After header,
+        // so without reading the body the loop would guess.
+        let body = r#"{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[
+            {"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[]},
+            {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"31.5s"}]}}"#;
+        assert_eq!(retry_delay(body), Some(Duration::from_secs_f64(31.5)));
+        assert_eq!(retry_delay(r#"{"error":{"code":500}}"#), None);
+        assert_eq!(retry_delay("not json"), None);
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_never_answers_ends_the_request_on_its_own() {
+        // No Stop is pressed and nothing is ever sent back: only the stall
+        // timeout can end this, and the test's own deadline is the proof.
+        let base = http::testing::silent_after(b"").await;
+        let provider = GeminiProvider::new("gemini", base, Some("key".into()))
+            .with_client(http::Client::stalling_after(Duration::from_millis(200)));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let request =
+            ChatRequest::new("gemini-2.5-pro", vec![taurus_provider::Message::user("hi")]);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            provider.stream(request, tx, tokio_util::sync::CancellationToken::new()),
+        )
+        .await
+        .expect("the stall timeout must end the request, not the test's deadline");
+        assert!(
+            matches!(outcome, Err(ProviderError::Stalled { .. })),
+            "{outcome:?}"
+        );
     }
 }
 

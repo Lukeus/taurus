@@ -2737,30 +2737,15 @@ impl Host {
             .iter()
             .map(|step| (step.title.clone(), step.sql.clone()))
             .collect();
-        let run = self
+        let mut run = self
             .engine
             .materialize(&tables, &start, &steps, &output)
             .await
             .map_err(|e| e.to_string())?;
 
         // Loaded on the way out, so the pane can show what came out without a
-        // second action. Skipped rather than forced when the name is spoken
-        // for — see the tool, which makes the same call for the same reason.
-        let dir = self.data_dir_for(&workspace);
-        let shown = taurus_tools::path_guard::display(&workspace, &output);
-        let name = taurus_data::catalog::suggest_name(&output);
-        if taurus_data::catalog::taken_by(&dir, &name, &shown).is_none() {
-            if let Ok(format) = taurus_data::Format::of(&output) {
-                let _ = taurus_data::catalog::register(
-                    &dir,
-                    taurus_data::Dataset {
-                        name,
-                        path: shown,
-                        format,
-                    },
-                );
-            }
-        }
+        // second action. See `list_output`.
+        run.unlisted = list_output(&self.data_dir_for(&workspace), &workspace, &output);
         Ok(run)
     }
 
@@ -2806,7 +2791,12 @@ impl Host {
     /// long as it takes the second call to land.
     pub async fn mcp_servers(&self) -> Vec<McpServerView> {
         let workspace = self.workspace.read().await.clone();
-        let (config, defined_in) = self.mcp_layers(&workspace);
+        let (config, defined_in, problems) = self.mcp_layers(&workspace);
+        // Recorded here as well as at a reload, because this is what the MCP
+        // panel reads when it opens. A file broken by hand since the last
+        // reload would otherwise take its servers off the list with nothing
+        // anywhere saying why.
+        self.replace_problems(ProblemSource::Mcp, problems).await;
         let statuses: BTreeMap<String, ServerStatus> = self
             .mcp
             .statuses()
@@ -2852,7 +2842,7 @@ impl Host {
     /// which is the only one that can open a window. See `taurus_mcp::oauth`.
     pub async fn begin_mcp_sign_in(&self, name: &str) -> Result<taurus_mcp::oauth::SignIn, String> {
         let workspace = self.workspace.read().await.clone();
-        let (config, _) = self.mcp_layers(&workspace);
+        let (config, _, _) = self.mcp_layers(&workspace);
         let server = config
             .servers
             .get(name)
@@ -2878,15 +2868,23 @@ impl Host {
     /// editing a server has to write to the file it came from, and a workspace
     /// entry saved into the global file would silently change every other
     /// project.
-    fn mcp_layers(&self, workspace: &Path) -> (taurus_mcp::McpConfig, LayerOf) {
+    /// And what was wrong with either: the same problems [`Self::reload_mcp`]
+    /// records, so a caller that reads the files can say what it read.
+    fn mcp_layers(&self, workspace: &Path) -> (taurus_mcp::McpConfig, LayerOf, Vec<Problem>) {
         let mut layers = Vec::new();
         let mut defined_in: LayerOf = BTreeMap::new();
+        let mut problems = Vec::new();
         for scope in [Scope::Global, Scope::Workspace] {
             let Some(dir) = config::scope_dir(scope, Some(workspace)) else {
                 continue;
             };
-            let Ok(layer) = taurus_mcp::load(&dir) else {
-                continue;
+            let layer = match taurus_mcp::load(&dir) {
+                Ok(layer) => layer,
+                // Skipped, as a reload skips it, and said, as a reload says it.
+                Err(e) => {
+                    problems.push(Problem::new(ProblemSource::Mcp, e));
+                    continue;
+                }
             };
             for (name, server) in &layer.servers {
                 // A toggle changes a server rather than defining one, so it must
@@ -2898,8 +2896,9 @@ impl Host {
             }
             layers.push(layer);
         }
-        let (merged, _) = config::merge_mcp(layers);
-        (merged, defined_in)
+        let (merged, merge_problems) = config::merge_mcp(layers);
+        problems.extend(Problem::tag(ProblemSource::Mcp, merge_problems));
+        (merged, defined_in, problems)
     }
 
     /// Reconnects the MCP servers without rebuilding anything else.
@@ -3086,6 +3085,37 @@ impl Host {
 /// Which of those the panel shows is the caller's decision, taken from whether
 /// the server connected: a connected server exposing no tools genuinely costs
 /// nothing, and a disabled one has nothing to measure at all.
+/// Adds a recipe's output to the Data pane's list, and says why when it cannot.
+///
+/// `None` when it was added, and when its name already belongs to another
+/// file: that one is left alone on purpose — see the tool, which makes the same
+/// call for the same reason.
+fn list_output(dir: &Path, workspace: &Path, output: &Path) -> Option<String> {
+    let shown = taurus_tools::path_guard::display(workspace, output);
+    let name = taurus_data::catalog::suggest_name(output);
+    if taurus_data::catalog::taken_by(dir, &name, &shown).is_some() {
+        return None;
+    }
+    let format = match taurus_data::Format::of(output) {
+        Ok(format) => format,
+        Err(e) => {
+            return Some(format!(
+                "{shown} was written, but it is not in the list: {e}"
+            ))
+        }
+    };
+    taurus_data::catalog::register(
+        dir,
+        taurus_data::Dataset {
+            name,
+            path: shown.clone(),
+            format,
+        },
+    )
+    .err()
+    .map(|e| format!("{shown} was written, but it could not be added to the list: {e}"))
+}
+
 fn mcp_schema_tokens(
     servers: &[String],
     advertised: &[taurus_provider::ToolDef],
@@ -5469,6 +5499,46 @@ Say hello.",
 
         host.revoke_trust().await.expect("revoke");
         assert_eq!(host.skill_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn an_mcp_file_broken_since_the_last_reload_is_named_when_the_panel_lists() {
+        // The panel reads the files again when it opens, and skipped a layer
+        // that would not parse. Until something reloaded, its servers were
+        // simply missing, with nothing on screen saying why.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = untrusted_host(&workspace);
+        std::fs::create_dir_all(config::home_dir()).unwrap();
+        std::fs::write(
+            config::home_dir().join("mcp.json"),
+            r#"{"mcpServers":{"probe":{"command":"npx",}}}"#,
+        )
+        .unwrap();
+
+        host.mcp_servers().await;
+
+        let problems = host.problems_from(&[ProblemSource::Mcp]).await;
+        assert!(
+            problems.iter().any(|p| p.message.contains("mcp.json")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_recipe_output_that_cannot_be_listed_says_why() {
+        // The file is written either way. Dropped, the failure left it missing
+        // from the Data pane with nothing saying why.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let blocker = workspace.join("blocker");
+        std::fs::write(&blocker, "a file where the list's directory would go").unwrap();
+        let output = workspace.join("out.csv");
+        std::fs::write(&output, "id\n1\n").unwrap();
+
+        let unlisted = list_output(&blocker.join("data"), &workspace, &output)
+            .expect("a list that cannot be written is said");
+        assert!(unlisted.contains("out.csv"), "{unlisted}");
     }
 
     #[tokio::test]

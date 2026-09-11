@@ -148,27 +148,37 @@ impl ToolRegistry {
         // ordering is the whole security argument for honoring a hook file at
         // all — see `taurus_hooks`.
         let pre = hook_payload(&tool, &input, ctx, taurus_hooks::HookEvent::PreToolUse);
+        // What a passing pre hook printed, held until the call has a result to
+        // carry it. A guard that warns "you are on main" and exits 0 is saying
+        // something the model needs, and there is nothing to attach it to yet.
+        let mut pre_notes = Vec::new();
         if let (Some(runner), Some(payload)) = (&ctx.hooks, &pre) {
-            let outcome = runner.run(payload).await;
+            let outcome = runner.run(payload, &ctx.cancel).await;
+            if outcome.stopped {
+                return Err(ToolError::Canceled);
+            }
             if let Some(reason) = outcome.denied {
                 return Err(ToolError::Failed(reason));
             }
-            // A passing hook's output is not dropped: a formatter that says
-            // what it changed is telling the model something it needs.
-            if !outcome.notes.is_empty() {
-                debug!(tool = name, notes = outcome.notes.len(), "hook notes");
-            }
+            pre_notes = outcome.notes;
         }
 
         // After the permission check, so a denied call leaves no trace, and
         // before execution, so what is recorded is what was there first.
         if let Some(recorder) = &ctx.checkpoints {
+            let mut recorded = Vec::new();
             for candidate in tool.touches(&input) {
                 // An unresolvable path is left to the tool to reject with its
                 // own message; there is nothing to snapshot either way.
                 if let Ok(path) = ctx.resolve(&candidate) {
                     recorder.capture(&path).await;
+                    recorded.push(crate::path_guard::display(&ctx.workspace, &path));
                 }
+            }
+            // A background command still running will see this file change
+            // too. It is this call's to undo. See `Jobs::claim`.
+            if let Some(jobs) = &ctx.jobs {
+                jobs.claim(recorded.iter().map(String::as_str));
             }
         }
 
@@ -201,11 +211,20 @@ impl ToolRegistry {
             vet_images(name, output);
         }
 
+        // First among the notes, because it was said first: before the call
+        // ran, about the call.
+        for note in &pre_notes {
+            annotate(&mut result, note);
+        }
+
         // Unconditionally: a command that failed, timed out, or was canceled
         // has still written whatever it got as far as writing, and that is
         // precisely the turn someone reaches for undo on.
         if let (Some(sweep), Some(recorder)) = (sweep, &ctx.checkpoints) {
             let change = sweep.after(&ctx.workspace, recorder).await;
+            if let Some(jobs) = &ctx.jobs {
+                jobs.claim(change.files.iter().map(String::as_str));
+            }
 
             // What it *did* record needs no announcement: the changed-file
             // count in the header and the Changes drawer are both read straight
@@ -227,7 +246,7 @@ impl ToolRegistry {
         // where the changes would otherwise go unrecorded. See
         // [`crate::jobs::Jobs::reap`].
         if let (Some(jobs), Some(recorder)) = (&ctx.jobs, &ctx.checkpoints) {
-            for warning in jobs.reap(&ctx.workspace, recorder).await {
+            for warning in jobs.reap(recorder).await {
                 annotate(&mut result, &warning);
             }
         }
@@ -238,7 +257,7 @@ impl ToolRegistry {
         // would otherwise have to discover by reading the file again.
         if let (Some(runner), Some(payload)) = (&ctx.hooks, post) {
             let payload = payload.with_outcome(result.is_ok());
-            for note in runner.run(&payload).await.notes {
+            for note in runner.run(&payload, &ctx.cancel).await.notes {
                 annotate(&mut result, &note);
             }
         }
@@ -544,6 +563,65 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_pre_call_hook_that_passes_is_still_heard() {
+        let (ctx, _dir) = test_ctx();
+        let scripts = TempDir::new().unwrap();
+        let warn = hook_script(scripts.path(), "branch", "echo 'you are on main'");
+        let ctx = ctx.with_hooks(Arc::new(taurus_hooks::HookRunner::new(vec![(
+            "branch".into(),
+            hook(warn, taurus_hooks::HookEvent::PreToolUse),
+        )])));
+
+        let output = ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "hi"}),
+                &ctx,
+            )
+            .await
+            .expect("a hook that exits 0 lets the call through");
+
+        // Exit 0 means "go ahead". What it printed on the way is the reason
+        // somebody wrote it, and the model is the one who needs to read it.
+        assert!(output.to_text().contains("you are on main"), "{output}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_reaches_a_call_waiting_on_its_pre_hook() {
+        let (ctx, dir) = test_ctx();
+        let scripts = TempDir::new().unwrap();
+        let mut slow = hook(
+            hook_script(scripts.path(), "slow", "sleep 30"),
+            taurus_hooks::HookEvent::PreToolUse,
+        );
+        slow.timeout_seconds = 60;
+        let ctx = ctx.with_hooks(Arc::new(taurus_hooks::HookRunner::new(vec![(
+            "slow".into(),
+            slow,
+        )])));
+        let stop = ctx.cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            stop.cancel();
+        });
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            ToolRegistry::with_builtins().execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "hi"}),
+                &ctx,
+            ),
+        )
+        .await
+        .expect("Stop must reach a call waiting on its pre hook");
+        assert!(matches!(outcome, Err(ToolError::Canceled)), "{outcome:?}");
+        assert!(!dir.path().join("a.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_hook_that_does_not_match_leaves_the_call_alone() {
         let (ctx, _dir) = test_ctx();
         let scripts = TempDir::new().unwrap();
@@ -796,6 +874,114 @@ mod tests {
             std::fs::read_to_string(root.join("a.txt")).unwrap(),
             "original"
         );
+    }
+
+    /// A command that outlives the turn it starts in, writing a file of its
+    /// own at the end.
+    #[cfg(windows)]
+    const OUTLIVES_ITS_TURN: &str = "ping -n 2 127.0.0.1 > nul & echo built > out.txt";
+    #[cfg(not(windows))]
+    const OUTLIVES_ITS_TURN: &str = "sleep 1; echo built > out.txt";
+
+    #[tokio::test]
+    async fn a_background_command_leaves_what_other_turns_changed_to_them() {
+        // A dev server started in one turn and stopped in a later one: its
+        // sweep sees every edit made in between, and recording those with its
+        // own pre-image would let a rewind of its turn undo them.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        std::fs::write(root.join("model.txt"), "before").unwrap();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let jobs = Arc::new(crate::Jobs::new());
+        let turn = |prompt: &str| {
+            ctx.clone()
+                .with_jobs(jobs.clone())
+                .with_checkpoints(store.begin_turn("s1", &root, prompt))
+        };
+        let registry = ToolRegistry::with_builtins();
+
+        registry
+            .execute(
+                "run_command",
+                serde_json::json!({"command": OUTLIVES_ITS_TURN, "background": true}),
+                &turn("start it"),
+            )
+            .await
+            .unwrap();
+        registry
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "model.txt", "content": "after"}),
+                &turn("edit while it runs"),
+            )
+            .await
+            .unwrap();
+        let checked = registry
+            .execute(
+                "check_command",
+                serde_json::json!({"id": 1, "wait_secs": 30}),
+                &turn("collect it"),
+            )
+            .await
+            .unwrap();
+        assert!(checked.to_text().contains("finished"), "{checked}");
+
+        let turns = store.turns("s1").unwrap();
+        let collected = turns
+            .iter()
+            .find(|t| t.files.iter().any(|f| f == "out.txt"))
+            .expect("the command's own file was not recorded");
+        assert_eq!(
+            collected.files,
+            vec!["out.txt"],
+            "another turn's edit was recorded as the command's"
+        );
+
+        store.rewind("s1", &root, collected.turn, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("model.txt")).unwrap(),
+            "after",
+            "undoing the command's turn undid another turn's edit"
+        );
+        assert!(!root.join("out.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_background_command_is_read_when_it_exits_not_when_it_is_collected() {
+        // Collected at the first tool call after it exits, which can be a turn
+        // later. What changed in between is not the command's.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let jobs = Arc::new(crate::Jobs::new());
+        let started = ctx
+            .with_jobs(jobs.clone())
+            .with_checkpoints(store.begin_turn("s1", &root, "start it"));
+        ToolRegistry::with_builtins()
+            .execute(
+                "run_command",
+                serde_json::json!({"command": "echo built > out.txt", "background": true}),
+                &started,
+            )
+            .await
+            .unwrap();
+
+        // Waited for without a tool call, so nothing has collected it yet.
+        let report = jobs
+            .check(Some(1), std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(report.contains("finished"), "{report}");
+        // Changed after it exited, by something no turn recorded.
+        std::fs::write(root.join("later.txt"), "not the command's").unwrap();
+
+        let recorder = store.begin_turn("s1", &root, "collect it");
+        jobs.reap(&recorder).await;
+
+        let turns = store.turns("s1").unwrap();
+        assert_eq!(turns.last().unwrap().files, vec!["out.txt"]);
     }
 
     #[tokio::test]

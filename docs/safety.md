@@ -353,8 +353,10 @@ paragraphs above cannot do. The timeout is ten minutes at the outside, and a
 turn spent waiting is a turn spending nothing else — so `run_command` takes a
 third argument, **`background: true`**, which starts the command and comes
 straight back with a number for it. `check_command` reads what it has said
-since the last check, and can wait for it to finish; `stop_command` ends it.
-Eight may run at once.
+since the last check, and can wait for it to finish; `stop_command` ends it,
+and answers only once it is gone — a kill that has not landed ten seconds
+later comes back as a command still running, not as a stop. Eight may run at
+once.
 
 Output arrives once *per reader*. Nobody is holding the pipes open on the
 model's behalf, so what a background command writes is drained into a buffer as
@@ -374,12 +376,15 @@ and a check does not blank the pane.
 makes a command undoable reads the workspace before it starts and again when it
 finishes ([Rewinding a turn](#rewinding-a-turn)). For a background command those
 are minutes apart and usually in different turns, so the command carries its own
-pre-image from the moment it started and spends it when the process exits. The
-changes land in the turn that was running when it finished, not the one that
-started it — which by then is history — and they land whether or not anybody
-checked: every tool call collects the commands that have finished since the last
-one. A command still running when a turn ends is in no turn's changed-file list
-yet, which is the honest answer, because it has not finished changing them.
+pre-image from the moment it started and compares it the moment the process
+exits. The changes land in the turn running at the next tool call after it
+finished, not the one that started it — which by then is history — and they
+land whether or not anybody checked: every tool call collects the commands that
+have finished since the last one. Files other calls changed while it ran are
+left to their own turns, so undoing a dev server's turn never undoes the edits
+made while it served. A command still running when a turn ends is in no turn's
+changed-file list yet, which is the honest answer, because it has not finished
+changing them.
 
 **Two arguments are refused rather than ignored.** `pty` has nothing watching
 the terminal it would open, and `timeout_secs` has nothing waiting to enforce
@@ -689,6 +694,10 @@ It can only read. Its tools are `explorer`'s — the same scope, taken from the
 same definition — and its context carries no checkpoint recorder, so a write is
 not something it declines to do so much as something it has no way to perform.
 It also does not run anything: no build, no tests.
+
+On a local model a review takes minutes, so **Stop reviewing** sits beside it
+while it runs, and closing the drawer ends it too — nobody is left to read the
+answer. A stopped review reports nothing, rather than half of what it found.
 
 The answer stays in the drawer. It is deliberately not put into the
 conversation, because a review in the transcript is a review in the context

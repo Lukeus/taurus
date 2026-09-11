@@ -58,6 +58,24 @@ fn read_answer_cap(budget: OutputBudget) -> usize {
     budget.bytes(READ_SHARE, MIN_READ_BYTES, MAX_READ_BYTES)
 }
 
+/// What one `list_dir` answers with, as a share of the window.
+///
+/// An entry is a name and a newline, about twenty-four bytes, so at
+/// [`OutputBudget::ANCHOR_WINDOW`] this is a thousand of them: the most `glob`
+/// returns, and more than any directory a person keeps by hand.
+const LIST_SHARE: f32 = 0.03;
+const ENTRY_BYTES: usize = 24;
+/// Fewer than this and a listing of a crowded directory stops showing what kind
+/// of directory it is.
+const MIN_ENTRIES: usize = 100;
+/// More than this and the answer is an inventory, which `glob` narrows better.
+const MAX_ENTRIES: usize = 5_000;
+
+/// How many entries one `list_dir` answers with.
+fn list_cap(budget: OutputBudget) -> usize {
+    budget.count(LIST_SHARE, ENTRY_BYTES, MIN_ENTRIES, MAX_ENTRIES)
+}
+
 /// The `path` argument, for the tools whose whole effect is on one file.
 ///
 /// Reads the raw JSON rather than the parsed input struct because a checkpoint
@@ -658,7 +676,8 @@ impl Tool for ListDir {
         "list_dir"
     }
     fn description(&self) -> &str {
-        "List the entries of a directory. Directories are marked with a trailing slash."
+        "List the entries of a directory. Directories are marked with a trailing slash. A \
+         directory with more entries than fit is cut short, and says how many it left out."
     }
     fn input_schema(&self) -> serde_json::Value {
         schema_for::<ListDirInput>()
@@ -695,7 +714,20 @@ impl Tool for ListDir {
             let key = |s: &String| (!s.ends_with('/'), s.to_lowercase());
             key(a).cmp(&key(b))
         });
-        Ok(rows.join("\n").into())
+        // Sorted before it is cut, so a capped listing is the first entries in
+        // that order on every platform, rather than whichever ones the
+        // filesystem happened to hand over first.
+        let cap = list_cap(ctx.budget);
+        let total = rows.len();
+        rows.truncate(cap);
+        let mut out = rows.join("\n");
+        if total > cap {
+            out.push_str(&format!(
+                "\n\n[stopped at {cap} of {total} entries; list a subdirectory, or find what you \
+                 are after with glob]"
+            ));
+        }
+        Ok(out.into())
     }
 }
 
@@ -1293,6 +1325,53 @@ mod tests {
         let lines: Vec<_> = out.lines().collect();
         assert_eq!(lines[0], "a_dir/");
         assert!(lines.contains(&"b.txt"));
+    }
+
+    #[tokio::test]
+    async fn list_dir_stops_at_what_the_window_holds_and_says_how_many_it_left() {
+        // `node_modules` is tens of thousands of lines, and every one of them
+        // at once is a turn's worth of context spent on names.
+        let (ctx, dir) = test_ctx();
+        for n in 0..1_200 {
+            std::fs::write(dir.path().join(format!("f{n:04}.js")), "").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("zz_dir")).unwrap();
+
+        let output = ListDir.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let out = output.to_text();
+        let cap = list_cap(ctx.budget);
+        assert_eq!(cap, 1_000);
+        let lines: Vec<&str> = out.lines().collect();
+        // Sorted before it was cut: the directory leads however late its name
+        // sorts.
+        assert_eq!(lines[0], "zz_dir/");
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.ends_with(".js") || l.ends_with('/'))
+                .count(),
+            cap
+        );
+        assert!(
+            out.contains(&format!("stopped at {cap} of 1201 entries")),
+            "{:?}",
+            lines.last()
+        );
+
+        // A small model gets a listing it can hold.
+        let small = ListDir
+            .execute(
+                serde_json::json!({}),
+                &ctx.clone().with_budget(OutputBudget::for_window(8_192)),
+            )
+            .await
+            .unwrap();
+        let small = small.to_text();
+        assert!(
+            small.contains(&format!("stopped at {MIN_ENTRIES} of 1201 entries")),
+            "{:?}",
+            small.lines().last()
+        );
     }
 
     #[tokio::test]
