@@ -324,6 +324,76 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
     at
 }
 
+/// How far into a file its line endings are judged from.
+const CRLF_SNIFF_BYTES: u64 = 64 * 1024;
+
+/// Whether the file at `path` writes its lines with `\r\n`, judged from its
+/// head.
+///
+/// The head rather than the whole: the question is which convention the file
+/// keeps, and its first lines answer it. Reading all of it to ask was a second
+/// full read of every file an overwrite was about to replace. A file that is LF
+/// for its first 64 KB and CRLF after is written as LF, the convention it opens
+/// with.
+fn uses_crlf(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = Vec::new();
+    if file.take(CRLF_SNIFF_BYTES).read_to_end(&mut head).is_err() {
+        return false;
+    }
+    head.windows(2).any(|pair| pair == b"\r\n")
+}
+
+/// Replaces a file's contents without ever leaving it empty or half written.
+///
+/// Written to a temporary file beside it, flushed to disk, given the old
+/// file's permissions, and renamed over it. What this replaced wrote in place:
+/// the file was emptied first, so a crash, a full disk or a killed process
+/// between the two left it empty, and anything reading it in between — a
+/// watcher, the editor beside the conversation — saw it empty or cut short.
+///
+/// A rename gives the path a new file, so a hard link to the old one keeps the
+/// old contents; that is the trade every editor that saves this way makes. A
+/// symbolic link is not replaced, because the path guard hands this the file a
+/// link resolves to. Two places still write in place, as before, rather than
+/// fail the call: a directory that will not take a new file, and a rename
+/// Windows refuses because another program holds the file open. A failed write
+/// to the temporary file is not one of them — that is the case this exists for,
+/// and the original is left as it was.
+fn replace_contents(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let permissions = match std::fs::metadata(path) {
+        Ok(meta) => {
+            // A file this process may not write is refused, as it was when the
+            // write went in place. A rename needs only the directory's
+            // permission, and a file somebody made read-only is one they
+            // meant to keep.
+            std::fs::OpenOptions::new().write(true).open(path)?;
+            Some(meta.permissions())
+        }
+        Err(_) => None,
+    };
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let Ok(mut temp) = tempfile::NamedTempFile::new_in(parent) else {
+        return std::fs::write(path, bytes);
+    };
+    temp.write_all(bytes)?;
+    temp.as_file().sync_all()?;
+    if let Some(permissions) = permissions {
+        temp.as_file().set_permissions(permissions)?;
+    }
+    match temp.persist(path) {
+        Ok(_) => Ok(()),
+        Err(refused) => {
+            drop(refused.file);
+            std::fs::write(path, bytes)
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct WriteFileInput {
     /// Path to write, relative to the workspace root.
@@ -386,16 +456,19 @@ impl Tool for WriteFile {
 
         // Match the file's existing convention rather than imposing LF, so a
         // write into a CRLF repository does not show up as a whole-file diff.
-        let existing = tokio::fs::read_to_string(&path).await.ok();
-        let content = match existing.as_deref() {
-            Some(prior) if prior.contains("\r\n") => to_crlf(&input.content),
-            _ => input.content,
-        };
-
-        let bytes = content.len();
-        tokio::fs::write(&path, content)
-            .await
-            .map_err(|e| ToolError::Failed(format!("cannot write {}: {e}", ctx.display(&path))))?;
+        // On a blocking thread with the write, since both are the disk's.
+        let writing = path.clone();
+        let bytes = tokio::task::spawn_blocking(move || {
+            let content = if uses_crlf(&writing) {
+                to_crlf(&input.content)
+            } else {
+                input.content
+            };
+            replace_contents(&writing, content.as_bytes()).map(|()| content.len())
+        })
+        .await
+        .map_err(|e| ToolError::Failed(e.to_string()))?
+        .map_err(|e| ToolError::Failed(format!("cannot write {}: {e}", ctx.display(&path))))?;
         Ok(format!("Wrote {bytes} bytes to {}", ctx.display(&path)).into())
     }
 }
@@ -475,8 +548,10 @@ impl Tool for EditFile {
         let display = ctx.display(&path);
         let (updated, count) = apply_edit(&original, &input).map_err(|e| e.explain(&display))?;
 
-        tokio::fs::write(&path, updated)
+        let writing = path.clone();
+        tokio::task::spawn_blocking(move || replace_contents(&writing, updated.as_bytes()))
             .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?
             .map_err(|e| ToolError::Failed(format!("cannot write {display}: {e}")))?;
         Ok(match count {
             1 => format!("Edited {display}").into(),
@@ -1185,6 +1260,118 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("list_dir"));
+    }
+
+    /// Unix only: a Windows rename over a file another program has open is
+    /// refused, and the write falls back to going in place — where a reader
+    /// can see it half done again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_being_overwritten_is_never_seen_empty_or_cut_short() {
+        // The window a write in place left open: the file was emptied and then
+        // filled, and anything reading it in between saw it empty or half
+        // written. A crash in that window left it that way.
+        let (ctx, dir) = test_ctx();
+        let path = dir.path().join("big.txt");
+        let size = 4 * 1024 * 1024;
+        std::fs::write(&path, "a".repeat(size)).unwrap();
+
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = std::thread::spawn({
+            let (path, done) = (path.clone(), done.clone());
+            move || {
+                let mut short = Vec::new();
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        if bytes.len() != size {
+                            short.push(bytes.len());
+                        }
+                    }
+                }
+                short
+            }
+        });
+        for round in 0..20 {
+            let content = if round % 2 == 0 { "b" } else { "a" }.repeat(size);
+            WriteFile
+                .execute(
+                    serde_json::json!({"path": "big.txt", "content": content}),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let short = reader.join().unwrap();
+        assert!(
+            short.is_empty(),
+            "a reader saw the file short {} times, e.g. {:?}",
+            short.len(),
+            &short[..short.len().min(5)]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_overwrite_keeps_the_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (ctx, dir) = test_ctx();
+        let path = dir.path().join("run.sh");
+        std::fs::write(&path, "echo one\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        WriteFile
+            .execute(
+                serde_json::json!({"path": "run.sh", "content": "echo two\n"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "echo two\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_read_only_file_is_refused_rather_than_replaced() {
+        // A rename needs only the directory's permission. A file somebody
+        // made read-only is one they meant to keep, so the write is refused
+        // as it was when it went in place.
+        use std::os::unix::fs::PermissionsExt;
+        let (ctx, dir) = test_ctx();
+        let path = dir.path().join("keep.txt");
+        std::fs::write(&path, "keep\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let err = WriteFile
+            .execute(
+                serde_json::json!({"path": "keep.txt", "content": "gone\n"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot write"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");
+    }
+
+    #[tokio::test]
+    async fn a_write_leaves_nothing_beside_the_file() {
+        let (ctx, dir) = test_ctx();
+        for content in ["one\n", "two\n"] {
+            WriteFile
+                .execute(
+                    serde_json::json!({"path": "only.txt", "content": content}),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+        }
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != ".taurus")
+            .collect();
+        assert_eq!(names, ["only.txt"]);
     }
 
     #[tokio::test]
