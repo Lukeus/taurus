@@ -24,6 +24,14 @@ pub struct ScriptedTurn {
     /// is scriptable too — which is the case the loop must *not* retry, and so
     /// the one worth being able to write a test for.
     pub failure: Option<ProviderError>,
+    /// When set, the user presses Stop once `events` have streamed, and the
+    /// request ends the way every adapter ends a canceled one: `Canceled`,
+    /// with no `ToolUseEnd` for a call that was still open.
+    ///
+    /// The one place the loop meets Stop half-way through a message rather
+    /// than between two of them, which is where a call can be left without its
+    /// result.
+    pub stopped: bool,
 }
 
 impl ScriptedTurn {
@@ -33,6 +41,7 @@ impl ScriptedTurn {
             events: vec![StreamEvent::TextDelta { text: text.into() }],
             stop: StopReason::EndTurn,
             failure: None,
+            stopped: false,
         }
     }
 
@@ -51,6 +60,7 @@ impl ScriptedTurn {
                 .collect(),
             stop: StopReason::EndTurn,
             failure: None,
+            stopped: false,
         }
     }
 
@@ -68,6 +78,7 @@ impl ScriptedTurn {
             events,
             stop: StopReason::EndTurn,
             failure: None,
+            stopped: false,
         }
     }
 
@@ -82,6 +93,7 @@ impl ScriptedTurn {
                 status: 503,
                 body: "upstream is briefly unavailable".into(),
             }),
+            stopped: false,
         }
     }
 
@@ -96,6 +108,7 @@ impl ScriptedTurn {
                 status: 503,
                 body: "died mid-answer".into(),
             }),
+            stopped: false,
         }
     }
 
@@ -109,6 +122,7 @@ impl ScriptedTurn {
                 status: 401,
                 body: "invalid api key".into(),
             }),
+            stopped: false,
         }
     }
 
@@ -128,6 +142,7 @@ impl ScriptedTurn {
             ],
             stop: StopReason::ToolUse,
             failure: None,
+            stopped: false,
         }
     }
 
@@ -149,6 +164,20 @@ impl ScriptedTurn {
             events,
             stop: StopReason::ToolUse,
             failure: None,
+            stopped: false,
+        }
+    }
+
+    /// A turn the user stops once `events` have streamed.
+    ///
+    /// Ends without the `ToolUseEnd` a call still open would have got, the way
+    /// every adapter ends a canceled request. See [`ScriptedTurn::stopped`].
+    pub fn stopped_after(events: Vec<StreamEvent>) -> Self {
+        Self {
+            events,
+            stop: StopReason::Canceled,
+            failure: None,
+            stopped: true,
         }
     }
 }
@@ -285,6 +314,13 @@ impl Provider for FakeProvider {
             if tx.send(event).await.is_err() {
                 return Ok(StopReason::Canceled);
             }
+        }
+        // Before anything that would end the stream normally: this is Stop
+        // arriving mid-message, and an adapter that sees it returns at once,
+        // whatever block was open.
+        if turn.stopped {
+            cancel.cancel();
+            return Ok(StopReason::Canceled);
         }
         // After the events, so a scripted failure can land either before the
         // stream produced anything or after it produced some of an answer.

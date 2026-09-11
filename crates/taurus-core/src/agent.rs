@@ -270,6 +270,34 @@ fn without_images(messages: &[Message]) -> Vec<Message> {
 /// What stands in for a picture the current model cannot read.
 const IMAGE_OMITTED: &str = "[an image was attached here; this model cannot read images]";
 
+/// What a call that Stop arrived before is answered with.
+const CANCELED_BEFORE_IT_RAN: &str =
+    "Not run: the user pressed Stop before this call was carried out.";
+
+/// Answers every call in an assistant message that Stop cut short.
+///
+/// Every hosted API refuses a history holding a tool call with no result after
+/// it, so a canceled message that asked for tools cannot be written down and
+/// left: the next request would be refused, and so would every one after it,
+/// because the call is still there. Each call is answered as not run, which is
+/// the truth, and which a resumed conversation can read.
+///
+/// A call cut off while its arguments were still streaming has none that
+/// parse, and the accumulator leaves those as `null`. That is refused as a
+/// call's input on its own, so it becomes an empty object.
+fn settle_canceled_calls(assistant: &mut Message) -> Vec<ContentBlock> {
+    let mut results = Vec::new();
+    for block in &mut assistant.content {
+        if let ContentBlock::ToolUse { id, input, .. } = block {
+            if !input.is_object() {
+                *input = serde_json::json!({});
+            }
+            results.push(ContentBlock::tool_error(id.clone(), CANCELED_BEFORE_IT_RAN));
+        }
+    }
+    results
+}
+
 /// A request that failed, and whether any of it had already reached the user.
 struct FailedAttempt {
     error: taurus_provider::ProviderError,
@@ -559,7 +587,7 @@ impl Agent {
             summarizing = self.compact_if_needed(session, &ui, summarizing).await;
             let _ = ui.send(UiEvent::IterationStarted { iteration }).await;
 
-            let (assistant, usage, stop) = self.stream_once(session, &ui).await?;
+            let (mut assistant, usage, stop) = self.stream_once(session, &ui).await?;
             total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
             total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
             // Before the answer is pushed: what the provider counted is what
@@ -569,11 +597,18 @@ impl Agent {
             session.add_usage(usage);
 
             let has_tools = assistant.has_tool_use();
+            let canceled_results = (stop == StopReason::Canceled && has_tools)
+                .then(|| settle_canceled_calls(&mut assistant));
             if !assistant.content.is_empty() {
                 session.push(assistant.clone());
             }
 
             if stop == StopReason::Canceled {
+                // Straight after the calls they answer, which is the only place
+                // an API accepts them. See `settle_canceled_calls`.
+                if let Some(results) = canceled_results {
+                    session.push(Message::new(Role::User, results));
+                }
                 let _ = ui
                     .send(UiEvent::TurnFinished {
                         stop_reason: stop,

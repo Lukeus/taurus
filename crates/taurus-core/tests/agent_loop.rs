@@ -459,6 +459,75 @@ async fn cancellation_partway_through_stops_the_loop_without_a_further_request()
 }
 
 #[tokio::test]
+async fn stop_while_a_tool_call_is_streaming_answers_every_call_it_leaves() {
+    // Every hosted API refuses a history holding a tool call with no result
+    // after it. Stop arriving while the model is still writing a call must not
+    // leave one, or the next message in the conversation gets a 400 — and so
+    // does every one after it, because the call is still there.
+    use taurus_provider::StreamEvent;
+    let h = harness(vec![ScriptedTurn::stopped_after(vec![
+        StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "list_dir".into(),
+        },
+        StreamEvent::ToolUseInputDelta {
+            id: "t1".into(),
+            json: "{}".into(),
+        },
+        StreamEvent::ToolUseEnd { id: "t1".into() },
+        // Cut off half-way through its arguments.
+        StreamEvent::ToolUseStart {
+            id: "t2".into(),
+            name: "write_file".into(),
+        },
+        StreamEvent::ToolUseInputDelta {
+            id: "t2".into(),
+            json: r#"{"path": "a.txt", "con"#.into(),
+        },
+    ])]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "write it").await;
+    assert_eq!(outcome.unwrap().stop_reason, StopReason::Canceled);
+
+    let calls: Vec<(String, serde_json::Value)> = session
+        .messages
+        .iter()
+        .flat_map(|m| {
+            m.tool_uses()
+                .map(|(id, _, input)| (id.to_string(), input.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    // A call cut off mid-arguments has none that parse, and `null` is refused
+    // as a call's input on its own.
+    assert!(
+        calls.iter().all(|(_, input)| input.is_object()),
+        "{calls:?}"
+    );
+
+    let last = session.messages.last().expect("the turn wrote something");
+    assert_eq!(last.role, Role::User);
+    let answered: Vec<&str> = last
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error: true,
+                ..
+            } => Some(tool_use_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answered, ["t1", "t2"]);
+    assert!(
+        !h.workspace.join("a.txt").exists(),
+        "a call answered as canceled was run anyway"
+    );
+}
+
+#[tokio::test]
 async fn superseded_tool_output_is_trimmed_instead_of_summarized() {
     let h = harness_with(
         // One turn only. A second would mean the summarizer ran.
