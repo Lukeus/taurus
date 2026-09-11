@@ -393,13 +393,13 @@ looks right. Only files whose length or modification time moved are re-read —
 the same comparison `make` and `rsync` have always used. On this repository:
 
 ```
-first pass:     44.4s  Indexed 212 files (2498 chunks)
-second pass:   53.4ms  Index is current: 212 files, nothing to re-read
-               2498 passages, 10.1 MB on disk
+first pass:    110.3s  Indexed 405 files (6116 chunks)
+second pass:  127.2ms  Index is current: 405 files, nothing to re-read
+               6116 passages, 24.7 MB on disk
 ```
 
-**The first pass starts with the message, not with the search.** Forty-four
-seconds is a long time to be inside a tool call, and that is where it would
+**The first pass starts with the message, not with the search.** Nearly two
+minutes is a long time to be inside a tool call, and that is where it would
 otherwise be spent: the model reaches for `search_code` on an unindexed
 workspace and the turn sits on an unreturned call for the whole of it. Sending a
 message starts the refresh in the background instead, so the first search lands

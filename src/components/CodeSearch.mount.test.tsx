@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The section exists to make a forty-four-second job something you can start,
+// The section exists to make a minutes-long job something you can start,
 // watch, and stop. All three are behaviour rather than markup, so a string
 // render would prove none of them.
 import { act } from "react";

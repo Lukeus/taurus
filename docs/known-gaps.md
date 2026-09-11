@@ -581,7 +581,7 @@ and they are the minority.
   to put back — but it means a conversation's disk footprint grows in a place
   the **Changes** drawer does not account for.
 - **The first index is slow, and a search that arrives early still waits for
-  it.** Embedding this repository takes around 44 seconds. Sending a message
+  it.** Embedding this repository takes nearly two minutes. Sending a message
   starts that in the background, so most of it is usually done before anything
   searches — but a model that reaches for `search_code` in its first tool call
   waits for the rest of it inside that call. What is left is genuinely less:

@@ -50,10 +50,11 @@ const EMBED_AHEAD: usize = 3;
 
 /// How many times a refresh says where it has got to.
 ///
-/// Not once per batch. A first index of this repository is around seventy
-/// batches, and seventy near-identical lines is a wall of text rather than a
-/// progress report — while one line at the start and nothing for forty-four
-/// seconds is what made this feel hung. Twenty is a bar you can watch move.
+/// Not once per batch. A first index of this repository is close to four
+/// hundred batches, and that many near-identical lines is a wall of text rather
+/// than a progress report — while one line at the start and nothing for the
+/// rest of the run is what made this feel hung. Twenty is a bar you can watch
+/// move.
 const PROGRESS_STEPS: usize = 20;
 
 /// How often a refresh in progress writes down what it has embedded.
@@ -252,8 +253,7 @@ pub async fn refresh(
 
         // Reported after the batch lands rather than before it is sent, so the
         // number is work finished rather than work started. On a first index
-        // this is the only thing between the caller and forty-four seconds of
-        // nothing.
+        // this is the only thing between the caller and minutes of nothing.
         let before = done;
         done += batch.len();
         if let Some(progress) = progress {
@@ -1051,8 +1051,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_first_index_reports_its_way_through_rather_than_going_quiet() {
-        // The bug this closes: one line at the start and nothing for the next
-        // forty-four seconds, which reads as a hung tool rather than a slow one.
+        // The bug this closes: one line at the start and nothing for the rest
+        // of the run, which reads as a hung tool rather than a slow one.
         let f = fixture();
         for n in 0..12 {
             write(&f.root, &format!("src/f{n}.rs"), 120);
