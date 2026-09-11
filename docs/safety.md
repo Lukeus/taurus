@@ -82,6 +82,20 @@ restriction governs what Taurus will *create* — a `run_command:*` rule written
 into the global file by hand is still honored, because editing that file is an
 explicit act and silently ignoring it would be its own surprise.
 
+**A command that does more than run one program is never covered by a
+standing grant.** A grant for `git` is keyed by the command's first word, and
+the first word says nothing about the rest of the line: `git status; rm -rf ~`
+starts with `git`. So a command that chains another onto it (`;`, `&&`, `||`,
+`&`, a new line), pipes into another program, runs a command inside it (`$(…)`,
+backticks, `<(…)`), or writes its output into a file (`>`) is asked about every
+time and never offered "always". So is one whose first word only hands the rest
+of the line to another program: `sh -c`, `env`, `xargs`, `sudo`, `nohup`, and
+the like. A grant already saved does not cover one either. Two things do not
+count: merging one of the program's own streams into another (`2>&1`), and
+throwing output away (`2>/dev/null`). The check does not parse shell, so a `;`
+inside quotes counts too — `git commit -m "fix; tidy"` is asked about each time
+— because a check that parses shell wrongly is worse than one that asks.
+
 Every path argument is canonicalized and checked against the workspace root,
 which closes `../` traversal and symlink escapes alike. A symlink that does not
 resolve — its target is missing, or it loops — is refused rather than guessed
@@ -103,8 +117,10 @@ $ taurus run --allow write_file "summarize the readme into SUMMARY.md"
 ```
 
 `--allow-command git` grants a shell program by its leading word, the same unit
-the interactive "allow always" uses. `--dangerously-allow-all` exists for
-throwaway or already-sandboxed environments.
+the interactive "allow always" uses, and with the same limit: a command that
+does more than run that program is not covered, and the refusal says why.
+`--dangerously-allow-all` exists for throwaway or already-sandboxed
+environments.
 
 Skills are never saved unattended. If the agent proposes one during a piped
 run, the CLI reports it and discards it rather than writing something nobody

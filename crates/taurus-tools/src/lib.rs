@@ -27,8 +27,8 @@ pub use env::expand_env;
 pub use jobs::{BackgroundJob, JobOutput, Jobs};
 pub use login_path::Outcome as LoginPath;
 pub use permission::{
-    AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,
-    PermissionRequest, Scope,
+    compound_reason, AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine,
+    PermissionPrompt, PermissionRequest, Scope,
 };
 pub use plan::PlanBoard;
 pub use registry::ToolRegistry;
