@@ -5,11 +5,25 @@
 // The static tests in `Markdown.test.tsx` see one render. These see two — the
 // last frame of a stream and the finished answer — because the thing at stake
 // is whether the second one keeps what the first one drew.
-import { act } from "react";
+import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
+
+/** Every text the parser was handed, in order. */
+const parsed: string[] = [];
+vi.mock("react-markdown", async (original) => {
+  const actual = await original<typeof import("react-markdown")>();
+  const Real = actual.default;
+  return {
+    ...actual,
+    default: (props: Parameters<typeof Real>[0]) => {
+      parsed.push(String(props.children ?? ""));
+      return createElement(Real, props);
+    },
+  };
+});
 
 /** How many times a flowchart was laid out. */
 let planned = 0;
@@ -61,6 +75,31 @@ describe("the end of a stream", () => {
     // The same element, not an equal one. A remount re-highlights the block
     // and throws away anything it was holding.
     expect(view.host.querySelector(".md-code")).toBe(block);
+  });
+});
+
+describe("a long answer, one frame at a time", () => {
+  it("parses only the paragraph being written, not the ones above it", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    cleanup.push(() => {
+      act(() => root.unmount());
+      host.remove();
+    });
+    const base = "First paragraph.\n\nSecond, with `code`.\n\nThird ";
+    // Finished rather than streaming, so every render is a parse instead of a
+    // throttled one — which is what each tick of the throttle pays.
+    const draw = (text: string) =>
+      act(() => root.render(<Markdown text={text} streaming={false} />));
+
+    draw(base);
+    parsed.length = 0;
+    draw(`${base}word `);
+    draw(`${base}word word `);
+
+    expect(parsed).toEqual(["Third word ", "Third word word "]);
+    expect(host.textContent).toContain("First paragraph.");
   });
 });
 

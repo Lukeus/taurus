@@ -33,17 +33,113 @@ export const Markdown = memo(function Markdown({
   streaming: boolean;
 }) {
   const throttled = useThrottled(text, streaming ? STREAM_FRAME_MS : 0);
+  const shown = text.length === 0 ? "" : throttled;
+  const parts = useMemo(() => blocks(shown), [shown]);
 
   return (
     <Streaming.Provider value={streaming}>
       <div className="markdown">
-        <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>
-          {text.length === 0 ? "" : throttled}
-        </ReactMarkdown>
+        {/* Keyed by where each stretch starts, which never moves as the text
+            grows. The stretch being written keeps its key when the paragraph
+            after it begins, so what it drew stays mounted. */}
+        {parts.map((part) => (
+          <Block key={part.at} text={part.text} />
+        ))}
       </div>
     </Streaming.Provider>
   );
 });
+
+/**
+ * One stretch of an answer, parsed on its own.
+ *
+ * Memoized on its text, which is the reason for cutting the answer up. Every
+ * stretch but the last is the same string frame after frame, so only the
+ * paragraph being written is parsed again — where parsing the whole answer on
+ * every frame made each frame cost more than the one before it.
+ */
+const Block = memo(function Block({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>
+      {text}
+    </ReactMarkdown>
+  );
+});
+
+/** A stretch of Markdown and the offset it starts at. */
+export type Stretch = { at: number; text: string };
+
+/**
+ * Cuts Markdown where parsing the pieces apart gives what parsing it whole
+ * would.
+ *
+ * A cut goes before a line that starts a fresh block: one that follows a blank
+ * line outside a fence, begins at the margin, and cannot be the next item of a
+ * list. A blank line ends a paragraph, a line at the margin ends a list or a
+ * quote, and nothing else in CommonMark reaches across that — so each piece
+ * parses to the same blocks it would have been part of.
+ *
+ * Every rule here errs towards not cutting, because a missed cut costs a
+ * re-parse and a wrong one changes what is on the page. A line that might
+ * continue a list is not cut before, an indented line is not, and text that
+ * holds anything able to reach across a blank line is not cut at all: a link
+ * or footnote definition, which applies to the whole document, and the raw
+ * HTML blocks that run to their own end marker.
+ */
+export function blocks(text: string): Stretch[] {
+  if (WHOLE.test(text)) return [{ at: 0, text }];
+
+  const out: Stretch[] = [];
+  let start = 0;
+  let fence: { char: string; length: number } | null = null;
+  let afterBlank = false;
+  let at = 0;
+  while (at < text.length) {
+    const newline = text.indexOf("\n", at);
+    const end = newline === -1 ? text.length : newline;
+    const line = text.slice(at, end);
+
+    if (fence) {
+      const close = FENCE.exec(line);
+      if (
+        close &&
+        close[2][0] === fence.char &&
+        close[2].length >= fence.length &&
+        close[3].trim() === ""
+      ) {
+        fence = null;
+      }
+      afterBlank = false;
+    } else if (line.trim() === "") {
+      afterBlank = true;
+    } else {
+      if (afterBlank && at > start && FRESH.test(line) && !LIST_ITEM.test(line)) {
+        out.push({ at: start, text: text.slice(start, at) });
+        start = at;
+      }
+      afterBlank = false;
+      const open = FENCE.exec(line);
+      // A backtick fence's info string may not hold a backtick; one that does
+      // is inline code, and opens nothing.
+      if (open && !(open[2][0] === "`" && open[3].includes("`"))) {
+        fence = { char: open[2][0], length: open[2].length };
+      }
+    }
+    at = end + 1;
+  }
+  out.push({ at: start, text: text.slice(start) });
+  return out;
+}
+
+/** A code fence's opening or closing line: indent, the run, what follows. */
+const FENCE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+/** A line at the margin that is not raw HTML. */
+const FRESH = /^[^\s<]/;
+/** A bullet or an ordered marker, which after a blank line continues a list. */
+const LIST_ITEM = /^([-+*]|\d{1,9}[.)])(\s|$)/;
+/** What can reach across a blank line: a definition, or a raw HTML block that
+ *  ends only at its own marker. */
+const WHOLE = /^ {0,3}\[[^\]]+\]:|<(!--|\?|!\[CDATA\[|pre\b|script\b|style\b|textarea\b)/im;
 
 /**
  * Whether the text a block sits in is still arriving.

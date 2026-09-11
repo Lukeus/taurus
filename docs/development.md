@@ -257,6 +257,31 @@ Underneath both, the store batches a frame of stream events at a time rather
 than writing once per token (`batchEvents`), so a fast local model produces
 thirty-odd renders a second instead of hundreds.
 
+The other axis is the answer itself. A renderer that parses the whole reply on
+every frame makes each frame dearer than the last, and the reply as a whole
+costs the square of its length. So `blocks` in `Markdown.tsx` cuts the text at
+blank lines that nothing can reach across, each piece is memoized on its own
+text, and a frame parses only the paragraph being written. The bench's second
+group is one frame at three lengths of reply:
+
+```
+· 10 paragraphs in      1.10 ms
+· 50 paragraphs in      1.08 ms
+· 200 paragraphs in     1.40 ms
+```
+
+Parsed whole, the same three measured 3.93, 14.78, and 58.63 ms. The bench
+draws a finished entry rather than an open one, because an open one is
+throttled to a parse every 60 ms and a bench never waits that long — but each
+tick of the throttle pays exactly what one of these iterations pays.
+
+The cut is allowed to rely on one property and nothing else: parsed apart, the
+pieces draw what the whole would have. `Markdown.test.tsx` checks it over
+documents chosen for the constructs that reach furthest — loose lists, fences
+with blank lines inside them, indented code, a reference definition — and
+`blocks` refuses to cut at all where a definition or a raw HTML block could
+reach across a blank line.
+
 jsdom lays nothing out and paints nothing, so the absolute numbers here are a
 fraction of what a webview pays. The ratio between them is the part that
 carries over, and the ratio is the thing being tested.
