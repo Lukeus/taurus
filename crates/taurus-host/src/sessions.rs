@@ -459,15 +459,21 @@ impl SessionLog {
         }
 
         self.persisted = pending.from;
+        // One open for the round rather than one per record: a reply and each
+        // of its tool results were a directory check, an open and a close
+        // apiece.
+        let Some(mut file) = self.open() else {
+            return created;
+        };
         for message in pending.messages {
-            if !self.write(&Record::Message(message)) {
+            if !self.append(&mut file, &Record::Message(message)) {
                 // Left pointing at the message that did not land, so the next
                 // turn writes it rather than skipping past it.
                 return created;
             }
             self.persisted += 1;
         }
-        self.write(&Record::Usage(pending.usage));
+        self.append(&mut file, &Record::Usage(pending.usage));
         created
     }
 
@@ -498,37 +504,57 @@ impl SessionLog {
 
     /// Appends one record. Returns whether it landed.
     fn write(&mut self, record: &Record) -> bool {
-        if self.off {
-            return false;
+        match self.open() {
+            Some(mut file) => self.append(&mut file, record),
+            None => false,
         }
-        match self.try_write(record) {
+    }
+
+    /// The transcript, open for appending, or `None` once it has said why not.
+    fn open(&mut self) -> Option<std::fs::File> {
+        if self.off {
+            return None;
+        }
+        let opened = (|| {
+            if let Some(parent) = self.path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+        })();
+        opened.map_err(|e| self.warn(&e)).ok()
+    }
+
+    /// Writes one record to an open transcript: the line and its newline in
+    /// one write, so a record never lands without the end that makes the next
+    /// one a line of its own. Returns whether it landed.
+    fn append(&mut self, file: &mut std::fs::File, record: &Record) -> bool {
+        let written = serde_json::to_vec(record)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            .and_then(|mut line| {
+                line.push(b'\n');
+                file.write_all(&line)
+            });
+        match written {
             Ok(()) => true,
             Err(e) => {
-                if !self.warned {
-                    tracing::warn!(
-                        path = %self.path.display(),
-                        error = %e,
-                        "could not write the session transcript; retrying on the next turn"
-                    );
-                    self.warned = true;
-                }
+                self.warn(&e);
                 false
             }
         }
     }
 
-    fn try_write(&self, record: &Record) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
+    fn warn(&mut self, error: &std::io::Error) {
+        if !self.warned {
+            tracing::warn!(
+                path = %self.path.display(),
+                error = %error,
+                "could not write the session transcript; retrying on the next turn"
+            );
+            self.warned = true;
         }
-        let line = serde_json::to_string(record)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")
     }
 }
 
