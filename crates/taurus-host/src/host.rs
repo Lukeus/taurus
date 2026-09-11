@@ -769,27 +769,33 @@ impl Host {
         let workspace = self.workspace.read().await.clone();
         let mut moved = false;
 
+        // Every fingerprint at once, on a blocking thread. Each is a `stat` per
+        // file and a directory listing or two, which with a large skill library
+        // is a few hundred blocking calls — made twice a turn, on the runtime
+        // that carries every other command.
+        let seen = self.instructions_seen.read().await.clone();
+        let taken = {
+            let (seen, workspace) = (seen.clone(), workspace.clone());
+            tokio::task::spawn_blocking(move || TurnStamps::take(&seen, &workspace)).await
+        };
+        let now = taken.unwrap_or_else(|_| TurnStamps::take(&seen, &workspace));
+
         // Against the files the last read depended on, restated — not against
         // the source list. The two are different sets whenever a brief imports
         // anything, and comparing across them would never be equal, which is a
         // gate that is always open rather than a gate.
-        let seen = self.instructions_seen.read().await.clone();
-        if seen != seen.refreshed() {
+        if seen != now.instructions {
             let found = self.load_instructions(&workspace).await;
             self.replace_problems(ProblemSource::Instructions, found)
                 .await;
             moved = true;
         }
 
-        if *self.agents_seen.read().await
-            != agent_freshness(&config::agent_sources(Some(&workspace)))
-        {
+        if *self.agents_seen.read().await != now.agents {
             moved |= self.rescan_agents().await;
         }
 
-        if *self.skills_seen.read().await
-            != skill_freshness(&config::skill_sources(Some(&workspace)))
-        {
+        if *self.skills_seen.read().await != now.skills {
             moved |= self.rescan_skills().await;
         }
 
@@ -797,7 +803,7 @@ impl Host {
         // imports, so the set to watch is knowable from the config layer — and
         // rebuilding it is what also notices the set *changing*, which is what
         // trusting a workspace does.
-        if *self.hooks_seen.read().await != hook_freshness(&workspace) {
+        if *self.hooks_seen.read().await != now.hooks {
             let found = self.load_hooks(&workspace).await;
             self.replace_problems(ProblemSource::Hooks, found).await;
             moved = true;
@@ -2497,38 +2503,47 @@ impl Host {
     /// `../` out of the workspace.
     pub async fn open_document(&self, path: &str) -> Result<Document, String> {
         let workspace = self.workspace().await;
-        let resolved =
-            taurus_tools::path_guard::resolve(&workspace, path).map_err(|e| e.to_string())?;
-        let shown = taurus_tools::path_guard::display(&workspace, &resolved);
+        let path = path.to_string();
+        // On a blocking thread: a document is read whole, up to
+        // `MAX_DOCUMENT_BYTES`, and the canvas opens one beside a live turn.
+        tokio::task::spawn_blocking(move || {
+            let resolved =
+                taurus_tools::path_guard::resolve(&workspace, &path).map_err(|e| e.to_string())?;
+            let shown = taurus_tools::path_guard::display(&workspace, &resolved);
 
-        let meta =
-            std::fs::metadata(&resolved).map_err(|e| format!("Could not open {shown}: {e}"))?;
-        if meta.is_dir() {
-            return Err(format!("{shown} is a folder, not a file."));
-        }
-        if meta.len() > MAX_DOCUMENT_BYTES {
-            return Err(format!(
-                "{shown} is too large to open in the editor ({:.1} MB). Files up to {} MB open \
-                 here; anything bigger is better read in pieces.",
-                meta.len() as f64 / (1024.0 * 1024.0),
-                MAX_DOCUMENT_BYTES / (1024 * 1024)
-            ));
-        }
-
-        let text = std::fs::read_to_string(&resolved).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::InvalidData {
-                format!("{shown} is not a text file, so there is nothing to show in the editor.")
-            } else {
-                format!("Could not open {shown}: {e}")
+            let meta =
+                std::fs::metadata(&resolved).map_err(|e| format!("Could not open {shown}: {e}"))?;
+            if meta.is_dir() {
+                return Err(format!("{shown} is a folder, not a file."));
             }
-        })?;
+            if meta.len() > MAX_DOCUMENT_BYTES {
+                return Err(format!(
+                    "{shown} is too large to open in the editor ({:.1} MB). Files up to {} MB \
+                     open here; anything bigger is better read in pieces.",
+                    meta.len() as f64 / (1024.0 * 1024.0),
+                    MAX_DOCUMENT_BYTES / (1024 * 1024)
+                ));
+            }
 
-        Ok(Document {
-            lines: text.lines().count() as u32,
-            fingerprint: fingerprint(&meta),
-            path: shown,
-            text,
+            let text = std::fs::read_to_string(&resolved).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::InvalidData {
+                    format!(
+                        "{shown} is not a text file, so there is nothing to show in the editor."
+                    )
+                } else {
+                    format!("Could not open {shown}: {e}")
+                }
+            })?;
+
+            Ok(Document {
+                lines: text.lines().count() as u32,
+                fingerprint: fingerprint(&meta),
+                path: shown,
+                text,
+            })
         })
+        .await
+        .map_err(|e| format!("reading the file failed: {e}"))?
     }
 
     /// Writes what the editor holds, unless the file moved since it was read.
@@ -3129,6 +3144,29 @@ fn skill_freshness(sources: &[taurus_skills::SkillSource]) -> Freshness {
 
 fn agent_freshness(sources: &[taurus_agents::AgentSource]) -> Freshness {
     Freshness::of_dirs(sources.iter().map(|s| s.dir.as_path()), ".md", false)
+}
+
+/// What a turn boundary compares with what is held: the brief restated, and
+/// the roster, the skills and the hooks fingerprinted afresh. See
+/// [`Host::refresh_for_turn`].
+struct TurnStamps {
+    instructions: Freshness,
+    agents: Freshness,
+    skills: Freshness,
+    hooks: Freshness,
+}
+
+impl TurnStamps {
+    /// A `stat` per file each and a directory listing or two, every one of them
+    /// a blocking call — which is why a turn takes these on a blocking thread.
+    fn take(instructions: &Freshness, workspace: &Path) -> Self {
+        Self {
+            instructions: instructions.refreshed(),
+            agents: agent_freshness(&config::agent_sources(Some(workspace))),
+            skills: skill_freshness(&config::skill_sources(Some(workspace))),
+            hooks: hook_freshness(workspace),
+        }
+    }
 }
 
 /// Intersects every agent's `tools:` list with the finished registry, returning
