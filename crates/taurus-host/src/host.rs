@@ -673,7 +673,15 @@ impl Host {
         // fingerprint stale rather than be recorded as already seen.
         *self.skills_seen.write().await = skill_freshness(&sources);
 
-        let (catalog, skill_problems) = SkillCatalog::discover(&sources);
+        // On a blocking thread: a scan lists every source directory and reads
+        // and validates a `SKILL.md` for every skill installed, and it runs at
+        // each turn boundary where the library moved.
+        let scanned = {
+            let sources = sources.clone();
+            tokio::task::spawn_blocking(move || SkillCatalog::discover(&sources)).await
+        };
+        let (catalog, skill_problems) =
+            scanned.unwrap_or_else(|_| SkillCatalog::discover(&sources));
         info!(
             skills = catalog.len(),
             problems = skill_problems.len(),

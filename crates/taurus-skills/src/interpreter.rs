@@ -81,11 +81,31 @@ pub fn for_extension(extension: &str) -> Option<&'static str> {
 
 /// Whether every interpreter a set of scripts needs is available here.
 pub fn missing_interpreters<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    missing_interpreters_in(names, &mut Interpreters::default())
+}
+
+/// What a scan has already learned about each interpreter: `None` for one on
+/// the PATH, and the reason for one that is not.
+pub type Interpreters = std::collections::HashMap<String, Option<String>>;
+
+/// [`missing_interpreters`], answering from `seen` where it can.
+///
+/// A scan of the skill library asks about the same few interpreters once per
+/// skill, and each asking is a walk of the PATH. Remembered for the length of
+/// one scan and no longer, so an interpreter installed between two scans is
+/// found by the second.
+pub fn missing_interpreters_in<'a>(
+    names: impl Iterator<Item = &'a str>,
+    seen: &mut Interpreters,
+) -> Vec<String> {
     let mut missing = Vec::new();
     for name in names {
-        if let Err(reason) = resolve(name) {
-            if !missing.contains(&reason) {
-                missing.push(reason);
+        let answer = seen
+            .entry(name.to_string())
+            .or_insert_with(|| resolve(name).err());
+        if let Some(reason) = answer {
+            if !missing.contains(reason) {
+                missing.push(reason.clone());
             }
         }
     }
@@ -124,6 +144,18 @@ mod tests {
         let err = resolve("brainfuck").unwrap_err();
         assert!(err.contains("unsupported interpreter"));
         assert!(err.contains("python3"));
+    }
+
+    #[test]
+    fn a_scan_asks_the_path_about_each_interpreter_once() {
+        // An answer already in hand is used rather than asked for again —
+        // seeded wrong here, so a second look at the PATH would show.
+        let mut seen = Interpreters::default();
+        seen.insert("sh".into(), Some("sh was looked for already".into()));
+
+        let missing = missing_interpreters_in(["sh", "sh"].into_iter(), &mut seen);
+
+        assert_eq!(missing, vec!["sh was looked for already".to_string()]);
     }
 
     #[test]
