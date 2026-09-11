@@ -2006,8 +2006,10 @@ pub async fn respond_skill_proposal(
     let dir = save(&proposal, &root).map_err(|e| format!("could not save skill: {e}"))?;
     info!(skill = %proposal.name, dir = %dir.display(), "skill approved");
 
-    // Reload so the skill is usable in the session that just proposed it.
-    state.host.reload().await;
+    // Reloaded so the skill is usable in the session that just proposed it.
+    // The local half only: a skill changes nothing an MCP server is running
+    // with, so there is nothing to restart one for.
+    state.host.reload_local().await;
     // And so the count on the rail moves with it, rather than on whatever the
     // user does next.
     emit_status(&state).await;
@@ -2210,10 +2212,12 @@ pub async fn set_embedding_model(
     provider: String,
 ) -> CmdResult<()> {
     state.host.set_embedding_model(&model, &provider).await;
-    // The tool is registered by `reload`, so without this a model named here
-    // does not become a `search_code` until the next workspace change — which
-    // reads as the setting not having taken.
-    state.host.reload().await;
+    // The tool is registered by the local half of a reload, so without this a
+    // model named here does not become a `search_code` until the next
+    // workspace change — which reads as the setting not having taken. Only
+    // that half: an embedding model changes nothing an MCP server is running
+    // with.
+    state.host.reload_local().await;
     emit_status(&state).await;
     Ok(())
 }
@@ -2225,10 +2229,10 @@ pub async fn set_rerank(
     provider: String,
 ) -> CmdResult<()> {
     state.host.set_rerank(&model, &provider).await;
-    // Same reason `set_embedding_model` reloads: the reranker is attached to
-    // `search_code` when the tool is registered, so without this it does not
-    // take hold until the next workspace change.
-    state.host.reload().await;
+    // Same reason `set_embedding_model` reloads, and the same half: the
+    // reranker is attached to `search_code` when the tool is registered, so
+    // without this it does not take hold until the next workspace change.
+    state.host.reload_local().await;
     emit_status(&state).await;
     Ok(())
 }

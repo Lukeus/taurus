@@ -216,6 +216,10 @@ pub struct Host {
     /// the first had just made, while the first went on to register tools
     /// pointing at them: tools that failed on every call, under a panel that
     /// said connected.
+    ///
+    /// The local half never takes this. It carries the MCP tools across at the
+    /// moment it swaps the registry — see [`Self::reload_local`] — so a
+    /// settings save does not wait behind a server that is still starting.
     mcp_reload: tokio::sync::Mutex<()>,
     problems: RwLock<Vec<Problem>>,
     prompts: Arc<dyn PermissionPromptFactory>,
@@ -328,9 +332,11 @@ impl Host {
     /// opened the app onto a shell with no providers, no model picker and no
     /// rail until every one of those servers had answered.
     ///
-    /// Startup calls the two in order, marking itself loaded in between. A
-    /// caller with nothing to gain from that should call [`Host::reload`] and
-    /// get both.
+    /// Startup calls the two in order, marking itself loaded in between. The
+    /// MCP tools that are running survive this half — it carries them across
+    /// rather than rebuilding them — so a change that cannot affect a server
+    /// calls this alone, and [`Host::reload`] is for when the servers should
+    /// restart too.
     pub async fn reload_local(&self) {
         let workspace = self.workspace.read().await.clone();
 
@@ -537,7 +543,8 @@ impl Host {
         //
         // The per-turn tools are not in this registry to be removed from — a
         // turn adds them to its own copy, and takes them away there. The MCP
-        // tools are not here *yet*, and `reload_mcp` never registers one the
+        // tools are not here *yet* — they are carried across at the swap below,
+        // through the same list — and `reload_mcp` never registers one the
         // settings disable, so the effect is identical; what would differ is a
         // warning about the user's own working config, appearing or not
         // depending on whether a server happened to be up this second.
@@ -555,11 +562,47 @@ impl Host {
 
         // After the registry is finished, and deliberately so: an agent scoped
         // to tools the user has since disabled is exactly the case this catches.
-        let available: Vec<String> = registry.names().map(str::to_string).collect();
+        // With the MCP tools that are running, which the swap below carries
+        // across: an agent scoped to a server's tools must not be refused by a
+        // reload that leaves the server up.
+        let running =
+            |name: &str| taurus_mcp::is_mcp_tool(name) && !disabled.iter().any(|off| off == name);
+        let mut available: Vec<String> = registry.names().map(str::to_string).collect();
+        available.extend(
+            self.registry
+                .read()
+                .await
+                .names()
+                .filter(|name| running(name))
+                .map(str::to_string),
+        );
         problems.extend(self.load_agents(&workspace, &available).await);
 
-        *self.registry.write().await = registry;
-        *self.problems.write().await = problems;
+        // The MCP tools come across from the registry this replaces. They are
+        // `reload_mcp`'s to change, and rebuilding without them would leave
+        // every caller choosing between no MCP tools and a restart of every
+        // server. Read under the write lock that swaps, so a reconnect finishing
+        // alongside cannot have its new tools replaced with the old ones; and
+        // filtered by the settings just read, so a tool switched off since does
+        // not come back.
+        let mut live = self.registry.write().await;
+        let carried: Vec<_> = live
+            .names()
+            .filter(|name| running(name))
+            .filter_map(|name| live.get(name))
+            .collect();
+        for tool in carried {
+            registry.register(tool);
+        }
+        *live = registry;
+        drop(live);
+
+        // Every source but MCP's, which `reload_mcp` reports and this half
+        // never looks at. Replacing the list wholesale would clear a server's
+        // problem until something next reconnected it.
+        let mut held = self.problems.write().await;
+        problems.extend(held.drain(..).filter(|p| p.source == ProblemSource::Mcp));
+        *held = problems;
     }
 
     /// Reads the standing brief and installs it, returning what to report.
@@ -1547,22 +1590,25 @@ impl Host {
 
     /// Saves the global search layer and rebuilds, so turning search on
     /// registers its tools without a restart.
+    ///
+    /// The local half only, here and in the two key setters below: web search
+    /// changes nothing an MCP server is running with.
     pub async fn set_search(&self, file: taurus_web::SearchFile) {
         config::save_search(&file);
-        self.reload().await;
+        self.reload_local().await;
     }
 
     pub async fn set_search_key(&self, backend_id: &str, key: &str) -> Result<(), String> {
         secrets::store(&config::search_key_id(backend_id), key)?;
         // A saved key can be the thing that makes a selected backend resolve,
         // and the tools are only registered for one that does.
-        self.reload().await;
+        self.reload_local().await;
         Ok(())
     }
 
     pub async fn clear_search_key(&self, backend_id: &str) -> Result<(), String> {
         secrets::clear(&config::search_key_id(backend_id))?;
-        self.reload().await;
+        self.reload_local().await;
         Ok(())
     }
 
@@ -3979,6 +4025,49 @@ mod tests {
         let servers = host.mcp_servers().await;
         assert_eq!(servers.len(), 1);
         assert!(servers[0].status.as_ref().unwrap().error.is_some());
+    }
+
+    #[tokio::test]
+    async fn reloading_locally_leaves_every_mcp_tool_where_it_was() {
+        // The twin of the test above. Settings that have nothing to do with
+        // MCP — a search key, an embedding model, an approved skill — run this
+        // half, and one that dropped the MCP tools would leave each of them a
+        // restart of every server away from having them back.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload_local().await;
+        let running = taurus_mcp::namespaced("notes", "search");
+        host.registry
+            .write()
+            .await
+            .register(Arc::new(StandIn(running.clone())));
+        host.problems.write().await.push(Problem::new(
+            ProblemSource::Mcp,
+            "notes: the token has expired".to_string(),
+        ));
+
+        host.reload_local().await;
+
+        assert!(
+            host.tool_names().await.contains(&running),
+            "a settings reload dropped a running server's tool"
+        );
+        assert_eq!(
+            host.problems_from(&[ProblemSource::Mcp]).await.len(),
+            1,
+            "a settings reload cleared a server's problem"
+        );
+
+        // Switched off since, it does not come back.
+        std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+        std::fs::write(
+            workspace.join(".taurus/settings.json"),
+            format!(r#"{{"disabled_tools": ["{running}"]}}"#),
+        )
+        .unwrap();
+        host.reload_local().await;
+        assert!(!host.tool_names().await.contains(&running));
     }
 
     #[tokio::test]
