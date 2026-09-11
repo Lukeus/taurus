@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use taurus_core::testing::{FakeProvider, ScriptedTurn};
 use taurus_core::{Agent, AgentConfig, AgentError, Session, TurnRecorder, UiEvent};
-use taurus_provider::{ContentBlock, Message, Role, StopReason};
+use taurus_provider::{ContentBlock, Message, ProviderError, Role, StopReason, StreamEvent};
 use taurus_tools::{
     AllowAll, DenyAll, PermissionEngine, PermissionPrompt, ToolContext, ToolRegistry,
 };
@@ -1132,6 +1132,38 @@ async fn a_failure_part_way_through_an_answer_is_not_retried() {
         !events.iter().any(|e| matches!(e, UiEvent::Retrying { .. })),
         "nothing should have been retried"
     );
+}
+
+#[tokio::test]
+async fn an_overload_after_an_empty_thinking_block_is_still_retried() {
+    // How Anthropic opens every thinking block: an empty delta, before a
+    // word of it exists. Nothing has reached the screen, so the overload that
+    // follows is as retryable as one that arrived before the stream opened.
+    let opened = ScriptedTurn {
+        events: vec![StreamEvent::ThinkingDelta {
+            text: String::new(),
+        }],
+        stop: StopReason::EndTurn,
+        failure: Some(ProviderError::Api {
+            provider: "fake".into(),
+            status: 529,
+            body: "overloaded_error: Overloaded".into(),
+            retry_after: None,
+        }),
+        stopped: false,
+    };
+    let h = harness_with(
+        vec![opened, ScriptedTurn::text("Recovered.")],
+        Box::new(AllowAll),
+        instant_retries(3),
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "hi").await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert_eq!(h.provider.request_count().await, 2);
+    assert_eq!(session.messages[1].text(), "Recovered.");
 }
 
 #[tokio::test]

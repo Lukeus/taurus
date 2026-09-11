@@ -889,7 +889,12 @@ impl Agent {
                 StreamEvent::ThinkingDelta { text } => Some((true, text)),
                 _ => None,
             };
-            if let Some((thinking, text)) = delta {
+            // An empty delta is not output: nothing reaches the screen. It
+            // still goes to the accumulator below, because Anthropic opens
+            // every thinking block with one so a signature has a block to land
+            // on. Counted, it would mark the attempt unretryable before an
+            // in-stream overload could arrive, on every model with thinking on.
+            if let Some((thinking, text)) = delta.filter(|(_, text)| !text.is_empty()) {
                 produced_output = true;
                 match &mut held {
                     // The two kinds are separate messages on screen, so a run
