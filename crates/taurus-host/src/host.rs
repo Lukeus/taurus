@@ -1437,9 +1437,26 @@ impl Host {
         crate::git::Repo::status(&self.workspace.read().await.clone()).await
     }
 
-    /// The branch this workspace is on, for stamping onto a new conversation.
+    /// The branch this workspace is on, for the status and for stamping onto a
+    /// new conversation.
+    ///
+    /// Read off disk rather than asked of git — see
+    /// [`crate::git::branch_on_disk`] — because the status is pushed after
+    /// nearly everything, and asking cost two git processes every time. Git is
+    /// asked only when the disk does not settle it.
     pub async fn branch(&self) -> Option<String> {
-        self.repo_status().await.branch
+        let workspace = self.workspace.read().await.clone();
+        let on_disk = {
+            let workspace = workspace.clone();
+            tokio::task::spawn_blocking(move || crate::git::branch_on_disk(&workspace))
+                .await
+                .ok()
+                .flatten()
+        };
+        match on_disk {
+            Some(branch) => branch,
+            None => crate::git::Repo::status(&workspace).await.branch,
+        }
     }
 
     /// The hooks in force. Cloned rather than borrowed so a turn holds the set
