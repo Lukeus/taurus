@@ -279,12 +279,23 @@ impl Tool for SearchCode {
             .ok_or_else(|| ToolError::Failed("the backend returned no embedding".into()))?;
 
         let keep = Self::keep(ctx.budget);
-        let hits = search(&entries, &vector, self.candidates(keep), &ctx.workspace);
+        let candidates = self.candidates(keep);
+        let passages = entries.len();
+        let workspace = ctx.workspace.clone();
+        // Scored and excerpted on a blocking thread: every vector in the index
+        // is decoded and compared, and each hit's excerpt read from disk — a
+        // few hundred milliseconds on a large index, which on the runtime would
+        // be taken from the stream and every command beside it.
+        let hits =
+            tokio::task::spawn_blocking(move || search(&entries, &vector, candidates, &workspace))
+                .await
+                .map_err(|e| {
+                    ToolError::Failed(format!("the search stopped before it answered: {e}"))
+                })?;
         if hits.is_empty() {
             return Ok(format!(
-                "No match for '{query}' in {} indexed passages. Try describing it differently, or \
-                 use grep if you know the literal text.",
-                entries.len()
+                "No match for '{query}' in {passages} indexed passages. Try describing it \
+                 differently, or use grep if you know the literal text."
             )
             .into());
         }
