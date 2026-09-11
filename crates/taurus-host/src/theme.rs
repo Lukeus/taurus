@@ -639,7 +639,10 @@ pub fn save_theme(
             .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     }
     // A trailing newline, because these are files people open in editors.
-    std::fs::write(&path, format!("{json}\n"))
+    // Through the atomic replace: a theme is rewritten on every save from the
+    // editor, and a torn one is a window drawn in whatever the next read makes
+    // of half a palette.
+    crate::config::replace_file(&path, &format!("{json}\n"))
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
     Ok(path)
 }

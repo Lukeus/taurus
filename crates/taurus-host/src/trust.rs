@@ -66,13 +66,43 @@ fn key(workspace: &Path) -> String {
         .to_string()
 }
 
-fn read() -> TrustFile {
-    std::fs::read_to_string(trust_file())
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+/// The stored set.
+///
+/// `Err` only for a file that is there and cannot be read as one; a missing file
+/// is the empty set, which is every install's first state. The message names
+/// the file and what to do about it, because the one place it is shown is
+/// somebody trying to trust or untrust a folder.
+fn read() -> Result<TrustFile, String> {
+    let path = trust_file();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(TrustFile::default()),
+        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+    };
+    serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "{} does not parse ({e}), so no folder is trusted until it is fixed. Fix it or \
+             remove it, then trust this folder again.",
+            path.display()
+        )
+    })
 }
 
+/// The stored set for a reader, which can do nothing about a broken file but
+/// decline to trust what it cannot read.
+///
+/// Said once per process rather than on every read: the gate is asked at every
+/// turn boundary, and one broken file would otherwise fill the log.
+fn read_or_nothing() -> TrustFile {
+    read().unwrap_or_else(|e| {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| tracing::warn!("{e}"));
+        TrustFile::default()
+    })
+}
+
+/// Written whole through the atomic replace. A torn file reads as one that does
+/// not parse, and that untrusts every workspace at once.
 fn write(file: &TrustFile) -> Result<(), String> {
     let path = trust_file();
     if let Some(parent) = path.parent() {
@@ -81,17 +111,21 @@ fn write(file: &TrustFile) -> Result<(), String> {
     }
     let text = serde_json::to_string_pretty(file)
         .map_err(|e| format!("could not serialize trust decisions: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("could not write {}: {e}", path.display()))
+    config::replace_file(&path, &text)
+        .map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
 /// Whether this workspace's own config may be read.
 pub fn is_trusted(workspace: &Path) -> bool {
-    read().trusted.contains(&key(workspace))
+    read_or_nothing().trusted.contains(&key(workspace))
 }
 
 /// Records that this workspace's config may be read, from now on.
+///
+/// Refused over a file that does not parse, rather than starting from nothing:
+/// written back with one entry, that file would lose every decision it held.
 pub fn trust(workspace: &Path) -> Result<(), String> {
-    let mut file = read();
+    let mut file = read()?;
     file.trusted.insert(key(workspace));
     write(&file)
 }
@@ -103,14 +137,14 @@ pub fn trust(workspace: &Path) -> Result<(), String> {
 /// contribute is still reported, so revoking is visible rather than a silent
 /// return to a clean slate.
 pub fn revoke(workspace: &Path) -> Result<(), String> {
-    let mut file = read();
+    let mut file = read()?;
     file.trusted.remove(&key(workspace));
     write(&file)
 }
 
 /// Every workspace trusted so far, for a settings screen that lists them.
 pub fn trusted_workspaces() -> Vec<String> {
-    read().trusted.into_iter().collect()
+    read_or_nothing().trusted.into_iter().collect()
 }
 
 /// The workspace, if its config may be read, and `None` if it may not.
@@ -419,6 +453,24 @@ mod tests {
 
         trust(workspace.path()).expect("trust");
         revoke(workspace.path()).expect("revoke");
+        assert!(!is_trusted(workspace.path()));
+    }
+
+    #[test]
+    fn a_trust_file_that_does_not_parse_is_not_written_over() {
+        // Read as the empty set and written back with one entry, it would lose
+        // every other decision it held, and trust is the boundary for workspace
+        // config.
+        let _home = isolated_home();
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let path = trust_file();
+        std::fs::create_dir_all(path.parent().expect("a config home")).unwrap();
+        let broken = "{\"trusted\": [\"/projects/a\",]}";
+        std::fs::write(&path, broken).unwrap();
+
+        let error = trust(workspace.path()).expect_err("a broken file must not be written over");
+        assert!(error.contains("does not parse"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
         assert!(!is_trusted(workspace.path()));
     }
 
