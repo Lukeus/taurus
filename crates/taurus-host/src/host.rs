@@ -2611,22 +2611,27 @@ impl Host {
     /// the pane says so, from the read that actually needed it.
     pub async fn dataset_schemas(&self) -> Vec<(taurus_data::Dataset, taurus_data::Schema)> {
         let workspace = self.workspace().await;
-        let mut out = Vec::new();
-        for dataset in self.datasets().await {
+        // Asked for all at once rather than one after another: each is a
+        // Parquet footer read or a CSV inference pass, and the query box asks
+        // on every visit, so it waited for the sum of them rather than the
+        // slowest. `join_all` answers in the order it was given, which is the
+        // catalog's.
+        let reads = self.datasets().await.into_iter().filter_map(|dataset| {
             // Through the guard, like every other read of an entry's path. An
             // entry is a line in a file somebody can edit, so `../` in one is a
             // thing that can happen rather than a thing that cannot.
-            let Ok(path) = taurus_tools::path_guard::resolve(&workspace, &dataset.path) else {
-                continue;
-            };
-            let Ok(source) = taurus_data::Source::at(path) else {
-                continue;
-            };
-            if let Ok(schema) = self.engine.schema(&source).await {
-                out.push((dataset, schema));
-            }
-        }
-        out
+            let path = taurus_tools::path_guard::resolve(&workspace, &dataset.path).ok()?;
+            let source = taurus_data::Source::at(path).ok()?;
+            Some(async move {
+                let schema = self.engine.schema(&source).await.ok()?;
+                Some((dataset, schema))
+            })
+        });
+        futures::future::join_all(reads)
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     /// A window of a dataset's rows.
