@@ -153,7 +153,10 @@ impl ToolRegistry {
         // something the model needs, and there is nothing to attach it to yet.
         let mut pre_notes = Vec::new();
         if let (Some(runner), Some(payload)) = (&ctx.hooks, &pre) {
-            let outcome = runner.run(payload).await;
+            let outcome = runner.run(payload, &ctx.cancel).await;
+            if outcome.stopped {
+                return Err(ToolError::Canceled);
+            }
             if let Some(reason) = outcome.denied {
                 return Err(ToolError::Failed(reason));
             }
@@ -244,7 +247,7 @@ impl ToolRegistry {
         // would otherwise have to discover by reading the file again.
         if let (Some(runner), Some(payload)) = (&ctx.hooks, post) {
             let payload = payload.with_outcome(result.is_ok());
-            for note in runner.run(&payload).await.notes {
+            for note in runner.run(&payload, &ctx.cancel).await.notes {
                 annotate(&mut result, &note);
             }
         }
@@ -571,6 +574,40 @@ mod tests {
         // Exit 0 means "go ahead". What it printed on the way is the reason
         // somebody wrote it, and the model is the one who needs to read it.
         assert!(output.to_text().contains("you are on main"), "{output}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_reaches_a_call_waiting_on_its_pre_hook() {
+        let (ctx, dir) = test_ctx();
+        let scripts = TempDir::new().unwrap();
+        let mut slow = hook(
+            hook_script(scripts.path(), "slow", "sleep 30"),
+            taurus_hooks::HookEvent::PreToolUse,
+        );
+        slow.timeout_seconds = 60;
+        let ctx = ctx.with_hooks(Arc::new(taurus_hooks::HookRunner::new(vec![(
+            "slow".into(),
+            slow,
+        )])));
+        let stop = ctx.cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            stop.cancel();
+        });
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            ToolRegistry::with_builtins().execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "hi"}),
+                &ctx,
+            ),
+        )
+        .await
+        .expect("Stop must reach a call waiting on its pre hook");
+        assert!(matches!(outcome, Err(ToolError::Canceled)), "{outcome:?}");
+        assert!(!dir.path().join("a.txt").exists());
     }
 
     #[cfg(unix)]

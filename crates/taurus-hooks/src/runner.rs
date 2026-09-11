@@ -50,11 +50,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
 
 use serde::Serialize;
 use taurus_process::Tree;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::config::{Hook, HookEvent};
@@ -155,6 +155,12 @@ pub struct Outcome {
     pub denied: Option<String>,
     /// What passing hooks printed, in the order they ran. Reaches the model.
     pub notes: Vec<String>,
+    /// Whether Stop arrived while the hooks ran.
+    ///
+    /// The hook running at that moment was ended, tree and all, and the ones
+    /// after it were not started. Not a refusal: nothing decided against the
+    /// call, the person at the keyboard ended the turn it belonged to.
+    pub stopped: bool,
 }
 
 impl Outcome {
@@ -205,15 +211,27 @@ impl HookRunner {
     }
 
     /// Runs every hook that matches, in name order, and reports what they said.
-    pub async fn run(&self, payload: &HookPayload) -> Outcome {
+    ///
+    /// `cancel` is the turn's Stop. A hook running when it fires is ended the
+    /// way a timeout ends one, instead of being left to run out its limit with
+    /// the turn waiting on it.
+    pub async fn run(&self, payload: &HookPayload, cancel: &CancellationToken) -> Outcome {
         let mut outcome = Outcome::default();
 
         for (name, hook, paths) in &self.hooks {
             if hook.on != payload.event || !applies(hook, paths.as_ref(), payload) {
                 continue;
             }
+            if cancel.is_cancelled() {
+                outcome.stopped = true;
+                return outcome;
+            }
 
-            match execute(name, hook, payload).await {
+            match execute(name, hook, payload, cancel).await {
+                Verdict::Stopped => {
+                    outcome.stopped = true;
+                    return outcome;
+                }
                 Verdict::Passed(note) => {
                     if !note.trim().is_empty() {
                         outcome
@@ -270,7 +288,9 @@ impl HookRunner {
                     format!("{} {}", hook.command, hook.args.join(" "))
                 },
                 matches: hook.matches.as_ref().and_then(describe_match),
-                timeout_seconds: hook.timeout_seconds,
+                // What it will actually get, which is what a list of what will
+                // run is for. See `MAX_TIMEOUT_SECONDS`.
+                timeout_seconds: hook.timeout().as_secs(),
             })
             .collect()
     }
@@ -295,6 +315,8 @@ fn describe_match(matches: &crate::config::Match) -> Option<String> {
 enum Verdict {
     Passed(String),
     Denied(String),
+    /// Stop arrived first, and the hook was ended before it could say.
+    Stopped,
 }
 
 /// Whether a hook's `matches` covers this call.
@@ -361,7 +383,12 @@ fn compile(globs: &[String]) -> Option<globset::GlobSet> {
 }
 
 /// Starts one hook, feeds it the payload, and reads its verdict.
-async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
+async fn execute(
+    name: &str,
+    hook: &Hook,
+    payload: &HookPayload,
+    cancel: &CancellationToken,
+) -> Verdict {
     let body = serde_json::to_vec(payload).unwrap_or_else(|_| b"{}".to_vec());
 
     let mut command = tokio::process::Command::new(&hook.command);
@@ -401,7 +428,7 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
     let stdin = child.take_stdin();
     let stdout = child.take_stdout();
     let stderr = child.take_stderr();
-    let timeout = Duration::from_secs(hook.timeout_seconds);
+    let timeout = hook.timeout();
 
     /*
      * Fed inside the timeout, and at the same time as the wait.
@@ -441,8 +468,21 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
         status.map(|status| (status, stdout, stderr))
     };
     // The wait is polled before the clock, so a hook that finishes exactly on
-    // the deadline is finished rather than killed.
-    let finished = tokio::time::timeout(timeout, run).await;
+    // the deadline is finished rather than killed. Stop is polled last, for
+    // the same reason: a hook that has already answered has answered.
+    let finished = tokio::select! {
+        biased;
+        finished = tokio::time::timeout(timeout, run) => finished,
+        _ = cancel.cancelled() => {
+            // Ended the way a timeout ends it, and for the same reason: the
+            // hook's own process is rarely the one doing the work. There is no
+            // result left to carry a failed kill, so it goes to the log.
+            if let Err(trouble) = child.end().await {
+                warn!(hook = name, %trouble, "a hook ended by Stop may have left something running");
+            }
+            return Verdict::Stopped;
+        }
+    };
     let (status, stdout, stderr) = match finished {
         Ok(Ok(done)) => done,
         Ok(Err(e)) => return Verdict::Denied(format!("could not be run: {e}")),
@@ -459,7 +499,7 @@ async fn execute(name: &str, hook: &Hook, payload: &HookPayload) -> Verdict {
             };
             return Verdict::Denied(format!(
                 "did not finish within {}s and was stopped{unfinished}",
-                hook.timeout_seconds
+                timeout.as_secs()
             ));
         }
     };
@@ -532,6 +572,7 @@ pub fn relative<'a>(workspace: &Path, path: &'a Path) -> Option<&'a str> {
 mod tests {
     use super::*;
     use crate::config::{HookEvent, Match};
+    use std::time::Duration;
 
     /// A hook that is a shell one-liner, written to a file so it can be run.
     #[cfg(unix)]
@@ -593,7 +634,7 @@ mod tests {
         let runner = HookRunner::new(vec![("guard".into(), guard)]);
 
         let payload = HookPayload::new(HookEvent::PreToolUse, dir.path());
-        let outcome = runner.run(&payload).await;
+        let outcome = runner.run(&payload, &CancellationToken::new()).await;
 
         assert!(outcome.is_denied());
         // The model has to be told why, or its next move is to try the same
@@ -612,7 +653,10 @@ mod tests {
         )]);
 
         let outcome = runner
-            .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
+            .run(
+                &HookPayload::new(HookEvent::PreToolUse, dir.path()),
+                &CancellationToken::new(),
+            )
             .await;
 
         // The whole argument for fail-closed: a guard that breaks must not
@@ -630,7 +674,10 @@ mod tests {
         )]);
 
         let outcome = runner
-            .run(&HookPayload::new(HookEvent::PostToolUse, dir.path()))
+            .run(
+                &HookPayload::new(HookEvent::PostToolUse, dir.path()),
+                &CancellationToken::new(),
+            )
             .await;
 
         // The call already ran. Refusing it now would be a claim about the past.
@@ -651,7 +698,10 @@ mod tests {
         let runner = HookRunner::new(vec![("fmt".into(), note)]);
 
         let outcome = runner
-            .run(&HookPayload::new(HookEvent::PostToolUse, dir.path()))
+            .run(
+                &HookPayload::new(HookEvent::PostToolUse, dir.path()),
+                &CancellationToken::new(),
+            )
             .await;
 
         assert!(!outcome.is_denied());
@@ -700,7 +750,10 @@ mod tests {
         let runner = HookRunner::new(vec![("slow".into(), slow)]);
 
         let outcome = runner
-            .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
+            .run(
+                &HookPayload::new(HookEvent::PreToolUse, dir.path()),
+                &CancellationToken::new(),
+            )
             .await;
 
         assert!(outcome.is_denied());
@@ -715,6 +768,81 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn stop_ends_a_running_hook_instead_of_waiting_out_its_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let alive = dir.path().join("alive");
+        let mut slow = scripted(
+            dir.path(),
+            "slow",
+            &format!(
+                "echo x > '{}'; sleep 3 && echo alive > '{}'",
+                started.display(),
+                alive.display()
+            ),
+            &format!(
+                "echo x> \"{}\"\nping -n 4 127.0.0.1 >NUL && echo alive> \"{}\"",
+                started.display(),
+                alive.display()
+            ),
+            HookEvent::PreToolUse,
+        );
+        slow.timeout_seconds = 60;
+        let runner = HookRunner::new(vec![("slow".into(), slow)]);
+
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        let running = started.clone();
+        tokio::spawn(async move {
+            // Once it is certainly running, so this is Stop reaching a hook
+            // and not Stop arriving before one started.
+            while !running.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            stop.cancel();
+        });
+
+        let began = std::time::Instant::now();
+        let outcome = runner
+            .run(
+                &HookPayload::new(HookEvent::PreToolUse, dir.path()),
+                &cancel,
+            )
+            .await;
+
+        assert!(outcome.stopped, "{outcome:?}");
+        assert!(!outcome.is_denied(), "Stop is not a hook refusing the call");
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "took {:?}, so the hook ran to its end",
+            began.elapsed()
+        );
+        // Past when it would have written, had it lived.
+        for _ in 0..80 {
+            assert!(!alive.exists(), "the hook outlived Stop");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[test]
+    fn a_limit_past_the_ceiling_is_brought_down_to_it() {
+        let mut long = hook("guard", HookEvent::PreToolUse);
+        long.timeout_seconds = 3_600;
+        // Refused at load, the hook would not run at all.
+        assert!(long.validate().is_ok());
+        assert_eq!(
+            long.timeout(),
+            Duration::from_secs(crate::config::MAX_TIMEOUT_SECONDS)
+        );
+        let runner = HookRunner::new(vec![("long".into(), long)]);
+        assert_eq!(
+            runner.summaries()[0].timeout_seconds,
+            crate::config::MAX_TIMEOUT_SECONDS,
+            "the list must show the limit the hook actually gets"
+        );
     }
 
     #[tokio::test]
@@ -752,7 +880,7 @@ mod tests {
         );
 
         let started = std::time::Instant::now();
-        let outcome = runner.run(&payload).await;
+        let outcome = runner.run(&payload, &CancellationToken::new()).await;
         let took = started.elapsed();
 
         assert!(outcome.is_denied(), "a hook that never answered was obeyed");
@@ -976,7 +1104,10 @@ mod tests {
 
         let began = std::time::Instant::now();
         let outcome = runner
-            .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
+            .run(
+                &HookPayload::new(HookEvent::PreToolUse, dir.path()),
+                &CancellationToken::new(),
+            )
             .await;
         // Before the listing is waited for, so this is the hook's time alone.
         let took = began.elapsed();
@@ -1099,7 +1230,11 @@ mod tests {
                 vec!["src/widget.rs".into()],
             )
             .with_session("s-1");
-        let reason = runner.run(&payload).await.denied.unwrap();
+        let reason = runner
+            .run(&payload, &CancellationToken::new())
+            .await
+            .denied
+            .unwrap();
 
         assert!(reason.contains("pre_tool_use"), "{reason}");
         assert!(reason.contains("run_command"), "{reason}");
@@ -1128,7 +1263,10 @@ mod tests {
         let runner = HookRunner::new(vec![("a-deny".into(), deny), ("b-second".into(), second)]);
 
         let outcome = runner
-            .run(&HookPayload::new(HookEvent::PreToolUse, dir.path()))
+            .run(
+                &HookPayload::new(HookEvent::PreToolUse, dir.path()),
+                &CancellationToken::new(),
+            )
             .await;
 
         assert!(outcome.is_denied());
@@ -1158,7 +1296,10 @@ mod tests {
             serde_json::json!({"command": "git push"}),
             vec![],
         );
-        assert!(runner.run(&git).await.is_denied());
+        assert!(runner
+            .run(&git, &CancellationToken::new())
+            .await
+            .is_denied());
 
         // Keyed by the leading word, the same unit an "always allow" uses —
         // approving `git` never approved `rm`, and a hook about `git` is not
@@ -1168,7 +1309,10 @@ mod tests {
             serde_json::json!({"command": "ls -la"}),
             vec![],
         );
-        assert!(!runner.run(&other).await.is_denied());
+        assert!(!runner
+            .run(&other, &CancellationToken::new())
+            .await
+            .is_denied());
     }
 
     #[tokio::test]
@@ -1192,14 +1336,20 @@ mod tests {
             serde_json::json!({"path": "src/widget.rs"}),
             vec!["src/widget.rs".into()],
         );
-        assert!(runner.run(&rust).await.is_denied());
+        assert!(runner
+            .run(&rust, &CancellationToken::new())
+            .await
+            .is_denied());
 
         let prose = HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
             "write_file",
             serde_json::json!({"path": "README.md"}),
             vec!["README.md".into()],
         );
-        assert!(!runner.run(&prose).await.is_denied());
+        assert!(!runner
+            .run(&prose, &CancellationToken::new())
+            .await
+            .is_denied());
     }
 
     #[tokio::test]

@@ -477,7 +477,7 @@ impl Agent {
         if let Some(session) = &self.tools.session_id {
             payload = payload.with_session(session.clone());
         }
-        runner.run(&payload).await.denied
+        runner.run(&payload, &self.tools.cancel).await.denied
     }
 
     /// Runs the `stop` hooks. Nothing can be refused here — the turn is over —
@@ -496,7 +496,11 @@ impl Agent {
         if let Some(session) = &self.tools.session_id {
             payload = payload.with_session(session.clone());
         }
-        for note in runner.run(&payload).await.notes {
+        // Not the turn's Stop. A stopped turn has still ended, which is the
+        // one thing this event reports, and that token has already fired. Each
+        // hook is still bounded by its own timeout.
+        let unstoppable = tokio_util::sync::CancellationToken::new();
+        for note in runner.run(&payload, &unstoppable).await.notes {
             info!(%note, "stop hook");
         }
     }
