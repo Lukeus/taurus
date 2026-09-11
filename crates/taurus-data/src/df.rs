@@ -675,6 +675,10 @@ impl Engine for InlineEngine {
                 detail: e.to_string(),
             })?;
 
+        // One session for every step, with only `input` swapped between them,
+        // for the reason `check` gives.
+        let run = self.session_for(tables).await?;
+
         let mut stats = Vec::with_capacity(steps.len());
         let mut current = start_source;
         for (index, (title, sql)) in steps.iter().enumerate() {
@@ -693,7 +697,7 @@ impl Engine for InlineEngine {
 
             let started = Instant::now();
             let columns = self
-                .run_step(tables, &current, sql, &destination, format, number, title)
+                .run_step(&run, &current, sql, &destination, format, number, title)
                 .await?;
             let took_ms = started.elapsed().as_millis() as u64;
 
@@ -742,10 +746,15 @@ impl InlineEngine {
         // `None` until the first step has been planned, because until then the
         // real file is what `input` is.
         let mut shape: Option<ArrowSchemaRef> = None;
+        // One session for the whole plan, with only `input` swapped between
+        // steps. A session per step registered every named table again for
+        // each one, and a CSV infers its schema from its rows every time it is
+        // registered.
+        let ctx = self.session_for(tables).await?;
 
         for (index, (title, sql)) in steps.iter().enumerate() {
             let number = index + 1;
-            let ctx = self.session_for(tables).await?;
+            forget_input(&ctx)?;
             match &shape {
                 None => self.register(&ctx, INPUT, start).await?,
                 // An empty table with the right columns. Planning asks a table
@@ -799,7 +808,7 @@ impl InlineEngine {
     #[allow(clippy::too_many_arguments)]
     async fn run_step(
         &self,
-        tables: &[(String, Source)],
+        ctx: &SessionContext,
         input: &Source,
         sql: &str,
         destination: &Path,
@@ -807,11 +816,11 @@ impl InlineEngine {
         number: usize,
         title: &str,
     ) -> Result<usize, DataError> {
-        let ctx = self.session_for(tables).await?;
+        forget_input(ctx)?;
         // Registered last, so it wins. A dataset genuinely called `input` is
         // shadowed inside a recipe rather than fought with — see the note at
         // the top of `recipe.rs`.
-        self.register(&ctx, INPUT, input).await?;
+        self.register(ctx, INPUT, input).await?;
 
         let plan = ctx
             .state()
@@ -883,6 +892,14 @@ impl InlineEngine {
         let batch = one_row(&ctx, source, &format!("SELECT count(*) FROM {TABLE}")).await?;
         Ok(as_u64(&batch, 0).unwrap_or(0))
     }
+}
+
+/// Takes the previous step's `input` out of a session, so the next step's can
+/// be registered under the same name.
+fn forget_input(ctx: &SessionContext) -> Result<(), DataError> {
+    ctx.deregister_table(INPUT)
+        .map(|_| ())
+        .map_err(|e| DataError::Failed(e.to_string()))
 }
 
 /// Whether this plan reads the previous step's rows at all.
