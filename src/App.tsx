@@ -1152,8 +1152,12 @@ export default function App() {
    * The trip the other way, and the pane's only route into a turn besides
    * typing. Nothing is sent: every one of these drafts is the first half of a
    * question, and the second half is the bit only the person knows.
+   *
+   * Stable, because the transcript hands it to every turn and the canvas takes
+   * it too. `Transcript` holds its callbacks steady itself, so this is not what
+   * keeps the turns still — it is what keeps the next reader from wondering.
    */
-  const ask = (text: string) => setDraft({ text });
+  const ask = useCallback((text: string) => setDraft({ text }), []);
 
   /**
    * Takes a conversation's unsent draft as the composer for it goes away.

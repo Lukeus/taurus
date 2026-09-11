@@ -216,6 +216,7 @@ export function Transcript({
   const openDocument = useStable(onOpenDocument);
   const openNote = useStable(onOpenNote);
   const runQuery = useStable(onRunQuery);
+  const editPrompt = useStable(onEditPrompt);
 
   // Follow the stream, but stop fighting the user the moment they scroll up.
   useEffect(() => {
@@ -295,7 +296,7 @@ export function Transcript({
           onRunQuery={runQuery}
           // The newest turn and nothing else. See the prop.
           onRetry={i === conversation.length - 1 ? onRetry : undefined}
-          onEditPrompt={onEditPrompt}
+          onEditPrompt={editPrompt}
         />
       ))}
       <div ref={bottom} />
