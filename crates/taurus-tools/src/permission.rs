@@ -157,6 +157,15 @@ struct Allowlist {
     /// Rule strings, e.g. `write_file` or `run_command:git`.
     #[serde(default)]
     allowed: BTreeSet<String>,
+    /// The file was there and could not be read as a list.
+    ///
+    /// Such a layer grants nothing it held, and is never written back. Reading
+    /// a stray comma as "no grants" and then saving the next one would put a
+    /// list of one over every rule the file held, and the user would find out
+    /// by being asked about everything again with nothing to say why. A grant
+    /// made while the file is broken holds for the rest of the session.
+    #[serde(skip)]
+    unreadable: bool,
 }
 
 /// Both layers, behind one lock.
@@ -322,6 +331,16 @@ impl PermissionEngine {
             Scope::Global => global_allowlist_file(&self.global),
             Scope::Workspace => workspace_allowlist_file(&self.workspace),
         };
+        if list.unreadable {
+            // See `Allowlist::unreadable`. Held in memory, and said, but not
+            // written over a file somebody can still fix.
+            tracing::warn!(
+                path = %path.display(),
+                "not saving a permission grant over a permissions file that does not parse; \
+                 it holds for this session, and fixing the file keeps the rules it had"
+            );
+            return;
+        }
         write_allowlist(&path, list);
     }
 }
@@ -420,22 +439,57 @@ fn global_allowlist_file(home: &Path) -> PathBuf {
     home.join(GLOBAL_ALLOWLIST_FILE)
 }
 
+/// One layer's rules, as the file at `path` has them.
+///
+/// No file is the empty list, which is every workspace's first state. A file
+/// that is there and will not read is named in the log and marked, so it grants
+/// nothing and is never written over. See [`Allowlist::unreadable`].
 fn read_allowlist(path: &Path) -> Allowlist {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Allowlist::default(),
+        Err(e) => return unreadable(path, &e.to_string()),
+    };
+    serde_json::from_str(&text).unwrap_or_else(|e| unreadable(path, &e.to_string()))
 }
 
+fn unreadable(path: &Path, error: &str) -> Allowlist {
+    tracing::warn!(
+        path = %path.display(),
+        error,
+        "a permissions file could not be read, so none of its grants apply until it is fixed"
+    );
+    Allowlist {
+        unreadable: true,
+        ..Allowlist::default()
+    }
+}
+
+/// Puts `list` at `path` without ever leaving it partly written.
+///
+/// A plain overwrite truncates first, and a crash in between leaves a file that
+/// no longer parses — which, read back, grants nothing until somebody fixes a
+/// file they never touched.
 fn write_allowlist(path: &Path, list: &Allowlist) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    // A failure to persist must not fail the tool call the user just approved;
+    // the grant holds for this session, and they are asked again next time.
+    if let Err(e) = replace(path, list) {
+        tracing::warn!(path = %path.display(), error = %e, "could not save a permission grant");
     }
-    if let Ok(json) = serde_json::to_string_pretty(list) {
-        // A failure to persist must not fail the tool call the user just
-        // approved; they simply get asked again next time.
-        let _ = std::fs::write(path, json);
-    }
+}
+
+/// Through a temporary file in the same directory, since a rename is atomic only
+/// within one filesystem, flushed before it is renamed over the old one.
+fn replace(path: &Path, list: &Allowlist) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let json = serde_json::to_string_pretty(list).map_err(std::io::Error::other)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(json.as_bytes())?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -753,6 +807,37 @@ mod tests {
             rule: "write_file".into(),
             scope: Scope::Workspace,
         }));
+    }
+
+    #[tokio::test]
+    async fn a_permissions_file_that_does_not_parse_is_not_written_over() {
+        // A stray comma must not read as "no grants" and then let the next
+        // "always" put a list of one over every rule the file held.
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let broken = r#"{"allowed": ["write_file", "run_command:git",]}"#;
+        std::fs::write(&file, broken).unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowAlways,
+            calls: calls.clone(),
+        }));
+        let tool = Fake {
+            name: "fetch",
+            effect: Effect::Network,
+        };
+        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            broken,
+            "the broken file was written over"
+        );
+
+        // The grant still holds for the rest of the session.
+        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
