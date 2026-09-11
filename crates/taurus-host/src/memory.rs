@@ -144,6 +144,23 @@ fn derived_id(note: &Note) -> String {
     format!("{hash:016x}")
 }
 
+/// Serializes every read-modify-write of a notes file in this process.
+///
+/// Each writer loads the whole set, changes it, and writes it back, so two at
+/// once each write a set missing the other's change. They do run at once:
+/// parallel delegates each hold a `remember` tool, and the drawer's forget and
+/// replace run beside a live turn. One lock for every workspace rather than one
+/// each, because these writes are rare and small, and a map of locks would be
+/// more code than the waiting it saves.
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn writing() -> std::sync::MutexGuard<'static, ()> {
+    // Nothing under this lock can leave the file half-written — see `write` —
+    // so a panic elsewhere while it was held is no reason to refuse the next
+    // note.
+    WRITING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Adds a note, and returns everything now held.
 pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, String> {
     let text = text.trim();
@@ -159,6 +176,7 @@ pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, 
         ));
     }
 
+    let _writing = writing();
     let mut notes = load(workspace);
     notes.push(Note {
         id: fresh_id(),
@@ -178,12 +196,16 @@ pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, 
 
 /// Replaces the whole set, which is how the drawer edits and deletes.
 pub fn replace(workspace: &Path, notes: &[Note]) -> Result<(), String> {
+    let _writing = writing();
     write(workspace, notes)
 }
 
-/// Written to a temporary file and renamed over the old one, so a crash or a
-/// full disk leaves the previous notes intact rather than a half-written file
-/// that loads as a plausible subset of them.
+/// Written through [`crate::config::replace_file`]: a temporary file with a name
+/// of its own, flushed to disk, then renamed over the old one. A crash or a full
+/// disk leaves the previous notes intact rather than a half-written file that
+/// loads as a plausible subset of them.
+///
+/// Called with [`writing`] held.
 fn write(workspace: &Path, notes: &[Note]) -> Result<(), String> {
     let dir = memory_dir(workspace);
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not open {}: {e}", dir.display()))?;
@@ -244,6 +266,7 @@ pub fn section(notes: &[Note], current: &str) -> Option<String> {
 /// the same file, so a note can be gone by the time somebody clicks — and the
 /// state they wanted is the state they get.
 pub fn forget(workspace: &Path, id: &str) -> Result<Vec<Note>, String> {
+    let _writing = writing();
     let notes: Vec<Note> = load(workspace)
         .into_iter()
         .filter(|note| note.id != id)
@@ -376,6 +399,33 @@ mod tests {
 
     fn write(session: &str, text: &str) -> Vec<Note> {
         append(&workspace(), session, text).expect("a valid note")
+    }
+
+    #[test]
+    fn notes_written_at_the_same_moment_are_all_kept() {
+        // Parallel delegates each hold a `remember` tool, and the drawer edits
+        // while a turn runs. Every writer loads the whole set and writes it
+        // back, so two at once without a lock each drop the other's note —
+        // from the one feature meant to outlast a conversation, with nobody
+        // told.
+        let _home = isolated_home();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let writers: Vec<_> = (0..16)
+            .map(|i| {
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    append(&workspace(), "s1", &format!("note {i}"))
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer
+                .join()
+                .expect("a writer panicked")
+                .expect("every write lands");
+        }
+        assert_eq!(load(&workspace()).len(), 16);
     }
 
     #[test]

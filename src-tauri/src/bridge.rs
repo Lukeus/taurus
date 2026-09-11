@@ -77,29 +77,44 @@ impl UiPermissionPrompt {
     }
 }
 
+/// A request parked in one of the pending maps, taken out again however the
+/// wait for it ends.
+///
+/// An answer takes it out, and so does a failed delivery. What neither covers is
+/// the wait being dropped — Stop winning the race against the prompt, a turn
+/// torn down — and an entry left behind then is a request that can still be
+/// answered into nothing, in a map that only grows.
+struct Parked<'a, T> {
+    pending: &'a DashMap<String, T>,
+    id: String,
+}
+
+impl<T> Drop for Parked<'_, T> {
+    fn drop(&mut self) {
+        self.pending.remove(&self.id);
+    }
+}
+
 #[async_trait]
 impl PermissionPrompt for UiPermissionPrompt {
     async fn request(&self, request: PermissionRequest) -> PermissionDecision {
         let id = request.id.clone();
         let (tx, rx) = oneshot::channel();
         self.pending.insert(id.clone(), tx);
+        let _parked = Parked {
+            pending: &self.pending,
+            id,
+        };
 
         if let Err(e) = self.app.emit(EVENT_PERMISSION_REQUEST, &request) {
             // With no UI listening the call can never be approved, so deny
             // rather than block the turn forever.
             warn!(error = %e, "could not deliver permission request; denying");
-            self.pending.remove(&id);
             return PermissionDecision::Deny;
         }
 
-        match rx.await {
-            Ok(decision) => decision,
-            // Sender dropped: the window closed or the session was torn down.
-            Err(_) => {
-                self.pending.remove(&id);
-                PermissionDecision::Deny
-            }
-        }
+        // Sender dropped: the window closed or the session was torn down.
+        rx.await.unwrap_or(PermissionDecision::Deny)
     }
 }
 
@@ -123,18 +138,16 @@ impl Asker for UiAsker {
     async fn ask(&self, id: &str, _questions: &[Question]) -> Option<Vec<Answer>> {
         let (tx, rx) = oneshot::channel();
         self.pending.insert(id.to_string(), tx);
+        let _parked = Parked {
+            pending: &self.pending,
+            id: id.to_string(),
+        };
 
-        match rx.await {
-            Ok(answers) => Some(answers),
-            // Sender dropped: the window closed, or the session was torn down
-            // with a card still on screen. Answering nothing lets the turn
-            // finish on its own judgement instead of holding the loop open on a
-            // card nobody can reach.
-            Err(_) => {
-                self.pending.remove(id);
-                None
-            }
-        }
+        // Sender dropped: the window closed, or the session was torn down with a
+        // card still on screen. Answering nothing lets the turn finish on its
+        // own judgement instead of holding the loop open on a card nobody can
+        // reach.
+        rx.await.ok()
     }
 }
 
@@ -230,5 +243,41 @@ impl TurnRecorder for UiSessionLog {
             // the next thing that lists it.
             warn!(error = %e, "could not announce a new conversation");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_question_whose_wait_is_dropped_leaves_nothing_parked() {
+        // Stop races the wait and wins, so the wait is dropped rather than
+        // answered. An entry left behind is a card that can still be answered
+        // into nothing, in a map that only grows. The permission prompt parks
+        // its requests through the same guard.
+        let pending: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>> = Arc::new(DashMap::new());
+        let asker = Arc::new(UiAsker::new(pending.clone()));
+        let waiting = {
+            let asker = asker.clone();
+            tokio::spawn(async move { asker.ask("call-1", &[]).await })
+        };
+        for _ in 0..100 {
+            if !pending.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            pending.contains_key("call-1"),
+            "the question was never parked"
+        );
+
+        waiting.abort();
+        let _ = waiting.await;
+        assert!(
+            pending.is_empty(),
+            "a dropped wait left its question parked"
+        );
     }
 }

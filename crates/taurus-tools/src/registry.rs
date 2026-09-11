@@ -131,7 +131,16 @@ impl ToolRegistry {
         // ones registered by skills and MCP servers.
         let input = crate::coerce::coerce(input, &tool.input_schema());
 
-        ctx.permissions.check(tool.as_ref(), &input).await?;
+        // Raced against Stop, because it can wait on a person for as long as
+        // they leave a dialog up. Unraced, a question nobody answers holds the
+        // turn past the Stop button, with an answer the only way out. Dropping
+        // the check is what withdraws the question: the prompt behind it takes
+        // its request back out of the pending map when it goes.
+        tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
+            checked = ctx.permissions.check(tool.as_ref(), &input) => checked?,
+        }
 
         // After the permission engine, never before it. A hook here can refuse
         // a call the user allowed and cannot allow one the user refused, so
@@ -402,6 +411,53 @@ mod tests {
                 def.name
             );
         }
+    }
+
+    /// A permission dialog nobody answers.
+    struct Unanswered;
+
+    #[async_trait::async_trait]
+    impl crate::permission::PermissionPrompt for Unanswered {
+        async fn request(
+            &self,
+            _: crate::permission::PermissionRequest,
+        ) -> crate::permission::PermissionDecision {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_reaches_a_call_waiting_on_its_permission_prompt() {
+        // The prompt can wait on a person for as long as they leave it up, and
+        // the turn must not wait past the Stop button with it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let permissions = Arc::new(crate::permission::PermissionEngine::new(
+            &root,
+            root.join(".taurus"),
+            Box::new(Unanswered),
+        ));
+        let ctx = ToolContext::new(root.clone(), permissions, cancel.clone());
+
+        let stop = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            stop.cancel();
+        });
+        let registry = ToolRegistry::with_builtins();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            registry.execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "hi"}),
+                &ctx,
+            ),
+        )
+        .await
+        .expect("Stop must reach a call waiting on its permission prompt");
+        assert!(matches!(outcome, Err(ToolError::Canceled)));
+        assert!(!root.join("a.txt").exists());
     }
 
     /// A hook that is a shell one-liner, written where it can be run from.

@@ -937,38 +937,15 @@ pub fn rename(id: &str, title: Option<&str>) -> Result<SessionMeta, String> {
         ));
     }
 
-    // Beside the file it replaces, so the rename stays within one filesystem —
-    // across filesystems it would become a copy, which is not atomic and is the
-    // whole reason for doing it this way. Hidden and suffixed so a stray one is
-    // recognizable, and so `list` skips it: it scans for `.jsonl`.
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("{} has no directory", path.display()))?;
-    let temp = parent.join(format!(".{id}.rename.tmp"));
-
-    write_then_replace(&temp, &path, &out).map_err(|e| {
-        // Best effort: the original is intact either way, and a leftover
-        // temporary is worth less than the error that explains the failure.
-        let _ = std::fs::remove_file(&temp);
-        format!("{}: {e}", path.display())
-    })?;
+    // Through the atomic replace: a temporary file beside this one, so the
+    // rename stays within one filesystem, flushed before it is renamed over it,
+    // so a power loss leaves the old transcript rather than an empty one. The
+    // temporary's name starts with a dot and does not end in `.jsonl`, so
+    // `list`, which scans for `.jsonl`, never mistakes a stray one for a
+    // conversation.
+    crate::config::replace_file(&path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
 
     read_meta(&path).ok_or_else(|| format!("{} could not be read back", path.display()))
-}
-
-/// Writes `contents` to `temp`, flushes it to the disk, and moves it over
-/// `path`.
-///
-/// The flush is what makes the rename mean anything: without it the directory
-/// entry can reach the disk before the bytes do, and a power loss in that
-/// window leaves the transcript replaced by a file that is empty rather than
-/// one that is old.
-fn write_then_replace(temp: &Path, path: &Path, contents: &str) -> std::io::Result<()> {
-    let mut file = std::fs::File::create(temp)?;
-    file.write_all(contents.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(temp, path)
 }
 
 /// What a given title is stored as, or `None` for one that says nothing.

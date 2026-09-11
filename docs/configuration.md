@@ -26,11 +26,11 @@ file every other project reads.
 | `settings.json` | Last workspace, the two synthesis toggles, theme and theme id, fallback model, `max_iterations`. | The provider and model this project was last worked in, and a step limit for turns here. |
 | `themes/` | Custom palettes, typefaces, wordmarks and corner radii. See [Themes](#themes). | Themes that travel with the project, so a repository can brand the app for everyone who opens it. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
-| `permissions.json` | "Always everywhere" decisions. | "Always here" decisions. |
+| `permissions.json` | "Always everywhere" decisions. A file that does not parse grants nothing, is named in the log, and is never written over, so the rules in it survive being fixed. | "Always here" decisions, read the same way. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
 | `checkpoints/` | Pre-images of changed files, keyed by workspace like sessions and for the same reason. | — |
 | `hooks.json` | Programs run at fixed points in a turn. | Extra hooks, or `{"disabled": true}` to switch an inherited one off. |
-| `trust.json` | Which workspaces' own config may be read. Global only — a repository that declared itself trusted would have declared nothing. | — |
+| `trust.json` | Which workspaces' own config may be read. Global only — a repository that declared itself trusted would have declared nothing. A file that does not parse trusts nothing and is never written over; trusting a folder then says which file to fix. | — |
 
 ## Trusting a workspace
 

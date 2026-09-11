@@ -157,6 +157,15 @@ struct Allowlist {
     /// Rule strings, e.g. `write_file` or `run_command:git`.
     #[serde(default)]
     allowed: BTreeSet<String>,
+    /// The file was there and could not be read as a list.
+    ///
+    /// Such a layer grants nothing it held, and is never written back. Reading
+    /// a stray comma as "no grants" and then saving the next one would put a
+    /// list of one over every rule the file held, and the user would find out
+    /// by being asked about everything again with nothing to say why. A grant
+    /// made while the file is broken holds for the rest of the session.
+    #[serde(skip)]
+    unreadable: bool,
 }
 
 /// Both layers, behind one lock.
@@ -246,12 +255,20 @@ impl PermissionEngine {
         }
 
         let rule = rule_for(tool, input);
-        if self.allowlists.lock().await.permits(&rule) {
+        // A command that does more than run its leading program is never
+        // covered by a standing grant, and is never offered one: the rule is
+        // keyed by the first word, and the first word of `git status; rm -rf ~`
+        // is `git`. See `compound_reason`.
+        let compound = (tool.effect() == Effect::Execute)
+            .then(|| input.get("command").and_then(|c| c.as_str()))
+            .flatten()
+            .and_then(compound_reason);
+        if compound.is_none() && self.allowlists.lock().await.permits(&rule) {
             return Ok(());
         }
 
-        let offer_global = global_offerable(tool.effect());
-        let offer_workspace = self.workspace_rules;
+        let offer_global = compound.is_none() && global_offerable(tool.effect());
+        let offer_workspace = compound.is_none() && self.workspace_rules;
         let request = PermissionRequest {
             id: Uuid::new_v4().to_string(),
             tool: tool.name().to_string(),
@@ -322,6 +339,16 @@ impl PermissionEngine {
             Scope::Global => global_allowlist_file(&self.global),
             Scope::Workspace => workspace_allowlist_file(&self.workspace),
         };
+        if list.unreadable {
+            // See `Allowlist::unreadable`. Held in memory, and said, but not
+            // written over a file somebody can still fix.
+            tracing::warn!(
+                path = %path.display(),
+                "not saving a permission grant over a permissions file that does not parse; \
+                 it holds for this session, and fixing the file keeps the rules it had"
+            );
+            return;
+        }
         write_allowlist(&path, list);
     }
 }
@@ -412,6 +439,111 @@ fn leading_word(command: &str) -> Option<&str> {
         .filter(|w| !w.is_empty())
 }
 
+/// Programs whose whole job is to run the rest of their command line.
+///
+/// A standing grant for one of these is a grant for anything at all, so a
+/// command that starts with one is asked about every time. Matched by name, so
+/// `/usr/bin/env` is `env` and `pwsh.exe` is `pwsh`.
+const WRAPPERS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "env",
+    "xargs",
+    "sudo",
+    "doas",
+    "su",
+    "nohup",
+    "time",
+    "exec",
+    "eval",
+    "command",
+    "builtin",
+    "nice",
+    "timeout",
+    "stdbuf",
+    "watch",
+    "cmd",
+    "powershell",
+    "pwsh",
+];
+
+/// What a command line does beyond running its leading program, if anything.
+///
+/// A standing grant is keyed by the first word, and the first word says nothing
+/// about the rest of the line: `git status; rm -rf ~` starts with `git`. So a
+/// line that chains another command onto it, pipes into another program, runs a
+/// command inside it, writes into a file, or hands itself to one of
+/// [`WRAPPERS`] is never covered by a standing grant and is never offered one.
+/// The answer finishes the sentence "this one …", for the places that say why.
+///
+/// Conservative on purpose. It does not parse shell, so a `;` inside quotes
+/// counts too — `git commit -m "fix; tidy"` is asked about each time — because a
+/// check that parses shell wrongly is worse than one that asks.
+pub fn compound_reason(command: &str) -> Option<&'static str> {
+    let mut line = without_stream_merges(command);
+    // Throwing output away reaches nothing either.
+    for discard in ["&>/dev/null", "&> /dev/null", ">/dev/null", "> /dev/null"] {
+        line = line.replace(discard, " ");
+    }
+    if ["$(", "`", "<(", ">("]
+        .iter()
+        .any(|mark| line.contains(mark))
+    {
+        return Some("runs another command inside it");
+    }
+    if line.contains("&>") {
+        return Some("writes its output into a file");
+    }
+    if line.contains(['\n', '\r', ';', '&']) || line.contains("||") {
+        return Some("chains another command onto it");
+    }
+    if line.contains('|') {
+        return Some("pipes into another program");
+    }
+    if line.contains('>') {
+        return Some("writes its output into a file");
+    }
+    let program = leading_word(command)?;
+    let lower = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let name = lower.strip_suffix(".exe").unwrap_or(&lower);
+    WRAPPERS
+        .contains(&name)
+        .then_some("hands the rest of the line to another program")
+}
+
+/// `command` with every stream merge like `2>&1` taken out.
+///
+/// Sending one of a program's own streams into another reaches nothing new,
+/// and it is in nearly every command a model writes. `>&file`, which writes to
+/// a file, keeps its `>` for the check that comes after.
+fn without_stream_merges(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    while let Some(at) = rest.find(">&") {
+        let after = &rest[at + 2..];
+        let target = after.len()
+            - after
+                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '-')
+                .len();
+        if target == 0 {
+            out.push_str(&rest[..=at]);
+        } else {
+            out.push_str(rest[..at].trim_end_matches(|c: char| c.is_ascii_digit()));
+        }
+        rest = &after[target..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn workspace_allowlist_file(workspace: &Path) -> PathBuf {
     workspace.join(ALLOWLIST_PATH)
 }
@@ -420,22 +552,57 @@ fn global_allowlist_file(home: &Path) -> PathBuf {
     home.join(GLOBAL_ALLOWLIST_FILE)
 }
 
+/// One layer's rules, as the file at `path` has them.
+///
+/// No file is the empty list, which is every workspace's first state. A file
+/// that is there and will not read is named in the log and marked, so it grants
+/// nothing and is never written over. See [`Allowlist::unreadable`].
 fn read_allowlist(path: &Path) -> Allowlist {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Allowlist::default(),
+        Err(e) => return unreadable(path, &e.to_string()),
+    };
+    serde_json::from_str(&text).unwrap_or_else(|e| unreadable(path, &e.to_string()))
 }
 
+fn unreadable(path: &Path, error: &str) -> Allowlist {
+    tracing::warn!(
+        path = %path.display(),
+        error,
+        "a permissions file could not be read, so none of its grants apply until it is fixed"
+    );
+    Allowlist {
+        unreadable: true,
+        ..Allowlist::default()
+    }
+}
+
+/// Puts `list` at `path` without ever leaving it partly written.
+///
+/// A plain overwrite truncates first, and a crash in between leaves a file that
+/// no longer parses — which, read back, grants nothing until somebody fixes a
+/// file they never touched.
 fn write_allowlist(path: &Path, list: &Allowlist) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    // A failure to persist must not fail the tool call the user just approved;
+    // the grant holds for this session, and they are asked again next time.
+    if let Err(e) = replace(path, list) {
+        tracing::warn!(path = %path.display(), error = %e, "could not save a permission grant");
     }
-    if let Ok(json) = serde_json::to_string_pretty(list) {
-        // A failure to persist must not fail the tool call the user just
-        // approved; they simply get asked again next time.
-        let _ = std::fs::write(path, json);
-    }
+}
+
+/// Through a temporary file in the same directory, since a rename is atomic only
+/// within one filesystem, flushed before it is renamed over the old one.
+fn replace(path: &Path, list: &Allowlist) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let json = serde_json::to_string_pretty(list).map_err(std::io::Error::other)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(json.as_bytes())?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -753,6 +920,134 @@ mod tests {
             rule: "write_file".into(),
             scope: Scope::Workspace,
         }));
+    }
+
+    #[tokio::test]
+    async fn a_permissions_file_that_does_not_parse_is_not_written_over() {
+        // A stray comma must not read as "no grants" and then let the next
+        // "always" put a list of one over every rule the file held.
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let broken = r#"{"allowed": ["write_file", "run_command:git",]}"#;
+        std::fs::write(&file, broken).unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowAlways,
+            calls: calls.clone(),
+        }));
+        let tool = Fake {
+            name: "fetch",
+            effect: Effect::Network,
+        };
+        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            broken,
+            "the broken file was written over"
+        );
+
+        // The grant still holds for the rest of the session.
+        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_command_that_only_runs_its_program_is_not_compound() {
+        for plain in [
+            "git status",
+            "cargo test 2>&1",
+            "cargo build 2>/dev/null",
+            "FOO=1 git log --oneline",
+            "npm run build >&2",
+        ] {
+            assert_eq!(compound_reason(plain), None, "{plain}");
+        }
+    }
+
+    #[test]
+    fn a_command_that_does_more_says_what() {
+        for (line, reason) in [
+            ("git status; rm -rf ~", "chains"),
+            ("git status && rm -rf ~", "chains"),
+            ("git status || rm -rf ~", "chains"),
+            ("sleep 100 &", "chains"),
+            ("git status\nrm -rf ~", "chains"),
+            ("git log | sh", "pipes"),
+            ("git show > ~/.bashrc", "file"),
+            ("git show &> out.txt", "file"),
+            ("git log $(rm -rf ~)", "inside"),
+            ("git log `rm -rf ~`", "inside"),
+            ("sh -c 'rm -rf ~'", "hands"),
+            ("/usr/bin/env rm -rf ~", "hands"),
+            ("sudo rm -rf /", "hands"),
+            ("pwsh.exe -c Remove-Item", "hands"),
+        ] {
+            let said = compound_reason(line)
+                .unwrap_or_else(|| panic!("{line:?} passed as a single program"));
+            assert!(said.contains(reason), "{line:?}: {said}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_standing_grant_does_not_cover_a_command_chained_onto_it() {
+        // The grant is keyed by the first word, and the first word of
+        // `git status; rm -rf ~` is `git`.
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"allowed": ["run_command:git"]}"#).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = homes.engine(Box::new(Counting {
+            decision: PermissionDecision::AllowOnce,
+            calls: calls.clone(),
+        }));
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+
+        engine
+            .check(&run, &serde_json::json!({"command": "git status"}))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "the grant covers git");
+
+        engine
+            .check(
+                &run,
+                &serde_json::json!({"command": "git status; rm -rf ~"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "what rides after git was let through unasked"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chained_command_is_never_granted_always() {
+        // Nothing standing is offered, and an answer of "always" regardless is
+        // narrowed to this one call.
+        let (engine, _, homes) = engine(PermissionDecision::AllowAlways);
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+        engine
+            .check(
+                &run,
+                &serde_json::json!({"command": "git status && git push"}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !homes.wrote_workspace(),
+            "a standing grant was saved for a chained command"
+        );
     }
 
     #[test]

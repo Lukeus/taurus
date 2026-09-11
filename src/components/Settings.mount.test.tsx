@@ -274,6 +274,63 @@ describe("folding a provider card", () => {
   });
 });
 
+describe("removing a provider", () => {
+  /** Two hosted providers, so both cards have a key field. */
+  const HOSTED = [
+    { ...SAVED[1], id: "work" },
+    { ...SAVED[1], id: "personal" },
+  ];
+
+  const keyField = (card: Element) =>
+    card.querySelector('input[type="password"]') as HTMLInputElement | null;
+
+  const remove = (card: Element) => {
+    const button = [...card.querySelectorAll("button")].find(
+      (b) => b.textContent === "Remove",
+    );
+    if (!button) throw new Error(`no Remove button in: ${card.outerHTML}`);
+    return act(() =>
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    );
+  };
+
+  it("takes the card's typed key with it rather than handing it to the next", async () => {
+    // Each card holds a key typed but not yet stored, and whether it is open,
+    // in its own state. Keyed by position, removing the first card hands both
+    // to the one that moves up into its place, and the key typed for one
+    // provider is then a press of Store away from being filed under another.
+    invoke.mockImplementation((...args: unknown[]) => {
+      switch (args[0]) {
+        case "list_global_providers":
+          return Promise.resolve(HOSTED);
+        case "keychain_available":
+          return Promise.resolve(true);
+        case "list_key_statuses":
+          return Promise.resolve([
+            ["work", { kind: "missing" }],
+            ["personal", { kind: "missing" }],
+          ]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    const host = await mount();
+    await toggle(cards(host)[0]);
+    await typeInto(keyField(cards(host)[0])!, "sk-meant-for-work");
+
+    await remove(cards(host)[0]);
+    expect(cards(host)).toHaveLength(1);
+    const left = cards(host)[0];
+    expect((left.querySelector(".settings-id") as HTMLInputElement).value).toBe(
+      "personal",
+    );
+    expect(isOpen(left)).toBe(false);
+
+    await toggle(left);
+    expect(keyField(cards(host)[0])?.value).toBe("");
+  });
+});
+
 describe("the synthesis toggles", () => {
   it("offers skills and sub-agents as separate switches", async () => {
     // One capability is a procedure the model follows and the other is a worker

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import * as api from "../lib/api";
 import type {
@@ -59,17 +59,37 @@ export function ChangesDrawer({
   // One turn open at a time. Expanding every diff in a long conversation is
   // both a wall of text and a request per turn to build it.
   const [open, setOpen] = useState<number | null>(null);
+  // The conversation the pane is showing now, for answers that arrive after a
+  // switch. The pane is not remounted when the conversation changes, and an
+  // answer about the one it left must not land in the one it moved to — least
+  // of all a rewind plan, whose button rewinds whichever conversation is
+  // current when it is pressed.
+  const showing = useRef(sessionId);
 
-  const refresh = () =>
-    api
-      .listCheckpoints(sessionId)
-      .then(setTurns)
+  const refresh = () => {
+    const asked = sessionId;
+    return api
+      .listCheckpoints(asked)
+      .then((list) => {
+        if (showing.current === asked) setTurns(list);
+      })
       .catch((e) => {
+        if (showing.current !== asked) return;
         setError(String(e));
         setTurns([]);
       });
+  };
 
   useEffect(() => {
+    showing.current = sessionId;
+    // Everything the pane holds belongs to one conversation. A plan kept
+    // across a switch is offered against the next conversation's turn of the
+    // same number, and confirming it rewinds that conversation instead.
+    setTurns(null);
+    setPlan(null);
+    setDone(null);
+    setOpen(null);
+    setError(null);
     refresh();
     // Read on open rather than held: someone switches branches in a terminal
     // beside this window, and a stale answer would be wrong exactly at the
@@ -79,27 +99,47 @@ export function ChangesDrawer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  // A rewind is the one write here meant never to be a single click, so it is
+  // not allowed to become two either: a second press while the first is in
+  // flight would be a second rewind racing the first over the same files.
+  const [applying, setApplying] = useState(false);
+  // Which preview was asked for last. Two quick presses on different turns
+  // are two requests, and the one that answers last is not always the one
+  // asked last; a plan for the earlier turn landing second would put the
+  // wrong list of files above the confirm button.
+  const asking = useRef(0);
+
   const preview = async (turn: number) => {
+    const asked = sessionId;
+    const ticket = ++asking.current;
+    const current = () => showing.current === asked && asking.current === ticket;
     setError(null);
     setDone(null);
     try {
-      setPlan({ turn, rewind: await api.rewindTo(sessionId, turn, true) });
+      const rewind = await api.rewindTo(asked, turn, true);
+      if (current()) setPlan({ turn, rewind });
     } catch (e) {
-      setError(String(e));
+      if (current()) setError(String(e));
     }
   };
 
   const apply = async () => {
-    if (!plan) return;
+    if (!plan || applying) return;
+    const asked = sessionId;
     setError(null);
+    setApplying(true);
     try {
-      setDone(await api.rewindTo(sessionId, plan.turn, false));
+      const rewound = await api.rewindTo(asked, plan.turn, false);
+      if (showing.current !== asked) return;
+      setDone(rewound);
       setPlan(null);
       // The undone turns are gone from the workspace but still in the log, so
       // the list is re-read rather than assumed.
       await refresh();
     } catch (e) {
-      setError(String(e));
+      if (showing.current === asked) setError(String(e));
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -282,8 +322,15 @@ export function ChangesDrawer({
                         </p>
                       ))}
                       <div className="actions">
-                        <button className="danger" onClick={apply}>
-                          Rewind to before turn {turn.turn}
+                        <button
+                          className="danger"
+                          // A running turn could be writing the same files, and
+                          // the backend refuses a rewind under one anyway; see
+                          // the preview button above.
+                          disabled={applying || busy}
+                          onClick={apply}
+                        >
+                          {applying ? "Rewinding…" : `Rewind to before turn ${turn.turn}`}
                         </button>
                         <button onClick={() => setPlan(null)}>Cancel</button>
                       </div>

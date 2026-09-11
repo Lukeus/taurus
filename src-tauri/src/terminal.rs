@@ -88,15 +88,26 @@ pub enum TerminalEvent {
 
 /// One live shell.
 ///
-/// Three handles onto the same pty, split by what they are for and locked
-/// separately: a resize must not wait behind a keystroke, and neither waits
-/// behind the reader, which does not appear here at all — it belongs to the
-/// blocking thread that owns the read loop.
+/// Three handles onto the same pty, split by what they are for: a resize must
+/// not wait behind a keystroke, and neither waits behind the reader, which does
+/// not appear here at all — it belongs to the blocking thread that owns the
+/// read loop.
 struct Shell {
     /// Kept for [`MasterPty::resize`] and nothing else. Dropping it would close
     /// the terminal, so it is held for the life of the session.
     master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// Keystrokes on their way to the pty, in the order they were typed.
+    ///
+    /// A queue rather than the writer itself. A pty's input buffer holds a few
+    /// kilobytes, and a program that is not reading its input — a build, a
+    /// `sleep` — is filled by one paste, after which a write blocks until the
+    /// program reads again. That wait is fine on a thread that exists to do
+    /// it, and nowhere else: made from a command handler, it holds a runtime
+    /// worker for as long as the program ignores its input, and every
+    /// keystroke after it holds another. So the writer lives on its own
+    /// thread, and sending a keystroke never waits for anything. See
+    /// [`pump_input`].
+    input: std::sync::mpsc::Sender<Vec<u8>>,
     /// Cloned from the child at spawn, because the child itself moves into the
     /// read loop. Without it there is no way to end a shell that is ignoring
     /// its input — and a blocking read cannot be cancelled, so killing the
@@ -105,12 +116,26 @@ struct Shell {
 }
 
 impl Shell {
+    fn new(
+        master: Box<dyn MasterPty + Send>,
+        writer: Box<dyn Write + Send>,
+        killer: Box<dyn ChildKiller + Send + Sync>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            master: Mutex::new(master),
+            input: pump_input(writer)?,
+            killer: Mutex::new(killer),
+        })
+    }
+
+    /// Queues `bytes` for the shell and returns at once.
+    ///
+    /// The only failure is a shell that has gone: the input thread ends when a
+    /// write fails, and the queue with it.
     fn write(&self, bytes: &[u8]) -> Result<(), String> {
-        let mut writer = lock(&self.writer);
-        writer
-            .write_all(bytes)
-            .and_then(|()| writer.flush())
-            .map_err(|e| format!("could not send input to the shell: {e}"))
+        self.input
+            .send(bytes.to_vec())
+            .map_err(|_| "that terminal has closed".to_string())
     }
 
     fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
@@ -127,6 +152,34 @@ impl Shell {
     fn kill(&self) {
         let _ = lock(&self.killer).kill();
     }
+}
+
+/// Moves input from a queue into the pty, for the life of the shell.
+///
+/// On a thread of its own, because `portable-pty` has no async writer and this
+/// one can sit in a single write for as long as the program behind it ignores
+/// its input. Not on the runtime's blocking pool: those threads are shared and
+/// bounded, and a wait with no bound does not belong in one.
+///
+/// Ends when its queue does — the shell is removed and its sender dropped — or
+/// when a write fails because the shell has gone, which drops the receiver and
+/// so turns the next keystroke into "that terminal has closed".
+fn pump_input(
+    mut writer: Box<dyn Write + Send>,
+) -> Result<std::sync::mpsc::Sender<Vec<u8>>, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::Builder::new()
+        .name("terminal-input".into())
+        .spawn(move || {
+            for bytes in rx {
+                if let Err(e) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
+                    warn!(error = %e, "terminal input had nowhere to go");
+                    return;
+                }
+            }
+        })
+        .map_err(|e| format!("could not start the terminal's input thread: {e}"))?;
+    Ok(tx)
 }
 
 /// Every shell this window has open, keyed by the id the pane holds.
@@ -207,14 +260,8 @@ impl Terminals {
         drop(pair.slave);
 
         let id = uuid::Uuid::new_v4().to_string();
-        self.open.insert(
-            id.clone(),
-            Arc::new(Shell {
-                master: Mutex::new(pair.master),
-                writer: Mutex::new(writer),
-                killer: Mutex::new(killer),
-            }),
-        );
+        let shell = Shell::new(pair.master, writer, killer)?;
+        self.open.insert(id.clone(), Arc::new(shell));
 
         let (tx, rx) = mpsc::channel::<Pump>(READ_BACKLOG);
 
@@ -595,6 +642,60 @@ mod tests {
             );
         }
         assert!(terminals.open.is_empty());
+    }
+
+    /// A child that is never there, for a shell built around a bare pty.
+    #[derive(Debug)]
+    struct NoChild;
+
+    impl ChildKiller for NoChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(NoChild)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_paste_into_a_program_that_is_not_reading_does_not_hold_the_caller() {
+        // A pty's input buffer holds a few kilobytes, and with nothing reading
+        // the other end a write past that waits until something does. Here
+        // nothing ever will: the far side is held open and never read, which
+        // is what a build or a `sleep` looks like from the pane. A keystroke
+        // handler that waited along with it would hold a runtime worker for as
+        // long as that lasts, and every keystroke after it another.
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("a pty must open");
+        let writer = pair.master.take_writer().expect("a pty has a writer");
+        let shell =
+            Shell::new(pair.master, writer, Box::new(NoChild)).expect("the input thread starts");
+        let terminals = Arc::new(Terminals::default());
+        terminals.open.insert("stalled".into(), Arc::new(shell));
+
+        let paste = "echo pasted\n".repeat(64 * 1024);
+        let writing = terminals.clone();
+        let written = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || writing.write("stalled", paste.as_bytes())),
+        )
+        .await;
+        // Released before the verdict, so a write stuck in the pty ends either
+        // way rather than outliving the test.
+        terminals.close("stalled");
+        drop(pair.slave);
+
+        written
+            .expect("a paste into a program that is not reading held the caller")
+            .expect("the write task ran")
+            .expect("a live shell takes input");
     }
 
     #[test]

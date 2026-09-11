@@ -74,15 +74,19 @@ function backend(replies: Record<string, unknown>) {
 }
 
 /** Mounts the drawer and flushes the effects its open fires. */
-async function open() {
+async function open(sessionId = "s1") {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  await act(async () => {
-    root.render(<ChangesDrawer sessionId="s1" busy={false} onClose={() => {}} />);
-  });
+  const render = (id: string) =>
+    act(async () => {
+      root.render(<ChangesDrawer sessionId={id} busy={false} onClose={() => {}} />);
+    });
+  await render(sessionId);
   return {
     host,
+    /** Moves the same mounted pane to another conversation, as App does. */
+    switchTo: render,
     html: () => host.innerHTML,
     // A diff line is one span per run of syntax now, and another wherever the
     // intra-line mark starts and stops. Anything asking whether a line of code
@@ -117,6 +121,125 @@ async function open() {
 beforeEach(() => invoke.mockReset());
 afterEach(() => {
   document.body.innerHTML = "";
+});
+
+describe("confirming a rewind", () => {
+  const REWIND = {
+    restored: [{ action: "reverted", path: "src/main.rs" }],
+    warnings: [],
+  };
+
+  it("sends one rewind however many times it is pressed", async () => {
+    // The write this pane exists to keep from being a single click must not
+    // become two: a second press while the first is in flight is a second
+    // rewind racing it over the same files.
+    const writes: unknown[] = [];
+    invoke.mockImplementation(
+      (command: string, args?: { dryRun?: boolean }) => {
+        if (command === "list_checkpoints") {
+          return Promise.resolve([TURN, LATER_TURN]);
+        }
+        if (command === "rewind_to") {
+          if (args?.dryRun) return Promise.resolve(REWIND);
+          writes.push(args);
+          return new Promise(() => {});
+        }
+        return Promise.resolve([]);
+      },
+    );
+    const ui = await open();
+    await ui.click("Rewind to before this");
+    const confirm = () =>
+      ui.host.querySelector(".rewind-plan .danger") as HTMLButtonElement;
+    await act(async () => confirm().click());
+    await act(async () => confirm().click());
+
+    expect(writes).toHaveLength(1);
+    ui.unmount();
+  });
+
+  it("shows the plan for the turn asked about last", async () => {
+    // Two quick presses are two requests, and the one that answers last is
+    // not always the one asked last.
+    const answers: Record<number, (value: unknown) => void> = {};
+    invoke.mockImplementation(
+      (command: string, args?: { turn?: number }) => {
+        if (command === "list_checkpoints") {
+          return Promise.resolve([TURN, LATER_TURN]);
+        }
+        if (command === "rewind_to") {
+          return new Promise((resolve) => {
+            answers[args?.turn ?? 0] = resolve;
+          });
+        }
+        return Promise.resolve([]);
+      },
+    );
+    const ui = await open();
+    const previews = () =>
+      [...ui.host.querySelectorAll("button")].filter((b) =>
+        (b.textContent ?? "").includes("Rewind to before this"),
+      );
+    // Newest first, so turn 2 and then turn 1.
+    await act(async () => previews()[0].click());
+    await act(async () => previews()[1].click());
+    await act(async () => answers[1](REWIND));
+    await act(async () => answers[2](REWIND));
+
+    expect(ui.text()).toContain("Rewind to before turn 1");
+    expect(ui.text()).not.toContain("Rewind to before turn 2");
+    ui.unmount();
+  });
+});
+
+describe("switching conversations", () => {
+  const REWIND = {
+    restored: [{ action: "reverted", path: "src/main.rs" }],
+    warnings: [],
+  };
+
+  it("drops a rewind plan made in the conversation it left", async () => {
+    // The pane is not remounted when the conversation changes. A plan kept
+    // across the switch is offered against the next conversation's turn of
+    // the same number, and its button rewinds that conversation instead.
+    backend({
+      list_checkpoints: [TURN, LATER_TURN],
+      repo_status: { repository: false },
+      rewind_to: REWIND,
+    });
+    const ui = await open("s1");
+    await ui.click("Rewind to before this");
+    expect(ui.text()).toContain("Rewind to before turn 2");
+
+    await ui.switchTo("s2");
+    expect(ui.text()).not.toContain("Rewind to before turn 2");
+    expect(ui.text()).not.toContain("This cannot be undone");
+    ui.unmount();
+  });
+
+  it("ignores a preview that answers after the switch", async () => {
+    // The same failure by another road: the question was asked in one
+    // conversation and answered once the pane was showing the next.
+    let answer: (value: unknown) => void = () => {};
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_checkpoints") {
+        return Promise.resolve([TURN, LATER_TURN]);
+      }
+      if (command === "rewind_to") {
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    });
+    const ui = await open("s1");
+    await ui.click("Rewind to before this");
+    await ui.switchTo("s2");
+    await act(async () => answer(REWIND));
+
+    expect(ui.text()).not.toContain("This cannot be undone");
+    ui.unmount();
+  });
 });
 
 describe("reading a turn", () => {

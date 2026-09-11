@@ -993,6 +993,59 @@ describe("a version kept for a note that was left", () => {
     });
   });
 
+  it("keeps yours when the save before a switch is refused, rather than dropping it", async () => {
+    // The flush `App` runs before a switch can itself come back refused:
+    // somebody wrote the file after this editor read it. Nothing on screen
+    // holds the text once the folder changes, so it has to be kept like any
+    // other version left behind.
+    vi.useFakeTimers();
+    const disk = contested();
+    const errors: string[] = [];
+    const handle: { notebook?: Notebook } = {};
+    const { host, click, type, rerender } = await mount({
+      errors,
+      onNotebook: (notebook) => (handle.notebook = notebook),
+    });
+    await click(rows(host)[0]);
+    disk.one = { ...page("One", "theirs\n"), fingerprint: "44-3000" };
+    await type(host.querySelector("textarea"), "mine\n");
+
+    // Straight to the switch, before the autosave has had its turn.
+    await act(async () => {
+      await handle.notebook!.flush(true);
+    });
+    await rerender({ workspace: "/code/elsewhere" });
+    expect(errors.join()).toContain("is kept for when taurus is open again");
+
+    await rerender({ workspace: "/code/taurus" });
+    await click(rows(host)[0]);
+    expect(host.querySelector(".notes-conflict")).not.toBeNull();
+    expect(host.querySelector("textarea")?.value).toBe("mine\n");
+  });
+
+  it("keeps yours when the save before a switch fails", async () => {
+    twoNotes({ save_page: () => new Error("The disk is full.") });
+    const errors: string[] = [];
+    const handle: { notebook?: Notebook } = {};
+    const { host, click, type, rerender } = await mount({
+      errors,
+      onNotebook: (notebook) => (handle.notebook = notebook),
+    });
+    await click(rows(host)[0]);
+    await type(host.querySelector("textarea"), "# One\n\nmine\n");
+
+    await act(async () => {
+      await handle.notebook!.flush(true);
+    });
+    await rerender({ workspace: "/code/elsewhere" });
+    expect(errors.join()).toContain("The disk is full.");
+    expect(errors.join()).toContain("is kept for when taurus is open again");
+
+    await rerender({ workspace: "/code/taurus" });
+    await click(rows(host)[0]);
+    expect(host.querySelector("textarea")?.value).toBe("# One\n\nmine\n");
+  });
+
   it("keeps a project note's version with its folder, across a switch and back", async () => {
     vi.useFakeTimers();
     const disk = contested();

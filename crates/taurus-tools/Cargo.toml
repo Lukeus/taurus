@@ -21,6 +21,7 @@ serde_json.workspace = true
 portable-pty.workspace = true
 dunce.workspace = true
 similar.workspace = true
+tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -29,8 +30,7 @@ ts-rs.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio ={ workspace = true, features = ["rt", "macros"] }
 tokio-util.workspace = true
 
 [lints]

@@ -230,66 +230,172 @@ impl Tool for RunSkillScript {
             .spawn()
             .map_err(|e| ToolError::Failed(format!("cannot start {interpreter_name}: {e}")))?;
 
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        // Both pipes are drained from the moment the script starts, beside the
+        // wait rather than after it. A pipe holds 64 KB, and a script that
+        // prints more than that blocks on its next write until somebody reads:
+        // read only once it has exited, it never exits, and the timeout and
+        // Stop would both be stuck inside the same wait.
+        let stdout = Drain::start(child.stdout.take());
+        let stderr = Drain::start(child.stderr.take());
         let timeout =
             std::time::Duration::from_secs(input.timeout_secs.unwrap_or(120).clamp(1, 600));
 
-        let status = tokio::select! {
+        let ended = tokio::select! {
             biased;
-            _ = ctx.cancel.cancelled() => {
-                let _ = child.start_kill();
-                return Err(ToolError::Canceled);
-            }
-            result = tokio::time::timeout(timeout, child.wait()) => result,
+            _ = ctx.cancel.cancelled() => Ended::Canceled,
+            result = tokio::time::timeout(timeout, child.wait()) => match result {
+                Ok(Ok(status)) => Ended::Exited(status),
+                Ok(Err(e)) => Ended::Failed(e),
+                Err(_) => Ended::TimedOut,
+            },
         };
-
-        let out = read_pipe(stdout).await;
-        let err = read_pipe(stderr).await;
-
-        let status = match status {
-            Ok(Ok(status)) => status,
-            Ok(Err(e)) => return Err(ToolError::Failed(e.to_string())),
-            Err(_) => {
-                let _ = child.start_kill();
-                return Err(ToolError::Failed(format!(
-                    "{} timed out after {}s",
-                    input.script,
-                    timeout.as_secs()
-                )));
-            }
-        };
-
-        let mut report = String::new();
-        if !out.trim().is_empty() {
-            report.push_str(&out);
+        if !matches!(ended, Ended::Exited(_)) {
+            // Before anything waits on the pipes: they reach end-of-file only
+            // once the script is gone.
+            let _ = child.start_kill();
         }
-        if !err.trim().is_empty() {
-            if !report.is_empty() {
-                report.push('\n');
-            }
-            report.push_str("[stderr]\n");
-            report.push_str(&err);
-        }
-        if report.trim().is_empty() {
-            report.push_str("(no output)");
+        if matches!(ended, Ended::Canceled) {
+            stdout.abandon();
+            stderr.abandon();
+            return Err(ToolError::Canceled);
         }
 
-        Ok(match status.code() {
-            Some(0) => report.into(),
-            Some(code) => format!("Exit code {code}\n{report}").into(),
-            None => format!("Killed by signal\n{report}").into(),
-        })
+        let (out, err) = tokio::join!(stdout.finish(), stderr.finish());
+        let report = report(&out, &err, &input.script, ctx);
+
+        match ended {
+            Ended::Exited(status) => Ok(match status.code() {
+                Some(0) => report.into(),
+                Some(code) => format!("Exit code {code}\n{report}").into(),
+                None => format!("Killed by signal\n{report}").into(),
+            }),
+            // What it printed is kept: a script that hangs on its last step has
+            // usually said why by then, and a run that comes back empty is run
+            // again and costs the whole timeout twice.
+            Ended::TimedOut => Err(ToolError::Failed(format!(
+                "{} timed out after {}s and was stopped. Its output until then:\n{report}",
+                input.script,
+                timeout.as_secs()
+            ))),
+            Ended::Failed(e) => Err(ToolError::Failed(e.to_string())),
+            Ended::Canceled => Err(ToolError::Canceled),
+        }
     }
 }
 
-async fn read_pipe<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) -> String {
-    use tokio::io::AsyncReadExt;
-    let mut buf = Vec::new();
-    if let Some(mut pipe) = pipe {
-        let _ = pipe.read_to_end(&mut buf).await;
+/// How a script run came to an end.
+enum Ended {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+    Canceled,
+    /// Waiting on the script failed, which is the OS refusing rather than the
+    /// script doing anything.
+    Failed(std::io::Error),
+}
+
+/// How long a script's pipes are read for once it has gone.
+///
+/// A pipe reaches end-of-file when the last process holding it closes it, and
+/// that can be something the script started and left running. What is already
+/// in the pipe arrives in well under this; what is still being written by a
+/// process nobody is waiting on is not a reason to hold the turn.
+const PIPE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// One of a script's pipes, read as it arrives.
+///
+/// On a task of its own, into a buffer shared with the tool rather than handed
+/// back at the end, so a script that is stopped still has what it printed
+/// before then, and a pipe that never closes costs [`PIPE_GRACE`] rather than
+/// the turn.
+struct Drain {
+    buf: Arc<std::sync::Mutex<Vec<u8>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drain {
+    fn start<R>(pipe: Option<R>) -> Self
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        let buf = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = buf.clone();
+        let task = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let Some(mut pipe) = pipe else {
+                return;
+            };
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = pipe.read(&mut chunk).await {
+                if n == 0 {
+                    break;
+                }
+                sink.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend_from_slice(&chunk[..n]);
+            }
+        });
+        Self { buf, task }
     }
-    String::from_utf8_lossy(&buf).into_owned()
+
+    /// What was read, once the pipe closes or [`PIPE_GRACE`] has passed.
+    async fn finish(mut self) -> String {
+        if tokio::time::timeout(PIPE_GRACE, &mut self.task)
+            .await
+            .is_err()
+        {
+            self.task.abort();
+        }
+        let buf = self.buf.lock().unwrap_or_else(|e| e.into_inner());
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    fn abandon(self) {
+        self.task.abort();
+    }
+}
+
+/// What share of the window a script's report may take, and its bounds. The
+/// same as a command's: a script is one.
+const OUTPUT_SHARE: f32 = 0.08;
+const MIN_OUTPUT_BYTES: usize = 4 * 1024;
+const MAX_OUTPUT_BYTES: usize = 512 * 1024;
+
+/// A script's output as the model reads it: stdout, then stderr under its own
+/// heading, cut to what the window can spare.
+///
+/// The whole of it is written out first where there is anywhere to write it, so
+/// the middle of a long report is a `read_file` away rather than gone — the
+/// bargain the shell tool and MCP results strike.
+fn report(out: &str, err: &str, script: &str, ctx: &ToolContext) -> String {
+    let mut report = String::new();
+    if !out.trim().is_empty() {
+        report.push_str(out);
+    }
+    if !err.trim().is_empty() {
+        if !report.is_empty() {
+            report.push('\n');
+        }
+        report.push_str("[stderr]\n");
+        report.push_str(err);
+    }
+    if report.trim().is_empty() {
+        return "(no output)".into();
+    }
+
+    let cap = ctx
+        .budget
+        .bytes(OUTPUT_SHARE, MIN_OUTPUT_BYTES, MAX_OUTPUT_BYTES);
+    if report.len() <= cap {
+        return report;
+    }
+    let spilled = taurus_tools::overflow::spill(&report, script, ctx);
+    taurus_tools::overflow::cut(&report, cap, |omitted| match &spilled {
+        Some(path) => format!(
+            "{omitted} bytes omitted; the whole output was written to {} — read_file it",
+            path.display()
+        ),
+        None => format!("{omitted} bytes omitted"),
+    })
 }
 
 // ------------------------------------------------------------- propose_skill
@@ -653,6 +759,99 @@ mod tests {
             .await
             .unwrap();
         assert!(out.to_text().contains("marker.txt"));
+    }
+
+    #[tokio::test]
+    async fn run_skill_script_that_prints_more_than_a_pipe_holds_still_finishes() {
+        // A pipe holds 64 KB, and a script that prints more than that blocks on
+        // its next write until somebody reads. Read only once it has exited, it
+        // never exits, and neither the timeout nor Stop can reach it.
+        let f = fixture(&[(
+            "chatty",
+            "scripts:\n  - path: flood.sh\n    interpreter: sh\n    description: prints a lot\n",
+        )]);
+        write_script(
+            f.skills.path(),
+            "chatty",
+            "flood.sh",
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 5000 ]; do\n  \
+             echo \"line $i of a report long enough to fill a pipe\"\n  \
+             i=$((i + 1))\ndone\necho finished >&2\n",
+        );
+
+        let tool = RunSkillScript::new(f.catalog.clone());
+        let run = tool.execute(
+            serde_json::json!({"skill": "chatty", "script": "flood.sh", "timeout_secs": 60}),
+            &f.ctx,
+        );
+        let out = tokio::time::timeout(std::time::Duration::from_secs(30), run)
+            .await
+            .expect("a script that fills its pipe must still finish")
+            .unwrap();
+        let text = out.to_text();
+        assert!(text.contains("line 0 of"), "the start is kept");
+        assert!(text.contains("finished"), "stderr is still read");
+        // Five thousand lines is past what one answer may take.
+        assert!(text.contains("bytes omitted"), "not cut to the budget");
+    }
+
+    #[tokio::test]
+    async fn a_script_past_its_timeout_is_stopped_before_its_output_is_read() {
+        // Its pipes close only once it is gone. Read first, the tool waits out
+        // the whole script rather than the timeout it was given.
+        let f = fixture(&[(
+            "slow",
+            "scripts:\n  - path: slow.sh\n    interpreter: sh\n    description: takes too long\n",
+        )]);
+        write_script(
+            f.skills.path(),
+            "slow",
+            "slow.sh",
+            "#!/bin/sh\necho started\nsleep 30\necho never\n",
+        );
+
+        let tool = RunSkillScript::new(f.catalog.clone());
+        let run = tool.execute(
+            serde_json::json!({"skill": "slow", "script": "slow.sh", "timeout_secs": 1}),
+            &f.ctx,
+        );
+        let message = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+            .await
+            .expect("the timeout must end the script, not wait it out")
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("timed out after 1s"), "{message}");
+        assert!(
+            message.contains("started"),
+            "what it printed is kept: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_script_that_leaves_something_running_is_not_waited_for() {
+        // A pipe closes when the last process holding it does, and that can be
+        // something the script started and left behind: a server, a watcher.
+        let f = fixture(&[(
+            "starter",
+            "scripts:\n  - path: start.sh\n    interpreter: sh\n    description: starts something\n",
+        )]);
+        write_script(
+            f.skills.path(),
+            "starter",
+            "start.sh",
+            "#!/bin/sh\nsleep 30 &\necho started it\n",
+        );
+
+        let tool = RunSkillScript::new(f.catalog.clone());
+        let run = tool.execute(
+            serde_json::json!({"skill": "starter", "script": "start.sh"}),
+            &f.ctx,
+        );
+        let out = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+            .await
+            .expect("a finished script must not wait on what it left running")
+            .unwrap();
+        assert!(out.to_text().contains("started it"), "{out}");
     }
 
     #[tokio::test]

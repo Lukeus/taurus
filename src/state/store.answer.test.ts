@@ -72,3 +72,17 @@ describe("answering a question card", () => {
     expect(useStore.getState().error).toContain("the call is gone");
   });
 });
+
+describe("a turn that ends", () => {
+  it("takes down a permission dialog it left up", async () => {
+    // Stop withdraws the question the turn was waiting on, so a dialog still
+    // up once the turn has ended would answer into nothing — and left on
+    // screen, it reads as a turn that is still waiting.
+    invoke.mockResolvedValue(undefined);
+    useStore.setState({ session: { id: "s1" } as never, busy: false, queued: null });
+
+    await useStore.getState().send("write the file");
+
+    expect(useStore.getState().permission).toBeNull();
+  });
+});

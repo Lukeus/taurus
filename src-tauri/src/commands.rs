@@ -2722,12 +2722,15 @@ pub async fn terminal_open(
 /// Sends keystrokes. `data` is the text the emulator produced, escape
 /// sequences and all — arrow keys and Ctrl chords arrive here as the bytes a
 /// terminal would have sent.
+///
+/// Not async, and that is the point. Tauri runs a plain command where its
+/// message arrives, one after another, so keystrokes reach the shell in the
+/// order they were typed; an async command is spawned per message, and two of
+/// them are free to land in either order. It can afford to be plain because it
+/// only queues the bytes — the write itself happens on the shell's own input
+/// thread, and nothing here waits for a program to read. See `terminal::Shell`.
 #[tauri::command]
-pub async fn terminal_write(
-    state: State<'_, Arc<AppState>>,
-    id: String,
-    data: String,
-) -> CmdResult<()> {
+pub fn terminal_write(state: State<'_, Arc<AppState>>, id: String, data: String) -> CmdResult<()> {
     state.terminals.write(&id, data.as_bytes())
 }
 

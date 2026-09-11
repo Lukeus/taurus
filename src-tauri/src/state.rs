@@ -185,6 +185,27 @@ impl AppState {
             .ok_or_else(|| format!("no session '{id}'"))
     }
 
+    /// Stops every turn in flight and withdraws every question they were
+    /// waiting on.
+    ///
+    /// For a page that has been replaced: a reload, a dev server restarting.
+    /// The frontend that started those turns is gone, and so is every dialog it
+    /// was showing. A turn parked on one would wait forever holding its
+    /// session's lock, and delete, rewind, and commit would refuse that
+    /// conversation until the app restarted. Clearing the maps drops each
+    /// parked sender, so a prompt the cancel has not reached yet is answered
+    /// with a denial rather than left.
+    pub async fn abandon_turns(&self) {
+        // Collected first, so no map guard is held across an await.
+        let entries: Vec<Arc<SessionEntry>> =
+            self.sessions.iter().map(|e| e.value().clone()).collect();
+        for entry in entries {
+            entry.cancel.lock().await.cancel();
+        }
+        self.pending_permissions.clear();
+        self.pending_questions.clear();
+    }
+
     /// Marks the first reload done, releasing anything waiting on it.
     pub fn mark_loaded(&self) {
         let _ = self.loaded.send(true);
