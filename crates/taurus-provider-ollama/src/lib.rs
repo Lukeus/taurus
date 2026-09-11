@@ -347,11 +347,9 @@ impl Provider for OllamaProvider {
             };
 
             if let Some(error) = chunk.error {
-                return Err(ProviderError::Api {
+                return Err(ProviderError::Stream {
                     provider: PROVIDER_ID.into(),
-                    status: 200,
-                    body: error,
-                    retry_after: None,
+                    message: error,
                 });
             }
 
@@ -610,5 +608,45 @@ mod tests {
             matches!(outcome, Err(ProviderError::Stalled { .. })),
             "{outcome:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_error_inside_the_stream_is_not_filed_as_a_client_error() {
+        // Ollama answers 200 and then reports the failure in the body. Filed
+        // as an API error with that status, it read as a 4xx and was never
+        // retried.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "capabilities": ["completion", "tools"],
+                "model_info": { "qwen3moe.context_length": 32768 },
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "{\"error\":\"model runner has unexpectedly stopped\"}\n",
+                "application/x-ndjson",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(server.uri());
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let error = provider
+            .stream(
+                ChatRequest::new("qwen3-coder", vec![Message::user("go")]),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("the stream reported a failure");
+
+        assert!(matches!(error, ProviderError::Stream { .. }), "{error:?}");
+        assert!(error.is_transient());
+        assert_eq!(error.kind(), "stream");
     }
 }

@@ -37,6 +37,15 @@ pub enum ProviderError {
         retry_after: Option<Duration>,
     },
 
+    /// The backend failed part-way through an answer it had already begun,
+    /// and said so inside the stream rather than with a status code.
+    ///
+    /// Its own kind rather than an API error with a made-up status: a status
+    /// of 200 would file a server-side failure as a client error, and one
+    /// that is never retried.
+    #[error("{provider} failed part-way through its answer: {message}")]
+    Stream { provider: String, message: String },
+
     #[error("model '{model}' is not available on {provider}")]
     ModelNotFound { provider: String, model: String },
 
@@ -69,6 +78,7 @@ impl ProviderError {
         match self {
             Self::Unreachable { .. } => "unreachable",
             Self::Stalled { .. } => "stalled",
+            Self::Stream { .. } => "stream",
             // The status and not the body. `api_429` and `api_500` are the two
             // somebody actually charts, and they are worth telling apart.
             Self::Api { status, .. } if *status == 429 => "api_429",
@@ -90,7 +100,7 @@ impl ProviderError {
             // the next one will be. The loop still retries only when nothing
             // reached the screen, so a stream that went quiet half-way through
             // an answer surfaces rather than starting over.
-            Self::Unreachable { .. } | Self::Stalled { .. } => true,
+            Self::Unreachable { .. } | Self::Stalled { .. } | Self::Stream { .. } => true,
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             _ => false,
         }
@@ -162,5 +172,16 @@ mod tests {
             "{error}"
         );
         assert_eq!(error.kind(), "stalled");
+    }
+
+    #[test]
+    fn a_failure_inside_a_stream_is_a_server_failure_worth_retrying() {
+        let error = ProviderError::Stream {
+            provider: "ollama".into(),
+            message: "model runner has unexpectedly stopped".into(),
+        };
+        assert!(error.is_transient());
+        assert_eq!(error.kind(), "stream");
+        assert!(error.to_string().contains("part-way"), "{error}");
     }
 }
