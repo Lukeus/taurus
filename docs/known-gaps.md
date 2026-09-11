@@ -43,7 +43,10 @@ and they are the minority.
   — said in the pane where the gap is, rather than skipped over. A long test run
   is comfortably inside it; `cargo build -vv` on a cold cache is not. Raising it
   is a number, and the reason it is not higher is that this is held per command
-  for as long as the workspace is open, times eight.
+  for as long as the command is kept: the eight that may run at once, and the
+  sixteen newest that have finished. An older finished command is forgotten —
+  its output with it — once what it changed has been recorded, and asking for it
+  by number says so.
 - **A background command's tab cannot be typed into.** It is text and not a
   terminal, which follows from the gap below: there is no pseudo-terminal behind
   one of these, so there is nothing to type into and nothing drawing a screen. A

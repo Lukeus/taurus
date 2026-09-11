@@ -75,13 +75,23 @@ use crate::sweep::{Diffed, Sweep};
 /// that needs scrolling is one nobody stops.
 pub const MAX_JOBS: usize = 8;
 
+/// How many finished commands are kept.
+///
+/// [`MAX_JOBS`] bounds only the ones running. A finished command stays for its
+/// output and the line that says how it ended, and without a bound a day of
+/// test runs in the background kept every one of them — each with its buffer,
+/// and all of them in a roster the model is handed whole. Past this the oldest
+/// go, once what they changed has been written down.
+pub const MAX_FINISHED: usize = 16;
+
 /// How much of one command's output is kept.
 ///
 /// The whole record the window has: a job's tab is drawn from this and from
 /// nothing else, so what falls off the front is gone from the pane as well as
 /// from the next check. A shell's scrollback lives in its own emulator and can
 /// afford to be long; this is held in the host for every job at once, so the
-/// worst case is [`TRIM_AT`] times [`MAX_JOBS`].
+/// worst case is [`TRIM_AT`] times [`MAX_JOBS`] running and [`MAX_FINISHED`]
+/// finished.
 const MAX_PENDING_BYTES: usize = 256 * 1024;
 
 /// How far past [`MAX_PENDING_BYTES`] a buffer runs before its front is
@@ -334,6 +344,7 @@ impl Jobs {
             claimed: Mutex::new(HashSet::new()),
         });
         self.jobs.lock().unwrap().insert(id, job.clone());
+        self.forget_finished();
 
         let drains = vec![
             drain(child.take_stdout(), job.clone()),
@@ -549,6 +560,27 @@ impl Jobs {
         self.jobs.lock().unwrap().clear();
     }
 
+    /// Forgets the oldest finished commands past [`MAX_FINISHED`].
+    ///
+    /// Only ones whose changes are already written down. A command that has
+    /// finished and not been reaped still owes a turn its record, and
+    /// forgetting it would lose that without a word.
+    fn forget_finished(&self) {
+        let mut jobs = self.jobs.lock().unwrap();
+        let done: Vec<u32> = jobs
+            .values()
+            .filter(|job| {
+                job.outcome.lock().unwrap().is_some() && job.diffed.lock().unwrap().is_none()
+            })
+            .map(|job| job.id)
+            .collect();
+        // Numbers rise with age and the map keeps them in order, so the front
+        // of the list is the oldest.
+        for id in done.iter().take(done.len().saturating_sub(MAX_FINISHED)) {
+            jobs.remove(id);
+        }
+    }
+
     /// A line per command, for a model that has lost track of the numbers.
     pub fn roster(&self) -> String {
         let jobs = self.all();
@@ -598,8 +630,19 @@ impl Jobs {
         if let Some(job) = self.jobs.lock().unwrap().get(&id) {
             return Ok(job.clone());
         }
+        // A number that was handed out and is gone was forgotten, and saying
+        // so is the difference between "you mistyped it" and "it ended a while
+        // ago" — the second is what a model checking on an old build needs.
+        let why = if id >= 1 && id <= self.next.load(Ordering::Relaxed) {
+            format!(
+                " It finished and was forgotten: only the newest {MAX_FINISHED} finished \
+                 commands are kept, and none from a workspace that was left."
+            )
+        } else {
+            String::new()
+        };
         Err(format!(
-            "There is no background command #{id}.\n{}",
+            "There is no background command #{id}.{why}\n{}",
             self.roster()
         ))
     }
@@ -1144,5 +1187,29 @@ mod tests {
         let (text, _) = tail.since(0, MAX_PENDING_BYTES);
         assert_eq!(text.len(), MAX_PENDING_BYTES);
         assert!(text.ends_with("bc"));
+    }
+
+    #[tokio::test]
+    async fn only_the_newest_finished_commands_are_kept() {
+        // `MAX_JOBS` bounds the ones running. Without this every finished one
+        // stayed, buffer and all, until the workspace was left.
+        let jobs = Jobs::new();
+        let mut ids = Vec::new();
+        for _ in 0..MAX_FINISHED + 3 {
+            let id = jobs.adopt("true".into(), sh("true"), None).await;
+            jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
+            ids.push(id);
+        }
+        let listed: Vec<u32> = jobs.list().iter().map(|job| job.id).collect();
+        // The newest has finished since it was adopted, so it is one over
+        // until the next command starts.
+        assert!(listed.len() <= MAX_FINISHED + 1, "{listed:?}");
+        assert!(!listed.contains(&ids[0]), "{listed:?}");
+        assert!(listed.contains(ids.last().unwrap()), "{listed:?}");
+        let asked = jobs.check(Some(ids[0]), Duration::ZERO).await.unwrap_err();
+        assert!(asked.contains("forgotten"), "{asked}");
+        // A number that was never handed out is not called forgotten.
+        let made_up = jobs.check(Some(9_999), Duration::ZERO).await.unwrap_err();
+        assert!(!made_up.contains("forgotten"), "{made_up}");
     }
 }
