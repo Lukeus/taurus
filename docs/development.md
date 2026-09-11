@@ -571,6 +571,14 @@ cargo test --release -p taurus-provider-anthropic --lib request_build_cost -- --
 # every save.
 cargo test --release -p taurus-index --lib search_code_cost -- --ignored --nocapture
 
+# What the context estimate costs over a long session: 300 messages, a hundred
+# write_file calls with 1 KB of arguments and a 4 KB result each. The loop
+# walks the whole history two or three times an iteration, so this grows with
+# the session. Measured when tool arguments stopped being serialized into a
+# string only to be measured: 1,000 walks went from 286.7 ms to 73.6 ms, with
+# every estimate unchanged.
+cargo test --release -p taurus-core --lib estimate_cost -- --ignored --nocapture
+
 # How well the index answers a question, as a number rather than by eye.
 # Needs Ollama and an embedding model; reads the workspace and writes nothing.
 # Fifteen questions phrased the way somebody asks them, each with the file that

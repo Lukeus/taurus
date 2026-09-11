@@ -510,6 +510,60 @@ fn starts_with_tool_result(message: &Message) -> bool {
 mod tests {
     use super::*;
 
+    /// What the context estimate costs over a long session: 300 messages, a
+    /// hundred `write_file` calls with 1 KB of arguments and a 4 KB result
+    /// each. The loop walks the whole history two or three times an iteration,
+    /// so this grows with the session. Ignored, because only a release build's
+    /// numbers mean anything. See `docs/development.md`.
+    #[test]
+    #[ignore]
+    fn estimate_cost_on_a_long_session() {
+        use taurus_provider::{Role, ToolOutput};
+        let mut session = Session::new("m");
+        let content = "fn main() { println!(\"hello\"); }\n".repeat(28);
+        for turn in 0..100 {
+            session.push(Message::user(format!(
+                "turn {turn}: change the handler and run the tests"
+            )));
+            session.push(Message::new(
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    format!("t{turn}"),
+                    "write_file",
+                    serde_json::json!({"path": format!("src/module_{turn}.rs"), "content": content}),
+                )],
+            ));
+            let output = if turn % 2 == 0 {
+                ToolOutput::text("x".repeat(4096))
+            } else {
+                ToolOutput::json(serde_json::json!({
+                    "columns": ["name", "count", "share"],
+                    "rows": (0..40)
+                        .map(|i| serde_json::json!([format!("item {i}"), i * 7, i as f64 / 40.0]))
+                        .collect::<Vec<_>>(),
+                }))
+            };
+            session.push(Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: format!("t{turn}"),
+                    content: output,
+                    is_error: false,
+                }],
+            ));
+        }
+        let first = session.estimated_tokens();
+        let t = std::time::Instant::now();
+        for _ in 0..1000 {
+            std::hint::black_box(session.estimated_tokens());
+        }
+        eprintln!(
+            "1,000 walks over {} messages ({first} tokens): {:.1?}",
+            session.messages.len(),
+            t.elapsed()
+        );
+    }
+
     #[test]
     fn json_len_is_what_serializing_would_have_measured() {
         use serde_json::json;
