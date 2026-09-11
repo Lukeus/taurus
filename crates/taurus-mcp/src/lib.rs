@@ -341,16 +341,34 @@ async fn handshake(
                     ));
                 }
 
-                let transport = TokioChildProcess::new(spawn_command(&command).configure(|c| {
-                    c.args(&expanded_args);
-                    for (key, value) in &expanded_env {
-                        c.env(key, value);
+                // Piped rather than inherited: launched from the Dock the app
+                // has nowhere for an inherited stderr to go, and that is where
+                // a server says why it will not start. See `StderrTail`.
+                let (transport, stderr) =
+                    TokioChildProcess::builder(spawn_command(&command).configure(|c| {
+                        c.args(&expanded_args);
+                        for (key, value) in &expanded_env {
+                            c.env(key, value);
+                        }
+                    }))
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .map_err(|e| start_failure(&command, &e))?;
+                let heard = stderr.map(StderrTail::drain);
+                match ().serve(transport).await {
+                    Ok(service) => service,
+                    Err(e) => {
+                        let said = match heard {
+                            Some(heard) => heard.said(STDERR_SETTLE).await,
+                            None => String::new(),
+                        };
+                        return Err(if said.is_empty() {
+                            format!("handshake failed: {e}")
+                        } else {
+                            format!("handshake failed: {e}. The server said: {said}")
+                        });
                     }
-                }))
-                .map_err(|e| start_failure(&command, &e))?;
-                ().serve(transport)
-                    .await
-                    .map_err(|e| format!("handshake failed: {e}"))?
+                }
             }
             ServerConfig::Http { url, headers, .. } => {
                 let url = expand_env(url).map_err(|e| format!("url: {e}"))?;
@@ -457,6 +475,66 @@ fn handshake_failure(error: impl std::fmt::Display, offer_sign_in: bool) -> Stri
     } else {
         "the stored sign-in is no longer accepted — it has expired or been          revoked. Sign in again."
             .to_string()
+    }
+}
+
+/// How much of a stdio server's stderr is kept.
+const STDERR_TAIL_BYTES: usize = 4 * 1024;
+
+/// How long a failed handshake waits for the server's last words.
+///
+/// A server that gives up usually exits a moment before its stderr has been
+/// read to the end, and the reason is in that last moment.
+const STDERR_SETTLE: Duration = Duration::from_millis(500);
+
+/// The end of what a stdio server has said on stderr.
+///
+/// Launched from the Dock, the app has nowhere for an inherited stderr to go,
+/// so "GITHUB_TOKEN not set" became "handshake failed". The pipe is drained for
+/// the life of the process, so a server that talks there never blocks on a
+/// full pipe, and only the last [`STDERR_TAIL_BYTES`] are kept.
+struct StderrTail {
+    text: Arc<std::sync::Mutex<String>>,
+    done: tokio::task::JoinHandle<()>,
+}
+
+impl StderrTail {
+    fn drain(mut pipe: tokio::process::ChildStderr) -> Self {
+        use tokio::io::AsyncReadExt;
+        let text = Arc::new(std::sync::Mutex::new(String::new()));
+        let done = tokio::spawn({
+            let text = text.clone();
+            async move {
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = pipe.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let mut text = text
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    text.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if text.len() > STDERR_TAIL_BYTES {
+                        let mut cut = text.len() - STDERR_TAIL_BYTES;
+                        while !text.is_char_boundary(cut) {
+                            cut += 1;
+                        }
+                        text.drain(..cut);
+                    }
+                }
+            }
+        });
+        Self { text, done }
+    }
+
+    /// What it has said, once the pipe closes or `wait` has passed.
+    async fn said(self, wait: Duration) -> String {
+        let _ = tokio::time::timeout(wait, self.done).await;
+        let text = self
+            .text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        text.trim().to_string()
     }
 }
 
@@ -941,6 +1019,24 @@ fn describe(rejected: taurus_provider::image::Rejected) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_that_will_not_start_is_heard_saying_why() {
+        // Launched from the Dock, its stderr went nowhere, and the one line
+        // that said what to fix became "handshake failed".
+        let server = ServerConfig::Stdio {
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo 'GITHUB_TOKEN not set' >&2; exit 1".into(),
+            ],
+            env: BTreeMap::new(),
+            disabled: false,
+        };
+        let error = probe("t", &server, None).await.unwrap_err();
+        assert!(error.contains("GITHUB_TOKEN not set"), "{error}");
+    }
+
     #[test]
     fn a_port_with_401_in_it_is_not_a_sign_in_request() {
         // A server that is simply down, on a port that happens to contain
