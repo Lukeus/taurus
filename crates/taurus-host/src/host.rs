@@ -208,6 +208,15 @@ pub struct Host {
     hooks: RwLock<Arc<taurus_hooks::HookRunner>>,
     permissions: RwLock<Arc<PermissionEngine>>,
     mcp: McpManager,
+    /// Held for the whole of an MCP reload, so two cannot interleave.
+    ///
+    /// A reload shuts every server down, spends seconds starting them again,
+    /// then swaps their tools into the registry — and the MCP panel starts one
+    /// on every save. Two at once let the second's shutdown drop connections
+    /// the first had just made, while the first went on to register tools
+    /// pointing at them: tools that failed on every call, under a panel that
+    /// said connected.
+    mcp_reload: tokio::sync::Mutex<()>,
     problems: RwLock<Vec<Problem>>,
     prompts: Arc<dyn PermissionPromptFactory>,
     /// Where `ask_user` puts its questions. Not a factory like `prompts`: it is
@@ -269,6 +278,7 @@ impl Host {
             // Handed the keychain, so a server that wants OAuth can be signed
             // in to. See `secrets::Keychain`.
             mcp: McpManager::with_vault(Arc::new(crate::secrets::Keychain)),
+            mcp_reload: tokio::sync::Mutex::new(()),
             problems: RwLock::new(Vec::new()),
             prompts,
             asker,
@@ -2697,6 +2707,8 @@ impl Host {
     /// without touching the built-ins, the skill tools, or the web tools beside
     /// them.
     pub async fn reload_mcp(&self) {
+        // One at a time — see the field.
+        let _reloading = self.mcp_reload.lock().await;
         let workspace = self.workspace.read().await.clone();
 
         let mut problems = Vec::new();
@@ -2712,6 +2724,23 @@ impl Host {
         let (config, merge_problems) = config::merge_mcp(layers);
         problems.extend(Problem::tag(ProblemSource::Mcp, merge_problems));
 
+        // Out of the registry before the servers go down, rather than after
+        // they come back. The other order left a turn that started in between
+        // holding tools whose connections were already closed, and those fail
+        // on every call; this way it sees no MCP tools, and works without.
+        let before: HashSet<String> = {
+            let mut registry = self.registry.write().await;
+            let before: HashSet<String> = registry
+                .names()
+                .filter(|name| taurus_mcp::is_mcp_tool(name))
+                .map(str::to_string)
+                .collect();
+            for name in &before {
+                registry.remove(name);
+            }
+            before
+        };
+
         // Reconnecting drops the previous connections, stopping the old child
         // processes; leaving them would leak one per workspace change.
         self.mcp.shutdown().await;
@@ -2722,14 +2751,6 @@ impl Host {
         // server reconnected.
         let disabled = self.settings.read().await.disabled_tools.clone();
         let mut registry = self.registry.write().await;
-        let before: HashSet<String> = registry
-            .names()
-            .filter(|name| taurus_mcp::is_mcp_tool(name))
-            .map(str::to_string)
-            .collect();
-        for name in &before {
-            registry.remove(name);
-        }
         let mut after: HashSet<String> = HashSet::new();
         for tool in tools {
             if disabled.iter().any(|off| off == tool.name()) {
@@ -3809,6 +3830,120 @@ mod tests {
             .await
             .iter()
             .any(|t| t == taurus_skills::PROPOSE_TOOL));
+    }
+
+    /// An MCP tool with no server behind it: what the registry holds, without a
+    /// process to start.
+    struct StandIn(String);
+
+    #[async_trait]
+    impl Tool for StandIn {
+        fn name(&self) -> &str {
+            &self.0
+        }
+        fn description(&self) -> &str {
+            "a stand-in for a server's tool"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn effect(&self) -> taurus_tools::Effect {
+            taurus_tools::Effect::Execute
+        }
+        async fn execute(
+            &self,
+            _: serde_json::Value,
+            _: &taurus_tools::ToolContext,
+        ) -> taurus_tools::ToolResult {
+            Err(ToolError::Rejected("a stand-in has no server".into()))
+        }
+    }
+
+    /// An `mcp.json` naming one server that starts and then never answers, so a
+    /// reload that reaches it stays there for as long as a test is looking.
+    fn a_server_that_never_answers(home: &Path) {
+        let (command, args) = if cfg!(windows) {
+            (
+                "powershell",
+                r#"["-NoProfile", "-Command", "Start-Sleep -Seconds 20"]"#,
+            )
+        } else {
+            ("sleep", r#"["20"]"#)
+        };
+        std::fs::write(
+            taurus_mcp::config::config_file(home),
+            format!(
+                r#"{{"mcpServers": {{"silent": {{"command": "{command}", "args": {args}}}}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Polls `reload` until it is waiting on something, and fails if it
+    /// finishes instead.
+    async fn until_waiting(
+        reload: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+        why: &str,
+    ) {
+        tokio::select! {
+            _ = reload => panic!("{why}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_starts_while_servers_reconnect_sees_no_dead_tools() {
+        // A reload shuts the old connections down before it starts the new
+        // ones. A tool still registered in between points at a connection that
+        // is gone and fails every call; no tool at all is something a turn can
+        // work without.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        let old = taurus_mcp::namespaced("silent", "search");
+        host.registry
+            .write()
+            .await
+            .register(Arc::new(StandIn(old.clone())));
+        a_server_that_never_answers(home.path());
+
+        let reload = host.reload_mcp();
+        tokio::pin!(reload);
+        until_waiting(reload.as_mut(), "a server that never answers was answered").await;
+
+        assert!(
+            !host.tool_names().await.contains(&old),
+            "a tool whose connection is closed is still offered mid-reload"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_mcp_reload_waits_for_the_one_in_flight() {
+        // The MCP panel starts a reload on every save. One running alongside
+        // another shuts down what the first has just connected, and the first
+        // then registers tools that point at nothing.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, home) = host(&workspace);
+        a_server_that_never_answers(home.path());
+
+        let first = host.reload_mcp();
+        tokio::pin!(first);
+        until_waiting(first.as_mut(), "a server that never answers was answered").await;
+
+        // Nothing to connect to this time, so on its own this one is instant.
+        std::fs::write(
+            taurus_mcp::config::config_file(home.path()),
+            r#"{"mcpServers": {}}"#,
+        )
+        .unwrap();
+        let second = host.reload_mcp();
+        tokio::pin!(second);
+        until_waiting(
+            second.as_mut(),
+            "a second reload ran alongside the one in flight",
+        )
+        .await;
     }
 
     #[tokio::test]
