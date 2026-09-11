@@ -1311,7 +1311,7 @@ fn write_config(path: &Path, json: &str) {
 /// plain overwrite needed only the file to be. A `.taurus` directory that is
 /// read-only while its files are writable is a strange enough arrangement to be
 /// worth losing, given what it buys.
-fn replace_file(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn replace_file(path: &Path, contents: &str) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     temp.write_all(contents.as_bytes())?;
