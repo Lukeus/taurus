@@ -354,6 +354,16 @@ interface Store {
    */
   refresh: () => Promise<void>;
   /**
+   * Re-asks what nothing can push: the trust question, and the dataset list.
+   *
+   * What returning to the window calls. Not the status — that is pushed
+   * whenever any part of it moves, and asking for it on every focus rebuilt
+   * all of it, git and the theme included, to say what the window already
+   * showed. Trust is different: what changes it is a file appearing in a
+   * directory nobody watches, and a `git pull` arrives with no event.
+   */
+  recheck: () => Promise<void>;
+  /**
    * Answers the trust question for this workspace.
    *
    * The reload that follows on the backend — saying yes is what loads this
@@ -424,6 +434,36 @@ async function release(session: CreatedSession | null, replacement?: string) {
  */
 let initialized = false;
 
+/**
+ * A pushed status, keeping whatever did not move.
+ *
+ * Every push is the whole status, and most change one field or none — a note
+ * saved, a count gone up by one. Taken wholesale, each handed every drawer
+ * reading `status` a new object, and each drawer redrew to show the same
+ * thing. The held object comes back when nothing moved; otherwise each field
+ * that did not move keeps the value it had, so a selector on one part of the
+ * status sees a change only when that part changed.
+ */
+export function settle(held: AppStatus | null, pushed: AppStatus): AppStatus {
+  if (!held) return pushed;
+  const keys = Object.keys(pushed) as (keyof AppStatus)[];
+  let moved = keys.length !== Object.keys(held).length;
+  const next = { ...pushed };
+  for (const key of keys) {
+    if (unchanged(held[key], pushed[key])) {
+      (next as Record<string, unknown>)[key] = held[key];
+    } else {
+      moved = true;
+    }
+  }
+  return moved ? next : held;
+}
+
+/** The same value, for plain data that came over IPC. */
+function unchanged(a: unknown, b: unknown): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
 export const useStore = create<Store>((set, get) => ({
   status: null,
   trust: null,
@@ -485,7 +525,7 @@ export const useStore = create<Store>((set, get) => ({
     // it is pushed — a reload, a workspace switch, a settings write, a turn
     // that left a note behind — so the rail's counts stop being as old as
     // whatever the user last happened to click.
-    api.onStatus((status) => set({ status }));
+    api.onStatus((status) => set((s) => ({ status: settle(s.status, status) })));
 
     // One conversation at a time, merged into the list already held. This is
     // what puts a new conversation in the rail the moment its first question
@@ -983,6 +1023,11 @@ export const useStore = create<Store>((set, get) => ({
   refresh: async () => {
     const [status, trust] = await Promise.all([api.getStatus(), api.workspaceTrust()]);
     set({ status, trust });
+    void get().refreshDatasets();
+  },
+
+  recheck: async () => {
+    set({ trust: await api.workspaceTrust() });
     void get().refreshDatasets();
   },
 

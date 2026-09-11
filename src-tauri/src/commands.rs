@@ -707,8 +707,18 @@ pub async fn send_message(
     // The conversation's listing entry has moved: its timestamp, and its title
     // if this was its first turn. The status has too — a turn can leave a note
     // behind, and can be the thing that moved the branch.
-    emit_session(&state, &session_id).await;
-    emit_status(&state).await;
+    //
+    // Pushed from a task of its own rather than awaited. The window learns the
+    // turn is over from this call returning, and awaiting a transcript read and
+    // a whole status first kept the Stop button lit after the answer had ended.
+    {
+        let state = state.inner().clone();
+        let session_id = session_id.clone();
+        tauri::async_runtime::spawn(async move {
+            emit_session(&state, &session_id).await;
+            emit_status(&state).await;
+        });
+    }
 
     match outcome {
         Ok(outcome) => {
@@ -1399,10 +1409,14 @@ pub async fn list_skills(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Skill
     // Rescanned first, the same as `list_agents`: the whole authoring surface
     // for a skill is a text editor and a folder, so a drawer showing the
     // catalog as it was at startup is not showing the feature working.
-    state.host.rescan_skills().await;
+    //
     // The rail carries the count beside the drawer that lists them, and the two
-    // disagreeing is worse than either being slightly late.
-    emit_status(&state).await;
+    // disagreeing is worse than either being slightly late — so a rescan that
+    // moved the count, or a problem, pushes a status. One that found the same
+    // library does not: opening a drawer is not a reason to rebuild all of it.
+    if state.host.rescan_skills().await {
+        emit_status(&state).await;
+    }
     Ok(state.host.skills().await)
 }
 
@@ -1441,10 +1455,12 @@ pub async fn list_commands(
 /// editor, so a list assembled at startup is stale by the time anyone opens it.
 #[tauri::command]
 pub async fn list_agents(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<AgentSummary>> {
-    state.host.rescan_agents().await;
-    // Same reason the skills listing does it: the rail's count and the drawer's
-    // list are two views of one scan and must not disagree.
-    emit_status(&state).await;
+    // Same rule the skills listing follows: the rail's count and the drawer's
+    // list are two views of one scan and must not disagree, and a scan that
+    // moved neither has nothing to push.
+    if state.host.rescan_agents().await {
+        emit_status(&state).await;
+    }
     Ok(state.host.agents().await)
 }
 
@@ -2356,8 +2372,11 @@ pub async fn reload_config(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
 /// `Host::refresh_config`.
 #[tauri::command]
 pub async fn rescan_library(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
-    state.host.refresh_config().await;
-    emit_status(&state).await;
+    // Runs on every return to the window, and a status is a dozen reads and a
+    // git branch lookup. Pushed only when something on disk moved.
+    if state.host.refresh_config().await {
+        emit_status(&state).await;
+    }
     Ok(())
 }
 

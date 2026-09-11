@@ -681,10 +681,23 @@ impl Host {
     /// exists: a drawer showing the catalog as it was at startup is not showing
     /// the feature working. Narrower than [`Host::reload`] — scanning a
     /// directory should not restart every MCP server.
-    pub async fn rescan_skills(&self) {
+    ///
+    /// Answers whether what the shell shows about skills moved — the count, or
+    /// a problem with one — so a caller pushes a status only when there is
+    /// something new in it.
+    pub async fn rescan_skills(&self) -> bool {
+        let before = (
+            self.skill_count().await,
+            self.problem_text(ProblemSource::Skills).await,
+        );
         let workspace = self.workspace.read().await.clone();
         let found = self.load_skills(&workspace).await;
         self.replace_problems(ProblemSource::Skills, found).await;
+        before
+            != (
+                self.skill_count().await,
+                self.problem_text(ProblemSource::Skills).await,
+            )
     }
 
     /// The check a turn makes, asked for outside one.
@@ -698,8 +711,11 @@ impl Host {
     /// Not safe mid-turn, for the reason the whole design is at turn
     /// boundaries: a turn runs against the brief, roster and catalog it started
     /// with. The caller is the one that knows whether a turn is running.
-    pub async fn refresh_config(&self) {
-        self.refresh_for_turn().await;
+    ///
+    /// Answers whether anything was re-read, so returning to the window pushes
+    /// a status only when something on disk actually moved.
+    pub async fn refresh_config(&self) -> bool {
+        self.refresh_for_turn().await
     }
 
     /// Re-reads the config this turn is about to be built from.
@@ -725,8 +741,13 @@ impl Host {
     /// because both cost more than a `stat`: instructions are a handful of file
     /// reads and an import resolution, and a roster scan parses every agent
     /// file, cross-checks its tools, and can reach the OS keychain.
-    async fn refresh_for_turn(&self) {
+    ///
+    /// Answers whether anything the status reports may have moved: a brief or
+    /// a hook file re-read, or a roster or catalog whose count or problems
+    /// changed.
+    async fn refresh_for_turn(&self) -> bool {
         let workspace = self.workspace.read().await.clone();
+        let mut moved = false;
 
         // Against the files the last read depended on, restated — not against
         // the source list. The two are different sets whenever a brief imports
@@ -737,18 +758,19 @@ impl Host {
             let found = self.load_instructions(&workspace).await;
             self.replace_problems(ProblemSource::Instructions, found)
                 .await;
+            moved = true;
         }
 
         if *self.agents_seen.read().await
             != agent_freshness(&config::agent_sources(Some(&workspace)))
         {
-            self.rescan_agents().await;
+            moved |= self.rescan_agents().await;
         }
 
         if *self.skills_seen.read().await
             != skill_freshness(&config::skill_sources(Some(&workspace)))
         {
-            self.rescan_skills().await;
+            moved |= self.rescan_skills().await;
         }
 
         // Rebuilt rather than restated, unlike instructions: a hook file has no
@@ -758,7 +780,21 @@ impl Host {
         if *self.hooks_seen.read().await != hook_freshness(&workspace) {
             let found = self.load_hooks(&workspace).await;
             self.replace_problems(ProblemSource::Hooks, found).await;
+            moved = true;
         }
+        moved
+    }
+
+    /// One source's problems, as text: what a rescan compares to tell whether
+    /// it moved anything the shell shows.
+    async fn problem_text(&self, source: ProblemSource) -> Vec<String> {
+        self.problems
+            .read()
+            .await
+            .iter()
+            .filter(|p| p.source == source)
+            .map(|p| p.message.clone())
+            .collect()
     }
 
     /// Swaps out every problem from one source, leaving the others alone.
@@ -775,7 +811,14 @@ impl Host {
     /// working. This is what opening it calls. It is deliberately narrower than
     /// [`Host::reload`]: rescanning a directory should not restart every MCP
     /// server, which a full reload does.
-    pub async fn rescan_agents(&self) {
+    ///
+    /// Answers whether the count or the agents' problems moved, the way
+    /// [`Self::rescan_skills`] does and for the same reason.
+    pub async fn rescan_agents(&self) -> bool {
+        let before = (
+            self.agents().await.len(),
+            self.problem_text(ProblemSource::Agents).await,
+        );
         let workspace = self.workspace.read().await.clone();
         let available: Vec<String> = self
             .registry
@@ -786,6 +829,11 @@ impl Host {
             .collect();
         let found = self.load_agents(&workspace, &available).await;
         self.replace_problems(ProblemSource::Agents, found).await;
+        before
+            != (
+                self.agents().await.len(),
+                self.problem_text(ProblemSource::Agents).await,
+            )
     }
 
     /// Discovers the roster, checks it against `available`, resolves its
@@ -3729,6 +3777,25 @@ mod tests {
         host.rescan_agents().await;
 
         assert!(host.agents().await.iter().any(|a| a.name == "late-arrival"));
+    }
+
+    #[tokio::test]
+    async fn a_rescan_that_finds_nothing_new_says_so() {
+        // Opening a drawer and returning to the window both rescan, and each
+        // pushes a status only when the rescan moved something the shell
+        // shows. A rescan that always said it had would rebuild the whole
+        // status — git included — on every alt-tab.
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let (host, _home) = host(&workspace);
+        host.reload().await;
+
+        assert!(!host.rescan_agents().await, "the same roster, read again");
+        assert!(!host.rescan_skills().await, "the same library, read again");
+        assert!(!host.refresh_config().await, "nothing on disk moved");
+
+        write_agent(&workspace, "late-arrival", "");
+        assert!(host.rescan_agents().await, "a new agent is a new count");
     }
 
     #[tokio::test]
