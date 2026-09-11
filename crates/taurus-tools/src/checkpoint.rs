@@ -1002,22 +1002,44 @@ impl TurnRecorder {
     }
 }
 
-/// The newest format a log's headers claim, or `None` for a log with none.
+/// The first bytes of a header line, as [`append`] writes one.
 ///
-/// Scans the whole file rather than checking the first line, because a log
-/// repaired after a failed first write carries its header after the turns it
-/// was missing from — and because a log upgraded in place carries two. A log
-/// is one short line per changed file, and the common case stops on line one.
-fn header_version(path: &Path) -> Option<u32> {
-    let file = std::fs::File::open(path).ok()?;
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| match serde_json::from_str::<Record>(&line) {
-            Ok(Record::Header(header)) => Some(header.version),
-            _ => None,
-        })
-        .max()
+/// Every record goes through `serde_json`, which writes an internally tagged
+/// enum's tag first — so a header line starts with exactly this, and a
+/// `before` line, which carries the whole pre-image of a file, starts with
+/// something else and can be passed over without being parsed.
+const HEADER_PREFIX: &[u8] = br#"{"type":"header""#;
+
+/// Whether a log carries a header at the current format.
+///
+/// Reads past line one when it has to, because a log repaired after a failed
+/// first write carries its header after the turns it was missing from, and a
+/// log upgraded in place carries an older header first. But it stops at the
+/// first current header, which is ordinarily line one, and it parses header
+/// lines only. This runs before the first write of every turn that changes a
+/// file, and parsing every pre-image in the log to learn that it was not a
+/// header made that wait grow with the length of the session.
+fn has_current_header(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        if !line.starts_with(HEADER_PREFIX) {
+            continue;
+        }
+        if let Ok(Record::Header(header)) = serde_json::from_slice::<Record>(&line) {
+            if header.version == FORMAT_VERSION {
+                return true;
+            }
+        }
+    }
 }
 
 /// Gives a log a header at the current format if it does not have one.
@@ -1027,11 +1049,11 @@ fn header_version(path: &Path) -> Option<u32> {
 /// it is about to gain a record that older build would skip rather than
 /// understand, and [`read_log`]'s version guard is the only thing that can stop
 /// it. Appending rather than rewriting keeps the file append-only, and
-/// [`header_version`] takes the newest of what it finds.
+/// [`has_current_header`] looks past an older header to find the current one.
 ///
 /// Returns whether the log is safe to append to.
 fn ensure_header(path: &Path, session: &str, workspace: &Path) -> bool {
-    if header_version(path) == Some(FORMAT_VERSION) {
+    if has_current_header(path) {
         return true;
     }
     append(
@@ -1375,7 +1397,7 @@ mod tests {
 
         f.turn("a newer turn", "after\n").await;
 
-        assert_eq!(header_version(&f.log("s1")), Some(FORMAT_VERSION));
+        assert!(has_current_header(&f.log("s1")));
         let turns = f.store.turns("s1").unwrap();
         assert_eq!(turns.len(), 2, "the format-1 turn is still readable");
         assert_eq!(turns[0].prompt, "an older turn");
@@ -1877,6 +1899,30 @@ mod tests {
         assert_eq!(turns[0].files, vec!["a.txt"]);
     }
 
+    #[test]
+    fn a_pre_image_that_looks_like_a_header_is_not_one() {
+        // Only a line that starts as a header is parsed, which is what keeps
+        // the check from reading every pre-image in the log. A file whose
+        // contents happen to be a header line is still a `before` record.
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.logs.path()).unwrap();
+        let lookalike = Record::Before {
+            path: "log.jsonl".into(),
+            state: State::Text {
+                content: format!(
+                    "{{\"type\":\"header\",\"version\":{FORMAT_VERSION},\"session\":\"s1\",\"workspace\":\"/w\"}}\n"
+                ),
+            },
+        };
+        std::fs::write(
+            f.log("s1"),
+            format!("{}\n", serde_json::to_string(&lookalike).unwrap()),
+        )
+        .unwrap();
+
+        assert!(!has_current_header(&f.log("s1")));
+    }
+
     #[tokio::test]
     async fn an_empty_log_left_by_a_failed_write_still_gets_its_header() {
         // `append` creates the file before it writes, so a write that fails
@@ -1932,9 +1978,8 @@ mod tests {
         let recorder = f.store.begin_turn("s1", &f.root, "a later turn");
         recorder.capture(&file).await;
 
-        assert_eq!(
-            header_version(&f.log("s1")),
-            Some(FORMAT_VERSION),
+        assert!(
+            has_current_header(&f.log("s1")),
             "the next turn must repair it"
         );
         // And repairing it once is enough — a second turn must not stack
