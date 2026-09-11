@@ -613,6 +613,35 @@ const THEMES: [Theme, string][] = [
 ];
 
 /**
+ * The settings a save came back with, keeping anything typed since it was sent.
+ *
+ * Replaced whole, the reload after a save on blur overwrote whatever had been
+ * typed during the round trip. A field that differs from what was sent was
+ * edited since, and that edit is newer than the answer.
+ */
+export function keepEdits(
+  fresh: SearchSettings,
+  now: SearchSettings | null,
+  sent: SearchBackend[],
+): SearchSettings {
+  if (!now) return fresh;
+  return {
+    ...fresh,
+    backends: fresh.backends.map((backend) => {
+      const mine = now.backends.find((b) => b.id === backend.id);
+      const was = sent.find((b) => b.id === backend.id);
+      if (!mine || !was) return backend;
+      return {
+        ...backend,
+        base_url: mine.base_url !== was.base_url ? mine.base_url : backend.base_url,
+        api_key_env:
+          mine.api_key_env !== was.api_key_env ? mine.api_key_env : backend.api_key_env,
+      };
+    }),
+  };
+}
+
+/**
  * Web search: which backend, and the key it needs.
  *
  * Everything behind this was built and shipped some time ago — the backends,
@@ -627,24 +656,42 @@ export function SearchTab() {
   const [settings, setSettings] = useState<SearchSettings | null>(null);
   const [keychain, setKeychain] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** Why the last read or write did not work, when it did not. */
+  const [error, setError] = useState<string | null>(null);
 
-  const load = () => api.getSearchSettings().then(setSettings).catch(() => {});
+  // Said rather than swallowed: a read that failed in silence left the tab on
+  // "Loading…" for good, which looks like a hang rather than a broken file.
+  const load = () =>
+    api
+      .getSearchSettings()
+      .then((fresh) => {
+        setSettings(fresh);
+        setError(null);
+      })
+      .catch((e) => setError(String(e)));
 
   useEffect(() => {
     load();
     api.keychainAvailable().then(setKeychain).catch(() => setKeychain(false));
   }, []);
 
-  if (!settings) return <p className="drawer-intro">Loading…</p>;
+  if (!settings) {
+    return error ? <Problem>{error}</Problem> : <p className="drawer-intro">Loading…</p>;
+  }
 
   const keys = new Map(settings.key_statuses);
   const selected = settings.backends.find((b) => b.id === settings.selected);
 
   const save = async (id: string | null, backends = settings.backends) => {
     setBusy(true);
+    setError(null);
     try {
       await api.saveSearchSettings(id, backends);
-      await load();
+      const fresh = await api.getSearchSettings();
+      // Merged rather than replaced: see `keepEdits`.
+      setSettings((now) => keepEdits(fresh, now, backends));
+    } catch (e) {
+      setError(String(e));
     } finally {
       setBusy(false);
     }
@@ -659,6 +706,8 @@ export function SearchTab() {
         Lets Taurus look things up on the web. Your prompt goes to whichever
         service you pick, so it stays off until you choose one.
       </p>
+
+      {error && <Problem>{error}</Problem>}
 
       {settings.problems.length > 0 && (
         <section className="section">

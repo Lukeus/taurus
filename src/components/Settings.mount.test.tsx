@@ -537,3 +537,61 @@ describe("a write that does not take", () => {
     expect(card.textContent).not.toContain("Save this provider before storing a key");
   });
 });
+
+describe("the search tab", () => {
+  const BRAVE = {
+    selected: null,
+    backends: [
+      {
+        id: "brave",
+        kind: "brave",
+        base_url: "https://api.search.brave.com",
+        api_key_env: null,
+        max_results: null,
+        needs_key: true,
+      },
+    ],
+    key_statuses: [],
+    active: false,
+    problems: [],
+  };
+
+  it("says why its settings could not be read, rather than loading forever", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "get_search_settings"
+        ? Promise.reject("search.json is not valid JSON")
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    click(host, "Search");
+    await act(async () => {});
+
+    expect(host.textContent).toContain("search.json is not valid JSON");
+    expect(host.textContent).not.toContain("Loading…");
+  });
+
+  it("says why a save did not take", async () => {
+    invoke.mockImplementation((...args: unknown[]) => {
+      switch (args[0]) {
+        case "get_search_settings":
+          return Promise.resolve(BRAVE);
+        case "save_search_settings":
+          return Promise.reject("search.json is read-only");
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    const host = await mount();
+    click(host, "Search");
+    await act(async () => {});
+    const select = [...host.querySelectorAll("select")].find((s) =>
+      s.querySelector('option[value="brave"]'),
+    ) as HTMLSelectElement;
+    await act(async () => {
+      select.value = "brave";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(host.textContent).toContain("search.json is read-only");
+  });
+});
