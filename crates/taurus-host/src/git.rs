@@ -121,8 +121,17 @@ pub struct Commit {
 /// runs with the workspace as its working directory, and every path handed in
 /// or out is relative to the workspace, so a Taurus opened on a subdirectory of
 /// a repository behaves like a terminal opened in the same place.
+///
+/// Git does not keep to that in one place: `status --porcelain` names paths
+/// relative to the repository root whatever the working directory is. So the
+/// workspace's own place in the repository is kept as well, and taken off what
+/// `status` answers before it is compared with anything. See [`Repo::dirty`].
 pub struct Repo {
     workspace: PathBuf,
+    /// Where the workspace sits below the repository root, as
+    /// `rev-parse --show-prefix` spells it: empty at the root, `pkg/` in a
+    /// package directory, always with forward slashes and a trailing one.
+    prefix: String,
 }
 
 impl Repo {
@@ -143,11 +152,21 @@ impl Repo {
         // unavailable. Any non-zero exit means the same thing here — there is
         // no work tree at this path — so the status is what is inspected, and
         // no error string is matched against.
-        let output = launch(workspace, &["rev-parse", "--is-inside-work-tree"]).await?;
-        let inside =
-            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true";
+        //
+        // `--show-prefix` rides along in the same process: inside a work tree
+        // the answer is two lines, `true` and then the prefix, which is an
+        // empty line at the repository root.
+        let output = launch(
+            workspace,
+            &["rev-parse", "--is-inside-work-tree", "--show-prefix"],
+        )
+        .await?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut lines = stdout.lines();
+        let inside = output.status.success() && lines.next() == Some("true");
         Ok(inside.then(|| Self {
             workspace: workspace.to_path_buf(),
+            prefix: lines.next().unwrap_or_default().to_string(),
         }))
     }
 
@@ -292,6 +311,13 @@ impl Repo {
     /// One call rather than one per file, and it answers the question that
     /// actually matters — an ignored path is simply absent from the output,
     /// which is why the caller has to ask about those separately.
+    ///
+    /// The pathspecs go in relative to the workspace, which is git's working
+    /// directory, but porcelain output names every path from the repository
+    /// root. So the workspace's prefix comes off each entry before it is
+    /// compared with what was asked. Without that, a workspace below the root
+    /// sees none of its own changes, and every commit from it is refused as
+    /// already matching the last one.
     async fn dirty(&self, paths: &[String]) -> Result<BTreeSet<String>, String> {
         let mut args = vec!["status", "--porcelain", "-z", "--"];
         args.extend(paths.iter().map(String::as_str));
@@ -304,7 +330,8 @@ impl Repo {
             // entries carry a second NUL-separated path, which cannot appear
             // here — a rename needs both halves in the pathspec, and even then
             // the entry names the destination, which is the path we asked about.
-            .map(|entry| entry[3..].to_string())
+            .filter_map(|entry| entry[3..].strip_prefix(self.prefix.as_str()))
+            .map(str::to_string)
             .collect())
     }
 
@@ -685,6 +712,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(commit.files, vec!["src/deep/mod.rs".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_workspace_below_the_repository_root_commits_its_own_files() {
+        needs_git!();
+        // Porcelain output names paths from the repository root, while the
+        // paths asked about are relative to the workspace. A package directory
+        // in a monorepo is the case, and every other test here opens the root.
+        let f = Fixture::new().await;
+        f.write("pkg/tracked.txt", "one\n");
+        let repo = Repo::discover(&f.root.join("pkg"))
+            .await
+            .expect("git must be available")
+            .expect("the package is inside the fixture");
+        repo.commit(&["tracked.txt".into()], "seed").await.unwrap();
+
+        f.write("pkg/tracked.txt", "two\n");
+        f.write("pkg/deep/new.txt", "one\n");
+        let commit = repo
+            .commit(
+                &["deep/new.txt".into(), "tracked.txt".into()],
+                "from the package",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            commit.files,
+            vec!["deep/new.txt".to_string(), "tracked.txt".to_string()]
+        );
+        assert!(commit.skipped.is_empty(), "{:?}", commit.skipped);
+
+        let shown = run(&f.root, &["show", "--name-only", "--format=", "HEAD"])
+            .await
+            .unwrap();
+        assert!(shown.contains("pkg/deep/new.txt"), "{shown}");
+        assert!(shown.contains("pkg/tracked.txt"), "{shown}");
     }
 
     #[tokio::test]
