@@ -437,18 +437,27 @@ function useStableTurns(entries: Entry[]): Turn[] {
 
 /**
  * `next`, with every turn that matches the one `previous` held at the same
- * position replaced by that one.
+ * position replaced by that one — and `previous` itself when every turn did.
  *
  * Pulled out of the hook because this is the whole property the memo depends
  * on, and a property worth a test of its own: a refactor that stops turns
  * carrying their identity forward would cost nothing visible and quietly
  * restore the behaviour this replaced.
+ *
+ * The list keeps its identity as well as the turns in it, because the list is
+ * what the search memo compares. A fresh array around the same turns reads as a
+ * different conversation, and while a search mark is up that meant every prompt
+ * and answer lowercased again on every render.
  */
 export function reuse(previous: Turn[], next: Turn[]): Turn[] {
-  return next.map((turn, i) => {
+  let same = previous.length === next.length;
+  const out = next.map((turn, i) => {
     const held = previous[i];
-    return held && unchanged(held, turn) ? held : turn;
+    if (held && unchanged(held, turn)) return held;
+    same = false;
+    return turn;
   });
+  return same ? previous : out;
 }
 
 /**
