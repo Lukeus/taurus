@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CHANGES_WIDTH,
@@ -7,6 +7,7 @@ import {
   ResizeHandle,
   TERMINAL_HEIGHT,
   clamp,
+  remembered,
   sizedBy,
   type Resizable,
 } from "./ResizeHandle";
@@ -91,6 +92,48 @@ describe("the handle", () => {
     expect(html).toContain('aria-orientation="horizontal"');
     expect(html).toContain("dock-handle");
     expect(html).toContain('aria-valuenow="300"');
+  });
+});
+
+describe("a remembered size", () => {
+  // Read inside App's first render. With site data blocked the read throws as
+  // the write does, and a throw there leaves no window at all.
+  it("is nothing, not a crash, when storage refuses the read", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new DOMException("blocked", "SecurityError");
+      },
+    });
+    try {
+      expect(remembered("taurus.rail")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("is nothing, not a crash, when merely naming storage throws", () => {
+    const before = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get() {
+        throw new DOMException("blocked", "SecurityError");
+      },
+    });
+    try {
+      expect(remembered("taurus.rail")).toBeNull();
+    } finally {
+      if (before) Object.defineProperty(globalThis, "localStorage", before);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
+
+  it("reads a size that was left behind", () => {
+    vi.stubGlobal("localStorage", { getItem: () => "300" });
+    try {
+      expect(remembered("taurus.rail")).toBe(300);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
