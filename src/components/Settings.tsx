@@ -46,7 +46,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const refresh = useStore((s) => s.refresh);
 
   const [tab, setTab] = useState<Tab>("models");
-  const [draft, setDraft] = useState<ProviderConfig[] | null>(null);
+  // Rows rather than bare providers, so each card is keyed by something that
+  // stays with it. See `Row`.
+  const [draft, setDraft] = useState<Row[] | null>(null);
   const [rules, setRules] = useState<AllowedRule[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -70,30 +72,41 @@ export function Settings({ onClose }: { onClose: () => void }) {
   };
 
   useEffect(() => {
-    api.listGlobalProviders().then(setDraft).catch((e) => setError(String(e)));
+    api
+      .listGlobalProviders()
+      .then((list) => setDraft(rowsOf(list)))
+      .catch((e) => setError(String(e)));
     api.listPermissionRules().then(setRules).catch(() => setRules([]));
     api.keychainAvailable().then(setKeychain).catch(() => setKeychain(false));
     refreshKeys();
   }, []);
 
-  const problems = draft ? validate(draft) : [];
+  const providers = draft?.map((r) => r.provider) ?? null;
+  const problems = providers ? validate(providers) : [];
   const dirty = draft !== null && saved === false;
 
-  const update = (index: number, patch: Partial<ProviderConfig>) => {
+  const update = (row: number, patch: Partial<ProviderConfig>) => {
     setDraft((d) =>
-      d ? d.map((p, i) => (i === index ? { ...p, ...patch } : p)) : d,
+      d
+        ? d.map((r) =>
+            r.row === row ? { ...r, provider: { ...r.provider, ...patch } } : r,
+          )
+        : d,
     );
     setSaved(false);
   };
 
   const save = async () => {
-    if (!draft || problems.length > 0) return;
+    if (!providers || problems.length > 0) return;
     setSaving(true);
     setError(null);
     try {
-      await api.saveProviders(draft);
+      await api.saveProviders(providers);
       await refresh();
-      setDraft(await api.listGlobalProviders());
+      const reloaded = await api.listGlobalProviders();
+      // The same rows carried over, so a card left open stays open. See
+      // `rowsOf`.
+      setDraft((d) => rowsOf(reloaded, d));
       // A provider that was just added or renamed only now has an id a key can
       // be stored against, so its field has to stop saying "not saved yet".
       refreshKeys();
@@ -135,18 +148,18 @@ export function Settings({ onClose }: { onClose: () => void }) {
           )}
 
           <div className="card-list">
-            {draft?.map((provider, index) => (
+            {draft?.map(({ row, provider }) => (
               <ProviderForm
-                key={index}
+                key={row}
                 provider={provider}
-                problems={problemsWith(provider, draft)}
+                problems={problemsWith(provider, providers ?? [])}
                 overriddenBy={overrideOf(provider, status?.providers ?? [])}
                 keyStatus={keys.get(provider.id)}
                 keychainAvailable={keychain}
                 onKeyChanged={refreshKeys}
-                onChange={(patch) => update(index, patch)}
+                onChange={(patch) => update(row, patch)}
                 onRemove={() => {
-                  setDraft((d) => d?.filter((_, i) => i !== index) ?? d);
+                  setDraft((d) => d?.filter((r) => r.row !== row) ?? d);
                   setSaved(false);
                 }}
               />
@@ -155,7 +168,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <button
               className="card-add"
               onClick={() => {
-                setDraft((d) => [...(d ?? []), blankProvider(d ?? [])]);
+                setDraft((d) => [
+                  ...(d ?? []),
+                  newRow(blankProvider(d?.map((r) => r.provider) ?? [])),
+                ]);
                 setSaved(false);
               }}
             >
@@ -1167,6 +1183,40 @@ function ApiKeyField({
       {error && <div className="settings-key-error text-12 text-danger">{error}</div>}
     </Field>
   );
+}
+
+/**
+ * A provider as the Models tab edits it, with an identity of its own.
+ *
+ * Each card holds things the draft does not — an API key typed but not yet
+ * stored, whether it is open — and React keeps those with whatever key the card
+ * has. Keyed by position, removing the first card would hand both to the one
+ * that moves up into its place, and a key typed for one provider would be a
+ * press of Store away from being filed under another. The provider's own id
+ * cannot be the key either: it is one of the fields being edited, and two
+ * unsaved providers can share it.
+ */
+type Row = { row: number; provider: ProviderConfig };
+
+let rowsMade = 0;
+
+function newRow(provider: ProviderConfig): Row {
+  rowsMade += 1;
+  return { row: rowsMade, provider };
+}
+
+/**
+ * Rows for a list read from disk, reusing `previous`'s identities when the list
+ * is the one those rows were saved as — the same length, in the same order — so
+ * a save does not remount every card and fold the one being worked on. A list
+ * that came back a different length is not that list, and gets fresh rows
+ * rather than guessed ones.
+ */
+function rowsOf(list: ProviderConfig[], previous?: Row[] | null): Row[] {
+  if (previous && previous.length === list.length) {
+    return list.map((provider, i) => ({ row: previous[i].row, provider }));
+  }
+  return list.map((provider) => newRow(provider));
 }
 
 /** What the field says beneath itself about where the key comes from. */
