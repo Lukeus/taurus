@@ -783,8 +783,8 @@ git tag v0.2.0 && git push origin main v0.2.0
 ```
 
 The version lives in four places, and only one is a file you can check the
-tag against by eye. `set` writes all four at once, including the fifteen
-workspace entries in `Cargo.lock`. A bump that stops at `Cargo.toml` leaves a
+tag against by eye. `set` writes all four at once, including every
+workspace entry in `Cargo.lock`. A bump that stops at `Cargo.toml` leaves a
 lock the next `cargo` command rewrites underneath the build.
 
 `.github/workflows/release.yml` runs `node scripts/version.mjs check "$TAG"`

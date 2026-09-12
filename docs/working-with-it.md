@@ -540,8 +540,11 @@ an explanation, not a conversation that just stops:
   with thirty rounds spends one of the parent's, not thirty. Each agent's
   limit is on its card in the Agents drawer, which also shows this number so
   you can compare them in one place.
-- **A stall**: the same tool call, with the same arguments, failing three
-  times with nothing succeeding in between. The system prompt tells the model
+- **A stall**: the same tool failing with the same error three times, with
+  nothing succeeding in between. The count goes by the error the model got
+  back, not the arguments it sent. A model retrying a refused call rarely
+  sends identical JSON: it reorders a key or rewords a field the tool
+  ignores, and still gets the same answer. The system prompt tells the model
   not to retry a failed call unchanged, and this enforces it. Failures count
   across rounds, not just back to back, so alternating between two dead ends
   (A, B, A, B, A) is caught as readily as repeating one. Any success clears
