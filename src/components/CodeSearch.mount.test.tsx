@@ -21,7 +21,7 @@ vi.mock("../state/store", () => ({
     select({ refresh }),
 }));
 
-import { CodeSearch, useIndexBuild } from "./Settings";
+import { CodeSearch, useIndexBuild } from "./settings/SearchTab";
 
 /** `CodeSearch` the way `Settings` holds it: the build lives a level up. */
 function Harness(props: {

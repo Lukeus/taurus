@@ -9,18 +9,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import type { ProviderConfig, SearchSettings } from "../lib/api";
-import {
-  FIELDS,
-  Settings,
-  ModelList,
-  keepEdits,
-  blankProvider,
-  keyHint,
-  overrideOf,
-  parseContextLength,
-  statusHint,
-  validate,
-} from "./Settings";
+import { FIELDS, ModelList, blankProvider, overrideOf, parseContextLength, validate } from "./settings/ProvidersTab";
+import { Settings } from "./Settings";
+import { keepEdits, statusHint } from "./settings/SearchTab";
+import { keyHint } from "./settings/ApiKeyField";
 
 const provider = (patch: Partial<ProviderConfig> = {}): ProviderConfig => ({
   id: "ollama",
