@@ -651,3 +651,20 @@ describe("searching the codebase", () => {
     expect(stopShown()).toBe(true);
   });
 });
+
+describe("saving providers", () => {
+  it("offers Save only once something has changed", async () => {
+    // `dirty` was `!saved`, and nothing had been saved on opening, so Save was
+    // live before a single field had moved.
+    withProviders();
+    const host = await mount();
+    const save = () =>
+      [...host.querySelectorAll("button")].find(
+        (b) => b.textContent === "Save",
+      ) as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
+
+    click(host, "Remove");
+    expect(save().disabled).toBe(false);
+  });
+});

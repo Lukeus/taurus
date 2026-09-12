@@ -4,7 +4,6 @@ import type {
   CustomTheme,
   KeyStatus,
   ProviderConfig,
-  Scope,
   Theme,
 } from "../lib/api";
 import { clampIterations, DEFAULT_MAX_ITERATIONS, MAX_ITERATIONS_LIMIT } from "../lib/limits";
@@ -16,7 +15,8 @@ import { ThemeEditor } from "./ThemeEditor";
 import { Problem, Problems } from "./Problem";
 import * as api from "../lib/api";
 import { SearchTab, useIndexBuild, CodeSearch } from "./settings/SearchTab";
-import { Field } from "./settings/Field";
+import { Field, same } from "./settings/Field";
+import { PermissionsTab } from "./settings/PermissionsTab";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
 
 type Tab = "models" | "search" | "permissions" | "behavior" | "appearance";
@@ -45,6 +45,8 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const [rules, setRules] = useState<AllowedRule[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  /** The providers as last read or saved: what Save compares the draft against. */
+  const [loaded, setLoaded] = useState<ProviderConfig[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [keys, setKeys] = useState<Map<string, KeyStatus>>(new Map());
   const [keychain, setKeychain] = useState(false);
@@ -91,7 +93,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     api
       .listGlobalProviders()
-      .then((list) => setDraft(rowsOf(list)))
+      .then((list) => {
+        setDraft(rowsOf(list));
+        setLoaded(list);
+      })
       .catch((e) => setError(String(e)));
     api.listPermissionRules().then(setRules).catch(() => setRules([]));
     api.keychainAvailable().then(setKeychain).catch(() => setKeychain(false));
@@ -100,7 +105,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
   const providers = draft?.map((r) => r.provider) ?? null;
   const problems = providers ? validate(providers) : [];
-  const dirty = draft !== null && saved === false;
+  // Against what is on disk, not whether a save has happened yet: `!saved`
+  // was true the moment the drawer opened, so Save was live before a single
+  // field had moved.
+  const dirty = providers !== null && loaded !== null && !same(providers, loaded);
 
   const update = (row: number, patch: Partial<ProviderConfig>) => {
     setDraft((d) =>
@@ -124,6 +132,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
       // The same rows carried over, so a card left open stays open. See
       // `rowsOf`.
       setDraft((d) => rowsOf(reloaded, d));
+      setLoaded(reloaded);
       // A provider that was just added or renamed only now has an id a key can
       // be stored against, so its field has to stop saying "not saved yet".
       refreshKeys();
@@ -234,49 +243,16 @@ export function Settings({ onClose }: { onClose: () => void }) {
       )}
 
       {tab === "permissions" && (
-        <>
-          <p className="drawer-intro">
-            Approvals you marked “always”. Revoking one puts the next such
-            call back in front of you.
-          </p>
-          {rules.length === 0 ? (
-            <p className="drawer-empty">
-              Nothing has been granted permanently yet.
-            </p>
-          ) : (
-            <ul className="card-list">
-              {rules.map((allowed) => (
-                <li key={`${allowed.scope}:${allowed.rule}`} className="card">
-                  <div className="card-body">
-                    <div className="card-row">
-                      <span className="card-title font-mono rule-name text-12-5 min-w-0 wrap-anywhere">
-                        {allowed.rule}
-                      </span>
-                      <span
-                        className={`tag${allowed.scope === "workspace" ? " project" : ""}`}
-                      >
-                        {SCOPE_LABEL[allowed.scope]}
-                      </span>
-                      <div className="spacer" />
-                      <button
-                        className="danger"
-                        onClick={() =>
-                          run(async () => {
-                            await api.revokePermissionRule(allowed.rule, allowed.scope);
-                            setRules(await api.listPermissionRules());
-                          })
-                        }
-                      >
-                        Revoke
-                      </button>
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-          {error && <Problem>{error}</Problem>}
-        </>
+        <PermissionsTab
+          rules={rules}
+          error={error}
+          onRevoke={(allowed) =>
+            run(async () => {
+              await api.revokePermissionRule(allowed.rule, allowed.scope);
+              setRules(await api.listPermissionRules());
+            })
+          }
+        />
       )}
 
       {tab === "behavior" && (
@@ -640,7 +616,3 @@ const TABS: [Tab, string][] = [
  * why something failed, was shared by eleven panels and is now `Problem`.
  */
 
-const SCOPE_LABEL: Record<Scope, string> = {
-  global: "every workspace",
-  workspace: "this workspace",
-};
