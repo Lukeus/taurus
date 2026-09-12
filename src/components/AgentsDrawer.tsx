@@ -10,7 +10,8 @@ import {
 import { AgentEditor } from "./AgentEditor";
 import { useStore } from "../state/store";
 import { Drawer } from "./Drawer";
-import { Problems } from "./Problem";
+import { Problem, Problems } from "./Problem";
+import { useLoad } from "../lib/load";
 
 type Filter = "all" | "builtin" | "attention";
 
@@ -25,8 +26,6 @@ type Filter = "all" | "builtin" | "attention";
  * directory the user has since edited.
  */
 export function AgentsDrawer({ onClose }: { onClose: () => void }) {
-  const [agents, setAgents] = useState<AgentSummary[] | null>(null);
-  const [cost, setCost] = useState<number | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [creating, setCreating] = useState(false);
 
@@ -47,23 +46,19 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
    */
   const [rescanning, setRescanning] = useState(false);
 
-  const refresh = async () => {
-    const [found, roster] = await Promise.all([
-      api.listAgents(),
-      api.agentRosterCost(),
-    ]);
-    setAgents(found);
-    setCost(roster);
+  // Read on open, because the rescan is the point of mounting, and again from
+  // Rescan and after a save. A read that fails says why above the list rather
+  // than emptying it into "no agents", which would be a claim.
+  const roster = useLoad(async () => {
+    const [found, cost] = await Promise.all([api.listAgents(), api.agentRosterCost()]);
     // The rescan replaced the host's agent problems, so the list the drawer
     // renders below has to come from after it, not before.
     await refreshStatus();
-  };
-
-  useEffect(() => {
-    refresh().catch(() => setAgents([]));
-    // Once, on open. The rescan is the point of mounting.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return { found, cost };
   }, []);
+  const agents = roster.data?.found ?? null;
+  const cost = roster.data?.cost ?? null;
+  const refresh = roster.reload;
 
   const { all, builtin, attention, shown } = partition(agents ?? [], filter);
 
@@ -80,10 +75,9 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
           onClick={async () => {
             setRescanning(true);
             try {
+              // A rescan that fails keeps the list from before, which is still
+              // true, and says why above it.
               await refresh();
-            } catch {
-              // The list on screen is the one from before, which is still
-              // true; the drawer says nothing rather than emptying itself.
             } finally {
               setRescanning(false);
             }
@@ -118,10 +112,12 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
         its own — Settings › Behavior.
       </p>
 
+      {roster.error && <Problem>{roster.error}</Problem>}
+
       {agents === null ? (
         // A count of zero is an answer, and this is not one yet. The same
         // distinction `MemoryDrawer` draws between empty and still reading.
-        <p className="drawer-loading">Reading…</p>
+        !roster.error && <p className="drawer-loading">Reading…</p>
       ) : (
         <div className="pill-row">
           <button

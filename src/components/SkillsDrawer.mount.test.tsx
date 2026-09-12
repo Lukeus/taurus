@@ -80,4 +80,26 @@ describe("opening the drawer", () => {
     expect(html).not.toContain("belongs in the MCP panel now");
     unmount();
   });
+
+  it("says why it could not read the skills, rather than listing none", async () => {
+    // A refused read became an empty list: "All 0", which reads as an answer
+    // and is the one thing that was not known.
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((command: string) =>
+      command === "list_skills"
+        ? Promise.reject("skills directory is unreadable")
+        : Promise.resolve([]),
+    );
+    useStore.setState({ status: null });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => root.render(<SkillsDrawer onClose={() => {}} />));
+
+    expect(host.textContent).toContain("skills directory is unreadable");
+    expect(host.textContent).not.toContain("All 0");
+    expect(host.textContent).not.toContain("Reading…");
+    act(() => root.unmount());
+    vi.mocked(invoke).mockImplementation(() => Promise.resolve([]));
+  });
 });

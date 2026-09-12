@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import * as api from "../lib/api";
 import type { Instructions, SkillSummary } from "../lib/api";
 import { plural } from "../lib/format";
 import { useStore } from "../state/store";
 import { Drawer } from "./Drawer";
-import { Problems } from "./Problem";
+import { Problem, Problems } from "./Problem";
+import { useLoad } from "../lib/load";
 
 type Filter = "all" | "project" | "attention";
 
@@ -18,7 +19,6 @@ type Filter = "all" | "project" | "attention";
  * says what went wrong rather than only that something did.
  */
 export function SkillsDrawer({ onClose }: { onClose: () => void }) {
-  const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   /*
    * One stable slice, narrowed here rather than in the selector.
@@ -41,7 +41,6 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
     (p) => p.source === "skills" || p.source === "instructions",
   );
 
-  const [instructions, setInstructions] = useState<Instructions[]>([]);
   /*
    * Whether a rescan is in flight.
    *
@@ -53,13 +52,17 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
    */
   const [rescanning, setRescanning] = useState(false);
 
-  useEffect(() => {
-    api.listSkills().then(setSkills).catch(() => setSkills([]));
-    api
-      .listInstructions()
-      .then(setInstructions)
-      .catch(() => setInstructions([]));
+  // What the host has loaded, read on open and again after a rescan. A read
+  // that fails says why, rather than showing "All 0", which would be a claim.
+  const catalog = useLoad(async () => {
+    const [skills, instructions] = await Promise.all([
+      api.listSkills(),
+      api.listInstructions(),
+    ]);
+    return { skills, instructions };
   }, []);
+  const skills: SkillSummary[] | null = catalog.data?.skills ?? null;
+  const instructions: Instructions[] = catalog.data?.instructions ?? [];
 
   const { all, project, attention, shown } = partition(skills ?? [], filter);
 
@@ -74,8 +77,7 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
             setRescanning(true);
             try {
               await api.reloadConfig();
-              setSkills(await api.listSkills());
-              setInstructions(await api.listInstructions().catch(() => []));
+              await catalog.reload();
               // The rescan replaced the host's catalog and its problems, so the
               // count on the rail and the list in here have to come from after
               // it. Without this a rescan that found a new skill showed it
@@ -90,12 +92,14 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
         </button>
       }
     >
+      {catalog.error && <Problem>{catalog.error}</Problem>}
+
       {skills === null ? (
         // Not "All 0" over an empty list, which is what a drawer that has
         // finished reading and found nothing looks like. `MemoryDrawer` has
         // always drawn the distinction; the counts here made it worse, by
         // stating a number that was not an answer yet.
-        <p className="drawer-loading">Reading…</p>
+        !catalog.error && <p className="drawer-loading">Reading…</p>
       ) : (
       <div className="pill-row">
         <button
