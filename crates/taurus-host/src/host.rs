@@ -1246,6 +1246,28 @@ impl Host {
         // over whatever is left. See [`Self::warm_index`].
         self.warm_index().await;
 
+        // What every agent in this turn runs with: the parent, and each child it
+        // delegates to. Read per turn rather than captured once, so raising the
+        // iteration ceiling in Settings applies to the next message instead of
+        // the next launch.
+        //
+        // Content capture follows the same rule, and it matters more there:
+        // turning it off has to take effect on the next message rather than the
+        // next launch, or somebody who has just realized what they switched on
+        // cannot switch it off.
+        let base = {
+            let settings = self.settings.read().await;
+            AgentConfig {
+                max_iterations: settings.max_iterations,
+                capture: if settings.otlp_capture_content {
+                    taurus_core::Capture::Content
+                } else {
+                    taurus_core::Capture::MetadataOnly
+                },
+                ..Default::default()
+            }
+        };
+
         // Bound to this session's provider and model, so it is added per turn
         // rather than living in the shared registry. Children get the shared
         // registry, which has no spawn tool — that is the depth cap.
@@ -1259,6 +1281,7 @@ impl Host {
                 model,
                 MAX_CONCURRENT_SUBAGENTS,
             )
+            .with_defaults(base.clone())
             .with_roster(
                 Arc::new(self.agents.read().await.to_vec()),
                 self.agent_models.read().await.clone(),
@@ -1363,20 +1386,7 @@ impl Host {
                     synthesis,
                     agent_synthesis,
                 ),
-                // Read per turn rather than captured once, so raising it in
-                // Settings applies to the next message instead of the next
-                // launch.
-                max_iterations: self.settings.read().await.max_iterations,
-                // Same rule, and it matters more here: turning content capture
-                // off has to take effect on the next message rather than the
-                // next launch, or somebody who has just realized what they
-                // switched on cannot switch it off.
-                capture: if self.settings.read().await.otlp_capture_content {
-                    taurus_core::Capture::Content
-                } else {
-                    taurus_core::Capture::MetadataOnly
-                },
-                ..Default::default()
+                ..base
             },
         )
         // The same board the tool writes to, so what the model wrote on the
