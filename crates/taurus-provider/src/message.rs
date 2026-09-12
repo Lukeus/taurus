@@ -18,6 +18,17 @@ pub enum Role {
     Assistant,
 }
 
+impl Role {
+    /// The name the chat APIs spell this role with.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]

@@ -2,17 +2,9 @@
 
 use std::collections::HashMap;
 
-use taurus_provider::{relocated_note, ChatRequest, ContentBlock, Role, ToolDef};
+use taurus_provider::{relocated_note, ChatRequest, ContentBlock, ToolDef};
 
 use crate::wire::{WireFunction, WireMessage, WireTool, WireToolCall, WireToolCallFunction};
-
-fn role_str(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-    }
-}
 
 pub fn tools_to_wire(tools: &[ToolDef]) -> Vec<WireTool> {
     tools
@@ -116,7 +108,7 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
 
         if !text.is_empty() || !images.is_empty() || !tool_calls.is_empty() {
             let msg = WireMessage {
-                role: role_str(message.role),
+                role: message.role.as_str(),
                 content: text,
                 images,
                 tool_calls,
@@ -137,7 +129,7 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taurus_provider::Message;
+    use taurus_provider::{Message, Role};
 
     #[test]
     fn system_is_prepended_as_a_message() {
@@ -240,7 +232,7 @@ mod tests {
 #[cfg(test)]
 mod image_tests {
     use super::*;
-    use taurus_provider::{ChatRequest, Message};
+    use taurus_provider::{ChatRequest, Message, Role};
 
     fn with_image() -> taurus_provider::ToolOutput {
         taurus_provider::ToolOutput::blocks(vec![

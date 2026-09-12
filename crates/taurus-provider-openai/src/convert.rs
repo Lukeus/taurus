@@ -1,6 +1,6 @@
 //! Content blocks to OpenAI messages.
 
-use taurus_provider::{relocated_note, ChatRequest, ContentBlock, Role, ToolDef};
+use taurus_provider::{relocated_note, ChatRequest, ContentBlock, ToolDef};
 
 pub fn tools_to_wire(tools: &[ToolDef]) -> Vec<serde_json::Value> {
     tools
@@ -16,14 +16,6 @@ pub fn tools_to_wire(tools: &[ToolDef]) -> Vec<serde_json::Value> {
             })
         })
         .collect()
-}
-
-fn role_str(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-    }
 }
 
 /// Flattens block-structured history into OpenAI's message list.
@@ -123,7 +115,7 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
 
         if !text.is_empty() || !images.is_empty() || !tool_calls.is_empty() {
             let mut msg = serde_json::Map::new();
-            msg.insert("role".into(), role_str(message.role).into());
+            msg.insert("role".into(), message.role.as_str().into());
             if images.is_empty() {
                 msg.insert("content".into(), text.into());
             } else {
@@ -154,7 +146,7 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taurus_provider::Message;
+    use taurus_provider::{Message, Role};
 
     #[test]
     fn tool_arguments_are_serialized_as_a_string() {

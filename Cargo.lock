@@ -6546,12 +6546,15 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
+ "bytes",
+ "futures",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+ "tracing",
  "ts-rs",
  "uuid",
 ]

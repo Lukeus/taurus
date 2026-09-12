@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::StreamExt;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -320,7 +319,7 @@ impl Provider for OllamaProvider {
             r = self.post_json("/api/chat", &body) => r?,
         };
 
-        let mut reader = NdjsonReader::new(response.bytes_stream());
+        let mut reader = http::LineReader::new(response.bytes_stream());
         let mut scanner = prompted.then(PromptedScanner::new);
         let mut saw_tool_call = false;
         let mut usage = TokenUsage::default();
@@ -438,53 +437,6 @@ impl Provider for OllamaProvider {
 /// rather than an error so the caller does not report a failure to the user.
 async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> {
     tx.send(event).await.map_err(|_| ProviderError::Canceled)
-}
-
-/// Splits a byte stream into newline-delimited JSON records.
-struct NdjsonReader<S> {
-    stream: S,
-    buf: Vec<u8>,
-    done: bool,
-}
-
-impl<S> NdjsonReader<S>
-where
-    S: futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin,
-{
-    fn new(stream: S) -> Self {
-        Self {
-            stream,
-            buf: Vec::new(),
-            done: false,
-        }
-    }
-
-    async fn next_line(&mut self) -> reqwest::Result<Option<String>> {
-        loop {
-            if let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
-                let line = self.buf.drain(..=i).collect::<Vec<_>>();
-                let line = String::from_utf8_lossy(&line[..line.len() - 1])
-                    .trim()
-                    .to_string();
-                if line.is_empty() {
-                    continue;
-                }
-                return Ok(Some(line));
-            }
-            if self.done {
-                // Final record without a trailing newline.
-                let rest = String::from_utf8_lossy(&std::mem::take(&mut self.buf))
-                    .trim()
-                    .to_string();
-                return Ok((!rest.is_empty()).then_some(rest));
-            }
-            match self.stream.next().await {
-                Some(Ok(bytes)) => self.buf.extend_from_slice(&bytes),
-                Some(Err(e)) => return Err(e),
-                None => self.done = true,
-            }
-        }
-    }
 }
 
 #[cfg(test)]
