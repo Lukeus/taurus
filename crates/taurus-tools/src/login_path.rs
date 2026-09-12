@@ -201,12 +201,27 @@ fn ask_shell() -> Result<String, String> {
 
 /// One attempt, bounded by [`TIMEOUT`].
 fn run(shell: &str, args: &[&str]) -> Result<String, String> {
+    run_with(shell, args, &[])
+}
+
+/// [`run`], with variables set for the shell on top of this process's own.
+///
+/// For the test that runs a real shell, which has to keep the developer's own
+/// startup files out of it: a slow `~/.profile` fails that test on that one
+/// machine, and a result that depends on whose laptop it ran on says nothing
+/// about this code.
+fn run_with(
+    shell: &str,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<String, String> {
     use std::process::{Command, Stdio};
 
     let script = format!(r#"printf '{BEGIN}%s{END}' "$PATH""#);
     let mut child = Command::new(shell)
         .args(args)
         .arg(&script)
+        .envs(env.iter().copied())
         // Not inherited: an interactive shell with the app's stdin can block
         // waiting on it, and a profile that prints is noise on the app's own
         // stderr.
@@ -421,7 +436,20 @@ mod tests {
         // The whole mechanism end to end, against the one shell every unix has.
         // If the fencing, the flags, or the script quoting are wrong, this is
         // where it shows — the alternative is finding out on a user's Dock.
-        let path = run("/bin/sh", &["-l", "-c"]).expect("sh must answer");
+        //
+        // Under an empty home, so that it is this code being tested and not
+        // the developer's profile: `-l` reads `~/.profile`, and one that is
+        // slow or prints fails the test on that one machine.
+        let home = tempfile::TempDir::new().unwrap();
+        let path = run_with(
+            "/bin/sh",
+            &["-l", "-c"],
+            &[
+                ("HOME", home.path().as_os_str()),
+                ("ENV", std::ffi::OsStr::new("")),
+            ],
+        )
+        .expect("sh must answer");
         assert!(path.contains('/'), "{path:?}");
         assert!(
             !path.contains(BEGIN),
