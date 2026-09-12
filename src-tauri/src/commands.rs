@@ -2170,8 +2170,11 @@ pub async fn list_agent_proposals(
         .collect())
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Snake case and exported, like [`ProposalResponse`] beside it. Every field
+/// is one word, so the wire is what it was; the TypeScript is now checked
+/// against it rather than written to match it by hand.
+#[derive(Deserialize, TS)]
+#[ts(export)]
 pub struct AgentProposalResponse {
     pub id: String,
     pub approve: bool,
