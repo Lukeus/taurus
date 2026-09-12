@@ -2,17 +2,18 @@
 
 <sub>[← Taurus AI Shell](../README.md)</sub>
 
-What the agent can reach for, and what it writes down. Every one of these
-works the same in the desktop app and the CLI, because none of it lives in a
-frontend — see [How it is put together](../README.md#how-it-is-put-together).
+What the agent can reach for, and what it writes down. All of it works the
+same in the desktop app and the CLI, because none of it lives in a frontend.
+See [How it is put together](../README.md#how-it-is-put-together).
 
 ## Instructions
 
 A skill is a procedure the model loads when it needs one. Instructions are the
-opposite: a short standing brief that applies to every turn — this project's
-conventions, how you want work done, what not to touch. Taurus reads the files
-you already have rather than asking for a seventh copy, on the same rule the
-skill library follows. Seven locations, lowest precedence first:
+opposite: a short standing brief for every turn, covering your project's
+conventions, how you want work done, and what not to touch.
+
+Like the skill library, Taurus reads the files you already have instead of
+asking for a seventh copy. Seven locations, lowest precedence first:
 
 ```
 ~/.agents/AGENTS.md         <workspace>/AGENTS.md
@@ -22,32 +23,34 @@ skill library follows. Seven locations, lowest precedence first:
 ```
 
 GitHub Copilot's repository brief is exactly this: one file, whole workspace,
-every turn. It has no personal counterpart to read — Copilot keeps a person's
-standing rules in the scoped files below rather than in a single file.
+every turn. There's no personal counterpart to read. Copilot keeps your
+standing rules in the scoped files below, not in a single file.
 
-The project files sit at the repository root rather than inside a dotdir,
-because that is where they actually live — a repo's brief is `AGENTS.md` beside
-the README, and looking anywhere else would find nothing in the projects this
-exists for.
+The project files sit at the repository root, not in a dotdir, because that's
+where a repo's brief lives: `AGENTS.md` beside the README. Looking anywhere
+else would find nothing in the projects this is for.
 
-**They accumulate rather than shadow**, which is the one deliberate difference
-from skills. Two skills named `deploy` are rival answers to one question, so the
-project's wins. "I prefer terse commit messages" and "this repo pins its
-toolchain" are both true at once, and dropping either because the other exists
-would be a silent loss. Each file is labelled in the prompt with where it came
-from, so a model can tell a personal preference from a project requirement — and
-the section says the project's win where they disagree.
+**They accumulate rather than shadow.** That's the one deliberate difference
+from skills. Two skills named `deploy` are rival answers to one question, so
+the project's wins. But "I prefer terse commit messages" and "this repo pins
+its toolchain" are both true at once, and dropping either would be a silent
+loss.
+
+Each file is labelled in the prompt with its source, so the model can tell a
+personal preference from a project requirement. Where they disagree, the
+section says the project's wins.
 
 Two files with identical bytes are read once. `CLAUDE.md` symlinked to
-`AGENTS.md` is the common shape, and a rule the model is told twice is a rule it
-weights twice.
+`AGENTS.md` is the common setup, and a rule the model sees twice gets weighted
+twice.
 
 **Copilot's scoped instructions are read, with their scope stated.** A
-`*.instructions.md` file under `.github/instructions` or `~/.copilot/instructions`
-declares an `applyTo` glob, and Copilot attaches it when it is about to touch a
-matching file. Taurus has no such moment — a brief is assembled once per turn,
-before anyone knows which files the turn will read — so the glob is carried into
-the prompt as a sentence and the model applies it when it applies:
+`*.instructions.md` file under `.github/instructions` or
+`~/.copilot/instructions` declares an `applyTo` glob. Copilot attaches it when
+it's about to touch a matching file. Taurus has no such moment: it builds the
+brief once per turn, before anyone knows which files the turn will read. So
+the glob goes into the prompt as a sentence, and the model applies it when it
+applies:
 
 ```
 ## rust.instructions.md (project, applies to files matching `**/*.rs`)
@@ -55,106 +58,115 @@ the prompt as a sentence and the model applies it when it applies:
 Never use unwrap in library code.
 ```
 
-That is weaker than Copilot's rule and stronger than dropping the file, which
-are the only other two options. Both folders are searched recursively, and the
-frontmatter is stripped rather than read aloud.
+That's weaker than Copilot's rule and stronger than dropping the file, and
+those are the only other two options. Both folders are searched recursively.
+The frontmatter is stripped, not read aloud.
 
-A file with **no `applyTo` is not carried**, and says so in the Skills drawer.
-Copilot does not apply those automatically either — they are for pulling into a
-request by hand — so carrying one into every turn would be Taurus asserting
-something about the file that the tool it was written for does not. Giving it
-`applyTo: "**"` makes it a standing brief.
+A file with **no `applyTo` is not carried**, and the Skills drawer says so.
+Copilot doesn't apply those automatically either. They're for pulling into a
+request by hand. Carrying one into every turn would mean Taurus claiming
+something about the file that the tool it was written for doesn't. Give it
+`applyTo: "**"` to make it a standing brief.
 
-Because a directory of these can grow without anyone noticing, the total is
-budgeted: past 24 KB across all briefs, the drawer says so. Every byte is paid
+A directory of these can grow without anyone noticing, so the total is
+budgeted. Past 24 KB across all briefs, the drawer says so. Every byte is paid
 on every request of every turn.
 
 **`@path` imports are resolved**, one level deep. Claude Code's format lets a
-file be a list of pointers, and real ones are: a global `CLAUDE.md` whose entire
-content is `@RTK.md` is a file Taurus would otherwise read as a single
-meaningless line. A line qualifies only when the whole of it is `@` followed by
-a path, so `Ask @alice before releasing` is prose and stays prose. An import of
-a missing file is reported rather than passed through — a pointer at nothing
+file be a list of pointers, and real ones are. A global `CLAUDE.md` whose
+entire content is `@RTK.md` would otherwise read as a single meaningless line.
+
+A line counts as an import only when the whole line is `@` followed by a path.
+So `Ask @alice before releasing` is prose and stays prose. An import of a
+missing file is reported, not passed through, because a pointer at nothing
 tells the model less than nothing.
 
-A file longer than 12 KB is cut on a line boundary and says so, in the prompt
-and in the Skills drawer. These bytes are paid on every request of every turn,
-so a checked-in handbook would otherwise spend an 8k model's whole context
-before it read a line of code.
+A file longer than 12 KB is cut on a line boundary, and both the prompt and
+the Skills drawer say so. Without the cap, a checked-in handbook could spend an
+8k model's whole context before it read a line of code.
 
-**An edit lands on your next message.** Taurus re-reads the brief at the start
-of each turn — including any file it imports, which is where the whole of a
-brief often lives — so editing `AGENTS.md` beside an open conversation works the
-way it looks like it should. It does not *watch* the files: a watcher fires
-whenever an editor happens to save, which is routinely the middle of a running
-turn, and the brief a turn was given has to be the one it started with. A turn
-boundary is the same change one turn later, without anything being swapped
-underneath work in progress.
+**An edit lands on your next message.** Taurus re-reads the brief at the
+start of every turn, along with any file it imports, which is often where the
+whole brief lives. So you can edit `AGENTS.md` with a conversation open and it
+just works.
 
-Checking costs a `stat` per file and re-reading only happens when one moved, so
-the common case — nothing changed — is a few microseconds per message. The
-comparison is length and modification time, the same one the sweep makes about
-the workspace and blind in the same place: a rewrite to the same length within
-one filesystem tick waits for the next change to be noticed.
+It doesn't *watch* the files. A watcher fires whenever your editor saves,
+which is often mid-turn, and a turn has to finish on the brief it started
+with. Waiting for the next turn gets you the same change one message later,
+without swapping anything out from under running work.
 
-The brief lands directly after the harness's own rules and before the skill
-catalog. That ordering is the design: a brief saying "ask before touching the
+The check costs a `stat` per file, and Taurus only re-reads a file that moved.
+When nothing changed, which is the usual case, that's a few microseconds per
+message. It compares length and modification time, the same test the sweep
+uses on the workspace, and it has the same blind spot: a rewrite to the same
+length within one filesystem tick isn't noticed until the next change.
+
+The brief goes directly after the harness's own rules and before the skill
+catalog. That order is deliberate. A brief saying "ask before touching the
 database" argues with "keep going until the task is done", and a small model
-settles a contradiction by recency — so the brief comes second, where it wins.
+settles a contradiction by recency. So the brief comes second, where it wins.
 
 ## Memory
 
 Instructions are what you tell it. Memory is what it tells the next
 conversation.
 
-A session ends where it ends. The transcript is on disk and can be reopened, but
-the conversation after it starts with none of that — so the first thing you do
-the next morning is explain, again, what was being done and how far it got.
-Nothing tells it that the auth refactor is half applied, or that the flaky test
-was tracked to a clock and not to the code.
+A session ends where it ends. You can reopen the transcript from disk, but the
+next conversation starts with none of it. So next morning you'd start by
+explaining, again, what you were doing and how far it got. Nothing tells it
+the auth refactor is half applied, or that the flaky test was traced to a
+clock and not to the code.
 
-So the model can write a note, with `remember`, when it works out something that
-outlives the conversation: work left half-done and where it stopped, a decision
-and the reason for it, a dead end worth not repeating. Notes are kept per
-workspace and read into the system prompt of every later conversation there,
-newest first, under a heading saying what they are and that they were true when
-written rather than necessarily now.
+So the model can write a note with `remember` when it works out something that
+outlives the conversation:
+
+- work left half-done, and where it stopped
+- a decision, and the reason for it
+- a dead end worth not repeating
+
+Notes are kept per workspace. They're read into the system prompt of every
+later conversation there, newest first, under a heading that says what they
+are. The heading also says they were true when written, not necessarily now.
 
 ```
 ~/.taurus/memory/<workspace>/notes.jsonl
 ```
 
-Beside the transcripts and checkpoints, keyed the same way, for the same reason:
-a note is prose about the contents of your project, and a file in the project is
-a file that gets committed. It is one JSON object per line and is meant to be
-readable — a line you write yourself, without the `id` the model's own notes
+The file sits beside the transcripts and checkpoints, keyed the same way, for
+the same reason. A note is prose about the contents of your project, and a
+file in the project gets committed. It's one JSON object per line and meant to
+be readable. A line you write yourself, without the `id` the model's own notes
 carry, loads like any other.
 
 **Nothing is written behind your back, and nothing is written *for* you.** A
-note is not a proposal you approve, the way a skill is — a dialog on something
-written this often is one you learn to dismiss. Instead it happens where you can
-see it: the call appears in the transcript as it is made, marked as a note
-rather than folded in with the reads, and every note is listed in the **Memory**
-drawer with the conversation it came from and a button to forget it. The same
-list is `taurus notes list`, and the same button is `taurus notes forget <id>`.
+note isn't a proposal you approve, the way a skill is. You'd learn to dismiss
+a dialog on something written this often. Instead it happens where you can
+see it:
 
-A note is capped at 2 KB and refused rather than truncated past it, because a
-note cut off mid-sentence still reads as a fact. The prompt carries the newest
-twelve under a 4 KB ceiling, and the file keeps the newest 200 — the same
-bargain the standing brief makes, for the same reason: these bytes are paid on
-every request of every turn.
+- The call appears in the transcript as it's made, marked as a note rather
+  than folded in with the reads.
+- Every note is listed in the **Memory** drawer with the conversation it came
+  from and a button to forget it.
 
-A conversation is never handed its own notes. They are already in its
-transcript, and repeating them back under a heading that says they came from an
-earlier conversation would be the harness telling the model something untrue
-about where they came from.
+The same list is `taurus notes list`, and the same button is
+`taurus notes forget <id>`.
+
+Notes are capped at 2 KB. A longer one is refused, not truncated, because a
+note cut off mid-sentence still reads like a fact. The prompt carries the
+newest twelve under a 4 KB ceiling, and the file keeps the newest 200. That's
+the same bargain the standing brief makes, for the same reason: these bytes
+are paid on every request of every turn.
+
+A conversation is never handed its own notes. They're already in its
+transcript. Repeating them under a heading that says they came from an earlier
+conversation would mean the harness telling the model something untrue.
 
 ## Skills
 
 A skill is a `SKILL.md` with YAML frontmatter plus optional bundled scripts, in
 the format defined by the [Agent Skills specification](https://agentskills.io/specification).
-Taurus reads the shared locations as well as its own, so a skill installed by
-another client works here without being copied. Eight directories, lowest
+Taurus reads the shared locations as well as its own, so a skill another
+client installed works here without copying. Eight directories, lowest
 precedence first:
 
 ```
@@ -164,91 +176,105 @@ precedence first:
 ~/.taurus/skills            <workspace>/.taurus/skills
 ```
 
-GitHub Copilot reads the same specification, so its skills are already skills
-Taurus understands and the whole cost is that row. It is the one origin whose
-two directories are not named the same — a repository's Copilot customizations
-live in the folder GitHub already reads rather than a dotdir of Copilot's own —
-so the drawer's tag says `.github` on a project skill and `.copilot` on a
-personal one.
+GitHub Copilot reads the same specification, so its skills already work in
+Taurus. The whole cost is that row. It's the one origin whose two directories
+have different names. A repository's Copilot customizations live in the
+folder GitHub already reads, not a dotdir of Copilot's own. So the drawer tags
+a project skill `.github` and a personal one `.copilot`.
 
-A project skill shadows a personal one of the same name, and within either
-tier a `.taurus` skill shadows a borrowed one — so you can override a skill you
-did not write without editing it. The drawer tags each row with where it came
-from, and a shadowed skill is logged rather than silently dropped.
+A project skill shadows a personal one of the same name. Within either tier, a
+`.taurus` skill shadows a borrowed one, so you can override a skill you didn't
+write without editing it. The drawer tags each row with where it came from,
+and a shadowed skill is logged, not silently dropped.
 
-Only one line per skill enters the system prompt: its `when_to_use` when it has
-one, and a condensed `description` otherwise, which is every skill written for
-another client. The procedure itself loads on demand via the `load_skill` tool.
-That is what makes a fifty-skill library affordable on a model with an 8k
+Only one line per skill goes into the system prompt: its `when_to_use` if it
+has one, or a condensed `description` if not, as with every skill written for
+another client. The procedure itself loads on demand through the `load_skill`
+tool. That's what makes a fifty-skill library affordable on a model with an 8k
 context window.
 
-`when_to_use` is a Taurus field and optional. It is worth writing for skills
-you keep here: the specification's `description` does two jobs at once — what
-the skill does and when to use it — and 200 characters aimed squarely at the
-decision beats 1024 aimed at a catalog listing when the whole context is 8k.
+`when_to_use` is an optional Taurus field. It's worth writing for skills you
+keep here. The specification's `description` does two jobs at once: what the
+skill does, and when to use it. When the whole context is 8k, 200 characters
+aimed at the decision beat 1024 aimed at a catalog listing.
 
-Loading is lenient, because a skill you already have installed is more useful
-read than refused. A name in the wrong case, a name that disagrees with its
-directory, a value with an unquoted colon — each is repaired or tolerated,
-reported on the skill's row in the drawer and by `taurus skills check`, and the
-skill loads. Only an empty description or YAML no quoting can rescue stops it.
-Skills Taurus writes itself are held to the strict rules: a proposal that would
-only load by leniency is rejected rather than written.
+Loading is lenient, because a skill you already have is more useful read than
+refused. A name in the wrong case, a name that disagrees with its directory, a
+value with an unquoted colon: each one is repaired or tolerated, and the skill
+loads. The problem is reported on the skill's row in the drawer and by
+`taurus skills check`. Only an empty description, or YAML that no quoting can
+rescue, stops a skill loading.
 
-Any skill can also be run directly as a slash command — `/speckit-specify add a
-dark mode toggle` — in the app and in `taurus run` alike. The harness fills the
-skill's `$ARGUMENTS` placeholder with the rest of the line and hands the model
-the procedure instead of the command; a skill with no placeholder gets the text
-appended under a heading rather than losing it. Sub-agents share the same `/`
-namespace — see [Slash commands](#slash-commands).
+Skills Taurus writes itself are held to the strict rules. A proposal that
+would only load thanks to leniency is rejected, not written.
 
-Two frontmatter flags decide the ways in. `disable-model-invocation: true`
-keeps a skill out of the prompt catalog while leaving it runnable by name — for
-procedures that should run when a person asks and not before. `user-invocable:
-false` does the reverse. Both are optional and both default to available.
+You can also run any skill directly as a slash command, like
+`/speckit-specify add a dark mode toggle`, in the app and in `taurus run`. The
+harness fills the skill's `$ARGUMENTS` placeholder with the rest of the line
+and hands the model the procedure instead of the command. A skill with no
+placeholder gets the text appended under a heading, so it isn't lost.
+Sub-agents share the same `/` namespace. See
+[Slash commands](#slash-commands).
+
+Two frontmatter flags decide how a skill can be reached:
+
+- `disable-model-invocation: true` keeps a skill out of the prompt catalog but
+  leaves it runnable by name. Use it for procedures that should run when a
+  person asks and not before.
+- `user-invocable: false` does the reverse.
+
+Both are optional, and both default to available.
 
 A skill's `scripts/`, `references/`, and `assets/` are listed when the skill is
-opened and read only if the procedure calls for one — the third tier of
+opened, and read only if the procedure calls for one. That's the third tier of
 progressive disclosure. Scripts left in `scripts/` without being declared in
 the frontmatter are picked up by extension, so a skill written for another
-client is runnable rather than merely readable. For the same reason, read-only
-tools may reach into the directories of loaded skills; writes stay inside the
+client is runnable, not just readable. For the same reason, read-only tools
+may reach into the directories of loaded skills. Writes stay inside the
 workspace.
 
 The agent proposes new skills through `propose_skill`. Every proposal is
-validated (kebab-case name, non-empty trigger under 200 characters, no
-near-duplicate of an existing skill, no destructive script patterns) before it
-reaches a review card, and nothing touches disk until you approve it. Approving
-reloads the catalog, so a skill is usable in the session that wrote it.
+validated before it reaches a review card:
+
+- kebab-case name
+- non-empty trigger under 200 characters
+- no near-duplicate of an existing skill
+- no destructive script patterns
+
+Nothing touches disk until you approve it. Approving reloads the catalog, so
+the skill is usable in the session that wrote it.
 
 **A new or edited skill is available on your next message.** The eight
 directories are checked at the start of each turn and rescanned only when
-something in them moved, so a skill dropped into `.taurus/skills` — or installed
-by another client into one of the shared ones — is usable in the next message
-without a reload. Coming back to the window rescans too, which is the case worth
-naming: writing a skill in an editor and switching back is the way most of them
-arrive. Opening the Skills drawer rescans as well, so the drawer and the rail's
-count are never the startup catalog.
+something in them moved. Drop a skill into `.taurus/skills`, or have another
+client install one into a shared directory, and your next message can use it
+without a reload.
 
-The catalog is frozen *within* a turn, the same as the sub-agent roster and for
-the same reason — a skill saved while a turn is running is not visible to it,
-because a turn has to run against the library it started with. The check itself
-is a `stat` per skill: what it guards is parsing every `SKILL.md` in the
-library, which is why it is worth asking first.
+Coming back to the window rescans too. That's the case that matters most:
+most skills arrive by writing one in an editor and switching back.
+Opening the Skills drawer also rescans, so the drawer and the rail's count
+never show the startup catalog.
 
-Scripts declare a logical interpreter (`python3`, `node`, `bash`, …) which is
-resolved per platform at load time. When it cannot be found, the skill is
-marked degraded and the model is told to follow the written steps instead — a
-Python-dependent skill does not hard-fail a Windows machine.
+The catalog is frozen *within* a turn, like the sub-agent roster and for the
+same reason. A turn has to run against the library it started with, so it
+can't see a skill saved while it's running. The check itself is a `stat` per
+skill. It saves parsing every `SKILL.md` in the library, which is why it's
+worth asking first.
+
+Scripts declare a logical interpreter (`python3`, `node`, `bash`, …), resolved
+per platform at load time. If it can't be found, the skill is marked degraded
+and the model is told to follow the written steps instead. A Python-dependent
+skill doesn't hard-fail on a Windows machine.
 
 ## Sub-agents
 
-A turn can hand a self-contained job to a sub-agent: its own conversation, its
-own context window, and a narrower set of tools. The parent sees only the
-child's conclusion, so a search that reads thirty files costs it one paragraph.
+A turn can hand a self-contained job to a sub-agent. The sub-agent gets its
+own conversation, its own context window, and a narrower set of tools. The
+parent sees only the child's conclusion, so a search that reads thirty files
+costs it one paragraph.
 
-Three ship with the harness, and the split between them is a question the parent
-can answer about its own task before it delegates:
+Three ship with the harness. The parent picks one by answering a question
+about its own task before it delegates:
 
 | Agent | Use it when | Scoped to |
 | --- | --- | --- |
@@ -256,19 +282,19 @@ can answer about its own task before it delegates:
 | `worker` | You can dictate the edit exactly. | Whatever the main agent has |
 | `coder` | Someone has to look at the code and decide. | The file tools, `grep`/`glob`, `run_command`, `load_skill` |
 
-`coder` is the one that checks its own work: it is told to read around the
-change before writing it, and to build it or run the tests afterwards and report
-what it ran. That is also why it is scoped to a named list rather than
-inheriting — an agent that advertises "builds or tests it" and quietly also
-holds a web client and your MCP servers is advertising a different thing. The
-model reaches any of them through `spawn_subagent`.
+`coder` is the one that checks its own work. It's told to read around the
+change before writing it, then build it or run the tests and report what it
+ran. That's also why it's scoped to a named list instead of inheriting. An
+agent that advertises "builds or tests it" but quietly also holds a web client
+and your MCP servers is advertising something else. The model reaches any of
+them through `spawn_subagent`.
 
-`coder` and `worker` overlap at the boundary, because real tasks do. What keeps
-them apart is who decides: hand `worker` a decision it was not given and it is
-told to stop and say what is missing rather than guess.
+`coder` and `worker` overlap at the edges, because real tasks do. What keeps
+them apart is who decides. Hand `worker` a decision it wasn't given and it's
+told to stop and say what's missing, not guess.
 
 You can add your own. An agent is a markdown file in `~/.taurus/agents` or
-`<workspace>/.taurus/agents` — the file name is the agent's name, and the body
+`<workspace>/.taurus/agents`. The file name is the agent's name, and the body
 below the frontmatter is its system prompt:
 
 ```markdown
@@ -286,8 +312,8 @@ defects you can point at a specific line for. You cannot ask questions.
 Be brief; the agent that called you sees only your reply.
 ```
 
-Agents are read from four directories, the same shape the skill library uses —
-the borrowed locations first, Taurus's own last:
+Agents are read from six directories, the same shape the skill library
+uses. The borrowed locations come first, Taurus's own last:
 
 ```
 ~/.claude/agents/<name>.md           <workspace>/.claude/agents/<name>.md
@@ -295,76 +321,86 @@ the borrowed locations first, Taurus's own last:
 ~/.taurus/agents/<name>.md           <workspace>/.taurus/agents/<name>.md
 ```
 
-The first two rows are Claude's and GitHub Copilot's, read for the reason
-`.claude/skills` is: an agent written for another tool is frontmatter and a
-markdown body that is its system prompt, which is what one written for Taurus
-is, so reading them costs directories rather than a second parser. Copilot's
-doubled extension is understood — `reviewer.agent.md` is the agent `reviewer`,
-not one called `reviewer.agent`. Frontmatter keys Taurus does not have are
-ignored rather than honoured.
+The first two rows are Claude's and GitHub Copilot's, read for the same reason
+as `.claude/skills`. Their agents have the same shape as a Taurus agent:
+frontmatter, plus a markdown body that's the system prompt. So reading them
+costs directories, not a second parser.
+
+Copilot's doubled extension is understood: `reviewer.agent.md` is the agent
+`reviewer`, not one called `reviewer.agent`. Frontmatter keys Taurus doesn't
+have are ignored, not honoured.
 
 A project agent shadows a personal one of the same name, and either shadows a
-built-in — so a `explorer.md` of your own replaces the shipped explorer rather
-than sitting beside it. Within a tier, yours wins over a borrowed one, which is
-how you override an agent you did not write without editing it. The drawer says
-on the row when that has happened.
+built-in. So an `explorer.md` of your own replaces the shipped explorer
+instead of sitting beside it. Within a tier, yours wins over a borrowed one.
+That's how you override an agent you didn't write without editing it. The
+drawer says so on the row when that happens.
 
-**A borrowed file is read and never written.** Retuning `max_iterations` on a
-Copilot agent saves a Taurus-owned copy beside it and shadows the original,
-exactly as editing a built-in does — and the field says so before you touch it.
-That is not tidiness: the file is usually committed, Copilot is still reading it,
+**A borrowed file is read and never written.** If you retune `max_iterations`
+on a Copilot agent, Taurus saves its own copy beside it that shadows the
+original, exactly as editing a built-in does. The field tells you this before
+you touch it.
+
+That isn't tidiness. The file is usually committed, Copilot still reads it,
 and its frontmatter carries keys Taurus has never heard of. Taurus rewrites a
 file from the fields it knows, so editing one in place would silently delete
-every `handoffs:` and `hooks:` in it. The copy lands in the same tier as the
-file it overrides, because a user-tier copy of a project-tier agent would sit
-underneath the thing it was meant to replace.
+every `handoffs:` and `hooks:` in it.
 
-**A new or edited agent is available on your next message.** The directories are
-checked at the start of each turn and rescanned only when something in them
-moved, so writing `reviewer.md` in an editor and delegating to it in the next
-message works without a reload or a trip to the drawer. The roster is still
-frozen *within* a turn — a file saved while one is running is not visible to it
-— which is deliberate: a turn has to delegate against the set of agents it
-started with, and that is exactly what a file watcher could not promise. The
-drawer's **Rescan** is still there for the moment you want it now rather than on
-the next message.
+The copy lands in the same tier as the file it overrides. A user-tier copy of
+a project-tier agent would sit underneath the thing it was meant to replace.
 
-The `/` command menu is the one surface that cannot rescan on its own, because
-it is redrawn on every keystroke and taking config locks there is how a reload
-comes to deadlock against typing. It lists what the last scan found — but it
-re-reads that list whenever the number of skills or agents changes, so a rescan
-is what refreshes it: coming back to the window, finishing a message, or opening
-either drawer. Typing the name in full works straight away regardless, because
-that path resolves against a fresh roster.
+**A new or edited agent is available on your next message.** The directories
+are checked at the start of each turn and rescanned only when something in
+them moved. So you can write `reviewer.md` in an editor and delegate to it in
+your next message, without a reload or a trip to the drawer.
 
-`max_iterations:` is how many model/tool round trips this agent gets before it
-is stopped, between 1 and 100. It is editable on the agent's card in the Agents
-drawer as well as in the file — that edit rewrites the file in place, so
-`model:` and anything else you set by hand survives it. Editing a built-in's
-limit has nowhere to write, so it saves a copy you own into `~/.taurus/agents`
-that shadows the built-in; the card says so before you change it. The same
-ceiling governs the conversation that delegates — see
-[the iteration ceiling](working-with-it.md#when-a-turn-stops), which is a
-separate number, in Settings › Behavior.
+The roster is still frozen *within* a turn, so a turn can't see a file saved
+while it's running. That's deliberate. A turn has to delegate against the set
+of agents it started with, and a file watcher couldn't promise that. The
+drawer's **Rescan** is still there for when you want it now, not on the next
+message.
 
-`tools:` is **enforced**, unlike a skill's `allowed_tools`, which is advisory:
-it is exactly the set the child is offered. Leave the key out to inherit
-everything the main agent has. It narrows what the agent is *offered* and never
-what it is *permitted* — every call the child makes still meets the same
-permission gate as the parent's. If every tool an agent names turns out to be
-unavailable here, the agent is refused rather than run unscoped, because an
-empty list would otherwise mean "everything".
+The `/` command menu is the one surface that can't rescan on its own. It's
+redrawn on every keystroke, and taking config locks there is how a reload
+ends up deadlocking against your typing. It lists what the last scan found,
+but it re-reads that list whenever the number of skills or agents changes. So
+any rescan refreshes it: coming back to the window, finishing a message, or
+opening either drawer. Typing the full name works straight away regardless,
+because that path resolves against a fresh roster.
 
-`model:` runs one agent somewhere else — a bigger model for review, a smaller
-one for search. Naming a provider that is not configured on this machine
-degrades the agent rather than failing the load: it runs on the session's model,
-and both the drawer and `taurus agents check` say so. A repo can ship an agent
-naming a cloud model without breaking for a contributor who runs Ollama only.
+`max_iterations:` is how many model/tool round trips this agent gets before
+it's stopped, between 1 and 100. You can edit it on the agent's card in the
+Agents drawer as well as in the file. The card edit rewrites the file in
+place, so `model:` and anything else you set by hand survives.
 
-A sub-agent cannot delegate further. Its registry has no `spawn_subagent` in it,
-so the depth cap is structural rather than a counter the model could talk past.
+A built-in has no file to write, so editing its limit saves a copy you own
+into `~/.taurus/agents` that shadows the built-in. The card says so before you
+change it. The conversation that delegates has its own ceiling, a separate
+number in Settings › Behavior. See
+[the iteration ceiling](working-with-it.md#when-a-turn-stops).
 
-Every delegate keeps a transcript of its own, written as it runs, in a directory
+`tools:` is **enforced**. It's exactly the set the child is offered. A skill's
+`allowed_tools`, by contrast, is advisory. Leave the key out to inherit
+everything the main agent has.
+
+It narrows what the agent is *offered*, never what it's *permitted*. Every
+call the child makes still meets the same permission gate as the parent's. If
+every tool an agent names turns out to be unavailable here, the agent is
+refused instead of run unscoped, because an empty list would otherwise mean
+"everything".
+
+`model:` runs one agent somewhere else: a bigger model for review, a smaller
+one for search. If it names a provider that isn't configured on this machine,
+the agent is degraded instead of failing to load. It runs on the session's
+model, and both the drawer and `taurus agents check` say so. That way a repo
+can ship an agent naming a cloud model without breaking for a contributor who
+only runs Ollama.
+
+A sub-agent can't delegate further. Its registry has no `spawn_subagent` in
+it, so the depth cap is structural, not a counter the model could talk its way
+past.
+
+Every delegate keeps its own transcript, written as it runs, in a directory
 named for the conversation that spawned it:
 
 ```text
@@ -372,18 +408,17 @@ named for the conversation that spawned it:
 ~/.taurus/sessions/<workspace>/<id>/subagents/agent-*.jsonl  what it delegated
 ```
 
-The parent's transcript still records a delegation as what it is — one call, one
-paragraph back — while the reading, the dead ends and the reasoning behind that
-paragraph stay somewhere they can be found. A delegate is not a conversation
-somebody had, so it never appears in the session list, and deleting a
+The parent's transcript still records a delegation as what it is: one call,
+one paragraph back. The reading, the dead ends and the reasoning behind that
+paragraph stay somewhere you can find them. A delegate isn't a conversation
+somebody had, so it never appears in the session list. Deleting a
 conversation deletes its delegates with it.
 
-In the app the delegation's row offers to open it, in a drawer beside the
-conversation rather than inside it — while the call is still running, which is
-when a delegation that looks stuck is worth looking into, and afterwards when
-the paragraph it returned is thinner than expected. It opens read-only: a
-delegate's conversation happened inside somebody else's turn, and there is
-nothing there to continue.
+In the app, the delegation's row opens it in a drawer beside the
+conversation. That works while the call is running, which is when a stuck
+delegation is worth checking, and afterwards, when the paragraph it returned
+is thinner than you expected. It opens read-only. A delegate's conversation
+happened inside somebody else's turn, so there's nothing there to continue.
 
 ```bash
 taurus agents list          # the roster, what each is scoped to, what it costs
@@ -391,37 +426,50 @@ taurus agents check         # non-zero if an agent will not load or cannot run a
 taurus sessions --agents ID # what one conversation delegated, and where it was written
 ```
 
-Authoring is a text editor, as it is for skills. The drawer's **New agent…**
-writes a starter file with every key documented in place and opens it, and it
-rescans on open, so editing a file and reopening shows what is actually on disk.
+You write agents in a text editor, as you do skills. The drawer's
+**New agent…** writes a starter file with every key documented in place and
+opens it. The drawer rescans on open, so editing a file and reopening shows
+what's actually on disk.
 
 The agent can also write one for you. `propose_agent` is the twin of
-`propose_skill` and gated by its own setting — a skill is a procedure the model
-follows, an agent is a worker it hands a task to, and wanting one is no reason
-to want the other. A proposal is validated before it reaches a review card:
-kebab-case name, a description under 200 characters, a system prompt long
-enough to be worth a file, no near-duplicate of an agent already on the roster,
-and no tool this session does not have. Nothing touches disk until you approve
-it, and the card is editable — so it is validated again on the way out, because
-a hand-edited name or tool list has never been checked.
+`propose_skill`, gated by its own setting. A skill is a procedure the model
+follows, and an agent is a worker it hands a task to. Wanting one is no reason
+to want the other.
 
-What keeps that a bounded risk is that a proposed agent cannot reach past the
-session that wrote it. `tools:` only ever narrows; a name outside the session's
-registry is refused rather than saved and degraded; every call the child makes
-still meets the parent's permission gate; and the child has no `spawn_subagent`,
-so it cannot propose or spawn further agents. `model:` and `provider:` are not
-proposable at all — which model a delegate runs on is a cost decision on a
-provider you pay for, and it is the one field with no bearing on what the agent
-can do. An approved agent inherits the session's model; change it by editing
-the file, where the decision is yours and visible.
+A proposal is validated before it reaches a review card:
 
-Approving rescans the roster rather than reloading everything, so saving an
-agent does not restart every MCP server — and saving a server, in the same
-spirit, reconnects the servers and rescans the roster only when the set of tools
-those servers offer actually changed, which is the one way a server can affect an
-agent. It is not usable in the turn that
-proposed it — a turn's roster is frozen when it starts — and the tool result
-says so, rather than letting the model spend a round trip finding out.
+- kebab-case name
+- a description under 200 characters
+- a system prompt long enough to be worth a file
+- no near-duplicate of an agent already on the roster
+- no tool this session doesn't have
+
+Nothing touches disk until you approve it. The card is editable, so it's
+validated again on the way out, because a hand-edited name or tool list hasn't
+been checked.
+
+The risk stays bounded because a proposed agent can't reach past the session
+that wrote it:
+
+- `tools:` only ever narrows.
+- A name outside the session's registry is refused, not saved and degraded.
+- Every call the child makes still meets the parent's permission gate.
+- The child has no `spawn_subagent`, so it can't propose or spawn more agents.
+
+`model:` and `provider:` aren't proposable at all. Which model a delegate runs
+on is a cost decision on a provider you pay for, and it's the one field with
+no bearing on what the agent can do. An approved agent inherits the session's
+model. To change it, edit the file, where the decision is yours and visible.
+
+Approving rescans the roster instead of reloading everything, so saving an
+agent doesn't restart every MCP server. Saving a server works the same way. It
+reconnects the servers and rescans the roster only when the set of tools
+those servers offer actually changed, which is the one way a server can
+affect an agent.
+
+A new agent isn't usable in the turn that proposed it, because a turn's roster
+is frozen when it starts. The tool result tells the model, so it doesn't spend
+a round trip finding out.
 
 ## Slash commands
 
@@ -432,32 +480,37 @@ One `/` namespace covers both libraries, in the app and in `taurus run` alike:
 /reviewer check the auth module            # hands the job to that sub-agent
 ```
 
-The composer completes as you type `/` and tags each row **skill** or **agent**,
-because the two do different things with the rest of the line. A skill's
-procedure replaces your message. An agent's name becomes an instruction to
-delegate: the turn calls `spawn_subagent` with the line as the task, and what
-comes back is the child's conclusion rather than the thirty files it read.
-Delegation stays a tool call rather than a separate code path, so a command runs
-exactly the agent the model would have run on its own — same tool scoping, same
-permission gate, same depth cap.
+The composer completes as you type `/` and tags each row **skill** or
+**agent**, because the two do different things with the rest of the line:
 
-`/explorer` with nothing after it points the agent at what the conversation has
-already established, which is what "now do that part with the explorer" means.
-Both built-ins are reachable this way on a machine with no agents directory.
+- A skill's procedure replaces your message.
+- An agent's name becomes an instruction to delegate. The turn calls
+  `spawn_subagent` with the line as the task, and what comes back is the
+  child's conclusion, not the thirty files it read.
 
-A name held by both a skill and an agent runs the skill. That is not a judgement
-about which is more useful — it is that a command which quietly starts doing
-something else is worse than a name that is awkward to reach. Rename one of the
-two if you want both. A model-only skill (`user-invocable: false`) does not
+Delegation stays a tool call, not a separate code path. So a command runs
+exactly the agent the model would have run on its own, with the same tool
+scoping, the same permission gate, and the same depth cap.
+
+`/explorer` with nothing after it points the agent at what the conversation
+has already established. That's what "now do that part with the explorer"
+means. Both built-ins are reachable this way on a machine with no agents
+directory.
+
+If a skill and an agent share a name, the command runs the skill. That isn't a
+judgement about which is more useful. A command that quietly starts doing
+something else is worse than a name that's awkward to reach. Rename one of
+the two if you want both. A model-only skill (`user-invocable: false`) doesn't
 reserve its name, so an agent behind one is still reachable.
 
-A name nothing matches is reported to you rather than sent, with the near misses
-from both rosters. Turning `spawn_subagent` off in `disabled_tools` takes agents
-out of the menu, and typing one anyway says that rather than "no such command".
+If nothing matches a name, you get told instead of it being sent, along with
+the near misses from both rosters. Turning `spawn_subagent` off in
+`disabled_tools` takes agents out of the menu. Typing one anyway tells you
+that, not "no such command".
 
-Ordinary text that begins with a slash is never treated as a command:
-`/usr/bin/env is portable` is sent as written. A command has to name a skill or
-an agent, start with a letter, and be followed by a space or nothing.
+Ordinary text that starts with a slash is never treated as a command, so
+`/usr/bin/env is portable` is sent as written. A command has to name a skill
+or an agent, start with a letter, and be followed by a space or nothing.
 
 ## The canvas
 
@@ -467,22 +520,20 @@ Ask to see a file and it opens in an editor beside the conversation:
 
 > show me where the retry logic is in `crates/taurus-host/src/host.rs`
 
-The second one opens on the passage rather than at the top — the model passes
-the lines it means, the editor scrolls there and selects them. It is the
+The second one opens on the passage, not at the top. The model passes the
+lines it means, and the editor scrolls there and selects them. It's the
 difference between being handed a file and being pointed at something in it.
 
-The transcript keeps a card for every file that was opened, and clicking one
-opens it again. The card holds a path and nothing else, so a conversation from
-last month opens today's version of the file — which is the version worth
-looking at, since the reason to go back is usually to find out whether what was
-said is still true.
+The transcript keeps a card for every file that was opened. Click one to open
+it again. The card holds a path and nothing else, so a conversation from last
+month opens today's version of the file. That's the version worth looking at,
+because you usually go back to check whether what was said is still true.
 
 ### It is a split, not a screen
 
-The conversation does not go anywhere. That is the whole point: the reason to
-have a file on screen is to talk about it while it is there. Drag the edge to
-give either side more room; close it with the ✕ and the conversation takes the
-width back.
+The conversation stays where it is. That's the whole point: you put a file on
+screen to talk about it while it's there. Drag the edge to give either side
+more room. Close it with the ✕ and the conversation takes the width back.
 
 Markdown opens on its rendered preview, with a **Source** switch for the
 asterisks. Source files open as source, coloured by the same tokenizer the
@@ -490,57 +541,58 @@ transcript uses.
 
 ### Asking about a passage
 
-Select some text and **Ask about this** appears. It puts the beginning of a
-sentence in the message box — `About lines 40–58 of host.rs: ` — and leaves the
+Select some text and **Ask about this** appears. It puts the start of a
+sentence in the message box, `About lines 40–58 of host.rs: `, and leaves the
 rest to you. Nothing is sent until you send it.
 
-What travels with that message is the selection itself: the model is told which
-file was open, which lines were highlighted, and what they said. So "tighten
-this" and "does this handle the empty case?" are complete questions, which they
-are on screen and are not in a transcript. Without a selection it is told the
-file is open and to read it before answering anything about what it says.
+The selection goes with that message. The model is told which file was open,
+which lines were highlighted, and what they said. On screen, "tighten this"
+and "does this handle the empty case?" are complete questions. The selection
+keeps them complete for the model, where a bare transcript wouldn't. Without a
+selection, the model is told the file is open and to read it before answering
+anything about its contents.
 
-The chip above the message box is where that becomes visible — it names the file
-and the lines while you are typing, because context you cannot see is behaviour
-you cannot explain.
+The chip above the message box shows this. It names the file and the lines
+while you type, because context you can't see is behaviour you can't explain.
 
 ### Typing in it
 
-The editor takes edits, and saves them itself about a second after you stop
-typing — there is no ⌘S and nothing to remember. That is not a convenience: the
+The editor takes edits and saves them itself about a second after you stop
+typing. There's no ⌘S and nothing to remember. That's not a convenience. The
 whole argument for the canvas is that you and Taurus are looking at the same
-file, and an unsaved buffer breaks it silently. You would ask about the
+file, and an unsaved buffer breaks that silently. You'd ask about the
 paragraph on screen and get an answer about the one on disk.
 
 The header says **Unsaved** while a save is pending and **Saving…** while it
-runs. Silence means it is written.
+runs. Silence means it's written.
 
 ### When you both write at once
 
 Taurus edits files too, and neither of you waits for the other.
 
-If Taurus writes the file you have open and you have not typed anything, the
-editor takes the new version and tints what changed for a second — you watch it
-edit your document. If you *have* typed something, nothing is taken: a bar
-appears saying the file changed while you were typing, with **Keep mine** and
-**Take theirs**. Your version stays in the editor either way.
+- If Taurus writes the file you have open and you haven't typed anything, the
+  editor takes the new version and tints what changed for a second. You watch
+  it edit your document.
+- If you *have* typed something, nothing is taken. A bar appears saying the
+  file changed while you were typing, with **Keep mine** and **Take theirs**.
+  Your version stays in the editor either way.
 
-A save never overwrites something it has not seen. The editor holds the
-fingerprint of the file as it read it, and a save that does not match is refused
-rather than applied — so the race is closed at the write, not papered over in
-the UI. While a conflict is open, Taurus is told that the file on disk is not
-what is on screen, so it cannot answer confidently from the wrong version.
+A save never overwrites something it hasn't seen. The editor holds the
+fingerprint of the file as it read it, and a save that doesn't match is
+refused. So the race is closed at the write, not papered over in the UI. While
+a conflict is open, Taurus is told the file on disk isn't what's on screen, so
+it can't answer confidently from the wrong version.
 
 CRLF files stay CRLF. A browser reports its editor's contents with LF endings
-whatever went in, so without this a three-line edit would land as a diff
+whatever went in. Without this, a three-line edit would land as a diff
 touching every line in the file.
 
 ### What it does not do yet
 
-One file at a time — opening another replaces it. It opens text (source,
-Markdown, config) up to 4 MB. There is no folding, no in-editor find, and one
-cursor. A file changed outside a turn — a `git checkout` in the dock — is
-noticed when you save rather than when it happens. See `docs/known-gaps.md`.
+One file at a time: opening another replaces it. It opens text (source,
+Markdown, config) up to 4 MB. There's no folding, no in-editor find, and one
+cursor. A file changed outside a turn, like a `git checkout` in the dock, is
+noticed when you save, not when it happens. See `docs/known-gaps.md`.
 
 ## Notes
 
@@ -552,59 +604,70 @@ with a pane of their own.
 ~/.taurus/notes/         global notes, yours across every project
 ```
 
-A note is a file and nothing else — no frontmatter, no index, no format only
-this app reads. The name in the list is the filename, so the two cannot drift,
-and a note added by hand in an editor shows up in the pane with no import step.
+A note is a file and nothing else: no frontmatter, no index, no format only
+this app reads. The name in the list is the filename, so the two can't drift.
+A note you add by hand in an editor shows up in the pane with no import step.
 
 Nothing merges between the notebooks. Two notes with the same name in the two
-scopes are two notes; unlike config, where the workspace layer wins, there is no
-sensible way to merge prose.
+scopes are two notes. Config merges, with the workspace layer winning, but
+there's no sensible way to merge prose.
 
-**Write** is the source and **Read** is what it renders as, including a
-```` ```mermaid ```` fence, which is drawn by the app's own diagram engines
-rather than by the Mermaid library. Editing saves itself a moment after typing
-stops and never overwrites a version it has not seen — a turn that writes the
-same note while you type in it leaves both versions on screen and neither
-chosen, which is the canvas's rule and the canvas's implementation of it.
+**Write** is the source and **Read** is what it renders as. That includes a
+```` ```mermaid ```` fence, which the app's own diagram engines draw instead
+of the Mermaid library. Editing saves itself a moment after you stop typing
+and never overwrites a version it hasn't seen. If a turn writes the same note
+while you're typing in it, both versions stay on screen and neither is
+chosen. That's the canvas's rule, with the canvas's implementation.
 
-A **sketch** is an Excalidraw drawing — a `.excalidraw` file in the same
-notebook, under the same rules, opened full-pane in the editor. A note draws one
-in Read with a Markdown image line, `![caption](<Name.excalidraw>)`, which is
+A **sketch** is an Excalidraw drawing: a `.excalidraw` file in the same
+notebook, under the same rules, opened full-pane in the editor. A note draws
+one in Read with a Markdown image line, `![caption](<Name.excalidraw>)`. That's
 also what **Copy embed** gives you.
 
-The model reaches a note with `read_note`, by notebook and name. Not by path:
-a global note is outside the workspace, and `read_file` will not go above the
-root. Nothing else is reachable through it. It writes one with `write_note`,
-which is a write like any other — asked first, with the diff, and rewindable for
-a project note — and shows you one with `open_note`, a card you open yourself.
-A sketch it cannot see; what reaches it is the text written on the sketches a
-note embeds.
+The model reaches a note with `read_note`, by notebook and name, not by path.
+A global note is outside the workspace, and `read_file` won't go above the
+root. Nothing else is reachable through `read_note`. The model has two more
+tools:
+
+- `write_note` writes a note. It's a write like any other: asked first, with
+  the diff, and rewindable for a project note.
+- `open_note` shows you a note as a card you open yourself.
+
+The model can't see a sketch. What reaches it is the text written on the
+sketches a note embeds.
 
 These are separate from [Memory](#memory) above, and the difference is worth
-keeping straight. Memory is written by the model, capped at a couple of
-sentences, and read into every later conversation's prompt. A note is written by
-you, is as long as you like, and costs nothing until you ask about it.
+keeping straight:
+
+- Memory is written by the model, capped at a couple of sentences, and read
+  into every later conversation's prompt.
+- A note is written by you, is as long as you like, and costs nothing until
+  you ask about it.
 
 ## Terminal
 
-<kbd>Ctrl</kbd>+<kbd>`</kbd> opens a shell in the bottom of the window, in the
-folder the window is pointed at. It is your own shell — `$SHELL` on macOS and
-Linux — started the way any other terminal starts one, so the rc file you
-already have is the rc file it reads. Aliases, prompt, completions: all of it is
-there, because none of it is reimplemented here.
+<kbd>Ctrl</kbd>+<kbd>`</kbd> opens a shell at the bottom of the window, in the
+folder the window is pointed at. It's your own shell (`$SHELL` on macOS and
+Linux), started the way any other terminal starts one. So it reads the rc file
+you already have. Your aliases, prompt and completions are all there, because
+none of it is reimplemented here.
 
-On Windows it opens PowerShell, the way Windows Terminal does: PowerShell 7 if
-you have it, the Windows PowerShell that ships in the box if not, and `cmd.exe`
-only where neither is on the PATH. The banner is suppressed, which is the one
-thing Windows Terminal does differently — it has a full screen to spend on
-three lines of copyright and this dock does not.
+On Windows it opens PowerShell, the way Windows Terminal does:
 
-A real pseudo-terminal underneath, and a real emulator on top, which together
-are what make it a terminal rather than a log with colours in it. `vim` opens.
-`htop` redraws. `less` pages. A progress bar overwrites its own line instead of
-printing a hundred of them. Resizing the pane tells the shell its new geometry,
-so a full-screen program reflows with it rather than drawing to the size it
-started at.
+- PowerShell 7 if you have it
+- otherwise the Windows PowerShell that ships in the box
+- `cmd.exe` only where neither is on the PATH
+
+The banner is suppressed. That's the one difference from Windows Terminal,
+which has a full screen to spend on three lines of copyright. This dock
+doesn't.
+
+There's a real pseudo-terminal underneath and a real emulator on top.
+Together they make it a terminal and not a log with colours in it. `vim`
+opens. `htop` redraws. `less` pages. A progress bar overwrites its own line
+instead of printing a hundred of them. Resizing the pane tells the shell its
+new geometry, so a full-screen program reflows with it instead of drawing at
+the size it started at.
 
 ### The commands the model started
 
@@ -613,46 +676,53 @@ that exited 101, and a `pnpm dev --host` still running — showing the failing
 test's output](screenshots/background.png)
 
 A background command gets a tab beside the shell. `run_command` with
-`background: true` hands the model a number and goes on printing into a buffer
-between turns — and the card for the call that started it is closed by the time
-anything arrives, so a build the model can read would otherwise be one you
-cannot see. The tab strip appears when there is a background command to show
-and is absent otherwise; the rail's **Terminal** row wears a count while any of
-them are running, which is what makes a build started behind a closed dock
-something you find out about.
+`background: true` hands the model a number and keeps printing into a buffer
+between turns. By the time anything arrives, the card for the call that
+started it is closed. Without the tab, the model could read a build you
+couldn't see.
 
-Each tab carries the command, how it is doing in the same words `check_command`
-gives the model, and a **Stop** while it is still going. A finished one is
-marked as well as coloured — `✓` clean, `✗` a non-zero exit, `–` stopped — so
-the strip reads on a projector and to someone who cannot tell the two colours
-apart.
+The tab strip only appears when there's a background command to show. The
+rail's **Terminal** row shows a count while any are running, so you find out
+about a build started behind a closed dock.
 
-These tabs are read-only, and that is what they are rather than a limitation
-half-built: a background command runs with pipes and no pseudo-terminal, so
-there is nothing to type into and nothing addressing a screen by coordinate.
-What it printed is text, wrapped rather than scrolled sideways, and escape
-sequences from a command that colours anyway are taken off on the way in. The
-pane follows the output down until you scroll up, and picks the tail back up
-when you scroll to the bottom.
+Each tab shows:
 
-The pane and the model read the same buffer and keep separate places in it, so
-opening a tab does not take lines out of the model's next `check_command` and a
-check does not blank the tab — see
-[Commands that keep running](safety.md#commands-that-keep-running). What the
-buffer has forgotten is gone from both, and the pane says where, in a bracketed
-line where the gap actually is rather than in a note off to one side.
+- the command
+- how it's doing, in the same words `check_command` gives the model
+- a **Stop** button while it's still going
 
-The dock is desktop-only, and deliberately so: `taurus` on the command line is
-already in a terminal, and a second one inside it would be a worse version of
-the one it is running in.
+A finished one is marked as well as coloured: `✓` clean, `✗` a non-zero exit,
+`–` stopped. So the strip reads on a projector, and for someone who can't tell
+the two colours apart.
 
-Closing the dock ends the shell, the same as closing a terminal window anywhere
-else — and so does closing the app, which is the part worth stating, because a
-shell started under a pty is not in the app's process tree in any way the
-operating system would clean up on its own.
+These tabs are read-only by design, not a half-built feature. A background
+command runs with pipes and no pseudo-terminal, so there's nothing to type
+into and nothing addressing a screen by coordinate. What it printed is text,
+wrapped instead of scrolled sideways. Escape sequences from a command that
+colours anyway are stripped on the way in. The pane follows the output down
+until you scroll up, and picks the tail back up when you scroll to the bottom.
 
-What it is **not**, yet: the shell is not wired to the conversation. The agent
-does not read what you type there, what you run is not checkpointed the way the
-agent's own commands are, and commands are a scrollback rather than the blocks a
-Warp-style terminal groups them into. Each of those is written down in
-[Known gaps](known-gaps.md).
+The pane and the model read the same buffer but keep separate places in it.
+Opening a tab doesn't take lines out of the model's next `check_command`, and
+a check doesn't blank the tab. See
+[Commands that keep running](safety.md#commands-that-keep-running). Anything
+the buffer has dropped is gone from both. The pane marks where with a
+bracketed line at the actual gap, not a note off to one side.
+
+The dock is desktop-only on purpose. `taurus` on the command line is already
+in a terminal, and a second one inside it would be a worse version of the one
+it's running in.
+
+Closing the dock ends the shell, the same as closing a terminal window
+anywhere else. So does closing the app. That's worth stating, because a shell
+started under a pty isn't in the app's process tree in any way the operating
+system would clean up on its own.
+
+What it is **not**, yet: the shell isn't wired to the conversation.
+
+- The agent doesn't read what you type there.
+- What you run isn't checkpointed the way the agent's own commands are.
+- Commands are a scrollback, not the blocks a Warp-style terminal groups them
+  into.
+
+Each of those is written down in [Known gaps](known-gaps.md).

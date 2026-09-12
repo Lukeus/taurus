@@ -2,1300 +2,1324 @@
 
 <sub>[← Taurus AI Shell](../README.md)</sub>
 
-What Taurus does not do, stated where it can be read before it is discovered.
-Each entry says what is missing, and what covering it would cost.
+What Taurus doesn't do, written down so you can read it before you run into
+it. Each entry says what's missing and what covering it would cost.
 
-This list grows, and that is not the same as debt accumulating. An entry arrives
-when a feature ships and someone writes down where it stops, so a longer list
-is mostly a sign of more features honestly described. Most of what is here is
-permanent by construction and says so in its own words — a terminal has one
-output stream, `fetch_url` runs no JavaScript, nothing can make a model write a
-note. Read those as documentation. The ones worth watching are the entries that
-end by naming a specific thing that has not been built; those are the backlog,
-and they are the minority.
+The list grows, but that isn't debt piling up. An entry gets added when a
+feature ships and someone writes down where it stops, so a longer list mostly
+means more features, honestly described. Most entries are permanent by design
+and say so: a terminal has one output stream, `fetch_url` runs no JavaScript,
+nothing can make a model write a note. Read those as documentation. The ones
+worth watching end by naming something specific that isn't built. Those are
+the backlog, and they're the minority.
 
 - **A pty on Windows depends on a runtime fetched at build time.** The Windows
-  bundle ships Microsoft's redistributable ConPTY beside the executable —
-  `conpty.dll` and a headless `OpenConsole.exe` — because the system's own
-  console host shows a window when the process asking for it has none, which a
-  release build does not. `portable-pty` prefers a sideloaded `conpty.dll`, so
-  those two files are the whole fix. What it costs: 2.2 MB in the installer, a
-  network fetch during a Windows build, and a version pinned by hash that
-  somebody has to bump. A machine that ends up without them still runs every
-  command — the pty falls back to pipes and the result says so — but the
-  fallback loses the terminal behaviour the call asked for. The app logs at
-  startup whether it found the runtime, which is the only signal available:
-  packaged wrongly, everything works except for a window that only a user on
-  Windows in an installed build can see. See
+  bundle ships Microsoft's redistributable ConPTY next to the executable:
+  `conpty.dll` and a headless `OpenConsole.exe`. The system's own console host
+  shows a window when the process asking for it has none, and a release build
+  has none. `portable-pty` prefers a sideloaded `conpty.dll`, so those two
+  files are the whole fix.
+
+  The cost: 2.2 MB in the installer, a network fetch during a Windows build,
+  and a hash-pinned version somebody has to bump. A machine without the files
+  still runs every command. The pty falls back to pipes and the result says
+  so, but you lose the terminal behaviour the call asked for. The app logs at
+  startup whether it found the runtime, and that's the only signal. If it's
+  packaged wrongly, everything works except for a window that only a Windows
+  user on an installed build can see. See
   [Running commands](safety.md#running-commands).
-- **A background command's tab is polled, not pushed.** The dock holds one
-  per command — see [Terminal](capabilities.md#terminal) — and it asks four
-  times a second while a tab is on screen rather than being told when a line
-  arrives. That is a decision and not a stub: the alternative is a subscription
-  per job with a lifetime to get right at both ends, over a buffer that is the
-  record anyway, where a missed message would cost nothing a later read does not
-  repair. What it does cost is a quarter second of latency on a line, and one
-  IPC call every two seconds while any command is still running. A window with
-  nothing running makes none.
+- **A background command's tab is polled, not pushed.** The dock holds one tab
+  per command (see [Terminal](capabilities.md#terminal)). While a command's
+  tab is on screen, it asks four times a second instead of being told when a
+  line arrives. That's a decision, not a stub. The alternative is a
+  subscription per job, with a lifetime to get right at both ends, over a
+  buffer that's the record anyway. A missed message there would cost nothing
+  a later read doesn't repair.
+
+  Polling costs a quarter second of latency on a line, plus a steady trickle
+  of IPC calls: one a second with the dock open on the shell tab, and one
+  every two seconds with the dock shut while a turn or a command is still
+  running. A window with the dock shut and nothing running makes none.
 - **What a background command printed is capped at 256 KB.** The buffer is the
-  whole record: it is what the tab draws from as well as what `check_command`
-  reads, so a build that printed more than that has lost its beginning from both
-  — said in the pane where the gap is, rather than skipped over. A long test run
-  is comfortably inside it; `cargo build -vv` on a cold cache is not. Raising it
-  is a number, and the reason it is not higher is that this is held per command
-  for as long as the command is kept: the eight that may run at once, and the
-  sixteen newest that have finished. An older finished command is forgotten —
-  its output with it — once what it changed has been recorded, and asking for it
-  by number says so.
-- **A background command's tab cannot be typed into.** It is text and not a
-  terminal, which follows from the gap below: there is no pseudo-terminal behind
-  one of these, so there is nothing to type into and nothing drawing a screen. A
-  program that stops to ask a question cannot be answered, and the only thing to
-  do with it is stop it.
+  whole record. The tab draws from it and `check_command` reads it, so a build
+  that printed more than that has lost its beginning from both. The pane says
+  so where the gap is instead of skipping over it. A long test run fits
+  comfortably; `cargo build -vv` on a cold cache doesn't. Raising it is one
+  number. It isn't higher because the buffer is held per command for as long
+  as the command is kept: the eight that may run at once, and the sixteen
+  newest that have finished. An older finished command is forgotten, output
+  and all, once what it changed has been recorded. Asking for it by number
+  says so.
+- **A background command's tab can't be typed into.** It's text, not a
+  terminal. That follows from the next gap: there's no pseudo-terminal behind
+  it, so there's nothing to type into and nothing drawing a screen. You can't
+  answer a program that stops to ask a question. All you can do is stop it.
 - **A background command has no pseudo-terminal.** `pty: true` and
-  `background: true` together are refused rather than silently doing one of
-  them. The pty path runs a command to completion behind a blocking read, and
-  handing back a handle to one instead means a second implementation of the
+  `background: true` together are refused, instead of silently doing one of
+  them. The pty path runs a command to completion behind a blocking read.
+  Handing back a handle instead would mean a second implementation of the
   drain and the stop, per platform. So a dev server that colours its output
-  loses the colour, and a program that refuses to start outside a terminal
-  cannot be backgrounded at all — it has to be run in the foreground, where the
+  loses the colour. A program that refuses to start outside a terminal can't
+  be backgrounded at all. You have to run it in the foreground, where the
   timeout applies again.
 - **A command still running when a turn ends is in no turn's changed-file
-  list.** Its pre-image is held from the moment it started and compared the
-  moment it exits, so nothing is lost — the changes land in the turn running
-  at the next tool call after it finishes. But a rewind offered while a build
-  is still writing cannot include what the build has not written yet, and the
-  list the user reads before deciding says nothing about the command that is
-  about to add to it. Covering it means the changed-file list growing under the
-  reader's eye, which is a UI question rather than a recording one.
+  list.** Its pre-image is held from when it starts and compared when it
+  exits, so nothing is lost: the changes land in whichever turn is running at
+  the next tool call after it finishes. But a rewind offered mid-build can't
+  include what the build hasn't written yet, and the list you read before
+  deciding says nothing about the command about to add to it. Covering it
+  means a changed-file list that grows as you read it: a UI question, not a
+  recording one.
 - **A file a background command and another call both changed belongs to the
-  other call.** The command's comparison runs from its start to its exit, so it
-  sees every edit made in that time, and the edits other calls record are left
-  to their own turns rather than recorded a second time with the command's
-  older pre-image. What that costs is the command's own change to such a file:
-  undoing the command's turn does not touch it, and undoing the other call's
-  turn puts the file back as it stood then, the command's change up to that
-  point included.
-- **What a message costs is still estimated, at four characters a token.** The
-  fixed part of a request is measured — a response reports the whole prompt's
-  size, and the difference from the estimate for the same messages is the
-  system prompt, the tools, and the envelope, exact. What is not measured is
-  the drift *inside* the messages: a tokenizer that makes 3.2 characters of a
-  token out of minified JSON leaves the estimate low by a fifth on a
-  conversation full of it, and the overhead cannot absorb that because it
-  grows with the messages rather than sitting beside them. Closing it means
-  either a tokenizer per model in the harness — the thing that would have to
-  be kept in step with every backend forever — or a count-tokens round trip
-  before each request, which is the cost the estimate exists to avoid. The
-  threshold is what covers it, and the meter above the composer is what makes
-  being wrong visible.
-- **A hook can refuse a tool call and cannot approve one.** There is no
-  `allow` verdict, so a hook cannot skip a permission prompt the way one in some
-  other harnesses can. That rules out the "approve every `git status` for me"
-  use, and the trade is deliberate: a hook that could approve makes `hooks.json`
-  a second permission surface, one that has to be trusted exactly as much as
-  `permissions.json` and kept in step with it. As it stands, adding hooks to a
-  machine can only ever shrink what it will do, which is what lets a project's
-  hook file be honoured at all. The narrowing use — "never let it force-push" —
-  is the one this covers. See [Hooks](configuration.md#hooks).
-- **A hook that cannot run blocks the call.** A missing program, a crash, or a
-  timeout denies on the two events where there is still something to deny. So a
-  typo in `hooks.json` stops every call it matches until it is fixed. That is
-  the intended direction rather than an oversight — a guard that treats its own
-  breakage as approval has stopped guarding at the one moment it mattered — but
-  it does mean a hook is a thing that can break a working setup, which a purely
-  observational one could not. `taurus hooks check` names the entry and the
-  field.
-- **Hooks are not told about a delegate's turn boundaries.** A sub-agent's tool
-  calls go through the same `pre_tool_use` and `post_tool_use` hooks the
-  parent's do — the context is shared, which is what stops a delegate routing
-  around a guard. `user_prompt_submit` and `stop` fire for the conversation, not
-  once per child: a delegation is one tool call from the outside, and firing
-  "the turn ended" four times for one turn would make a `stop` hook that counts
-  anything wrong. Covering it properly means an event pair of its own, and
-  nothing yet needs one.
-- **Trust is per folder, and it is answered once.** A workspace you have
-  vouched for stays vouched for, so a `git pull` that adds a server to
-  `.taurus/mcp.json` is read on the next turn without asking again. Fixing that
-  means fingerprinting the config and re-asking whenever it moves, which sounds
-  strictly better and is not: the file changes on ordinary branch switches, and
-  a prompt that appears on most `git checkout`s is a prompt that gets clicked
-  through — including the one time it mattered. The decision on offer is
-  therefore "this project may configure Taurus", the same unit an editor's
-  workspace trust uses, and the honest reading is that it is trust in the
-  project's maintainers rather than in a particular revision. `taurus trust
-  --revoke` and the Settings row are what withdraw it. See
+  other call.** The command's comparison runs from its start to its exit, so
+  it sees every edit made in that time. Edits other calls record stay with
+  their own turns instead of being recorded again with the command's older
+  pre-image. The cost is the command's own change to such a file. Undoing the
+  command's turn doesn't touch it. Undoing the other call's turn restores the
+  file as it stood then, the command's change so far included.
+- **What a message costs is estimated, at four characters a token.** The fixed
+  part of a request is measured. A response reports the whole prompt's size,
+  and its difference from the estimate for the same messages is exactly the
+  system prompt, the tools, and the envelope. What isn't measured is the drift
+  *inside* the messages. A tokenizer that gets 3.2 characters a token out of
+  minified JSON leaves the estimate a fifth low on a conversation full of it.
+  The overhead can't absorb that, because it grows with the messages instead
+  of sitting beside them.
+
+  Closing it takes one of two things. Either a tokenizer per model in the
+  harness, kept in step with every backend forever, or a count-tokens round
+  trip before each request, which is the cost the estimate exists to avoid.
+  The threshold covers the error, and the meter above the composer shows you
+  when it's wrong.
+- **A hook can refuse a tool call but can't approve one.** There's no `allow`
+  verdict, so a hook can't skip a permission prompt the way hooks in some
+  other harnesses can. That rules out "approve every `git status` for me", and
+  the trade is deliberate. A hook that could approve would make `hooks.json` a
+  second permission surface, trusted exactly as much as `permissions.json` and
+  kept in step with it. As it is, adding hooks to a machine can only shrink
+  what it will do, and that's what lets Taurus honour a project's hook file
+  at all. This covers the narrowing use: "never let it force-push". See
+  [Hooks](configuration.md#hooks).
+- **A hook that can't run blocks the call.** A missing program, a crash, or a
+  timeout denies the call on the two events where there's still something to
+  deny. So a typo in `hooks.json` stops every call it matches until you fix
+  it. That's intended, not an oversight: a guard that treats its own breakage
+  as approval stops guarding at the one moment it matters. But it does mean a
+  hook can break a working setup, which a purely observational one couldn't.
+  `taurus hooks check` names the entry and the field.
+- **Hooks aren't told about a delegate's turn boundaries.** A sub-agent's tool
+  calls go through the same `pre_tool_use` and `post_tool_use` hooks as the
+  parent's. The context is shared, which stops a delegate routing around a
+  guard. `user_prompt_submit` and `stop` fire for the conversation, not once
+  per child. From the outside a delegation is one tool call, and firing "the
+  turn ended" four times for one turn would break any `stop` hook that
+  counts. Covering it properly needs an event pair of its own, and nothing
+  needs one yet.
+- **Trust is per folder, and it's answered once.** A workspace you've vouched
+  for stays vouched for. So a `git pull` that adds a server to
+  `.taurus/mcp.json` is read on the next turn without asking again.
+
+  The fix would be fingerprinting the config and asking again whenever it
+  changes. That sounds strictly better and isn't. The file changes on
+  ordinary branch switches, and a prompt that shows up on most
+  `git checkout`s gets clicked through, including the one time it matters. So
+  the decision on offer is "this project may configure Taurus", the same unit
+  an editor's workspace trust uses. Read honestly, it's trust in the
+  project's maintainers, not in a particular revision. `taurus trust --revoke`
+  and the Settings row withdraw it. See
   [Trusting a workspace](safety.md#trusting-a-workspace).
 - **Trusting a workspace is about its config, not about its code.** The gate
   decides whether a folder's `.taurus` may configure the harness. It says
-  nothing about what running that project's build script does, and it cannot:
-  once you ask an agent to work in a repository, the repository's own code is
-  the thing you asked it to run. Commands still go through the permission
-  prompt, which is where that decision is actually made. An untrusted workspace
-  is not a sandbox and is not described as one.
+  nothing about what running the project's build script does, and it can't.
+  Once you ask an agent to work in a repository, the repository's own code is
+  what you asked it to run. Commands still go through the permission prompt,
+  which is where that decision is really made. An untrusted workspace isn't a
+  sandbox, and nothing here calls it one.
 
-  The banner now reads those config files and names what is in them worth
-  looking at, which narrows the gap and does not close it: a finding is a thing
-  to read, and an *absence* of findings is not a clean bill of health. The rules
-  are deliberately quiet — a zero-width joiner is how a family emoji is built
-  and a `data:` image is a long run of base64, so neither fires — and quiet
-  rules miss things by construction. Anything that arrives as a technique
-  nobody wrote a rule for arrives unflagged. See
+  The banner reads those config files and names anything in them worth
+  looking at. That narrows the gap but doesn't close it: a finding is
+  something to read, and *no* findings isn't a clean bill of health. The rules
+  are deliberately quiet. A zero-width joiner is how a family emoji is built,
+  and a `data:` image is a long run of base64, so neither fires. Quiet rules
+  miss things by construction, and a technique nobody wrote a rule for
+  arrives unflagged. See
   [Trusting a workspace](safety.md#trusting-a-workspace).
-- **The config scan reads the first 64 KB of at most 64 files.** It runs inside
-  the same `pending` the desktop app calls on every refresh and the CLI calls
-  once per command, so it is capped in three directions — files opened, bytes
-  per file, findings reported — and a payload past any of those is not seen.
-  Raising the caps is three numbers; the reason they are where they are is that
-  the alternative is reading an unbounded tree on every `taurus run`, on the
-  path whose whole job is to print one line and get out of the way. The scan
-  also never runs at all on a workspace with no config of its own, which is
-  most of them.
-- **Nothing re-reads trust between turns on its own.** The desktop app asks the
-  backend for it when it refreshes, and the CLI once per command. A workspace
-  that gains its first `.taurus/mcp.json` while the window is open raises its
-  banner at the next refresh rather than the moment the file lands — the same
-  turn-boundary rule the rest of the config follows, and for the same reason
-  there is no watcher here. See
+- **The config scan reads the first 64 KB of at most 64 files.** It runs
+  inside the same `pending` call the desktop app makes on every refresh and
+  the CLI makes once per command. So it's capped three ways: files opened,
+  bytes per file, and findings reported. A payload past any of those isn't
+  seen. Raising the caps is three numbers. They're where they are because the
+  alternative is reading an unbounded tree on every `taurus run`, on a path
+  whose whole job is to print one line and get out of the way. The scan never
+  runs at all on a workspace with no config of its own, which is most of
+  them.
+- **Nothing re-reads trust between turns on its own.** The desktop app asks
+  the backend for it when it refreshes, and the CLI asks once per command. A
+  workspace that gains its first `.taurus/mcp.json` while the window is open
+  raises its banner at the next refresh, not the moment the file lands.
+  That's the same turn-boundary rule the rest of the config follows, and
+  there's no watcher here for the same reason. See
   [Trusting a workspace](configuration.md#trusting-a-workspace).
 - **A review reads the code and not the intent.** **Review this turn** hands a
-  diff to an agent with none of the conversation in it, which is the only
-  arrangement in which the exercise means anything — and it is also the whole of
-  the limitation. The reviewer cannot know what was asked for, so it will call a
-  deliberate choice a defect: a function left unused on purpose, an error
-  swallowed because the caller handles it, a simplification the user asked for
-  by name. The brief tells it to say "if this was intended, ignore me" rather
-  than to assert, which softens the wording and not the underlying fact.
-  Covering it means giving the reviewer the request back, which gives it the
-  context that wrote the code — the thing there was no point running. See
+  diff to an agent that has none of the conversation. That's the only way the
+  exercise means anything, and it's also the whole limitation. The reviewer
+  can't know what was asked for, so it will call a deliberate choice a
+  defect: a function left unused on purpose, an error swallowed because the
+  caller handles it, a simplification you asked for by name. Its brief tells
+  it to say "if this was intended, ignore me" instead of asserting. That
+  softens the wording, not the fact. Covering it means giving the reviewer
+  the request back, which gives it the context that wrote the code, and then
+  there'd be no point running it. See
   [Reading it back](safety.md#reading-it-back-to-somebody-who-did-not-write-it).
-- **A review reads; it does not run.** Its tool list is `explorer`'s, so no
-  build, no tests, and no reproducing anything. It is told not to claim a test
-  passes, which is a prompt and therefore not a guarantee. What makes it unable
-  to *change* anything is structural rather than instructed: the scope holds no
-  writing tool and the context carries no checkpoint recorder, so there is
-  nothing to record a write into.
+- **A review reads; it does not run.** Its tool list is `explorer`'s: no
+  build, no tests, no reproducing anything. It's told not to claim a test
+  passes, but that's a prompt, not a guarantee. What stops it *changing*
+  anything is structural, not an instruction. The scope holds no writing
+  tool, and the context carries no checkpoint recorder, so there's nothing to
+  record a write into.
 - **A review sees at most 24 KB of diff, and at most 160 lines of any one
-  file.** The per-file cap is `FileDiff`'s own and predates this; the total is
-  the reviewer's, and it keeps whole files rather than cutting one mid-hunk —
-  a diff that stops in the middle reads as a change that ends there. Everything
-  left out is named in the report rather than dropped, and a single file over
-  the cap is still reviewed whole, because refusing the largest turn is
-  refusing the one most worth reviewing. A turn past both caps gets a partial
-  review that says which parts it is.
-- **A review costs a model round trip, on your own provider.** It is a button
-  that takes a minute on a local model, and nothing about it is free or
-  cached — asking twice asks twice. It is deliberately not a roster line the
-  model can reach: a `reviewer` sub-agent would be a line in every request's
-  spawn-tool description, charging every conversation for a button pressed once
-  an hour. The trade is that the model cannot decide to review something on its
-  own; only you can.
+  file.** The per-file cap is `FileDiff`'s own. The total is the reviewer's,
+  and it keeps whole files instead of cutting one mid-hunk, because a diff
+  that stops in the middle reads as a change that ends there. Everything left
+  out is named in the report, not dropped. A single file over the cap is
+  still reviewed whole, because refusing the largest turn means refusing the
+  one most worth reviewing. A turn past both caps gets a partial review that
+  says which parts it covers.
+- **A review costs a model round trip, on your own provider.** It's a button
+  that takes a minute on a local model. Nothing about it is free or cached:
+  asking twice asks twice. It's deliberately not a roster line the model can
+  reach. A `reviewer` sub-agent would add a line to every request's
+  spawn-tool description, charging every conversation for a button pressed
+  once an hour. The trade is that the model can't decide to review something
+  on its own. Only you can.
 - **A rewind does not cover ignored directories.** A file an ignore rule
-  excludes by name is covered; everything under a directory an ignore rule
-  excludes is not, so a command that rewrites something in `target/` or
-  `node_modules/` is neither listed nor restorable. Widening it means indexing
-  those before every command, which is not affordable, and having a rewind
-  delete build output, which is not wanted. See
+  excludes by name is covered. Anything under a directory an ignore rule
+  excludes isn't, so a command that rewrites something in `target/` or
+  `node_modules/` is neither listed nor restorable. Widening it would mean
+  indexing those before every command, which isn't affordable, and a rewind
+  deleting build output, which nobody wants. See
   [Rewinding a turn](safety.md#rewinding-a-turn).
 - **A rewind reports git state, it does not put it back.** `.git` is left out
-  of the walk, so undoing a turn that ran `git checkout` or `git reset --hard`
-  restores the file contents while leaving `HEAD` and the index where the
-  command moved them — a tree that matches neither commit. Covering it properly
-  means snapshotting the object store, which is its own feature and not one this
-  opens. What has been closed is *when you hear about it*: the sweep writes the
-  fact into the checkpoint log, and the rewind plan repeats it beside the file
-  list, so the warning arrives at the moment you reach for undo rather than
-  only at the moment the command ran. Staging is still unreported — see
-  [Rewinding a turn](safety.md#rewinding-a-turn) for why the index is deliberately not
-  watched.
+  of the walk. So undoing a turn that ran `git checkout` or
+  `git reset --hard` restores the file contents but leaves `HEAD` and the
+  index where the command moved them. You get a tree that matches neither
+  commit. Covering it properly means snapshotting the object store, which is
+  a feature of its own.
+
+  What you do get is the warning at the right time. The sweep writes the fact
+  into the checkpoint log, and the rewind plan repeats it beside the file
+  list. So you hear about it when you reach for undo, not only when the
+  command ran. Staging isn't reported. See
+  [Rewinding a turn](safety.md#rewinding-a-turn) for why the index is
+  deliberately not watched.
 - **A change that moves neither length nor timestamp is invisible.** The same
   walk compares size and modification time, which is what `make` and `rsync`
-  have always compared. On a filesystem with nanosecond timestamps defeating it
-  takes deliberate effort; on one with coarse timestamps, a command that
+  have always compared. On a filesystem with nanosecond timestamps, defeating
+  it takes deliberate effort. On one with coarse timestamps, a command that
   rewrites a file to the same length within the same tick would slip through.
   Closing it means reading every file twice per command.
 
   Every command after the first in a workspace reuses what the previous one
-  read, keyed on that same length and modification time — across turns, since
-  the host holds the cache for the workspace — so a workspace is read once
-  rather than before every command. That is the same comparison and so the
-  same blind spot, but it reaches one case further. Where a sweep on its own
-  would merely fail to *notice* an invisible change, a reused read can also
-  carry the wrong pre-image: if a file is rewritten to the same length and
-  timestamp between two commands, and a later command in the same turn changes
-  it visibly, what a rewind puts back is the version from before the invisible
-  edit. It is bounded on both ends — reaching it needs a deliberate
-  same-length, same-tick rewrite in the window between two commands, and a
-  file the turn already recorded is unaffected, because the first
-  pre-image of a turn is the one that is kept. Closing it is the same read
-  every file twice, in the same place.
-- **A pty command's stdout and stderr cannot be told apart.** A terminal has one
-  stream, so `pty: true` gives up the `[stderr]` split the piped path reports.
-  That is the format rather than the implementation, and it is why the pty is
-  opt-in rather than the default. Output streams to the transcript as it is
-  produced on both paths — batched every 100ms, kept as a bounded scrollback,
-  and dropped from the *display* rather than allowed to stall the child if the
-  UI falls behind. What the model receives is always the complete output; only
-  what you are watching scroll past can skip.
-- **A pty command answers prompts it was given, not prompts it was not.** `stdin`
-  is written up front and closed, so a program that asks something unanticipated
-  still waits for the timeout. Driving a genuine back-and-forth would mean
-  keeping the turn open on a running child and deciding what the model is
-  allowed to type into it, which is a larger surface than this opens.
-- **Reasoning the provider returns redacted cannot be replayed.** Anthropic
-  signs its thinking blocks and requires them back unedited; a redacted one has
-  no signature this harness can carry, so it is left out of the next request.
-  Where that matters the API says so explicitly rather than failing quietly, but
-  it is a turn that has to be retried. Carrying the encrypted form would mean a
-  second shape in the normalized types for one provider's edge case.
-- **An instructions file is read at turn boundaries, not watched.** `AGENTS.md`
-  and everything it imports are re-read at the start of each turn, so an edit
-  lands on the next message rather than the next reload. It is still not
-  *watched*, and that stays: a watcher fires whenever an editor happens to save,
-  which is routinely the middle of a running turn, and the brief a turn was
-  given has to be the one it started with. What is left is the one-turn delay
-  and one narrow blind spot — the freshness check compares length and
-  modification time, so a rewrite to the same length within one filesystem tick
-  waits for the next change. That is the same comparison the sweep makes, and it
-  is closed the same way: by reading every file on every message, which is what
-  the check exists to avoid. See
+  read, keyed on the same length and modification time. The host keeps that
+  cache across turns, so a workspace is read once, not before every command.
+  Same comparison, same blind spot, but it reaches one case further. A sweep
+  alone would only fail to *notice* an invisible change; a reused read can
+  also carry the wrong pre-image. If a file is rewritten to the same length
+  and timestamp between two commands, and a later command in the same turn
+  changes it visibly, a rewind puts back the version from before the
+  invisible edit.
+
+  It's bounded at both ends. It takes a deliberate same-length, same-tick
+  rewrite in the window between two commands. And a file the turn already
+  recorded is unaffected, because a turn keeps its first pre-image. The fix
+  is the same: read every file twice, in the same place.
+- **A pty command's stdout and stderr can't be told apart.** A terminal has
+  one stream, so `pty: true` gives up the `[stderr]` split the piped path
+  reports. That's the format, not the implementation, and it's why the pty is
+  opt-in and not the default. On both paths, output streams to the transcript
+  as it's produced. It's batched every 100ms and kept as a bounded
+  scrollback. If the UI falls behind, lines are dropped from the *display*
+  instead of stalling the child. The model always gets the complete output.
+  Only what you're watching scroll past can skip.
+- **A pty command answers prompts it was given, not prompts it wasn't.**
+  `stdin` is written up front and closed, so a program that asks something
+  unexpected still waits for the timeout. A real back-and-forth would mean
+  keeping the turn open on a running child and deciding what the model may
+  type into it. That's a bigger surface than this opens.
+- **Reasoning the provider returns redacted can't be replayed.** Anthropic
+  signs its thinking blocks and requires them back unedited. A redacted one
+  has no signature this harness can carry, so it's left out of the next
+  request. Where that matters, the API says so explicitly instead of failing
+  quietly, but the turn has to be retried. Carrying the encrypted form would
+  mean a second shape in the normalized types for one provider's edge case.
+- **An instructions file is read at turn boundaries, not watched.**
+  `AGENTS.md` and everything it imports are re-read at the start of each
+  turn, so an edit lands on your next message, not the next reload. It isn't
+  *watched*, and that won't change. A watcher fires whenever your editor
+  saves, which is often mid-turn, and a turn has to finish on the brief it
+  started with.
+
+  That leaves a one-turn delay and one narrow blind spot. The freshness check
+  compares length and modification time, so a rewrite to the same length
+  within one filesystem tick waits for the next change. The sweep makes the
+  same comparison, and closing it takes the same fix: reading every file on
+  every message, which is what the check exists to avoid. See
   [Instructions](capabilities.md#instructions).
 - **Warnings are matched by their headline, which is not the same as by their
   lint.** Two hundred sites of one clippy lint print the same headline and
-  collapse to one body; two hundred `unused variable` warnings name a different
-  variable each time, so each is its own headline and none of them collapse.
-  That is the weaker half of the same feature, and it is a limit of the text
-  rather than of the code: rustc prints the `#[warn(...)]` note that would name
-  the lint only on a lint's first occurrence. What would close it is
-  `--message-format=json`, which the model would have to have asked for — and
-  rewriting a command line to add a flag is a different thing from shortening
-  its output, with a different failure mode: the command that ran would no
-  longer be the command that was approved. See
+  collapse to one body. Two hundred `unused variable` warnings each name a
+  different variable, so each is its own headline and none collapse. That's
+  the weaker half of the feature. It's a limit of the text, not the code:
+  rustc prints the `#[warn(...)]` note that names the lint only on the lint's
+  first occurrence.
+
+  `--message-format=json` would close it, but the model would have to ask
+  for it. Rewriting a command line to add a flag isn't the same as shortening
+  its output, and it fails differently: the command that ran wouldn't be the
+  command you approved. See
   [Output too big to hand over](safety.md#output-too-big-to-hand-over).
-- **The test filter knows libtest and nothing else.** It recognizes the format
-  `cargo test` prints, which covers a Rust workspace and a directly-run test
-  binary. `cargo nextest`, `jest`, `pytest` and `go test` all announce
-  themselves differently, so their output is collapsed only where it repeats
-  itself, which for a passing suite is not at all. Each is a small filter of
-  its own beside the existing one; what stops them being written today is that
-  none of them can be checked against real output from this machine, and a
-  pattern nobody has run against the thing it matches is a guess. See
+- **The test filter knows libtest and nothing else.** It recognizes the
+  format `cargo test` prints, which covers a Rust workspace and a test binary
+  run directly. `cargo nextest`, `jest`, `pytest` and `go test` all announce
+  themselves differently. Their output is collapsed only where it repeats
+  itself, which for a passing suite is never. Each would be a small filter
+  beside the existing one. They aren't written because none of them can be
+  checked against real output from this machine, and a pattern nobody has run
+  against what it matches is a guess. See
   [Output too big to hand over](safety.md#output-too-big-to-hand-over).
-- **Only repetition that is literally consecutive is collapsed.** A command
-  large enough to be worth the pass — 16 KB on a 200,000-token model, and a
-  share of the window on any other — that prints the same line three or more
-  times in a row keeps one copy and a count, which is most of what a chatty build or a retrying server
-  produces. It is not most of what a *server* produces: two messages
-  alternating — a retry and the timestamped line after it — are never
-  adjacent, so nothing collapses and the stream is as long as it was. Closing
-  that means matching lines that are merely similar, which is a different kind
-  of claim: a count of identical lines is a fact, and a count of lines that
-  looked alike is a judgement the model cannot check. The other half is that
-  none of this applies to `check_command`. A background command's readers keep
-  byte cursors into a shared buffer, and shortening the text those cursors
-  count would move the model's place and the window's apart. See
-  [Output too big to hand over](safety.md#output-too-big-to-hand-over).
+- **Only repetition that is literally consecutive is collapsed.** The pass
+  runs on output large enough to be worth it: 16 KB on a 200,000-token model,
+  and a share of the window on any other. A line printed three or more times
+  in a row becomes one copy and a count. That covers most of a chatty build,
+  and a server printing one failure line over and over. It doesn't cover most
+  real server logs. Two alternating messages, like a retry and the
+  timestamped line after it, are never adjacent, so nothing collapses.
+
+  Closing that means matching lines that are merely similar, a different kind
+  of claim. A count of identical lines is a fact; a count of lines that
+  looked alike is a judgement the model can't check.
+
+  None of this applies to `check_command` either. A background command's
+  readers keep byte cursors into a shared buffer, and shortening the text
+  those cursors count would move the model's place and the window's apart.
+  See [Output too big to hand over](safety.md#output-too-big-to-hand-over).
 - **A cut command's output can be swept away while the transcript still points
-  at it.** When a stream runs past what the model's window has room for the
-  whole of it is written to
-  `~/.taurus/output/<workspace-key>/` and the gap in the result names the file,
-  so the middle of a long build is a `read_file` away rather than a re-run. But
-  twenty streams are kept per workspace and the oldest go as new ones arrive, so
-  a message from earlier in a long session can name a file that a later command
-  has since displaced — and reopening a saved conversation weeks later will
-  usually find nothing there at all. The model is told the file is missing
-  rather than shown the wrong one, which is the important half. Closing the rest
-  means either keeping build logs indefinitely, or pruning against the
-  transcripts that reference them, which is a second index of the kind
-  [Sessions](../crates/taurus-host/src/sessions.rs) deliberately does not keep.
-  Size is not the other half of it: `read_file` windows around the offset it is
+  at it.** When a stream outruns what the model's window has room for, the
+  whole of it is written to `~/.taurus/output/<workspace-key>/`, and the gap
+  in the result names the file. So the middle of a long build is a
+  `read_file` away, not a re-run. But twenty streams are kept per workspace,
+  oldest out first. A message from earlier in a long session can name a file
+  a later command has displaced, and a conversation reopened weeks later
+  usually finds nothing there. The model is told the file is missing instead
+  of being shown the wrong one, which is the important half.
+
+  Closing the rest means either keeping build logs indefinitely or pruning
+  against the transcripts that reference them. That's a second index, of the
+  kind [Sessions](../crates/taurus-host/src/sessions.rs) deliberately doesn't
+  keep. Size isn't the other half: `read_file` windows around the offset it's
   given, so a spilled stream opens at any line however large the file. See
   [Output too big to hand over](safety.md#output-too-big-to-hand-over).
 - **A diff is shown for `write_file` and `edit_file` and nothing else.** A
   command line has no before-and-after to compute, which is exactly why
-  `run_command` is swept afterwards rather than predicted. So the most
-  consequential writes in a session — the ones a script made — are still
-  approved on the command line alone. They are at least *readable* afterwards:
-  the **Changes** drawer diffs what the sweep recorded, so a `sed -i` across a
-  dozen files can be inspected line by line once it has happened. That is
+  `run_command` is swept afterwards instead of predicted. So the most
+  consequential writes in a session, the ones a script made, are approved on
+  the command line alone. You can at least *read* them afterwards. The
+  **Changes** drawer diffs what the sweep recorded, so you can inspect a
+  `sed -i` across a dozen files line by line once it's happened. That's
   review after the fact, not before it.
 - **A turn's diff attributes a hand edit to the wrong turn.** What a turn
-  changed is computed as its own pre-image against the next recorded pre-image
-  of the same file, which is exact for anything Taurus did and silently wrong
-  for anything you did in between — your edit appears inside the later turn's
-  diff. Closing it means post-images, which is a second copy of every file
-  written per turn to attribute a case the rewind already warns about in the
-  same words. See [Keeping a turn](safety.md#keeping-a-turn).
-- **Committing a turn still does not offer to squash.** The checkpoint log
-  records which turns are in `HEAD`, so committing turn 5 while turn 4 is
-  uncommitted says so first — and says something sharper when the two share a
-  file, because `git commit -- <paths>` takes what those paths hold now and
-  would carry turn 4's edits in wearing turn 5's message. What is still missing
-  is the other half: nothing offers to commit a run of turns as one. That is not
-  a record shape any more, it is a second commit path with its own message
-  editor and its own failure modes, and it has not been built. See
+  changed is computed as its own pre-image against the next recorded
+  pre-image of the same file. That's exact for anything Taurus did and
+  silently wrong for anything you did in between: your edit shows up in the
+  later turn's diff. Closing it means post-images, a second copy of every
+  file written per turn, to attribute a case the rewind already warns about
+  in the same words. See [Keeping a turn](safety.md#keeping-a-turn).
+- **Committing a turn does not offer to squash.** The checkpoint log records
+  which turns are in `HEAD`. So committing turn 5 while turn 4 is uncommitted
+  warns you first. The warning is sharper when the two share a file, because
+  `git commit -- <paths>` takes what those paths hold now and would carry
+  turn 4's edits in under turn 5's message. What's missing is the other half:
+  nothing offers to commit a run of turns as one. That isn't a record shape.
+  It's a second commit path with its own message editor and its own failure
+  modes, and it isn't built. See
   [Committing a turn](safety.md#committing-a-turn).
-- **A committed turn can still be rewound, deliberately.** Rewinding past a turn
-  you committed restores the files and leaves the commit in place, so the tree
-  no longer matches it. That is still true and is not going to change — it is
-  your tree, and there are good reasons to want the files back regardless. What
-  the rewind plan does do is name the commit and what to do about it (`git
-  revert`, `git reset`) before you press anything, rather than letting you find
-  out afterwards. The one thing it will not do is refuse: a rewind that
-  second-guessed you would be a worse tool than one that tells you.
-- **Nothing makes a model write a note either.** `remember` is offered and the
-  prompt says when to reach for it, and that is the end of the harness's
-  leverage — the same limit `update_plan` has, for the same reason. A model that
-  finishes a long piece of work and simply answers leaves nothing behind, and
-  the next conversation starts as blank as it would have before the feature
-  existed. Forcing one at the end of every turn would spend an iteration on the
-  many turns with nothing worth carrying, and would fill the drawer with notes
-  about turns nobody needed a note about.
-- **A note is not checked against the workspace it describes.** It says what was
-  true when it was written, and nothing revisits it — a note about a branch that
-  has since merged, or a file that has since been deleted, is carried into every
-  later conversation exactly as confidently as one still true. The prompt says
-  so in as many words, which puts the judgement on the model where it has to be,
-  and the Memory drawer is where a stale one gets removed. Expiring them
+- **A committed turn can still be rewound, deliberately.** Rewinding past a
+  turn you committed restores the files and leaves the commit in place, so
+  the tree doesn't match it. That won't change: it's your tree, and there are
+  good reasons to want the files back anyway. The rewind plan names the
+  commit and what to do about it (`git revert`, `git reset`) before you press
+  anything, so you don't find out afterwards. The one thing it won't do is
+  refuse. A rewind that second-guessed you would be a worse tool than one
+  that tells you.
+- **Nothing makes a model write a note.** `remember` is offered and the prompt
+  says when to use it, and that's as far as the harness's leverage goes: the
+  same limit `update_plan` has, for the same reason. A model that finishes a
+  long piece of work and just answers leaves nothing behind, and the next
+  conversation starts blank. Forcing a note every turn would spend an
+  iteration on the many turns with nothing worth carrying, and fill the
+  drawer with notes nobody needed.
+- **A note isn't checked against the workspace it describes.** It says what
+  was true when it was written, and nothing revisits it. A note about a
+  branch that has since merged, or a file since deleted, goes into every
+  later conversation just as confidently as one that's still true. The prompt
+  says so plainly, which puts the judgement on the model, where it has to be.
+  The Memory drawer is where you remove a stale one. Expiring notes
   automatically would need a model of what each note is *about*, which is a
-  larger claim than a line of prose supports.
+  bigger claim than a line of prose supports.
 - **Nothing makes a model plan.** `update_plan` is offered and the prompt says
-  when to reach for it, and that is the end of the harness's leverage. On a
-  five-step mechanical task neither `qwen3.6:27b` nor `qwen3.5:9b` called it
-  unprompted — both simply did the work — so the feature earns its keep on the
-  long, exploratory turns where drift actually happens, and on the models that
-  take the instruction. Forcing a plan on every multi-step request would spend
-  an iteration and a card on turns that never needed one.
-- **A plan can still end in progress — but not silently.** A model that finishes
-  the work and goes straight to its answer leaves a step reading `[>]` that is
-  actually complete, and the pinned panel keeps that stale version somewhere you
-  cannot miss. The harness cannot decide a plan is finished, so it does the one
-  thing it can: when the model tries to end the turn with steps open, it is
-  asked once to send the list back closed, and the turn continues. That is the
-  same lever as the verify nudge and it has the same limit — a model that
-  answers the question without calling `update_plan` gets to stop, and the panel
-  then clears on the next request as before.
-- **A plan does not survive the process.** The board is held per session in
-  memory, not written to disk, so an unfinished plan carries across messages and
-  is gone if the app restarts. Reopening the conversation redraws the panel from
-  the transcript, because that is derived; the model's copy has to be rebuilt by
-  the model. Persisting it means a second record that can disagree with the tool
-  calls that made it, which is a worse failure than re-deriving.
+  when to use it, and that's as far as the harness's leverage goes. On a
+  five-step mechanical task, neither `qwen3.6:27b` nor `qwen3.5:9b` called it
+  unprompted. Both just did the work. So the feature earns its keep on long,
+  exploratory turns where drift really happens, and on models that follow the
+  instruction. Forcing a plan on every multi-step request would spend an
+  iteration and a card on turns that never needed one.
+- **A plan can still end in progress — but not silently.** A model that
+  finishes the work and goes straight to its answer can leave a step reading
+  `[>]` that's actually complete. The pinned panel keeps that stale version
+  where you can't miss it. The harness can't decide a plan is finished, so it
+  does the one thing it can. When the model tries to end the turn with steps
+  open, it's asked once to send the list back closed, and the turn continues.
+  That's the same lever as the verify nudge, with the same limit. A model
+  that answers without calling `update_plan` gets to stop, and the panel
+  clears on the next request.
+- **A plan doesn't survive the process.** The board is held per session in
+  memory, not written to disk. An unfinished plan carries across messages and
+  is gone if the app restarts. Reopening the conversation redraws the panel
+  from the transcript, because the panel is derived, but the model has to
+  rebuild its own copy. Persisting it would mean a second record that can
+  disagree with the tool calls that made it, which is a worse failure than
+  re-deriving.
 - **Whether a carried plan still applies is the model's call.** The harness
-  clears a finished plan and labels an unfinished one as belonging to an earlier
-  message. It cannot tell whether a follow-up continues the task or changes the
-  subject, so a model that ignores the label works the old checklist against the
-  new request.
-- **A branch is warned about, not enforced.** A conversation started on `feat/x`
-  and resumed on `main` is labelled in the rail, each of its turns records the
-  branch it began on, and a rewind that would write those pre-images over a
-  different tree says so beside the plan. It still does not refuse, and its file
-  references still point where they pointed. Refusing is the version that has
-  not been built and probably should not be: a rewind onto another branch is
+  clears a finished plan and labels an unfinished one as belonging to an
+  earlier message. It can't tell whether a follow-up continues the task or
+  changes the subject. So a model that ignores the label works the old
+  checklist against the new request.
+- **A branch is warned about, not enforced.** A conversation started on
+  `feat/x` and resumed on `main` is labelled in the rail. Each of its turns
+  records the branch it began on, and a rewind that would write those
+  pre-images over a different tree says so beside the plan. It doesn't
+  refuse, and its file references still point where they pointed. Refusing
+  isn't built and probably shouldn't be: a rewind onto another branch is
   occasionally exactly what someone means, and the warning is what separates
-  that from the accident.
+  that from an accident.
 - **A sub-agent's answer is summarized, not streamed.** Its tool calls appear
-  under the delegation card as it makes them, so a long delegation looks alive
-  rather than hung, but its reasoning and prose stay inside the child. That part
-  is deliberate: the parent asked for a conclusion, and a second conversation
-  inlined into the transcript is what delegation exists to avoid. What is *not*
-  deliberate is having nowhere to read it afterwards, and that part is covered
-  — every delegate keeps its own transcript beside its parent's, written as it
-  runs, and the delegation card opens it in a drawer while the call is still
-  running or long after it finished. `taurus sessions --agents <ID>` lists them
-  for the CLI, which prints where they are rather than rendering one: a
-  conversation inside a conversation is the thing the terminal has no second
-  pane for. What a *resumed* conversation loses is the link, not the
-  transcripts: the parent's own record says a delegation happened, not where
-  its child was written, so a reopened conversation's cards no longer offer to
-  open one. The files are still there, and `--agents` still lists them.
-- **A custom agent's roster is frozen for the turn, on purpose.** The set of
-  sub-agents is snapshotted when a turn starts, so an agent file saved mid-turn
-  is not visible until the next one. That is the whole of it: the
-  directories are checked at every turn boundary and rescanned when anything in
-  them moved, so a new agent is available on the next message rather than after
-  a reload or a trip to the drawer. The remaining freeze is the feature — a turn
-  must delegate against the roster it started with — and it is why there is no
-  file watcher here rather than an admission that one is missing. The
-  same-length-same-tick blind spot above applies to the check here too. One
-  surface still lags on purpose: the `/` command *menu* lists the last scan,
-  because it redraws on every keystroke and taking config locks there is how a
-  reload deadlocks against typing — typing the name in full works immediately,
-  and the menu re-reads itself whenever a rescan changes how many skills or
-  agents there are, which is a message finishing, a drawer opening, or coming
-  back to the window. See
-  [Sub-agents](capabilities.md#sub-agents).
-- **A proposed agent's system prompt is reviewed by eye, and nothing else.**
-  `propose_agent` checks the shape — the name, the description, the tool scope,
-  whether it duplicates an existing agent — but the prompt itself is prose, and
-  prose that will steer a delegate on every future turn. That is the same
-  exposure `propose_skill` has always had, and it has the same answer: the card
-  shows it in full, unelided and editable, and nothing is written until you
-  approve it. There is no check that reads what it says. See
-  [Sub-agents](capabilities.md#sub-agents).
-- **Reading another client's directories is not the same as being that client.**
-  Taurus reads Claude's and GitHub Copilot's skills, sub-agents, and standing
-  instructions, because all three are formats it already understands. What it
-  does not do is behave like those clients. Copilot's scoped
-  `*.instructions.md` files declare an `applyTo` glob and are attached when
-  Copilot is about to touch a matching file; Taurus assembles a brief once per
-  turn, before it knows what the turn will touch, so it carries the glob into
-  the prompt as a sentence and leaves the model to apply it. That is a weaker
-  guarantee than Copilot's, and the file says so in as many words rather than
-  quietly behaving as though it were the same. Frontmatter keys these tools have
-  and Taurus does not — `handoffs`, `hooks`, `user-invocable` — are ignored
-  rather than honoured, which is why a borrowed file is never rewritten in
-  place. `.claude/rules`, which is Claude's spelling of the same scoped
-  instructions, is the one directory in this family still unread. See
-  [Instructions](capabilities.md#instructions).
+  under the delegation card as it makes them, so a long delegation looks
+  alive, not hung. Its reasoning and prose stay inside the child. That part is
+  deliberate: the parent asked for a conclusion, and inlining a second
+  conversation into the transcript is what delegation exists to avoid.
 
-- **The agent will not install an MCP server for you.** `draft_mcp_server` hands
-  back an entry; adding it is yours to do, in the MCP panel or in the file. The
-  command line is the whole of what a review could show, and it does not say
-  what the program does, so this is a limit rather than a to-do. The catalogue
-  behind **Browse servers** is the same argument answered from the other end:
-  the review happens once, in a commit, against the source — which is a thing a
-  person can do properly and a model emitting a package name at runtime cannot.
-  See [MCP servers](configuration.md#mcp-servers).
+  You can still read it afterwards. Every delegate keeps its own transcript
+  beside its parent's, written as it runs. The delegation card opens it in a
+  drawer while the call is running or long after it's finished.
+  `taurus sessions --agents <ID>` lists them in the CLI. The CLI prints where
+  they are instead of rendering one, because the terminal has no second pane
+  for a conversation inside a conversation.
+
+  A *resumed* conversation loses the link, not the transcripts. The parent's
+  own record says a delegation happened, not where its child was written, so
+  a reopened conversation's cards don't offer to open one. The files are
+  still there, and `--agents` still lists them.
+- **A custom agent's roster is frozen for the turn, on purpose.** The set of
+  sub-agents is snapshotted when a turn starts, so an agent file saved
+  mid-turn isn't visible until the next one. That's all. The directories are
+  checked at every turn boundary and rescanned when anything in them changed,
+  so a new agent is available on your next message, without a reload or a
+  trip to the drawer. The freeze is the feature: a turn has to delegate
+  against the roster it started with. That's why there's no file watcher
+  here, and it isn't a missing piece. The same-length-same-tick blind spot
+  above applies to this check too.
+
+  One surface lags on purpose: the `/` command *menu* lists the last scan. It
+  redraws on every keystroke, and taking config locks there is how a reload
+  deadlocks against typing. Typing the name in full works immediately. The
+  menu re-reads itself whenever a rescan changes how many skills or agents
+  there are: when a message finishes, when a drawer opens, or when you come
+  back to the window. See [Sub-agents](capabilities.md#sub-agents).
+- **A proposed agent's system prompt is reviewed by eye, and nothing else.**
+  `propose_agent` checks the shape: the name, the description, the tool
+  scope, and whether it duplicates an existing agent. But the prompt itself is
+  prose, and it will steer a delegate on every future turn. `propose_skill`
+  has the same exposure and the same answer. The card shows the prompt in
+  full, unelided and editable, and nothing is written until you approve it.
+  Nothing checks what it says. See [Sub-agents](capabilities.md#sub-agents).
+- **Reading another client's directories is not the same as being that
+  client.** Taurus reads Claude's and GitHub Copilot's skills, sub-agents, and
+  standing instructions, because it already understands all three formats. It
+  doesn't behave like those clients.
+
+  Copilot's scoped `*.instructions.md` files declare an `applyTo` glob and
+  are attached when Copilot is about to touch a matching file. Taurus
+  assembles a brief once per turn, before it knows what the turn will touch.
+  So it carries the glob into the prompt as a sentence and leaves the model
+  to apply it. That's a weaker guarantee than Copilot's, and the file says so
+  plainly instead of acting as if it were the same.
+
+  Frontmatter keys these tools have and Taurus doesn't (`handoffs`, `hooks`,
+  `user-invocable`) are ignored, not honoured. That's why a borrowed file is
+  never rewritten in place. `.claude/rules`, Claude's spelling of the same
+  scoped instructions, is the one directory in this family Taurus doesn't
+  read. See [Instructions](capabilities.md#instructions).
+
+- **The agent won't install an MCP server for you.** `draft_mcp_server` hands
+  back an entry, and adding it is up to you, in the MCP panel or in the file.
+  The command line is all a review could show, and it doesn't say what the
+  program does. So this is a limit, not a to-do. The catalogue behind
+  **Browse servers** answers the same argument from the other end. The review
+  happens once, in a commit, against the source. A person can do that
+  properly; a model emitting a package name at runtime can't. See
+  [MCP servers](configuration.md#mcp-servers).
 - **A disabled server's cost is unknown, not zero.** The MCP panel prices each
-  connected server's tool schemas — what it adds to every request, called or
-  not — and shows nothing at all for one that never connected. That is the
-  honest answer rather than a gap in the rendering: a disabled server registers
-  no tools, so there is nothing on the live registry to measure. What the panel
-  answers is "what did enabling this cost me", and the question someone
-  actually wants answered before they flip a switch is "what would enabling it
-  cost", which cannot be answered without starting the program and asking it —
-  the thing the switch is off to avoid. The figures are also estimates at four
-  characters a token, like every other token count outside the **Billed** row.
-  See [The MCP panel](configuration.md#the-mcp-panel).
+  connected server's tool schemas: what it adds to every request, called or
+  not. It shows nothing for a server that never connected. That's the honest
+  answer, not a rendering gap: a disabled server registers no tools, so
+  there's nothing on the live registry to measure. The panel answers "what
+  did enabling this cost me", but before flipping a switch you want "what
+  would enabling it cost". Answering that means starting the program and
+  asking it, which is what the switch is off to avoid. The figures are also
+  estimates at four characters a token, like every other token count outside
+  the **Billed** row. See
+  [The MCP panel](configuration.md#the-mcp-panel).
 - **Taurus speaks the tools half of MCP and none of the rest.** A server's
   tools are found, namespaced and offered to the model. Its *resources*,
-  *prompts* and *roots* are not asked for, `notifications/tools/list_changed` is
-  not listened to — a server that gains a tool mid-session is not noticed until
-  the next Reconnect — and the two requests a server can make of the client,
-  *sampling* and *elicitation*, are not answered. Tools are the part almost
-  every server leads with, which is why they came first and not why the rest is
-  missing. Prompts and roots are the two worth having next: prompts because a
-  server's own prompts belong in a shell's command line, roots because a
-  filesystem server told once where it may look is better than one told again on
-  every call.
-- **A dead server's tools stay callable until you reconnect.** The panel is
-  corrected the moment a call finds the server gone, but the tools themselves
-  were handed to the tool registry and nothing revokes them from there. So the
-  model can still call one, and gets a sentence saying the server is not running
-  and Reconnect is the fix. Restarting it automatically is not done: a server
-  that dies on startup would be restarted in a loop, and deciding when a crash
-  is worth retrying is a policy nobody has written here.
-- **A server that hangs is not marked dead, only the call is.** The line is
-  drawn at the transport: a closed pipe or a dropped connection means the server
-  is gone and the panel says so. A server that simply ignores a request for two
-  minutes may well answer the next one, so its card is left alone and only the
-  call fails. That is a judgement, and it can be wrong in the direction of a
-  panel that looks healthier than the server is.
+  *prompts* and *roots* aren't asked for. Nothing listens for
+  `notifications/tools/list_changed`, so a server that gains a tool
+  mid-session isn't noticed until the next Reconnect. And the two requests a
+  server can make of the client, *sampling* and *elicitation*, go
+  unanswered. Tools are what almost every server leads with, which is why
+  they're here. It isn't why the rest is missing. Prompts and roots are the
+  two worth having next. Prompts, because a server's own prompts belong in a
+  shell's command line. Roots, because a filesystem server told once where it
+  may look beats one told again on every call.
+- **A dead server's tools stay callable until you reconnect.** The panel
+  updates the moment a call finds the server gone. But the tools were handed
+  to the tool registry, and nothing revokes them there. So the model can
+  still call one, and gets back a sentence saying the server isn't running
+  and Reconnect is the fix. Taurus doesn't restart it automatically. A server
+  that dies on startup would restart in a loop, and nobody has written a
+  policy for when a crash is worth retrying.
+- **A server that hangs isn't marked dead, only the call is.** The line is
+  drawn at the transport. A closed pipe or a dropped connection means the
+  server is gone, and the panel says so. A server that ignores a request for
+  two minutes may well answer the next one, so its card is left alone and
+  only the call fails. That's a judgement, and it can be wrong in one
+  direction: the panel can look healthier than the server is.
 - **A token you paste is stored in `mcp.json` in plain text.** OAuth refresh
-  tokens go to the OS keychain; a personal access token typed into the header or
-  environment field does not — it is written into the file, which is the file
-  the panel exists to save you from editing. Entries that want one default to the
-  global file rather than the one inside the repository, and choosing the
-  repository asks you to acknowledge that a commit can publish it. What is not
-  there is a keychain reference: `${VARIABLE}` is expanded in any field, so the
-  way to keep a token out of the file today is to export it and name the
-  variable, and nothing in the panel tells you that.
+  tokens go to the OS keychain. A personal access token typed into the header
+  or environment field doesn't. It's written into the file, the same file the
+  panel exists to save you from editing. Entries that want a token default to
+  the global file, not the one inside the repository. Choosing the repository
+  asks you to acknowledge that a commit can publish it. There's no keychain
+  reference. `${VARIABLE}` is expanded in any field, so the way to keep a
+  token out of the file today is to export it and name the variable. Nothing
+  in the panel tells you that.
 - **A sign-in needs the authorization server to register Taurus on the spot.**
-  OAuth works by dynamic client registration (RFC 7591): Taurus asks the
-  authorization server for a client id at the moment you press Sign in. The
-  specification now prefers a Client ID Metadata Document instead — an HTTPS URL
-  the authorization server fetches to learn about the client — and a desktop
-  application has nowhere to host one, so that route is closed until Taurus has
-  a published document to point at. A server that offers neither, and instead
-  expects a client id issued by hand through a developer console, cannot be
-  signed in to; the panel says so rather than failing at the redirect. Where
-  such a server also issues a plain token, the HTTP form takes it.
+  OAuth works through dynamic client registration (RFC 7591): Taurus asks the
+  authorization server for a client id when you press Sign in. The current
+  specification prefers a Client ID Metadata Document instead, which is an
+  HTTPS URL the authorization server fetches to learn about the client. A
+  desktop application has nowhere to host one, so that route is closed until
+  Taurus has a published document to point at. A server that offers neither,
+  and expects a client id issued by hand through a developer console, can't
+  be signed in to. The panel says so instead of failing at the redirect. If
+  that server also issues a plain token, the HTTP form takes it.
 - **Signing out is local.** It removes Taurus's copy of the tokens from the
-  keychain. The grant itself lives at the authorization server and stays there
-  until you remove the application in that provider's own settings, which is the
-  only place it can be revoked from. The panel says this rather than implying a
-  revocation it cannot perform.
-- **Scope step-up is not wired to anything.** A server that answers a tool call
-  with `insufficient_scope` gets that error surfaced as the call failing. The
-  library underneath supports re-authorizing for a wider scope, and what is
-  missing is the decision it needs: asking somebody mid-turn to widen a grant is
-  a permission prompt of its own, and it is not built.
-- **The catalogue is a snapshot, and it is small on purpose.** Around a dozen
-  entries, shipped in the binary, each one first-party — the MCP project's own
-  reference servers, plus GitHub's and Brave's. Nothing third-party is listed,
-  because a third-party package name is exactly the artifact `draft_mcp_server`
-  refuses to ask anybody to approve. It goes out of date between releases and
-  the panel says when it was last checked. What it cannot do is break a working
-  setup: an install copies the entry into `mcp.json` and the catalogue never
-  reads it again. A registry search would fix the staleness and reintroduce the
-  unreviewed-package problem, so if it is added it will be marked as such and
-  will land in the manual form rather than the guided one.
+  keychain. The grant itself lives at the authorization server. It stays
+  there until you remove the application in that provider's own settings,
+  the only place it can be revoked. The panel says this instead of implying a
+  revocation it can't perform.
+- **Scope step-up isn't wired to anything.** When a server answers a tool call
+  with `insufficient_scope`, that error surfaces as the call failing. The
+  library underneath supports re-authorizing for a wider scope. What's
+  missing is the decision it needs: asking somebody mid-turn to widen a grant
+  is a permission prompt of its own, and it isn't built.
+- **The catalogue is a snapshot, and it's small on purpose.** Around a dozen
+  entries, shipped in the binary, all first-party: the MCP project's own
+  reference servers, plus GitHub's and Brave's. Nothing third-party is
+  listed, because a third-party package name is exactly what
+  `draft_mcp_server` refuses to ask anybody to approve. It goes out of date
+  between releases, and the panel says when it was last checked. It can't
+  break a working setup: an install copies the entry into `mcp.json`, and the
+  catalogue never reads it again. A registry search would fix the staleness
+  and bring back the unreviewed-package problem. If one is added, it'll be
+  marked as such and land in the manual form, not the guided one.
 - **A PATH read from your login shell is a snapshot, not a subscription.**
-  Taurus asks the shell once at startup, because a window launched from the Dock
-  inherits the launcher's PATH and not yours. A server installed after that —
-  `npm i -g` in a terminal beside the app — is invisible until Taurus is
-  restarted, or until the entry names the program by its full path. The MCP
-  panel says which directories it is searching rather than leaving that to be
-  guessed at.
-- **An agent's tools narrow what it is offered, not what it may do.** Every call
-  a child makes goes through the same permission engine as the parent's, so
-  `tools:` is a scope, not a sandbox. A per-agent permission policy would be a
-  second thing to keep in step with the first, and is not there.
+  Taurus asks the shell once at startup, because a window launched from the
+  Dock inherits the launcher's PATH, not yours. A server installed after that
+  (`npm i -g` in a terminal beside the app) is invisible until you restart
+  Taurus, or until the entry names the program by its full path. The MCP
+  panel shows which directories it's searching, so you don't have to guess.
+- **An agent's tools narrow what it's offered, not what it may do.** Every
+  call a child makes goes through the same permission engine as the parent's,
+  so `tools:` is a scope, not a sandbox. A per-agent permission policy would
+  be a second thing to keep in step with the first, and there isn't one.
 - **Stall detection needs an exact repeat.** Alternating between two dead ends
-  is caught, but the calls have to match argument for argument. A model
-  asking the same unanswerable question in three slightly different ways —
-  reading a missing file by three spellings of its path — is making no more
-  progress than one asking it identically, and nothing here notices. Judging
-  that would mean deciding when two calls are *near* enough to be the same
-  mistake, which is a guess the iteration ceiling makes unnecessary. See
+  is caught, but the calls have to match argument for argument. Say a model
+  asks the same unanswerable question three slightly different ways, like
+  reading a missing file by three spellings of its path. It's making no more
+  progress than one asking identically, and nothing here notices. Catching it
+  would mean deciding when two calls are *near* enough to be the same
+  mistake. That's a guess, and the iteration ceiling makes it unnecessary. See
   [When a turn stops](working-with-it.md#when-a-turn-stops).
-- **The *model* still cannot produce an image.** A tool can hand one back, but
-  the model itself reads pictures and cannot draw or edit one, so a turn
-  best answered with a diagram answers in prose or reaches for `show_chart`.
-  Closing that means image *generation*, which only some backends offer and none
-  of them the same way.
-- **No built-in tool returns an image yet.** The shape exists and every adapter
-  carries it, but the only things exercising it are MCP servers — a browser
-  driver's screenshot, a renderer's output. A built-in that rasterizes a PDF
-  page or captures a window is a tool nobody has written here, not a limit of
-  what a tool may return.
+- **The *model* can't produce an image.** A tool can hand one back, but the
+  model only reads pictures. It can't draw or edit one. So a turn best
+  answered with a diagram answers in prose or uses `show_chart`. Closing that
+  means image *generation*, which only some backends offer, and none the
+  same way.
+- **No built-in tool returns an image yet.** The shape exists and every
+  adapter carries it, but only MCP servers use it: a browser driver's
+  screenshot, a renderer's output. A built-in that rasterizes a PDF page or
+  captures a window is a tool nobody has written here, not a limit on what a
+  tool may return.
 - **Only Anthropic carries a tool's image inside the result.** OpenAI's
   `role: "tool"`, Gemini's `functionResponse`, and Ollama's tool message are
-  text, so on those three the picture is relocated to immediately after the
-  result, with a marker line left where it was and a note naming the call. It
-  arrives, in order, attributed — but it is a separate part of the conversation
-  rather than part of the answer, and a model that weighs a tool result
-  differently from a user message will weigh it differently. This is what the
-  wire formats allow; closing it means those APIs changing, not this one.
+  text. On those three, the picture moves to just after the result, with a
+  marker line where it was and a note naming the call. It arrives in order
+  and attributed, but as a separate part of the conversation, not part of the
+  answer. A model that weighs a tool result differently from a user message
+  will weigh it differently. That's what the wire formats allow. Closing it
+  needs those APIs to change, not this one.
 - **A tool's image is budgeted at a flat estimate, like a pasted one.** 1,000
-  tokens, regardless of its dimensions, because the real cost has nothing to do
-  with the length of its base64 and each provider prices it differently. The
-  number the compaction trigger reads is therefore approximate in exactly the
-  place the stakes are highest — a turn that returned four screenshots may have
-  less room left than the counter says.
-- **Trimming an old tool result drops its picture.** Deliberate: the point of
-  shortening an old result is to reclaim the window, and the image is the most
-  expensive thing in it. But it means a screenshot from earlier in a long
-  conversation is gone from the model's view while its caption remains, and
+  tokens, whatever its dimensions. The real cost has nothing to do with the
+  length of its base64, and each provider prices it differently. So the
+  number the compaction trigger reads is approximate exactly where the stakes
+  are highest. A turn that returned four screenshots may have less room left
+  than the counter says.
+- **Trimming an old tool result drops its picture.** That's deliberate. The
+  point of shortening an old result is to reclaim the window, and the image
+  is the most expensive thing in it. But a screenshot from earlier in a long
+  conversation disappears from the model's view while its caption stays, and
   nothing says which it was.
-- **An attached image is not in the checkpoint log.** It goes into the
-  transcript, so it survives and redraws; it is not a file in the workspace, so
-  a rewind neither restores nor reports it. That is correct — there is nothing
-  to put back — but it means a conversation's disk footprint grows in a place
-  the **Changes** drawer does not account for.
+- **An attached image isn't in the checkpoint log.** It goes into the
+  transcript, so it survives and redraws. It isn't a file in the workspace,
+  so a rewind neither restores nor reports it. That's correct, since there's
+  nothing to put back. But a conversation's disk footprint grows somewhere
+  the **Changes** drawer doesn't account for.
 - **The first index is slow, and a search that arrives early still waits for
   it.** Embedding this repository takes nearly two minutes. Sending a message
-  starts that in the background, so most of it is usually done before anything
-  searches — but a model that reaches for `search_code` in its first tool call
-  waits for the rest of it inside that call. What is left is genuinely less:
-  the search takes the warm-up over rather than starting again, everything
-  embedded so far is already written down, and the turn watches a passage count
-  move. Closing it the rest of the way means answering from a partial index and
-  saying so, which is a different promise from the one the tool makes —
-  every search refreshes first, so that a file just written is a file that can
-  be found.
-- **The index does not notice a file that changed without moving.** Length and
-  modification time, the same comparison the sweep uses and blind in the same
-  place: a rewrite to the same length within one filesystem tick is invisible,
-  and the stale chunk stays until something else about the file moves.
+  starts it in the background, so most of it is usually done before anything
+  searches. But a model that calls `search_code` in its first tool call waits
+  for the rest inside that call. The wait is shorter than a fresh start. The
+  search takes over the warm-up instead of starting again, everything
+  embedded so far is already written down, and the turn shows a passage count
+  moving. Closing it fully means answering from a partial index and saying
+  so. That's a different promise from the one the tool makes: every search
+  refreshes first, so a file you just wrote is a file it can find.
+- **The index doesn't notice a file that changed without moving.** It compares
+  length and modification time, like the sweep, and it's blind in the same
+  place. A rewrite to the same length within one filesystem tick is
+  invisible, and the stale chunk stays until something else about the file
+  changes.
 - **Semantic search is only as good as what ranks it.** `search_code` ranks by
-  cosine similarity, and optionally by a reranking model over the top thirty of
-  those — but there is still no keyword fallback and no blend with grep. A query
-  that lands badly returns three confident near-misses, and the tool says they
-  are leads rather than answers, which is the whole of what it can do about it.
-  Where the literal text is known, grep is exact and this is only close.
+  cosine similarity, and optionally by a reranking model over the top thirty
+  of those. There's no keyword fallback and no blend with grep. A query that
+  lands badly returns three confident near-misses. The tool says they're
+  leads, not answers, and that's all it can do about it. Where you know the
+  literal text, grep is exact and this is only close.
 - **Nothing here embeds in-process.** An index needs a backend with an
-  embedding endpoint, and every provider this speaks to except Anthropic has
-  one — so this is a gap for exactly one setup: chatting to Claude with no
+  embedding endpoint, and every provider Taurus speaks to except Anthropic
+  has one. So this is a gap for exactly one setup: chatting to Claude with no
   other backend reachable. Closing it means running an embedding model inside
-  this process, which is a model to download on first use and a machine-learning
-  runtime to carry on all three platforms, for a case a second provider entry
-  already answers. Not built, and not obviously worth building.
-- **Reranking needs a second server, and most backends cannot be it.** The
-  `/rerank` route is Cohere's shape rather than OpenAI's, and OpenAI never
-  shipped one to imitate — so it is served by llama.cpp started with
-  `--reranking`, by text-embeddings-inference, and by the hosted rerankers, and
-  by almost nothing else. Ollama, which is where most local setups embed, has no
-  such route at all, which is why `rerank_provider` exists as a setting separate
-  from the embedding provider. Closing this properly means running a reranking
-  model in-process rather than asking for an endpoint, which is the same
-  unbuilt thing that would let the index work with no local server at all.
-- **A reranked score cannot be compared to anything but its own result set.**
-  Voyage and Cohere normalize to 0–1; llama.cpp returns the cross-encoder's raw
-  logit, where negative values are ordinary. Taurus orders by it and never
-  filters on it, and labels the column `relevance` rather than `similarity` so
-  the number is not read as a cosine — but there is no way to make one backend's
-  0.82 mean the same thing as another's, and there is no threshold below which a
+  this process. That's a model to download on first use and a
+  machine-learning runtime to carry on all three platforms, for a case a
+  second provider entry already covers. It isn't built, and it's not
+  obviously worth building.
+- **Reranking needs a second server, and most backends can't be it.** The
+  `/rerank` route is Cohere's shape, not OpenAI's, and OpenAI has none to
+  imitate. So it's served by llama.cpp started with `--reranking`, by
+  text-embeddings-inference, by the hosted rerankers, and by almost nothing
+  else. Ollama, where most local setups embed, has no such route at all.
+  That's why `rerank_provider` is a setting separate from the embedding
+  provider. Closing this properly means running a reranking model in-process
+  instead of asking for an endpoint. That's the same unbuilt piece that would
+  let the index work with no local server at all.
+- **A reranked score can't be compared to anything but its own result set.**
+  Voyage and Cohere normalize to 0–1. llama.cpp returns the cross-encoder's
+  raw logit, where negative values are ordinary. Taurus orders by it and never
+  filters on it. It labels the column `relevance`, not `similarity`, so
+  nobody reads the number as a cosine. But there's no way to make one
+  backend's 0.82 mean the same as another's, and no threshold below which a
   result is known to be worthless.
 - **The Traces panel covers one run of the app, and nothing else.** The spans
-  it draws live in a ring in that process: quitting forgets them, a `taurus
-  run` in the terminal is a different process and never appears in the window,
-  and once the ring is full the oldest go. It says how many it has forgotten
-  rather than describing a shorter period than it appears to, but "everything
-  since launch" is the widest question it can answer. Anything longer than a
-  session is what an OTLP endpoint is for, and the two are not alternatives —
-  the same spans go to both.
+  it draws live in a ring in that process. Quitting forgets them. A
+  `taurus run` in the terminal is a different process and never shows up in
+  the window. And once the ring is full, the oldest go. The panel says how
+  many it's forgotten, so it never looks like it covers a longer period than
+  it does. But "everything since launch" is the widest question it can
+  answer. Anything longer than a session is what an OTLP endpoint is for. The
+  two aren't alternatives: the same spans go to both.
 - **Traces go out over HTTP, and only over HTTP.** OTLP has a gRPC transport
-  too and this speaks the `http/protobuf` one alone. Every collector worth
-  naming accepts it, so this is a smaller gap than it sounds — but a setup
-  standardized on gRPC needs a collector in front, and the port is the other
-  one (4318 rather than 4317), which is the mistake everybody makes once.
-- **A trace says which tools ran, not what they were called with.** Arguments
-  are absent from tool spans even when content capture is on: they are the one
+  too, and Taurus speaks only the `http/protobuf` one. Every collector worth
+  naming accepts it, so the gap is smaller than it sounds. But a setup
+  standardized on gRPC needs a collector in front. And the port is the other
+  one (4318, not 4317), which is the mistake everybody makes once.
+- **A trace says which tools ran, not what they were called with.** Tool spans
+  leave out arguments even when content capture is on. Arguments are the one
   place a path, a URL, or a command line would end up on a dashboard with no
-  way to notice. Closing it means deciding what an argument may contain, which
-  is the same unanswerable question redaction always is.
+  way to notice. Closing it means deciding what an argument may contain,
+  which is the same unanswerable question redaction always is.
 - **Cache and reasoning tokens are only as good as the backend's report.**
-  Anthropic reports cache reads and writes, OpenAI-compatible servers report
-  cached prompt tokens and reasoning tokens when they have them, Gemini reports
-  cached content and thoughts. Ollama reports none of it, and a compatible
-  gateway may report a subset or nothing. Absent is recorded as absent rather
-  than zero — but that means a dashboard comparing two backends is comparing
-  what each chose to say.
+  Anthropic reports cache reads and writes. OpenAI-compatible servers report
+  cached prompt tokens and reasoning tokens when they have them. Gemini
+  reports cached content and thoughts. Ollama reports none of it, and a
+  compatible gateway may report a subset or nothing. Absent is recorded as
+  absent, not zero. But that means a dashboard comparing two backends is
+  comparing what each chose to say.
 - **Reasoning tokens are inside the output count, not beside it.** Every
-  backend that reports both counts reasoning within `output_tokens`, so adding
-  the two double-counts. The field is kept because it is the only way to see
-  that a turn spent its budget thinking rather than answering.
-- **`fetch_url` reads the HTML it is served.** No JavaScript runs, so a page
+  backend that reports both counts reasoning within `output_tokens`, so
+  adding the two double-counts. The field stays because it's the only way to
+  see that a turn spent its budget thinking instead of answering.
+- **`fetch_url` reads the HTML it's served.** No JavaScript runs, so a page
   that renders its content client-side comes back near-empty. Closing this
-  means shipping a browser engine, so it is a limit rather than a to-do.
-- **`fetch_url`'s address check does not survive a proxy.** Loopback and
-  private-network addresses are refused, and the check runs inside the
-  client that connects, so a name cannot answer publicly for the check and
-  privately for the connection. An HTTP proxy resolves the name at its end
-  though, so a request routed through one reaches a destination Taurus never
-  sees. Taurus configures no proxy, but reqwest reads `HTTP_PROXY` and the
-  system settings, and refusing to work behind a corporate proxy would cost
-  more than this buys. `"allow_private_hosts": true` in `search.json` turns
-  the check off deliberately.
-- **Config is re-read at turn boundaries, and nothing is watched.** Instructions,
-  sub-agents, skills, and hooks are all fingerprinted — a `stat` of the files
-  behind each — and re-read at the start of a turn when that fingerprint moved.
-  So an edit lands on your next message rather than the next launch, and coming
-  back to the window runs the same check on top of that. What
-  is deliberately absent is a file watcher: one fires whenever an editor happens
-  to save, which is routinely the middle of a running turn, and the brief a turn
-  was given and the roster it delegates against have to be the ones it started
-  with. The costs are a one-turn delay in the worst case, and the same
-  same-length-same-tick blind spot every fingerprint here has. Two things are
-  *not* on this path and still need a reload: the provider list and
-  `settings.json`. Both are edited in the app rather than in a file most of the
-  time, and both are re-read when they are saved there — a hand edit to
-  `providers.json` while the app is open is the case that still waits.
+  means shipping a browser engine, so it's a limit, not a to-do.
+- **`fetch_url`'s address check doesn't survive a proxy.** Loopback and
+  private-network addresses are refused. The check runs inside the client
+  that connects, so a name can't answer publicly for the check and privately
+  for the connection. An HTTP proxy resolves the name at its end, though, so
+  a request routed through one reaches a destination Taurus never sees.
+  Taurus configures no proxy, but reqwest reads `HTTP_PROXY` and the system
+  settings, and refusing to work behind a corporate proxy would cost more
+  than this buys. `"allow_private_hosts": true` in `search.json` turns the
+  check off deliberately.
+- **Config is re-read at turn boundaries, and nothing is watched.**
+  Instructions, sub-agents, skills, and hooks are all fingerprinted (a `stat`
+  of the files behind each) and re-read at the start of a turn when the
+  fingerprint changed. So an edit lands on your next message, not the next
+  launch. Coming back to the window runs the same check too.
+
+  There's deliberately no file watcher. A watcher fires whenever your editor
+  saves, which is often mid-turn, and a turn has to finish on the brief and
+  the roster it started with. The costs are a one-turn delay at worst, and
+  the same same-length-same-tick blind spot every fingerprint here has.
+
+  Two things *aren't* on this path and need a reload: the provider list and
+  `settings.json`. You edit both in the app most of the time, not in a file,
+  and both are re-read when you save them there. A hand edit to
+  `providers.json` while the app is open is the case that waits.
 
 - **The terminal dock is a terminal, not part of the conversation.** It runs
-  your shell in the window the agent works in, and that is the whole of the
-  connection between them. The agent cannot read what you ran there, you cannot
-  hand it a failed command without copying the text across, and its own
-  `run_command` calls appear in the transcript rather than in the pane. All
-  three are the same missing piece: the shell has no way to say where one
-  command ended and the next began, so there is nothing for either side to point
-  at. Closing it means shell integration — the `OSC 133` marks a prompt emits
-  around each command, injected per shell — which is what would turn a
-  scrollback into addressable blocks with an exit code and a duration on each.
-  That is the next thing to build here rather than a limit. See
-  [Terminal](capabilities.md#terminal).
+  your shell in the window the agent works in, and that's the whole
+  connection. The agent can't read what you ran there. You can't hand it a
+  failed command without copying the text across. And its own `run_command`
+  calls show up in the transcript, not in the pane. All three come from the
+  same missing piece: the shell has no way to say where one command ended and
+  the next began, so there's nothing for either side to point at.
+
+  Closing it means shell integration: the `OSC 133` marks a prompt emits
+  around each command, injected per shell. That would turn scrollback into
+  addressable blocks, each with an exit code and a duration. It's the next
+  thing to build here, not a limit. See [Terminal](capabilities.md#terminal).
 - **What you run in the terminal is outside the undo history.** Every command
-  the *agent* runs is bracketed by a sweep of the workspace, so anything it
-  changed can be put back by a rewind. A command you type in the dock is not:
-  the shell runs it directly, nothing reads the workspace before or after, and a
-  `sed -i` there is invisible to the Changes panel and to every checkpoint. The
-  dock does not pretend otherwise — it is a terminal, and a terminal has never
-  had an undo — but it is worth knowing that the two halves of the window keep
-  different promises. Covering it needs the same command boundaries the entry
-  above is about, and it would cost a read of the workspace per command you
-  type. See [Rewinding a turn](safety.md#rewinding-a-turn).
+  the *agent* runs is bracketed by a sweep of the workspace, so a rewind can
+  put back anything it changed. A command you type in the dock isn't. The
+  shell runs it directly and nothing reads the workspace before or after, so
+  a `sed -i` there is invisible to the Changes panel and to every checkpoint.
+  The dock doesn't pretend otherwise. It's a terminal, and a terminal has
+  never had an undo. But the two halves of the window keep different
+  promises. Covering it needs the same command boundaries as the entry above,
+  and it would cost a read of the workspace per command you type. See
+  [Rewinding a turn](safety.md#rewinding-a-turn).
 - **One shell, and it ends when the dock does.** There are no tabs and no
-  splits, and hiding the pane is not hiding it — closing the dock ends the
-  shell, the same as closing a terminal window. So a long `cargo build` started
-  there does not survive ⌃`, and there is no second pane to run something else
-  in while it works. Both are worth having and neither is written; a shell that
-  outlived the pane would also need somewhere for its output to go while nothing
-  is watching, which is a scrollback the backend would have to keep.
-- **A prompt's icons need a font this app cannot ship.** Powerline separators
-  and the git glyphs a modern prompt draws come from the private-use area, which
-  the app's own mono has nothing in. The dock names the Nerd Fonts people
-  actually install and falls back through them, so a machine with any of them
-  renders the prompt correctly — and a machine with none shows those glyphs as
-  empty boxes, with the text around them intact. Bundling one would be tens of
-  megabytes for a decoration, and there is no setting to name a different font
-  yet.
+  splits. Hiding the pane isn't hiding it: closing the dock ends the shell,
+  the same as closing a terminal window. So a long `cargo build` started
+  there doesn't survive ⌃`, and there's no second pane to run something else
+  in while it works. Both are worth having and neither is written. A shell
+  that outlived the pane would also need somewhere for its output to go while
+  nothing is watching, which is a scrollback the backend would have to keep.
+- **A prompt's icons need a font this app can't ship.** Powerline separators
+  and the git glyphs a modern prompt draws come from the private-use area,
+  and the app's own mono has nothing there. The dock names the Nerd Fonts
+  people actually install and falls back through them. A machine with any of
+  them renders the prompt correctly. A machine with none shows those glyphs
+  as empty boxes, with the text around them intact. Bundling one would be
+  tens of megabytes for a decoration, and there's no setting to name a
+  different font yet.
 - **On Windows the dock holds a console window open for as long as it is open.**
-  The ConPTY gap above is the same bug seen for longer: a release build has no
-  console of its own, so a pty opened without the sideloaded runtime creates
-  one, and where a tool call showed it for the length of a command the dock
-  shows it for the length of the session. The fix is the same — the two files
-  the Windows bundle ships beside the executable — and the startup log line
-  saying whether they were found is still the only warning available.
+  It's the ConPTY gap above, seen for longer. A release build has no console
+  of its own, so a pty opened without the sideloaded runtime creates one. A
+  tool call shows it for the length of a command; the dock shows it for the
+  length of the session. The fix is the same: the two files the Windows
+  bundle ships beside the executable. The startup log line saying whether
+  they were found is the only warning you get.
 - **A Mermaid fence draws two diagram types, and names the rest.** A
-  ```` ```mermaid ```` block draws when it is a `flowchart`/`graph` or a
+  ```` ```mermaid ```` block draws when it's a `flowchart`/`graph` or a
   `sequenceDiagram`. `classDiagram`, `stateDiagram`, `erDiagram`, `gantt`,
-  `pie`, `mindmap`, `gitGraph` and the rest are shown as their source with a
-  sentence naming what stopped them. This is the price of drawing these with the
-  app's own two diagram engines rather than the Mermaid library — see
-  [Notes](working-with-it.md#notes) — and it is the whole of that price. The
-  library is 80 MB unpacked across d3, three cytoscape packages, katex and
-  marked; it themes itself, loads its own fonts, and generates element ids per
-  render that every screenshot would have to tolerate. The engines this uses
-  instead are the ones already drawing `show_flow` and `show_sequence`, in the
-  app's palette, under tests that need no browser. If the named-and-refused list
-  is what stops people using notes for diagrams, that is the evidence for
-  drawing fences with the library rather than growing the reader.
+  `pie`, `mindmap`, `gitGraph` and the rest show as source, with a sentence
+  naming what stopped them. That's the price of drawing these with the app's
+  own two diagram engines instead of the Mermaid library (see
+  [Notes](working-with-it.md#notes)), and it's the whole price.
+
+  The library is 80 MB unpacked across d3, three cytoscape packages, katex
+  and marked. It themes itself, loads its own fonts, and generates element ids
+  per render that every screenshot would have to tolerate. The engines used
+  instead already draw `show_flow` and `show_sequence`, in the app's palette,
+  under tests that need no browser. If the named-and-refused list is what
+  stops people using notes for diagrams, that's the evidence for drawing
+  fences with the library instead of growing the reader.
 - **The Mermaid library ships anyway, inside the sketch editor.** Excalidraw's
-  own **Mermaid to Excalidraw** tool — which turns a diagram into shapes you can
-  draw over — needs it, and imports it lazily. It is 3.3 MB of the app's 8.6 MB,
-  measured by building with and without it, and it is loaded only if that tool
-  is used. It cannot be taken out cleanly: the tool's menu entry has no option
-  to hide it and shares its only stable hook with the web-embed tool beside it,
-  so removing the library would leave an entry that fails when chosen. A fence
-  in a note is still drawn by the app's own engines; this changes the size of
-  the download and nothing about how a note looks.
+  own **Mermaid to Excalidraw** tool, which turns a diagram into shapes you
+  can draw over, needs it and imports it lazily. It's 3.3 MB of the app's
+  8.6 MB, measured by building with and without it, and it loads only if you
+  use that tool. It can't be taken out cleanly. The tool's menu entry has no
+  option to hide it and shares its only stable hook with the web-embed tool
+  beside it, so removing the library would leave an entry that fails when
+  chosen. A fence in a note is still drawn by the app's own engines. This
+  changes the download size, not how a note looks.
 - **Every Mermaid diagram is laid out left to right.** `graph TD`, `TB`, `BT`
-  and `RL` are read and drawn as `LR`, with a line under the picture saying so.
-  Direction in Mermaid is presentational — the same nodes, arrows and labels
-  either way — so this re-orients rather than loses anything, but `TD` is the
-  most common thing people type and the picture is not the shape they drew.
-  Stages as rows is a second geometry for the layout engine, with its own
-  routing for all four kinds of edge, rather than a flag on the one that exists.
-- **Node shapes are read and then drawn as rectangles.** `a{Is it cached?}` and
-  `a[(store)]` come out as boxes with the right text in them. The text is the
-  part that carries the meaning and is parsed properly; the diamond that says
-  "this is where it branches" is not drawn, which is a real loss on a flowchart
+  and `RL` are read and drawn as `LR`, with a line under the picture saying
+  so. Direction in Mermaid is presentational: the same nodes, arrows and
+  labels either way. So this re-orients without losing anything. But `TD` is
+  the most common thing people type, and the picture isn't the shape they
+  drew. Stages as rows would be a second geometry for the layout engine, with
+  its own routing for all four kinds of edge, not a flag on the existing one.
+- **Node shapes are read and then drawn as rectangles.** `a{Is it cached?}`
+  and `a[(store)]` come out as boxes with the right text in them. The text
+  carries the meaning, and it's parsed properly. The diamond that says "this
+  is where it branches" isn't drawn, which is a real loss on a flowchart
   about a decision. Arrow *heads* are flattened the same way: `--o` and `--x`
   draw as ordinary arrows.
 - **A `Note over` or a block frame in a sequence diagram is dropped.** The
-  messages inside a `loop`, `alt`, `opt` or `par` still draw, in order — the
-  frame around them and its label do not, and the diagram says how many it left
-  out. Activation bars are ignored silently, because `show_sequence` decided
-  before any of this that a picture somebody reads once carries two kinds of
-  arrow and not four.
-- **Notes are files, so two people editing one is git's problem.** A note saves
-  itself and refuses to overwrite a version it has not seen, which covers the
-  case this app can see: you and a running turn. Two checkouts, or two windows
-  on the same folder, meet in the file and are reconciled the way any other file
-  in the repository is.
-- **A version kept for a note you left lasts as long as the window.** Leaving a
-  note while it shows two versions, or while its last save is refused or fails,
-  keeps yours in memory and marks the note in the list until you open it again.
-  Closing the window first loses it. Writing it to disk instead would be a second
-  copy of every contested note, somewhere nobody looks, outliving the question
-  it was kept for.
-- **A note's diagram is not searchable and its text is not indexed.** Transcript
-  search does not look in notes, and the code index does not either — a project
+  messages inside a `loop`, `alt`, `opt` or `par` still draw, in order. The
+  frame around them and its label don't, and the diagram says how many it
+  left out. Activation bars are ignored silently. `show_sequence` already
+  holds that a picture somebody reads once carries two kinds of arrow, not
+  four.
+- **Notes are files, so two people editing one is git's problem.** A note
+  saves itself and refuses to overwrite a version it hasn't seen. That covers
+  the case this app can see: you and a running turn. Two checkouts, or two
+  windows on the same folder, meet in the file and get reconciled the way any
+  other file in the repository does.
+- **A version kept for a note you left lasts as long as the window.** Say you
+  leave a note while it shows two versions, or while its last save is refused
+  or fails. Your version is kept in memory, and the note is marked in the
+  list until you open it again. Close the window first and it's lost. Writing
+  it to disk instead would make a second copy of every contested note,
+  somewhere nobody looks, outliving the question it was kept for.
+- **A note's diagram isn't searchable and its text isn't indexed.** Transcript
+  search doesn't look in notes, and neither does the code index. A project
   note is a Markdown file in `.taurus/`, which the index skips along with the
-  rest of that directory. Finding a note is scanning the list, which is fine at
-  a dozen and is not at a hundred.
-- **Chinese, Japanese and Korean text in a sketch is not handwritten.**
-  Excalidraw draws those scripts in Xiaolai, a 12 MB face — more than every other
-  font, script and stylesheet in the app together. It is left out, so the text
-  draws in the system's own face instead. It still saves, exports and embeds.
-- **A sketch's library lasts as long as the window.** Shapes added to
-  Excalidraw's library are kept in memory and not written anywhere. **Browse
-  libraries** opens the public library site in your browser, and its **Add to
-  Excalidraw** button returns to excalidraw.com rather than to the app.
+  rest of that directory. You find a note by scanning the list, which is fine
+  at a dozen and not at a hundred.
+- **Chinese, Japanese and Korean text in a sketch isn't handwritten.**
+  Excalidraw draws those scripts in Xiaolai, a 12 MB face. That's more than
+  every other font, script and stylesheet in the app put together. It's left
+  out, so that text draws in the system's own face instead. It still saves,
+  exports and embeds.
+- **A sketch's library lasts as long as the window.** Shapes you add to
+  Excalidraw's library are kept in memory and not written anywhere.
+  **Browse libraries** opens the public library site in your browser, and
+  its **Add to Excalidraw** button returns to excalidraw.com, not to the app.
 - **A sketch has no export.** Excalidraw's Save to disk, Open and Export image
-  are turned off, because the file is the sketch and a second way of saving it
-  would bypass the rule that no save overwrites a version it has not seen. Copy
-  as PNG from a selection's context menu is Excalidraw's own and still there.
-- **Renaming a sketch leaves the notes that embed it pointing at the old name.**
-  The embed says the sketch is not there, and the fix is one line in the note.
-  Rewriting other notes to follow the rename would be the app editing prose
-  somebody else wrote.
-- **The model cannot see a sketch.** There is no picture of one to give it —
-  only the scene. What reaches it is the text written on each sketch a note
-  embeds, through `read_note`. A sketch on screen with no note around it tells
-  the model nothing, and there is no Ask about this on one.
-- **A global note written by the model cannot be rewound.** It is outside every
+  are turned off. The file is the sketch, and a second way to save it would
+  bypass the rule that no save overwrites a version it hasn't seen. Copy as
+  PNG from a selection's context menu is Excalidraw's own and still there.
+- **Renaming a sketch leaves the notes that embed it pointing at the old
+  name.** The embed says the sketch isn't there, and the fix is one line in
+  the note. Rewriting other notes to follow the rename would mean the app
+  editing prose somebody else wrote.
+- **The model can't see a sketch.** There's no picture of one to give it, only
+  the scene. What reaches it is the text written on each sketch a note
+  embeds, through `read_note`. A sketch on screen with no note around it
+  tells the model nothing, and there's no Ask about this on one.
+- **A global note written by the model can't be rewound.** It's outside every
   workspace, so the checkpoint recorder has nothing to copy it into. The
-  permission prompt shows the diff, and that is the whole of its safety.
-- **Excalidraw roughly quadruples the download.** The app was 1.8 MB without
-  source maps before sketches; it is 8.6 MB with them. None of it is in the
-  chunk that starts the app — that grew by 5 KB — and all of it is fetched from
-  disk the first time a sketch is opened, not before. Of the increase, 3.3 MB is
-  the Mermaid library above, 1.7 MB is Excalidraw's font subsetting, 1.2 MB is
-  the editor, and 0.4 MB is its fonts. Its fifty-two unused translations are
-  replaced with empty modules at build time.
+  permission prompt shows the diff, and that's all the safety there is.
+- **Excalidraw roughly quadruples the download.** Without sketches, the app
+  measured 1.8 MB without source maps. With them it's 8.6 MB. None of it is
+  in the chunk that starts the app, which grew by 5 KB. All of it is fetched
+  from disk the first time you open a sketch, not before. Of the increase,
+  3.3 MB is the Mermaid library above, 1.7 MB is Excalidraw's font
+  subsetting, 1.2 MB is the editor, and 0.4 MB is its fonts. Its fifty-two
+  unused translations are replaced with empty modules at build time.
 - **The canvas holds one file at a time.** Opening another replaces it. Tabs
-  are a second navigation model to build and to explain, and "open the readme
-  while we talk about it" does not need one. What that costs is comparing two
-  files side by side, which is still the terminal dock's job.
+  would be a second navigation model to build and explain, and "open the
+  readme while we talk about it" doesn't need one. The cost is comparing two
+  files side by side, which is the terminal dock's job.
 - **A canvas edit is invisible to the Changes panel and to rewind.** The
-  drawer is what this *conversation* changed and the way back from it; your own
-  typing is neither, so git is the undo that covers it. The cost is real and
-  worth naming: rewinding a turn restores the files that turn wrote, and if you
-  had also been typing in one of them, that typing is inside what gets restored
-  over. Nothing warns you.
+  drawer shows what this *conversation* changed and the way back from it.
+  Your own typing is neither, so git is the undo that covers it. The cost is
+  real: rewinding a turn restores the files that turn wrote. If you were also
+  typing in one of them, your typing gets restored over. Nothing warns you.
 - **A file changing outside a turn goes unnoticed.** The canvas reloads when
-  the running turn writes the file — `files_changed` says so on the turn's own
-  event stream — and when the document is opened again. A `git checkout` in the
-  terminal dock, or another editor, is neither, so the canvas goes on showing
-  what it read. The save is still safe: it compares fingerprints and refuses
-  rather than overwriting. But you find out at the moment you save rather than
-  at the moment it happened. Watching the filesystem properly is a dependency
-  and a lifetime to get right; refreshing on window focus, the way
-  `rescan_library` does, is the cheap version and is not written.
+  the running turn writes the file (`files_changed` says so on the turn's own
+  event stream) and when the document is opened again. A `git checkout` in
+  the terminal dock, or another editor, is neither, so the canvas keeps
+  showing what it read. Saving is still safe: it compares fingerprints and
+  refuses instead of overwriting. But you find out when you save, not when
+  the change happened. Watching the filesystem properly is a dependency and a
+  lifetime to get right. Refreshing on window focus, the way
+  `rescan_library` does, is the cheap version, and it isn't written.
 - **The editor folds nothing, finds nothing, and has one cursor.** No code
   folding, no in-editor find-and-replace, no multiple cursors, no bracket
-  matching. Each is a feature in its own right rather than a detail of this one,
-  and the painted-textarea approach the canvas shares with the query box means
-  each would be built rather than configured — which is the honest cost of not
-  carrying a quarter of a megabyte of editor. The browser's own find-on-page
-  still works, because underneath it is a real `<textarea>`. If this list starts
-  being the reason people do not use it, that is the evidence for importing an
-  editor rather than growing this one.
-- **Source view does not wrap, so long prose lines scroll sideways.** A
+  matching. Each is a feature in its own right. The canvas shares its
+  painted-textarea approach with the query box, so each would have to be
+  built, not configured. That's the honest cost of not carrying a quarter of
+  a megabyte of editor. The browser's own find-on-page still works, because
+  underneath it's a real `<textarea>`. If this list becomes the reason people
+  don't use it, that's the evidence for importing an editor instead of
+  growing this one.
+- **Source view doesn't wrap, so long prose lines scroll sideways.** A
   paragraph written as one long line runs off the right edge of the editor
-  rather than folding at it. That is a decision rather than an omission, and it
-  was made by photographing the alternative: a wrapped line takes more than one
-  row, a gutter is one number per row, and with wrapping on the numbers walked
-  off their own lines at the first long paragraph — 4 pointing at the second
-  half of line 3. A wrong line number is worse than a long line, because
-  everything else here speaks in line numbers: the model points with them, the
-  selection reports in them, the chip on the composer repeats them. Markdown
-  that somebody wants to read has the preview, which wraps and is the mode
-  built for reading. Fixing it properly means measuring every line's height,
-  which gives up both the windowed painting and the arithmetic that makes the
-  caret cheap.
+  instead of folding. That's a decision, not an omission, and it was made by
+  photographing the alternative. A wrapped line takes more than one row, and
+  a gutter has one number per row. With wrapping on, the numbers walked off
+  their own lines at the first long paragraph, with 4 pointing at the second
+  half of line 3.
+
+  A wrong line number is worse than a long line, because everything else here
+  speaks in line numbers. The model points with them, the selection reports
+  in them, and the chip on the composer repeats them. Markdown you want to
+  read has the preview, which wraps and is the mode built for reading. Fixing
+  it properly means measuring every line's height. That gives up both the
+  windowed painting and the arithmetic that makes the caret cheap.
 - **A query answers thirty rows, and that is a context limit rather than a
-  reading one.** `query_data` results are read by the model, and every row is
-  paid for again on each later request of the turn — so the tool is shaped for
-  aggregating, and a query that wants a thousand rows wants to be writing a
-  file. The pane pays the same cap even though nothing there is paying for
-  context, which is the honest cost of one guarantee rather than two: the pane
-  and the model go through the same call, and the alternative is a second limit
-  that can be got wrong on its own. A result that hit the cap says so.
+  reading one.** The model reads `query_data` results, and every row is paid
+  for again on each later request of the turn. So the tool is shaped for
+  aggregating. A query that wants a thousand rows should be writing a file.
+  The pane has the same cap even though nothing there pays for context.
+  That's the cost of one guarantee instead of two. The pane and the model go
+  through the same call, and the alternative is a second limit that can be
+  got wrong on its own. A result that hit the cap says so.
 - **A refused query is refused by plan shape, not by intent.** `query_data`
-  plans every statement and rejects it if the plan does anything but read, and
-  the match over plan kinds is written out in full so that a future DataFusion
-  release adding a writing statement fails to compile rather than being waved
-  through. What that does not cover is a read that is merely *expensive*: a
-  cross join over two million-row files is a legal SELECT. There is a 512 MB
-  ceiling per query so one of those fails instead of taking the app with it,
-  and the tool is cancellable, but nothing estimates a query before running it.
+  plans every statement and rejects it if the plan does anything but read.
+  The match over plan kinds is written out in full, so a future DataFusion
+  release that adds a writing statement fails to compile instead of being
+  waved through. That doesn't cover a read that's merely *expensive*: a cross
+  join over two million-row files is a legal SELECT. There's a 512 MB ceiling
+  per query, so one of those fails instead of taking the app with it, and the
+  tool is cancellable. But nothing estimates a query before running it.
 - **A recipe transforms; nothing here judges.** A recipe is a chain of SQL
-  steps, so it can clean, filter, join, derive, and rank — everything SQL can
-  express. What it cannot do is anything that needs a *model*: classify a free
-  text column into a taxonomy, extract fields from a description, embed a
-  column for a recommender. Those are the reason the whole feature exists for
-  anybody building a dataset for an agent, and none of them is written. They
-  need a different shape from a SQL step, because a judgement over a million
-  rows is a bill: it wants to be sampled first, reviewed, and only then
-  committed to the whole file. Adding one as another `-- step:` would skip
-  exactly the gate that makes it safe to run.
-  See [Recipes](working-with-it.md#recipes).
+  steps, so it can clean, filter, join, derive, and rank: anything SQL can
+  express. It can't do anything that needs a *model*, like classifying a free
+  text column into a taxonomy, extracting fields from a description, or
+  embedding a column for a recommender. For anyone building a dataset for an
+  agent, those are the whole reason the feature exists, and none of them is
+  written. They need a different shape from a SQL step, because a judgement
+  over a million rows is a bill. It should be sampled first, reviewed, and
+  only then committed to the whole file. Adding one as another `-- step:`
+  would skip exactly the gate that makes it safe to run. See
+  [Recipes](working-with-it.md#recipes).
 - **What the Data pane was showing reaches the model but not the transcript.**
   A message sent from the pane carries the open dataset and the query box, so
-  "this" has a referent — but it goes onto the prompt, not onto the transcript's
-  copy of what was said. That is the same split a `/command` expansion makes,
-  and it has the same consequence: a conversation reopened a week later shows
-  "which category refunds most?" with no record of which dataset that meant.
-  The chip above the composer is what makes it visible at the time, and the
-  answer beneath usually names the dataset, which is what makes this bearable
-  rather than fine. Fixing it properly means a transcript entry that can carry
-  more than text and images.
-- **The turn strip says what is happening, not what was said.** One line above
-  the composer while a turn runs in the Data pane, showing the running tool or
-  the last sentence of prose. It is not a transcript and cannot be: a table or
-  a chart has nowhere to go on one line. The question card — which was the case
-  that mattered, because the turn parks and only you can unpark it — is
-  called out rather than left to be inferred: the strip switches to a breathing
-  mint ring and says *Waiting on your answer*. What is still true is that the
-  answer itself has to be given in the conversation, and the strip cannot show
-  you the options.
+  "this" has a referent. But it goes onto the prompt, not onto the
+  transcript's copy of what was said. A `/command` expansion makes the same
+  split, with the same consequence. A conversation reopened a week later
+  shows "which category refunds most?" with no record of which dataset it
+  meant. The chip above the composer makes it visible at the time, and the
+  answer beneath usually names the dataset. That makes this bearable, not
+  fine. Fixing it properly means a transcript entry that can carry more than
+  text and images.
+- **The turn strip says what's happening, not what was said.** It's one line
+  above the composer while a turn runs in the Data pane, showing the running
+  tool or the last sentence of prose. It isn't a transcript and can't be: a
+  table or a chart has nowhere to go on one line. The question card matters
+  most, because the turn parks and only you can unpark it. So it's called out
+  instead of left to be inferred: the strip switches to a breathing mint ring
+  and says *Waiting on your answer*. But you still have to give the answer in
+  the conversation, and the strip can't show you the options.
 - **The waveform's shape is the tool's category, which is coarser than the
-  work.** Four shapes over six categories, and the categories are themselves a
-  simplification — `grep` and `read_file` are both reads and draw the same
-  sweep, though one is a search and the other is not. Finer would mean the
-  harness classifying tools by something other than effect, which is what the
-  categories exist to do and what the run header counts. The shape is a useful
-  hint about the kind of work, not a readout.
+  work.** Four shapes over six categories, and the categories are themselves
+  a simplification. `grep` and `read_file` are both reads and draw the same
+  sweep, though one is a search and the other isn't. Finer shapes would mean
+  the harness classifying tools by something other than effect. Effect is
+  what the categories exist to capture, and it's what the run header counts.
+  The shape is a useful hint about the kind of work, not a readout.
 - **Nothing says how long a turn has been running.** The motion says a turn is
-  alive; it says nothing about whether *alive* has meant forty seconds or four
-  minutes. The design's own working state pairs its waveform with an elapsed
-  counter, which Taurus cannot draw honestly — a tool call carries its own
-  start time, but a turn does not, and a resumed conversation carries neither.
-  A finished run reports its duration in the run header, which leaves exactly
-  the case you would want it in uncovered.
-- **A query card stands alone, so a query-heavy turn is a stack of cards.** Any
-  tool call that draws a view is excluded from the folded run header — that is
-  what stops a table being filed under "6 steps · 11s" behind a disclosure
-  triangle. `query_data` draws one, so a turn that asks six questions leaves
-  six cards rather than one row of six. Each is small and
-  each is useful; six in a column is still more transcript than the turn is
-  worth. The fix is a fold that can hold cards, which is a change to how a run
-  is drawn rather than to this tool.
+  alive. It doesn't say whether *alive* means forty seconds or four minutes.
+  The design's own working state pairs its waveform with an elapsed counter,
+  which Taurus can't draw honestly. A tool call carries its own start time,
+  but a turn doesn't, and a resumed conversation carries neither. A finished
+  run reports its duration in the run header, which leaves exactly the case
+  you'd want it for uncovered.
+- **A query card stands alone, so a query-heavy turn is a stack of cards.**
+  Any tool call that draws a view is left out of the folded run header.
+  That's what stops a table getting filed under "6 steps · 11s" behind a
+  disclosure triangle. `query_data` draws one, so a turn that asks six
+  questions leaves six cards, not one row of six. Each is small and useful,
+  but six in a column is more transcript than the turn is worth. The fix is a
+  fold that can hold cards, which is a change to how a run is drawn, not to
+  this tool.
 - **Running a query from a card can disagree with the transcript above it.**
-  The card carries the SQL and not the rows, on purpose — a remembered answer
-  is the number that is right for a week and then quietly wrong. So **Run in
-  Query** asks the files as they are *now*, and if something has rewritten one
-  since, the pane's answer and the model's sentence about it differ with
-  nothing saying why. That is the right way round — the fresh number is the
-  true one — but the disagreement is left for the reader to notice.
-- **A recipe's steps cannot be taken to the query box.** The pane shows every
-  step's SQL when a recipe is opened, and there is deliberately no button to
-  run one: every step reads from `input`, which is the rows the step before it
+  The card carries the SQL and not the rows, on purpose: a remembered answer
+  is the number that's right for a week and then quietly wrong. So
+  **Run in Query** asks the files as they are *now*. If something has
+  rewritten one since, the pane's answer and the model's sentence about it
+  differ, with nothing saying why. That's the right way round, since the
+  fresh number is the true one. But it's up to you to notice the
+  disagreement.
+- **A recipe's steps can't be taken to the query box.** The pane shows every
+  step's SQL when you open a recipe, and there's deliberately no button to
+  run one. Every step reads from `input`, the rows the step before it
   produced, and no such table exists outside a run. Pasting one into the box
-  gets `table 'input' not found`, which would be the button's fault rather than
-  the user's. Making it work means materializing the chain up to that step,
-  which is most of a run — see the sample-then-commit gating that phase 3 needs
-  anyway.
+  gets `table 'input' not found`, which would be the button's fault, not
+  yours. Making it work means materializing the chain up to that step, which
+  is most of a run. The sample-then-commit gate a model step needs would cover
+  it too; see *A recipe transforms; nothing here judges*, above.
 - **The drafts these buttons write are a guess at the question.** "Add this as
-  a step in a recipe" does not say *which* recipe, because the pane does not
-  know — so the model asks, or picks, and either way it is a round trip the
-  person could have saved by typing four words. The button is a head start, not
-  a complete instruction, which is why nothing is sent and the cursor is left at
+  a step in a recipe" doesn't say *which* recipe, because the pane doesn't
+  know. So the model asks, or picks, and either way it's a round trip you
+  could have saved by typing four words. The button is a head start, not a
+  complete instruction. That's why nothing is sent and the cursor is left at
   the end of it.
-- **The query box's highlighting is a scanner, not a grammar.** It knows where
-  a literal starts and ends, which is the half a regex gets wrong, and it knows
-  nothing about scope. The function list is a fixed set of the common ones, so
-  a DataFusion function nobody thought of — and any UDF — draws as a plain
-  identifier rather than as a call. Nothing is *wrong* on screen when that
-  happens; a word is simply the wrong colour, which is the failure mode a
+- **The query box's highlighting is a scanner, not a grammar.** It knows
+  where a literal starts and ends, which is the half a regex gets wrong. It
+  knows nothing about scope. The function list is a fixed set of the common
+  ones, so a DataFusion function nobody thought of, and any UDF, draws as a
+  plain identifier instead of a call. Nothing is *wrong* on screen when that
+  happens. A word is just the wrong colour, which is the failure mode a
   scanner is chosen for.
 - **Completion knows the files, not the query.** It offers columns that exist
-  in a loaded dataset, and a CTE's output columns do not — `WITH t AS (SELECT
-  a + b AS total …) SELECT | FROM t` will not offer `total`, because knowing it
+  in a loaded dataset, and a CTE's output columns don't. `WITH t AS (SELECT
+  a + b AS total …) SELECT | FROM t` won't offer `total`, because knowing it
   exists means planning the query, which is the engine's job and a round trip
-  away. Aliases are found by sweeping for `FROM`/`JOIN` and the name after it,
-  so the subquery form `FROM (SELECT …) t` is not matched either and `t.` falls
-  back to offering every column in the workspace. Both cases degrade to a
-  longer list rather than to a wrong one.
+  away. Aliases are found by sweeping for `FROM`/`JOIN` and the name after
+  it. So the subquery form `FROM (SELECT …) t` isn't matched either, and `t.`
+  falls back to offering every column in the workspace. Both cases degrade to
+  a longer list, not a wrong one.
 - **The caret the completion list hangs off is computed, not measured.** The
-  box is monospace and does not wrap, so the list's position is arithmetic: one
-  cell width, times the column, plus the padding. A character that is not one
-  cell wide — CJK, most emoji — puts the list a few characters off for the rest
-  of that line. The alternative is measuring a mirror element on every
-  keystroke, which is a lot of DOM for a case that does not arise in SQL.
+  box is monospace and doesn't wrap, so the list's position is arithmetic:
+  one cell width, times the column, plus the padding. A character that isn't
+  one cell wide (CJK, most emoji) puts the list a few characters off for the
+  rest of that line. The alternative is measuring a mirror element on every
+  keystroke, which is a lot of DOM for a case that doesn't come up in SQL.
 - **A selection in the query box shows as a block of colour with no text in
-  it.** The consequence of painting the query on a layer behind a transparent
-  textarea: the browser draws the selection on the real control, whose text is
-  invisible. The highlight is tinted harder than the app's default to
+  it.** That comes from painting the query on a layer behind a transparent
+  textarea. The browser draws the selection on the real control, whose text
+  is invisible. The highlight is tinted harder than the app's default to
   compensate. Fixing it properly means an editor component, which is the
   dependency the whole arrangement exists to avoid.
-- **The tables panel is reference and nothing is clickable in it.** Deliberate
-  rather than unfinished — completion is the way text gets into the box, and a
-  second insertion route is a second set of rules about where the caret lands.
-  It does mean a column read there still has to be typed, and the first three
-  letters are all that costs.
+- **The tables panel is reference and nothing is clickable in it.** That's
+  deliberate, not unfinished. Completion is how text gets into the box, and a
+  second insertion route would be a second set of rules about where the caret
+  lands. It does mean you still have to type a column you read there, and
+  the first three letters are all that costs.
 - **Identifier case is Taurus's own dialect choice, and a recipe carries it.**
   DataFusion lowercases an unquoted identifier by default, the way Postgres
-  does; Taurus turns that off, so a column reported as `Material` is written as
-  `Material`. That is the right trade for data whose column names come from a
-  spreadsheet header — it makes the tool's own output valid input to itself —
-  but it does mean a recipe written here is *stricter* than the same SQL pasted
+  does. Taurus turns that off, so a column reported as `Material` is written
+  as `Material`. That's the right trade for data whose column names come from
+  a spreadsheet header, because it makes the tool's own output valid input to
+  itself. But a recipe written here is *stricter* than the same SQL pasted
   into a database client, where `SELECT MATERIAL` against a lowercase column
-  would have worked. Nothing warns about that when a recipe is copied out.
+  would work. Nothing warns you about that when you copy a recipe out.
 - **A recipe's SQL is DataFusion's SQL, and that goes into your
-  repository.** The engine sits behind a trait so the rest of the harness does
-  not name it, but a recipe is a file with SQL text in it, so swapping engines
-  would mean every recipe anybody wrote is a file in a dialect nothing reads.
-  That cost was taken knowingly — the alternative is an invented step language,
-  which buys portability nobody wants with unfamiliarity everybody pays — and
-  it is the reason exactly one method on the trait writes. What is not written
-  is any way to *tell* you a recipe uses something dialect-specific; a
-  `row_number() OVER` is portable and a DataFusion-only function is not, and
-  nothing distinguishes them.
+  repository.** The engine sits behind a trait so the rest of the harness
+  doesn't name it. But a recipe is a file with SQL text in it, so swapping
+  engines would leave every recipe anybody wrote in a dialect nothing reads.
+  That's a known cost. The alternative is an invented step language, which
+  buys portability nobody wants with unfamiliarity everybody pays for. It's
+  also the reason exactly one method on the trait writes. Nothing *tells* you
+  a recipe uses something dialect-specific. A `row_number() OVER` is portable
+  and a DataFusion-only function isn't, and nothing distinguishes them.
 - **A recipe writes one file, and there is no incremental run.** Every run
-  reads the source from the beginning and rewrites the output whole. There is
-  no "only the rows since last time", no partitioning, and no way to append —
-  so a recipe over a growing export costs the whole export every time. Each
-  intermediate step also spills to a scratch file, which keeps memory flat and
-  the row counts exact but means a five-step recipe over a gigabyte does
-  several gigabytes of temporary I/O. That scratch goes in the system temp
-  directory, so a machine with a small `/tmp` is the case that fails; there is
-  no setting to move it.
-- **Running a recipe from the pane asks nothing first.** The button carries the
-  path it writes, and that is the whole of the consent — the same arrangement
-  the query box has. `run_recipe` called by the *model* does prompt, and its
-  prompt names the path parsed from the same file the run will use. What
-  neither offers is a preview of the output before it lands: there is no dry
-  run, no "this would drop 380,000 rows, continue", and the per-step deltas
-  arrive after the file is already written. A rewind undoes it, which is what
-  makes that acceptable rather than fine.
-- **Writing or editing a recipe is not rewindable.** `.taurus` is skipped by
-  the checkpoint sweep, so a turn that authors a recipe leaves nothing for
-  `taurus rewind` to put back — the same property project skills already have,
-  for the same reason: these are the instructions, not the output. The file a
-  recipe *writes* is fully rewindable. Git is the undo for the recipe itself,
-  which is an argument for committing them and not much comfort before the
-  first commit.
-- **The list of loaded datasets does not travel with the repository.** It lives
-  in `~/.taurus/data/<workspace>/datasets.json`, beside the transcripts and the
-  search index, not in the project's own `.taurus`. That is what keeps loading a
-  file from being a *write* to the workspace — otherwise looking at a CSV would
-  cost a permission dialog, a diff in the Changes panel, and a line in the next
-  commit. The cost is that a teammate who clones the repository loads the files
-  again, which is one sentence to the agent. A recipe sidesteps it by naming its
-  own files — `source: data/events.csv`, plus a `tables:` block for anything it
-  joins against — which is what makes a committed recipe run on a fresh clone.
-  A recipe that names loaded datasets instead still does not, and nothing warns
-  you which kind you have written.
-- **A profile is a full scan every time, and it cannot be cancelled.** Its
-  result is not cached: a dataset entry points at a file anything can rewrite,
-  and a remembered profile is the kind of answer that is right for a week and
+  reads the source from the beginning and rewrites the output whole. There's
+  no "only the rows since last time", no partitioning, and no way to append.
+  So a recipe over a growing export costs the whole export every time. Each
+  intermediate step also spills to a scratch file. That keeps memory flat and
+  the row counts exact, but a five-step recipe over a gigabyte does several
+  gigabytes of temporary I/O. The scratch goes in the system temp directory,
+  so a machine with a small `/tmp` is the case that fails. There's no setting
+  to move it.
+- **Running a recipe from the pane asks nothing first.** The button carries
+  the path it writes, and that's the whole of the consent, the same as the
+  query box. `run_recipe` called by the *model* does prompt, and its prompt
+  names the path parsed from the same file the run will use. Neither offers a
+  preview of the output before it lands. There's no dry run, no "this would
+  drop 380,000 rows, continue", and the per-step deltas arrive after the file
+  is already written. A rewind undoes it, which makes that acceptable, not
+  fine.
+- **Writing or editing a recipe isn't rewindable.** The checkpoint sweep skips
+  `.taurus`, so a turn that authors a recipe leaves nothing for
+  `taurus rewind` to put back. Project skills work the same way, for the same
+  reason: these are the instructions, not the output. The file a recipe
+  *writes* is fully rewindable. Git is the undo for the recipe itself. That's
+  an argument for committing recipes, and not much comfort before the first
+  commit.
+- **The list of loaded datasets doesn't travel with the repository.** It lives
+  in `~/.taurus/data/<workspace>/datasets.json`, beside the transcripts and
+  the search index, not in the project's own `.taurus`. That keeps loading a
+  file from being a *write* to the workspace. Otherwise looking at a CSV
+  would cost a permission dialog, a diff in the Changes panel, and a line in
+  the next commit. The cost is that a teammate who clones the repository has
+  to load the files again, which is one sentence to the agent. A recipe
+  sidesteps this by naming its own files (`source: data/events.csv`, plus a
+  `tables:` block for anything it joins against). That's what lets a
+  committed recipe run on a fresh clone. A recipe that names loaded datasets
+  instead doesn't, and nothing warns you which kind you've written.
+- **A profile is a full scan every time, and it can't be cancelled.** Its
+  result isn't cached. A dataset entry points at a file anything can rewrite,
+  and a remembered profile is the kind of answer that's right for a week and
   then quietly wrong. So opening the pane on a multi-gigabyte file reads it
-  again, and clicking away leaves that read running to completion rather than
-  stopping it. Caching it properly means invalidating on the file's length and
-  modification time — which is how a page's row count is now kept — and
-  cancelling means threading a token through the engine trait. Neither is
-  written for the profile. What keeps this bearable is that a profile is the
-  one thing that must read everything: loading reads a header, and paging
-  counts a file once per version of it. A page deep into a CSV or NDJSON file
-  still reads every row in front of it, because those formats have no index to
-  seek by. On an 80 MB file of two million rows, measured: 14.1 ms for the
-  first page and 16.3 ms for one at row 1,999,900 — against 14.4 and 29.0 ms
-  when every page counted the whole file again.
-- **`.json` means newline-delimited JSON, not a JSON array.** A file holding one
-  big `[ {...}, {...} ]` is refused with a message rather than read, because
-  reading it would mean parsing the whole thing into memory before any of the
-  streaming below it could start — which is the one shape of file this is
-  supposed to protect you from. Converting it is one `jq` line and the agent can
-  run it. There is no Excel reader either, and adding one is a dependency rather
-  than a design question.
-- **A dataset has to sit on a local drive.** A file reached by its UNC name —
-  `\\fileserver\reports\q3.csv`, or anything under a Windows share that has not
-  been mapped to a drive letter — is refused when it is loaded, with a message
-  saying to copy it into the workspace first. The engine addresses files by
-  `file://` URL, a share becomes a URL with a *host* in it, and only the local
-  filesystem is registered to serve one. Mapping the share to a drive letter is
-  the workaround and it is a real one. Serving `file://server/` properly means
-  registering a second object store per share, which is more machinery than the
-  case has yet asked for.
-- **A nested column is counted and not described.** A list, a struct, or a map
-  profiles as how many rows have one and nothing else — no distinct count, no
-  range, no common values, because none of those are questions with an answer
-  until the column is flattened. It is kept rather than refused so that one
-  nested column in an export does not cost you the other thirteen. Flattening is
-  a transformation: a recipe can flatten one with an `unnest` step, and until
+  again, and clicking away leaves that read running to completion. Caching it
+  properly means invalidating on the file's length and modification time,
+  which is how a page's row count is kept. Cancelling means threading a token
+  through the engine trait. Neither is written for the profile.
+
+  What keeps this bearable is that a profile is the one thing that has to
+  read everything. Loading reads a header, and paging counts a file once per
+  version of it. A page deep into a CSV or NDJSON file still reads every row
+  in front of it, because those formats have no index to seek by. Measured on
+  an 80 MB file of two million rows: 14.1 ms for the first page and 16.3 ms
+  for one at row 1,999,900, against 14.4 and 29.0 ms with every page counting
+  the whole file again.
+- **`.json` means newline-delimited JSON, not a JSON array.** A file holding
+  one big `[ {...}, {...} ]` is refused with a message instead of read.
+  Reading it would mean parsing the whole thing into memory before any of the
+  streaming downstream could start, and that's the one shape of file this is
+  meant to protect you from. Converting it is one `jq` line, and the agent
+  can run it. There's no Excel reader either, and adding one is a dependency,
+  not a design question.
+- **A dataset has to sit on a local drive.** A file reached by its UNC name,
+  like `\\fileserver\reports\q3.csv` or anything under a Windows share that
+  hasn't been mapped to a drive letter, is refused when you load it. The
+  message says to copy it into the workspace first. The engine addresses
+  files by `file://` URL, a share becomes a URL with a *host* in it, and only
+  the local filesystem is registered to serve one. Mapping the share to a
+  drive letter is the workaround, and it's a real one. Serving
+  `file://server/` properly means registering a second object store per
+  share, which is more machinery than the case has asked for so far.
+- **A nested column is counted and not described.** A list, a struct, or a
+  map profiles as how many rows have one, and nothing else: no distinct
+  count, no range, no common values. None of those has an answer until the
+  column is flattened. The column is kept, not refused, so one nested column
+  in an export doesn't cost you the other thirteen. Flattening is a
+  transformation. A recipe can flatten one with an `unnest` step, and until
   somebody does, the profile says what it can.
-- **The grid does not sort or filter.** It pages, a hundred rows at a time, in
-  the order the file is in. Sorting a million rows is a query rather than a
-  click — it has to go back to the engine, and the pane would need somewhere to
-  say that it is running one — and filtering is the same thing with a predicate.
-  Both are worth having. The transcript's `show_table` sorts because its rows
-  are already in the browser; these are not, and pretending otherwise would sort
+- **The grid doesn't sort or filter.** It pages, a hundred rows at a time, in
+  the order the file is in. Sorting a million rows is a query, not a click.
+  It has to go back to the engine, and the pane would need somewhere to say
+  it's running one. Filtering is the same thing with a predicate. Both are
+  worth having. The transcript's `show_table` sorts because its rows are
+  already in the browser. These aren't, and pretending otherwise would sort
   the hundred rows on screen and call it sorted.
-- **Searching a conversation reads every transcript, every time.** There is no
-  index. What makes that affordable is the shape of the file rather than any
-  structure kept beside it: a transcript is JSONL, so one whose bytes do not
-  hold the query cannot hold it once parsed, and a conversation that does not
-  match costs one read and nothing else. Measured on sixty-one real
-  conversations across every workspace, a whole-history search is about 110ms —
-  which is why the palette debounces rather than searching per keystroke, and
-  why its two local groups answer first and this one fills in underneath. It
-  grows linearly with how much you have said. Building an index means deciding
-  when to rebuild it, and a stale index that quietly stops finding last
-  Tuesday is worse than a search that takes a tenth of a second. See
+- **Searching a conversation reads every transcript, every time.** There's no
+  index. What makes that affordable is the file's shape, not a structure kept
+  beside it. A transcript is JSONL, so if its bytes don't hold the query, it
+  can't hold it once parsed either. A conversation that doesn't match costs
+  one read and nothing else. Measured on sixty-one real conversations across
+  every workspace, a whole-history search is about 110ms. That's why the
+  palette debounces instead of searching per keystroke, and why its two local
+  groups answer first while this one fills in underneath. It grows linearly
+  with how much you've said. An index would need a rule for when to rebuild
+  it, and a stale index that quietly stops finding last Tuesday is worse
+  than a search that takes a tenth of a second. See
   [Finding a conversation](working-with-it.md#finding-a-conversation).
-- **The search is literal, and it does not read tool calls.** No regex, no
-  fuzzy matching, no stemming: `banner` does not find `banners`. And it reads
-  prose only — what you typed and what the model wrote back, not a tool's
-  arguments and not its results. That last one is a decision rather than an
-  omission, and it is what makes the results usable: tool results are file
-  contents and build logs, so including them would match nearly every
-  conversation for nearly every query. The cost is real, though — a thing that
-  only ever appeared in a file the agent read is not findable here, and `grep`
-  over `~/.taurus/sessions` is the honest answer for that.
-- **A search hit is found again by text, not by position.** The search reports
-  which message matched, and the app throws that away and looks for the words
-  again in what is on screen. The two do not count the same things — a turn
-  folds a prompt, an answer and a run of tool calls into one card — and looking
-  again is both simpler and right for a conversation that has been compacted
-  since. What it costs is the case where the hit was summarized away: the
-  conversation opens, nothing is marked, and nothing says why. It also marks
-  the *first* turn holding the words rather than the one the search found, which
-  differ when a conversation says the same thing twice.
+- **The search is literal, and it doesn't read tool calls.** No regex, no
+  fuzzy matching, no stemming: `banner` doesn't find `banners`. It reads
+  prose only: what you typed and what the model wrote back, not a tool's
+  arguments or its results. That last part is a decision, not an omission,
+  and it's what makes the results usable. Tool results are file contents and
+  build logs, so including them would match nearly every conversation for
+  nearly every query. The cost is real, though. Something that only ever
+  appeared in a file the agent read isn't findable here. For that, `grep`
+  over `~/.taurus/sessions` is the honest answer.
+- **A search hit is found again by text, not by position.** The search
+  reports which message matched. The app throws that away and looks for the
+  words again in what's on screen. The two don't count the same things (a
+  turn folds a prompt, an answer and a run of tool calls into one card), and
+  looking again is simpler and also right for a conversation compacted since.
+  The cost is the case where the hit was summarized away: the conversation
+  opens, nothing is marked, and nothing says why. It also marks the *first*
+  turn holding the words, not the one the search found. The two differ when a
+  conversation says the same thing twice.
 - **Colouring code is a scanner, not a parser.** One walk serves every
   language, parameterized by how a comment opens, which delimiters quote a
-  string, and which words are the vocabulary. That is enough to be right about
-  ordinary code and it is not enough to be right about all of it: a construct
-  it misreads is coloured wrongly rather than reported, because there is
-  nothing here that could report it. The languages it knows are Rust,
-  TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML, and TOML.
-  Everything else — HTML and CSS included, which are common in a fenced block
-  and whose syntax is not word-shaped — renders plain with its label intact.
-  Growing the list is a `Grammar` each; growing it to *markup* is a second
-  scanner, and a word-oriented one turned loose on HTML produces confident
-  nonsense.
+  string, and which words are the vocabulary. That's enough to be right about
+  ordinary code, but not about all of it. A construct it misreads is coloured
+  wrongly instead of reported, because nothing here could report it. It
+  knows Rust, TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML,
+  and TOML. Everything else renders plain with its label intact. That
+  includes HTML and CSS, which are common in a fenced block and whose syntax
+  isn't word-shaped. Growing the list is a `Grammar` each. Growing it to
+  *markup* is a second scanner, because a word-oriented one turned loose on
+  HTML produces confident nonsense.
 - **An intra-line diff mark is a trim, not a diff.** The common words at each
-  end of a replaced line come off and whatever is left in the middle is marked,
-  which is one region per line by construction. A line with two separate small
-  edits in it is therefore marked from the first to the last, including the
-  unchanged text between them. Two cases decline outright rather than guess: a
-  line rewritten end to end, where marking almost all of it would look like a
-  finding, and a run of removals answered by a run of additions of a different
-  length, where pairing by position would mark the difference between unrelated
-  lines. In all three the line-level `+` and `−` are still exactly right, which
-  is why declining is affordable.
+  end of a replaced line come off, and whatever's left in the middle is
+  marked. That's one region per line by construction. So a line with two
+  separate small edits is marked from the first to the last, including the
+  unchanged text between them. Two cases decline outright instead of
+  guessing. One is a line rewritten end to end, where marking almost all of
+  it would look like a finding. The other is a run of removals answered by a
+  run of additions of a different length, where pairing by position would
+  mark the difference between unrelated lines. In all three cases the
+  line-level `+` and `−` are still exactly right, which is why declining is
+  affordable.
 - **What a tool cost in the Context panel is apportioned, not measured.** The
-  provider reports one number for a whole request and never says which part of
-  the prompt was whose, so every figure there except the billed row is the
-  harness's own four-characters-a-token estimate — the same estimate the
-  compaction threshold runs on, and limited the same way. It is accurate enough
-  to rank tools against each other, which is what the panel is for, and it is
-  not a bill. The two numbers that are exact are what the provider reported in
-  and out. See [The context window](working-with-it.md#the-context-window).
+  provider reports one number for a whole request and never says which part
+  of the prompt was whose. So every figure there except the billed row is the
+  harness's own four-characters-a-token estimate. It's the same estimate the
+  compaction threshold runs on, with the same limits. It's accurate enough to
+  rank tools against each other, which is what the panel is for, but it isn't
+  a bill. The two exact numbers are what the provider reported in and out.
+  See [The context window](working-with-it.md#the-context-window).
 - **The panel accounts for tokens, not money.** No provider's prices are in
-  here and none are fetched, so nothing multiplies the billed tokens by a rate.
-  Adding it means a price table per provider per model that somebody has to
-  keep current, and a table that is six months stale reporting dollars to two
+  here and none are fetched, so nothing multiplies the billed tokens by a
+  rate. Adding it means a price table per provider per model that somebody
+  has to keep current. A table six months stale reporting dollars to two
   decimal places is worse than no dollars at all.
 - **There are five window shortcuts and two more inside one dialog.** ⌘K and
   ⌘⇧P open the palette, ⌘N starts a conversation, ⌘L puts the cursor in the
-  composer, ⌘, opens Settings, and ⌃` shows the terminal. That is the whole
-  window list, and it is short on purpose: every one of them is also a row in
-  the palette wearing the key it answers to, so the palette is the discovery
-  surface and adding a sixth is cheap in a way adding the first was not.
+  composer, ⌘, opens Settings, and ⌃` shows the terminal. That's the whole
+  window list, and it's short on purpose. Every one is also a palette row
+  showing the key it answers to, so the palette is where you discover them.
+  Adding a sixth is cheap in a way adding the first wasn't.
 
-  The permission dialog is the exception, and it is an exception on an argument
-  rather than by oversight. ⌘↵ allows once and ⌘⌫ denies, printed on the
-  buttons. The reason the window list stays short is that it is a shared
-  namespace; a modal has none, so a chord bound there collides with nothing and
-  needs no discovery surface beyond the key on the button it fires. It is also
-  the most-pressed control in the app. See
-  [Permissions](safety.md#permissions) for why the two standing grants get no
-  key.
+  The permission dialog is the exception, and it's argued for, not an
+  oversight. ⌘↵ allows once and ⌘⌫ denies, printed on the buttons. The window
+  list stays short because it's a shared namespace. A modal has none, so a
+  chord bound there collides with nothing and needs no discovery beyond the
+  key on the button it fires. It's also the most-pressed control in the app.
+  See [Permissions](safety.md#permissions) for why the two standing grants
+  get no key.
 
-  What is not here is user-defined bindings — a keymap file means a conflict
-  resolver, a way to see what is bound, and a way to find out why a key did
+  There are no user-defined bindings. A keymap file means a conflict
+  resolver, a way to see what's bound, and a way to find out why a key did
   nothing.
-- **One message can be typed ahead, not a list of them.** Enter during a turn
-  holds the message and sends it when that turn finishes; a second one typed
-  ahead replaces the first rather than joining a queue. That is a decision:
-  the composer is one box, and it offers no way to see three pending messages,
-  reorder them, or edit the second one — so a queue would be state the app
-  holds and the user cannot inspect. What it costs is that a genuine list of
+- **One message can be typed ahead, not a list of them.** Press Enter during a
+  turn and the message is held and sent when that turn finishes. A second one
+  typed ahead replaces the first instead of joining a queue. That's a
+  decision. The composer is one box, with no way to see three pending
+  messages, reorder them, or edit the second one. A queue would be state the
+  app holds and you can't inspect. The cost is that a real list of
   follow-ups has to be sent one at a time.
-- **"Edit" on a question re-asks it; it does not rewind the conversation.** The
-  button puts a sent message back in the composer, and the original stays in
-  the transcript along with whatever it produced. Making it a true edit means
-  truncating the conversation at that turn — dropping the messages after it
-  from the transcript on disk, and from the model's next request — which is a
-  different feature with a different failure mode: a mis-click that discards an
-  hour of work. The files a discarded turn wrote are already recoverable
-  through [Rewinding a turn](safety.md#rewinding-a-turn); the words are not.
-- **A "try again" is a resend, not a resume.** The harness cannot pick a turn
-  up partway, so retrying a turn that died runs it from the top — and a turn
-  that had already written files before it broke leaves those writes in place.
-  Both turns are in the checkpoint log and either can be rewound, which is the
-  honest arrangement rather than a convenient one: folding them together would
-  leave a rewind that undid twice as much as its label said.
+- **"Edit" on a question re-asks it; it does not rewind the conversation.**
+  The button puts a sent message back in the composer. The original stays in
+  the transcript, along with whatever it produced. A true edit would mean
+  truncating the conversation at that turn: dropping the later messages from
+  the transcript on disk and from the model's next request. That's a
+  different feature with a different failure mode, where a mis-click
+  discards an hour of work. The files a discarded turn wrote are already
+  recoverable through [Rewinding a turn](safety.md#rewinding-a-turn); the
+  words aren't.
+- **A "try again" is a resend, not a resume.** The harness can't pick a turn
+  up partway, so retrying a turn that died runs it from the top. If the turn
+  had already written files before it broke, those writes stay. Both turns
+  are in the checkpoint log and either can be rewound. That's the honest
+  arrangement, not the convenient one: folding them together would leave a
+  rewind that undoes twice as much as its label says.
 - **The dock badge is not on Windows.** The desktop is told when a turn needs
-  somebody — a badge counting what is owed, a bounce when the count rises while
-  the window is not focused — and `set_badge_count` is unsupported on Windows,
-  where the documented substitute is a taskbar overlay icon and that means
-  shipping a rendered image per count. The taskbar flash is what carries the
+  somebody: a badge counting what's owed, and a bounce when the count rises
+  while the window isn't focused. `set_badge_count` is unsupported on
+  Windows. The documented substitute there is a taskbar overlay icon, which
+  means shipping a rendered image per count. So the taskbar flash carries the
   signal there, and it works. On Linux the badge needs a desktop with
-  `libunity` and is dropped where there is none. Neither fallback is silent to
-  the *user*, who still gets the flash; both are silent to anyone reading the
-  code expecting a number.
+  `libunity` and is dropped where there isn't one. Neither fallback is silent
+  to the *user*, who still gets the flash. Both are silent to anyone reading
+  the code and expecting a number.
 - **Changes and the canvas share one column, so opening one hides the other.**
-  Both dock to the right of the conversation, and only one is drawn at a time —
-  the canvas is hidden rather than closed, so its unsaved typing and scroll
-  position come back when Changes is shut. A third column is what this refuses:
-  at the width the window is designed for, the transcript already gives up half
-  of itself to whichever of these is open, and splitting the rest three ways
-  leaves nothing readable. Reading a diff and the file it changed side by side
-  therefore means closing one of them.
+  Both dock to the right of the conversation, and only one is drawn at a
+  time. The canvas is hidden, not closed, so its unsaved typing and scroll
+  position come back when you shut Changes. This refuses a third column. At
+  the width the window is designed for, the transcript already gives up half
+  of itself to whichever one is open, and splitting the rest three ways
+  leaves nothing readable. So reading a diff next to the file it changed
+  means closing one of them.
 - **Chunking for the index is a line window, and structure-aware chunking was
   tried and lost.** Forty lines with ten of overlap, in every language. The
-  obvious improvement is to cut where a definition starts, and the obvious
-  objection — a grammar per language, a silent fallback for the ones you lack,
-  and confident nonsense on a file half understood — turns out not to apply to
-  reading *layout*: a non-blank line at zero indent, after a blank line or after
-  the close of what came before, starts a new top-level thing in every language
-  a person writes by hand, and snapping a cut to the nearest one within twelve
-  lines needs no grammar and has no second code path.
+  obvious improvement is to cut where a definition starts. The obvious
+  objection is a grammar per language, a silent fallback for the ones you
+  lack, and confident nonsense on a file half understood. That objection
+  doesn't apply to reading *layout*, though. In every language a person
+  writes by hand, a non-blank line at zero indent, after a blank line or
+  after the close of what came before, starts a new top-level thing. Snapping
+  a cut to the nearest one within twelve lines needs no grammar and has no
+  second code path.
 
-  It was built that way, and measured. On this repository, fifteen questions,
-  `nomic-embed-text`: line windows scored MRR 0.668 and put the answering file
-  first 53% of the time; structure-snapped cuts scored 0.598 and 40%; adding an
-  embedded heading — the file's path and the definitions the chunk sits inside —
-  scored 0.565 and 40%. Restoring the overlap that snapping drops recovered
-  nothing (0.577), which rules out the obvious confound. The numbers are
-  deterministic and reproduced exactly across runs.
+  It was built that way, and measured. On this repository, with fifteen
+  questions and `nomic-embed-text`, line windows scored MRR 0.668 and put the
+  answering file first 53% of the time. Structure-snapped cuts scored 0.598
+  and 40%. Adding an embedded heading (the file's path and the definitions
+  the chunk sits inside) scored 0.565 and 40%. Restoring the overlap that
+  snapping drops recovered nothing (0.577), which rules out the obvious
+  confound. The numbers are deterministic and reproduced exactly across runs.
 
-  So it is not shipped, and `git show` on the commit before the one that
-  reverted it is the implementation if anybody wants to try again. What the
-  measurement does **not** settle: fifteen questions is a small sample, one
-  embedding model is one embedding model, and the corpus is Rust and TypeScript
-  — a model that reads code structurally, or a workspace in a language where
-  indentation carries more, could land differently. One thing it did not isolate
-  is that snapping produces 13% fewer passages (4025 against 4610), and a corpus
-  with more passages in it gives every file more chances to be the best match
-  for something; the overlap control lengthened chunks rather than adding them,
-  so that axis is untested. `cargo run -p taurus-index --example retrieval` is
-  the gate, and re-running it is the whole cost of arguing with any of this —
-  though it has to be run the way that comparison was, scoring both things
-  against one corpus in one process. The corpus is the working tree, and
-  editing a doc page between two runs was measured moving MRR by 0.03, which is
-  the size of the differences it exists to detect.
-- **Reranking is still off by default, and still ungated.** `rerank_model` is
-  empty because the plan that added it said to beat cosine before defaulting it
-  on, and that comparison has never been run. It has somewhere to be run:
-  the retrieval harness above scores whatever the index currently does, so the
-  gate is one command with the setting on and one with it off. Until somebody
-  does that, an empty default is the honest state rather than a forgotten one.
+  So it isn't shipped. If anybody wants to try again, `git show` on the
+  commit before the one that reverted it is the implementation.
+
+  What the measurement does **not** settle: fifteen questions is a small
+  sample, one embedding model is one embedding model, and the corpus is Rust
+  and TypeScript. A model that reads code structurally, or a workspace in a
+  language where indentation carries more, could land differently. One thing
+  it didn't isolate: snapping produces 13% fewer passages (4025 against
+  4610). A corpus with more passages gives every file more chances to be the
+  best match for something. The overlap control lengthened chunks instead of
+  adding them, so that axis is untested.
+
+  `cargo run -p taurus-index --example retrieval` is the gate, and re-running
+  it is all it costs to argue with any of this. It has to be run the way that
+  comparison was, though: scoring both things against one corpus in one
+  process. The corpus is the working tree, and editing a doc page between two
+  runs was measured moving MRR by 0.03. That's the size of the differences it
+  exists to detect.
+- **Reranking is off by default, and ungated.** `rerank_model` is empty
+  because the plan that added it said to beat cosine before turning it on by
+  default, and that comparison hasn't been run. There's somewhere to run it.
+  The retrieval harness above scores whatever the index currently does, so
+  the gate is one command with the setting on and one with it off. Until
+  somebody does that, an empty default is the honest state, not a forgotten
+  one.
 - **A theme sets fourteen colours, three typefaces, a wordmark and a corner
-  radius, and nothing else.** Not a stub — the ceiling is the point. Everything
-  below the top of `src/styles.css` speaks in roles, so those fourteen values
-  move the whole window; letting a theme restate a *rule* instead would let it
-  break a layout in a way only its author could reproduce, and "the app is
-  broken" would be a report nobody could tie back to a colour picker. The
-  spacing ladder is deliberately not exposed for the same reason: it is a
-  constraint the stylesheet's own tests enforce, and a theme that could redefine
-  it could make the app look like nobody measured anything. What that costs is
-  real — a theme cannot change a font size, a weight, a shadow, or the width of
-  the rail.
-- **A theme cannot bring a typeface with it.** `fonts` names families, and they
-  have to be installed on the machine already: the window's CSP allows no remote
-  stylesheet, so there is nothing to point a `@font-face` at. Bundling a font
-  file inside a theme would mean reading arbitrary binaries out of a config
-  directory and injecting them as `data:` URIs, which is a wider hole than the
-  feature is worth. A theme naming a font nobody has degrades to the stack the
-  app ships rather than failing, so this is quiet rather than broken — and quiet
-  is its own problem: nothing on screen says the font was not found.
+  radius, and nothing else.** That's not a stub; the ceiling is the point.
+  Everything below the top of `src/styles.css` speaks in roles, so those
+  fourteen values move the whole window. If a theme could restate a *rule*
+  instead, it could break a layout in a way only its author could reproduce.
+  "The app is broken" would then be a report nobody could tie back to a
+  colour picker. The spacing ladder isn't exposed, for the same reason. It's
+  a constraint the stylesheet's own tests enforce, and a theme that could
+  redefine it could make the app look like nobody measured anything. The
+  cost is real: a theme can't change a font size, a weight, a shadow, or the
+  width of the rail.
+- **A theme can't bring a typeface with it.** `fonts` names families, and
+  they have to be installed on the machine already. The window's CSP allows
+  no remote stylesheet, so there's nothing to point a `@font-face` at.
+  Bundling a font file inside a theme would mean reading arbitrary binaries
+  out of a config directory and injecting them as `data:` URIs, which is a
+  wider hole than the feature is worth. A theme naming a font nobody has
+  falls back to the stack the app ships instead of failing. So this is
+  quiet, not broken, and quiet is its own problem: nothing on screen says the
+  font wasn't found.
 - **Themes are read fresh on every status, and only the active one carries its
-  logo.** The picker's full scan happens when the picker opens. That split
-  exists because a resolved theme carries its logo inlined as base64, and the
-  status is pushed after anything that moves a number on screen — so a scan on
-  that path would re-encode every logo on the machine several times a turn. The
-  cost is that a *different* theme's problems, in a file you are not using, are
-  not reported until you open Settings › Appearance.
+  logo.** The picker's full scan happens when the picker opens. The split
+  exists because a resolved theme carries its logo inlined as base64, and
+  the status is pushed after anything that moves a number on screen. A scan
+  on that path would re-encode every logo on the machine several times a
+  turn. The cost is that problems in a *different* theme, in a file you
+  aren't using, aren't reported until you open Settings › Appearance.
 - **Ending a child reaches its whole tree — everything that stayed inside
-  it.** A hook that hits its timeout, and a background command that is
-  Stopped, are both usually a shell, so killing the child alone would reach
-  `/bin/sh` or `cmd.exe` and leave the linter, the build or the watcher
-  running while the app reported the thing as stopped. So each starts as a
-  tree (`taurus_process::Tree`). On Unix that is a process group of its own,
-  ended with `kill -KILL -- -<pgid>`. On Windows it is a Job Object: the child
-  is started suspended and put in the job before it runs, and every process
-  it starts after that is in the job however its parents come and go. Both
-  are tested against a real tree on every platform in CI, including a
-  grandchild whose parent has already exited — the shape an npm `.cmd` shim
-  leaves every time. What it costs on Unix is a fork of `kill`, and only on a
-  path where something has already hung or been stopped by hand; on Windows,
-  a snapshot of the system's threads each time a hook or background command
-  starts, to let the suspended child go. The Unix spelling is a scar twice
-  over: without the `--`, procps reads `-123` as a signal rather than a pid
-  and signals *the caller's* group — eleven of twelve kills on Ubuntu left the
-  tree running and killed Taurus instead — and a pid past `i32::MAX` negates
-  to `-1`, which on Linux means every process the user owns; it took out three
-  CI runners from inside a test written to prove the opposite. A kill that
-  could not be carried out says so on the hook's own refusal rather than in a
-  log nobody reads. What escapes is a process that leaves on purpose: on Unix
-  one that starts a session or group of its own (`setsid`, a daemon's double
-  fork); on Windows anything started outside the tree on the child's behalf,
-  such as a scheduled task or a service. Nothing short of a container catches
-  those, and a hook or command that does it means to leave something
-  running.
-- **Two other children are still killed one process at a time.** A *foreground*
-  `run_command` is left in the parent's process group on purpose — a terminal's
-  own Ctrl-C then reaches the whole tree without anything in this code having
-  to run first, which is worth more than a group would be — so its timeout
-  kills the shell alone. And a skill's script (`taurus_skills::tools`) uses
-  `kill_on_drop` with no tree kill at all. Both are the same small change as
-  above wherever it is wanted; neither has been made, because neither has the
-  safety argument the hook timeout does — a hook is a guard whose whole promise
-  is that it stopped something.
+  it.** A hook that hits its timeout and a background command that's Stopped
+  are both usually a shell. Killing the child alone would reach `/bin/sh` or
+  `cmd.exe` and leave the linter, the build or the watcher running while the
+  app reported it stopped. So each starts as a tree (`taurus_process::Tree`).
+
+  On Unix that's a process group of its own, ended with
+  `kill -KILL -- -<pgid>`. On Windows it's a Job Object: the child starts
+  suspended and goes into the job before it runs, and every process it starts
+  after that is in the job, however its parents come and go. Both are tested
+  against a real tree on every platform in CI. That includes a grandchild
+  whose parent has already exited, the shape an npm `.cmd` shim leaves every
+  time. The cost on Unix is a fork of `kill`, and only on a path where
+  something has already hung or been stopped by hand. On Windows it's a
+  snapshot of the system's threads each time a hook or background command
+  starts, to let the suspended child go.
+
+  The Unix spelling is a scar twice over. Without the `--`, procps reads
+  `-123` as a signal, not a pid, and signals *the caller's* group: eleven of
+  twelve kills on Ubuntu left the tree running and killed Taurus instead. And
+  a pid past `i32::MAX` negates to `-1`, which on Linux means every process
+  the user owns. It took out three CI runners from inside a test written to
+  prove the opposite.
+
+  A kill that can't be carried out says so on the hook's own refusal, not in
+  a log nobody reads. What escapes is a process that leaves on purpose. On
+  Unix that's one that starts a session or group of its own (`setsid`, a
+  daemon's double fork). On Windows it's anything started outside the tree
+  on the child's behalf, such as a scheduled task or a service. Nothing short
+  of a container catches those, and a hook or command that does it means to
+  leave something running.
+- **Two other children are killed one process at a time.** A *foreground*
+  `run_command` stays in the parent's process group on purpose. That way a
+  terminal's own Ctrl-C reaches the whole tree without anything in this code
+  having to run first, which is worth more than a group would be. So its
+  timeout kills the shell alone. And a skill's script
+  (`taurus_skills::tools`) uses `kill_on_drop` with no tree kill at all. Both
+  would be the same small change as above, wherever it's wanted. Neither has
+  been made, because neither has the safety argument the hook timeout has: a
+  hook is a guard whose whole promise is that it stopped something.

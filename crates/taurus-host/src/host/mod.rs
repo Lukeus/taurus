@@ -73,9 +73,10 @@ pub const ROSTER_BUDGET_CHARS: usize = 2_400;
 /// Tools a parent turn registers for itself, rather than into the shared
 /// registry every reload rebuilds.
 ///
-/// All four are here for the same reason: a sub-agent must not have them.
-/// `spawn_subagent` is the depth cap, and the other three speak to the person
-/// watching this conversation, which a delegate does not have.
+/// Every one is here for the same reason: a sub-agent must not have them.
+/// `spawn_subagent` is the depth cap, `update_plan`'s checklist belongs to the
+/// turn that wrote it, and the rest speak to the person watching this
+/// conversation, which a delegate does not have.
 ///
 /// Named as a set because `disabled_tools` has to know about them twice over —
 /// once to take one away in [`Host::build_agent`], and once so
