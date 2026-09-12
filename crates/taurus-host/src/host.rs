@@ -1273,7 +1273,12 @@ impl Host {
         // registry, which has no spawn tool — that is the depth cap.
         let mut registry = self.registry.read().await.clone();
         // The roster is snapshotted here, so a turn sees the set of agents it
-        // started with even if a file is saved while it runs.
+        // started with even if a file is saved while it runs. Each read is
+        // bound before the next await, so no guard is held across one — see
+        // `Self::rosters`.
+        let roster = Arc::new(self.agents.read().await.to_vec());
+        let models = self.agent_models.read().await.clone();
+        let logs = SubagentLogs::new(self.workspace().await, turn.session_id);
         registry.register(Arc::new(
             SpawnSubagent::new(
                 provider.clone(),
@@ -1282,18 +1287,12 @@ impl Host {
                 MAX_CONCURRENT_SUBAGENTS,
             )
             .with_defaults(base.clone())
-            .with_roster(
-                Arc::new(self.agents.read().await.to_vec()),
-                self.agent_models.read().await.clone(),
-            )
+            .with_roster(roster, models)
             // Every child's conversation is kept, under this one's. The parent
             // transcript still records a delegation as one call and one answer
             // — that is what delegating is for — but the work behind that
             // answer is no longer thrown away with the tool result.
-            .with_recorder(Arc::new(SubagentLogs::new(
-                self.workspace().await,
-                turn.session_id,
-            ))),
+            .with_recorder(Arc::new(logs)),
         ));
 
         // Registered per turn, alongside the spawn tool and for the same
@@ -1474,12 +1473,15 @@ impl Host {
     /// and this is a delegate by every measure but the one that spawned it.
     async fn review_context(&self, cancel: CancellationToken) -> ToolContext {
         let workspace = self.workspace.read().await.clone();
-        ToolContext::new(workspace, self.permissions.read().await.clone(), cancel)
-            // The loaded skills' own directories, so a reviewer following a
-            // procedure's "see references/…" can read it. Read-only, and it
-            // widens nothing that may be written.
-            .with_readable_roots(self.catalog.read().await.dirs())
-            .with_hooks(self.hooks.read().await.clone())
+        let permissions = self.permissions.read().await.clone();
+        // The loaded skills' own directories, so a reviewer following a
+        // procedure's "see references/…" can read it. Read-only, and it widens
+        // nothing that may be written.
+        let roots = self.catalog.read().await.dirs();
+        let hooks = self.hooks.read().await.clone();
+        ToolContext::new(workspace, permissions, cancel)
+            .with_readable_roots(roots)
+            .with_hooks(hooks)
     }
 
     /// Where this workspace stands with git.
@@ -2363,12 +2365,17 @@ impl Host {
     /// A closure rather than a returned `Rosters` because the two guards have
     /// to outlive it, and holding both across an `.await` in a caller is how a
     /// reload deadlocks against a keystroke.
+    ///
+    /// The rule this file keeps everywhere, stated once here: no read guard is
+    /// held across an `.await`. tokio's `RwLock` is write-preferring, so a guard
+    /// held across one while a writer queues blocks every new reader behind
+    /// that writer — and a second lock taken in the other order is a deadlock.
+    /// Bind the snapshot to a local, then await the next thing.
     async fn rosters<T>(&self, f: impl FnOnce(command::Rosters<'_>) -> T) -> T {
-        let skills = self.catalog.read().await;
-        let agents = self.agents.read().await;
         // Read here rather than passed in: whether a turn can delegate is a
         // setting, and the composer asking what it may offer should get the
-        // same answer the send path will act on.
+        // same answer the send path will act on. Read first, so the two guards
+        // below are never held across an await.
         let can_delegate = !self
             .settings
             .read()
@@ -2376,6 +2383,8 @@ impl Host {
             .disabled_tools
             .iter()
             .any(|tool| tool == taurus_core::SPAWN_TOOL);
+        let skills = self.catalog.read().await;
+        let agents = self.agents.read().await;
         f(command::Rosters {
             skills: &skills,
             agents: &agents,
@@ -2426,13 +2435,24 @@ impl Host {
         // No session to exclude: this reports what a turn would carry, and the
         // turn that will carry it has not started.
         let memory_section = memory::section(&memory::load(&workspace), "");
+        // Each bound before the next await rather than read inline as an
+        // argument, where every guard lives until the call — see `Self::rosters`.
+        let skills = self.catalog.read().await.prompt_section();
+        let instructions = instructions::section(&self.instructions.read().await);
+        let (synthesis, agent_synthesis) = {
+            let settings = self.settings.read().await;
+            (
+                settings.skill_synthesis_enabled,
+                settings.agent_synthesis_enabled,
+            )
+        };
         prompt::build(
             &workspace,
-            self.catalog.read().await.prompt_section(),
-            instructions::section(&self.instructions.read().await),
+            skills,
+            instructions,
             memory_section,
-            self.settings.read().await.skill_synthesis_enabled,
-            self.settings.read().await.agent_synthesis_enabled,
+            synthesis,
+            agent_synthesis,
         )
     }
 
