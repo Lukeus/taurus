@@ -62,7 +62,7 @@ async fn main() {
         }
     };
     content.push(taurus_provider::ContentBlock::text(
-        "This image has two horizontal bands. Name the colour of the top band and the colour of \
+        "This image has two horizontal bands. Name the color of the top band and the color of \
          the bottom band, in that order. Answer in under ten words.",
     ));
 
@@ -105,7 +105,7 @@ async fn main() {
     let blue = said.find("blue");
     match (red, blue) {
         (Some(red), Some(blue)) if red < blue => println!("\nsaw it: red above blue"),
-        (Some(_), Some(_)) => println!("\nboth colours named, wrong way round"),
+        (Some(_), Some(_)) => println!("\nboth colors named, wrong way round"),
         _ => println!("\nthe image did not get through, or the model could not read it"),
     }
 }

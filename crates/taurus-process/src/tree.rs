@@ -244,7 +244,7 @@ async fn kill_group(group: Option<u32>) -> Result<(), String> {
     // signalled and hoped about. See [`kill_command`].
     let Some((program, args)) = kill_command(pid) else {
         return Err(format!(
-            "{pid} does not name a process group, so nothing was signalled"
+            "{pid} does not name a process group, so nothing was signaled"
         ));
     };
     // Awaited rather than detached, so it is reaped here instead of becoming

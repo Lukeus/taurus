@@ -119,7 +119,7 @@ export const COLOR_GROUPS: readonly { label: string; hint: string; keys: string[
   },
   {
     label: "Accent",
-    hint: "The lead colour, its hover, and what stays legible on top of it.",
+    hint: "The lead color, its hover, and what stays legible on top of it.",
     keys: ["accent", "accent-hover", "on-accent"],
   },
   {

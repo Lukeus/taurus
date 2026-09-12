@@ -307,7 +307,7 @@ export function ThemeEditor({
         </label>
         {(
           [
-            ["gutter", "Centre gutter", "Where the transcript and the composer start"],
+            ["gutter", "Center gutter", "Where the transcript and the composer start"],
             ["railGutter", "Rail gutter", "Where the rail's text starts"],
           ] as const
         ).map(([key, label, hint]) => (
@@ -380,7 +380,7 @@ function Swatch({
         className="theme-swatch-clear"
         disabled={!own}
         aria-label={`Use the built-in ${name}`}
-        data-tip="Back to the colour the app ships"
+        data-tip="Back to the color the app ships"
         onClick={() => onChange(null)}
       >
         ✕

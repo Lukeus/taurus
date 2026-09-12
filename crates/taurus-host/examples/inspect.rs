@@ -63,7 +63,7 @@ fn main() {
         println!("Nothing worth pointing out.");
         println!();
         println!("Which is not the same as safe. This reads configuration, not");
-        println!("behaviour: what running the project's own build does is a");
+        println!("behavior: what running the project's own build does is a");
         println!("different question, and the permission prompt is where it is");
         println!("asked. See docs/known-gaps.md.");
         return;

@@ -106,7 +106,7 @@ export function McpCatalog({
         autoFocus
         placeholder="Search — postgres, github, files…"
         onChange={(e) => setQuery(e.target.value)}
-        aria-label="Search the catalogue"
+        aria-label="Search the catalog"
       />
 
       {error && <Problem>{error}</Problem>}
