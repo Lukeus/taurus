@@ -126,7 +126,7 @@ export function ProseEditor({
       {runs && <InkLayer runs={runs} className="prose-ink" />}
       <textarea
         ref={box}
-        className={`prose-input${runs ? "" : " plain"}`}
+        className={`painted-input prose-input${runs ? "" : " plain"}`}
         value={text}
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}

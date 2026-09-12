@@ -11,7 +11,7 @@ describe("the painted layer", () => {
       <InkLayer runs={[{ text: "SELECT 1\n", kind: "keyword" }]} className="sql-ink" />,
     );
     expect(html).toBe(
-      '<pre class="sql-ink" aria-hidden="true"><span class="ink-keyword">SELECT 1\n</span>\n</pre>',
+      '<pre class="painted-ink sql-ink" aria-hidden="true"><span class="ink-keyword">SELECT 1\n</span>\n</pre>',
     );
   });
 

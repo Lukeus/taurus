@@ -160,7 +160,7 @@ export function SqlEditor({
 
       <textarea
         ref={box}
-        className="sql-input"
+        className="painted-input sql-input"
         value={value}
         spellCheck={false}
         rows={4}

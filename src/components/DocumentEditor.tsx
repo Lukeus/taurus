@@ -262,7 +262,7 @@ export function DocumentEditor({
 
         <textarea
           ref={box}
-          className="doc-input"
+          className="painted-input doc-input"
           value={text}
           spellCheck={false}
           aria-label={path}

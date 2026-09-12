@@ -31,7 +31,7 @@ export function InkLayer({
   after?: ReactNode;
 }) {
   return (
-    <pre className={className} aria-hidden="true" ref={ghost}>
+    <pre className={`painted-ink ${className}`} aria-hidden="true" ref={ghost}>
       {before}
       {runs.map((run, i) => (
         <span key={i} className={`ink-${run.kind}`}>
