@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 
 import { paint } from "../lib/ink";
+import { growToContent, InkLayer } from "./InkLayer";
 
 /**
  * Markdown, painted and wrapping.
@@ -90,7 +91,7 @@ export function ProseEditor({
   // auto-sizing query box has.
   useLayoutEffect(() => {
     const el = box.current;
-    if (el) fit(el);
+    if (el) growToContent(el);
   }, [text]);
 
   /*
@@ -100,8 +101,8 @@ export function ProseEditor({
    * width — its last lines cut off below the box, and the painted layer drifting
    * off the text above it until the next keystroke.
    *
-   * Width only. The height `fit` sets is itself a resize, and answering that
-   * too would be a loop that only happens to settle.
+   * Width only. The height `growToContent` sets is itself a resize, and
+   * answering that too would be a loop that only happens to settle.
    */
   useLayoutEffect(() => {
     const el = box.current;
@@ -111,7 +112,7 @@ export function ProseEditor({
     const watch = new ResizeObserver(() => {
       if (el.clientWidth === width) return;
       width = el.clientWidth;
-      fit(el);
+      growToContent(el);
     });
     watch.observe(el);
     return () => watch.disconnect();
@@ -122,19 +123,7 @@ export function ProseEditor({
       {/* Behind the text, and hidden from a screen reader: the textarea over it
           holds the same characters, and a reader that saw both would read the
           note twice. */}
-      {runs && (
-        <pre className="prose-ink" aria-hidden="true">
-          {runs.map((run, i) => (
-            <span key={i} className={`ink-${run.kind}`}>
-              {run.text}
-            </span>
-          ))}
-          {/* A trailing newline has no glyph, so the painted layer ends one line
-              short of the textarea and the last line of a note that ends in a
-              blank one is painted nowhere. */}
-          {"\n"}
-        </pre>
-      )}
+      {runs && <InkLayer runs={runs} className="prose-ink" />}
       <textarea
         ref={box}
         className={`prose-input${runs ? "" : " plain"}`}
@@ -150,10 +139,4 @@ export function ProseEditor({
       />
     </div>
   );
-}
-
-/** Makes the box exactly as tall as what is in it, at the width it has now. */
-function fit(el: HTMLTextAreaElement) {
-  el.style.height = "auto";
-  el.style.height = `${el.scrollHeight}px`;
 }

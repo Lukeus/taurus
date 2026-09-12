@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DataTable } from "../lib/api";
 import { ink, suggest, type Suggestion } from "../lib/sql";
+import { growToContent, InkLayer } from "./InkLayer";
 
 /**
  * The box you write a query in.
@@ -77,11 +78,7 @@ export function SqlEditor({
   useEffect(() => {
     const area = box.current;
     if (!area) return;
-    // `auto` first, and that is the whole trick: `scrollHeight` on an element
-    // already tall enough reports the height it has, so measuring without
-    // collapsing it makes the box grow and never shrink.
-    area.style.height = "auto";
-    area.style.height = `${area.scrollHeight}px`;
+    growToContent(area);
   }, [value]);
 
   /**
@@ -159,17 +156,7 @@ export function SqlEditor({
         {PROBE}
       </span>
 
-      <pre className="sql-ink" aria-hidden ref={ghost}>
-        {painted.map((run, i) => (
-          <span key={i} className={`ink-${run.kind}`}>
-            {run.text}
-          </span>
-        ))}
-        {/* A `<pre>` swallows one trailing newline, so a query ending in one
-            would paint a line short and the caret would sit below its own
-            text. */}
-        {"\n"}
-      </pre>
+      <InkLayer runs={painted} className="sql-ink" ghost={ghost} />
 
       <textarea
         ref={box}

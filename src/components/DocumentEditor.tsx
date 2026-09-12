@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { grammarFor, paint } from "../lib/ink";
+import { InkLayer } from "./InkLayer";
 
 /**
  * A file, painted and scrollable.
@@ -250,20 +251,14 @@ export function DocumentEditor({
           />
         )}
 
-        <pre className="doc-ink" aria-hidden ref={ghost}>
-          {/* Everything above the window, as height and nothing else. */}
-          <div style={{ height: window_.from * row }} />
-          {painted.map((run, i) => (
-            <span key={i} className={`ink-${run.kind}`}>
-              {run.text}
-            </span>
-          ))}
-          {/* A `<pre>` swallows one trailing newline, so a file ending in one
-              would paint a line short and every caret below it would sit off
-              its own text. */}
-          {"\n"}
-          <div style={{ height: Math.max(0, total - window_.to) * row }} />
-        </pre>
+        <InkLayer
+          runs={painted}
+          className="doc-ink"
+          ghost={ghost}
+          // What is above the window and below it, as height and nothing else.
+          before={<div style={{ height: window_.from * row }} />}
+          after={<div style={{ height: Math.max(0, total - window_.to) * row }} />}
+        />
 
         <textarea
           ref={box}
