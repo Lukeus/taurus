@@ -1001,10 +1001,7 @@ impl Host {
         // Rebuilt with this workspace's trust state, so a committed allowlist
         // in a directory the user has not vouched for is not consulted and
         // "always allow here" is not offered.
-        *self.permissions.write().await = Arc::new(
-            PermissionEngine::new(&canonical, config::home_dir(), self.prompts.create())
-                .with_workspace_rules(crate::trust::is_trusted(&canonical)),
-        );
+        self.rebuild_permissions(&canonical).await;
 
         // Global, and only global: "the workspace I had open" is a fact about
         // the user, and writing it into the workspace it names would be a file
@@ -1820,7 +1817,17 @@ impl Host {
     /// the next turn reads, not which tools exist.
     pub async fn set_max_iterations(&self, limit: u32) {
         let limit = limit.clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT);
-        config::edit_settings(Scope::Global, None, |s| s.max_iterations = Some(limit));
+        self.edit_global_setting(|s| s.max_iterations = Some(limit))
+            .await;
+    }
+
+    /// Writes one global setting and reloads the resolved ones.
+    ///
+    /// What every setter the UI calls does, and the reason it is one function:
+    /// the global file is the layer the UI edits, and the workspace's layer
+    /// still has to be applied over it before anything reads the result.
+    async fn edit_global_setting(&self, edit: impl FnOnce(&mut config::StoredSettings)) {
+        config::edit_settings(Scope::Global, None, edit);
         let workspace = self.workspace.read().await.clone();
         *self.settings.write().await = config::load_settings(Some(&workspace));
     }
@@ -1830,11 +1837,8 @@ impl Host {
     /// A project that wants it off regardless can say so in its own
     /// `.taurus/settings.json`, which this will not overwrite.
     pub async fn set_skill_synthesis(&self, enabled: bool) {
-        config::edit_settings(Scope::Global, None, |s| {
-            s.skill_synthesis_enabled = Some(enabled)
-        });
-        let workspace = self.workspace.read().await.clone();
-        *self.settings.write().await = config::load_settings(Some(&workspace));
+        self.edit_global_setting(|s| s.skill_synthesis_enabled = Some(enabled))
+            .await;
 
         // The tool follows the setting rather than waiting for a reload, so
         // turning synthesis off stops paying for its schema on the next request
@@ -1862,11 +1866,8 @@ impl Host {
     /// The twin of [`Host::set_skill_synthesis`], down to not rebuilding the
     /// registry: a checkbox has no business dropping every MCP connection.
     pub async fn set_agent_synthesis(&self, enabled: bool) {
-        config::edit_settings(Scope::Global, None, |s| {
-            s.agent_synthesis_enabled = Some(enabled)
-        });
-        let workspace = self.workspace.read().await.clone();
-        *self.settings.write().await = config::load_settings(Some(&workspace));
+        self.edit_global_setting(|s| s.agent_synthesis_enabled = Some(enabled))
+            .await;
 
         let resolved = self.settings.read().await.clone();
         let mut registry = self.registry.write().await;
@@ -1892,9 +1893,7 @@ impl Host {
     /// it into a workspace file would hand one repo the power to decide how the
     /// app looks everywhere it is opened.
     pub async fn set_theme(&self, theme: Theme) {
-        config::edit_settings(Scope::Global, None, |s| s.theme = Some(theme));
-        let workspace = self.workspace.read().await.clone();
-        *self.settings.write().await = config::load_settings(Some(&workspace));
+        self.edit_global_setting(|s| s.theme = Some(theme)).await;
     }
 
     /// Picks the custom theme painting over that palette, or none of them.
@@ -1905,9 +1904,7 @@ impl Host {
     /// that is a layer, and a hand-edited layer is a different thing from a
     /// click in the app quietly writing into somebody's project.
     pub async fn set_theme_id(&self, id: String) {
-        config::edit_settings(Scope::Global, None, |s| s.theme_id = Some(id));
-        let workspace = self.workspace.read().await.clone();
-        *self.settings.write().await = config::load_settings(Some(&workspace));
+        self.edit_global_setting(|s| s.theme_id = Some(id)).await;
     }
 
     /// The custom theme in force, if there is one.
@@ -2097,12 +2094,11 @@ impl Host {
     pub async fn set_embedding_model(&self, model: &str, provider: &str) {
         let model = model.trim().to_string();
         let provider = provider.trim().to_string();
-        config::edit_settings(Scope::Global, None, |s| {
+        self.edit_global_setting(|s| {
             s.embedding_model = Some(model);
             s.embedding_provider = Some(provider);
-        });
-        let workspace = self.workspace.read().await.clone();
-        *self.settings.write().await = config::load_settings(Some(&workspace));
+        })
+        .await;
     }
 
     /// Which reranking model reorders search results, and which provider
@@ -2120,12 +2116,11 @@ impl Host {
     pub async fn set_rerank(&self, model: &str, provider: &str) {
         let model = model.trim().to_string();
         let provider = provider.trim().to_string();
-        config::edit_settings(Scope::Global, None, |s| {
+        self.edit_global_setting(|s| {
             s.rerank_model = Some(model);
             s.rerank_provider = Some(provider);
-        });
-        let workspace = self.workspace.read().await.clone();
-        *self.settings.write().await = config::load_settings(Some(&workspace));
+        })
+        .await;
     }
 
     /// Brings this workspace's semantic index up to date, outside any turn.
