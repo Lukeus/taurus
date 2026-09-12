@@ -107,34 +107,12 @@ async fn main() {
     // The deltas are the point. A step meant to drop a hundred duplicates that
     // dropped four hundred thousand rows is invisible in the SQL and unmissable
     // in this column — which is the whole argument for reporting per step.
-    let width = run
-        .steps
-        .iter()
-        .map(|s| s.title.chars().count())
-        .max()
-        .unwrap_or(0);
-    println!(
-        "{:>13}  {:>10}  before any step",
-        thousands(run.started_with),
-        ""
-    );
-    let mut previous = run.started_with;
-    for (index, step) in run.steps.iter().enumerate() {
-        println!(
-            "{:>13}  {:>10}  {}. {:width$}  {:>6} ms",
-            thousands(step.rows),
-            delta(previous, step.rows),
-            index + 1,
-            step.title,
-            step.took_ms,
-            width = width
-        );
-        previous = step.rows;
-    }
+    // The table `run_recipe` answers with, so this checks what the model reads.
+    print!("{}", taurus_data::step_table(&run));
 
     println!(
         "\nwrote {} rows × {} columns, {:.1} MB, in {:.1} s",
-        thousands(run.rows),
+        taurus_data::thousands(run.rows),
         run.columns.len(),
         run.bytes as f64 / (1024.0 * 1024.0),
         run.took_ms as f64 / 1000.0
@@ -144,24 +122,4 @@ async fn main() {
     for column in &run.columns {
         println!("  {:<28} {}", column.name, column.type_name);
     }
-}
-
-fn delta(before: u64, after: u64) -> String {
-    match after.cmp(&before) {
-        std::cmp::Ordering::Equal => "—".to_string(),
-        std::cmp::Ordering::Less => format!("−{}", thousands(before - after)),
-        std::cmp::Ordering::Greater => format!("+{}", thousands(after - before)),
-    }
-}
-
-fn thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
