@@ -589,12 +589,11 @@ fn check_flow(input: &ShowFlowInput) -> Result<(), ToolError> {
             labels.len()
         )));
     }
-    if let Some((i, label)) = labels
+    if let Some((_, label)) = labels
         .iter()
         .enumerate()
         .find(|(i, label)| labels[..*i].contains(label))
     {
-        let _ = i;
         return Err(ToolError::InvalidInput(format!(
             "'{label}' is the label of two different nodes; edges find their box by label, so \
              every one has to be unique — add what tells them apart, like 'Cache (read)' and \
