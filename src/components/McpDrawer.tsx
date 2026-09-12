@@ -17,6 +17,7 @@ import { McpSetup } from "./McpSetup";
 import { useStore } from "../state/store";
 import { Modal } from "./Modal";
 import { Problem, Problems } from "./Problem";
+import { useArmed } from "../lib/armed";
 
 /**
  * Every tool server this workspace reaches, and everything needed to work out
@@ -334,7 +335,7 @@ function ServerCard({
    * Deleting takes an entry someone typed, and nothing brings it back. The
    * button arms rather than acts, the same way the conversation list's does.
    */
-  const [arming, setArming] = useState(false);
+  const { armed: arming, arm, disarm } = useArmed();
   const [showTools, setShowTools] = useState(false);
   const state = stateOf(server);
   const stdio = server.transport === "stdio";
@@ -469,18 +470,18 @@ function ServerCard({
                 className="danger"
                 disabled={busy}
                 onClick={() => {
-                  setArming(false);
+                  disarm();
                   onDelete();
                 }}
               >
                 Remove from mcp.json
               </button>
-              <button disabled={busy} onClick={() => setArming(false)}>
+              <button disabled={busy} onClick={disarm}>
                 Keep
               </button>
             </>
           ) : (
-            <button disabled={busy} onClick={() => setArming(true)}>
+            <button disabled={busy} onClick={() => arm(true)}>
               Delete
             </button>
           )}

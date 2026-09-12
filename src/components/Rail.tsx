@@ -1,4 +1,4 @@
-import { memo, type ReactNode, useState } from "react";
+import { memo, type ReactNode } from "react";
 
 import type { SessionMeta, Theme } from "../lib/api";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
@@ -19,6 +19,7 @@ import {
   TerminalIcon,
   TrashIcon,
 } from "./icons";
+import { useArmed } from "../lib/armed";
 
 /*
  * The class lists more than one element wears.
@@ -179,8 +180,9 @@ export const Rail = memo(function Rail({
    * undoable, and neither comes back — so the trash can arms rather than acts.
    * Held here rather than per row so that arming a second one disarms the
    * first, which is what stops the rail filling up with pending questions.
+   * It lets go on its own, and on Escape — see `useArmed`.
    */
-  const [arming, setArming] = useState<string | null>(null);
+  const { armed: arming, arm, disarm } = useArmed<string>();
 
   /** Which sections are folded. Outlives the window — see `useSections`. */
   const sections = useSections();
@@ -244,7 +246,7 @@ export const Rail = memo(function Rail({
               data-confirm
               data-tip="Erase the transcript and the checkpoints that made its turns undoable"
               onClick={() => {
-                setArming(null);
+                disarm();
                 onDelete(session.id);
               }}
             >
@@ -254,7 +256,7 @@ export const Rail = memo(function Rail({
               className={DELETE_ICON}
               aria-label="Keep this conversation"
               data-tip="Keep it"
-              onClick={() => setArming(null)}
+              onClick={disarm}
             >
               ✕
             </button>
@@ -277,7 +279,7 @@ export const Rail = memo(function Rail({
             disabled={busy && current}
             aria-label={`Delete ${title}`}
             data-tip="Delete this conversation"
-            onClick={() => setArming(session.id)}
+            onClick={() => arm(session.id)}
           >
             <TrashIcon />
           </button>

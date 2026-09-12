@@ -8,6 +8,7 @@ import { Markdown } from "./Markdown";
 import { Problem } from "./Problem";
 import { ProseEditor } from "./ProseEditor";
 import { SketchHost } from "./SketchEmbed";
+import { useArmed } from "../lib/armed";
 
 /**
  * The sketch editor, loaded the first time a sketch is opened.
@@ -89,7 +90,7 @@ export function NotesPane({
    *  open note's header, or the other way round. */
   const [renameRefused, setRenameRefused] = useState<string | null>(null);
   /** Armed once, so nothing is deleted by one stray click. */
-  const [arming, setArming] = useState(false);
+  const { armed: arming, arm, disarm } = useArmed();
 
   /*
    * A different file is open, by whichever route — a row, an embed's open, a
@@ -101,8 +102,8 @@ export function NotesPane({
   useEffect(() => {
     setRenaming(null);
     setRenameRefused(null);
-    setArming(false);
-  }, [openKey]);
+    disarm();
+  }, [openKey, disarm]);
 
   const start = useCallback(
     async (scope: Scope, kind: PageKind, name: string) => {
@@ -275,10 +276,10 @@ export function NotesPane({
               className={`pill${arming ? " armed" : ""}`}
               onClick={() => {
                 if (!arming) {
-                  setArming(true);
+                  arm(true);
                   return;
                 }
-                setArming(false);
+                disarm();
                 void forget(page);
               }}
             >
