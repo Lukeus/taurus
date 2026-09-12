@@ -1071,12 +1071,9 @@ impl Agent {
                 .await;
         }
 
-        let (concurrent, sequential): (Vec<_>, Vec<_>) =
-            calls.into_iter().partition(|(_, n, _)| {
-                self.registry
-                    .get(n)
-                    .is_some_and(|t| t.effect().is_concurrent_safe())
-            });
+        let (concurrent, sequential): (Vec<_>, Vec<_>) = calls
+            .into_iter()
+            .partition(|(_, n, _)| self.runs_concurrently(n));
 
         let mut results: Vec<(String, ContentBlock)> = Vec::new();
 
@@ -1113,21 +1110,30 @@ impl Agent {
         ordered
     }
 
-    /// Whether this round ran something that could answer a question about the
-    /// project — a build, a test run, a script.
+    /// Whether a call runs alongside the others in its round, ahead of the ones
+    /// that run one at a time. See [`Self::run_tool_calls`].
+    fn runs_concurrently(&self, name: &str) -> bool {
+        self.registry
+            .get(name)
+            .is_some_and(|t| t.effect().is_concurrent_safe())
+    }
+
+    /// Whether this round ran something that checks the project — a build, a
+    /// test run, a script — and then wrote nothing after it.
     ///
     /// Keyed off a declaration on the tool rather than a list of names here,
     /// which would quietly fall behind the registry. `Tool::checks_work`
     /// follows the sweep's question by default and parts from it for
     /// `check_command`, where the run being read finished after the turn that
     /// started it.
-    /// Whether this round ran something and then wrote nothing after it.
     ///
-    /// Calls in one message run in the order they appear, so this is a walk
-    /// rather than a pair of `any`s: a command that cannot say what it touches
-    /// is the model asking the project a question, and a tool that names the
-    /// file it is about to write is the model changing its answer. The last one
-    /// of the two decides, exactly as it would across two rounds.
+    /// A walk rather than a pair of `any`s: a check is the model asking the
+    /// project a question, and a tool that names the file it is about to write
+    /// is the model changing its answer. The later of the two decides, exactly
+    /// as it would across two rounds. Later means in the order the calls ran,
+    /// which is not the order the message gives them: every concurrent call
+    /// runs first, then the rest one at a time. A write listed before a
+    /// `check_command` still lands after it.
     ///
     /// Which leaves out one case on purpose. A command that both checks and
     /// works — a `make` that builds and formats, a test run that updates its
@@ -1138,8 +1144,11 @@ impl Agent {
     /// something false; a missed one leaves a backstop unused, with the system
     /// prompt still asking for the same thing.
     fn checked_with_nothing_written_after(&self, assistant: &Message) -> bool {
+        let (first, then): (Vec<_>, Vec<_>) = assistant
+            .tool_uses()
+            .partition(|(_, name, _)| self.runs_concurrently(name));
         let mut checked = false;
-        for (_, name, input) in assistant.tool_uses() {
+        for (_, name, input) in first.into_iter().chain(then) {
             let Some(tool) = self.registry.get(name) else {
                 continue;
             };

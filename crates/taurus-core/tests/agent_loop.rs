@@ -2028,6 +2028,39 @@ async fn writing_after_the_check_still_owes_a_check() {
 }
 
 #[tokio::test]
+async fn a_write_listed_before_a_check_that_ran_first_still_owes_a_check() {
+    // Later means in the order the calls ran. `check_command` only reads, so it
+    // runs with the round's other reads, ahead of every call that runs one at a
+    // time — and a write the message lists before it lands after it, with
+    // nothing run against it since.
+    let (agent, provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_calls(vec![
+                (
+                    "t1",
+                    "write_file",
+                    serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+                ),
+                ("t2", "check_command", serde_json::json!({})),
+            ]),
+            ScriptedTurn::text("Done."),
+            ScriptedTurn::tool_call("t3", "run_command", serde_json::json!({"command": "true"})),
+            ScriptedTurn::text("Checked."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "write then check").await;
+
+    assert_eq!(
+        nudges(&provider.last_request().await.unwrap()),
+        1,
+        "a write that landed after the check went unchecked"
+    );
+}
+
+#[tokio::test]
 async fn a_turn_that_only_read_things_is_left_alone() {
     let (agent, provider, _workspace, _dir, _logs) = recorded(
         vec![
