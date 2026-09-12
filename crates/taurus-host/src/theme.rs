@@ -466,7 +466,7 @@ fn clean(
     for (key, value) in palette {
         if !COLORS.iter().any(|(name, _)| name == key) {
             problems.push(format!(
-                "{}: \"{key}\" in {mode} is not a colour this app has. The names it knows are {}.",
+                "{}: \"{key}\" in {mode} is not a color this app has. The names it knows are {}.",
                 short(path),
                 COLORS
                     .iter()
@@ -478,7 +478,7 @@ fn clean(
         }
         if !is_hex(value) {
             problems.push(format!(
-                "{}: {mode}.{key} is \"{value}\", which is not a hex colour. Write it as #rgb, #rrggbb or #rrggbbaa.",
+                "{}: {mode}.{key} is \"{value}\", which is not a hex color. Write it as #rgb, #rrggbb or #rrggbbaa.",
                 short(path)
             ));
             continue;
@@ -693,10 +693,10 @@ pub fn validate(file: &ThemeFile) -> Vec<String> {
     for (mode, palette) in [("dark", &file.dark), ("light", &file.light)] {
         for (key, value) in palette {
             if !COLORS.iter().any(|(name, _)| name == key) {
-                problems.push(format!("\"{key}\" is not a colour this app has."));
+                problems.push(format!("\"{key}\" is not a color this app has."));
             } else if !is_hex(value) {
                 problems.push(format!(
-                    "{mode}.{key} is \"{value}\", which is not a hex colour — write it as #rgb, #rrggbb or #rrggbbaa."
+                    "{mode}.{key} is \"{value}\", which is not a hex color — write it as #rgb, #rrggbb or #rrggbbaa."
                 ));
             }
         }
@@ -755,7 +755,7 @@ mod tests {
         );
         let (themes, problems) = load_themes(None);
         assert!(themes[0].dark.is_empty());
-        assert!(problems.iter().any(|p| p.contains("not a hex colour")));
+        assert!(problems.iter().any(|p| p.contains("not a hex color")));
     }
 
     #[test]
@@ -830,7 +830,7 @@ mod tests {
         let mut file = ThemeFile::default();
         file.dark.insert("accent".into(), "not-a-colour".into());
         let e = save_theme(Scope::Global, None, "x", &file).unwrap_err();
-        assert!(e.contains("not a hex colour"), "{e}");
+        assert!(e.contains("not a hex color"), "{e}");
     }
 
     #[test]

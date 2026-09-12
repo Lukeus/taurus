@@ -89,7 +89,7 @@ export function TrustBanner({
         <p className="trust-note">
           Your own skills, agents, and settings are unaffected — only this
           folder's are being held back. Nothing here is a verdict: these are
-          the parts of those files worth your eyes, not a judgement about
+          the parts of those files worth your eyes, not a judgment about
           them.
         </p>
       </div>

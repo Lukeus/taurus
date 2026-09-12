@@ -148,14 +148,14 @@ describe("opening the panel", () => {
     useStore.setState({
       status: {
         problems: [
-          { source: "mcp", message: "mcp server 'typo' does not recognise `commnd`" },
+          { source: "mcp", message: "mcp server 'typo' does not recognize `commnd`" },
           { source: "skills", message: "a skill problem, shown elsewhere" },
         ],
       } as never,
     });
 
     const { host, unmount } = await mount([]);
-    expect(host.innerHTML).toContain("does not recognise");
+    expect(host.innerHTML).toContain("does not recognize");
     expect(host.innerHTML).not.toContain("shown elsewhere");
     unmount();
   });

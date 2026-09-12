@@ -233,7 +233,7 @@
         "database",
         "db"
       ],
-      "blocked": "There is no first-party Postgres server to recommend. The reference one was archived in May 2025 and deprecated on npm in July 2025 over a SQL-injection vulnerability, and nothing official replaced it. The maintained alternatives are all third-party, which is exactly the package-name-nobody-reviewed problem this catalogue exists to avoid — so pick one yourself, read it, and add it by hand."
+      "blocked": "There is no first-party Postgres server to recommend. The reference one was archived in May 2025 and deprecated on npm in July 2025 over a SQL-injection vulnerability, and nothing official replaced it. The maintained alternatives are all third-party, which is exactly the package-name-nobody-reviewed problem this catalog exists to avoid — so pick one yourself, read it, and add it by hand."
     },
     {
       "id": "linear",

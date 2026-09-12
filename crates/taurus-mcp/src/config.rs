@@ -299,7 +299,7 @@ fn diagnose(value: &serde_json::Value) -> String {
             .collect();
         if !strays.is_empty() {
             return format!(
-                "has no `command` or `url`, and does not recognise {}",
+                "has no `command` or `url`, and does not recognize {}",
                 strays.join(", ")
             );
         }
