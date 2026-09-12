@@ -385,9 +385,11 @@ pub fn create(
 /// Renames a note, keeping its contents.
 ///
 /// The file moves, because the name *is* the filename. Refuses a taken name for
-/// the same reason [`create`] does, and refuses a move onto itself with a
-/// different case only where the filesystem would treat the two as one file —
-/// which is why this checks the destination rather than comparing the strings.
+/// the same reason [`create`] does. A name that differs from this one only in
+/// case is not taken, even where the filesystem ignores case and the
+/// destination is already there: it is there because it is this note. So the
+/// check asks whether the two paths are one file, not whether the destination
+/// exists.
 ///
 /// A sketch that is renamed is not renamed inside the notes that embed it. The
 /// app editing prose somebody else wrote, to keep a link pointing where it did,
@@ -407,7 +409,7 @@ pub fn rename(
     if !from.exists() {
         return Err(format!("There is no {word} called '{name}' any more."));
     }
-    if onto.exists() && onto != from {
+    if onto.exists() && !same_file::is_same_file(&from, &onto).unwrap_or(false) {
         return Err(format!(
             "There is already a {word} called '{to}' in {}. Pick another name.",
             place(scope)
@@ -1229,9 +1231,28 @@ mod tests {
             page(Scope::Workspace, w, "One");
             page(Scope::Workspace, w, "Two");
             assert!(rename(Scope::Workspace, Some(w), PageKind::Note, "One", "Two").is_err());
-            // Onto itself is not a collision, so a case-only change is allowed
-            // wherever the filesystem can tell the two apart.
+            // Onto itself is not a collision.
             assert!(rename(Scope::Workspace, Some(w), PageKind::Note, "One", "One").is_ok());
+        });
+    }
+
+    #[test]
+    fn a_note_can_be_renamed_to_its_own_name_in_another_case() {
+        // On macOS and Windows `auth.md` is already there, because it is
+        // `Auth.md`. Asking whether the destination exists refuses the one
+        // rename that fixes a name's capitals.
+        isolated(|w| {
+            page(Scope::Workspace, w, "Auth");
+            let moved = rename(Scope::Workspace, Some(w), PageKind::Note, "Auth", "auth").unwrap();
+            assert_eq!(moved.name, "auth");
+            // Read from the directory, since on those systems `exists` answers
+            // yes for either spelling.
+            let names: Vec<String> = std::fs::read_dir(w.join(".taurus/notes"))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert!(names.contains(&"auth.md".to_string()), "{names:?}");
+            assert!(!names.contains(&"Auth.md".to_string()), "{names:?}");
         });
     }
 

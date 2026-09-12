@@ -6460,6 +6460,7 @@ dependencies = [
  "directories",
  "futures",
  "keyring",
+ "same-file",
  "schemars 1.2.2",
  "serde",
  "serde_json",
