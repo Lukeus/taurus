@@ -111,6 +111,18 @@ same-file = "1"
 htmd = "0.5"
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 
+# Line tables for this workspace's own crates, and no debug info at all for
+# dependencies. Full DWARF for DataFusion and Arrow across every test binary is
+# most of what a dev build writes: target/ reached 342 GB on one machine. A
+# panic's backtrace still names the file and line in our code, which is what a
+# failing test needs; stepping through a dependency in a debugger needs this
+# turned back on locally.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
