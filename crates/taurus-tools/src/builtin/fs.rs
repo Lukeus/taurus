@@ -97,7 +97,8 @@ pub struct ReadFileInput {
     /// 1-based line to start at. Defaults to the start of the file.
     #[serde(default)]
     pub offset: Option<usize>,
-    /// How many lines to return. Defaults to 2000.
+    /// How many lines to return. Defaults to a window sized to the model,
+    /// between 200 and 10,000 lines.
     #[serde(default)]
     pub limit: Option<usize>,
 }
@@ -861,6 +862,20 @@ pub fn to_crlf(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
+
+    #[test]
+    fn the_schema_states_the_range_a_default_read_is_sized_in() {
+        // The model plans its reads against this text. A fixed number here was
+        // off by up to five times once the default was sized to the window, so
+        // the range is checked against the bounds that actually apply.
+        let schema = ReadFile.input_schema().to_string();
+        let range = format!(
+            "between {} and {} lines",
+            crate::test_support::grouped(MIN_READ_LINES),
+            crate::test_support::grouped(MAX_READ_LINES)
+        );
+        assert!(schema.contains(&range), "{schema}");
+    }
 
     /// The claim the whole feature rests on: the diff the user approves and the
     /// bytes that get written are computed by the same code, so they cannot

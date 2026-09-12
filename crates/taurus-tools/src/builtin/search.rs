@@ -221,8 +221,8 @@ pub struct GrepInput {
     /// Return the paths of the files that matched, without the matching lines.
     #[serde(default)]
     pub files_only: bool,
-    /// Return at most this many matches. Defaults to 200, which is also the
-    /// most any search returns.
+    /// Return at most this many matches. Defaults to the most a search
+    /// returns, which is sized to the model: between 40 and 1,000.
     #[serde(default)]
     pub limit: Option<usize>,
 }
@@ -627,6 +627,20 @@ fn format_hits(mut hits: Vec<String>, noun: &str, cap: usize) -> String {
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
+
+    #[test]
+    fn the_schema_states_the_range_a_search_is_capped_in() {
+        // The model plans its searches against this text, and "defaults to
+        // 200" was off by five times either way once the cap was sized to the
+        // window.
+        let schema = Grep.input_schema().to_string();
+        let range = format!(
+            "between {} and {}",
+            crate::test_support::grouped(MIN_RESULTS),
+            crate::test_support::grouped(MAX_RESULTS)
+        );
+        assert!(schema.contains(&range), "{schema}");
+    }
 
     fn seed(dir: &std::path::Path) {
         std::fs::create_dir_all(dir.join("src")).unwrap();

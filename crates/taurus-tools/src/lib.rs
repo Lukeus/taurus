@@ -59,6 +59,20 @@ mod test_support {
         build(Box::new(DenyAll))
     }
 
+    /// `10000` as `10,000`, the way a description written for a reader
+    /// spells it.
+    pub fn grouped(n: usize) -> String {
+        let digits = n.to_string();
+        let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+        for (i, digit) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(digit);
+        }
+        out
+    }
+
     fn build(prompt: Box<dyn crate::permission::PermissionPrompt>) -> (ToolContext, TempDir) {
         let dir = TempDir::new().unwrap();
         // Canonicalize up front: on macOS the temp dir is behind /var -> /private/var,
