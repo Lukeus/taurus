@@ -855,13 +855,31 @@ impl Agent {
                 span.record("gen_ai.input.messages", messages.as_str());
             }
         }
-        let _entered = span.enter();
+        // Instrumented rather than entered. A guard held across the awaits
+        // below stays entered on whichever worker thread polls next, and
+        // another task's tool and chat spans would nest under this one there.
+        self.stream_in(session, request, ui, &span)
+            .instrument(span.clone())
+            .await
+    }
 
+    /// The body of [`Self::stream_attempt`], run inside its span.
+    async fn stream_in(
+        &self,
+        session: &Session,
+        request: ChatRequest,
+        ui: &mpsc::Sender<UiEvent>,
+        span: &tracing::Span,
+    ) -> Result<(Message, TokenUsage, StopReason), FailedAttempt> {
         let (tx, mut rx) = mpsc::channel(128);
         let provider = self.provider.clone();
         let cancel = self.tools.cancel.clone();
 
-        let handle = tokio::spawn(async move { provider.stream(request, tx, cancel).await });
+        // In the same span, so what the adapter logs while it streams belongs
+        // to the request it logs about rather than to nothing at all.
+        let handle = tokio::spawn(
+            async move { provider.stream(request, tx, cancel).await }.instrument(span.clone()),
+        );
 
         let mut acc = StreamAccumulator::new();
         // Tool-use deltas do not count: they are accumulated, not displayed, so
@@ -931,7 +949,7 @@ impl Agent {
                 // By type, not by message: `error.type` is meant to be
                 // something a dashboard can group by, and the message is
                 // already on the log event beside it.
-                crate::telemetry::record_error(&span, error.kind());
+                crate::telemetry::record_error(span, error.kind());
                 return Err(FailedAttempt {
                     error,
                     produced_output,
@@ -949,7 +967,7 @@ impl Agent {
             "gen_ai.response.finish_reasons",
             crate::telemetry::finish_reason(stop),
         );
-        crate::telemetry::record_usage(&span, &usage);
+        crate::telemetry::record_usage(span, &usage);
         if self.config.capture.content() {
             if let Ok(output) = serde_json::to_string(&message) {
                 span.record("gen_ai.output.messages", output.as_str());
