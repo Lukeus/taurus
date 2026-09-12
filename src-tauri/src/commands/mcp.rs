@@ -117,11 +117,9 @@ pub async fn save_mcp_server(
         taurus_host::config::delete_mcp_server(source.scope, Some(&workspace), source.name.trim())?;
     }
 
-    state.host.reload_mcp().await;
     // The panel is handed the listing directly; this is for the rail's badge,
     // which is showing the same servers from somewhere else on screen.
-    emit_status(&state).await;
-    Ok(state.host.mcp_servers().await)
+    after_mcp_change(&state).await
 }
 
 /// One layer's stored entry for a server, for the secrets the panel was never
@@ -147,9 +145,7 @@ pub async fn delete_mcp_server(
 ) -> CmdResult<Vec<McpServerView>> {
     let workspace = state.host.workspace().await;
     taurus_host::config::delete_mcp_server(scope, Some(&workspace), &name)?;
-    state.host.reload_mcp().await;
-    emit_status(&state).await;
-    Ok(state.host.mcp_servers().await)
+    after_mcp_change(&state).await
 }
 
 #[tauri::command]
@@ -161,9 +157,7 @@ pub async fn set_mcp_server_disabled(
 ) -> CmdResult<Vec<McpServerView>> {
     let workspace = state.host.workspace().await;
     taurus_host::config::set_mcp_server_disabled(scope, Some(&workspace), &name, disabled)?;
-    state.host.reload_mcp().await;
-    emit_status(&state).await;
-    Ok(state.host.mcp_servers().await)
+    after_mcp_change(&state).await
 }
 
 /// Connects to one entry, reports what it offers, and disconnects.
@@ -221,9 +215,7 @@ pub async fn mcp_sign_in(
     // Reconnected rather than left for the user to press Reconnect: the whole
     // point of signing in is the server working, and it cannot work until it is
     // reconnected with the credentials that did not exist a moment ago.
-    state.host.reload_mcp().await;
-    emit_status(&state).await;
-    Ok(state.host.mcp_servers().await)
+    after_mcp_change(&state).await
 }
 
 /// Forgets one server's sign-in.
@@ -237,9 +229,7 @@ pub async fn mcp_sign_out(
     name: String,
 ) -> CmdResult<Vec<McpServerView>> {
     state.host.mcp_sign_out(&name)?;
-    state.host.reload_mcp().await;
-    emit_status(&state).await;
-    Ok(state.host.mcp_servers().await)
+    after_mcp_change(&state).await
 }
 
 /// Which of these programs are on the PATH this application inherited.
@@ -281,7 +271,18 @@ pub async fn mcp_catalog() -> CmdResult<taurus_mcp::Catalog> {
 /// Narrower than [`reload_config`] on purpose — see `Host::reload_mcp`.
 #[tauri::command]
 pub async fn reload_mcp(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<McpServerView>> {
+    after_mcp_change(&state).await
+}
+
+/// What every command that changes an MCP entry does last: reconnect, tell the
+/// rail, and hand the panel the listing it will redraw from.
+///
+/// One function rather than three lines in each, because the next command that
+/// edits `mcp.json` would otherwise copy the three lines, and a copy that
+/// forgets the status push leaves the rail's badge counting yesterday's
+/// servers.
+async fn after_mcp_change(state: &AppState) -> CmdResult<Vec<McpServerView>> {
     state.host.reload_mcp().await;
-    emit_status(&state).await;
+    emit_status(state).await;
     Ok(state.host.mcp_servers().await)
 }

@@ -244,13 +244,12 @@ pub async fn emit_changed(state: &AppState, session_id: &str) {
         return;
     };
 
-    let mut files: Vec<String> = turns
+    let files: Vec<String> = turns
         .into_iter()
         .flat_map(|turn| turn.files)
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    files.dedup();
 
     let payload = ChangedFiles {
         session: session_id.to_string(),

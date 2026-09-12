@@ -98,26 +98,7 @@ pub async fn save_agent(
     draft: AgentProposal,
     target: AgentSaveTarget,
 ) -> CmdResult<String> {
-    let available: Vec<String> = state
-        .host
-        .registry()
-        .read()
-        .await
-        .names()
-        .map(str::to_string)
-        .collect();
-    {
-        let catalog = state.host.agent_catalog().read().await;
-        validate_agent(&draft, &catalog, &available)
-            .map_err(|e| format!("this agent cannot be saved as written: {e}"))?;
-    }
-
-    let root = match target {
-        AgentSaveTarget::Project => {
-            taurus_host::config::workspace_agents_dir(&state.host.workspace().await)
-        }
-        AgentSaveTarget::User => taurus_host::config::user_agents_dir(),
-    };
+    let root = validated_agent_root(&state, &draft, target).await?;
     let path = save_agent_file(&draft, &root).map_err(|e| format!("could not save agent: {e}"))?;
     info!(agent = %draft.name, path = %path.display(), "agent saved from the editor");
 
@@ -488,26 +469,12 @@ pub async fn respond_agent_proposal(
     // Re-validated because the card is editable. What the model proposed passed
     // on the way in; what the user is about to save may be something else
     // entirely, and a hand-edited name or tool list has never been checked.
-    let available: Vec<String> = state
-        .host
-        .registry()
-        .read()
-        .await
-        .names()
-        .map(str::to_string)
-        .collect();
-    {
-        let catalog = state.host.agent_catalog().read().await;
-        validate_agent(&proposal, &catalog, &available)
-            .map_err(|e| format!("this agent cannot be saved as written: {e}"))?;
-    }
-
-    let root = match response.target.unwrap_or(AgentSaveTarget::Project) {
-        AgentSaveTarget::Project => {
-            taurus_host::config::workspace_agents_dir(&state.host.workspace().await)
-        }
-        AgentSaveTarget::User => taurus_host::config::user_agents_dir(),
-    };
+    let root = validated_agent_root(
+        &state,
+        &proposal,
+        response.target.unwrap_or(AgentSaveTarget::Project),
+    )
+    .await?;
 
     let path =
         save_agent_file(&proposal, &root).map_err(|e| format!("could not save agent: {e}"))?;
@@ -525,4 +492,37 @@ pub async fn set_agent_synthesis(state: State<'_, Arc<AppState>>, enabled: bool)
     state.host.set_agent_synthesis(enabled).await;
     emit_status(&state).await;
     Ok(())
+}
+
+/// Checks a draft agent against the tools this session has and the agents it
+/// already knows, and says which folder it would be saved in.
+///
+/// Both ways an agent is saved run this: the editor's Save, whose draft has
+/// never been checked, and an approved proposal, re-checked because the card
+/// the user approved it from is editable. Written twice, the two had begun to
+/// differ only in the order of their lines.
+async fn validated_agent_root(
+    state: &AppState,
+    draft: &AgentProposal,
+    target: AgentSaveTarget,
+) -> Result<std::path::PathBuf, String> {
+    let available: Vec<String> = state
+        .host
+        .registry()
+        .read()
+        .await
+        .names()
+        .map(str::to_string)
+        .collect();
+    {
+        let catalog = state.host.agent_catalog().read().await;
+        validate_agent(draft, &catalog, &available)
+            .map_err(|e| format!("this agent cannot be saved as written: {e}"))?;
+    }
+    Ok(match target {
+        AgentSaveTarget::Project => {
+            taurus_host::config::workspace_agents_dir(&state.host.workspace().await)
+        }
+        AgentSaveTarget::User => taurus_host::config::user_agents_dir(),
+    })
 }
