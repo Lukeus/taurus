@@ -4,6 +4,8 @@ import { grammarFor } from "../lib/ink";
 import type { Document } from "../bindings/Document";
 import { DocumentEditor } from "./DocumentEditor";
 import { Markdown } from "./Markdown";
+import { ConflictBanner } from "./ConflictBanner";
+import type { SaveState } from "../state/notebook";
 
 /**
  * The file open beside the conversation.
@@ -167,31 +169,16 @@ export function Canvas({
         </button>
       </header>
 
-      {/*
-       * Somebody else wrote the file while there was typing in the editor.
-       *
-       * Both versions are kept and neither is chosen, which is the whole rule:
-       * the one thing that must not happen here is the app deciding whose work
-       * to throw away. Drawn above the editor rather than over it, so what is
-       * being decided about stays readable while the decision is made.
-       */}
+      {/* Somebody else wrote the file while there was typing in the editor.
+          Drawn above the editor rather than over it, so what is being decided
+          about stays readable while the decision is made. */}
       {conflict && (
-        <div className="canvas-conflict" role="alert">
-          <div className="canvas-conflict-say">
-            {/* Not "wrote over it" — nothing was overwritten, which is the
-                entire point. The save was refused, so both versions exist and
-                the sentence has to say that rather than describe a loss that
-                did not happen. */}
-            <b>Taurus changed this file while you were typing.</b>
-            <span>Your version is still here, unsaved.</span>
-          </div>
-          <button className="pill" onClick={onTakeTheirs}>
-            Take theirs
-          </button>
-          <button className="pill primary" onClick={onKeepMine}>
-            Keep mine
-          </button>
-        </div>
+        <ConflictBanner
+          className="canvas-conflict"
+          title="Taurus changed this file while you were typing."
+          onTakeTheirs={onTakeTheirs}
+          onKeepMine={onKeepMine}
+        />
       )}
 
       {error ? (
@@ -252,8 +239,6 @@ export function Canvas({
 type Mode = "source" | "preview";
 type Sel = { from: number; to: number; text: string };
 
-/** Where a save has got to. `idle` covers both "nothing typed" and "written". */
-export type SaveState = "idle" | "typing" | "saving" | "failed";
 
 const SAVE_WORD: Record<Exclude<SaveState, "idle">, string> = {
   typing: "Unsaved",

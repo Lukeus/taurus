@@ -9,6 +9,7 @@ import { Problem } from "./Problem";
 import { ProseEditor } from "./ProseEditor";
 import { SketchHost } from "./SketchEmbed";
 import { useArmed } from "../lib/armed";
+import { ConflictBanner } from "./ConflictBanner";
 
 /**
  * The sketch editor, loaded the first time a sketch is opened.
@@ -289,28 +290,16 @@ export function NotesPane({
 
           {renameRefused && <Problem>{renameRefused}</Problem>}
 
-          {/*
-           * Somebody else wrote the file while there was work in the editor.
-           *
-           * Both versions are kept and neither is chosen, which is the whole
-           * rule. Drawn above the editor rather than over it, so what is being
-           * decided about stays readable while the decision is made.
-           */}
+          {/* Somebody else wrote the file while there was work in the editor.
+              Drawn above the editor rather than over it, so what is being
+              decided about stays readable while the decision is made. */}
           {conflict && (
-            <div className="notes-conflict" role="alert">
-              <div className="notes-conflict-say">
-                {/* Not "wrote over it" — nothing was overwritten, which is the
-                    entire point. The save was refused, so both versions exist. */}
-                <b>This {word} changed while you were working on it.</b>
-                <span>Your version is still here, unsaved.</span>
-              </div>
-              <button className="pill" onClick={takeTheirs}>
-                Take theirs
-              </button>
-              <button className="pill primary" onClick={keepMine}>
-                Keep mine
-              </button>
-            </div>
+            <ConflictBanner
+              className="notes-conflict"
+              title={`This ${word} changed while you were working on it.`}
+              onTakeTheirs={takeTheirs}
+              onKeepMine={keepMine}
+            />
           )}
 
           {page.kind === "sketch" ? (
