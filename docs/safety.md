@@ -29,14 +29,14 @@ make](screenshots/permission-diff.png)
 A line diff on its own tells you a line was replaced and leaves you to find the
 difference. Two things narrow that down:
 
-- The text is coloured by the file's own language.
+- The text is colored by the file's own language.
 - Where a removal is answered by exactly one addition (the same line before
   and after), the characters that actually differ are marked inside them.
 
 Above, `MAX_ITERATIONS` and `self.config.max_iterations` carry the mark. The
 line below them was added, not rewritten, and answers nothing, so nothing in it
 is marked. See
-[Code is coloured, and so is a diff](working-with-it.md#code-is-coloured-and-so-is-a-diff)
+[Code is colored, and so is a diff](working-with-it.md#code-is-colored-and-so-is-a-diff)
 for the two cases where it declines to guess. Either way, the `+` and `−` in
 the gutter stay the primary signal.
 
@@ -87,7 +87,7 @@ globally applies in every repository you ever open, including one you just
 cloned to look at. That's the decision most worth making per project.
 
 The restriction covers what Taurus will *create*. A `run_command:*` rule you
-write into the global file by hand is still honoured. Editing that file is an
+write into the global file by hand is still honored. Editing that file is an
 explicit act, and silently ignoring it would be its own surprise.
 
 **A command that does more than run one program is never covered by a
@@ -216,7 +216,7 @@ It looks for seven things:
 Most of these are things a reviewer couldn't have seen by reading the file.
 
 **None of it is a verdict.** A workspace with nothing found isn't a workspace
-that's safe to run. This reads configuration, not behaviour. And the two rules
+that's safe to run. This reads configuration, not behavior. And the two rules
 most likely to matter are the ones written to *stay quiet*:
 
 - A zero-width joiner is how a family emoji is built, and it's never flagged.
@@ -247,9 +247,9 @@ everything an agent runs. A model can't answer a `[y/N]` prompt, so a command
 that waits for one must fail on the timeout instead of hanging the session.
 
 The exception is a program that checks whether it's talking to a terminal. Told
-no, `git` pages and colours nothing, `npm create` declines to scaffold, and
+no, `git` pages and colors nothing, `npm create` declines to scaffold, and
 anything built on a full-screen prompt library fails at startup. A person would
-never see that behaviour and couldn't easily explain it. These aren't exotic
+never see that behavior and couldn't easily explain it. These aren't exotic
 commands. They're the ones somebody would reach for.
 
 So `run_command` takes two more arguments:
@@ -274,13 +274,13 @@ doesn't produce a transcript that scrolls over itself.
 The timeout still holds, and it has to. Under a pty an interactive program
 waits instead of hitting end-of-file, so a ceiling that didn't fire would hang
 the session for good. The timeout kills the child instead of abandoning it. A
-blocking read can't be cancelled, and a worker parked on a child that never
+blocking read can't be canceled, and a worker parked on a child that never
 exits would otherwise outlive the session that started it.
 
 **A machine with no usable pty still runs the command.** Asking for a terminal
 and not getting one isn't the command's fault, so it runs with ordinary pipes
 instead of failing. The result says so, above the output, not below it. That
-order matters. A program told it's not on a terminal pages nothing and colours
+order matters. A program told it's not on a terminal pages nothing and colors
 nothing, which reads like a fact about the project unless you already know the
 terminal never arrived.
 
@@ -432,7 +432,7 @@ That's the honest answer, because it hasn't finished changing them.
 
 **Two arguments are refused rather than ignored.** `pty` has nothing watching
 the terminal it would open, and `timeout_secs` has nothing waiting to enforce
-it. Both answer a question the caller asked. Quietly not honouring one is how a
+it. Both answer a question the caller asked. Quietly not honoring one is how a
 model concludes the wrong thing about what it just started.
 
 **They end with the workspace and with the window.** Nothing in the operating
@@ -539,7 +539,7 @@ the model wrote and ran: all of it comes back. All of it also appears in the
 changed-file count and the **Changes** drawer, which is where you look to
 decide whether you want it back.
 
-This runs whether the command succeeded, failed, timed out, or was cancelled.
+This runs whether the command succeeded, failed, timed out, or was canceled.
 A command killed halfway through has still written whatever it got as far as
 writing, and that's exactly the turn you want to undo.
 
@@ -847,7 +847,7 @@ commit wearing this turn's message:
                   with it.
 ```
 
-A turn that's already been committed is labelled with its commit in the list.
+A turn that's already been committed is labeled with its commit in the list.
 The label survives closing the drawer and reopening the conversation, because
 the sha is in the checkpoint log, not in the window. Committing it again is
 still allowed, and still says what it would do.
@@ -886,7 +886,7 @@ on feat/parser · 3 files changed · 2h ago
 Printing it on every row would make the common case noisier just to make the
 rare case visible. That's the wrong trade in a list that dense. Older sessions
 that don't record a branch, and sessions started outside a repository, carry no
-branch and aren't labelled. Neither is "elsewhere", and guessing would put a
+branch and aren't labeled. Neither is "elsewhere", and guessing would put a
 warning on every old conversation.
 
 The rail label isn't the only place the branch shows up. Each turn records the

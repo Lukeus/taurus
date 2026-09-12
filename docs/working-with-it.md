@@ -258,14 +258,14 @@ staleness rule on purpose. What you read above the composer and what the model
 reads are the same checklist, and they'd be worse than useless if they
 disagreed about whether it's live.
 
-A carried plan is labelled as carried. The model is told the steps predate
+A carried plan is labeled as carried. The model is told the steps predate
 the message it's answering, and to call `update_plan` with a new list if the
 request has moved on. Only the model has read your follow-up, so only it can
 decide whether the task continues or changes. The harness honestly declines to
 guess. Rewinding a turn drops the plan, like the files: it was working state
 for work that's been undone.
 
-**Whether a model reaches for it is the model's own judgement.** On a
+**Whether a model reaches for it is the model's own judgment.** On a
 five-step mechanical task, `qwen3.6:27b` and `qwen3.5:9b` both did the work
 correctly and never called it. Asked to plan, the 27B kept the list accurate
 through every step. The prompt says when to plan and when to update, and
@@ -483,7 +483,7 @@ its own window: a dock badge counting what's owed, and one bounce when the
 count rises.
 
 Both are suppressed while the window has focus, since everything the badge
-could say is already on screen, in colour, three inches from the pointer. The
+could say is already on screen, in color, three inches from the pointer. The
 bounce fires when something new arrives while you're away, not when you leave
 with something pending. Alt-tabbing away from a permission dialog isn't news
 about it. A turn that finishes unwatched counts as one thing owed, and coming
@@ -558,7 +558,7 @@ the wait is that or the backoff, whichever is longer, and the notice says so.
 
 A backend asking for more than two minutes has run out of quota, not hit a
 blip. That failure surfaces with its number instead of holding the turn.
-Cancelling during a backoff returns immediately.
+Canceling during a backoff returns immediately.
 
 A backend that goes quiet is given up on, not waited for:
 
@@ -639,7 +639,7 @@ it: its tokenizer, its envelope, its rendering of the tools, cache hits
 included. The gap between that and the estimate for the same messages is the
 overhead, exact and self-correcting per provider.
 
-A reported zero is ignored. A cancelled stream, or a gateway that strips the
+A reported zero is ignored. A canceled stream, or a gateway that strips the
 field, would otherwise say the whole prompt cost nothing.
 
 **It's on screen while it fills.** Above the box, from half a window on, you
@@ -980,7 +980,7 @@ as visible text. Links open in your browser instead of navigating the webview
 away from the app.
 
 The CLI applies ANSI attributes line by line: headings bold, `•` for bullets,
-coloured inline code, dimmed fenced blocks. With colour off (piped,
+colored inline code, dimmed fenced blocks. With color off (piped,
 redirected, or `NO_COLOR`), every line passes through byte for byte, so
 `taurus run > out.md` still produces valid markdown.
 
@@ -989,19 +989,19 @@ since a line has to be complete before it can be styled. Redrawing the
 current line with cursor escapes instead corrupts output as soon as a line
 wraps.
 
-### Code is coloured, and so is a diff
+### Code is colored, and so is a diff
 
-A fenced block in the app is coloured by the language on the fence. Every
-diff is coloured by the file's extension, on a permission prompt and later in
+A fenced block in the app is colored by the language on the fence. Every
+diff is colored by the file's extension, on a permission prompt and later in
 the Changes panel. One palette does all of it, the query box included, so a
-`SELECT` is the same colour everywhere.
+`SELECT` is the same color everywhere.
 
 A scanner paints it, deliberately not a parser, and the same scanner handles
 every language. Languages differ in a short list of facts: how a comment
 opens, which delimiters quote a string, which words are the vocabulary. Those
 facts are data, and the walk over the characters is shared. It knows Rust,
 TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML, and TOML.
-Anything else keeps its label and renders plain, which beats colouring it
+Anything else keeps its label and renders plain, which beats coloring it
 wrongly.
 
 A diff does one more thing. Where a removed line and an added line are the
@@ -1018,7 +1018,7 @@ Two cases get no mark instead of a guess:
   lines were inserted or deleted as well as changed. Pairing them by position
   would mark differences between unrelated lines, confidently and wrongly.
 
-The `+` and `−` in the gutter stay the primary signal. Colour is the fast
+The `+` and `−` in the gutter stay the primary signal. Color is the fast
 read, and it fails on a projector, in a screenshot, and for anyone who can't
 tell red from green.
 
@@ -1150,7 +1150,7 @@ which way it went.
 ## Notes
 
 A place to write things down, beside the conversation about them. **Notes**
-is a tab above the centre column. It's always there, because writing the first
+is a tab above the center column. It's always there, because writing the first
 note needs nothing to have happened first.
 
 A note is a Markdown file and nothing more: no frontmatter, no database, no
@@ -1529,7 +1529,7 @@ the rows get a surface of their own.
 
 ![The Data pane, showing a profile and a page of rows](screenshots/data.png)
 
-The pane takes the centre column, beside the conversation, not over it. The
+The pane takes the center column, beside the conversation, not over it. The
 rail and the box you type in stay put, because the conversation still drives
 this: asking is how a dataset gets here.
 
@@ -1538,7 +1538,7 @@ Ask "which category refunds most?" with a dataset open and "this" has a
 referent. The turn carries the dataset's name and path, plus whatever is in
 the query box. That makes "why does this not work?" answerable about SQL you
 haven't run yet. The chip above the composer shows what's going with the
-message, because context you can't see is behaviour you can't explain.
+message, because context you can't see is behavior you can't explain.
 
 It carries the handle and the box, nothing else. Not the columns: the model
 has `profile_dataset` for those, and a forty-column listing on every message
@@ -1578,10 +1578,10 @@ here would be one more thing to keep in step with the real one.
 with the shared ones marked, and the completion list showing one table's
 columns after its alias](screenshots/query-complete.png)
 
-**It's coloured, and it isn't an editor.** The query is painted on a layer
+**It's colored, and it isn't an editor.** The query is painted on a layer
 behind a plain `<textarea>`, so the browser's own undo works, a paste is a
 paste, and none of it costs the quarter-megabyte of an embedded editor. A
-scanner, not a regex, does the colouring, so a keyword inside a string stays
+scanner, not a regex, does the coloring, so a keyword inside a string stays
 a string. `"Material"` draws as the identifier it is and `'Material'` as the
 literal it is, which in a dialect with case-sensitive columns is the
 difference worth seeing.
@@ -1589,7 +1589,7 @@ difference worth seeing.
 **It completes against the real columns.** Not a keyword list: the actual
 schema of every loaded file, read from a Parquet footer or a CSV header each
 time the box opens. Type three letters and it offers the columns that fit,
-each labelled with its file. Type `i.` after aliasing a table and it offers
+each labeled with its file. Type `i.` after aliasing a table and it offers
 only that table's columns. ⌃space asks without typing anything, Tab or ↵
 takes one, Esc dismisses.
 
@@ -1690,14 +1690,14 @@ under the thread](screenshots/motion.png)
 
 **The waveform under a running turn is the shape of the work.** Eight bars on
 a frame loop, drawing a shape picked by the *category of the running call*,
-the same classification that colours each tool row's glyph:
+the same classification that colors each tool row's glyph:
 
 - Reading draws a peak sweeping across, which is what a scan looks like.
 - Writing draws a ripple from the middle, which reads as something being
   produced.
 - A command draws scattered ticks, the one non-periodic shape, because
   command output arrives in bursts nobody can predict.
-- Thinking (a turn between calls) draws a travelling wave.
+- Thinking (a turn between calls) draws a traveling wave.
 
 That mapping is why this isn't a spinner. A spinner says a turn is alive.
 This says what kind of work it's doing, and after a day you stop reading the
@@ -1705,15 +1705,15 @@ row above to find out.
 
 **A running tool row wears the motion its category calls for.** A read gets a
 cyan band sweeping down it. A write gets a peach bar filling the gutter, the
-write head. Everything else gets a travelling hairline that doesn't imply a
+write head. Everything else gets a traveling hairline that doesn't imply a
 fraction, because nothing here knows how far through a call is. Several read
 rows can move at once, since calls that only read run side by side. A write
 or a command runs on its own, after them.
 
 **The strip above the composer has three states**, and they differ in shape,
-not only in colour:
+not only in color:
 
-- Working is a three-dot cadence over a travelling hairline.
+- Working is a three-dot cadence over a traveling hairline.
 - Stopping is the same cadence in peach. A paused run gets a slow pulse and
   nothing else, because the pause itself is the alarm.
 - Waiting is neither: a slow mint breath inside an expanding ring. Nothing is
@@ -1735,5 +1735,5 @@ Anything faster would read as activity that isn't happening.
 Every loop above stops under `prefers-reduced-motion`, and each holds a still
 frame chosen to still say something. A gutter frozen at zero wouldn't be there
 at all. Reveals keep their fade and lose their travel: the preference asks for
-less movement, not invisible state changes. The waveform honours it twice, in
+less movement, not invisible state changes. The waveform honors it twice, in
 the stylesheet and in script, because a media query can't stop a frame loop.

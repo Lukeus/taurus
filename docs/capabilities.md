@@ -36,7 +36,7 @@ the project's wins. But "I prefer terse commit messages" and "this repo pins
 its toolchain" are both true at once, and dropping either would be a silent
 loss.
 
-Each file is labelled in the prompt with its source, so the model can tell a
+Each file is labeled in the prompt with its source, so the model can tell a
 personal preference from a project requirement. Where they disagree, the
 section says the project's wins.
 
@@ -328,7 +328,7 @@ costs directories, not a second parser.
 
 Copilot's doubled extension is understood: `reviewer.agent.md` is the agent
 `reviewer`, not one called `reviewer.agent`. Frontmatter keys Taurus doesn't
-have are ignored, not honoured.
+have are ignored, not honored.
 
 A project agent shadows a personal one of the same name, and either shadows a
 built-in. So an `explorer.md` of your own replaces the shipped explorer
@@ -498,7 +498,7 @@ means. Both built-ins are reachable this way on a machine with no agents
 directory.
 
 If a skill and an agent share a name, the command runs the skill. That isn't a
-judgement about which is more useful. A command that quietly starts doing
+judgment about which is more useful. A command that quietly starts doing
 something else is worse than a name that's awkward to reach. Rename one of
 the two if you want both. A model-only skill (`user-invocable: false`) doesn't
 reserve its name, so an agent behind one is still reachable.
@@ -536,7 +536,7 @@ screen to talk about it while it's there. Drag the edge to give either side
 more room. Close it with the ✕ and the conversation takes the width back.
 
 Markdown opens on its rendered preview, with a **Source** switch for the
-asterisks. Source files open as source, coloured by the same tokenizer the
+asterisks. Source files open as source, colored by the same tokenizer the
 transcript uses.
 
 ### Asking about a passage
@@ -553,7 +553,7 @@ selection, the model is told the file is open and to read it before answering
 anything about its contents.
 
 The chip above the message box shows this. It names the file and the lines
-while you type, because context you can't see is behaviour you can't explain.
+while you type, because context you can't see is behavior you can't explain.
 
 ### Typing in it
 
@@ -663,7 +663,7 @@ which has a full screen to spend on three lines of copyright. This dock
 doesn't.
 
 There's a real pseudo-terminal underneath and a real emulator on top.
-Together they make it a terminal and not a log with colours in it. `vim`
+Together they make it a terminal and not a log with colors in it. `vim`
 opens. `htop` redraws. `less` pages. A progress bar overwrites its own line
 instead of printing a hundred of them. Resizing the pane tells the shell its
 new geometry, so a full-screen program reflows with it instead of drawing at
@@ -691,15 +691,15 @@ Each tab shows:
 - how it's doing, in the same words `check_command` gives the model
 - a **Stop** button while it's still going
 
-A finished one is marked as well as coloured: `✓` clean, `✗` a non-zero exit,
+A finished one is marked as well as colored: `✓` clean, `✗` a non-zero exit,
 `–` stopped. So the strip reads on a projector, and for someone who can't tell
-the two colours apart.
+the two colors apart.
 
 These tabs are read-only by design, not a half-built feature. A background
 command runs with pipes and no pseudo-terminal, so there's nothing to type
 into and nothing addressing a screen by coordinate. What it printed is text,
 wrapped instead of scrolled sideways. Escape sequences from a command that
-colours anyway are stripped on the way in. The pane follows the output down
+colors anyway are stripped on the way in. The pane follows the output down
 until you scroll up, and picks the tail back up when you scroll to the bottom.
 
 The pane and the model read the same buffer but keep separate places in it.

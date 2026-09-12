@@ -310,7 +310,7 @@ frame should cost when nothing else has moved.
 
 Every icon the bundles use is generated from `app-icon.svg` at the repository
 root. It's the same mark the rail draws (the `Logo` in
-`src/components/icons.tsx`, on the same grid), with the colours resolved
+`src/components/icons.tsx`, on the same grid), with the colors resolved
 because Finder and Explorer don't know what `var(--accent)` means.
 
 ```bash
@@ -362,7 +362,7 @@ the next one. The shots run under Chrome's `--virtual-time-budget`, and a
 frame loop that reschedules itself every frame spends the whole budget without
 ever letting the fetch it's waiting on land.
 
-Some shots are the only check a behaviour has. That's on purpose, not a gap.
+Some shots are the only check a behavior has. That's on purpose, not a gap.
 
 - `query-run` presses **Run in Query** on a card in the transcript and
   photographs where it lands: a lazily mounted pane, a tab switch, and a query
@@ -426,7 +426,7 @@ the label is drawn from. The other one would be correctly refused, and the
 shot would fail for the one reason that isn't a regression.
 
 `permission-diff` earns its place twice. Besides the dialog, it's the only
-picture of a coloured, marked diff. Its hunk rewrites one line and adds one,
+picture of a colored, marked diff. Its hunk rewrites one line and adds one,
 so the same image shows the intra-line mark on the rewritten pair and *no*
 mark on the addition, which answers nothing.
 
