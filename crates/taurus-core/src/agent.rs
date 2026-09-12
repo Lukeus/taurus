@@ -600,8 +600,7 @@ impl Agent {
             let _ = ui.send(UiEvent::IterationStarted { iteration }).await;
 
             let (mut assistant, usage, stop) = self.stream_once(session, &ui).await?;
-            total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
-            total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+            total.add(&usage);
             // Before the answer is pushed: what the provider counted is what
             // was sent, and the estimate it is paired with has to be of the
             // same messages. See `Session::record_request`.

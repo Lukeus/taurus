@@ -641,6 +641,44 @@ async fn every_request_says_how_full_the_window_is() {
 }
 
 #[tokio::test]
+async fn a_turn_totals_the_cache_reads_of_every_request_in_it() {
+    // The turn's total kept input and output and dropped the rest, so the turn
+    // event, the session total and the turn span all said a cached session had
+    // read nothing from its cache.
+    let cached = |mut turn: ScriptedTurn| {
+        turn.events.push(StreamEvent::Usage {
+            usage: taurus_provider::TokenUsage {
+                cache_read_input_tokens: Some(300),
+                reasoning_tokens: Some(7),
+                ..Default::default()
+            },
+        });
+        turn
+    };
+    let h = harness(vec![
+        cached(ScriptedTurn::tool_call(
+            "t1",
+            "list_dir",
+            serde_json::json!({}),
+        )),
+        cached(ScriptedTurn::text("Done.")),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "hello").await;
+    let outcome = outcome.expect("the turn finishes");
+
+    assert_eq!(outcome.usage.cache_read_input_tokens, Some(600));
+    assert_eq!(outcome.usage.reasoning_tokens, Some(14));
+    assert_eq!(session.usage.cache_read_input_tokens, Some(600));
+    let reported = events.iter().find_map(|e| match e {
+        UiEvent::TurnFinished { usage, .. } => Some(usage.cache_read_input_tokens),
+        _ => None,
+    });
+    assert_eq!(reported, Some(Some(600)));
+}
+
+#[tokio::test]
 async fn the_budget_counts_what_the_messages_cannot_see() {
     // A conversation well under the window, and a system prompt that is not.
     // Measured by its messages alone this session has room to spare; measured

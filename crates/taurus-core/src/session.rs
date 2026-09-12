@@ -62,8 +62,7 @@ impl Session {
     }
 
     pub fn add_usage(&mut self, usage: TokenUsage) {
-        self.usage.input_tokens = self.usage.input_tokens.saturating_add(usage.input_tokens);
-        self.usage.output_tokens = self.usage.output_tokens.saturating_add(usage.output_tokens);
+        self.usage.add(&usage);
     }
 
     /// Records what a request cost, against what was in it.
@@ -914,6 +913,30 @@ mod tests {
             output_tokens: 2,
             ..Default::default()
         });
+        assert_eq!(session.usage.total(), 20);
+    }
+
+    #[test]
+    fn usage_keeps_the_cache_and_reasoning_counts() {
+        // Summing only input and output told a cached Anthropic session it had
+        // read nothing from the cache, however much it had.
+        let mut session = Session::new("m");
+        session.add_usage(TokenUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_input_tokens: Some(700),
+            cache_creation_input_tokens: Some(40),
+            reasoning_tokens: Some(12),
+        });
+        // A turn on a backend that reports none of them adds nothing to them.
+        session.add_usage(TokenUsage {
+            input_tokens: 3,
+            output_tokens: 2,
+            ..Default::default()
+        });
+        assert_eq!(session.usage.cache_read_input_tokens, Some(700));
+        assert_eq!(session.usage.cache_creation_input_tokens, Some(40));
+        assert_eq!(session.usage.reasoning_tokens, Some(12));
         assert_eq!(session.usage.total(), 20);
     }
 
