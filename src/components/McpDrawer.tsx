@@ -17,6 +17,7 @@ import { McpSetup } from "./McpSetup";
 import { useStore } from "../state/store";
 import { Modal } from "./Modal";
 import { Problem, Problems } from "./Problem";
+import { useArmed } from "../lib/armed";
 
 /**
  * Every tool server this workspace reaches, and everything needed to work out
@@ -334,7 +335,7 @@ function ServerCard({
    * Deleting takes an entry someone typed, and nothing brings it back. The
    * button arms rather than acts, the same way the conversation list's does.
    */
-  const [arming, setArming] = useState(false);
+  const { armed: arming, arm, disarm } = useArmed();
   const [showTools, setShowTools] = useState(false);
   const state = stateOf(server);
   const stdio = server.transport === "stdio";
@@ -358,7 +359,7 @@ function ServerCard({
               specification says so explicitly — so a sign-in state there would
               be a control for something that cannot happen. */}
           {!stdio && server.signed_in && (
-            <span className="tag ok" data-tip="Taurus holds an OAuth sign-in for this server">
+            <span className="tag ok" tabIndex={0} data-tip="Taurus holds an OAuth sign-in for this server">
               signed in
             </span>
           )}
@@ -402,6 +403,7 @@ function ServerCard({
         {server.schema_tokens !== undefined && (
           <span
             className="card-files"
+            tabIndex={0}
             data-tip="Added to every request, whether or not it is called"
           >
             ~{short(server.schema_tokens)} tokens of every request
@@ -412,6 +414,7 @@ function ServerCard({
           <>
             <button
               className="link tools-toggle"
+              aria-expanded={showTools}
               onClick={() => setShowTools((open) => !open)}
             >
               {showTools ? "Hide" : "Show"}{" "}
@@ -467,18 +470,18 @@ function ServerCard({
                 className="danger"
                 disabled={busy}
                 onClick={() => {
-                  setArming(false);
+                  disarm();
                   onDelete();
                 }}
               >
                 Remove from mcp.json
               </button>
-              <button disabled={busy} onClick={() => setArming(false)}>
+              <button disabled={busy} onClick={disarm}>
                 Keep
               </button>
             </>
           ) : (
-            <button disabled={busy} onClick={() => setArming(true)}>
+            <button disabled={busy} onClick={() => arm(true)}>
               Delete
             </button>
           )}

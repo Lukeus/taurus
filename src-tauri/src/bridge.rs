@@ -260,6 +260,25 @@ impl TurnRecorder for UiSessionLog {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_frontend_listens_for_the_names_this_emits() {
+        // Each name is spelled twice, here and in `src/lib/api.ts`. A rename on
+        // one side compiles on both and fails only when the app runs: the
+        // listener waits for an event nothing sends.
+        let api = include_str!("../../src/lib/api.ts");
+        for (name, value) in [
+            ("EVENT_PERMISSION_REQUEST", EVENT_PERMISSION_REQUEST),
+            ("EVENT_SKILL_PROPOSAL", EVENT_SKILL_PROPOSAL),
+            ("EVENT_AGENT_PROPOSAL", EVENT_AGENT_PROPOSAL),
+            ("EVENT_STATUS", EVENT_STATUS),
+            ("EVENT_SESSION", EVENT_SESSION),
+            ("EVENT_CHANGED", EVENT_CHANGED),
+        ] {
+            let line = format!("export const {name} = \"{value}\";");
+            assert!(api.contains(&line), "src/lib/api.ts has no `{line}`");
+        }
+    }
+
     use super::*;
 
     #[tokio::test]

@@ -63,9 +63,9 @@ import App, {
   offered,
   isAsking,
   onScreenFor,
-  withDraft,
   TurnStrip,
 } from "./App";
+import { withDraft } from "./components/Composer";
 
 const provider = (id: string): ProviderConfig => ({
   id,

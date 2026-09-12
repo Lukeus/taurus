@@ -43,6 +43,23 @@ pub enum ProblemSource {
 }
 
 impl ProblemSource {
+    /// Every source, in the order they are declared.
+    ///
+    /// What a check that has to hold for all of them walks, so a test never
+    /// lists them by hand and falls behind. A new variant does not compile
+    /// until [`Self::label`] names it; this is the other place it goes.
+    pub const ALL: [Self; 9] = [
+        Self::Providers,
+        Self::Search,
+        Self::Mcp,
+        Self::Skills,
+        Self::Agents,
+        Self::Tools,
+        Self::Instructions,
+        Self::Hooks,
+        Self::Themes,
+    ];
+
     /// Where a person goes to fix this, in the words the UI uses for it.
     pub fn where_to_fix(self) -> &'static str {
         match self {
@@ -51,12 +68,14 @@ impl ProblemSource {
             // The drawer that lists the roster, which is where a broken agent
             // file is both visible and explicable.
             Self::Agents => "Agents",
+            Self::Themes => "Settings › Appearance",
             // The screen that lists what the agent can reach, which is exactly
             // what a disabled tool changes.
+            Self::Tools => "Skills",
             // The drawer that lists what the agent knows and can reach, which
             // is where a brief that is not arriving belongs.
-            Self::Themes => "Settings › Appearance",
-            Self::Mcp | Self::Skills | Self::Tools | Self::Instructions | Self::Hooks => "Skills",
+            Self::Instructions => "Skills",
+            Self::Mcp | Self::Skills | Self::Hooks => "Skills",
         }
     }
 
@@ -159,16 +178,18 @@ mod tests {
     fn every_source_names_somewhere_to_go() {
         // A problem that reaches the UI without a screen behind it is one the
         // user can read and not act on.
-        for source in [
-            ProblemSource::Providers,
-            ProblemSource::Search,
-            ProblemSource::Mcp,
-            ProblemSource::Skills,
-            ProblemSource::Agents,
-            ProblemSource::Tools,
-            ProblemSource::Instructions,
-        ] {
-            assert!(!source.where_to_fix().is_empty());
+        for source in ProblemSource::ALL {
+            assert!(!source.where_to_fix().is_empty(), "{source:?}");
         }
+    }
+
+    #[test]
+    fn every_source_has_a_label_of_its_own() {
+        // The label is all a terminal has in place of a screen, so two sources
+        // sharing one would send somebody to the wrong file. Distinct labels
+        // also mean `ALL` names nothing twice.
+        let labels: std::collections::BTreeSet<&str> =
+            ProblemSource::ALL.iter().map(|s| s.label()).collect();
+        assert_eq!(labels.len(), ProblemSource::ALL.len());
     }
 }

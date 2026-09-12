@@ -176,7 +176,23 @@ impl ToolRegistry {
         // adding hooks to a machine only ever shrinks what it will do. That
         // ordering is the whole security argument for honoring a hook file at
         // all — see `taurus_hooks`.
-        let pre = hook_payload(&tool, &input, ctx, taurus_hooks::HookEvent::PreToolUse);
+        //
+        // What the call touches is asked once and resolved once, for both hook
+        // payloads and the checkpoint below. A path that will not resolve is
+        // left out of all three: the tool is about to reject it with a better
+        // message, and there is nothing to snapshot either way.
+        let touched: Vec<std::path::PathBuf> = tool
+            .touches(&input)
+            .iter()
+            .filter_map(|candidate| ctx.resolve(candidate).ok())
+            .collect();
+        let pre = hook_payload(
+            &tool,
+            &input,
+            &touched,
+            ctx,
+            taurus_hooks::HookEvent::PreToolUse,
+        );
         // What a passing pre hook printed, held until the call has a result to
         // carry it. A guard that warns "you are on main" and exits 0 is saying
         // something the model needs, and there is nothing to attach it to yet.
@@ -196,13 +212,9 @@ impl ToolRegistry {
         // before execution, so what is recorded is what was there first.
         if let Some(recorder) = &ctx.checkpoints {
             let mut recorded = Vec::new();
-            for candidate in tool.touches(&input) {
-                // An unresolvable path is left to the tool to reject with its
-                // own message; there is nothing to snapshot either way.
-                if let Ok(path) = ctx.resolve(&candidate) {
-                    recorder.capture(&path).await;
-                    recorded.push(crate::path_guard::display(&ctx.workspace, &path));
-                }
+            for path in &touched {
+                recorder.capture(path).await;
+                recorded.push(crate::path_guard::display(&ctx.workspace, path));
             }
             // A background command still running will see this file change
             // too. It is this call's to undo. See `Jobs::claim`.
@@ -225,7 +237,13 @@ impl ToolRegistry {
         // Built before the call, because `input` is moved into it — and built
         // independently of the pre-call payload, since a config with only a
         // `post_tool_use` hook in it is an ordinary thing to write.
-        let post = hook_payload(&tool, &input, ctx, taurus_hooks::HookEvent::PostToolUse);
+        let post = hook_payload(
+            &tool,
+            &input,
+            &touched,
+            ctx,
+            taurus_hooks::HookEvent::PostToolUse,
+        );
 
         debug!(tool = name, "executing");
         let mut result = tool.execute(input, ctx).await;
@@ -304,6 +322,7 @@ impl ToolRegistry {
 fn hook_payload(
     tool: &Arc<dyn Tool>,
     input: &serde_json::Value,
+    touched: &[std::path::PathBuf],
     ctx: &ToolContext,
     event: taurus_hooks::HookEvent,
 ) -> Option<taurus_hooks::HookPayload> {
@@ -314,16 +333,12 @@ fn hook_payload(
 
     // Workspace-relative, so a glob in `hooks.json` is written the way a person
     // would say the path out loud rather than against somebody's home
-    // directory. A path that will not resolve is left out rather than passed on
-    // raw: the tool is about to reject it with a better message than a hook
-    // would.
-    let paths = tool
-        .touches(input)
+    // directory. `touched` holds only paths that resolved: one that will not
+    // is left out rather than passed on raw, since the tool is about to reject
+    // it with a better message than a hook would.
+    let paths = touched
         .iter()
-        .filter_map(|candidate| {
-            let resolved = ctx.resolve(candidate).ok()?;
-            taurus_hooks::runner::relative(&ctx.workspace, &resolved).map(str::to_string)
-        })
+        .filter_map(|path| taurus_hooks::runner::relative(&ctx.workspace, path).map(str::to_string))
         .collect();
 
     let mut payload = taurus_hooks::HookPayload::new(event, &ctx.workspace).with_call(
@@ -1319,5 +1334,64 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    /// A tool that counts how often it is asked what it touches.
+    struct Touching(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl Tool for Touching {
+        fn name(&self) -> &str {
+            "touching"
+        }
+        fn description(&self) -> &str {
+            "names the one file it would change"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn effect(&self) -> crate::tool::Effect {
+            crate::tool::Effect::Write
+        }
+        fn touches(&self, _input: &serde_json::Value) -> Vec<String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            vec!["a.txt".into()]
+        }
+        async fn execute(&self, _input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+            Ok("done".into())
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_call_is_asked_what_it_touches_once() {
+        // Both hook payloads and the checkpoint each asked the tool, and each
+        // resolved every path it named again.
+        let (ctx, _dir) = test_ctx();
+        let root = ctx.workspace.clone();
+        let scripts = TempDir::new().unwrap();
+        let pass = hook_script(scripts.path(), "pass", "exit 0");
+        let ctx = ctx.with_hooks(Arc::new(taurus_hooks::HookRunner::new(vec![
+            (
+                "before".into(),
+                hook(pass.clone(), taurus_hooks::HookEvent::PreToolUse),
+            ),
+            (
+                "after".into(),
+                hook(pass, taurus_hooks::HookEvent::PostToolUse),
+            ),
+        ])));
+        let logs = tempfile::TempDir::new().unwrap();
+        let store = crate::CheckpointStore::new(logs.path());
+        let ctx = ctx.with_checkpoints(store.begin_turn("s1", &root, "touch a.txt"));
+
+        let touching = Arc::new(Touching(Default::default()));
+        let mut registry = ToolRegistry::new();
+        registry.register(touching.clone());
+        registry
+            .execute("touching", serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(touching.0.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

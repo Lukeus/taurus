@@ -100,11 +100,28 @@ windows = { version = "0.62", features = ["Win32_System_Threading"] }
 dunce = "1"
 ignore = "0.4"
 globset = "0.4"
+# Whether two paths are one file. A rename that changes only a name's case finds
+# its destination already there on macOS and Windows, because it is the source.
+# Reads the file's identity on every platform — device and inode, or volume and
+# file index — and is already in the tree under `ignore`.
+same-file = "1"
 # HTML to Markdown for `fetch_url`. A page arrives as markup and reaches the
 # model as prose either way; converting keeps the headings and link targets that
 # a plain-text render throws away.
 htmd = "0.5"
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
+
+# Line tables for this workspace's own crates, and no debug info at all for
+# dependencies. Full DWARF for DataFusion and Arrow across every test binary is
+# most of what a dev build writes: target/ reached 342 GB on one machine. A
+# panic's backtrace still names the file and line in our code, which is what a
+# failing test needs; stepping through a dependency in a debugger needs this
+# turned back on locally.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

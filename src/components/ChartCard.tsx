@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { CopyButton } from "./CopyButton";
 import type { TranscriptView } from "../lib/api";
+import { csvOf } from "../lib/format";
 
 type ChartView = Extract<TranscriptView, { type: "chart" }>;
 
@@ -62,6 +63,10 @@ export function ChartCard({ view }: { view: ChartView }) {
             <div
               key={`${label}-${i}`}
               className={`chart-bar${hovered === i ? " on" : ""}`}
+              // The value shows on hover and nowhere else, so a screen reader
+              // would get a row of unlabelled boxes of different heights.
+              role="img"
+              aria-label={`${label}: ${format(value)}${active.unit}`}
               onMouseEnter={() => setHovered(i)}
               onMouseLeave={() => setHovered(null)}
             >
@@ -118,11 +123,5 @@ function csv(view: ChartView): string {
     label,
     ...view.series.map((s) => String(s.values[i] ?? "")),
   ]);
-  return [header, ...rows]
-    .map((row) => row.map(escape).join(","))
-    .join("\n");
-}
-
-function escape(cell: string): string {
-  return /[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
+  return csvOf([header, ...rows]);
 }

@@ -15,7 +15,6 @@ mod wire;
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -206,26 +205,10 @@ impl OpenAiProvider {
         };
         match &self.api_key_header {
             None => builder.bearer_auth(key),
-            Some(name) => {
-                // Built by hand rather than passed as a &str so it can be
-                // marked sensitive: reqwest prints headers in its `{:?}`, and a
-                // subscription key in a debug log is a leaked credential.
-                let mut value = match reqwest::header::HeaderValue::from_str(key) {
-                    Ok(value) => value,
-                    // A key with a newline or a non-ASCII byte in it cannot be
-                    // sent. Dropping the header produces a 401 the user can
-                    // act on; panicking on their config would not.
-                    Err(_) => {
-                        warn!(
-                            provider = %self.id,
-                            "the API key has characters an HTTP header cannot carry; sending none"
-                        );
-                        return builder;
-                    }
-                };
-                value.set_sensitive(true);
-                builder.header(name, value)
-            }
+            Some(name) => match http::sensitive_header(&self.id, key) {
+                Some(value) => builder.header(name, value),
+                None => builder,
+            },
         }
     }
 
@@ -234,38 +217,7 @@ impl OpenAiProvider {
     }
 
     async fn check_status(&self, response: reqwest::Response) -> Result<reqwest::Response> {
-        let status = response.status();
-        if status.is_success() {
-            return Ok(response);
-        }
-        let retry_after = http::retry_after(response.headers());
-        let body = response.text().await.unwrap_or_default();
-        // A key that was refused and a key that is fine but may not do this
-        // are different fixes, and the body is what says which: "invalid
-        // x-api-key" against "no access to this model".
-        match status.as_u16() {
-            401 => {
-                return Err(ProviderError::MissingCredentials {
-                    provider: self.id.clone(),
-                    detail: taurus_provider::brief(&body),
-                });
-            }
-            403 => {
-                return Err(ProviderError::Api {
-                    provider: self.id.clone(),
-                    status: 403,
-                    body: taurus_provider::brief(&body),
-                    retry_after: None,
-                });
-            }
-            _ => {}
-        }
-        Err(ProviderError::Api {
-            provider: self.id.clone(),
-            status: status.as_u16(),
-            body,
-            retry_after,
-        })
+        http::check_status(&self.id, response, None).await
     }
 }
 
@@ -497,7 +449,7 @@ impl Provider for OpenAiProvider {
             }
         };
 
-        let mut reader = SseReader::new(response.bytes_stream());
+        let mut reader = http::SseReader::new(response.bytes_stream());
         let mut scanner = prompted.then(PromptedScanner::new);
         // Tool calls arrive as fragments keyed by index; the id and name only
         // appear on the first fragment.
@@ -629,53 +581,6 @@ fn normalize_prefix(prefix: &str) -> String {
 
 async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> {
     tx.send(event).await.map_err(|_| ProviderError::Canceled)
-}
-
-/// Minimal SSE reader: yields the payload of each `data:` line.
-struct SseReader<S> {
-    stream: S,
-    buf: Vec<u8>,
-    done: bool,
-}
-
-impl<S> SseReader<S>
-where
-    S: futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin,
-{
-    fn new(stream: S) -> Self {
-        Self {
-            stream,
-            buf: Vec::new(),
-            done: false,
-        }
-    }
-
-    async fn next_event(&mut self) -> reqwest::Result<Option<String>> {
-        loop {
-            if let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
-                let line: Vec<u8> = self.buf.drain(..=i).collect();
-                let line = String::from_utf8_lossy(&line[..line.len() - 1])
-                    .trim()
-                    .to_string();
-                // Blank lines separate events; comment lines start with ':'.
-                if line.is_empty() || line.starts_with(':') {
-                    continue;
-                }
-                if let Some(data) = line.strip_prefix("data:") {
-                    return Ok(Some(data.trim().to_string()));
-                }
-                continue;
-            }
-            if self.done {
-                return Ok(None);
-            }
-            match self.stream.next().await {
-                Some(Ok(bytes)) => self.buf.extend_from_slice(&bytes),
-                Some(Err(e)) => return Err(e),
-                None => self.done = true,
-            }
-        }
-    }
 }
 
 #[cfg(test)]

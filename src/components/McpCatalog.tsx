@@ -86,6 +86,7 @@ export function McpCatalog({
         {catalog && (
           <span
             className="micro"
+            tabIndex={0}
             data-tip="Shipped with this version rather than fetched, so it never waits on a network — and goes out of date between releases"
           >
             checked {catalog.revised}
@@ -167,7 +168,7 @@ function CatalogCard({
         <div className="card-row">
           <span className="card-title">{entry.name}</span>
           {entry.transport === "http" && !entry.blocked && (
-            <span className="tag" data-tip="Runs on the vendor's machines; nothing is installed here">
+            <span className="tag" tabIndex={0} data-tip="Runs on the vendor's machines; nothing is installed here">
               hosted
             </span>
           )}

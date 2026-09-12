@@ -94,6 +94,11 @@ pub struct SpawnSubagent {
     /// Where children's transcripts go. `None` keeps them in memory and drops
     /// them with the turn, which is what every test and example wants.
     recorder: Option<Arc<dyn SubagentRecorder>>,
+    /// What a child runs with, apart from the three things its definition
+    /// decides: its prompt, its iteration ceiling, and its tools. The parent's
+    /// config, so content capture, output caps and the retry settings reach a
+    /// delegate the way they reach the turn that spawned it.
+    defaults: AgentConfig,
 }
 
 impl SpawnSubagent {
@@ -116,12 +121,20 @@ impl SpawnSubagent {
             registry,
             permits: Arc::new(Semaphore::new(max_concurrent.max(1))),
             recorder: None,
+            defaults: AgentConfig::default(),
         }
     }
 
     /// Keeps every child's conversation, wherever the host puts transcripts.
     pub fn with_recorder(mut self, recorder: Arc<dyn SubagentRecorder>) -> Self {
         self.recorder = Some(recorder);
+        self
+    }
+
+    /// Runs every child with the parent's config, apart from the prompt, the
+    /// iteration ceiling and the tools, which each child's definition sets.
+    pub fn with_defaults(mut self, defaults: AgentConfig) -> Self {
+        self.defaults = defaults;
         self
     }
 
@@ -300,7 +313,7 @@ impl Tool for SpawnSubagent {
                 ),
                 max_iterations: definition.frontmatter.max_iterations,
                 allowed_tools: allowed,
-                ..Default::default()
+                ..self.defaults.clone()
             },
         );
 
@@ -551,6 +564,34 @@ mod tests {
         .unwrap();
 
         assert!(progress.transcripts.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_delegate_runs_with_the_parents_config() {
+        // Built on `Default::default()`, a child threw the parent's config
+        // away: content capture, output caps and the retry settings never
+        // reached a delegate. What it sends is what it was configured with.
+        let (tool, provider, ctx, _dir) =
+            fixture_with(vec![ScriptedTurn::text("Three files.")], None);
+        let tool = tool.with_defaults(AgentConfig {
+            temperature: Some(0.25),
+            max_tokens: Some(1_234),
+            ..Default::default()
+        });
+
+        tool.execute(
+            serde_json::json!({
+                "agent_type": "explorer",
+                "prompt": "Count the files in this directory and report back."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let sent = provider.last_request().await.expect("the child asked");
+        assert_eq!(sent.temperature, Some(0.25));
+        assert_eq!(sent.max_tokens, Some(1_234));
     }
 
     #[tokio::test]

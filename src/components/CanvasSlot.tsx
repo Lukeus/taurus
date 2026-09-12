@@ -4,7 +4,8 @@ import * as api from "../lib/api";
 import type { Document, Selection } from "../lib/api";
 import { changedLines, FLASH_MS, reconcile, SAVE_AFTER_MS } from "../lib/document";
 import { useStore } from "../state/store";
-import { Canvas, type SaveState } from "./Canvas";
+import { Canvas } from "./Canvas";
+import type { SaveState } from "../state/notebook";
 import { ResizeHandle, type Resizable } from "./ResizeHandle";
 
 /**

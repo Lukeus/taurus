@@ -325,9 +325,16 @@ impl Provider for FakeProvider {
         let turn = self.turns.lock().await.pop_front();
         let turn = turn.unwrap_or_else(|| ScriptedTurn::text(&self.fallback_text));
 
+        // A turn may script the counts only a backend can know — cache reads,
+        // reasoning — and they go out with the input count this fake makes
+        // itself, which is the one the loop's own estimate is checked against.
+        let mut scripted = taurus_provider::TokenUsage::default();
         for event in turn.events {
             if cancel.is_cancelled() {
                 return Ok(StopReason::Canceled);
+            }
+            if let StreamEvent::Usage { usage } = &event {
+                scripted = taurus_provider::TokenUsage { ..*usage };
             }
             if tx.send(event).await.is_err() {
                 return Ok(StopReason::Canceled);
@@ -350,7 +357,7 @@ impl Provider for FakeProvider {
                 usage: taurus_provider::TokenUsage {
                     input_tokens: counted,
                     output_tokens: 1,
-                    ..Default::default()
+                    ..scripted
                 },
             })
             .await;

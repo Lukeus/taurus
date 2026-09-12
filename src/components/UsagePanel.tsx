@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import type { UsageReport } from "../lib/api";
 import { short } from "../lib/format";
+import { onTabKeys } from "../lib/tabs";
 import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
 
@@ -76,10 +77,11 @@ export function UsagePanel({
         ones.
       </p>
 
-      <div className="usage-scope" role="tablist">
+      <div className="usage-scope" role="tablist" aria-label="Which turns" onKeyDown={onTabKeys}>
         <button
           role="tab"
           aria-selected={scope === "session"}
+          tabIndex={scope === "session" ? 0 : -1}
           className={`seg${scope === "session" ? " on" : ""}`}
           disabled={!sessionId}
           data-tip={
@@ -94,6 +96,7 @@ export function UsagePanel({
         <button
           role="tab"
           aria-selected={scope === "workspace"}
+          tabIndex={scope === "workspace" ? 0 : -1}
           className={`seg${scope === "workspace" ? " on" : ""}`}
           onClick={() => setScope("workspace")}
         >
@@ -172,6 +175,7 @@ export function UsagePanel({
                             {tool.failures > 0 && (
                               <span
                                 className="usage-failed"
+                                tabIndex={0}
                                 data-tip="Calls that came back an error. The tokens were spent either way."
                               >
                                 {tool.failures} failed

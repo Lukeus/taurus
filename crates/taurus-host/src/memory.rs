@@ -324,7 +324,13 @@ impl taurus_tools::Tool for Remember {
     }
 
     fn description(&self) -> &str {
-        "Leave a note for the next conversation in this workspace. Reach for it when you learn          something that outlives this conversation and is not written anywhere else: work left          half-done and where it stopped, a decision and the reason for it, a dead end worth not          repeating, a fact about this project that cost you several steps to establish. One or          two sentences, written for someone who was not here. Do not use it for what the files          already say, for a reusable procedure — propose a skill instead — or to log what you          just did in a conversation the user watched."
+        "Leave a note for the next conversation in this workspace. Reach for it when you learn \
+         something that outlives this conversation and is not written anywhere else: work left \
+         half-done and where it stopped, a decision and the reason for it, a dead end worth not \
+         repeating, a fact about this project that cost you several steps to establish. One or \
+         two sentences, written for someone who was not here. Do not use it for what the files \
+         already say, for a reusable procedure — propose a skill instead — or to log what you \
+         just did in a conversation the user watched."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -657,6 +663,18 @@ mod tests {
             assert_eq!(
                 load(&workspace())[0].text,
                 "the migration is staged, not live"
+            );
+        }
+
+        #[test]
+        fn the_description_reads_as_one_paragraph() {
+            // The model reads this on every request. Reflowed without line
+            // continuations, it carried ten spaces at each of six line breaks.
+            let tool = Remember::new(workspace(), "s1");
+            assert!(
+                !tool.description().contains("  "),
+                "{:?}",
+                tool.description()
             );
         }
 

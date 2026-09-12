@@ -158,8 +158,24 @@ pub async fn run(
         result = tokio::time::timeout(timeout, &mut worker) => result,
     };
 
-    if let Some(forward) = forward {
-        forward.abort();
+    if let Some(mut forward) = forward {
+        match &outcome {
+            // The worker has returned, so the sender it held is gone and the
+            // forwarder is sending its last batch: the tail of the output,
+            // which is where a command prints its summary. Bounded all the
+            // same, because what it waits on is the screen, not the child.
+            Ok(_) => {
+                if tokio::time::timeout(FORWARD_GRACE, &mut forward)
+                    .await
+                    .is_err()
+                {
+                    forward.abort();
+                }
+            }
+            // Timed out, and the worker may hold the sender until the kill
+            // lands. What the model reads is in `printed` either way.
+            Err(_) => forward.abort(),
+        }
     }
 
     match outcome {
@@ -185,6 +201,11 @@ pub async fn run(
         }
     }
 }
+
+/// How long a finished command's last batch of output may take to reach the
+/// screen before it is dropped. What it waits on is the UI, which answers in
+/// milliseconds, and a UI that has stopped listening must not hold the result.
+const FORWARD_GRACE: Duration = Duration::from_secs(1);
 
 /// Whether the sideloaded ConPTY runtime is beside the executable, and what is
 /// missing if it is not.
@@ -602,6 +623,44 @@ mod tests {
             "{:?}",
             text_of(&out.output)
         );
+    }
+
+    /// Keeps everything the live view was sent.
+    #[derive(Default)]
+    struct Shown(std::sync::Mutex<String>);
+
+    #[async_trait::async_trait]
+    impl ToolProgress for Shown {
+        async fn step(&self, label: String) {
+            self.0.lock().unwrap().push_str(&label);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_last_lines_reach_the_live_view() {
+        // The forwarder holds a batch for up to a tenth of a second, and it was
+        // aborted the moment the command finished: the tail of the output,
+        // which is usually the summary, never reached the screen.
+        if cfg!(windows) {
+            return;
+        }
+        let shown = Arc::new(Shown::default());
+        run(
+            "/bin/sh",
+            &["-c", "echo first; echo summary"],
+            std::path::Path::new("."),
+            None,
+            Duration::from_secs(10),
+            tokio_util::sync::CancellationToken::new(),
+            Outputs {
+                progress: Some(shown.clone()),
+                spill_to: None,
+            },
+        )
+        .await
+        .expect("the command runs");
+        let seen = shown.0.lock().unwrap().clone();
+        assert!(seen.contains("summary"), "{seen:?}");
     }
 
     #[tokio::test]

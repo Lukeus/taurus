@@ -641,6 +641,44 @@ async fn every_request_says_how_full_the_window_is() {
 }
 
 #[tokio::test]
+async fn a_turn_totals_the_cache_reads_of_every_request_in_it() {
+    // The turn's total kept input and output and dropped the rest, so the turn
+    // event, the session total and the turn span all said a cached session had
+    // read nothing from its cache.
+    let cached = |mut turn: ScriptedTurn| {
+        turn.events.push(StreamEvent::Usage {
+            usage: taurus_provider::TokenUsage {
+                cache_read_input_tokens: Some(300),
+                reasoning_tokens: Some(7),
+                ..Default::default()
+            },
+        });
+        turn
+    };
+    let h = harness(vec![
+        cached(ScriptedTurn::tool_call(
+            "t1",
+            "list_dir",
+            serde_json::json!({}),
+        )),
+        cached(ScriptedTurn::text("Done.")),
+    ]);
+
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "hello").await;
+    let outcome = outcome.expect("the turn finishes");
+
+    assert_eq!(outcome.usage.cache_read_input_tokens, Some(600));
+    assert_eq!(outcome.usage.reasoning_tokens, Some(14));
+    assert_eq!(session.usage.cache_read_input_tokens, Some(600));
+    let reported = events.iter().find_map(|e| match e {
+        UiEvent::TurnFinished { usage, .. } => Some(usage.cache_read_input_tokens),
+        _ => None,
+    });
+    assert_eq!(reported, Some(Some(600)));
+}
+
+#[tokio::test]
 async fn the_budget_counts_what_the_messages_cannot_see() {
     // A conversation well under the window, and a system prompt that is not.
     // Measured by its messages alone this session has room to spare; measured
@@ -1986,6 +2024,39 @@ async fn writing_after_the_check_still_owes_a_check() {
         nudges(&provider.last_request().await.unwrap()),
         1,
         "an edit after the check went unchecked"
+    );
+}
+
+#[tokio::test]
+async fn a_write_listed_before_a_check_that_ran_first_still_owes_a_check() {
+    // Later means in the order the calls ran. `check_command` only reads, so it
+    // runs with the round's other reads, ahead of every call that runs one at a
+    // time — and a write the message lists before it lands after it, with
+    // nothing run against it since.
+    let (agent, provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_calls(vec![
+                (
+                    "t1",
+                    "write_file",
+                    serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+                ),
+                ("t2", "check_command", serde_json::json!({})),
+            ]),
+            ScriptedTurn::text("Done."),
+            ScriptedTurn::tool_call("t3", "run_command", serde_json::json!({"command": "true"})),
+            ScriptedTurn::text("Checked."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "write then check").await;
+
+    assert_eq!(
+        nudges(&provider.last_request().await.unwrap()),
+        1,
+        "a write that landed after the check went unchecked"
     );
 }
 

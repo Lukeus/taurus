@@ -239,6 +239,9 @@ describe("the rows view", () => {
     await act(async () => {
       tab.click();
     });
+    // The view that is showing, said and not only shaded.
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    expect(tab.closest('[role="tablist"]')?.getAttribute("aria-label")).toBe("Dataset view");
     return host;
   }
 

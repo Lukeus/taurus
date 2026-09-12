@@ -13,7 +13,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
-import { Composer, type Parked } from "./App";
+import { Composer, type Parked } from "./components/Composer";
 import type { Attachment, OnScreen } from "./lib/api";
 import type { Outgoing } from "./state/store";
 

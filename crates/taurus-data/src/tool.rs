@@ -615,12 +615,39 @@ fn describe_run(
     loaded: &Result<String, Dataset>,
 ) -> String {
     let mut out = format!(
-        "Ran `{}` over {} → {}\n\n{:>13}  rows to start\n",
+        "Ran `{}` over {} → {}\n\n{}",
         recipe.name,
         recipe.source,
         output,
-        thousands(run.started_with),
+        step_table(run),
     );
+
+    out.push_str(&format!(
+        "\n{} rows × {} columns, {}, in {}.",
+        thousands(run.rows),
+        run.columns.len(),
+        bytes(run.bytes),
+        seconds(run.took_ms)
+    ));
+
+    match loaded {
+        Ok(name) => out.push_str(&format!(" Loaded as `{name}`.")),
+        Err(existing) => out.push_str(&format!(
+            " Not loaded as a dataset: the name `{}` is already taken by {}. \
+             Call load_dataset with a `name` to give the new file one.",
+            existing.name, existing.path
+        )),
+    }
+    out
+}
+
+/// What each step of a run did to the row count, one line a step, under the
+/// count it started from.
+///
+/// Public because `taurus data run` prints the same table, and two renderings
+/// of one table drift apart: this is the one both read.
+pub fn step_table(run: &Materialized) -> String {
+    let mut out = format!("{:>13}  rows to start\n", thousands(run.started_with));
 
     let width = run
         .steps
@@ -656,23 +683,6 @@ fn describe_run(
         ));
         rows = step.rows;
         columns = step.columns;
-    }
-
-    out.push_str(&format!(
-        "\n{} rows × {} columns, {}, in {}.",
-        thousands(run.rows),
-        run.columns.len(),
-        bytes(run.bytes),
-        seconds(run.took_ms)
-    ));
-
-    match loaded {
-        Ok(name) => out.push_str(&format!(" Loaded as `{name}`.")),
-        Err(existing) => out.push_str(&format!(
-            " Not loaded as a dataset: the name `{}` is already taken by {}. \
-             Call load_dataset with a `name` to give the new file one.",
-            existing.name, existing.path
-        )),
     }
     out
 }
@@ -954,7 +964,10 @@ fn percent(part: u64, whole: u64) -> String {
 }
 
 /// Digits grouped, so a seven-figure row count can be read at a glance.
-fn thousands(n: u64) -> String {
+///
+/// Public for the CLI, which prints counts beside the tables this crate
+/// renders and should group them the same way.
+pub fn thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {

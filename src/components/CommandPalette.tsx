@@ -161,6 +161,7 @@ export function CommandPalette({
           <button
             type="button"
             className={`palette-scope${everywhere ? " on" : ""}`}
+            aria-pressed={everywhere}
             data-tip="Search transcripts in every workspace, not only this one"
             onClick={() => {
               setEverywhere((on) => !on);

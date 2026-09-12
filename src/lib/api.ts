@@ -7,7 +7,9 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { AgentProposalResponse } from "../bindings/AgentProposalResponse";
 import type { AgentSummary } from "../bindings/AgentSummary";
+import type { ProposalResponse } from "../bindings/ProposalResponse";
 import type { AgentTier } from "../bindings/AgentTier";
 import type { AllowedRule } from "../bindings/AllowedRule";
 import type { Answer } from "../bindings/Answer";
@@ -750,7 +752,14 @@ export const respondSkillProposal = (
   edited?: SkillProposal,
 ) =>
   invoke<string | null>("respond_skill_proposal", {
-    response: { id, approve, target: target ?? null, edited: edited ?? null },
+    // Checked against the Rust type, so a renamed field fails here rather than
+    // at the command.
+    response: {
+      id,
+      approve,
+      target: target ?? null,
+      edited: edited ?? null,
+    } satisfies ProposalResponse,
   });
 
 export const setSkillSynthesis = (enabled: boolean) =>
@@ -775,7 +784,12 @@ export const respondAgentProposal = (
   edited?: AgentProposal,
 ) =>
   invoke<string | null>("respond_agent_proposal", {
-    response: { id, approve, target: target ?? null, edited: edited ?? null },
+    response: {
+      id,
+      approve,
+      target: target ?? null,
+      edited: edited ?? null,
+    } satisfies AgentProposalResponse,
   });
 
 export const setAgentSynthesis = (enabled: boolean) =>

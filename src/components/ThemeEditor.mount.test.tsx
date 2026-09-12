@@ -97,6 +97,21 @@ describe("previewing a draft", () => {
     expect(painted("--lk-ink")).toBe("#0a0b0c");
   });
 
+  it("paints a colour only once it is one, and says so meanwhile", () => {
+    // `#0a0b0`, on its way to six digits, was painted across the whole window
+    // and flickered it on every keystroke — and the contrast panel scored it
+    // as fine.
+    const host = mount(
+      <ThemeEditor editing={theme()} mode="dark" onClose={() => {}} onSaved={() => {}} />,
+    );
+    type(host, "ink hex", "#0a0b0");
+    expect(painted("--lk-ink"), "a half-typed colour was painted").toBe("");
+    expect(host.querySelector(".theme-contrast")?.textContent).toContain("?:1");
+
+    type(host, "ink hex", "#0a0b0c");
+    expect(painted("--lk-ink")).toBe("#0a0b0c");
+  });
+
   it("puts the window back on the way out, whichever way out was taken", () => {
     // Restoring inside each handler instead left Escape — and a click on the
     // scrim — painting somebody's abandoned draft until the next status

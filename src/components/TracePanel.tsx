@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import * as api from "../lib/api";
 import type { TraceReport, TraceStep, TurnTrace } from "../lib/api";
+import { onTabKeys } from "../lib/tabs";
 import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
 
@@ -102,10 +103,11 @@ export function TracePanel({
         endpoint in Settings to send the same spans somewhere that keeps them.
       </p>
 
-      <div className="usage-scope" role="tablist">
+      <div className="usage-scope" role="tablist" aria-label="Which turns" onKeyDown={onTabKeys}>
         <button
           role="tab"
           aria-selected={scope === "session"}
+          tabIndex={scope === "session" ? 0 : -1}
           className={`seg${scope === "session" ? " on" : ""}`}
           disabled={!sessionId}
           data-tip={
@@ -118,6 +120,7 @@ export function TracePanel({
         <button
           role="tab"
           aria-selected={scope === "window"}
+          tabIndex={scope === "window" ? 0 : -1}
           className={`seg${scope === "window" ? " on" : ""}`}
           onClick={() => setScope("window")}
         >
@@ -219,6 +222,7 @@ export function TracePanel({
                         {model.failures > 0 && (
                           <span
                             className="usage-failed"
+                            tabIndex={0}
                             data-tip="Requests that came back an error. A retried request is counted twice, because it was two round trips."
                           >
                             {model.failures} failed
@@ -277,6 +281,7 @@ export function TracePanel({
                              delegate's whole turn. */
                           <span
                             className="trace-aside"
+                            tabIndex={0}
                             data-tip="This tool ran a sub-agent, so its time includes the delegate's model calls and tools"
                           >
                             includes a delegate
@@ -468,6 +473,10 @@ function Total({
  * Under a second, milliseconds are what a tool call is compared in; past it,
  * a decimal second is how long a turn *felt*; past a minute, nobody is
  * counting seconds any more.
+ *
+ * Not `duration` from `lib/format`, which rounds anything under a second to a
+ * tenth of one: that suits a turn in the rail, and here a tool call is compared
+ * in milliseconds, so the two are different answers on purpose.
  */
 export function ms(value: number): string {
   if (value < 1_000) return `${Math.round(value)}ms`;

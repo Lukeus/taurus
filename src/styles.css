@@ -739,7 +739,9 @@ body.resizing-y * {
   flex: 1;
   min-height: 0;
   display: flex;
-  flex-direction: column;
+  /* A row: the conversation, and the file open beside it. See the canvas
+     section, which is why. */
+  flex-direction: row;
 }
 
 .topbar {
@@ -5437,31 +5439,39 @@ button.link:where(:not(.excalidraw *)):hover {
    between them — a hair of letter-spacing, a different tab size, one of them
    wrapping — would slide the colour off the text a little further with every
    character. Declared once so they cannot drift. */
-.sql-ink,
-.sql-input {
+.painted-ink,
+.painted-input {
   margin: 0;
-  padding: 12px;
   font-family: var(--mono);
   font-size: 12.5px;
-  line-height: 1.55;
   letter-spacing: normal;
   tab-size: 2;
-  /* Not `pre-wrap`. A wrapped SELECT is harder to read than a scrolled one,
-     and wrapping would also make the caret's line unknowable without
-     measuring the DOM — which is what lets `caretAt` be arithmetic. */
-  white-space: pre;
-  overflow: auto;
   border: none;
   background: transparent;
 }
-.sql-ink {
+/* The layer that is read. The three editors each set only what differs —
+   padding, line height, and whether lines wrap — beside their own names. */
+.painted-ink {
   position: absolute;
   inset: 0;
   /* Behind the textarea and unclickable: every pointer event belongs to the
      real control on top. */
   pointer-events: none;
-  overflow: hidden;
   color: var(--text);
+}
+
+.sql-ink,
+.sql-input {
+  padding: 12px;
+  line-height: 1.55;
+  /* Not `pre-wrap`. A wrapped SELECT is harder to read than a scrolled one,
+     and wrapping would also make the caret's line unknowable without
+     measuring the DOM — which is what lets `caretAt` be arithmetic. */
+  white-space: pre;
+  overflow: auto;
+}
+.sql-ink {
+  overflow: hidden;
 }
 .sql-input {
   position: relative;
@@ -6230,13 +6240,10 @@ button.link:where(:not(.excalidraw *)):hover {
    The file open beside the conversation.
 
    A split rather than a third tab, which is a decision argued in `Canvas.tsx`
-   and shows up here as one line: `main` is a row. Everything that was in the
-   centre column before goes on being a column inside `.pane-split`, so the
-   transcript, the Data pane and the proposals below them are laid out exactly
-   as they were and simply have less width. */
-.pane main {
-  flex-direction: row;
-}
+   and shows up as one line on `.pane main`: it is a row. Everything that was
+   in the centre column before goes on being a column inside `.pane-split`, so
+   the transcript, the Data pane and the proposals below them are laid out
+   exactly as they were and simply have less width. */
 .pane-split {
   flex: 1;
   min-width: 0;
@@ -6391,29 +6398,16 @@ button.link:where(:not(.excalidraw *)):hover {
    every character. */
 .doc-ink,
 .doc-input {
-  margin: 0;
   padding: 8px 12px;
-  font-family: var(--mono);
-  font-size: 12.5px;
   line-height: 1.55;
-  letter-spacing: normal;
-  tab-size: 2;
   /* Never `pre-wrap`. A wrapped line takes more than one row and the gutter is
      one number per row, so wrapping walks the numbers off their own lines from
      the first long paragraph on. Markdown that wants wrapping has the preview,
      which is the mode built for reading. See `DocumentEditor`. */
   white-space: pre;
-  border: none;
-  background: transparent;
 }
 .doc-ink {
-  position: absolute;
-  inset: 0;
-  /* Behind the textarea and unclickable: every pointer event belongs to the
-     real control on top. */
-  pointer-events: none;
   overflow: hidden;
-  color: var(--text);
 }
 .doc-input {
   position: absolute;
@@ -6478,26 +6472,11 @@ button.link:where(:not(.excalidraw *)):hover {
    own text. */
 .prose-ink,
 .prose-input {
-  margin: 0;
   padding: 12px 16px;
-  font-family: var(--mono);
-  font-size: 12.5px;
   /* Looser than the code editors. This is prose, read in paragraphs. */
   line-height: 1.7;
-  letter-spacing: normal;
-  tab-size: 2;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  border: none;
-  background: transparent;
-}
-.prose-ink {
-  position: absolute;
-  inset: 0;
-  /* Behind the textarea and unclickable: every pointer event belongs to the
-     real control on top. */
-  pointer-events: none;
-  color: var(--text);
 }
 .prose-input {
   /* In flow, and the thing that gives the panel its height — see `ProseEditor`.

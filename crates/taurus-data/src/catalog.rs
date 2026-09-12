@@ -235,9 +235,9 @@ pub fn suggest_name(path: &Path) -> String {
 pub fn normalize_name(raw: &str) -> Result<String, DataError> {
     let name = sanitize(raw);
     if name.is_empty() {
-        return Err(DataError::Failed(format!(
-            "'{raw}' has no letters or digits in it, so it cannot name a dataset. Use something              like 'events' or 'user_profiles'."
-        )));
+        return Err(DataError::BadName {
+            raw: raw.to_string(),
+        });
     }
     Ok(name)
 }
@@ -385,9 +385,16 @@ mod tests {
 
     #[test]
     fn a_chosen_name_with_no_word_characters_is_refused_with_an_example() {
-        let message = normalize_name("///").unwrap_err().to_string();
+        let error = normalize_name("///").unwrap_err();
+        // A name is an input the model chose, so the refusal is one it can fix
+        // by choosing again — not a failure of the tool.
+        assert!(matches!(error, DataError::BadName { .. }), "{error:?}");
+        let message = error.to_string();
         assert!(message.contains("///"), "{message}");
         assert!(message.contains("events"), "{message}");
+        // Reflowed without a line continuation, it read "Use something" and
+        // then ten spaces.
+        assert!(!message.contains("  "), "{message:?}");
     }
 
     #[test]

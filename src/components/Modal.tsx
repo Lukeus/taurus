@@ -127,8 +127,26 @@ export function Modal({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [onClose]);
 
+  // Where the press began. A click is dispatched on the nearest element that
+  // held both the press and the release, so a selection dragged out of a diff
+  // and let go past the panel's edge arrives here as a click on the scrim, and
+  // closed the drawer it was made in. Only a press and a release both on the
+  // scrim itself is somebody clicking it.
+  const pressed = useRef(false);
+
   return (
-    <div className={className} onClick={onClose} ref={scrim}>
+    <div
+      className={className}
+      ref={scrim}
+      onPointerDown={(e) => {
+        pressed.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        const onScrim = pressed.current && e.target === e.currentTarget;
+        pressed.current = false;
+        if (onScrim) onClose?.();
+      }}
+    >
       {children}
     </div>
   );

@@ -159,6 +159,170 @@ pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     number("retry-after").map(Duration::from_secs_f64)
 }
 
+/// Passes a successful response through, and turns any other into the error
+/// that says what to fix.
+///
+/// A 401 is a key that was refused and a 403 a key that is fine but may not do
+/// this — different fixes, told apart by the body — so each is its own error,
+/// with the body trimmed to the part that says why. Anything else keeps its
+/// status, its body and the wait the backend asked for. `retry_in_body` is for
+/// a backend that states that wait in the body instead of a header.
+pub async fn check_status(
+    provider: &str,
+    response: reqwest::Response,
+    retry_in_body: Option<fn(&str) -> Option<Duration>>,
+) -> Result<reqwest::Response, ProviderError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let asked = retry_after(response.headers());
+    let body = response.text().await.unwrap_or_default();
+    Err(status_error(
+        provider,
+        status.as_u16(),
+        asked,
+        body,
+        retry_in_body,
+    ))
+}
+
+fn status_error(
+    provider: &str,
+    status: u16,
+    asked: Option<Duration>,
+    body: String,
+    retry_in_body: Option<fn(&str) -> Option<Duration>>,
+) -> ProviderError {
+    match status {
+        401 => ProviderError::MissingCredentials {
+            provider: provider.to_string(),
+            detail: crate::error::brief(&body),
+        },
+        403 => ProviderError::Api {
+            provider: provider.to_string(),
+            status,
+            body: crate::error::brief(&body),
+            retry_after: None,
+        },
+        _ => {
+            let retry_after = asked.or_else(|| retry_in_body.and_then(|read| read(&body)));
+            ProviderError::Api {
+                provider: provider.to_string(),
+                status,
+                body,
+                retry_after,
+            }
+        }
+    }
+}
+
+/// An API key as a header value marked sensitive, so the `{:?}` of a request
+/// that a debug trace prints shows it redacted rather than in full.
+///
+/// `None` for a key with a newline or a non-ASCII byte in it, which no header
+/// can carry. The request goes without it and comes back a 401 the user can
+/// act on, where panicking over their config would not.
+pub fn sensitive_header(provider: &str, key: &str) -> Option<reqwest::header::HeaderValue> {
+    match reqwest::header::HeaderValue::from_str(key) {
+        Ok(mut value) => {
+            value.set_sensitive(true);
+            Some(value)
+        }
+        Err(_) => {
+            tracing::warn!(
+                provider,
+                "the API key has characters an HTTP header cannot carry; sending none"
+            );
+            None
+        }
+    }
+}
+
+/// A response body, a line at a time as it arrives.
+///
+/// Every backend here streams one record per line — Ollama as NDJSON, the
+/// other three as server-sent events. Each adapter kept its own copy of this,
+/// and three of the four dropped a last record that arrived with no newline
+/// after it. Blank lines are skipped, and a final line without a newline is
+/// still a line.
+pub struct LineReader<S> {
+    stream: S,
+    buf: Vec<u8>,
+    done: bool,
+}
+
+impl<S> LineReader<S>
+where
+    S: futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin,
+{
+    pub fn new(stream: S) -> Self {
+        Self {
+            stream,
+            buf: Vec::new(),
+            done: false,
+        }
+    }
+
+    /// The next line that is not blank, trimmed, or `None` at the end.
+    pub async fn next_line(&mut self) -> reqwest::Result<Option<String>> {
+        use futures::StreamExt;
+        loop {
+            if let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = self.buf.drain(..=i).collect();
+                let line = String::from_utf8_lossy(&line[..line.len() - 1])
+                    .trim()
+                    .to_string();
+                if line.is_empty() {
+                    continue;
+                }
+                return Ok(Some(line));
+            }
+            if self.done {
+                let rest = String::from_utf8_lossy(&std::mem::take(&mut self.buf))
+                    .trim()
+                    .to_string();
+                return Ok((!rest.is_empty()).then_some(rest));
+            }
+            match self.stream.next().await {
+                Some(Ok(bytes)) => self.buf.extend_from_slice(&bytes),
+                Some(Err(e)) => return Err(e),
+                None => self.done = true,
+            }
+        }
+    }
+}
+
+/// The `data:` payloads of a server-sent event stream, one per call.
+///
+/// Comment lines and every field but `data` are skipped. Each backend here
+/// repeats an event's type inside its JSON, so reading `event:` as well would
+/// be two sources of one truth that could disagree.
+pub struct SseReader<S> {
+    lines: LineReader<S>,
+}
+
+impl<S> SseReader<S>
+where
+    S: futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin,
+{
+    pub fn new(stream: S) -> Self {
+        Self {
+            lines: LineReader::new(stream),
+        }
+    }
+
+    /// The next event's payload, or `None` at the end of the stream.
+    pub async fn next_event(&mut self) -> reqwest::Result<Option<String>> {
+        while let Some(line) = self.lines.next_line().await? {
+            if let Some(data) = line.strip_prefix("data:") {
+                return Ok(Some(data.trim().to_string()));
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// Backends that misbehave on purpose, for the adapters' own tests.
 pub mod testing {
     use std::time::Duration;
@@ -229,6 +393,104 @@ mod tests {
             None
         );
         assert_eq!(retry_after(&headers(&[("retry-after", "-3")])), None);
+    }
+
+    /// A body delivered in the chunks given, however they split its lines.
+    fn body(
+        chunks: &[&'static str],
+    ) -> impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin {
+        futures::stream::iter(
+            chunks
+                .iter()
+                .map(|chunk| Ok(bytes::Bytes::from_static(chunk.as_bytes())))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_last_event_with_no_newline_after_it_is_still_read() {
+        // Three adapters' readers ended the stream with a `data:` line still
+        // in the buffer. Only Ollama's kept a final record like this.
+        let mut reader = SseReader::new(body(&[
+            "data: {\"a\":1}\n\n: keepalive\nevent: delta\nda",
+            "ta: {\"b\":2}",
+        ]));
+        assert_eq!(
+            reader.next_event().await.unwrap().as_deref(),
+            Some("{\"a\":1}")
+        );
+        assert_eq!(
+            reader.next_event().await.unwrap().as_deref(),
+            Some("{\"b\":2}")
+        );
+        assert_eq!(reader.next_event().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_line_split_across_chunks_arrives_whole() {
+        let mut reader = LineReader::new(body(&["{\"do", "ne\":tr", "ue}\n\n{\"n\":2}\n"]));
+        assert_eq!(
+            reader.next_line().await.unwrap().as_deref(),
+            Some("{\"done\":true}")
+        );
+        assert_eq!(
+            reader.next_line().await.unwrap().as_deref(),
+            Some("{\"n\":2}")
+        );
+        assert_eq!(reader.next_line().await.unwrap(), None);
+    }
+
+    #[test]
+    fn a_refused_key_and_a_forbidden_request_are_different_errors() {
+        let refused = status_error("anthropic", 401, None, "invalid x-api-key".into(), None);
+        assert!(
+            matches!(refused, ProviderError::MissingCredentials { .. }),
+            "{refused:?}"
+        );
+        let forbidden = status_error("anthropic", 403, None, "no access".into(), None);
+        assert!(
+            matches!(
+                forbidden,
+                ProviderError::Api {
+                    status: 403,
+                    retry_after: None,
+                    ..
+                }
+            ),
+            "{forbidden:?}"
+        );
+    }
+
+    #[test]
+    fn a_wait_stated_in_the_body_is_read_when_no_header_gives_one() {
+        let seconds: fn(&str) -> Option<Duration> = |body| {
+            body.strip_suffix('s')?
+                .parse()
+                .ok()
+                .map(Duration::from_secs)
+        };
+        let asked = status_error("gemini", 429, None, "31s".into(), Some(seconds));
+        assert!(
+            matches!(asked, ProviderError::Api { retry_after: Some(wait), .. } if wait == Duration::from_secs(31)),
+            "{asked:?}"
+        );
+        // A header, when there is one, is the backend's word and wins.
+        let header = status_error(
+            "gemini",
+            429,
+            Some(Duration::from_secs(5)),
+            "31s".into(),
+            Some(seconds),
+        );
+        assert!(
+            matches!(header, ProviderError::Api { retry_after: Some(wait), .. } if wait == Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn a_key_no_header_can_carry_is_left_off_rather_than_sent() {
+        assert!(sensitive_header("openai", "sk-abc").unwrap().is_sensitive());
+        assert!(sensitive_header("openai", "sk-abc\nrest").is_none());
     }
 
     #[tokio::test]

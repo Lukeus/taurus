@@ -4,7 +4,8 @@ import { Terminal } from "@xterm/xterm";
 import "../vendor.css";
 
 import * as api from "../lib/api";
-import type { BackgroundJob, Theme } from "../lib/api";
+import type { BackgroundJob } from "../lib/api";
+import { useWindowPalette } from "../lib/windowTheme";
 import { basename } from "../lib/format";
 import { acknowledger, bytes, fade } from "../lib/terminal";
 import { DockTabs, JobScreen } from "./JobScreen";
@@ -33,7 +34,6 @@ import { DockTabs, JobScreen } from "./JobScreen";
  */
 export function TerminalDock({
   workspace,
-  theme,
   jobs,
   watching,
   output,
@@ -50,8 +50,6 @@ export function TerminalDock({
    * window is pointed.
    */
   workspace: string | null;
-  /** Only to re-theme on a change; the colours themselves are read from CSS. */
-  theme: Theme;
   /**
    * The background commands, polled by `App`.
    *
@@ -255,11 +253,15 @@ export function TerminalDock({
     return () => observer.disconnect();
   }, []);
 
-  // Follows the app. The colours are the stylesheet's, so this only has to
-  // re-read them once the new palette is in force.
+  // Follows the window, whatever moved it: the preference, the system's
+  // appearance under "system", or one custom theme swapped for another in the
+  // same mode. The colours are the stylesheet's, so this only has to re-read
+  // them once the new palette is in force, which is what `colours` changing
+  // says.
+  const colours = useWindowPalette();
   useEffect(() => {
     if (term.current) term.current.options.theme = palette();
-  }, [theme]);
+  }, [colours]);
 
   // A tab whose command has gone — a workspace change forgets them — leaves
   // the pane pointed at nothing. Falling back to the shell rather than drawing

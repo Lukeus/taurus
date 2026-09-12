@@ -1,5 +1,6 @@
 //! Filesystem tools.
 
+use std::borrow::Cow;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -97,7 +98,8 @@ pub struct ReadFileInput {
     /// 1-based line to start at. Defaults to the start of the file.
     #[serde(default)]
     pub offset: Option<usize>,
-    /// How many lines to return. Defaults to 2000.
+    /// How many lines to return. Defaults to a window sized to the model,
+    /// between 200 and 10,000 lines.
     #[serde(default)]
     pub limit: Option<usize>,
 }
@@ -734,26 +736,29 @@ fn near_miss(original: &str, old: &str) -> Option<NearMiss> {
 fn apply_edit(original: &str, input: &EditFileInput) -> Result<(String, usize), EditProblem> {
     // The model reasons in LF because that is how read_file presented the
     // file; translate its strings into the file's own convention.
+    // Borrowed for an LF file, which is nearly every file: translating cost a
+    // copy of both strings for nothing.
     let crlf = original.contains("\r\n");
-    let old = if crlf {
-        to_crlf(&input.old_string)
+    let (old, new): (Cow<str>, Cow<str>) = if crlf {
+        (
+            Cow::Owned(to_crlf(&input.old_string)),
+            Cow::Owned(to_crlf(&input.new_string)),
+        )
     } else {
-        input.old_string.clone()
-    };
-    let new = if crlf {
-        to_crlf(&input.new_string)
-    } else {
-        input.new_string.clone()
+        (
+            Cow::Borrowed(&input.old_string),
+            Cow::Borrowed(&input.new_string),
+        )
     };
 
-    match original.matches(&old).count() {
+    match original.matches(old.as_ref()).count() {
         0 => Err(EditProblem::NotFound(miss(original, &old, &new))),
         n if n > 1 && !input.replace_all => Err(EditProblem::Ambiguous(n)),
         n => Ok((
             if input.replace_all {
-                original.replace(&old, &new)
+                original.replace(old.as_ref(), &new)
             } else {
-                original.replacen(&old, &new, 1)
+                original.replacen(old.as_ref(), &new, 1)
             },
             n,
         )),
@@ -861,6 +866,20 @@ pub fn to_crlf(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
+
+    #[test]
+    fn the_schema_states_the_range_a_default_read_is_sized_in() {
+        // The model plans its reads against this text. A fixed number here was
+        // off by up to five times once the default was sized to the window, so
+        // the range is checked against the bounds that actually apply.
+        let schema = ReadFile.input_schema().to_string();
+        let range = format!(
+            "between {} and {} lines",
+            crate::test_support::grouped(MIN_READ_LINES),
+            crate::test_support::grouped(MAX_READ_LINES)
+        );
+        assert!(schema.contains(&range), "{schema}");
+    }
 
     /// The claim the whole feature rests on: the diff the user approves and the
     /// bytes that get written are computed by the same code, so they cannot

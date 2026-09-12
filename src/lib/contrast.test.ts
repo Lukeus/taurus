@@ -139,6 +139,16 @@ describe("checking a palette", () => {
     expect(check({}).every((r) => r.ok)).toBe(true);
   });
 
+  it("fails a colour that is there but is not a colour", () => {
+    // `#1a2b3`, half typed, scored null and passed: the warning went quiet on
+    // exactly the value nobody could read.
+    const palette = { ...shipped(":root {"), text: "#1a2b3" };
+    const text = check(palette).filter((r) => r.fg === "text" || r.bg === "text");
+    expect(text.length).toBeGreaterThan(0);
+    expect(text.every((r) => r.ratio === null && !r.ok)).toBe(true);
+    expect(failures(palette).some((r) => r.fg === "text")).toBe(true);
+  });
+
   it("puts the worst failure first", () => {
     const palette = { ...shipped(":root {"), text: "#0c1014", accent: "#0d1116" };
     const found = failures(palette);

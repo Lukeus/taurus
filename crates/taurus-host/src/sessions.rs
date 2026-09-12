@@ -790,8 +790,18 @@ pub(crate) fn listed(workspace: Option<&Path>) -> Vec<(SessionMeta, PathBuf)> {
         .collect();
 
     // Descending, so the newest is first and `latest` is just the head.
-    sessions.sort_by_key(|(s, _)| std::cmp::Reverse(s.updated));
+    sessions.sort_by(|(a, _), (b, _)| newest_first(a, b));
     sessions
+}
+
+/// Newest first, in the same order every time for two updated in one second.
+///
+/// `updated` is whole seconds, so a turn that ends as another begins puts two
+/// conversations in the same one. Left to the directory's order, those two
+/// swap places in the rail from one listing to the next, for no reason anybody
+/// looking at it could see.
+fn newest_first(a: &SessionMeta, b: &SessionMeta) -> std::cmp::Ordering {
+    b.updated.cmp(&a.updated).then_with(|| b.id.cmp(&a.id))
 }
 
 /// One conversation's delegates, newest first.
@@ -811,7 +821,7 @@ pub fn list_subagents(parent: &str) -> Vec<SessionMeta> {
         .filter(|path| path.extension().is_some_and(|e| e == EXTENSION))
         .filter_map(|path| read_meta(&path))
         .collect();
-    listed.sort_by_key(|s| std::cmp::Reverse(s.updated));
+    listed.sort_by(newest_first);
     listed
 }
 
@@ -1264,6 +1274,28 @@ mod tests {
         assert!(mentions_at(&path, "banner"));
         assert!(!mentions_at(&path, "rail"));
         assert!(mentions_at(&dir.path().join("missing.jsonl"), "anything"));
+    }
+
+    #[test]
+    fn conversations_updated_in_the_same_second_keep_their_places() {
+        let meta = |id: &str, updated| SessionMeta {
+            id: id.to_string(),
+            workspace: String::new(),
+            model: String::new(),
+            started: 0,
+            updated,
+            title: String::new(),
+            branch: None,
+            agent: None,
+        };
+        let ids = |listed: &[SessionMeta]| listed.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        // The same three, found in two different directory orders.
+        let mut one = vec![meta("a", 5), meta("b", 5), meta("c", 9)];
+        let mut other = vec![meta("b", 5), meta("c", 9), meta("a", 5)];
+        one.sort_by(newest_first);
+        other.sort_by(newest_first);
+        assert_eq!(ids(&one), ["c", "b", "a"]);
+        assert_eq!(ids(&one), ids(&other));
     }
     use crate::testing::isolated_home;
 

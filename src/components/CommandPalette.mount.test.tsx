@@ -259,8 +259,11 @@ describe("the command palette", () => {
     await ui.type("widget");
     await ui.settle();
     const scope = ui.host.querySelector(".palette-scope") as HTMLButtonElement;
+    // A toggle says whether it is on, not only by its colour.
+    expect(scope.getAttribute("aria-pressed")).toBe("false");
     await act(async () => scope.click());
     await ui.settle();
+    expect(scope.getAttribute("aria-pressed")).toBe("true");
     expect(invoke).toHaveBeenLastCalledWith("search_sessions", {
       query: "widget",
       everywhere: true,

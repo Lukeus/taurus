@@ -62,6 +62,21 @@ export function plural(count: number, noun: string, many?: string): string {
 }
 
 /**
+ * Rows as CSV, quoting only the cells that need it.
+ *
+ * For the copy buttons on tables and charts, which hand a spreadsheet the same
+ * shape. A cell holding a quote, a comma or a newline is quoted with its
+ * quotes doubled; every other cell goes as it is.
+ */
+export function csvOf(rows: string[][]): string {
+  return rows.map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function csvCell(cell: string): string {
+  return /[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
+}
+
+/**
  * `128000` → `128k`.
  *
  * Every number this is used on is read rather than computed with, and the

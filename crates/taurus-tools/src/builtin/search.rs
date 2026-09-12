@@ -178,9 +178,13 @@ impl Tool for Glob {
         let cap = result_cap(ctx);
         let paths = ctx.clone();
         let (hits, partial) = walk_within(ctx, move |stop| {
+            // Every match, not the first `cap` of them: the cut is made after
+            // sorting, in `format_hits`. Cut in walk order, a capped answer was
+            // whichever files the filesystem listed first, which is a
+            // different set on macOS, Linux and Windows.
             let mut hits = Vec::new();
             for entry in walker(&root).flatten() {
-                if hits.len() >= cap || stop.is_cancelled() {
+                if stop.is_cancelled() {
                     break;
                 }
                 if entry.file_type().is_some_and(|t| t.is_file()) {
@@ -221,8 +225,8 @@ pub struct GrepInput {
     /// Return the paths of the files that matched, without the matching lines.
     #[serde(default)]
     pub files_only: bool,
-    /// Return at most this many matches. Defaults to 200, which is also the
-    /// most any search returns.
+    /// Return at most this many matches. Defaults to the most a search
+    /// returns, which is sized to the model: between 40 and 1,000.
     #[serde(default)]
     pub limit: Option<usize>,
 }
@@ -612,12 +616,15 @@ fn format_hits(mut hits: Vec<String>, noun: &str, cap: usize) -> String {
     if hits.is_empty() {
         return format!("No {noun} found.");
     }
-    let capped = hits.len() >= cap;
+    // Sorted before the cut, so a capped answer is the first names in order
+    // wherever it runs, and the note can say how many there were.
     hits.sort();
+    let total = hits.len();
+    hits.truncate(cap);
     let mut out = hits.join("\n");
-    if capped {
+    if total > cap {
         out.push_str(&format!(
-            "\n\n[stopped at {cap} {noun}; narrow the search to see the rest]"
+            "\n\n[the first {cap} of {total} {noun}, by name; narrow the search to see the rest]"
         ));
     }
     out
@@ -627,6 +634,55 @@ fn format_hits(mut hits: Vec<String>, noun: &str, cap: usize) -> String {
 mod tests {
     use super::*;
     use crate::test_support::test_ctx;
+
+    #[tokio::test]
+    async fn a_capped_glob_is_the_first_names_in_order_on_every_platform() {
+        // glob stopped at the cap in walk order and sorted afterwards, so a
+        // capped answer was whichever files the filesystem listed first —
+        // a different set on each platform, and not the first by name on any.
+        let (ctx, dir) = test_ctx();
+        let cap = result_cap(&ctx);
+        let mut names = Vec::new();
+        for group in ["late", "early"] {
+            std::fs::create_dir_all(dir.path().join(group)).unwrap();
+            for i in 0..cap {
+                let name = format!("{group}/f{i:04}.txt");
+                std::fs::write(dir.path().join(&name), "").unwrap();
+                names.push(name);
+            }
+        }
+        names.sort();
+
+        let result = Glob
+            .execute(serde_json::json!({"pattern": "**/*.txt"}), &ctx)
+            .await
+            .unwrap();
+        let out = result.to_text();
+        let listed: Vec<String> = out
+            .lines()
+            .take_while(|line| !line.is_empty())
+            .map(|line| line.replace('\\', "/"))
+            .collect();
+        assert_eq!(listed, names[..cap]);
+        assert!(
+            out.contains(&format!("the first {cap} of {} files", 2 * cap)),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_schema_states_the_range_a_search_is_capped_in() {
+        // The model plans its searches against this text, and "defaults to
+        // 200" was off by five times either way once the cap was sized to the
+        // window.
+        let schema = Grep.input_schema().to_string();
+        let range = format!(
+            "between {} and {}",
+            crate::test_support::grouped(MIN_RESULTS),
+            crate::test_support::grouped(MAX_RESULTS)
+        );
+        assert!(schema.contains(&range), "{schema}");
+    }
 
     fn seed(dir: &std::path::Path) {
         std::fs::create_dir_all(dir.join("src")).unwrap();

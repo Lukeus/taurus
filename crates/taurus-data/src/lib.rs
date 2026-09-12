@@ -57,6 +57,6 @@ pub use engine::{
 };
 pub use recipe::{Recipe, RecipeError, RECIPE_DIR};
 pub use tool::{
-    LoadDataset, ProfileDataset, QueryData, RunRecipe, LOAD_DATASET_TOOL, PROFILE_DATASET_TOOL,
-    QUERY_DATA_TOOL, RUN_RECIPE_TOOL,
+    step_table, thousands, LoadDataset, ProfileDataset, QueryData, RunRecipe, LOAD_DATASET_TOOL,
+    PROFILE_DATASET_TOOL, QUERY_DATA_TOOL, RUN_RECIPE_TOOL,
 };

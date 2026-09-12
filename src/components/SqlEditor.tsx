@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DataTable } from "../lib/api";
 import { ink, suggest, type Suggestion } from "../lib/sql";
+import { growToContent, InkLayer } from "./InkLayer";
 
 /**
  * The box you write a query in.
@@ -77,11 +78,7 @@ export function SqlEditor({
   useEffect(() => {
     const area = box.current;
     if (!area) return;
-    // `auto` first, and that is the whole trick: `scrollHeight` on an element
-    // already tall enough reports the height it has, so measuring without
-    // collapsing it makes the box grow and never shrink.
-    area.style.height = "auto";
-    area.style.height = `${area.scrollHeight}px`;
+    growToContent(area);
   }, [value]);
 
   /**
@@ -159,21 +156,11 @@ export function SqlEditor({
         {PROBE}
       </span>
 
-      <pre className="sql-ink" aria-hidden ref={ghost}>
-        {painted.map((run, i) => (
-          <span key={i} className={`ink-${run.kind}`}>
-            {run.text}
-          </span>
-        ))}
-        {/* A `<pre>` swallows one trailing newline, so a query ending in one
-            would paint a line short and the caret would sit below its own
-            text. */}
-        {"\n"}
-      </pre>
+      <InkLayer runs={painted} className="sql-ink" ghost={ghost} />
 
       <textarea
         ref={box}
-        className="sql-input"
+        className="painted-input sql-input"
         value={value}
         spellCheck={false}
         rows={4}
@@ -248,6 +235,8 @@ export function SqlEditor({
       {menu && (
         <ul
           className="sql-menu"
+          role="listbox"
+          aria-label="Completions"
           style={{ left: menu.at.left, top: menu.at.top }}
           // The textarea's `blur` fires before a click lands, so the list
           // would close out from under the pointer. Taking the press rather
@@ -255,8 +244,10 @@ export function SqlEditor({
           onMouseDown={(e) => e.preventDefault()}
         >
           {menu.items.map((item, i) => (
-            <li key={`${item.kind}-${item.note}-${item.insert}`}>
+            <li key={`${item.kind}-${item.note}-${item.insert}`} role="presentation">
               <button
+                role="option"
+                aria-selected={i === active}
                 className={`sql-choice${i === active ? " on" : ""}`}
                 onMouseEnter={() => setActive(i)}
                 onClick={() => take(item)}

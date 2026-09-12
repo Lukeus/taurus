@@ -217,12 +217,18 @@ export function clamp(value: number, min: number, max: number): number {
 /**
  * The size this pane was left at, if there is one to read.
  *
- * Guarded twice over: the tests render these components to a string with no DOM
- * at all, and a stored size can be anything a previous version — or a hand
- * edit — left behind.
+ * Guarded three times over: the tests render these components to a string with
+ * no DOM at all; a webview with site data blocked throws on the read as it does
+ * on the write — on merely naming `localStorage`, in some — and this runs in
+ * App's first render, where a throw leaves no window at all; and a stored size
+ * can be anything a previous version, or a hand edit, left behind.
  */
-function remembered(key: string): number | null {
-  if (typeof localStorage === "undefined") return null;
-  const stored = Number(localStorage.getItem(key));
-  return Number.isFinite(stored) && stored > 0 ? stored : null;
+export function remembered(key: string): number | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const stored = Number(localStorage.getItem(key));
+    return Number.isFinite(stored) && stored > 0 ? stored : null;
+  } catch {
+    return null;
+  }
 }

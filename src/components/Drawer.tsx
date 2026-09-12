@@ -12,13 +12,11 @@ import { Modal } from "./Modal";
  * control in one corner reading two different ways depending on which panel you
  * had open.
  *
- * The part that mattered most is invisible: `onClick={(e) =>
- * e.stopPropagation()}` on the panel. `Modal` dismisses on a click that reaches
- * the scrim, and without that line every click on a patch of drawer that is not
- * itself a control closes the drawer. It is one line, it is easy to leave out,
- * and leaving it out is not something a type checks or a test notices — it is
- * the drawer shutting under somebody's cursor. Written once, it cannot be left
- * out.
+ * What keeps a drawer open under somebody's cursor is `Modal`'s, not this: it
+ * dismisses only on a press and a release that both land on the scrim, so a
+ * click on a patch of drawer that is not itself a control, or a selection
+ * dragged out past its edge, leaves it where it is. No panel has a line of its
+ * own to remember.
  *
  * Not every panel fits, and the ones that do not are left alone rather than
  * given a flag each: the changes pane is docked rather than floating and has no
@@ -63,11 +61,7 @@ export function Drawer({
 }) {
   return (
     <Modal onClose={onClose}>
-      <aside
-        className={panel ? `drawer ${panel}` : "drawer"}
-        // See above. This is the line the extraction exists for.
-        onClick={(e) => e.stopPropagation()}
-      >
+      <aside className={panel ? `drawer ${panel}` : "drawer"}>
         <DrawerHead title={title} onClose={onClose}>
           {actions}
         </DrawerHead>

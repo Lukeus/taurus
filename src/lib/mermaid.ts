@@ -40,6 +40,7 @@
 
 import type { FlowEdgeIn, FlowInput, FlowNodeIn, FlowStageIn } from "./flow";
 import type { MessageIn, ParticipantIn, SequenceInput } from "./sequence";
+import { plural } from "./format";
 
 /**
  * What a fence turned out to hold.
@@ -790,10 +791,6 @@ export function arrow(text: string): MessageIn | null {
     return { from, to, text: text.slice(colon + 1).trim(), kind };
   }
   return null;
-}
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 /** `a`, `a and b`, `a, b and c`. */
