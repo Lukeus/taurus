@@ -1469,6 +1469,114 @@ mod tests {
     use crate::testing::isolated_home;
     use tempfile::TempDir;
 
+    /// Every field of a provider set to something other than its default, so
+    /// a field dropped anywhere on its way through a layer shows as a change.
+    fn every_provider_field() -> ProviderConfig {
+        ProviderConfig {
+            id: "gateway".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: "https://llm.example.com".into(),
+            models: vec![ModelEntry::new("gpt-x")],
+            default_model: Some("gpt-x".into()),
+            api_key_env: Some("GATEWAY_KEY".into()),
+            api_key_header: Some("api-key".into()),
+            native_tools: Some(false),
+            context_length: Some(8192),
+            vision: Some(false),
+            api_prefix: Some("/v3".into()),
+            thinking: Some("adaptive".into()),
+        }
+    }
+
+    #[test]
+    fn a_provider_survives_the_round_trip_through_a_layer_entry() {
+        // Each field is written out five times — the struct, the layer entry,
+        // and `From`, `into_config` and `apply_to` — and one missed in any of
+        // them never layers, with nothing failing to say so.
+        let full = every_provider_field();
+        let json = serde_json::to_value(&full).unwrap();
+        for (field, value) in json.as_object().unwrap() {
+            assert!(!value.is_null(), "the fixture leaves `{field}` unset");
+        }
+
+        let back = ProviderEntry::from(&full).into_config().unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            json,
+            "lost in into_config"
+        );
+
+        let mut layered = default_providers().remove(0);
+        layered.id = full.id.clone();
+        ProviderEntry::from(&full).apply_to(&mut layered);
+        assert_eq!(
+            serde_json::to_value(&layered).unwrap(),
+            json,
+            "lost in apply_to"
+        );
+    }
+
+    /// Every setting a layer can hold, each set.
+    fn every_setting() -> StoredSettings {
+        StoredSettings {
+            last_workspace: Some("/code/taurus".into()),
+            last_provider: Some("gateway".into()),
+            last_model: Some("gpt-x".into()),
+            skill_synthesis_enabled: Some(false),
+            agent_synthesis_enabled: Some(false),
+            disabled_tools: Some(vec!["fetch_url".into()]),
+            theme: Some(Theme::Light),
+            theme_id: Some("midnight".into()),
+            embedding_model: Some("nomic-embed-text".into()),
+            embedding_provider: Some("ollama".into()),
+            rerank_model: Some("bge-reranker".into()),
+            rerank_provider: Some("gateway".into()),
+            otlp_endpoint: Some("http://localhost:4318".into()),
+            otlp_capture_content: Some(true),
+            max_iterations: Some(42),
+        }
+    }
+
+    #[test]
+    fn every_setting_layers_and_resolves_to_what_was_stored() {
+        // `overlay` and `resolve` restate every field as well, and a field
+        // missed in either is one a workspace can set and nothing reads.
+        let full = every_setting();
+        let stored = serde_json::to_value(&full).unwrap();
+
+        let mut inherited = full.clone();
+        inherited.overlay(StoredSettings::default());
+        assert_eq!(
+            serde_json::to_value(&inherited).unwrap(),
+            stored,
+            "lost inheriting"
+        );
+
+        let mut overridden = StoredSettings::default();
+        overridden.overlay(full.clone());
+        assert_eq!(
+            serde_json::to_value(&overridden).unwrap(),
+            stored,
+            "lost overriding"
+        );
+
+        let resolved = serde_json::to_value(full.resolve()).unwrap();
+        let resolved = resolved.as_object().unwrap();
+        let stored = stored.as_object().unwrap();
+        for field in resolved.keys() {
+            assert!(
+                stored.contains_key(field),
+                "the fixture leaves `{field}` unset"
+            );
+        }
+        for (field, value) in stored {
+            assert_eq!(
+                &resolved[field], value,
+                "`{field}` did not resolve to what was stored"
+            );
+        }
+    }
+
     /// Runs `body` against an isolated, empty `~/.taurus`.
     fn with_home<T>(body: impl FnOnce(&Path) -> T) -> T {
         let home = isolated_home();
