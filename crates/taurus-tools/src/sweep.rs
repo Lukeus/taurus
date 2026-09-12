@@ -396,8 +396,9 @@ impl Diffed {
         // sound, and saying otherwise would be its own kind of wrong.
         if self.rules_moved {
             caveats.push(
-                "An ignore rule changed while this command ran, so any file it stopped ignoring \
-                 was left out and a rewind will not touch it."
+                "An ignore rule changed while this command ran, so files it created were left \
+                 out and a rewind will not delete them. What it modified or deleted was recorded \
+                 as usual."
                     .to_string(),
             );
         }
