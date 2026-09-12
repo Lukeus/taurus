@@ -47,7 +47,9 @@
 //! typing is neither, and git is the undo that covers it.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -259,10 +261,6 @@ pub(crate) fn at(len: u64, when: SystemTime) -> String {
         .unwrap_or(0);
     format!("{len}-{nanos}")
 }
-
-#[cfg(not(test))]
-#[allow(dead_code)]
-fn _unused(_: SystemTime) {}
 
 #[cfg(test)]
 mod tests {
