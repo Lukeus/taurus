@@ -498,10 +498,12 @@ fn handshake_failure(error: impl std::fmt::Display, offer_sign_in: bool) -> Stri
         return format!("handshake failed: {text}");
     }
     if offer_sign_in {
-        "this server wants an account. Sign in below, or add a token as an          Authorization header if it issues one."
+        "this server wants an account. Sign in below, or add a token as an \
+         Authorization header if it issues one."
             .to_string()
     } else {
-        "the stored sign-in is no longer accepted — it has expired or been          revoked. Sign in again."
+        "the stored sign-in is no longer accepted — it has expired or been \
+         revoked. Sign in again."
             .to_string()
     }
 }
@@ -1157,6 +1159,11 @@ mod tests {
 
         let wants_account = handshake_failure("Unexpected server response: 401", true);
         assert!(wants_account.contains("Sign in"), "{wants_account}");
+        // Both sign-in messages were reflowed without a line continuation, and
+        // read with ten spaces in the middle of a sentence.
+        let expired = handshake_failure("Unexpected server response: 401", false);
+        assert!(!wants_account.contains("  "), "{wants_account:?}");
+        assert!(!expired.contains("  "), "{expired:?}");
         assert!(names_status("status 401 from the server", "401"));
         assert!(!names_status("http://localhost:401/mcp", "401"));
         assert!(!names_status("request 44017 failed", "401"));
