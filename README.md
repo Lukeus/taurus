@@ -89,7 +89,7 @@ harness. These are the parts that don't. Each one comes with a limit, and
 [Known gaps](docs/known-gaps.md) spells those out in full.
 
 **It's built for the model on your own machine, not only one in a
-datacentre.** Every decision here is shaped around an 8k context window:
+datacenter.** Every decision here is shaped around an 8k context window:
 
 - A fifty-skill library costs one line per skill in the prompt. A procedure
   loads only when it's needed.
@@ -258,8 +258,8 @@ you put things back afterwards.
   results you're meant to *look* at sit on their own beside the text,
   including sequence and flow diagrams. When a decision is really yours, it
   asks and waits, and you can skip any question.
-- [**Code is coloured, and so is a diff**](docs/working-with-it.md#code-is-coloured-and-so-is-a-diff):
-  a fenced block is coloured by its fence, a diff by the file's extension. One
+- [**Code is colored, and so is a diff**](docs/working-with-it.md#code-is-colored-and-so-is-a-diff):
+  a fenced block is colored by its fence, a diff by the file's extension. One
   palette covers both, and the query box too. Where one line was rewritten into
   another, the characters that actually changed are marked inside it.
 - [**Motion that says what it is doing**](docs/working-with-it.md#motion):
@@ -276,7 +276,7 @@ you put things back afterwards.
   with your code. You can re-run it on next month's export, and it reports
   what each step did to the row count.
 - [**A query box that knows your columns**](docs/working-with-it.md#writing-the-query):
-  SQL is coloured as you type, and completion draws on the real schema of
+  SQL is colored as you type, and completion draws on the real schema of
   every loaded file, not a keyword list. A column two files share is marked
   `joins`, so you find the key to join on while you're writing the join.
 
@@ -284,7 +284,7 @@ you put things back afterwards.
 marked](docs/screenshots/data.png)
 
 The pane doesn't exist until a workspace has loaded something. It takes the
-centre column beside the conversation instead of covering it. The box you type
+center column beside the conversation instead of covering it. The box you type
 in never moves, because asking is still how anything gets here.
 
 It works both ways:
@@ -310,7 +310,7 @@ Select a passage and **Ask about this** starts a sentence in the message box.
 The selection itself goes with that message: which file, which lines, and what
 they said. So "tighten this" is a complete question to the model, the same way
 it is to you looking at the screen. A chip above the box shows that while you
-type, because context you can't see is behaviour you can't explain.
+type, because context you can't see is behavior you can't explain.
 
 You can type in it, and it saves a second after you stop. That's not just a
 convenience. The whole point of the canvas is that you and Taurus are looking
@@ -388,7 +388,7 @@ web search.
 - Everything the Settings drawer writes is a plain file the CLI reads too.
 - [**MCP servers**](docs/configuration.md#mcp-servers): add and test them in
   the app, in the same `mcpServers` format Claude Desktop uses.
-- [**Themes**](docs/configuration.md#themes): fourteen colours, three
+- [**Themes**](docs/configuration.md#themes): fourteen colors, three
   typefaces, a wordmark, and a corner radius, in a file you can commit. A
   workspace can carry its own, so a repo can brand the app for everyone who
   opens it.

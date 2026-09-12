@@ -119,7 +119,7 @@ a machine will do.
 
 That's deliberate. The alternative is a second permission system sitting
 beside the first and disagreeing with it. It's also what makes a project's
-hook file safe to honour at all once you trust the project.
+hook file safe to honor at all once you trust the project.
 
 | Event | When | Can it stop anything? |
 | --- | --- | --- |
@@ -195,7 +195,7 @@ bounds them.
 The kill reaches the whole process tree, not just the program the hook names.
 A script that calls a linter takes the linter with it.
 
-- On Unix the hook runs in its own process group, and the group is signalled.
+- On Unix the hook runs in its own process group, and the group is signaled.
 - On Windows it runs in a Job Object. Ending the job ends every process in it,
   including one whose own parent has already exited.
 
@@ -280,7 +280,7 @@ Filling one in produces an ordinary entry and hands it to the same form you'd
 use to type one by hand. You see the command line before anything is written,
 and **Test** is the same Test.
 
-![The catalogue, listing the servers Taurus knows the setup
+![The catalog, listing the servers Taurus knows the setup
 for](screenshots/mcp-catalog.png)
 
 Adding one writes into `mcp.json` and nothing else. Nothing is downloaded and
@@ -300,7 +300,7 @@ the loop can make. The costs:
 - A server not on it is added by hand: one extra step, not a dead end.
 
 A stale list can't break a working setup. Installing copies the entry into
-`mcp.json`, and the catalogue never looks at it again.
+`mcp.json`, and the catalog never looks at it again.
 
 **Some of what you'll search for isn't there, and says why.** Postgres has had
 no first-party server since the reference one was archived and deprecated over
@@ -331,7 +331,7 @@ Stdio servers have no sign-in and aren't offered one. The MCP authorization
 spec says a local program takes its credentials from the environment, which is
 what `${VAR}` below is for.
 
-**A credential goes in the global file by default.** Catalogued entries that
+**A credential goes in the global file by default.** Cataloged entries that
 want one default to `~/.taurus/mcp.json`, which nobody commits. Choosing this
 project writes it into `<workspace>/.taurus/mcp.json` instead, a file one
 `git add .` from being published, so Taurus asks you to confirm. It isn't
@@ -428,7 +428,7 @@ path doesn't need it.
 The panel also tells you, so you don't have to find out:
 
 - A server that won't parse is reported **by name, with the key that's
-  wrong**, and its neighbours still load. One typo doesn't discard every
+  wrong**, and its neighbors still load. One typo doesn't discard every
   server in the file.
 - A server switched off is listed as `off`, not hidden.
 - A server that never answers is given up on after 60 seconds, so one hung
@@ -488,17 +488,17 @@ comes back will parse.
 ## Themes
 
 The window ships two palettes and follows your system between them. A
-**theme** sets whose colours, typefaces and wordmark they wear. It's a file in
+**theme** sets whose colors, typefaces and wordmark they wear. It's a file in
 `~/.taurus/themes/`. Settings › Appearance edits it, but you can also write one
 by hand.
 
 ![Settings, Appearance](screenshots/appearance.png)
 
-A theme supplies fourteen colours, three typefaces, a wordmark and a corner
+A theme supplies fourteen colors, three typefaces, a wordmark and a corner
 radius, and nothing else. It can be that small because `src/styles.css` names
 its raw values exactly once and speaks in *roles* everywhere else: a panel is
 `--bg-raised`, a hairline is `--rule`, the lead accent is `--accent`. Fourteen
-colours at the top move six thousand lines below them.
+colors at the top move six thousand lines below them.
 
 There's no stylesheet, selector or length beyond those. A theme that could
 restate a rule could break a layout in a way only its author could reproduce.
@@ -548,14 +548,14 @@ one:
 | Key | What it is |
 | --- | --- |
 | `name` | What the picker calls it. Falls back to the file name. |
-| `dark`, `light` | The fourteen colours, by the names in the table below. Hex only: `#rgb`, `#rrggbb` or `#rrggbbaa`. |
+| `dark`, `light` | The fourteen colors, by the names in the table below. Hex only: `#rgb`, `#rrggbb` or `#rrggbbaa`. |
 | `fonts` | `display`, `body`, `mono`. A family name, not a stack. The fallbacks after it stay the app's, so naming a font you don't have degrades instead of breaking. It has to be **installed on the machine**. The window loads no remote stylesheets, so a theme can't bring a typeface with it. |
 | `brand.wordmark` | The word beside the mark. An empty string is a real answer and means a mark on its own. Leaving the key out keeps `taurus`. |
 | `brand.logo` | An SVG, PNG, JPEG or WebP up to 256KB. A bare name is read from the theme file's folder, so a logo committed beside it travels with it. |
 | `shape.radius` | Multiplier on the corner-radius ladder, 0 to 3. `0` is square, `1` is as shipped. |
 | `shape.gutter`, `shape.rail-gutter` | The two column insets, in px, up to 96. |
 
-The colour names are *jobs*, not colours. The design system names its accents
+The color names are *jobs*, not colors. The design system names its accents
 after what they happen to be (cyan, peach, mint), which is fine with one
 palette and absurd in a file whose whole point is that the accent might be
 violet.
@@ -568,7 +568,7 @@ violet.
 | `surface-hover` | The step between, so a hover reads as on the way to a selection, not as one. |
 | `line` | The one hairline weight. |
 | `text`, `text-dim`, `text-faint` | Three weights, brightest first. The faint one carries the 10px mono micro-labels. |
-| `accent`, `accent-hover` | The lead colour. |
+| `accent`, `accent-hover` | The lead color. |
 | `on-accent` | What stays legible on top of it, like a filled button's label. |
 | `ok`, `warn`, `danger` | The three signals. |
 
@@ -576,7 +576,7 @@ violet.
 
 `dark` and `light` are separate palettes, not one palette with a base. Fill in
 both and the System/Light/Dark choice keeps working under your brand. "Follow
-the system" is a preference people keep, and a theme that couldn't honour it
+the system" is a preference people keep, and a theme that couldn't honor it
 would quietly take it away.
 
 Fill in only one and you've said *this brand is dark*. Selecting it pins the
@@ -619,7 +619,7 @@ directory, where the project could never see it again.
 
 A file that won't parse costs only itself. The rest still load, and Settings ›
 Appearance says what's wrong, naming the file, the key and what to put there.
-The same goes for a colour that isn't a colour, a missing logo, or a size past
+The same goes for a color that isn't a color, a missing logo, or a size past
 its maximum: the theme paints the part of itself that works.
 
 ## Web search
