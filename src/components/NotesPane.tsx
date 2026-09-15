@@ -1,10 +1,23 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { when } from "../lib/format";
-import { embedFor, pathOf, same, type Notebook } from "../state/notebook";
+import { chord, isChord } from "../lib/keys";
+import { toggleTask } from "../lib/prose";
+import { embedFor, pathOf, same, type Notebook, type NoteMode } from "../state/notebook";
 import type { PageKind, PageRef, Scope } from "../lib/api";
 import { CopyButton } from "./CopyButton";
-import { Markdown } from "./Markdown";
+import { ListPaneIcon } from "./icons";
+import { Markdown, NoteHost } from "./Markdown";
+import { NoteBody, type NoteBodyHandle } from "./NoteBody";
 import { Problem } from "./Problem";
 import { ProseEditor } from "./ProseEditor";
 import { SketchHost } from "./SketchEmbed";
@@ -76,7 +89,25 @@ export function NotesPane({
     takeTheirs,
     drain,
     keptAs,
+    viewKeyFor,
   } = notebook;
+
+  /**
+   * Whether the list is folded away, giving the open file the whole width.
+   *
+   * Remembered, because it is a habit rather than a moment — somebody who
+   * sketches wants the room every time. Only ever folded with a file open: with
+   * nothing open, the list is the only thing on the screen that can open one.
+   */
+  const [listShut, setListShut] = useState(readListShut);
+  const foldList = useCallback(
+    () =>
+      setListShut((shut) => {
+        keepListShut(!shut);
+        return !shut;
+      }),
+    [],
+  );
 
   /** What is being made, where, and what it is being called. */
   const [making, setMaking] = useState<{ scope: Scope; kind: PageKind; name: string } | null>(
@@ -138,10 +169,116 @@ export function NotesPane({
     [noteScope, choose],
   );
 
+  /** The sketches a note being written can embed: the ones in its notebook. */
+  const sketchNames = useMemo(
+    () =>
+      (pages ?? [])
+        .filter((p) => p.kind === "sketch" && p.scope === noteScope)
+        .map((p) => p.name),
+    [pages, noteScope],
+  );
+
+  /** The notes a link in the open note can reach: its own notebook's. */
+  const noteNames = useMemo(
+    () =>
+      (pages ?? [])
+        .filter((p) => p.kind === "note" && p.scope === noteScope)
+        .map((p) => p.name),
+    [pages, noteScope],
+  );
+  /** And the ones worth offering to link to, which is all but itself. */
+  const linkable = useMemo(
+    () => noteNames.filter((name) => name !== page?.name),
+    [noteNames, page?.name],
+  );
+
+  /*
+   * The rendered note trails the keys by a render when it has to. In Split it
+   * is on screen while somebody types, and a whole note parsed and laid out
+   * between one key and the next is a keystroke that waits for it. Deferred,
+   * React draws the text first and the note when there is time.
+   */
+  const shown = useDeferredValue(typed);
+  const latest = useRef({ typed, shown });
+  latest.current = { typed, shown };
+
+  const pane = useRef<HTMLElement>(null);
+  const body = useRef<NoteBodyHandle | null>(null);
+  /** The mode before Split, which ⌘\ goes back to. */
+  const beforeSplit = useRef<NoteMode>("write");
+
+  /** Changes how the note is shown, keeping the reader where they were. */
+  const switchTo = useCallback(
+    (next: NoteMode) => {
+      if (next === mode) return;
+      if (next === "split") beforeSplit.current = mode;
+      body.current?.capture();
+      setMode(next);
+    },
+    [mode, setMode],
+  );
+
+  /*
+   * ⌘E between Write and Read, and ⌘\ for the two side by side — from Split,
+   * ⌘E goes to Read. On the window rather than the editor, because in Read the
+   * editor is not where the focus is. Not while somebody is typing somewhere
+   * else, like the composer under the pane: a key there is for that box.
+   */
+  const isNote = page?.kind === "note";
+  useEffect(() => {
+    if (!isNote) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing || e.shiftKey) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const typing = target?.closest("input, textarea, [contenteditable='true']");
+      if (typing && !pane.current?.contains(typing)) return;
+      if (isChord(e, "e")) {
+        e.preventDefault();
+        switchTo(mode === "read" ? "write" : "read");
+      } else if (isChord(e, "\\")) {
+        e.preventDefault();
+        switchTo(mode === "split" ? beforeSplit.current : "split");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isNote, mode, switchTo]);
+
+  /*
+   * What a note being read can do to the notebook — see `NoteHost`.
+   *
+   * A tick goes against the text on screen, and only while that is the text in
+   * the editor: the rendered note can trail the keys by a render, and a
+   * position read off a note one keystroke old could be the next task's box.
+   * The editor's caret is put back afterwards, because the text changing under
+   * it would otherwise send it to the end.
+   */
+  const noteHost = useMemo(() => {
+    if (noteScope === null || !page || page.kind !== "note") return null;
+    return {
+      hasNote: (name: string) => noteNames.includes(name),
+      openNote: (name: string) => choose({ scope: noteScope, kind: "note" as const, name }),
+      toggleTask: (at: number) => {
+        const { typed: now, shown: seen } = latest.current;
+        if (seen !== now) return;
+        const next = toggleTask(now, at);
+        if (next === null) return;
+        const area = pane.current?.querySelector<HTMLTextAreaElement>("textarea.prose-input");
+        const kept = area ? [area.selectionStart, area.selectionEnd] : null;
+        edit(next, page);
+        if (area && kept) {
+          requestAnimationFrame(() => area.setSelectionRange(kept[0], kept[1]));
+        }
+      },
+    };
+  }, [noteScope, page, noteNames, choose, edit]);
+
   const word = page?.kind === "sketch" ? "sketch" : "note";
+  const folded = listShut && page !== null;
 
   return (
-    <section className="notes-pane" aria-label="Notes">
+    <section className="notes-pane" aria-label="Notes" ref={pane}>
+      {!folded && (
       <aside className="notes-list">
         {(["workspace", "global"] as const).map((scope) => (
           <Group
@@ -167,6 +304,7 @@ export function NotesPane({
           />
         ))}
       </aside>
+      )}
 
       {page === null ? (
         <div className="notes-none">
@@ -193,9 +331,21 @@ export function NotesPane({
       ) : (
         <section className="notes-doc" aria-label={`${word}: ${page.name}`}>
           <header className="notes-head">
+            <button
+              className="notes-fold"
+              onClick={foldList}
+              aria-expanded={!listShut}
+              aria-label={listShut ? "Show the list" : "Hide the list"}
+              data-tip={listShut ? "Show the list" : "Hide the list"}
+            >
+              <ListPaneIcon size={14} />
+            </button>
             {renaming === null ? (
               <>
-                <span className="notes-name">{page.name}</span>
+                {/* Titled, because a long one is cut to fit the header. */}
+                <span className="notes-name" title={page.name}>
+                  {page.name}
+                </span>
                 <span className="notes-where">
                   {page.scope === "workspace" ? pathOf(page.name, page.kind) : "global"}
                 </span>
@@ -242,16 +392,17 @@ export function NotesPane({
 
             {page.kind === "note" ? (
               <>
-                <div className="notes-modes" role="tablist" aria-label="How to read it">
-                  {(["write", "read"] as const).map((m) => (
+                <div className="notes-modes" role="tablist" aria-label="How to show it">
+                  {(["write", "split", "read"] as const).map((m) => (
                     <button
                       key={m}
                       role="tab"
                       aria-selected={mode === m}
                       className={`seg${mode === m ? " on" : ""}`}
-                      onClick={() => setMode(m)}
+                      onClick={() => switchTo(m)}
+                      data-tip={MODE_TIP[m]}
                     >
-                      {m === "write" ? "Write" : "Read"}
+                      {MODE_WORD[m]}
                     </button>
                   ))}
                 </div>
@@ -318,21 +469,17 @@ export function NotesPane({
                   // pane has moved on is not taken as the next file's text.
                   onChange={(text) => edit(text, page)}
                   drain={drain}
+                  // Where it was being looked at, kept on this machine rather
+                  // than in the file — see `sketchView.ts`.
+                  viewKey={viewKeyFor(page)}
                 />
               </Suspense>
             </div>
           ) : (
-            <div className="notes-body">
-              {mode === "read" ? (
-                <div className="notes-read">
-                  {/* What has been typed, not what was read: a preview showing
-                      the version on disk while the editor holds a newer one
-                      would be two answers to one question on one screen. */}
-                  <SketchHost.Provider value={sketches}>
-                    <Markdown text={typed} streaming={false} />
-                  </SketchHost.Provider>
-                </div>
-              ) : (
+            <NoteBody
+              mode={mode}
+              handle={body}
+              editor={
                 <ProseEditor
                   // Keyed on the note so a different one gets a fresh box rather
                   // than the previous note's caret. Deliberately not on the
@@ -345,15 +492,61 @@ export function NotesPane({
                   // debounce later that somebody who has moved on is not
                   // watching for.
                   onBlur={() => void notebook.flush()}
-                  placeholder="Write in Markdown. A mermaid block draws as a diagram."
+                  // The one key worth knowing, said where it is used.
+                  placeholder="Write in Markdown. Type / at the start of a line for a heading, a list, a diagram or a sketch."
+                  sketches={sketchNames}
+                  notes={linkable}
                 />
-              )}
-            </div>
+              }
+              preview={
+                mode === "write" ? null : (
+                  // What has been typed, not what was read: a preview showing
+                  // the version on disk while the editor holds a newer one
+                  // would be two answers to one question on one screen. Keyed
+                  // by content, so a keystroke in the first paragraph does not
+                  // lay out every diagram below it again.
+                  <NoteHost.Provider value={noteHost}>
+                    <SketchHost.Provider value={sketches}>
+                      <Markdown text={shown} streaming={false} keyBy="content" />
+                    </SketchHost.Provider>
+                  </NoteHost.Provider>
+                )
+              }
+            />
           )}
         </section>
       )}
     </section>
   );
+}
+
+const MODE_WORD: Record<NoteMode, string> = { write: "Write", split: "Split", read: "Read" };
+
+/** Each mode's key, where the mode is chosen. ⌘E is both halves of one toggle. */
+const MODE_TIP: Record<NoteMode, string> = {
+  write: `Write (${chord("E")})`,
+  split: `Write and Read side by side (${chord("\\")})`,
+  read: `Read (${chord("E")})`,
+};
+
+const LIST_KEY = "taurus.notesListShut";
+
+/** Whether the list was left folded. Guarded the way `ResizeHandle`'s
+ *  `remembered` is, for the same three reasons. */
+function readListShut(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(LIST_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function keepListShut(shut: boolean): void {
+  try {
+    localStorage.setItem(LIST_KEY, shut ? "1" : "0");
+  } catch {
+    // Storage turned off still folds. It just forgets.
+  }
 }
 
 const SAVE_WORD: Record<"typing" | "saving" | "failed", string> = {

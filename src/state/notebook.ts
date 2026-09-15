@@ -4,6 +4,7 @@ import * as api from "../lib/api";
 import type { Page, PageKind, PageRef, Scope } from "../lib/api";
 import { reconcile, SAVE_AFTER_MS } from "../lib/document";
 import { basename } from "../lib/format";
+import { forgetView, moveView, viewKey } from "../lib/sketchView";
 
 /**
  * The notebook, as one screen's worth of state.
@@ -39,8 +40,8 @@ import { basename } from "../lib/format";
 /** Everything needed to name one note or sketch. `Page` and `PageRef` satisfy it. */
 export type Which = { scope: Scope; kind: PageKind; name: string };
 
-/** How a note is shown: the Markdown, or what it renders as. */
-export type NoteMode = "write" | "read";
+/** How a note is shown: the Markdown, both side by side, or what it renders as. */
+export type NoteMode = "write" | "split" | "read";
 
 export type SaveState = "idle" | "typing" | "saving" | "failed";
 
@@ -572,6 +573,9 @@ export function useNotebook({
       // The list comes back with the page, as it does after a delete, so the
       // pane redraws from one answer rather than asking again.
       const [made, pages] = await api.createPage(scope, kind, name);
+      // A new drawing opens centred on itself, not wherever a deleted one of
+      // the same name was left.
+      if (kind === "sketch") forgetView(viewKey(made, live.current.workspace));
       setPages(pages);
       void flush(true);
       go(made);
@@ -601,6 +605,12 @@ export function useNotebook({
         }
       }
       const [moved, pages] = await api.renamePage(from.scope, from.kind, from.name, to);
+      // The view goes with the sketch. Written under the old name by the flush
+      // above, which drained the editor — see `SketchEditor`'s `settle`.
+      if (from.kind === "sketch") {
+        const folder = live.current.workspace;
+        moveView(viewKey(from, folder), viewKey(moved, folder));
+      }
       setPages(pages);
       go(moved);
       return moved;
@@ -617,8 +627,10 @@ export function useNotebook({
         timer.current = null;
       }
       setPages(await api.forgetPage(target.scope, target.kind, target.name));
-      // A version kept for a file that is gone has nothing left to be about.
+      // A version kept for a file that is gone has nothing left to be about,
+      // and neither has the view a sketch was left at.
       release(target);
+      if (target.kind === "sketch") forgetView(viewKey(target, live.current.workspace));
       if (same(live.current.open, target)) go(null);
     } catch (e) {
       report.current(String(e));
@@ -671,6 +683,9 @@ export function useNotebook({
     [kept, workspace],
   );
 
+  /** What a sketch's view is kept under, in the folder that is open now. */
+  const viewKeyFor = useCallback((which: Which) => viewKey(which, workspace), [workspace]);
+
   const onScreen = useMemo(
     () =>
       page && page.kind === "note"
@@ -696,6 +711,7 @@ export function useNotebook({
     flush,
     drain,
     keptAs,
+    viewKeyFor,
     setMode,
     create,
     rename,

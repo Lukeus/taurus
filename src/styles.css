@@ -2388,6 +2388,28 @@ body.resizing-y * {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* A link to a note the notebook does not have: still the link that was
+   written, marked so it is not taken for one that works. */
+.markdown a.md-note-link.missing {
+  color: var(--text-faint);
+  text-decoration-style: dashed;
+  cursor: default;
+}
+
+/* A task. The box stands where the bullet would, the way GitHub draws one. */
+.markdown li.task-list-item {
+  list-style: none;
+}
+.markdown li.task-list-item > input,
+.markdown li.task-list-item > p > input {
+  margin: 0 0.45em 0.2em -1.3em;
+  vertical-align: middle;
+}
+/* Tickable only in a note being read — see `NoteHost`. */
+.markdown .md-task {
+  cursor: pointer;
+  accent-color: var(--accent);
+}
 
 .md-inline-code {
   font-family: var(--mono);
@@ -4821,6 +4843,27 @@ button.link:where(:not(.excalidraw *)):hover {
   background: transparent;
   color: var(--text);
 }
+/* Folds the list away, so the note or the sketch has the pane's whole width.
+   A sketch needs it most: Excalidraw switches to its compact layout, which has
+   no zoom controls, when its canvas is under 730px wide, or under 500px tall
+   and under 1000px wide — and in a small window the list's 200px is often the
+   difference. */
+.notes-fold {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-faint);
+}
+.notes-fold:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
 .notes-make {
   display: flex;
   flex-direction: column;
@@ -4908,20 +4951,39 @@ button.link:where(:not(.excalidraw *)):hover {
   gap: 8px;
   padding-bottom: 8px;
 }
+/* One line, whatever the pane's width. When the header is short of room, the
+   path gives way first — all the way, to nothing — and the name only past a
+   cap of its own, each to an ellipsis. Said as sizes rather than as shrink
+   weights: weighted, the two shrank together, and a third mode tab was enough
+   to cut the name while half the path still showed. The buttons never give
+   way: a wrapped "Ask about this" doubles the header's height and moves the
+   editor under the pointer. */
 .notes-name {
+  flex: none;
+  max-width: min(40%, 32ch);
   font-size: 13px;
   color: var(--text);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Where the file is, dimmed. The name is what anybody is looking for; the path
    is what says whether this one gets committed. */
 .notes-where {
+  flex: 1 1 0;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text-faint);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.notes-head .pill,
+.notes-modes,
+.notes-state {
+  flex: none;
+  white-space: nowrap;
 }
 .notes-rename {
   flex: 1;
@@ -4984,6 +5046,33 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 .notes-read {
   padding: 12px 16px;
+}
+/* An open note's body: the editor and the rendered note as two columns, one of
+   them away in Write or Read. The columns scroll, each on its own — see
+   `NoteBody` — so the panel around them does not. */
+.notes-body.note {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+}
+.notes-col {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-y: auto;
+}
+/* The editor in Read: hidden, but still laid out at the panel's full width, so
+   its caret, its undo history and where its lines break are all exactly as
+   they were when Write comes back. */
+.notes-col.shut {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+}
+.notes-body.split .notes-preview {
+  border-left: 1px solid var(--rule);
+}
+.notes-preview:focus {
+  outline: none;
 }
 
 /* Armed, so a note is never deleted by one stray click. The second press is the
@@ -5555,8 +5644,10 @@ button.link:where(:not(.excalidraw *)):hover {
   color: var(--text-dim);
 }
 
-/* The completion list, hung off the caret. */
-.sql-menu {
+/* The completion list, hung off the caret — in the query box, and in a note,
+   where it is the same list with other rows in it. */
+.sql-menu,
+.prose-menu {
   position: absolute;
   z-index: 5;
   margin: 4px 0 0;
@@ -5571,7 +5662,8 @@ button.link:where(:not(.excalidraw *)):hover {
   background: var(--bg-elevated);
   box-shadow: 0 10px 26px rgb(0 0 0 / 0.32);
 }
-.sql-choice {
+.sql-choice,
+.prose-choice {
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -5589,34 +5681,43 @@ button.link:where(:not(.excalidraw *)):hover {
    steps *down* and the label takes the accent, so which one Enter takes is
    readable at a glance and in a photograph. */
 .sql-choice:hover,
-.sql-choice.on {
+.sql-choice.on,
+.prose-choice:hover,
+.prose-choice.on {
   background: var(--bg-sunken);
 }
-.sql-choice.on .sql-label {
+.sql-choice.on .sql-label,
+.prose-choice.on .prose-label {
   color: var(--accent);
 }
 /* One glyph per kind, so the list is scannable by shape before it is read —
    which is what tells a column from a table without reading either. */
-.sql-tag {
+.sql-tag,
+.prose-tag {
   flex: none;
   width: 0.9rem;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-faint);
 }
-.sql-tag.table {
+.sql-tag.table,
+.prose-tag.sketch,
+.prose-tag.note {
   color: var(--accent);
 }
-.sql-tag.fn {
+.sql-tag.fn,
+.prose-tag.diagram {
   color: var(--ok);
 }
-.sql-label {
+.sql-label,
+.prose-label {
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--text);
   white-space: nowrap;
 }
-.sql-note {
+.sql-note,
+.prose-note {
   flex: 1;
   min-width: 0;
   font-size: 11px;
@@ -6502,6 +6603,21 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 .prose-input::placeholder {
   color: var(--text-faint);
+}
+/* Where the note's list differs from the query box's. No top margin, because
+   `ProseEditor` places it exactly, gap included — and flips it above the caret
+   near the bottom of the panel, where a margin would push it back down over
+   the line being written. The note is the syntax a row writes, set as syntax. */
+.prose-menu {
+  margin: 0;
+}
+.prose-note {
+  font-family: var(--mono);
+}
+/* The copy of the text `ProseEditor` lays out to find where the caret is.
+   Present for one measurement, and never seen. */
+.prose-measure {
+  visibility: hidden;
 }
 
 /* ------------------------------------------------------------- the sketch

@@ -341,7 +341,11 @@ yourself:
   projects.
 
 There's no frontmatter and no database. The name in the list is the filename,
-and the file is exactly what you typed.
+and the file is exactly what you typed. Type `/` at the start of a line for a
+heading, a list, a table, a diagram to start from, or one of your sketches,
+and a list carries on when you press Enter. Write and Read can sit side by
+side, a task ticks from the rendered note, and a link to another note opens
+it.
 
 ![The notes pane: both notebooks in the list, one note open in an editor that
 wraps](docs/screenshots/notes.png)
@@ -367,7 +371,7 @@ A **sketch** is a drawing kept beside your notes, made in
 text. It's a `.excalidraw` file in the same notebook, saved the same way. A
 note shows one with a line of Markdown:
 `![How a sign-in goes](<Auth flow.excalidraw>)`. **Copy embed** on the sketch
-gives you that line.
+gives you that line. A sketch reopens at the zoom and the spot you left it.
 
 ![A sketch open in the editor beside the list of notes](docs/screenshots/sketch.png)
 

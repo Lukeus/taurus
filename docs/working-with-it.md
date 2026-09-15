@@ -1175,10 +1175,54 @@ about one.
 
 ### Writing
 
-**Write** is the Markdown; **Read** is how it renders. The editor wraps,
-the one way it differs from the canvas. A note is prose all the way down, with
-no line numbers for anything to point at, so the canvas's no-wrap gutter
-isn't here.
+**Write** is the Markdown, **Read** is how it renders, and **Split** puts the
+two side by side, scrolling together. ⌘E switches between Write and Read
+(Ctrl+E off a Mac), and ⌘\ turns Split on and off. Switching keeps your place:
+the view that appears opens at the heading you were at, not at the top, and
+the editor keeps its caret and its undo history. The editor wraps, the one way
+it differs from the canvas. A note is prose all the way down, with no line
+numbers for anything to point at, so the canvas's no-wrap gutter isn't here.
+
+![A note in Write and Read side by side](screenshots/notes-split.png)
+
+The editor offers the syntax you'd otherwise look up:
+
+- **`/` at the start of a line** opens a list of blocks: headings, lists, a
+  task, a quote, a code block, a table, a divider, a Mermaid flowchart or
+  sequence diagram to start from, and every sketch in the note's notebook.
+  Keep typing to narrow it: `/todo` finds **Task**, and `/h2` finds
+  **Heading 2**. **⌃Space** opens it on an empty line without the slash.
+- **After a fence's backticks**, the languages the app colors, and `mermaid`.
+  On a new fence, picking one writes the closing fence too and puts the caret
+  inside.
+- **Inside `![`**, the notebook's sketches, written as the embed line.
+
+↑ and ↓ move through the list, ↵ or ⇥ takes a row, and Esc closes it.
+Nothing opens inside a code block, where a `/` or a `![` is just part of the
+sample.
+
+Enter on a list item starts the next one with the same marker: the next
+number, an unticked box, a quote at the same depth. Enter on an empty item
+ends the list, and ⇧↵ is always a plain newline. Whatever the list or Enter
+writes goes in the way typing does, so ⌘Z takes it back in one step.
+
+![The block list open under a slash in a note](screenshots/notes-complete.png)
+
+In Read and Split, a task's box ticks. That writes `[x]` into the note, the
+same as typing it, and saves the same way.
+
+A note links to another note in the same notebook with an ordinary link to
+its file:
+
+```markdown
+The store itself is in [Token store](<Token store.md>).
+```
+
+Clicking it opens that note. A link to a note the notebook doesn't have is
+drawn dashed and says so when you point at it. A link reaches only the note's
+own notebook, and a `#section` after the name is ignored, so the note opens at
+its top. Inside a link's address, `[text](`, the editor offers the notebook's
+other notes, and the `/` list has them too.
 
 It saves itself a moment after you stop typing, and never overwrites anything
 it hasn't seen. If a turn writes the note while you're typing in it, the save
@@ -1234,6 +1278,23 @@ What doesn't draw says so, instead of drawing something else:
 freehand, handwritten text, pasted images. It saves as soon as the drawing
 stops changing, and never over a version it hasn't seen, the same rule and
 code as a note.
+
+A sketch opens where you left it, at the same zoom and on the same part of
+the drawing. That view is kept on this machine, not in the `.excalidraw`
+file. The file is committed with the repository, and a view saved in it
+would turn every pan into a change in someone's review. So the view doesn't
+follow the sketch to another machine. If the drawing has moved since you left
+it (a teammate's commit, or a turn that redrew it) and your view would show
+none of it, the sketch opens centered on the drawing instead.
+
+The panel button at the start of the header folds the list away, so the note
+or sketch gets the pane's whole width. It stays folded until you unfold it.
+Sketches need the room most. Excalidraw switches to a compact layout with no
+zoom controls when its canvas is narrower than 730 pixels, or shorter than
+500 and narrower than 1,000. In a smaller window, the list's 200 pixels are
+often the difference.
+
+![A sketch with the list folded away, in Excalidraw's full layout](screenshots/sketch-wide.png)
 
 Some of Excalidraw is turned off here, each for a reason:
 
