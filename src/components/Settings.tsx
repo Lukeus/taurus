@@ -555,7 +555,7 @@ export function ThemePicker({ theme }: { theme: Theme }) {
         )}
 
         <p className="hint">
-          A theme is a file in <code>~/.taurus/themes</code> — fourteen colours,
+          A theme is a file in <code>~/.taurus/themes</code> — fourteen colors,
           three typefaces, a wordmark and a corner radius. Everything it leaves
           out stays as the app ships it, so changing one accent is four lines.
           A workspace can carry its own in <code>.taurus/themes</code>, which is

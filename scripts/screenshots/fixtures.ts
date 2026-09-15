@@ -56,7 +56,7 @@ export const STATUS = {
     {
       source: "mcp",
       message:
-        "mcp server 'notion' has no `command` or `url`, and does not recognise `commnd` (did you mean `command`?)",
+        "mcp server 'notion' has no `command` or `url`, and does not recognize `commnd` (did you mean `command`?)",
     },
   ],
   tool_names: [],

@@ -319,7 +319,7 @@ pub fn validate(frontmatter: &AgentFrontmatter, body: &str, path: &str) -> Resul
     if body.trim().is_empty() {
         return Err(invalid(
             "the body below the frontmatter is empty; it is this agent's system prompt, and an \
-             agent without one is a name with no behaviour behind it"
+             agent without one is a name with no behavior behind it"
                 .into(),
         ));
     }

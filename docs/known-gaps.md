@@ -23,7 +23,7 @@ the backlog, and they're the minority.
   The cost: 2.2 MB in the installer, a network fetch during a Windows build,
   and a hash-pinned version somebody has to bump. A machine without the files
   still runs every command. The pty falls back to pipes and the result says
-  so, but you lose the terminal behaviour the call asked for. The app logs at
+  so, but you lose the terminal behavior the call asked for. The app logs at
   startup whether it found the runtime, and that's the only signal. If it's
   packaged wrongly, everything works except for a window that only a Windows
   user on an installed build can see. See
@@ -58,8 +58,8 @@ the backlog, and they're the minority.
   `background: true` together are refused, instead of silently doing one of
   them. The pty path runs a command to completion behind a blocking read.
   Handing back a handle instead would mean a second implementation of the
-  drain and the stop, per platform. So a dev server that colours its output
-  loses the colour. A program that refuses to start outside a terminal can't
+  drain and the stop, per platform. So a dev server that colors its output
+  loses the color. A program that refuses to start outside a terminal can't
   be backgrounded at all. You have to run it in the foreground, where the
   timeout applies again.
 - **A command still running when a turn ends is in no turn's changed-file
@@ -97,7 +97,7 @@ the backlog, and they're the minority.
   the trade is deliberate. A hook that could approve would make `hooks.json` a
   second permission surface, trusted exactly as much as `permissions.json` and
   kept in step with it. As it is, adding hooks to a machine can only shrink
-  what it will do, and that's what lets Taurus honour a project's hook file
+  what it will do, and that's what lets Taurus honor a project's hook file
   at all. This covers the narrowing use: "never let it force-push". See
   [Hooks](configuration.md#hooks).
 - **A hook that can't run blocks the call.** A missing program, a crash, or a
@@ -297,7 +297,7 @@ the backlog, and they're the minority.
 
   Closing that means matching lines that are merely similar, a different kind
   of claim. A count of identical lines is a fact; a count of lines that
-  looked alike is a judgement the model can't check.
+  looked alike is a judgment the model can't check.
 
   None of this applies to `check_command` either. A background command's
   readers keep byte cursors into a shared buffer, and shortening the text
@@ -362,7 +362,7 @@ the backlog, and they're the minority.
   was true when it was written, and nothing revisits it. A note about a
   branch that has since merged, or a file since deleted, goes into every
   later conversation just as confidently as one that's still true. The prompt
-  says so plainly, which puts the judgement on the model, where it has to be.
+  says so plainly, which puts the judgment on the model, where it has to be.
   The Memory drawer is where you remove a stale one. Expiring notes
   automatically would need a model of what each note is *about*, which is a
   bigger claim than a line of prose supports.
@@ -395,7 +395,7 @@ the backlog, and they're the minority.
   changes the subject. So a model that ignores the label works the old
   checklist against the new request.
 - **A branch is warned about, not enforced.** A conversation started on
-  `feat/x` and resumed on `main` is labelled in the rail. Each of its turns
+  `feat/x` and resumed on `main` is labeled in the rail. Each of its turns
   records the branch it began on, and a rewind that would write those
   pre-images over a different tree says so beside the plan. It doesn't
   refuse, and its file references still point where they pointed. Refusing
@@ -455,7 +455,7 @@ the backlog, and they're the minority.
   plainly instead of acting as if it were the same.
 
   Frontmatter keys these tools have and Taurus doesn't (`handoffs`, `hooks`,
-  `user-invocable`) are ignored, not honoured. That's why a borrowed file is
+  `user-invocable`) are ignored, not honored. That's why a borrowed file is
   never rewritten in place. `.claude/rules`, Claude's spelling of the same
   scoped instructions, is the one directory in this family Taurus doesn't
   read. See [Instructions](capabilities.md#instructions).
@@ -463,7 +463,7 @@ the backlog, and they're the minority.
 - **The agent won't install an MCP server for you.** `draft_mcp_server` hands
   back an entry, and adding it is up to you, in the MCP panel or in the file.
   The command line is all a review could show, and it doesn't say what the
-  program does. So this is a limit, not a to-do. The catalogue behind
+  program does. So this is a limit, not a to-do. The catalog behind
   **Browse servers** answers the same argument from the other end. The review
   happens once, in a commit, against the source. A person can do that
   properly; a model emitting a package name at runtime can't. See
@@ -501,7 +501,7 @@ the backlog, and they're the minority.
   drawn at the transport. A closed pipe or a dropped connection means the
   server is gone, and the panel says so. A server that ignores a request for
   two minutes may well answer the next one, so its card is left alone and
-  only the call fails. That's a judgement, and it can be wrong in one
+  only the call fails. That's a judgment, and it can be wrong in one
   direction: the panel can look healthier than the server is.
 - **A token you paste is stored in `mcp.json` in plain text.** OAuth refresh
   tokens go to the OS keychain. A personal access token typed into the header
@@ -532,14 +532,14 @@ the backlog, and they're the minority.
   library underneath supports re-authorizing for a wider scope. What's
   missing is the decision it needs: asking somebody mid-turn to widen a grant
   is a permission prompt of its own, and it isn't built.
-- **The catalogue is a snapshot, and it's small on purpose.** Around a dozen
+- **The catalog is a snapshot, and it's small on purpose.** Around a dozen
   entries, shipped in the binary, all first-party: the MCP project's own
   reference servers, plus GitHub's and Brave's. Nothing third-party is
   listed, because a third-party package name is exactly what
   `draft_mcp_server` refuses to ask anybody to approve. It goes out of date
   between releases, and the panel says when it was last checked. It can't
   break a working setup: an install copies the entry into `mcp.json`, and the
-  catalogue never reads it again. A registry search would fix the staleness
+  catalog never reads it again. A registry search would fix the staleness
   and bring back the unreviewed-package problem. If one is added, it'll be
   marked as such and land in the manual form, not the guided one.
 - **A PATH read from your login shell is a snapshot, not a subscription.**
@@ -903,7 +903,7 @@ the backlog, and they're the minority.
   text column into a taxonomy, extracting fields from a description, or
   embedding a column for a recommender. For anyone building a dataset for an
   agent, those are the whole reason the feature exists, and none of them is
-  written. They need a different shape from a SQL step, because a judgement
+  written. They need a different shape from a SQL step, because a judgment
   over a million rows is a bill. It should be sampled first, reviewed, and
   only then committed to the whole file. Adding one as another `-- step:`
   would skip exactly the gate that makes it safe to run. See
@@ -975,7 +975,7 @@ the backlog, and they're the minority.
   knows nothing about scope. The function list is a fixed set of the common
   ones, so a DataFusion function nobody thought of, and any UDF, draws as a
   plain identifier instead of a call. Nothing is *wrong* on screen when that
-  happens. A word is just the wrong colour, which is the failure mode a
+  happens. A word is just the wrong color, which is the failure mode a
   scanner is chosen for.
 - **Completion knows the files, not the query.** It offers columns that exist
   in a loaded dataset, and a CTE's output columns don't. `WITH t AS (SELECT
@@ -991,7 +991,7 @@ the backlog, and they're the minority.
   one cell wide (CJK, most emoji) puts the list a few characters off for the
   rest of that line. The alternative is measuring a mirror element on every
   keystroke, which is a lot of DOM for a case that doesn't come up in SQL.
-- **A selection in the query box shows as a block of colour with no text in
+- **A selection in the query box shows as a block of color with no text in
   it.** That comes from painting the query on a layer behind a transparent
   textarea. The browser draws the selection on the real control, whose text
   is invisible. The highlight is tinted harder than the app's default to
@@ -1054,13 +1054,13 @@ the backlog, and they're the minority.
   `tables:` block for anything it joins against). That's what lets a
   committed recipe run on a fresh clone. A recipe that names loaded datasets
   instead doesn't, and nothing warns you which kind you've written.
-- **A profile is a full scan every time, and it can't be cancelled.** Its
+- **A profile is a full scan every time, and it can't be canceled.** Its
   result isn't cached. A dataset entry points at a file anything can rewrite,
   and a remembered profile is the kind of answer that's right for a week and
   then quietly wrong. So opening the pane on a multi-gigabyte file reads it
   again, and clicking away leaves that read running to completion. Caching it
   properly means invalidating on the file's length and modification time,
-  which is how a page's row count is kept. Cancelling means threading a token
+  which is how a page's row count is kept. Canceling means threading a token
   through the engine trait. Neither is written for the profile.
 
   What keeps this bearable is that a profile is the one thing that has to
@@ -1130,10 +1130,10 @@ the backlog, and they're the minority.
   opens, nothing is marked, and nothing says why. It also marks the *first*
   turn holding the words, not the one the search found. The two differ when a
   conversation says the same thing twice.
-- **Colouring code is a scanner, not a parser.** One walk serves every
+- **Coloring code is a scanner, not a parser.** One walk serves every
   language, parameterized by how a comment opens, which delimiters quote a
   string, and which words are the vocabulary. That's enough to be right about
-  ordinary code, but not about all of it. A construct it misreads is coloured
+  ordinary code, but not about all of it. A construct it misreads is colored
   wrongly instead of reported, because nothing here could report it. It
   knows Rust, TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML,
   and TOML. Everything else renders plain with its label intact. That
@@ -1266,13 +1266,13 @@ the backlog, and they're the minority.
   the gate is one command with the setting on and one with it off. Until
   somebody does that, an empty default is the honest state, not a forgotten
   one.
-- **A theme sets fourteen colours, three typefaces, a wordmark and a corner
+- **A theme sets fourteen colors, three typefaces, a wordmark and a corner
   radius, and nothing else.** That's not a stub; the ceiling is the point.
   Everything below the top of `src/styles.css` speaks in roles, so those
   fourteen values move the whole window. If a theme could restate a *rule*
   instead, it could break a layout in a way only its author could reproduce.
   "The app is broken" would then be a report nobody could tie back to a
-  colour picker. The spacing ladder isn't exposed, for the same reason. It's
+  color picker. The spacing ladder isn't exposed, for the same reason. It's
   a constraint the stylesheet's own tests enforce, and a theme that could
   redefine it could make the app look like nobody measured anything. The
   cost is real: a theme can't change a font size, a weight, a shadow, or the

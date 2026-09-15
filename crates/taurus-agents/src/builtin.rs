@@ -123,7 +123,7 @@ pub fn definitions() -> Vec<AgentDefinition> {
             frontmatter: AgentFrontmatter {
                 name: CODER.into(),
                 description: "Implements a change in code: reads what it needs, writes it, then \
-                              builds or tests it. Use when the work needs judgement about the \
+                              builds or tests it. Use when the work needs judgment about the \
                               code rather than an exact edit you could dictate."
                     .into(),
                 tools: Some(CODER_TOOLS.map(String::from).to_vec()),
@@ -231,7 +231,7 @@ mod tests {
         let coder = find(CODER).frontmatter.description;
         assert!(worker.contains("exactly-specified"), "{worker}");
         assert!(worker.contains("will not decide"), "{worker}");
-        assert!(coder.contains("judgement"), "{coder}");
+        assert!(coder.contains("judgment"), "{coder}");
     }
 
     #[test]

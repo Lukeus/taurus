@@ -175,7 +175,7 @@ pub struct Catalog {
 /// into the binary: it cannot be wrong at runtime without having been wrong in
 /// the commit, and the test below runs on every build.
 pub fn catalog() -> Catalog {
-    serde_json::from_str(SOURCE).expect("the shipped catalogue must parse")
+    serde_json::from_str(SOURCE).expect("the shipped catalog must parse")
 }
 
 impl CatalogEntry {
