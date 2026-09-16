@@ -1204,9 +1204,10 @@ export const NOTES = [
 /**
  * The note the shots open.
  *
- * Prose, a list, and a `mermaid` fence — because the fence is the thing worth
- * photographing and it has to be in a note that reads like one rather than in a
- * note that exists to hold a diagram. Written as a flowchart with two named
+ * Prose, a task list, a link to another note, and a `mermaid` fence — because
+ * the fence is the thing worth photographing and it has to be in a note that
+ * reads like one rather than in a note that exists to hold a diagram. The tasks
+ * and the link are what Read and Split draw that Write does not. Written as a flowchart with two named
  * subgraphs and a retry loop, which is the case the reader and the layout engine
  * both have the most to get wrong: stages carried across, and one edge pointing
  * backwards.
@@ -1223,9 +1224,11 @@ sign-out can revoke one without writing to a row three services read.
 
 ## What changes
 
-- \`POST /token\` mints a pair rather than a single token.
-- The gateway checks the access token and never sees the refresh one.
-- A revoked refresh token is a row deleted, not a flag set.
+- [x] \`POST /token\` mints a pair rather than a single token.
+- [x] The gateway checks the access token and never sees the refresh one.
+- [ ] A revoked refresh token is a row deleted, not a flag set.
+
+The store itself is in [Token store](<Token store.md>).
 
 ## How a sign-in goes
 

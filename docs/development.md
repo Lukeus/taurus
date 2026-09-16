@@ -362,6 +362,16 @@ the next one. The shots run under Chrome's `--virtual-time-budget`, and a
 frame loop that reschedules itself every frame spends the whole budget without
 ever letting the fetch it's waiting on land.
 
+A scene also runs on a page shorter than the shot. With `--window-size` at 840
+tall, the page measures about 750 while a scene runs (read with
+`--dump-dom`), and the PNG is the full 840. So anything that sizes itself from
+its own box decides at the shorter height. The note editor's list opens above
+the caret when there's no room below, and in the picture there is. Every
+sketch canvas is under Excalidraw's 500-pixel line. Put what a scene
+photographs high enough to fit either way. And don't read a decision made on
+resize off a `--dump-dom`: the `sketch-wide` scene dumps in Excalidraw's
+compact layout and photographs in its full one.
+
 Some shots are the only check a behavior has. That's on purpose, not a gap.
 
 - `query-run` presses **Run in Query** on a card in the transcript and
@@ -369,6 +379,15 @@ Some shots are the only check a behavior has. That's on purpose, not a gap.
   that comes back. That's a real browser doing the whole round trip.
 - `query-complete` types a half-written join into the query box and
   photographs the completion list under the caret.
+- `notes-complete` types a slash into a note and photographs the block list
+  under it. The note editor wraps, so it finds the caret by laying the text
+  out again, which jsdom can't do.
+- `sketch-wide` is taken 1440 wide. It waits for Excalidraw's compact layout,
+  folds the notes list away, and waits for the full layout with its zoom
+  controls.
+- `notes-kept` scrolls a note's editor down to its diagram, presses ⌘E, and
+  photographs where Read opens. The two views are lined up by the note's
+  headings, and jsdom can measure neither.
 
 Between them, they're the only check of anything measured from the DOM. jsdom
 has no layout, so it reports every `scrollHeight` and `getBoundingClientRect`

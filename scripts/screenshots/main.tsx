@@ -238,6 +238,16 @@ window.__TAURI_INTERNALS__ = {
       if (asked.kind === "sketch") return SKETCH;
       return asked.name === NOTE_EMBEDDING.name ? NOTE_EMBEDDING : NOTE;
     }
+    // A scene that types into a note autosaves it a moment later. Answered as
+    // written, with what was sent: a `null` here reads as a failed save, and
+    // photographs as an error banner over the thing the scene is of.
+    if (cmd === "save_page") {
+      const sent = args as { scope: string; kind: string; name: string; text: string };
+      return {
+        type: "written",
+        page: { scope: sent.scope, kind: sent.kind, name: sent.name, text: sent.text, fingerprint: "9-9" },
+      };
+    }
     if (cmd in ANSWERS) return ANSWERS[cmd];
     // Anything else is a command a screenshot does not need. Answering null
     // rather than throwing keeps one unmodelled call from blanking the window.
@@ -465,6 +475,80 @@ requestAnimationFrame(() => {
         await until(() => document.querySelector(".prose-input"));
         (await click(".notes-modes .seg", (b) => b === "Read"))();
         await until(() => document.querySelector(".sketch-embed-body svg"));
+      },
+      // The block list, opened by a slash on a line of its own under the note's
+      // first paragraph. The only check of where it lands: the editor wraps, so
+      // the caret is found by laying the text out again, and jsdom lays nothing
+      // out. High in the note, because the list opens above the caret when the
+      // panel has no room below — and a scene runs on a page shorter than the
+      // shot (see `docs/development.md`), so lower down it flips over room
+      // the photograph then shows.
+      "notes-complete": async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
+        (await click(".notes-row b", (b) => b === "Auth redesign"))();
+        const box = (await until(() =>
+          document.querySelector(".prose-input"),
+        )) as HTMLTextAreaElement;
+        const after = "three services read.\n\n";
+        const text = NOTE.text.replace(after, `${after}/\n\n`);
+        const caret = text.indexOf(after) + after.length + 1;
+        const write = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        write.call(box, text);
+        // The caret before the focus, and a focus that does not scroll. The value
+        // setter leaves the caret at the end of the note, and focusing there
+        // scrolls the panel to the bottom — then placing it mid-note scrolls back
+        // just far enough to put the line at the panel's top edge, under the list.
+        box.setSelectionRange(caret, caret);
+        box.focus({ preventScroll: true });
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+        await until(() => document.querySelector(".prose-menu"));
+      },
+      // A note in Write and Read side by side. The only picture of the two
+      // columns, and of a task box and a note link as the rendered note draws
+      // them.
+      "notes-split": async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
+        (await click(".notes-row b", (b) => b === "Auth redesign"))();
+        await until(() => document.querySelector(".prose-input"));
+        (await click(".notes-modes .seg", (b) => b === "Split"))();
+        await until(() => document.querySelector(".notes-preview svg.flow"));
+      },
+      // Read, reached with the key from a Write view scrolled down to the
+      // diagram. The only check of the two views lining up by their headings:
+      // the rendered note should open at the diagram, where the editor was,
+      // and not at the title. jsdom measures neither view.
+      "notes-kept": async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
+        (await click(".notes-row b", (b) => b === "Auth redesign"))();
+        await until(() => document.querySelector(".prose-input"));
+        const editor = document.querySelector(".notes-write") as HTMLElement;
+        editor.scrollTop = 320;
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "e",
+            metaKey: APPLE,
+            ctrlKey: !APPLE,
+            bubbles: true,
+          }),
+        );
+        await until(() => document.querySelector(".notes-preview svg.flow"));
+      },
+      // A sketch with the list folded away, taken 1440 wide — see its entry in
+      // `capture.mjs`. Excalidraw picks its compact layout, the one without zoom
+      // controls, from its own box: under 730 wide, or under 500 tall and under
+      // 1000 wide. Beside the list at this size the canvas is the second, and
+      // folded it is past 1000. So the scene waits for the compact layout
+      // first and for it to go after the fold — which makes it the check that
+      // folding is what did it, rather than a picture of a window that was
+      // never compact.
+      "sketch-wide": async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
+        (await click(".notes-row b", (b) => b === "Auth flow"))();
+        await until(() => document.querySelector(".excalidraw--mobile .excalidraw__canvas"));
+        (await click(".notes-fold", () => true))();
+        await until(
+          () => document.querySelector(".excalidraw") && !document.querySelector(".excalidraw--mobile"),
+        );
       },
       // The Changes panel, beside the conversation it is about — which is the
       // whole of what moved, so the shot has to hold both. Opened by pressing

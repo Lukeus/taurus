@@ -15,6 +15,35 @@ describe("reading a sketch file", () => {
     expect(got.data.scrollToContent).toBe(true);
   });
 
+  it("opens where it was left, when that still shows some of the drawing", () => {
+    const got = parse(
+      '{"elements":[{"id":"a","x":0,"y":0,"width":100,"height":100}],"appState":{"gridSize":20}}',
+      { zoom: 2, scrollX: -10, scrollY: -20, width: 800, height: 600 },
+    );
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    expect(got.data.scrollToContent).toBe(false);
+    expect(got.data.appState).toEqual({
+      gridSize: 20,
+      zoom: { value: 2 },
+      scrollX: -10,
+      scrollY: -20,
+    });
+  });
+
+  it("opens centred instead, when the view it was left at shows none of it", () => {
+    // The drawing moved while this machine was not looking.
+    const got = parse('{"elements":[{"id":"a","x":5000,"y":5000,"width":10,"height":10}]}', {
+      zoom: 1,
+      scrollX: 0,
+      scrollY: 0,
+      width: 800,
+      height: 600,
+    });
+    expect(got.ok && got.data.scrollToContent).toBe(true);
+    expect(got.ok && got.data.appState).toEqual({});
+  });
+
   it("fills in what a hand-written scene leaves out", () => {
     const got = parse('{"elements":[]}');
     expect(got.ok && got.data.files).toEqual({});

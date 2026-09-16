@@ -6,6 +6,7 @@ import type { AppState, BinaryFiles } from "@excalidraw/excalidraw/types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { parse } from "../lib/sketch";
+import { recall, remember, sameView, type View } from "../lib/sketchView";
 import { useWindowTheme } from "../lib/windowTheme";
 
 import "../sketch.css";
@@ -50,6 +51,7 @@ export default function SketchEditor({
   generation,
   onChange,
   drain,
+  viewKey,
 }: {
   /** The `.excalidraw` file as last read. Only read when `generation` moves. */
   text: string;
@@ -71,11 +73,47 @@ export default function SketchEditor({
    * `flush` — so a stroke finished just before a switch is saved with the rest.
    */
   drain?: RefObject<(() => void) | null>;
+  /**
+   * What this sketch's zoom and pan are kept under — see `sketchView.ts`.
+   * Without one, the sketch opens centred on its content every time.
+   */
+  viewKey?: string;
 }) {
   const theme = useWindowTheme();
-  // Keyed on `generation` alone, deliberately — see the prop.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const parsed = useMemo(() => parse(text), [generation]);
+
+  /*
+   * Where the canvas is being looked at, as of Excalidraw's last report.
+   *
+   * Held for two readers. A reload of this same sketch — the other version
+   * taken, a turn's rewrite arriving — puts the canvas back here rather than
+   * re-centring it under somebody mid-look. And the store, which is written
+   * once the view has stopped moving and on the way out, so the next opening
+   * starts here too.
+   */
+  const view = useRef<View | null>(null);
+  /** Whether `view` has moved since it was last written to the store. */
+  const viewMoved = useRef(false);
+  const viewTimer = useRef<number | null>(null);
+  const key = useRef(viewKey);
+  key.current = viewKey;
+
+  /** Writes the view now, if it has moved since the last write. */
+  const keepView = useCallback(() => {
+    if (viewTimer.current !== null) window.clearTimeout(viewTimer.current);
+    viewTimer.current = null;
+    if (!viewMoved.current || !view.current || !key.current) return;
+    viewMoved.current = false;
+    remember(key.current, view.current);
+  }, []);
+
+  // Keyed on `generation` alone, deliberately — see the prop. The view is the
+  // live one when this sketch has been on screen, and the stored one when it
+  // is only now being opened.
+  const parsed = useMemo(
+    () => parse(text, view.current ?? (viewKey ? recall(viewKey) : null)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [generation],
+  );
 
   /*
    * What the drawing looked like at the last call that mattered.
@@ -93,14 +131,21 @@ export default function SketchEditor({
   const emit = useRef(onChange);
   emit.current = onChange;
 
-  /** Runs the waiting serialisation now, if there is one. */
+  /**
+   * Runs the waiting serialisation now, if there is one, and writes the view.
+   *
+   * The view goes with it because the notebook drains before a rename — and a
+   * view written afterwards, under the name being left, is one the renamed
+   * sketch would never find.
+   */
   const settle = useCallback(() => {
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = null;
     const serialise = pending.current;
     pending.current = null;
     if (serialise) emit.current(serialise());
-  }, []);
+    keepView();
+  }, [keepView]);
 
   // A reload starts the comparison over, and throws away a change waiting to be
   // serialised: it belongs to the scene the reload replaced, and handing it over
@@ -185,6 +230,22 @@ export default function SketchEditor({
           openExternally(element.link);
         }}
         onChange={(elements, appState, files) => {
+          // The view first, and on its own track: a pan or a zoom is exactly
+          // the change the scene key below ignores, so that nothing about
+          // looking at a drawing ever writes to its file.
+          const now = viewOf(appState);
+          if (!sameView(now, view.current)) {
+            // The first report after opening is where the canvas was put, not
+            // somewhere it was moved to. Kept, but not written.
+            const opening = view.current === null;
+            view.current = now;
+            if (!opening) {
+              viewMoved.current = true;
+              if (viewTimer.current !== null) window.clearTimeout(viewTimer.current);
+              viewTimer.current = window.setTimeout(keepView, KEEP_VIEW_AFTER_MS);
+            }
+          }
+
           const key = keyOf(elements, appState, files);
           // The first call after a load is Excalidraw reporting what it was
           // given. Saving that would rewrite a file nobody touched into
@@ -221,6 +282,26 @@ export default function SketchEditor({
 
 /** How long a changed drawing waits before it is serialised. */
 const SERIALIZE_AFTER_MS = 200;
+
+/**
+ * How long the view has to stop moving before it is written down.
+ *
+ * Longer than the drawing's wait, because a pan is a stream of changes with no
+ * natural end, and each write is a parse and an encode of every sketch's view.
+ * Leaving the sketch writes it at once regardless — see `settle`.
+ */
+const KEEP_VIEW_AFTER_MS = 500;
+
+/** The part of Excalidraw's state that says where it is being looked at. */
+function viewOf(appState: AppState): View {
+  return {
+    zoom: appState.zoom.value,
+    scrollX: appState.scrollX,
+    scrollY: appState.scrollY,
+    width: appState.width,
+    height: appState.height,
+  };
+}
 
 /** What a change has to move to be worth serialising. */
 function keyOf(

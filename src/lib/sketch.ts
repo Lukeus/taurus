@@ -1,5 +1,7 @@
 import type { BinaryFiles, ExcalidrawInitialDataState } from "@excalidraw/excalidraw/types";
 
+import { shows, type View } from "./sketchView";
+
 /**
  * A sketch file, read into what Excalidraw is given on load — or why it cannot be.
  *
@@ -18,7 +20,7 @@ export type Parsed =
   | { ok: true; data: ExcalidrawInitialDataState }
   | { ok: false; why: string };
 
-export function parse(text: string): Parsed {
+export function parse(text: string, view: View | null = null): Parsed {
   let data: unknown;
   try {
     data = JSON.parse(text);
@@ -40,13 +42,31 @@ export function parse(text: string): Parsed {
     appState?: ExcalidrawInitialDataState["appState"];
     files?: BinaryFiles;
   };
+  const appState = scene.appState ?? {};
+  const files = scene.files ?? {};
+  // Back where it was left, if that still shows some of the drawing — see
+  // `sketchView.ts` for why the view is kept here rather than in the file.
+  // Otherwise centred on the content: a sketch opened scrolled to wherever its
+  // author left the viewport can open onto empty canvas with the drawing off
+  // to one side.
+  if (view && shows(view, scene.elements ?? [])) {
+    return {
+      ok: true,
+      data: {
+        elements: scene.elements,
+        appState: {
+          ...appState,
+          zoom: { value: view.zoom as never },
+          scrollX: view.scrollX,
+          scrollY: view.scrollY,
+        },
+        files,
+        scrollToContent: false,
+      },
+    };
+  }
   return {
     ok: true,
-    data: {
-      elements: scene.elements,
-      appState: scene.appState ?? {},
-      files: scene.files ?? {},
-      scrollToContent: true,
-    },
+    data: { elements: scene.elements, appState, files, scrollToContent: true },
   };
 }

@@ -94,6 +94,24 @@ const SHOTS = [
   { name: "sketch", shot: "sketch", theme: "dark" },
   // A sketch drawn into a note being read, which is the embed's only check.
   { name: "notes-sketch", shot: "notes-sketch", theme: "dark" },
+  // The note editor's block list, open under a slash mid-note. The only check
+  // of where it lands — the editor wraps, so the caret is found by layout, and
+  // jsdom has none.
+  { name: "notes-complete", shot: "notes-complete", theme: "dark" },
+  // A note in Write and Read side by side, with a ticked task and a note link
+  // in the rendered half.
+  { name: "notes-split", shot: "notes-split", theme: "dark" },
+  // Read, reached with ⌘E from an editor scrolled down to the diagram: the
+  // check that the two views line up by their headings rather than both
+  // opening at the top.
+  { name: "notes-kept", shot: "notes-kept", theme: "dark" },
+  // A sketch with the list folded: the check that folding it is enough to take
+  // Excalidraw out of its compact layout and give it back its zoom controls.
+  // The one shot taken wider than the rest. Headless Chrome leaves the page
+  // about 750 of the window's 840, so every canvas here is under 500 tall, and
+  // then only a width of 1000 clears the line — which a 1280 window does not
+  // reach even with the list folded, and a 1440 one does.
+  { name: "sketch-wide", shot: "sketch-wide", theme: "dark", width: 1440 },
   // The moment the two writers meet: Taurus wrote the file while there was
   // typing in it, so both versions exist and neither has been chosen. The only
   // picture of the rule the whole write slice is built around.
@@ -177,7 +195,7 @@ process.on("SIGINT", () => {
 
 await waitForServer(`http://localhost:${PORT}/`);
 
-for (const { name, shot, theme } of SHOTS) {
+for (const { name, shot, theme, width = WIDTH } of SHOTS) {
   const file = join(out, `${name}.png`);
   await run(chrome, [
     "--headless",
@@ -187,7 +205,7 @@ for (const { name, shot, theme } of SHOTS) {
     // identical file and git does not see a diff in every image every time.
     "--force-device-scale-factor=2",
     "--font-render-hinting=none",
-    `--window-size=${WIDTH},${HEIGHT}`,
+    `--window-size=${width},${HEIGHT}`,
     `--screenshot=${file}`,
     // Generous: the page marks itself ready after its startup round trips, and
     // virtual time runs far faster than the wall clock.

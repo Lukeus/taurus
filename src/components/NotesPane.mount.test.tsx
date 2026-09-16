@@ -8,6 +8,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Notebook } from "../state/notebook";
+import { recall, remember, viewKey } from "../lib/sketchView";
+import { APPLE } from "../lib/keys";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -33,11 +35,13 @@ vi.mock("./SketchEditor", () => ({
     generation,
     onChange,
     drain,
+    viewKey,
   }: {
     text: string;
     generation: number;
     onChange: (text: string) => void;
     drain?: { current: (() => void) | null };
+    viewKey?: string;
   }) => {
     // A stroke the real editor would still be holding on its own debounce,
     // handed over only when the notebook asks for it.
@@ -49,7 +53,7 @@ vi.mock("./SketchEditor", () => ({
       };
     }
     return (
-      <div className="stub-sketch" data-generation={generation}>
+      <div className="stub-sketch" data-generation={generation} data-view-key={viewKey}>
         <pre>{text}</pre>
         <button
           onClick={() =>
@@ -731,6 +735,257 @@ describe("a sketch", () => {
     const canvas = host.querySelector(".stub-sketch");
     expect(Number(canvas?.getAttribute("data-generation"))).toBeGreaterThan(before);
     expect(canvas?.textContent).toContain("theirs");
+  });
+});
+
+/*
+ * Where a sketch was being looked at, kept on this machine rather than in the
+ * file. The zoom and pan themselves are Excalidraw's and cannot be produced
+ * here — the stub has no canvas — so what is under test is the bookkeeping the
+ * notebook owns: which key a sketch's view is under, and that the key follows
+ * the file through a rename, a delete and a new sketch with an old name.
+ */
+describe("a sketch's view", () => {
+  const FOLDER = "/code/taurus";
+  const VIEW = { zoom: 2, scrollX: -40, scrollY: -10, width: 800, height: 600 };
+  const keyFor = (name: string) => viewKey({ scope: "workspace", name }, FOLDER);
+
+  beforeEach(() => localStorage.clear());
+
+  it("is looked for under the sketch's own notebook and name", async () => {
+    answering({
+      list_pages: () => [ref("Flow", "workspace", "sketch")],
+      read_page: () => page("Flow", EMPTY, "workspace", "sketch"),
+    });
+    const { host, click } = await mount({ workspace: FOLDER });
+    await click(host.querySelector(".notes-row"));
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
+    expect(host.querySelector(".stub-sketch")?.getAttribute("data-view-key")).toBe(keyFor("Flow"));
+  });
+
+  it("follows the sketch to its new name, and goes when the sketch does", async () => {
+    remember(keyFor("Flow"), VIEW);
+    answering({
+      list_pages: () => [ref("Flow", "workspace", "sketch")],
+      read_page: (args: never) =>
+        page((args as { name: string }).name, EMPTY, "workspace", "sketch"),
+      rename_page: (args: never) => {
+        const { to } = args as { to: string };
+        return [page(to, EMPTY, "workspace", "sketch"), [ref(to, "workspace", "sketch")]];
+      },
+      forget_page: () => [],
+    });
+    const { host, click, type, press } = await mount({ workspace: FOLDER });
+    await click(host.querySelector(".notes-row"));
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
+
+    await click(saying(host, "Rename"));
+    const field = host.querySelector(".notes-rename");
+    await type(field, "Flows");
+    await press(field, "Enter");
+    await vi.waitFor(() => expect(host.querySelector(".notes-name")?.textContent).toBe("Flows"));
+    expect(recall(keyFor("Flow"))).toBeNull();
+    expect(recall(keyFor("Flows"))).toEqual(VIEW);
+
+    await click(saying(host, "Delete"));
+    await click(saying(host, "Delete it"));
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).toBeNull());
+    expect(recall(keyFor("Flows"))).toBeNull();
+  });
+
+  it("is not inherited by a new sketch given a name an old one had", async () => {
+    // Left behind by a sketch deleted while its editor was still writing it.
+    remember(keyFor("Flow"), VIEW);
+    answering({
+      list_pages: () => [],
+      create_page: (args: never) => {
+        const { name } = args as { name: string };
+        return [page(name, EMPTY, "workspace", "sketch"), [ref(name, "workspace", "sketch")]];
+      },
+      read_page: (args: never) =>
+        page((args as { name: string }).name, EMPTY, "workspace", "sketch"),
+    });
+    const { host, click, type, press } = await mount({ workspace: FOLDER });
+    await click(host.querySelector(".notes-new"));
+    await click(saying(host, "Sketch"));
+    const field = host.querySelector(".notes-make-name");
+    await type(field, "Flow");
+    await press(field, "Enter");
+    await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
+    expect(recall(keyFor("Flow"))).toBeNull();
+  });
+});
+
+describe("room to work", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("folds the list away while a file is open, and keeps it folded next time", async () => {
+    answering({
+      list_pages: () => [ref("One")],
+      read_page: () => page("One", "# One\n"),
+    });
+    const first = await mount();
+    await first.click(first.host.querySelector(".notes-row"));
+    await vi.waitFor(() => expect(first.host.querySelector("textarea")).not.toBeNull());
+    const fold = first.host.querySelector(".notes-fold");
+    expect(fold?.getAttribute("aria-expanded")).toBe("true");
+    await first.click(fold);
+    expect(first.host.querySelector(".notes-list")).toBeNull();
+    expect(first.host.querySelector(".notes-fold")?.getAttribute("aria-label")).toBe("Show the list");
+
+    cleanup.forEach((fn) => fn());
+    cleanup = [];
+    const second = await mount();
+    // Nothing is open, and the list is the only thing that can open anything.
+    expect(second.host.querySelector(".notes-list")).not.toBeNull();
+    await second.click(second.host.querySelector(".notes-row"));
+    await vi.waitFor(() => expect(second.host.querySelector("textarea")).not.toBeNull());
+    expect(second.host.querySelector(".notes-list")).toBeNull();
+  });
+
+  it("offers a note being written the sketches in its own notebook, and no others", async () => {
+    answering({
+      list_pages: () => [
+        ref("One"),
+        ref("Flow", "workspace", "sketch"),
+        ref("Mine", "global", "sketch"),
+      ],
+      read_page: () => page("One", ""),
+    });
+    const { host, click, type } = await mount();
+    await click(host.querySelector(".notes-row"));
+    await vi.waitFor(() => expect(host.querySelector("textarea")).not.toBeNull());
+    await type(host.querySelector("textarea"), "![");
+    expect([...host.querySelectorAll(".prose-label")].map((row) => row.textContent)).toEqual([
+      "Flow",
+    ]);
+  });
+});
+
+describe("write, read, or both", () => {
+  const TEXT =
+    "# Plan\n\n- [ ] ship it\n\nSee [the store](<Token store.md>) and [the old plan](<Gone.md>).\n";
+
+  const openPlan = async () => {
+    answering({
+      list_pages: () => [ref("Plan"), ref("Token store")],
+      read_page: (args: never) => {
+        const { name } = args as { name: string };
+        return page(name, name === "Plan" ? TEXT : "# Token store\n");
+      },
+      save_page: (args: never) => ({
+        type: "written",
+        page: { ...page("Plan", (args as { text: string }).text), fingerprint: "50-2000" },
+      }),
+    });
+    const mounted = await mount();
+    await mounted.click(mounted.host.querySelector(".notes-row"));
+    await vi.waitFor(() => expect(mounted.host.querySelector("textarea")?.value).toBe(TEXT));
+    return mounted;
+  };
+
+  const selected = (host: HTMLElement) =>
+    host.querySelector('.notes-modes [aria-selected="true"]')?.textContent;
+
+  /** The platform's shortcut, pressed wherever `target` is. */
+  const chord = async (key: string, target: EventTarget = window) => {
+    await act(async () => {
+      target.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key,
+          metaKey: APPLE,
+          ctrlKey: !APPLE,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+  };
+
+  it("shows both side by side, and keeps one editor through every switch", async () => {
+    // Remounted, the editor lost its caret and its undo history on every look
+    // at the rendered note.
+    const { host, click } = await openPlan();
+    const editor = host.querySelector("textarea");
+
+    await click(saying(host, "Split"));
+    expect(host.querySelector(".notes-read h1")?.textContent).toBe("Plan");
+    expect(host.querySelector("textarea")).toBe(editor);
+
+    await click(saying(host, "Read"));
+    expect(host.querySelector("textarea")).toBe(editor);
+    expect(host.querySelector(".notes-write")?.classList.contains("shut")).toBe(true);
+
+    await click(saying(host, "Write"));
+    expect(host.querySelector(".notes-read")).toBeNull();
+    expect(host.querySelector("textarea")).toBe(editor);
+  });
+
+  it("switches with the keys, and not while somebody types somewhere else", async () => {
+    const { host } = await openPlan();
+    await chord("e");
+    expect(selected(host)).toBe("Read");
+    await chord("e");
+    expect(selected(host)).toBe("Write");
+    await chord("\\");
+    expect(selected(host)).toBe("Split");
+    // From Split, ⌘E goes to Read; ⌘\ goes back to where Split was entered from.
+    await chord("\\");
+    expect(selected(host)).toBe("Write");
+
+    // The composer under the pane, say. Its keys are its own.
+    const outside = document.createElement("textarea");
+    document.body.appendChild(outside);
+    await chord("e", outside);
+    expect(selected(host)).toBe("Write");
+    outside.remove();
+  });
+
+  it("ticks a task in Read, into the note's own text", async () => {
+    const { host, click } = await openPlan();
+    await click(saying(host, "Read"));
+    const box = host.querySelector<HTMLInputElement>(".notes-read input[type=checkbox]");
+    expect(box?.disabled).toBe(false);
+
+    await click(box);
+    const ticked = TEXT.replace("- [ ] ship it", "- [x] ship it");
+    expect(host.querySelector("textarea")?.value).toBe(ticked);
+    expect(host.querySelector<HTMLInputElement>(".notes-read input[type=checkbox]")?.checked).toBe(
+      true,
+    );
+    // And saved the way typing is.
+    await vi.waitFor(
+      () =>
+        expect(invoke).toHaveBeenCalledWith(
+          "save_page",
+          expect.objectContaining({ name: "Plan", text: ticked }),
+        ),
+      { timeout: 3000 },
+    );
+  });
+
+  it("opens the note a link names, and not one the notebook does not have", async () => {
+    const { host, click } = await openPlan();
+    await click(saying(host, "Read"));
+    const link = (text: string) =>
+      [...host.querySelectorAll(".notes-read a")].find((a) => a.textContent === text);
+
+    expect(link("the old plan")?.classList.contains("missing")).toBe(true);
+    await click(link("the old plan"));
+    expect(invoke).not.toHaveBeenCalledWith("read_page", expect.objectContaining({ name: "Gone" }));
+
+    await click(link("the store"));
+    await vi.waitFor(() =>
+      expect(host.querySelector(".notes-name")?.textContent).toBe("Token store"),
+    );
+  });
+
+  it("offers the notebook's other notes while a link is being written", async () => {
+    const { host, type } = await openPlan();
+    await type(host.querySelector("textarea"), `${TEXT}\nAlso [this](`);
+    expect([...host.querySelectorAll(".prose-label")].map((row) => row.textContent)).toEqual([
+      "Token store",
+    ]);
   });
 });
 
