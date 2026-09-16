@@ -57,6 +57,7 @@ pub async fn create_session(
             cancel: Arc::new(Mutex::new(CancellationToken::new())),
             log: Arc::new(Mutex::new(log)),
             live: Mutex::new(None),
+            unattended: Arc::new(AtomicBool::new(false)),
             released: AtomicBool::new(false),
             // A conversation starts where it starts; a switch is what puts
             // anything in here.
@@ -236,6 +237,7 @@ pub async fn resume_session(
                 cancel: Arc::new(Mutex::new(CancellationToken::new())),
                 log: Arc::new(Mutex::new(log)),
                 live: Mutex::new(None),
+                unattended: Arc::new(AtomicBool::new(false)),
                 released: AtomicBool::new(false),
                 switches: Mutex::new(switches),
             }));
@@ -354,6 +356,10 @@ pub async fn send_message(
             TurnRef {
                 session_id: &session_id,
                 prompt: &text,
+                // The conversation's own switch, not a copy of it: turning it
+                // on is something somebody does on their way out, while the
+                // turn it applies to is already running.
+                unattended: Some(entry.unattended.clone()),
             },
         )
         .await
@@ -492,6 +498,13 @@ pub struct Attached {
     /// else. What it costs is the start of that round on screen; the transcript
     /// has it as soon as the round is recorded.
     pub dropped: usize,
+    /// Whether this conversation is running with nobody to answer it.
+    ///
+    /// A fact about the conversation rather than about the turn, answered here
+    /// because this is what every open asks. It is not persisted, so it is
+    /// false for anything opened in a new process. See
+    /// [`crate::state::SessionEntry::unattended`].
+    pub unattended: bool,
 }
 
 /// Watches the turn running in a conversation, from a window that did not start
@@ -518,8 +531,12 @@ pub async fn attach_session(
         return Ok(Attached {
             turn: None,
             dropped: 0,
+            // A conversation with no live entry has no switch either, and a
+            // process that has just started has not been told to leave.
+            unattended: false,
         });
     };
+    let unattended = entry.unattended.load(Ordering::Relaxed);
     // Cloned out rather than held: `attach` takes the fan's own lock, and
     // holding this one across it would put every attach behind every publish.
     let live = entry.live.lock().await.clone();
@@ -527,6 +544,7 @@ pub async fn attach_session(
         return Ok(Attached {
             turn: None,
             dropped: 0,
+            unattended,
         });
     };
 
@@ -535,7 +553,29 @@ pub async fn attach_session(
     Ok(Attached {
         turn: Some(live.as_ref().into()),
         dropped,
+        unattended,
     })
+}
+
+/// Sets whether a conversation runs with nobody to answer it.
+///
+/// Held on the conversation rather than passed with a message, because it is
+/// set in the middle of the turn it applies to: the moment somebody decides to
+/// leave is a moment when something is already running.
+///
+/// It widens nothing — see [`SessionEntry::unattended`] — so there is no
+/// standing decision to record and nothing is written to disk. A conversation
+/// reopened tomorrow asks again.
+#[tauri::command]
+pub async fn set_unattended(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    unattended: bool,
+) -> CmdResult<()> {
+    let entry = state.session(&session_id)?;
+    entry.unattended.store(unattended, Ordering::Relaxed);
+    info!(session = %session_id, unattended, "unattended set");
+    Ok(())
 }
 
 /// Lets go of a conversation whose release was waiting for its turn.

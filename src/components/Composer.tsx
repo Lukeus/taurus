@@ -44,6 +44,7 @@ export function Composer({
   ready,
   vision,
   workspace,
+  unattended,
   library,
   onScreen,
   draft,
@@ -53,6 +54,7 @@ export function Composer({
   queued,
   onPark,
   onPickWorkspace,
+  onUnattended,
   onSend,
   onSendQueued,
   onUnqueue,
@@ -72,6 +74,14 @@ export function Composer({
    */
   vision: boolean;
   workspace: string | null;
+  /**
+   * Whether this conversation runs with nobody to answer it.
+   *
+   * Beside Stop because it belongs to the same question — what happens while
+   * this works — and because the moment somebody wants it is the moment they
+   * are looking at a turn they are about to walk away from.
+   */
+  unattended: boolean;
   /**
    * A signature of how many skills and agents there are.
    *
@@ -128,6 +138,7 @@ export function Composer({
   queued: Outgoing | null;
   onPark: (sessionKey: string, draft: Parked) => void;
   onPickWorkspace: () => void;
+  onUnattended: (unattended: boolean) => void;
   onSend: (
     text: string,
     images: Attachment[],
@@ -433,6 +444,21 @@ export function Composer({
             }
           >
             ▤ {workspace ? basename(workspace) : "no workspace"}
+          </button>
+          {/* Two words for the whole of what a turn does when it reaches
+              something it needs a person for. Here rather than in Settings
+              because it is not a preference: it is about this conversation and
+              the next few hours, and it is decided while looking at a turn. */}
+          <button
+            className={`pill${unattended ? " on" : ""}`}
+            onClick={() => onUnattended(!unattended)}
+            data-tip={
+              unattended
+                ? "Running unattended: anything that needs a decision is refused rather than left waiting, and questions are skipped. Nothing extra is allowed."
+                : "You are asked before anything that needs a decision, and the turn waits. Switch to unattended to leave a long one running."
+            }
+          >
+            {unattended ? "◐ unattended" : "◑ asks you"}
           </button>
           <div className="spacer" />
           {/* The hint is the only place the slash namespace announces itself,

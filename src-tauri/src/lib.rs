@@ -261,6 +261,7 @@ pub fn run() {
             commands::send_message,
             commands::attach_session,
             commands::running_sessions,
+            commands::set_unattended,
             commands::cancel_session,
             commands::close_session,
             commands::delete_session,

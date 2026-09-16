@@ -1,6 +1,7 @@
 //! The tool trait, its error type, and the context handed to every call.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -11,7 +12,7 @@ use ts_rs::TS;
 
 use crate::budget::OutputBudget;
 use crate::diff::FileDiff;
-use crate::permission::PermissionEngine;
+use crate::permission::{Asking, PermissionEngine};
 
 /// What a tool does to the world. Drives the permission tier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
@@ -223,8 +224,18 @@ pub struct ToolContext {
     /// that a delegate could route around is not a guard.
     pub hooks: Option<Arc<taurus_hooks::HookRunner>>,
     /// The conversation these calls belong to, passed to hooks so one can tell
-    /// two sessions apart. `None` wherever there is no session.
+    /// two sessions apart, and carried onto every permission request so a
+    /// window can say which conversation is asking. `None` wherever there is no
+    /// session.
     pub session_id: Option<String>,
+    /// Whether a call that needs a decision is refused rather than left waiting
+    /// for one. See [`Asking::unattended`].
+    ///
+    /// Shared rather than copied, so it can be turned on while the turn is
+    /// already running — which is the whole point, since whoever sets it is
+    /// about to walk away — and so a delegate answers to the same switch its
+    /// parent does.
+    pub unattended: Arc<AtomicBool>,
     /// The id of the call this context was built for.
     ///
     /// Only [`crate::builtin::present::AskUser`] reads it, and only because it
@@ -266,6 +277,7 @@ impl ToolContext {
             progress: None,
             hooks: None,
             session_id: None,
+            unattended: Arc::new(AtomicBool::new(false)),
             call_id: None,
             budget: OutputBudget::unknown(),
         }
@@ -290,6 +302,30 @@ impl ToolContext {
     pub fn with_session(mut self, id: impl Into<String>) -> Self {
         self.session_id = Some(id.into());
         self
+    }
+
+    /// Hands this turn the switch that says whether anybody is there.
+    ///
+    /// Taken by handle rather than by value: the caller keeps it and can turn
+    /// it on mid-turn.
+    #[must_use]
+    pub fn with_unattended(mut self, switch: Arc<AtomicBool>) -> Self {
+        self.unattended = switch;
+        self
+    }
+
+    /// Whether this turn is running with nobody to answer it.
+    pub fn unattended(&self) -> bool {
+        self.unattended.load(Ordering::Relaxed)
+    }
+
+    /// The turn's half of a permission question: which conversation is asking,
+    /// and whether anybody is there to answer. See [`Asking`].
+    pub fn asking(&self) -> Asking {
+        Asking {
+            session: self.session_id.clone(),
+            unattended: self.unattended(),
+        }
     }
 
     /// Widens what read-only tools may open, without widening what may change.

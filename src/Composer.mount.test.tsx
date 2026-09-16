@@ -65,6 +65,8 @@ function mount(options: Options = {}) {
         onScreen={null}
         draft={null}
         onPickWorkspace={() => {}}
+        unattended={false}
+        onUnattended={() => {}}
         onSend={(text, images, onScreen) => sent.push({ text, images, onScreen })}
         onStop={() => {}}
         onUsage={() => {}}

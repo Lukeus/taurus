@@ -959,14 +959,21 @@ the backlog, and they're the minority.
   attaching afterwards says so where the gap is instead of quietly beginning
   mid-sentence. Reopening again once the round is recorded reads all of it from
   the transcript. The cap only ever costs what is on screen, never the record.
-- **A permission prompt doesn't say which conversation is asking.** Now that a
-  turn keeps running in a conversation you've left, a prompt can arrive from
-  one that isn't on screen, and the dialog names the call rather than the
-  conversation: you get "run `cargo test`" with no way to tell which of two
-  running turns wants it. The call itself is the thing being decided, so the
-  decision is sound; what's missing is where it came from. It needs a
-  conversation's id on the request, which the prompt is built without — see
-  `UiPrompts` in the desktop app.
+- **Unattended only ever refuses.** A conversation set to run without you
+  refuses anything that would have asked, and there's no way to say "allow this
+  much while I'm gone". That's deliberate: a switch that could widen what a
+  turn may do would be a second permission surface, trusted as much as
+  `permissions.json` and kept in step with it by hand. The way to let a long
+  run do more is to grant it while you're there — "always" on the prompt — and
+  then leave. The cost is that the first time a run needs something new, it
+  gets a refusal and you find out in the morning.
+- **A turn running unattended doesn't say so in its transcript.** The refusals
+  do: each one reads "nobody is there to allow this" where the call would have
+  been. But the switch itself leaves no line, so a conversation read back a
+  week later shows a turn that refused its own tools with nothing saying why
+  that was the arrangement. It's a per-conversation setting rather than
+  anything the transcript records, and it isn't saved, so reopening the
+  conversation shows the refusals and no trace of the decision behind them.
 - **A query card stands alone, so a query-heavy turn is a stack of cards.**
   Any tool call that draws a view is left out of the folded run header.
   That's what stops a table getting filed under "6 steps · 11s" behind a

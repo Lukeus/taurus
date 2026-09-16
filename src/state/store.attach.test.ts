@@ -30,7 +30,9 @@ const STARTED = 1_700_000_000;
 
 /** What every command a test is not about answers with. */
 const idle = (command: string): Promise<unknown> => {
-  if (command === "attach_session") return Promise.resolve({ turn: null, dropped: 0 });
+  if (command === "attach_session") {
+    return Promise.resolve({ turn: null, dropped: 0, unattended: false });
+  }
   if (command === "resume_session") {
     return Promise.resolve({ ...session("other"), messages: [], switches: [] });
   }
@@ -72,7 +74,7 @@ describe("opening a conversation that is already working", () => {
     // read says nothing about whether anything is still writing to it.
     invoke.mockImplementation((command: string) =>
       command === "attach_session"
-        ? Promise.resolve({ turn: { started_at: STARTED, iteration: 4 }, dropped: 0 })
+        ? Promise.resolve({ turn: { started_at: STARTED, iteration: 4 }, dropped: 0, unattended: false })
         : idle(command),
     );
 
@@ -98,7 +100,7 @@ describe("opening a conversation that is already working", () => {
     // saying so.
     invoke.mockImplementation((command: string) =>
       command === "attach_session"
-        ? Promise.resolve({ turn: { started_at: STARTED, iteration: 9 }, dropped: 12 })
+        ? Promise.resolve({ turn: { started_at: STARTED, iteration: 9 }, dropped: 12, unattended: false })
         : idle(command),
     );
 
@@ -122,7 +124,7 @@ describe("opening a conversation that is already working", () => {
     const attaching = useStore.getState().attach(OPEN.id);
     // Opened, then left again before the answer came back.
     useStore.setState({ session: session("elsewhere") });
-    answer({ turn: { started_at: STARTED, iteration: 1 }, dropped: 0 });
+    answer({ turn: { started_at: STARTED, iteration: 1 }, dropped: 0, unattended: false });
     await attaching;
 
     expect(useStore.getState().busy).toBe(false);
@@ -179,7 +181,7 @@ describe("a turn left running in another conversation", () => {
       command === "send_message"
         ? running
         : command === "attach_session"
-          ? Promise.resolve({ turn: { started_at: STARTED, iteration: 2 }, dropped: 0 })
+          ? Promise.resolve({ turn: { started_at: STARTED, iteration: 2 }, dropped: 0, unattended: false })
           : idle(command),
     );
 
@@ -215,5 +217,53 @@ describe("a turn left running in another conversation", () => {
     // The transcript it belongs to keeps the error, and reopening reads it.
     expect(useStore.getState().entries).toEqual([]);
     expect(useStore.getState().busy).toBe(false);
+  });
+});
+
+describe("leaving a conversation to run without you", () => {
+  it("is read back from the conversation, not kept by the window", async () => {
+    // Two conversations can disagree about it, and the one you left keeps
+    // whatever it was told — so the window asks on every open.
+    invoke.mockImplementation((command: string) =>
+      command === "attach_session"
+        ? Promise.resolve({
+            turn: { started_at: STARTED, iteration: 3 },
+            dropped: 0,
+            unattended: true,
+          })
+        : idle(command),
+    );
+
+    await useStore.getState().attach(OPEN.id);
+
+    expect(useStore.getState().unattended).toBe(true);
+  });
+
+  it("answers the question already on screen, because that is what holds the turn", async () => {
+    // Turning this on is something somebody does on their way out. A dialog
+    // left up is exactly what would stop the turn they meant to leave running.
+    invoke.mockImplementation(idle);
+    useStore.setState({
+      permission: { id: "p1", tool: "run_command" } as never,
+    });
+
+    await useStore.getState().setUnattended(true);
+
+    expect(useStore.getState().permission).toBeNull();
+    const answered = invoke.mock.calls.find(([name]) => name === "respond_permission");
+    expect(answered?.[1]).toMatchObject({ response: { id: "p1", decision: "deny" } });
+  });
+
+  it("leaves a question alone when somebody is coming back to it", async () => {
+    invoke.mockImplementation(idle);
+    useStore.setState({
+      unattended: true,
+      permission: { id: "p1", tool: "run_command" } as never,
+    });
+
+    await useStore.getState().setUnattended(false);
+
+    expect(useStore.getState().permission).not.toBeNull();
+    expect(invoke.mock.calls.map(([name]) => name)).not.toContain("respond_permission");
   });
 });

@@ -366,6 +366,19 @@ export function sendMessage(
 }
 
 /**
+ * Sets whether a conversation runs with nobody to answer it.
+ *
+ * On, a call that needs a decision is refused instead of waiting for one, and
+ * a question card is skipped rather than parked. It allows nothing extra:
+ * everything a standing grant already permits never reaches a prompt, so this
+ * only decides what becomes of the calls that would have been asked about.
+ *
+ * Not persisted. A conversation reopened in a new window asks again.
+ */
+export const setUnattended = (sessionId: string, unattended: boolean) =>
+  invoke<void>("set_unattended", { sessionId, unattended });
+
+/**
  * Which conversations have a turn running in them.
  *
  * Asked when the window starts and when it re-reads the rail; every change

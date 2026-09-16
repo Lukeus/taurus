@@ -160,6 +160,10 @@ impl ToolRegistry {
         // ones registered by skills and MCP servers.
         let input = crate::coerce::coerce(input, &schema);
 
+        // Read before the race below rather than inside it, where it would be a
+        // temporary. Which conversation is asking, and whether anybody is there
+        // to answer — see `Asking`.
+        let asking = ctx.asking();
         // Raced against Stop, because it can wait on a person for as long as
         // they leave a dialog up. Unraced, a question nobody answers holds the
         // turn past the Stop button, with an answer the only way out. Dropping
@@ -168,7 +172,7 @@ impl ToolRegistry {
         tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
-            checked = ctx.permissions.check(tool.as_ref(), &input) => checked?,
+            checked = ctx.permissions.check(tool.as_ref(), &input, &asking) => checked?,
         }
 
         // After the permission engine, never before it. A hook here can refuse

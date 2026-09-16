@@ -28,6 +28,7 @@ fn open(model: &str) -> SessionEntry {
         cancel: Arc::new(Mutex::new(CancellationToken::new())),
         log: Arc::new(Mutex::new(SessionLog::disabled())),
         live: Mutex::new(None),
+        unattended: Arc::new(AtomicBool::new(false)),
         released: AtomicBool::new(false),
         switches: Mutex::new(Vec::new()),
     }

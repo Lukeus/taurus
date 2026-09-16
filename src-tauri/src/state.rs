@@ -67,6 +67,19 @@ pub struct SessionEntry {
     /// the window can reload, or move to another conversation, and find its way
     /// back to this. See [`crate::live`].
     pub live: Mutex<Option<Arc<Live>>>,
+    /// Whether this conversation runs without anybody to answer it.
+    ///
+    /// Off by default and never persisted: it is a statement about the next few
+    /// hours rather than about the project, and a conversation reopened
+    /// tomorrow should be asked again. Shared with the turn rather than read
+    /// per turn, because the moment it is set is usually a moment when a turn
+    /// is already running — somebody on their way out.
+    ///
+    /// It widens nothing. What a standing grant already permits never reaches a
+    /// prompt, so this only decides what becomes of the calls that would have
+    /// been asked about, and the answer it gives is no. See
+    /// [`taurus_tools::Asking::unattended`].
+    pub unattended: Arc<AtomicBool>,
     /// Set when the window has let go of this conversation while a turn was
     /// still running.
     ///

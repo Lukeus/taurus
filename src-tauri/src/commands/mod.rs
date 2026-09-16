@@ -1,7 +1,7 @@
 //! Tauri commands: the entire surface the frontend can reach.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use dashmap::mapref::entry::Entry;

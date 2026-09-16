@@ -210,6 +210,18 @@ interface Store {
    */
   busy: boolean;
   /**
+   * Whether the conversation on screen runs with nobody to answer it.
+   *
+   * What it changes is what happens to a call that needs a decision: refused,
+   * rather than left waiting for one. It allows nothing extra — a standing
+   * grant already answers everything it covers without reaching a prompt — so
+   * the only thing this can do to a turn is narrow it.
+   *
+   * Per conversation and not persisted: it is a statement about the next few
+   * hours rather than about the project.
+   */
+  unattended: boolean;
+  /**
    * Every conversation with a turn running in it, this one or another.
    *
    * A turn is no longer tied to being looked at: leaving a conversation leaves
@@ -302,6 +314,14 @@ interface Store {
    * nothing running answers so and this does nothing.
    */
   attach: (sessionId: string) => Promise<void>;
+  /**
+   * Says whether anybody is here to answer this conversation.
+   *
+   * Turning it on while a question is on screen answers that question with a
+   * refusal: the point of the switch is that the turn carries on without you,
+   * and a dialog left up is exactly what stops it.
+   */
+  setUnattended: (unattended: boolean) => Promise<void>;
   /**
    * Erases a saved conversation. Deleting the open one starts a replacement on
    * the same provider and model, so the app is never left without a session.
@@ -587,6 +607,7 @@ export const useStore = create<Store>((set, get) => ({
   context: null,
   busy: false,
   turn: null,
+  unattended: false,
   running: [],
   stopping: false,
   resuming: false,
@@ -738,6 +759,10 @@ export const useStore = create<Store>((set, get) => ({
       // is not offered for a turn that is no longer on screen.
       queued: null,
       sent: null,
+      // The same: each conversation carries its own answer, and `attach` fills
+      // this in with the one being opened. Cleared rather than kept, so the
+      // moment between the two shows the safe answer.
+      unattended: false,
       context: null,
       error: null,
       proposals: [],
@@ -780,6 +805,7 @@ export const useStore = create<Store>((set, get) => ({
   wrote: null,
       queued: null,
       sent: null,
+      unattended: false,
         context: null,
         error: null,
         proposals: [],
@@ -814,7 +840,14 @@ export const useStore = create<Store>((set, get) => ({
     // Opened, then left again before the answer came back.
     if (get().session?.id !== sessionId) return;
 
-    set({ busy: Boolean(attached.turn), turn: attached.turn ?? null });
+    set({
+      busy: Boolean(attached.turn),
+      turn: attached.turn ?? null,
+      // A conversation's own answer, which is why it is read on every open
+      // rather than kept as the window's: two conversations can disagree, and
+      // the one being left keeps whatever it was told.
+      unattended: attached.unattended,
+    });
 
     if (attached.dropped > 0) {
       set((s) => ({
@@ -1059,6 +1092,27 @@ export const useStore = create<Store>((set, get) => ({
       // does not say why.
       set({ stopping: false, error: String(e) });
     }
+  },
+
+  setUnattended: async (unattended) => {
+    const { session, permission } = get();
+    if (!session) return;
+
+    // Optimistic, and not put back on failure: what this sets is a switch on
+    // the conversation, and a window showing "asks you" while the harness
+    // refuses everything would be worse than the banner.
+    set({ unattended });
+    try {
+      await api.setUnattended(session.id, unattended);
+    } catch (e) {
+      set({ unattended: !unattended, error: String(e) });
+      return;
+    }
+
+    // A question already on screen is the thing that would hold the turn for
+    // as long as somebody is away, so leaving answers it. Refused, because
+    // that is the only answer this switch ever gives — see `set_unattended`.
+    if (unattended && permission) await get().answerPermission("deny");
   },
 
   answerPermission: async (decision) => {

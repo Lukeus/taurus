@@ -263,6 +263,7 @@ mod tests {
             always_global_scope: None,
             offer_always: true,
             input,
+            session: None,
         }
     }
 

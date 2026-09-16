@@ -78,6 +78,45 @@ pub struct PermissionRequest {
     pub offer_always: bool,
     #[ts(type = "unknown")]
     pub input: serde_json::Value,
+    /// Which conversation is asking.
+    ///
+    /// A window shows one conversation at a time and a turn keeps running in
+    /// the ones it does not, so a prompt can arrive from somewhere other than
+    /// what is on screen. Without this the dialog names the call and nothing
+    /// else, and two turns running at once are indistinguishable at the one
+    /// moment that matters.
+    ///
+    /// `None` where there is no conversation — a tool run directly, an
+    /// example, a test.
+    #[ts(optional)]
+    pub session: Option<String>,
+}
+
+/// Who is being asked, and whether anybody is there.
+///
+/// Both are facts about the turn rather than about the call, and the gate has
+/// no other way to learn either: a [`PermissionEngine`] is shared by every
+/// conversation in a process.
+#[derive(Clone, Debug, Default)]
+pub struct Asking {
+    /// The conversation, carried onto the request. See
+    /// [`PermissionRequest::session`].
+    pub session: Option<String>,
+    /// Whether a call that needs a decision is refused instead of waiting for
+    /// one.
+    ///
+    /// The default is to wait, and waiting is right when somebody is there:
+    /// the turn keeps its place, and answering it hours later carries on from
+    /// exactly where it stopped. It is wrong when nobody is, which is the case
+    /// this exists for — a run left going overnight should spend the night
+    /// working and report in the morning what it could not do, rather than
+    /// stopping on the first question at ten past midnight.
+    ///
+    /// It never widens anything. What a standing grant already permits does
+    /// not reach a prompt at all, so this only decides what happens to the
+    /// calls that would have been asked about, and the only answer it gives is
+    /// no.
+    pub unattended: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -249,7 +288,15 @@ impl PermissionEngine {
     }
 
     /// Decides whether `tool` may run with `input`, prompting if needed.
-    pub async fn check(&self, tool: &dyn Tool, input: &serde_json::Value) -> Result<(), ToolError> {
+    ///
+    /// `asking` is the turn's half of the question: which conversation wants
+    /// this, and whether there is anybody to answer. See [`Asking`].
+    pub async fn check(
+        &self,
+        tool: &dyn Tool,
+        input: &serde_json::Value,
+        asking: &Asking,
+    ) -> Result<(), ToolError> {
         if tool.effect() == Effect::Read {
             return Ok(());
         }
@@ -280,7 +327,23 @@ impl PermissionEngine {
             always_global_scope: offer_global
                 .then(|| describe_rule(&rule, tool.effect(), Scope::Global)),
             input: input.clone(),
+            session: asking.session.clone(),
         };
+
+        // Refused rather than asked, and only ever refused: everything a
+        // standing grant permits was answered above without reaching here, so
+        // running unattended takes nothing away from what was already allowed
+        // and adds nothing to it. See [`Asking::unattended`].
+        //
+        // The preview goes into the message because this is the one refusal
+        // the model is expected to work around rather than abandon, and it
+        // cannot do that without knowing what was refused.
+        if asking.unattended {
+            return Err(ToolError::Rejected(format!(
+                "nobody is there to allow this. The conversation is running unattended, so a                  call that needs a decision is refused rather than left waiting for one — this                  one was: {}. Carry on without it where you can, and say plainly what you could                  not do.",
+                request.preview
+            )));
+        }
 
         let scope = match self.prompt.request(request).await {
             PermissionDecision::AllowOnce => return Ok(()),
@@ -649,6 +712,20 @@ mod tests {
         }
     }
 
+    /// Keeps the conversation the request named.
+    struct Session {
+        asked: Arc<Mutex<Option<Option<String>>>>,
+        decision: PermissionDecision,
+    }
+
+    #[async_trait]
+    impl PermissionPrompt for Session {
+        async fn request(&self, request: PermissionRequest) -> PermissionDecision {
+            *self.asked.lock().await = Some(request.session);
+            self.decision
+        }
+    }
+
     /// Keeps the request it was asked, so a test can assert on what the user
     /// would have been offered.
     struct Recording {
@@ -709,8 +786,107 @@ mod tests {
             name: "read_file",
             effect: Effect::Read,
         };
-        assert!(engine.check(&tool, &serde_json::json!({})).await.is_ok());
+        assert!(engine
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .is_ok());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// The whole of what running unattended does: a call that would have been
+    /// asked about is refused instead of waiting for somebody who is not there.
+    #[tokio::test]
+    async fn unattended_refuses_what_it_would_have_asked_about() {
+        let (engine, calls, _dir) = engine(PermissionDecision::AllowOnce);
+        let tool = Fake {
+            name: "write_file",
+            effect: Effect::Write,
+        };
+
+        let refused = engine
+            .check(
+                &tool,
+                &serde_json::json!({}),
+                &Asking {
+                    session: None,
+                    unattended: true,
+                },
+            )
+            .await
+            .expect_err("a call that needs a decision has nobody to make it");
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "the prompt is not put to a window nobody is looking at"
+        );
+        // `Rejected` rather than `Denied`: nobody denied it, and the advice
+        // that follows the two is different — see `ToolError::to_model_message`.
+        let ToolError::Rejected(why) = refused else {
+            panic!("expected a refusal on the merits, got {refused:?}");
+        };
+        assert!(why.contains("unattended"), "{why}");
+    }
+
+    /// It narrows and never widens. What a standing grant covers is answered
+    /// before a prompt is ever reached, so leaving changes nothing about it.
+    #[tokio::test]
+    async fn unattended_still_runs_what_was_already_granted() {
+        let (engine, _calls, _dir) = engine(PermissionDecision::AllowAlways);
+        let tool = Fake {
+            name: "write_file",
+            effect: Effect::Write,
+        };
+
+        // Granted while somebody was there to grant it.
+        engine
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
+
+        // And then left to run.
+        engine
+            .check(
+                &tool,
+                &serde_json::json!({}),
+                &Asking {
+                    session: None,
+                    unattended: true,
+                },
+            )
+            .await
+            .expect("a standing grant is not a decision anybody has to be there for");
+    }
+
+    /// Two turns can run at once, so a window has to be able to say which one
+    /// it is being asked about.
+    #[tokio::test]
+    async fn a_request_says_which_conversation_is_asking() {
+        let homes = Homes::new();
+        let asked: Arc<Mutex<Option<Option<String>>>> = Arc::new(Mutex::new(None));
+        let engine = homes.engine(Box::new(Session {
+            asked: asked.clone(),
+            decision: PermissionDecision::Deny,
+        }));
+
+        let _ = engine
+            .check(
+                &Fake {
+                    name: "write_file",
+                    effect: Effect::Write,
+                },
+                &serde_json::json!({}),
+                &Asking {
+                    session: Some("conversation-7".into()),
+                    unattended: false,
+                },
+            )
+            .await;
+
+        assert_eq!(
+            asked.lock().await.clone(),
+            Some(Some("conversation-7".into()))
+        );
     }
 
     #[tokio::test]
@@ -721,7 +897,9 @@ mod tests {
             effect: Effect::Write,
         };
         assert!(matches!(
-            engine.check(&tool, &serde_json::json!({})).await,
+            engine
+                .check(&tool, &serde_json::json!({}), &Asking::default())
+                .await,
             Err(ToolError::Denied)
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -735,7 +913,10 @@ mod tests {
             effect: Effect::Write,
         };
         for _ in 0..2 {
-            engine.check(&tool, &serde_json::json!({})).await.unwrap();
+            engine
+                .check(&tool, &serde_json::json!({}), &Asking::default())
+                .await
+                .unwrap();
         }
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
@@ -748,7 +929,10 @@ mod tests {
             effect: Effect::Write,
         };
         for _ in 0..3 {
-            engine.check(&tool, &serde_json::json!({})).await.unwrap();
+            engine
+                .check(&tool, &serde_json::json!({}), &Asking::default())
+                .await
+                .unwrap();
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -764,12 +948,18 @@ mod tests {
             decision: PermissionDecision::AllowAlways,
             calls: Arc::new(AtomicUsize::new(0)),
         }));
-        first.check(&tool, &serde_json::json!({})).await.unwrap();
+        first
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
 
         // A fresh engine over the same workspace must honor the stored rule
         // even though its prompt denies everything.
         let second = homes.engine(Box::new(DenyAll));
-        assert!(second.check(&tool, &serde_json::json!({})).await.is_ok());
+        assert!(second
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -779,7 +969,10 @@ mod tests {
             name: "write_file",
             effect: Effect::Write,
         };
-        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        engine
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
 
         assert!(homes.wrote_workspace());
         assert!(
@@ -805,7 +998,10 @@ mod tests {
                 calls: Arc::new(AtomicUsize::new(0)),
             }),
         );
-        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        engine
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
         assert!(
             !workspace_allowlist_file(first.path()).is_file(),
             "a global decision must not also be written to the workspace"
@@ -815,7 +1011,10 @@ mod tests {
         // that would refuse. The stored global rule has to carry it.
         let second = tempfile::tempdir().unwrap();
         let elsewhere = PermissionEngine::new(second.path(), global.path(), Box::new(DenyAll));
-        assert!(elsewhere.check(&tool, &serde_json::json!({})).await.is_ok());
+        assert!(elsewhere
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -835,7 +1034,11 @@ mod tests {
         };
         let engine = homes.engine(Box::new(recorder));
         engine
-            .check(&tool, &serde_json::json!({"command": "git status"}))
+            .check(
+                &tool,
+                &serde_json::json!({"command": "git status"}),
+                &Asking::default(),
+            )
             .await
             .unwrap();
 
@@ -864,25 +1067,36 @@ mod tests {
             decision: PermissionDecision::AllowAlways,
             calls: Arc::new(AtomicUsize::new(0)),
         }));
-        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        engine
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
         engine.revoke("write_file", Scope::Workspace).await;
 
         let global = homes.engine(Box::new(Counting {
             decision: PermissionDecision::AllowAlwaysGlobal,
             calls: Arc::new(AtomicUsize::new(0)),
         }));
-        global.check(&tool, &serde_json::json!({})).await.unwrap();
+        global
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
 
         global.revoke("write_file", Scope::Workspace).await;
         assert!(
-            global.check(&tool, &serde_json::json!({})).await.is_ok(),
+            global
+                .check(&tool, &serde_json::json!({}), &Asking::default())
+                .await
+                .is_ok(),
             "revoking the workspace copy dropped the global grant"
         );
 
         global.revoke("write_file", Scope::Global).await;
         let fresh = homes.engine(Box::new(DenyAll));
         assert!(matches!(
-            fresh.check(&tool, &serde_json::json!({})).await,
+            fresh
+                .check(&tool, &serde_json::json!({}), &Asking::default())
+                .await,
             Err(ToolError::Denied)
         ));
     }
@@ -903,13 +1117,19 @@ mod tests {
             decision: PermissionDecision::AllowAlways,
             calls: Arc::new(AtomicUsize::new(0)),
         }));
-        engine.check(&write, &serde_json::json!({})).await.unwrap();
+        engine
+            .check(&write, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
 
         let global = homes.engine(Box::new(Counting {
             decision: PermissionDecision::AllowAlwaysGlobal,
             calls: Arc::new(AtomicUsize::new(0)),
         }));
-        global.check(&net, &serde_json::json!({})).await.unwrap();
+        global
+            .check(&net, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
 
         let rules = global.allowed_rules().await;
         assert!(rules.contains(&AllowedRule {
@@ -941,7 +1161,10 @@ mod tests {
             name: "fetch",
             effect: Effect::Network,
         };
-        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        engine
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             broken,
@@ -949,7 +1172,10 @@ mod tests {
         );
 
         // The grant still holds for the rest of the session.
-        engine.check(&tool, &serde_json::json!({})).await.unwrap();
+        engine
+            .check(&tool, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -1009,7 +1235,11 @@ mod tests {
         };
 
         engine
-            .check(&run, &serde_json::json!({"command": "git status"}))
+            .check(
+                &run,
+                &serde_json::json!({"command": "git status"}),
+                &Asking::default(),
+            )
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 0, "the grant covers git");
@@ -1018,6 +1248,7 @@ mod tests {
             .check(
                 &run,
                 &serde_json::json!({"command": "git status; rm -rf ~"}),
+                &Asking::default(),
             )
             .await
             .unwrap();
@@ -1041,6 +1272,7 @@ mod tests {
             .check(
                 &run,
                 &serde_json::json!({"command": "git status && git push"}),
+                &Asking::default(),
             )
             .await
             .unwrap();
@@ -1106,21 +1338,33 @@ mod tests {
         }));
 
         engine
-            .check(&fetch, &serde_json::json!({"url": "https://docs.rs/serde"}))
+            .check(
+                &fetch,
+                &serde_json::json!({"url": "https://docs.rs/serde"}),
+                &Asking::default(),
+            )
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         // A second page on the granted host does not ask again.
         engine
-            .check(&fetch, &serde_json::json!({"url": "https://docs.rs/tokio"}))
+            .check(
+                &fetch,
+                &serde_json::json!({"url": "https://docs.rs/tokio"}),
+                &Asking::default(),
+            )
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         // A different host is a different decision.
         engine
-            .check(&fetch, &serde_json::json!({"url": "https://evil.test/x"}))
+            .check(
+                &fetch,
+                &serde_json::json!({"url": "https://evil.test/x"}),
+                &Asking::default(),
+            )
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -1150,7 +1394,11 @@ mod tests {
             calls: Arc::new(AtomicUsize::new(0)),
         }));
         engine
-            .check(&search, &serde_json::json!({"query": "rust"}))
+            .check(
+                &search,
+                &serde_json::json!({"query": "rust"}),
+                &Asking::default(),
+            )
             .await
             .unwrap();
         assert!(engine.allowed_rules().await.contains(&AllowedRule {
@@ -1181,6 +1429,7 @@ mod tests {
                     effect: Effect::Execute,
                 },
                 &serde_json::json!({"command": "git status"}),
+                &Asking::default(),
             )
             .await
             .is_ok());
@@ -1204,11 +1453,19 @@ mod tests {
             effect: Effect::Execute,
         };
         engine
-            .check(&tool, &serde_json::json!({"command": "git status"}))
+            .check(
+                &tool,
+                &serde_json::json!({"command": "git status"}),
+                &Asking::default(),
+            )
             .await
             .unwrap();
         engine
-            .check(&tool, &serde_json::json!({"command": "git log"}))
+            .check(
+                &tool,
+                &serde_json::json!({"command": "git log"}),
+                &Asking::default(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1218,7 +1475,11 @@ mod tests {
         );
 
         engine
-            .check(&tool, &serde_json::json!({"command": "rm -rf /"}))
+            .check(
+                &tool,
+                &serde_json::json!({"command": "rm -rf /"}),
+                &Asking::default(),
+            )
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2, "rm must prompt separately");

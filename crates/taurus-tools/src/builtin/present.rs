@@ -712,9 +712,10 @@ impl Tool for AskUser {
         // for a call nobody is holding.
         let id = ctx.call_id.as_deref().unwrap_or_default();
 
-        // Without this, Stop leaves the turn parked on a question forever: the
-        // card is the only thing still running, and cancelling the token is
-        // exactly what the user just asked for.
+        // The wait below is raced against Stop, which is what keeps a question
+        // from parking the turn past the button that stops it: the card is the
+        // only thing still running, and cancelling the token is exactly what
+        // the user just asked for.
         //
         // `biased`, so the token is read before the asker is polled at all.
         // Unbiased, the branch order is random — and [`Unattended`] answers
@@ -725,7 +726,18 @@ impl Tool for AskUser {
         let answers = tokio::select! {
             biased;
             () = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
-            answers = self.asker.ask(id, &input.questions) => answers,
+            // A conversation running unattended is not asked at all, for the
+            // same reason its permission prompts are refused rather than waited
+            // on: a card nobody is there to answer parks the turn until
+            // somebody is. `None` is already the right answer to that — it is
+            // what a piped run gets — so it is taken without asking, inside the
+            // race so that Stop still wins.
+            answers = async {
+                if ctx.unattended() {
+                    return None;
+                }
+                self.asker.ask(id, &input.questions).await
+            } => answers,
         };
 
         Ok(match answers {
@@ -974,9 +986,25 @@ fn human_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
     use crate::test_support::test_ctx;
     use crate::view::{ColumnKind, MessageKind, QuestionKind, QuestionOption, Unattended};
+
+    /// An asker that would answer, so a test can tell "not asked" from
+    /// "asked and told nothing".
+    struct Counting {
+        asked: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Asker for Counting {
+        async fn ask(&self, _id: &str, _questions: &[Question]) -> Option<Vec<Answer>> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        }
+    }
 
     fn table(rows: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
@@ -1486,6 +1514,27 @@ mod tests {
         let error = tool.execute(questions(), &ctx).await.unwrap_err();
 
         assert!(matches!(error, ToolError::Canceled), "{error}");
+    }
+
+    /// A conversation left running answers its own questions, rather than
+    /// stopping on one until somebody comes back to it.
+    #[tokio::test]
+    async fn an_unattended_conversation_is_not_asked() {
+        let (ctx, _dir) = test_ctx();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let tool = AskUser::new(Arc::new(Counting {
+            asked: asked.clone(),
+        }));
+        ctx.unattended
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let result = tool.execute(questions(), &ctx).await.unwrap();
+
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            result.to_text().contains("Decide each of these yourself"),
+            "{result}"
+        );
     }
 
     #[tokio::test]

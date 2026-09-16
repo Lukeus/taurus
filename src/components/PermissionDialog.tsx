@@ -42,9 +42,20 @@ const EFFECT_LABEL: Record<string, string> = {
  */
 export function PermissionDialog({
   request,
+  askedBy,
   onDecide,
 }: {
   request: PermissionRequest;
+  /**
+   * The conversation asking, named only when it is not the one on screen.
+   *
+   * A turn keeps running in a conversation you have left, so this dialog can
+   * be about work that is nowhere in front of you. What is being approved is
+   * the call either way — that part is unchanged — but which turn wanted it
+   * decides whether the answer makes any sense, and two running at once are
+   * otherwise indistinguishable.
+   */
+  askedBy?: string;
   onDecide: (decision: PermissionDecision) => void;
 }) {
   // Captured, for the same reason `Modal` captures Escape: nothing inside this
@@ -81,6 +92,15 @@ export function PermissionDialog({
             Taurus {EFFECT_LABEL[request.effect] ?? "wants permission"}
           </h2>
         </div>
+
+        {/* Above the call rather than below it: it changes what the reader
+            thinks they are looking at, and a footnote under the buttons would
+            arrive after the decision was made. */}
+        {askedBy && (
+          <p className="dialog-asked-by">
+            Asked by <b>{askedBy}</b>, which is not the conversation on screen.
+          </p>
+        )}
 
         <pre className="dialog-detail">
           {request.effect === "execute" && <span className="prompt">❯ </span>}

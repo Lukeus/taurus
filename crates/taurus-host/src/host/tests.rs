@@ -389,6 +389,7 @@ async fn a_delegation_leaves_its_transcript_under_the_conversation_that_spawned_
             TurnRef {
                 session_id: "conversation1",
                 prompt: "what is in this project?",
+                unattended: None,
             },
         )
         .await;
@@ -1271,6 +1272,7 @@ async fn turn_tools(host: &Host) -> Vec<String> {
             TurnRef {
                 session_id: "s1",
                 prompt: "hello",
+                unattended: None,
             },
         )
         .await;
@@ -1290,6 +1292,7 @@ async fn a_turn(host: &Host) {
         TurnRef {
             session_id: "s1",
             prompt: "hello",
+            unattended: None,
         },
     )
     .await;

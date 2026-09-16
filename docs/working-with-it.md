@@ -31,6 +31,24 @@ long it's been going.
 Stop is the only thing that ends a turn early. Leaving a conversation, opening
 another, starting a new one, reloading the window: none of them stop anything.
 
+What does stop a turn you've walked away from is being asked something. A
+permission prompt or a question card waits for you, which is right when you're
+there — the turn keeps its place, and answering hours later carries on from
+exactly where it stopped — and wrong when you're not. The pill beside Stop
+says which it is. Set it to **unattended** and anything needing a decision is
+refused instead of waiting, and a question card is skipped: the turn spends the
+night working and tells you in the morning what it couldn't do.
+
+It never allows anything extra. Whatever a standing grant already covers
+doesn't reach a prompt at all, so the only calls this changes are the ones
+you'd have been asked about, and the only answer it gives them is no. The way
+to let a long run do more is to grant it while you're there — **Allow always**
+on the prompt — and then leave. It isn't saved either: the conversation asks
+again tomorrow.
+
+A prompt from a conversation that isn't the one on screen says whose it is,
+since a turn you left running can be the one asking.
+
 You can switch model or backend and keep the conversation. Pick another from
 the topbar and the transcript comes with it. That's the point: you usually
 want a second opinion on the question you just asked. A line marks the switch

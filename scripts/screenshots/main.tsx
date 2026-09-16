@@ -134,7 +134,7 @@ const ANSWERS: Record<string, unknown> = {
   running_sessions: [],
   // Every scene opens a conversation, and opening one asks whether a turn is
   // running in it. Only the motion scene has one, and it is seeded directly.
-  attach_session: { turn: null, dropped: 0 },
+  attach_session: { turn: null, dropped: 0, unattended: false },
   list_models: MODELS,
   list_checkpoints: CHECKPOINTS,
   repo_status: REPO,
@@ -306,6 +306,10 @@ requestAnimationFrame(() => {
         ? {
             turn: { started_at: Math.floor(Date.now() / 1000) - 154, iteration: 6 },
             running: ["s1", "s2"],
+            // The one scene where the switch beside Stop is worth showing in
+            // its other state: a long turn, a second conversation working, and
+            // the thing that lets somebody walk away from both.
+            unattended: true,
           }
         : {}),
       entries: (
