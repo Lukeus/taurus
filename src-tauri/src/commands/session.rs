@@ -446,7 +446,12 @@ pub async fn send_message(
 /// rail that carried it would be a second transcript.
 #[tauri::command]
 pub async fn running_sessions(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<String>> {
-    let mut running = Vec::new();
+    Ok(running_ids(&state).await)
+}
+
+/// The conversations with a turn in them, for the command above and for the
+/// one thing a turn anywhere has to be able to refuse — see `set_workspace`.
+pub(super) async fn running_ids(state: &AppState) -> Vec<String> {
     // Cloned out of the map first: holding a `DashMap` reference across the
     // `await` below would keep a shard locked for as long as the read takes.
     let entries: Vec<_> = state
@@ -454,12 +459,14 @@ pub async fn running_sessions(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<
         .iter()
         .map(|entry| (entry.key().clone(), entry.value().clone()))
         .collect();
+
+    let mut running = Vec::new();
     for (id, entry) in entries {
         if entry.live.lock().await.is_some() {
             running.push(id);
         }
     }
-    Ok(running)
+    running
 }
 
 /// What a window learns by attaching to a conversation.

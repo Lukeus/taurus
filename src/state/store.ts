@@ -1136,7 +1136,11 @@ export const useStore = create<Store>((set, get) => ({
     // the tools a running turn is holding would start failing mid-call — and
     // the turn would go on editing the folder being left while the app claimed
     // to be in the new one.
-    if (get().busy) {
+    //
+    // Any turn, not only this conversation's. A turn left running in another
+    // conversation is just as dead when the servers go, and it is not on
+    // screen to say so. The backend refuses this too — see `set_workspace`.
+    if (get().busy || get().running.length > 0) {
       return set({
         error:
           "Taurus is in the middle of a turn. Stop it before switching workspace.",

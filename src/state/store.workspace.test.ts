@@ -227,3 +227,19 @@ describe("letting go of a conversation", () => {
     expect(useStore.getState().error).toBeNull();
   });
 });
+
+describe("a turn running in a conversation that is not on screen", () => {
+  it("blocks the move, the same as one that is", async () => {
+    // The turn keeps working when you leave it, so the folder switch has to
+    // account for every conversation rather than the one being looked at: the
+    // move reconnects every MCP server, and the turn it kills is one nobody is
+    // watching.
+    backend();
+    useStore.setState({ busy: false, running: ["somewhere-else"] });
+
+    await useStore.getState().setWorkspace("/src/project-b");
+
+    expect(useStore.getState().error).toMatch(/middle of a turn/);
+    expect(invoke.mock.calls.map(([name]) => name)).not.toContain("set_workspace");
+  });
+});
