@@ -6,6 +6,7 @@
 //! a command from the webview.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -21,6 +22,7 @@ use taurus_skills::proposal::SkillProposal;
 use taurus_tools::{Answer, PermissionDecision, PermissionPrompt};
 
 use crate::bridge::{UiAgentProposalSink, UiAsker, UiPermissionPrompt, UiProposalSink};
+use crate::live::Live;
 use crate::terminal::Terminals;
 
 /// One live conversation.
@@ -58,6 +60,34 @@ pub struct SessionEntry {
     /// The transcript this conversation appends to. Its own lock rather than
     /// the session's, so a listing or a close does not wait behind a turn.
     pub log: Arc<Mutex<SessionLog>>,
+    /// The turn running in this conversation, and every view watching it.
+    ///
+    /// `Some` for exactly as long as a turn runs. It is here rather than inside
+    /// the call that started the turn because a turn outlives the view of it:
+    /// the window can reload, or move to another conversation, and find its way
+    /// back to this. See [`crate::live`].
+    pub live: Mutex<Option<Arc<Live>>>,
+    /// Whether this conversation runs without anybody to answer it.
+    ///
+    /// Off by default and never persisted: it is a statement about the next few
+    /// hours rather than about the project, and a conversation reopened
+    /// tomorrow should be asked again. Shared with the turn rather than read
+    /// per turn, because the moment it is set is usually a moment when a turn
+    /// is already running — somebody on their way out.
+    ///
+    /// It widens nothing. What a standing grant already permits never reaches a
+    /// prompt, so this only decides what becomes of the calls that would have
+    /// been asked about, and the answer it gives is no. See
+    /// [`taurus_tools::Asking::unattended`].
+    pub unattended: Arc<AtomicBool>,
+    /// Set when the window has let go of this conversation while a turn was
+    /// still running.
+    ///
+    /// Closing a conversation releases the live copy of it — every message and
+    /// every image, otherwise held for the life of the process. A conversation
+    /// mid-turn is still using all of it, so the release waits for the turn and
+    /// this is what remembers that it was asked for. See `close_session`.
+    pub released: AtomicBool,
     /// Where this conversation has changed model, oldest first.
     ///
     /// Held as well as written down, so that reopening a conversation that is
@@ -67,7 +97,46 @@ pub struct SessionEntry {
     pub switches: Mutex<Vec<Switch>>,
 }
 
+/// What letting go of a conversation means, asked at the moment of letting go.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Release {
+    /// Nothing is using it: drop the entry and everything keyed by it.
+    Now,
+    /// A turn is: it is still using the session, the transcript and the plan
+    /// board, and it is noted down to be released when it ends.
+    WhenTheTurnEnds,
+}
+
 impl SessionEntry {
+    /// Lets go of the live copy of this conversation, or arranges to.
+    ///
+    /// The whole of the rule that makes a long turn survivable: leaving is not
+    /// stopping. Until this existed, closing a conversation cancelled the turn
+    /// in it — and closing is what happens on every switch between
+    /// conversations.
+    pub async fn release(&self) -> Release {
+        if self.live.lock().await.is_some() {
+            self.released.store(true, Ordering::Relaxed);
+            return Release::WhenTheTurnEnds;
+        }
+        Release::Now
+    }
+
+    /// Whether a release was asked for while a turn was running.
+    ///
+    /// Read once the turn has ended, by whoever ran it.
+    pub fn was_released(&self) -> bool {
+        self.released.load(Ordering::Relaxed)
+    }
+
+    /// Takes back a release, for a conversation reopened before its turn ended.
+    ///
+    /// Coming back to a conversation is the opposite of letting go of it, and
+    /// without this the turn ending would reap an entry the window is using.
+    pub fn keep(&self) {
+        self.released.store(false, Ordering::Relaxed);
+    }
+
     /// The conversation, if no turn is running in it.
     ///
     /// A turn holds the session's lock for its whole run, which is minutes for

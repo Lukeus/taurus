@@ -82,6 +82,7 @@ const state = {
   opening: false,
   resuming: null,
   busy: false,
+  running: [] as string[],
   stopping: false,
   error: null,
   init: vi.fn(),

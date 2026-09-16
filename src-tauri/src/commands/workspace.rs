@@ -14,6 +14,22 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus>
 
 #[tauri::command]
 pub async fn set_workspace(state: State<'_, Arc<AppState>>, path: String) -> CmdResult<String> {
+    // Refused here rather than only in the window. The move reconnects every
+    // MCP server, so a turn running through it starts failing mid-call, and a
+    // turn is no longer something one screen can account for: it keeps running
+    // in a conversation the window has moved on from. The rail disables the
+    // button while anything is working; this is what makes that a rule.
+    let running = running_ids(&state).await;
+    if !running.is_empty() {
+        return Err(format!(
+            "{} still running. Stop it before switching folders.",
+            match running.len() {
+                1 => "A turn is".to_string(),
+                many => format!("{many} turns are"),
+            }
+        ));
+    }
+
     let resolved = state.host.set_workspace(&PathBuf::from(path)).await?;
     let shown = taurus_tools::path_guard::plain(&resolved);
     info!(workspace = %shown.display(), "workspace changed");

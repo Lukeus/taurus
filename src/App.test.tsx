@@ -27,6 +27,7 @@ const state = {
   agentProposals: [],
   datasets: [] as unknown[],
   busy: false,
+  running: [] as string[],
   stopping: false,
   error: null,
   init: vi.fn(),
@@ -58,6 +59,7 @@ vi.mock("./state/store", async (original) => ({
 import type { ProviderConfig } from "./lib/api";
 import type { Entry } from "./state/store";
 import App, {
+  askedBy,
   currentProvider,
   lastActivity,
   offered,
@@ -527,5 +529,45 @@ describe("the turn strip", () => {
 
   it("says something rather than nothing before the first event arrives", () => {
     expect(render([])).toContain("Working…");
+  });
+});
+
+describe("which conversation a permission prompt came from", () => {
+  const request = (session?: string) =>
+    ({
+      id: "p1",
+      tool: "run_command",
+      effect: "execute",
+      preview: "cargo test",
+      diff: null,
+      always_scope: "run cargo in this project",
+      always_global_scope: null,
+      offer_always: true,
+      input: {},
+      ...(session ? { session } : {}),
+    }) as never;
+
+  const sessions = [
+    { id: "s1", title: "Where is the build time going?" },
+    { id: "s2", title: "Summarize the crates" },
+  ] as never[];
+
+  it("says nothing about the conversation you are looking at", () => {
+    // Naming the conversation in front of you is noise on the app's
+    // most-pressed dialog.
+    expect(askedBy(request("s1"), "s1", sessions)).toBeUndefined();
+  });
+
+  it("names the one that is asking from somewhere else", () => {
+    // A turn keeps running in a conversation you have left, so this dialog can
+    // be about work that is nowhere on screen.
+    expect(askedBy(request("s2"), "s1", sessions)).toBe("Summarize the crates");
+  });
+
+  it("says nothing when there is no name to say", () => {
+    // A conversation with no title yet, and a request from a process that
+    // never named one. "Another conversation" is not information.
+    expect(askedBy(request("gone"), "s1", sessions)).toBeUndefined();
+    expect(askedBy(request(), "s1", sessions)).toBeUndefined();
   });
 });

@@ -52,6 +52,15 @@ pub const EVENT_STATUS: &str = "taurus://status";
 /// in the workspace.
 pub const EVENT_SESSION: &str = "taurus://session";
 
+/// Whether a conversation is mid-turn, when that changes.
+///
+/// A turn is no longer something the window can infer from a call it is
+/// waiting on: it can reload, or move to another conversation, and the turn
+/// carries on either way. So the backend says. Sent when a turn starts and
+/// again when it ends, carrying the conversation it belongs to — the frontend
+/// merges by id, exactly as it does for [`EVENT_SESSION`].
+pub const EVENT_TURN: &str = "taurus://turn";
+
 /// The whole set of files one conversation has changed, when it is cut back.
 ///
 /// A turn reports what it changes on the turn's own event stream, as it changes
@@ -272,6 +281,7 @@ mod tests {
             ("EVENT_AGENT_PROPOSAL", EVENT_AGENT_PROPOSAL),
             ("EVENT_STATUS", EVENT_STATUS),
             ("EVENT_SESSION", EVENT_SESSION),
+            ("EVENT_TURN", EVENT_TURN),
             ("EVENT_CHANGED", EVENT_CHANGED),
         ] {
             let line = format!("export const {name} = \"{value}\";");

@@ -25,9 +25,17 @@ export function isToday(seconds: number): boolean {
 export function duration(ms: number): string {
   if (ms < 1000) return `${Math.max(1, Math.round(ms / 100)) / 10}s`;
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = Math.round((ms % 60_000) / 1000);
-  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  if (ms < 3_600_000) {
+    const minutes = Math.floor(ms / 60_000);
+    const seconds = Math.round((ms % 60_000) / 1000);
+    return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  }
+  // Past an hour the seconds stop being information. They are still ticking on
+  // screen, which is what says the thing is alive; what a reader wants at this
+  // length is how long it has been, and "127m 4s" is arithmetic.
+  const hours = Math.floor(ms / 3_600_000);
+  const minutes = Math.round((ms % 3_600_000) / 60_000);
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
 /** The last segment of a path, on either platform's separator. */

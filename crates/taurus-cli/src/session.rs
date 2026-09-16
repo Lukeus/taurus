@@ -253,6 +253,7 @@ async fn turn(
             TurnRef {
                 session_id: &session.id,
                 prompt: task,
+                unattended: None,
             },
         )
         .await;

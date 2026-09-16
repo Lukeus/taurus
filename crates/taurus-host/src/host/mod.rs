@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -110,6 +111,16 @@ pub struct TurnRef<'a> {
     pub session_id: &'a str,
     /// What the user asked for. Labels the checkpoint in a listing.
     pub prompt: &'a str,
+    /// The conversation's "nobody is here" switch, where it has one.
+    ///
+    /// Held by the caller rather than built here, because it belongs to the
+    /// conversation rather than to the turn: it is set by somebody about to
+    /// walk away, often while the turn is already running. See
+    /// [`taurus_tools::Asking::unattended`].
+    ///
+    /// `None` for a caller that answers its own prompts — the CLI has a policy
+    /// for that, and a piped run has an asker that answers nothing.
+    pub unattended: Option<Arc<AtomicBool>>,
 }
 
 /// The active theme, and what resolving it depended on. See

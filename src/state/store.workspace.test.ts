@@ -63,6 +63,11 @@ const backend = (overrides: Record<string, unknown> = {}) => {
         return Promise.resolve({ ...OPEN, id: "fresh" });
       case "list_checkpoints":
         return Promise.resolve([]);
+      // Every conversation these tests open is idle; attaching to one says so.
+      case "attach_session":
+        return Promise.resolve({ turn: null, dropped: 0 });
+      case "running_sessions":
+        return Promise.resolve([]);
       case "list_models":
         return Promise.resolve([{ id: "qwen3.6:27b", display_name: "Qwen" }]);
       default:
@@ -220,5 +225,21 @@ describe("letting go of a conversation", () => {
     await useStore.getState().resume("in-project-b");
     expect(useStore.getState().session?.id).toBe("in-project-b");
     expect(useStore.getState().error).toBeNull();
+  });
+});
+
+describe("a turn running in a conversation that is not on screen", () => {
+  it("blocks the move, the same as one that is", async () => {
+    // The turn keeps working when you leave it, so the folder switch has to
+    // account for every conversation rather than the one being looked at: the
+    // move reconnects every MCP server, and the turn it kills is one nobody is
+    // watching.
+    backend();
+    useStore.setState({ busy: false, running: ["somewhere-else"] });
+
+    await useStore.getState().setWorkspace("/src/project-b");
+
+    expect(useStore.getState().error).toMatch(/middle of a turn/);
+    expect(invoke.mock.calls.map(([name]) => name)).not.toContain("set_workspace");
   });
 });

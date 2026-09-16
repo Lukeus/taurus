@@ -1,6 +1,7 @@
 //! Tauri commands: the entire surface the frontend can reach.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use dashmap::mapref::entry::Entry;
@@ -41,7 +42,8 @@ use taurus_host::{
     Theme, ThemeFile, TurnChange, TurnRef,
 };
 
-use crate::state::{AppState, SessionEntry};
+use crate::live::Live;
+use crate::state::{AppState, Release, SessionEntry};
 use crate::terminal::TerminalEvent;
 
 /// Commands return this so the frontend gets a readable message rather than a
@@ -217,6 +219,58 @@ pub async fn emit_status(state: &AppState) {
     let status = status_of(state).await;
     if let Err(e) = state.app.emit(crate::bridge::EVENT_STATUS, &status) {
         tracing::warn!(error = %e, "could not push the status to the window");
+    }
+}
+
+/// A turn in progress, as anything that is not watching it sees one.
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
+pub struct RunningTurn {
+    /// Unix seconds, so the window can count up from it rather than from when
+    /// it happened to start looking. Seconds because that is the unit it is
+    /// shown in; see [`SessionMeta::started`] for why this is a `number` in
+    /// TypeScript rather than a `bigint`.
+    #[ts(type = "number")]
+    pub started_at: u64,
+    /// The tool round trip it is on. Zero until the first one begins.
+    pub iteration: u32,
+}
+
+impl From<&Live> for RunningTurn {
+    fn from(live: &Live) -> Self {
+        Self {
+            started_at: live.started(),
+            iteration: live.iteration(),
+        }
+    }
+}
+
+/// Whether a conversation is mid-turn, for the window to draw and to obey.
+///
+/// The backend is the only thing that knows this. The window used to infer it
+/// from having a call outstanding, which is a fact about the window: a reload
+/// cleared it while the turn ran on, leaving a composer that offered to send a
+/// message the harness would then queue behind a turn nothing said was there.
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
+pub struct TurnState {
+    pub session: String,
+    /// `None` when nothing is running in it.
+    #[ts(optional)]
+    pub turn: Option<RunningTurn>,
+}
+
+/// Pushes that to the window, for a turn that has just started or just ended.
+///
+/// Never fails the turn. A window that has gone away is the case this whole
+/// path exists to survive.
+pub async fn emit_turn(state: &AppState, session_id: &str, turn: Option<RunningTurn>) {
+    let payload = TurnState {
+        session: session_id.to_string(),
+        turn,
+    };
+    if let Err(e) = state.app.emit(crate::bridge::EVENT_TURN, &payload) {
+        tracing::warn!(error = %e, "could not push a turn to the window");
     }
 }
 

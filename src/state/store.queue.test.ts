@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}
 import { useStore } from "./store";
 
 /** The commands that answer with a list, which `idle` answers with an empty one. */
-const LISTS = new Set(["list_sessions", "list_checkpoints"]);
+const LISTS = new Set(["list_sessions", "list_checkpoints", "running_sessions"]);
 
 /**
  * What every command a test is not about answers with: the empty version of
@@ -30,6 +30,9 @@ const LISTS = new Set(["list_sessions", "list_checkpoints"]);
  * errors teaches everyone to skim past the one that matters.
  */
 function idle(command: string): Promise<unknown> {
+  // Attaching answers with a shape rather than a list: a conversation with no
+  // turn in it, which is what every conversation in these tests is.
+  if (command === "attach_session") return Promise.resolve({ turn: null, dropped: 0 });
   return Promise.resolve(LISTS.has(command) ? [] : undefined);
 }
 

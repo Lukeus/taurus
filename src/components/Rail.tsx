@@ -87,6 +87,7 @@ export const Rail = memo(function Rail({
   brand,
   onPickWorkspace,
   onNew,
+  running,
   onOpen,
   onDelete,
   onTheme,
@@ -103,6 +104,13 @@ export const Rail = memo(function Rail({
   width: number;
   workspace: string | null;
   sessions: SessionMeta[];
+  /**
+   * The ids of conversations with a turn running in them.
+   *
+   * A turn outlives being looked at, so this is the only thing on screen that
+   * says a conversation left an hour ago is still working. See `subtitle`.
+   */
+  running: string[];
   currentId: string | undefined;
   changedCount: number;
   /**
@@ -187,12 +195,22 @@ export const Rail = memo(function Rail({
   /** Which sections are folded. Outlives the window — see `useSections`. */
   const sections = useSections();
 
+  // Anything working anywhere, which is what the two controls that a turn
+  // cannot survive have to obey. `busy` is the open conversation alone, and it
+  // is read here as well because it is set the moment a message is sent, a
+  // beat before the backend's answer says the same thing.
+  const anyRunning = busy || running.length > 0;
+
   const today = sessions.filter((s) => isToday(s.updated));
   const earlier = sessions.filter((s) => !isToday(s.updated));
 
   const item = (session: SessionMeta) => {
     const current = session.id === currentId;
     const armed = arming === session.id;
+    // Said on the row only for a conversation that is not the one on screen.
+    // The open one has a whole transcript saying it, and the line here is the
+    // only room the row has for the files it changed.
+    const working = !current && running.includes(session.id);
     const title = session.title || "New conversation";
     return (
       /*
@@ -220,9 +238,11 @@ export const Rail = memo(function Rail({
             opacity where a genuinely unavailable one fades. */}
         <button
           className="rail-item flex-1 min-w-0 flex flex-col gap-px p-0 border-0 rounded-none bg-transparent text-left hover:not-disabled:bg-transparent group-data-current:disabled:opacity-100"
-          // Switching mid-turn would leave the running turn streaming into a
-          // transcript nobody is looking at.
-          disabled={busy || current}
+          // Open, and only open. A turn used to disable every other row,
+          // because leaving a conversation cancelled the turn in it — so the
+          // app's answer to "can I do something else while this builds" was
+          // no. It now keeps running, and this row says so while it does.
+          disabled={current}
           data-tip={session.title || "No turns yet"}
           data-tip-side="right"
           onClick={() => onOpen(session.id)}
@@ -235,7 +255,9 @@ export const Rail = memo(function Rail({
           <span className="font-mono text-10 text-faint truncate group-data-armed:text-danger">
             {armed
               ? "delete this and its undo history?"
-              : subtitle(session, current ? changedCount : null, branch)}
+              : working
+                ? "working…"
+                : subtitle(session, current ? changedCount : null, branch)}
           </span>
         </button>
 
@@ -332,10 +354,14 @@ export const Rail = memo(function Rail({
           className="rail-workspace w-full flex items-center gap-2 py-2 px-3 rounded-md bg-hover text-left hover:not-disabled:bg-active"
           // Switching folders closes the conversation and reconnects every MCP
           // server, neither of which a running turn survives.
-          disabled={busy}
+          //
+          // Any running turn, not only this conversation's: a turn left
+          // working in another one is just as dead when the servers go, and it
+          // is not on screen to say so.
+          disabled={anyRunning}
           onClick={onPickWorkspace}
           data-tip={
-            busy
+            anyRunning
               ? "Stop the running turn before switching workspace"
               : (workspace ?? "Choose a workspace")
           }
@@ -360,12 +386,10 @@ export const Rail = memo(function Rail({
         <button
           className="primary rail-new w-full py-2 px-2.5 text-13"
           onClick={onNew}
-          disabled={busy}
-          data-tip={
-            busy
-              ? "Stop the running turn before starting another conversation"
-              : "Start a new conversation in this workspace"
-          }
+          // Not gated on a running turn any more, for the same reason the rows
+          // above are not: starting something else is precisely what a person
+          // does while a long one works, and the turn they leave keeps running.
+          data-tip="Start a new conversation in this workspace"
           data-tip-side="bottom"
         >
           New conversation

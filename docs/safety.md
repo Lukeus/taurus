@@ -141,6 +141,25 @@ Skills are never saved unattended. If the agent proposes one during a piped
 run, the CLI reports it and discards it, so nothing gets written that nobody
 reviewed.
 
+**In the desktop app**, the same problem arrives a different way: a turn can
+run for hours, and the person who started it can be asleep. A prompt waits for
+you, which is the right default — the turn keeps its place, and answering in
+the morning carries on from where it stopped. The pill beside Stop is how you
+say you won't be there. Set a conversation to **unattended** and anything that
+would have prompted is refused instead, with the reason in the transcript, and
+a question card is skipped rather than parked.
+
+It has the narrow shape the CLI's policy deliberately doesn't: it can only
+refuse. There's no desktop equivalent of `--allow`, because a switch that could
+widen what a turn may do would be a second permission surface trusted as much
+as `permissions.json` and kept in step with it by hand. Anything a standing
+grant already covers never reaches a prompt, so leaving takes nothing away from
+what you've allowed — it only decides what becomes of the rest. To let a long
+run do more, grant it while you're there and then leave.
+
+Nothing about it is saved. The conversation asks again tomorrow, and a
+conversation you didn't set it on is unaffected.
+
 ## Trusting a workspace
 
 Everything above covers decisions Taurus asks you to make. Trust covers the

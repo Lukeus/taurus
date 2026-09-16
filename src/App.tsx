@@ -47,9 +47,11 @@ import type {
   ModelInfo,
   NoteOnScreen,
   OnScreen,
+  PermissionRequest,
   Selection,
   ProviderConfig,
   ServerStatus,
+  SessionMeta,
   Theme,
 } from "./lib/api";
 import { basename, plural } from "./lib/format";
@@ -184,6 +186,8 @@ export default function App() {
       wrote: s.wrote,
       noteError: s.noteError,
       busy: s.busy,
+      running: s.running,
+      unattended: s.unattended,
       stopping: s.stopping,
       resuming: s.resuming,
       queued: s.queued,
@@ -203,6 +207,7 @@ export default function App() {
       startSession: s.startSession,
       switchModel: s.switchModel,
       setWorkspace: s.setWorkspace,
+      setUnattended: s.setUnattended,
       dismissError: s.dismissError,
       answerPermission: s.answerPermission,
       answerQuestions: s.answerQuestions,
@@ -1042,6 +1047,8 @@ export default function App() {
    * half, and it exists so that the alternative to an automatic resend is one
    * click rather than retyping the sentence.
    */
+  const setUnattended = (unattended: boolean) => void store.setUnattended(unattended);
+
   const sendQueued = () => {
     const held = store.queued;
     if (!held) return;
@@ -1137,6 +1144,7 @@ export default function App() {
         width={rail.size}
         workspace={workspace}
         sessions={store.sessions}
+        running={store.running}
         currentId={store.session?.id}
         changedCount={store.changed.length}
         branch={store.status?.branch ?? null}
@@ -1477,6 +1485,8 @@ export default function App() {
           onUnqueue={store.unqueue}
           focus={focusComposer}
           busy={store.busy}
+          unattended={store.unattended}
+          onUnattended={setUnattended}
           stopping={store.stopping}
           ready={!!store.session}
           vision={store.session?.vision ?? false}
@@ -1528,6 +1538,7 @@ export default function App() {
       {store.permission && (
         <PermissionDialog
           request={store.permission}
+          askedBy={askedBy(store.permission, store.session?.id, store.sessions)}
           onDecide={store.answerPermission}
         />
       )}
@@ -1617,6 +1628,26 @@ export default function App() {
  * so ignoring it here meant the header disagreed with the session actually
  * running whenever the restore failed.
  */
+/**
+ * Which conversation a permission request came from, when it is not the one on
+ * screen.
+ *
+ * `undefined` for the ordinary case — the turn you are watching asked — and the
+ * dialog says nothing then, because naming the conversation in front of you is
+ * noise. A request from a conversation the rail does not list, or from a
+ * process that never named one, also says nothing: a title is what makes this
+ * worth printing, and "another conversation" is not one.
+ */
+export function askedBy(
+  request: PermissionRequest,
+  open: string | undefined,
+  sessions: SessionMeta[],
+): string | undefined {
+  if (!request.session || request.session === open) return undefined;
+  const title = sessions.find((session) => session.id === request.session)?.title;
+  return title || undefined;
+}
+
 export function currentProvider(
   providers: ProviderConfig[],
   sessionProvider: string | undefined,
@@ -1962,7 +1993,11 @@ function Attention() {
       s.agentProposals.length +
       (isAsking(s.entries) ? 1 : 0),
   );
-  const busy = useStore((s) => s.busy);
+  // Any conversation, not only the one on screen. A turn is no longer tied to
+  // being looked at, and the case this whole component exists for — somebody
+  // walks away from a long run — is now most likely to be a turn in a
+  // conversation they left open behind another one.
+  const busy = useStore((s) => s.busy || s.running.length > 0);
 
   // Seeded from the platform rather than assumed: a window can be opened
   // behind something, and a first turn finishing in a window that never had

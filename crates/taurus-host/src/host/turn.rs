@@ -156,10 +156,17 @@ impl Host {
         Agent::new(
             provider,
             registry,
-            self.tool_context(cancel)
-                .await
-                .with_checkpoints(recorder)
-                .with_session(turn.session_id),
+            {
+                let context = self
+                    .tool_context(cancel)
+                    .await
+                    .with_checkpoints(recorder)
+                    .with_session(turn.session_id);
+                match turn.unattended {
+                    Some(switch) => context.with_unattended(switch),
+                    None => context,
+                }
+            },
             AgentConfig {
                 system_prompt: prompt::build(
                     &workspace,
