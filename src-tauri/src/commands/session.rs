@@ -302,9 +302,10 @@ pub async fn send_message(
     // letting it through costs a round trip and comes back as a wire error
     // naming a field in the request body.
     //
-    // Out of the session itself, and waited for rather than read off the
-    // entry: a message sent while a turn is running waits here for that turn
-    // to end, rather than building its agent underneath it.
+    // Out of the session itself rather than off the entry, which mirrors it:
+    // what this message is checked against has to be what it will be sent to.
+    // The lock is taken and let go, so a turn already running is waited out
+    // here as well as at the queue point below — this one only reads.
     let model = entry.session.lock().await.model.clone();
     let images = images.unwrap_or_default();
     let blocks = if images.is_empty() {
@@ -317,13 +318,23 @@ pub async fn send_message(
         taurus_host::attach::to_blocks(&images, &capabilities)?
     };
 
+    // The queue point. A message sent while a turn is running waits here for
+    // that turn to end, rather than building an agent underneath it — and
+    // everything below this line belongs to *this* turn, which is why the lock
+    // is taken before any of it. Held until the turn is over.
+    //
+    // A second message used to install its cancellation token while the first
+    // turn still ran, so Stop cancelled a turn that had not started; it would
+    // now do the same to the turn's stream. Both are the same mistake: a turn
+    // has not begun until it owns the conversation.
+    let mut session = entry.session.lock().await;
+
     // The turn's stream belongs to the conversation rather than to this call,
     // and this call's channel is its first view — see `crate::live`.
     //
-    // Installed before the cancellation token below, and after the last thing
-    // that can still fail: from here to the end of the turn this conversation
-    // reads as running, so a window closing it in that time marks it released
-    // rather than cancelling the token the turn is about to be built with.
+    // From here to the end of the turn this conversation reads as running, so
+    // a window closing it in that time marks it released rather than
+    // cancelling the token the turn is about to be built with.
     let live = Arc::new(Live::new());
     live.attach(on_event).await;
     *entry.live.lock().await = Some(live.clone());
@@ -385,7 +396,6 @@ pub async fn send_message(
         Message::new(taurus_provider::Role::User, content)
     };
 
-    let mut session = entry.session.lock().await;
     // The transcript is written from inside this call, by the recorder attached
     // above — once per round and once at the end, whatever the outcome. An
     // interrupted turn still produced the messages that led there, and they are
