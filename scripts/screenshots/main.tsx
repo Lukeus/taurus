@@ -128,6 +128,13 @@ function typeInto(box: HTMLTextAreaElement | HTMLInputElement, text: string) {
 const ANSWERS: Record<string, unknown> = {
   get_status: { ...STATUS, settings: { ...STATUS.settings, theme } },
   list_sessions: SESSIONS,
+  // Which conversations are working. The motion scene overrides it below: a
+  // turn left running in another conversation is the one thing on the rail
+  // that only exists while something is.
+  running_sessions: [],
+  // Every scene opens a conversation, and opening one asks whether a turn is
+  // running in it. Only the motion scene has one, and it is seeded directly.
+  attach_session: { turn: null, dropped: 0 },
   list_models: MODELS,
   list_checkpoints: CHECKPOINTS,
   repo_status: REPO,
@@ -292,6 +299,15 @@ requestAnimationFrame(() => {
       // from the category of the call that is running, so the picture is only
       // honest if a call really is.
       busy: shot === "motion",
+      // The turn's own clock and the rail's marker, which only exist while
+      // something is running. `started_at` is Unix seconds counted back from
+      // now, so the reading is the same in every capture.
+      ...(shot === "motion"
+        ? {
+            turn: { started_at: Math.floor(Date.now() / 1000) - 154, iteration: 6 },
+            running: ["s1", "s2"],
+          }
+        : {}),
       entries: (
         shot === "motion"
           ? MOTION_EVENTS

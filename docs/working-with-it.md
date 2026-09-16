@@ -20,6 +20,17 @@ taurus run --resume <ID> "and now…"   # continue a named one
 The desktop app reopens the workspace's last conversation on launch. The left
 rail lists the rest, today's first, so switching is one click, not a drawer.
 
+Switching doesn't stop the turn you're leaving. A conversation mid-turn keeps
+working: it keeps calling tools, keeps writing its transcript, and keeps the
+files it changes on its own undo history. The rail says `working…` under every
+conversation that's running, and going back to one picks the turn up where it
+is — the part already recorded from its transcript, the round in progress from
+the harness. The working line in the transcript counts up, so you can see how
+long it's been going.
+
+Stop is the only thing that ends a turn early. Leaving a conversation, opening
+another, starting a new one, reloading the window: none of them stop anything.
+
 You can switch model or backend and keep the conversation. Pick another from
 the topbar and the transcript comes with it. That's the point: you usually
 want a second opinion on the question you just asked. A line marks the switch
@@ -53,7 +64,9 @@ turn sent to a conversation from another folder is refused. The backend
 enforces that, not the window.
 
 You can't change folders mid-turn either. The move reconnects every MCP
-server, so the turn's tools would start failing mid-call. Stop the turn first.
+server, so the turn's tools would start failing mid-call. Stop the turn first —
+any turn, in any conversation, not only the one on screen. The rail's workspace
+button says so while something is running.
 
 A conversation shows up in the rail as soon as you ask the first question,
 not when the answer arrives. A two-minute turn is listed, with its name, the
@@ -67,6 +80,11 @@ clicking away saves, Escape discards, and an empty field restores the derived
 name. The name lives in the transcript's header, so it travels with the
 conversation and survives being copied out. You can rename mid-turn, since
 that touches nothing the turn is writing.
+
+Closing the window still ends everything. A turn lives in the app's process,
+so quitting costs the round in flight — the conversation survives, complete to
+the end of the last recorded round, because the transcript is written as the
+turn goes.
 
 Transcripts live in `~/.taurus/sessions/<workspace>/<id>.jsonl`, in the
 global config home, not the project. They hold file contents, command output,

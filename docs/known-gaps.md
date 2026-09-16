@@ -933,13 +933,40 @@ the backlog, and they're the minority.
   the harness classifying tools by something other than effect. Effect is
   what the categories exist to capture, and it's what the run header counts.
   The shape is a useful hint about the kind of work, not a readout.
-- **Nothing says how long a turn has been running.** The motion says a turn is
-  alive. It doesn't say whether *alive* means forty seconds or four minutes.
-  The design's own working state pairs its waveform with an elapsed counter,
-  which Taurus can't draw honestly. A tool call carries its own start time,
-  but a turn doesn't, and a resumed conversation carries neither. A finished
-  run reports its duration in the run header, which leaves exactly the case
-  you'd want it for uncovered.
+- **A turn dies with the process.** It survives everything inside the window —
+  a reload, a switch to another conversation, the conversation being closed —
+  because the turn belongs to the conversation rather than to the call that
+  started it. It does not survive the app going away. Quitting, a crash, or a
+  machine going to sleep costs the round in flight.
+
+  What is lost is bounded and it is the same thing a crash has always cost:
+  the transcript is written once per tool round trip, so the conversation is
+  complete to the end of the last recorded round and reopens there. What is
+  gone is whatever the round in progress had done — including a tool call that
+  ran, since a call is recorded with the round that holds it.
+
+  Covering it means journaling the round as it happens and replaying it on
+  start, and the hard part isn't the journal. It's deciding what a half-run
+  tool call means: a `write_file` that landed, recorded nowhere, is a change
+  the conversation doesn't know it made.
+- **What a turn kept for a window that wasn't watching is capped.** Reopening a
+  conversation mid-turn reads the transcript, which is complete to the last
+  recorded round, and the harness replays the round in progress on top of it.
+  That replay is held in memory and capped at 256 KB of text.
+
+  A round that says more than that — a reasoning model thinking at length, a
+  tool returning something large — loses its oldest part, and a window
+  attaching afterwards says so where the gap is instead of quietly beginning
+  mid-sentence. Reopening again once the round is recorded reads all of it from
+  the transcript. The cap only ever costs what is on screen, never the record.
+- **A permission prompt doesn't say which conversation is asking.** Now that a
+  turn keeps running in a conversation you've left, a prompt can arrive from
+  one that isn't on screen, and the dialog names the call rather than the
+  conversation: you get "run `cargo test`" with no way to tell which of two
+  running turns wants it. The call itself is the thing being decided, so the
+  decision is sound; what's missing is where it came from. It needs a
+  conversation's id on the request, which the prompt is built without — see
+  `UiPrompts` in the desktop app.
 - **A query card stands alone, so a query-heavy turn is a stack of cards.**
   Any tool call that draws a view is left out of the folded run header.
   That's what stops a table getting filed under "6 steps · 11s" behind a
