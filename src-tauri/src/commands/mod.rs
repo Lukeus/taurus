@@ -1,7 +1,7 @@
 //! Tauri commands: the entire surface the frontend can reach.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use dashmap::mapref::entry::Entry;
@@ -43,7 +43,7 @@ use taurus_host::{
 };
 
 use crate::live::Live;
-use crate::state::{AppState, SessionEntry};
+use crate::state::{AppState, Release, SessionEntry};
 use crate::terminal::TerminalEvent;
 
 /// Commands return this so the frontend gets a readable message rather than a

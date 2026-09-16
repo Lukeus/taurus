@@ -33,6 +33,8 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(test)]
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::ipc::Channel;
@@ -217,7 +219,117 @@ fn now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex as StdMutex;
+
     use super::*;
+
+    /// A view, and what it has been shown.
+    ///
+    /// A real `Channel`, because what is being tested is the thing `Live` does
+    /// with one: it hands events to it and drops it when it will not take them.
+    /// `send` calls the handler directly, so nothing here needs a webview.
+    #[derive(Clone, Default)]
+    struct View(Arc<StdMutex<Vec<String>>>);
+
+    impl View {
+        /// A channel that takes everything.
+        fn open(&self) -> Channel<UiEvent> {
+            let seen = self.0.clone();
+            Channel::new(move |body| {
+                seen.lock().unwrap().push(format!("{body:?}"));
+                Ok(())
+            })
+        }
+
+        /// A channel that is gone — a reloaded webview, a closed window.
+        fn shut() -> Channel<UiEvent> {
+            Channel::new(|_| Err(tauri::Error::WebviewNotFound))
+        }
+
+        fn seen(&self) -> usize {
+            self.0.lock().unwrap().len()
+        }
+
+        fn said(&self) -> String {
+            self.0.lock().unwrap().join(" ")
+        }
+    }
+
+    #[tokio::test]
+    async fn every_view_sees_every_event() {
+        let live = Live::new();
+        let one = View::default();
+        let two = View::default();
+        live.attach(one.open()).await;
+        live.attach(two.open()).await;
+
+        live.publish(text("hello")).await;
+
+        assert_eq!(one.seen(), 1);
+        assert_eq!(two.seen(), 1);
+    }
+
+    /// The whole point of the module. A window that has gone away used to stop
+    /// the turn — first by breaking the one forwarder it had, later by
+    /// cancelling outright. Now it is dropped and the work carries on.
+    #[tokio::test]
+    async fn a_view_that_has_gone_is_dropped_and_the_others_carry_on() {
+        let live = Live::new();
+        let staying = View::default();
+        live.attach(View::shut()).await;
+        live.attach(staying.open()).await;
+
+        live.publish(text("first")).await;
+        live.publish(text("second")).await;
+
+        assert_eq!(staying.seen(), 2);
+        // Asked for by the send that failed, not by a later sweep: a dead view
+        // must not be tried again on every event for the rest of the turn.
+        assert_eq!(live.fan.lock().await.views.len(), 1);
+    }
+
+    /// What a window that opens mid-turn is missing is exactly the round in
+    /// progress, because the transcript is written at the end of each round.
+    #[tokio::test]
+    async fn a_view_arriving_mid_round_is_caught_up_on_that_round() {
+        let live = Live::new();
+        live.publish(UiEvent::IterationStarted { iteration: 1 })
+            .await;
+        live.publish(text("the first round")).await;
+        live.publish(UiEvent::IterationStarted { iteration: 2 })
+            .await;
+        live.publish(text("the second ")).await;
+
+        let late = View::default();
+        let dropped = live.attach(late.open()).await;
+        live.publish(text("round")).await;
+
+        assert_eq!(dropped, 0);
+        let said = late.said();
+        assert!(said.contains("the second "), "{said}");
+        assert!(
+            said.contains("round"),
+            "the rest of the round follows: {said}"
+        );
+        assert!(
+            !said.contains("the first round"),
+            "the transcript on disk has the rounds that finished: {said}"
+        );
+        assert_eq!(live.iteration(), 2);
+    }
+
+    /// A conversation nobody has opened yet still runs, and the replay is what
+    /// it keeps for whoever turns up.
+    #[tokio::test]
+    async fn a_turn_nobody_is_watching_keeps_going() {
+        let live = Live::new();
+        live.publish(text("talking to nobody")).await;
+
+        let late = View::default();
+        live.attach(late.open()).await;
+
+        assert!(late.said().contains("talking to nobody"));
+    }
 
     fn text(body: &str) -> UiEvent {
         UiEvent::TextDelta {

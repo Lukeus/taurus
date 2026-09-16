@@ -82,3 +82,44 @@ async fn what_cannot_happen_mid_turn_is_refused_and_told_what_to_do() {
     drop(turn);
     assert!(entry.idle("stop it before rewinding").is_ok());
 }
+
+/// Leaving a conversation is not stopping the turn in it.
+///
+/// The rule the whole of long-running work rests on. Closing is what happens
+/// on every switch between conversations, and while it cancelled, a task you
+/// started and then looked away from was a task you had killed.
+#[tokio::test]
+async fn letting_go_of_a_conversation_mid_turn_waits_for_the_turn() {
+    let entry = open("m");
+    *entry.live.lock().await = Some(Arc::new(crate::live::Live::new()));
+
+    assert_eq!(entry.release().await, Release::WhenTheTurnEnds);
+    assert!(
+        entry.was_released(),
+        "the turn has to find out, or the conversation is held for the life of the process"
+    );
+}
+
+#[tokio::test]
+async fn letting_go_of_an_idle_conversation_is_immediate() {
+    let entry = open("m");
+
+    assert_eq!(entry.release().await, Release::Now);
+    assert!(
+        !entry.was_released(),
+        "nothing is owed to a turn that is not running"
+    );
+}
+
+/// Coming back to a conversation before its turn ends must un-say the release,
+/// or the turn ending reaps an entry the window is using.
+#[tokio::test]
+async fn reopening_a_released_conversation_keeps_it() {
+    let entry = open("m");
+    *entry.live.lock().await = Some(Arc::new(crate::live::Live::new()));
+    entry.release().await;
+
+    entry.keep();
+
+    assert!(!entry.was_released());
+}

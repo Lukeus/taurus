@@ -6,7 +6,7 @@
 //! a command from the webview.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -84,7 +84,46 @@ pub struct SessionEntry {
     pub switches: Mutex<Vec<Switch>>,
 }
 
+/// What letting go of a conversation means, asked at the moment of letting go.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Release {
+    /// Nothing is using it: drop the entry and everything keyed by it.
+    Now,
+    /// A turn is: it is still using the session, the transcript and the plan
+    /// board, and it is noted down to be released when it ends.
+    WhenTheTurnEnds,
+}
+
 impl SessionEntry {
+    /// Lets go of the live copy of this conversation, or arranges to.
+    ///
+    /// The whole of the rule that makes a long turn survivable: leaving is not
+    /// stopping. Until this existed, closing a conversation cancelled the turn
+    /// in it — and closing is what happens on every switch between
+    /// conversations.
+    pub async fn release(&self) -> Release {
+        if self.live.lock().await.is_some() {
+            self.released.store(true, Ordering::Relaxed);
+            return Release::WhenTheTurnEnds;
+        }
+        Release::Now
+    }
+
+    /// Whether a release was asked for while a turn was running.
+    ///
+    /// Read once the turn has ended, by whoever ran it.
+    pub fn was_released(&self) -> bool {
+        self.released.load(Ordering::Relaxed)
+    }
+
+    /// Takes back a release, for a conversation reopened before its turn ended.
+    ///
+    /// Coming back to a conversation is the opposite of letting go of it, and
+    /// without this the turn ending would reap an entry the window is using.
+    pub fn keep(&self) {
+        self.released.store(false, Ordering::Relaxed);
+    }
+
     /// The conversation, if no turn is running in it.
     ///
     /// A turn holds the session's lock for its whole run, which is minutes for

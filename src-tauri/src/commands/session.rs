@@ -150,7 +150,7 @@ pub async fn resume_session(
             // Reopening is the opposite of letting go: a conversation released
             // while its turn ran must not be reaped out from under the window
             // that has just come back to it. See `reap_released`.
-            entry.released.store(false, Ordering::Relaxed);
+            entry.keep();
             let provider_id = entry.provider_id.lock().await.clone();
             let switches = entry.switches.lock().await.clone();
             // Never waited for. A turn holds this lock for its whole run, which
@@ -527,7 +527,7 @@ pub async fn attach_session(
 /// transcript and the plan board have stopped being in use, and the entry goes
 /// the way it would have gone at the click.
 async fn reap_released(state: &AppState, session_id: &str, entry: &Arc<SessionEntry>) {
-    if !entry.released.load(Ordering::Relaxed) {
+    if !entry.was_released() {
         return;
     }
     state.sessions.remove(session_id);
@@ -559,8 +559,7 @@ pub async fn close_session(state: State<'_, Arc<AppState>>, session_id: String) 
         return Ok(());
     };
 
-    if entry.live.lock().await.is_some() {
-        entry.released.store(true, Ordering::Relaxed);
+    if entry.release().await == Release::WhenTheTurnEnds {
         info!(session = %session_id, "left a conversation mid-turn; the turn carries on");
         return Ok(());
     }
