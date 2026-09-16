@@ -56,6 +56,8 @@ pub async fn create_session(
             workspace,
             cancel: Arc::new(Mutex::new(CancellationToken::new())),
             log: Arc::new(Mutex::new(log)),
+            live: Mutex::new(None),
+            released: AtomicBool::new(false),
             // A conversation starts where it starts; a switch is what puts
             // anything in here.
             switches: Mutex::new(Vec::new()),
@@ -145,6 +147,10 @@ pub async fn resume_session(
     let (session, provider_id, switches, loaded) = match state.sessions.get(&session_id) {
         Some(open) => {
             let entry = open.clone();
+            // Reopening is the opposite of letting go: a conversation released
+            // while its turn ran must not be reaped out from under the window
+            // that has just come back to it. See `reap_released`.
+            entry.released.store(false, Ordering::Relaxed);
             let provider_id = entry.provider_id.lock().await.clone();
             let switches = entry.switches.lock().await.clone();
             // Never waited for. A turn holds this lock for its whole run, which
@@ -229,6 +235,8 @@ pub async fn resume_session(
                 workspace: loaded.workspace,
                 cancel: Arc::new(Mutex::new(CancellationToken::new())),
                 log: Arc::new(Mutex::new(log)),
+                live: Mutex::new(None),
+                released: AtomicBool::new(false),
                 switches: Mutex::new(switches),
             }));
             info!(session = %session_id, "session resumed");
@@ -309,6 +317,18 @@ pub async fn send_message(
         taurus_host::attach::to_blocks(&images, &capabilities)?
     };
 
+    // The turn's stream belongs to the conversation rather than to this call,
+    // and this call's channel is its first view — see `crate::live`.
+    //
+    // Installed before the cancellation token below, and after the last thing
+    // that can still fail: from here to the end of the turn this conversation
+    // reads as running, so a window closing it in that time marks it released
+    // rather than cancelling the token the turn is about to be built with.
+    let live = Arc::new(Live::new());
+    live.attach(on_event).await;
+    *entry.live.lock().await = Some(live.clone());
+    emit_turn(state.inner(), &session_id, Some(live.as_ref().into())).await;
+
     // A fresh token per turn: reusing a canceled one would abort the next turn
     // before it started.
     let cancel = CancellationToken::new();
@@ -340,12 +360,16 @@ pub async fn send_message(
             session_id.clone(),
         )));
 
-    // Bridge the loop's mpsc channel to the IPC channel.
+    // The loop still reports on an `mpsc` and still waits when nobody is
+    // draining it, which is the backpressure it has always had. What changed is
+    // what drains: a task that only clones and hands on, so a view that has
+    // stopped reading cannot slow the turn down.
     let (tx, mut rx) = mpsc::channel::<UiEvent>(256);
-    let forwarder = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            if on_event.send(event).is_err() {
-                break;
+    let fan = tokio::spawn({
+        let live = live.clone();
+        async move {
+            while let Some(event) = rx.recv().await {
+                live.publish(event).await;
             }
         }
     });
@@ -368,7 +392,15 @@ pub async fn send_message(
     // already on disk in the order they happened.
     let outcome = agent.run_turn(&mut session, message, tx).await;
     drop(session);
-    let _ = forwarder.await;
+    // Ends on its own once the loop's sender goes with the turn, so awaiting it
+    // is what makes sure the last events reached every view before the
+    // conversation is declared idle.
+    let _ = fan.await;
+    *entry.live.lock().await = None;
+    emit_turn(state.inner(), &session_id, None).await;
+    // A conversation the window let go of mid-turn is released here: this is
+    // the moment it stops being in use. See `close_session`.
+    reap_released(state.inner(), &session_id, &entry).await;
 
     // The conversation's listing entry has moved: its timestamp, and its title
     // if this was its first turn. The status has too — a turn can leave a note
@@ -402,6 +434,107 @@ pub async fn send_message(
     }
 }
 
+/// Which conversations have a turn running in them, right now.
+///
+/// Asked once, when the window starts and whenever it re-reads the rail. Every
+/// change after that is pushed on [`crate::bridge::EVENT_TURN`]. The two
+/// together are what let a window that has just been opened — or reloaded —
+/// draw work it never started: without this, a conversation left running would
+/// look idle in the rail until the moment it finished.
+///
+/// Ids only. What a turn is doing belongs to the conversation it is in, and a
+/// rail that carried it would be a second transcript.
+#[tauri::command]
+pub async fn running_sessions(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<String>> {
+    let mut running = Vec::new();
+    // Cloned out of the map first: holding a `DashMap` reference across the
+    // `await` below would keep a shard locked for as long as the read takes.
+    let entries: Vec<_> = state
+        .sessions
+        .iter()
+        .map(|entry| (entry.key().clone(), entry.value().clone()))
+        .collect();
+    for (id, entry) in entries {
+        if entry.live.lock().await.is_some() {
+            running.push(id);
+        }
+    }
+    Ok(running)
+}
+
+/// What a window learns by attaching to a conversation.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct Attached {
+    /// `None` when no turn is running — and then nothing was attached, because
+    /// there is nothing to wait for and the transcript already holds all of it.
+    #[ts(optional)]
+    pub turn: Option<RunningTurn>,
+    /// How much of the round in progress is no longer held, for a window that
+    /// arrived after a long round overran the replay buffer. Zero everywhere
+    /// else. What it costs is the start of that round on screen; the transcript
+    /// has it as soon as the round is recorded.
+    pub dropped: usize,
+}
+
+/// Watches the turn running in a conversation, from a window that did not start
+/// it.
+///
+/// Called after every `resume_session`, unconditionally, rather than only when
+/// the window thinks something is running — the window is the one thing that
+/// cannot know. The two together are both the cold open and the rejoin: the
+/// resume hands back the transcript, complete to the end of the last recorded
+/// round, and this replays the round in progress and streams the rest of it.
+///
+/// A conversation with no turn in it answers `turn: None` and attaches nothing,
+/// which is what the rail's every-day click gets.
+#[tauri::command]
+pub async fn attach_session(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    on_event: Channel<UiEvent>,
+) -> CmdResult<Attached> {
+    // Deliberately not an error. A conversation with no live entry is one with
+    // no turn, which is the ordinary answer for anything opened from the rail,
+    // and the frontend asks about every conversation it opens.
+    let Ok(entry) = state.session(&session_id) else {
+        return Ok(Attached {
+            turn: None,
+            dropped: 0,
+        });
+    };
+    // Cloned out rather than held: `attach` takes the fan's own lock, and
+    // holding this one across it would put every attach behind every publish.
+    let live = entry.live.lock().await.clone();
+    let Some(live) = live else {
+        return Ok(Attached {
+            turn: None,
+            dropped: 0,
+        });
+    };
+
+    let dropped = live.attach(on_event).await;
+    info!(session = %session_id, dropped, "attached to a running turn");
+    Ok(Attached {
+        turn: Some(live.as_ref().into()),
+        dropped,
+    })
+}
+
+/// Lets go of a conversation whose release was waiting for its turn.
+///
+/// The other half of `close_session`: the turn has ended, so the session, the
+/// transcript and the plan board have stopped being in use, and the entry goes
+/// the way it would have gone at the click.
+async fn reap_released(state: &AppState, session_id: &str, entry: &Arc<SessionEntry>) {
+    if !entry.released.load(Ordering::Relaxed) {
+        return;
+    }
+    state.sessions.remove(session_id);
+    state.host.forget_plan(session_id).await;
+    info!(session = %session_id, "released a conversation the window had left");
+}
+
 #[tauri::command]
 pub async fn cancel_session(state: State<'_, Arc<AppState>>, session_id: String) -> CmdResult<()> {
     state.session(&session_id)?.cancel.lock().await.cancel();
@@ -409,11 +542,31 @@ pub async fn cancel_session(state: State<'_, Arc<AppState>>, session_id: String)
     Ok(())
 }
 
+/// Lets go of the live copy of a conversation the window has moved on from.
+///
+/// Not a stop. A conversation mid-turn keeps everything — the session, the
+/// transcript, the plan board, the turn itself — and is released by
+/// [`reap_released`] the moment the turn ends. `cancel_session` is what the
+/// Stop button calls, and it is the only thing that ends a turn early.
+///
+/// Until this split, closing cancelled. Closing is what happens on every switch
+/// between conversations, so a long task ended the moment you looked at
+/// anything else — with no warning and nothing in the transcript saying a
+/// person had done it.
 #[tauri::command]
 pub async fn close_session(state: State<'_, Arc<AppState>>, session_id: String) -> CmdResult<()> {
-    if let Some((_, entry)) = state.sessions.remove(&session_id) {
-        entry.cancel.lock().await.cancel();
+    let Some(entry) = state.sessions.get(&session_id).map(|entry| entry.clone()) else {
+        return Ok(());
+    };
+
+    if entry.live.lock().await.is_some() {
+        entry.released.store(true, Ordering::Relaxed);
+        info!(session = %session_id, "left a conversation mid-turn; the turn carries on");
+        return Ok(());
     }
+
+    state.sessions.remove(&session_id);
+    entry.cancel.lock().await.cancel();
     // The board goes with the conversation it belongs to. `delete_session` and
     // `rewind_to` already did this; closing did not, and closing is the one
     // that happens on every switch between conversations — so the map grew by

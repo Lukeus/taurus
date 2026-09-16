@@ -14,6 +14,7 @@ import type { AgentTier } from "../bindings/AgentTier";
 import type { AllowedRule } from "../bindings/AllowedRule";
 import type { Answer } from "../bindings/Answer";
 import type { AppStatus } from "../bindings/AppStatus";
+import type { Attached } from "../bindings/Attached";
 import type { Attachment } from "../bindings/Attachment";
 import type { Background } from "../bindings/Background";
 import type { BackgroundJob } from "../bindings/BackgroundJob";
@@ -131,7 +132,9 @@ import type { Finding } from "../bindings/Finding";
 import type { ReviewReport } from "../bindings/ReviewReport";
 import type { PendingConfig } from "../bindings/PendingConfig";
 import type { TrustStatus } from "../bindings/TrustStatus";
+import type { RunningTurn } from "../bindings/RunningTurn";
 import type { TurnChange } from "../bindings/TurnChange";
+import type { TurnState } from "../bindings/TurnState";
 import type { UiEvent } from "../bindings/UiEvent";
 
 export type {
@@ -257,7 +260,9 @@ export type {
   ToolResultBlock,
   TranscriptView,
   TrustStatus,
+  RunningTurn,
   TurnChange,
+  TurnState,
   UiEvent,
 };
 
@@ -291,6 +296,15 @@ export const EVENT_SESSION = "taurus://session";
  * A turn reports what it changes on its own event stream as it changes them,
  * so this is for the one thing that moves the count the other way: a rewind.
  */
+/**
+ * Whether one conversation is mid-turn, when that changes.
+ *
+ * A turn is no longer something this window can infer from a call it happens
+ * to be waiting on: it can reload, or move to another conversation, and the
+ * turn carries on regardless. Sent when a turn starts and again when it ends.
+ */
+export const EVENT_TURN = "taurus://turn";
+
 export const EVENT_CHANGED = "taurus://changed";
 
 export const getStatus = () => invoke<AppStatus>("get_status");
@@ -349,6 +363,35 @@ export function sendMessage(
     onScreen,
     onEvent: channel,
   });
+}
+
+/**
+ * Which conversations have a turn running in them.
+ *
+ * Asked when the window starts and when it re-reads the rail; every change
+ * after that arrives on {@link EVENT_TURN}. A window that has just opened has
+ * no other way to know about work it did not start.
+ */
+export const runningSessions = () => invoke<string[]>("running_sessions");
+
+/**
+ * Watches the turn running in a conversation, if one is.
+ *
+ * Called after every open of a conversation, not only when something looks
+ * like it is running — this window is the one thing that cannot know. What
+ * comes back says whether there is a turn, when it started, and how much of
+ * the round in progress was too old to be kept for a late arrival.
+ *
+ * The transcript handed back by {@link resumeSession} is complete to the end
+ * of the last recorded round; this covers the round after it.
+ */
+export function attachSession(
+  sessionId: string,
+  onEvent: (event: UiEvent) => void,
+): Promise<Attached> {
+  const channel = new Channel<UiEvent>();
+  channel.onmessage = onEvent;
+  return invoke<Attached>("attach_session", { sessionId, onEvent: channel });
 }
 
 /**
@@ -1193,6 +1236,9 @@ export const onStatus = (handler: (status: AppStatus) => void): Promise<Unlisten
 
 export const onSession = (handler: (session: SessionMeta) => void): Promise<UnlistenFn> =>
   listen<SessionMeta>(EVENT_SESSION, (e) => handler(e.payload));
+
+export const onTurn = (handler: (turn: TurnState) => void): Promise<UnlistenFn> =>
+  listen<TurnState>(EVENT_TURN, (e) => handler(e.payload));
 
 export const onChanged = (
   handler: (changed: ChangedFiles) => void,

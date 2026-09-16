@@ -18,6 +18,7 @@ import type {
   OnScreen,
   PermissionDecision,
   PermissionRequest,
+  RunningTurn,
   SessionMeta,
   AgentProposal,
   Attachment,
@@ -197,7 +198,36 @@ interface Store {
    * is the one number here a person can correct.
    */
   context: { used: number; window: number } | null;
+  /**
+   * Set while a turn is running in the conversation on screen.
+   *
+   * Derived from what the backend says rather than from having a call
+   * outstanding. The difference is the whole of why a turn can now be left: a
+   * reload cleared the old flag while the turn ran on, and coming back to a
+   * conversation whose turn this window never started had no way to know.
+   *
+   * See `turn` for the turn itself.
+   */
   busy: boolean;
+  /**
+   * Every conversation with a turn running in it, this one or another.
+   *
+   * A turn is no longer tied to being looked at: leaving a conversation leaves
+   * it working. So the rail marks which ones are, or a long task started and
+   * then navigated away from would be invisible until it finished.
+   *
+   * Read once at startup and kept current by the push — a window that has just
+   * opened has no other way to know about work it did not start.
+   */
+  running: string[];
+  /**
+   * The turn running in the conversation on screen, when there is one.
+   *
+   * Carries when it started, which is what lets the header say how long it has
+   * been going — the one thing a person walking away from a long task wants to
+   * know, and the one thing the app used to keep to itself.
+   */
+  turn: RunningTurn | null;
   /**
    * Set between pressing Stop and the turn actually unwinding.
    *
@@ -264,6 +294,14 @@ interface Store {
   startSession: (providerId: string, model: string) => Promise<void>;
   /** Reopens a saved conversation and redraws it. */
   resume: (sessionId: string) => Promise<void>;
+  /**
+   * Picks up the turn running in the conversation on screen, if one is.
+   *
+   * Called after every open, unconditionally: whether a turn is running is the
+   * one thing this window cannot work out for itself. A conversation with
+   * nothing running answers so and this does nothing.
+   */
+  attach: (sessionId: string) => Promise<void>;
   /**
    * Erases a saved conversation. Deleting the open one starts a replacement on
    * the same provider and model, so the app is never left without a session.
@@ -447,6 +485,67 @@ async function release(session: CreatedSession | null, replacement?: string) {
 let initialized = false;
 
 /**
+ * The view currently drawing a conversation's turn.
+ *
+ * A turn outlives the view of it, so one turn can have two: the call that
+ * started it is still streaming to the window that sent it, and coming back to
+ * that conversation after looking elsewhere attaches a second. Only the newest
+ * folds. Without this the round in progress would be drawn twice, interleaved.
+ */
+let watching: object | null = null;
+
+/**
+ * Folds one turn's events into the conversation on screen, a frame at a time.
+ *
+ * See `batchEvents` for the batching. The changed-file set, the canvas and the
+ * open-document set are folded in the same pass: they arrive on the same
+ * ordered stream, and watching for them separately would put a second render
+ * behind every one of these.
+ *
+ * Two things can make a batch not ours, and both drop it rather than draw it.
+ * A newer view of the same conversation has taken over, or the window has
+ * moved to another conversation entirely — in which case the turn is still
+ * running and still being recorded, and coming back re-reads the transcript
+ * and attaches afresh.
+ */
+function turnStream(
+  sessionId: string,
+  get: () => Store,
+  set: (partial: Partial<Store> | ((s: Store) => Partial<Store>)) => void,
+) {
+  const token = {};
+  watching = token;
+  return batchEvents((events) => {
+    if (watching !== token || get().session?.id !== sessionId) return;
+    set((s) => ({
+      entries: foldEvents(events, s.entries),
+      changed: events.reduce(mergeChanged, s.changed),
+      context: events.reduce(mergeContext, s.context),
+    }));
+    // Conditional, and deliberately so: a turn re-reads nothing on principle
+    // (see the note at the end of `send`). This is not that — it fires only on
+    // the one event that can have changed the answer, and the card the turn has
+    // already drawn is pointing at the dataset it loaded. Waiting for the turn
+    // to end would leave that card reading "not loaded" for as long as the turn
+    // keeps working.
+    if (loadedADataset(events, get().entries)) void get().refreshDatasets();
+    // The canvas opens as the call is *announced*, not when it finishes. That
+    // is the whole feel of the feature: "open the readme" puts the readme on
+    // screen while the model is still typing the sentence about it, rather than
+    // a beat later once a tool has returned.
+    const open = opened(events);
+    if (open) set((s) => ({ opening: { ...open, at: (s.opening?.at ?? 0) + 1 } }));
+    // Every path this batch wrote, so a document open on one of them can
+    // reload — or, if it has unsaved typing in it, say so rather than lose it.
+    // Folded here with the rest, so a write costs no extra render.
+    const paths = events.flatMap((e) => (e.type === "files_changed" ? e.paths : []));
+    if (paths.length > 0) {
+      set((s) => ({ wrote: { paths, at: (s.wrote?.at ?? 0) + 1 } }));
+    }
+  });
+}
+
+/**
  * A pushed status, keeping whatever did not move.
  *
  * Every push is the whole status, and most change one field or none — a note
@@ -487,6 +586,8 @@ export const useStore = create<Store>((set, get) => ({
   wrote: null,
   context: null,
   busy: false,
+  turn: null,
+  running: [],
   stopping: false,
   resuming: false,
   queued: null,
@@ -544,6 +645,32 @@ export const useStore = create<Store>((set, get) => ({
     // reaches disk, rather than when the turn answering it is over.
     api.onSession((session) =>
       set((s) => ({ sessions: mergeSession(s.sessions, session, s.status) })),
+    );
+
+    // Whether a conversation is mid-turn, from the one place that knows it.
+    // This is what ends a turn on screen that this window did not start — one
+    // it attached to after a reload, or after looking at something else — and
+    // what keeps the composer from offering to send into a turn still running.
+    api.onTurn(({ session, turn }) =>
+      set((s) => {
+        const running = turn
+          ? s.running.includes(session)
+            ? s.running
+            : [...s.running, session]
+          : s.running.filter((id) => id !== session);
+        if (s.session?.id !== session) return { running };
+        if (turn) return { running, busy: true, turn };
+        // The open bubble is closed here as well as in `send`, because the
+        // window watching a turn end is not always the one that started it.
+        return { running, busy: false, turn: null, entries: closeOpen(s.entries) };
+      }),
+    );
+
+    // What was already running when this window opened. Everything after it is
+    // the push above; this is the one read.
+    api.runningSessions().then(
+      (running) => set({ running }),
+      (e) => console.warn("could not read which conversations are working", e),
     );
 
     // The turn's own stream reports files as it changes them; this is the one
@@ -660,8 +787,50 @@ export const useStore = create<Store>((set, get) => ({
       });
       // Its changed files, and not the list it was opened from.
       void get().refreshChanged();
+      // And the turn it may be in the middle of. Not awaited: the transcript
+      // is already on screen, and what this adds is the part still being
+      // written.
+      void get().attach(session.id);
     } finally {
       set({ resuming: false });
+    }
+  },
+
+  attach: async (sessionId) => {
+    // Registered before the call, because the catch-up is sent during it: the
+    // events of the round in progress arrive on this channel before the answer
+    // saying there was one.
+    const stream = turnStream(sessionId, get, set);
+    let attached;
+    try {
+      attached = await api.attachSession(sessionId, stream.push);
+    } catch (e) {
+      // Not a banner. What the user asked for was to open the conversation,
+      // and it is open; this is the part that says whether it is working.
+      console.warn("could not attach to the turn in this conversation", e);
+      return;
+    }
+
+    // Opened, then left again before the answer came back.
+    if (get().session?.id !== sessionId) return;
+
+    set({ busy: Boolean(attached.turn), turn: attached.turn ?? null });
+
+    if (attached.dropped > 0) {
+      set((s) => ({
+        entries: [
+          ...s.entries,
+          {
+            kind: "notice",
+            id: nextId(),
+            tone: "info",
+            text:
+              "The start of what the model is saying now isn't shown: this round " +
+              "ran on longer than is kept for a window that wasn't watching it. " +
+              "Reopen this conversation once the turn ends to read all of it.",
+          },
+        ],
+      }));
     }
   },
 
@@ -786,38 +955,7 @@ export const useStore = create<Store>((set, get) => ({
       entries: [...s.entries, { kind: "user", id: nextId(), text, images }],
     }));
 
-    // A frame's worth of events at a time rather than one render per token.
-    // See `batchEvents`. The changed-file set is folded in the same pass: it
-    // arrives on the same ordered stream, and updating it separately would put
-    // a second render behind every one of these.
-    const stream = batchEvents((events) => {
-      set((s) => ({
-        entries: foldEvents(events, s.entries),
-        changed: events.reduce(mergeChanged, s.changed),
-        context: events.reduce(mergeContext, s.context),
-      }));
-      // Conditional, and deliberately so: the note at the end of this function
-      // explains why a turn re-reads nothing on principle. This is not that —
-      // it fires only on the one event that can have changed the answer, and
-      // the card the turn has already drawn is pointing at the dataset it
-      // loaded. Waiting for the turn to end would leave that card reading
-      // "not loaded" for as long as the turn keeps working.
-      if (loadedADataset(events, get().entries)) void get().refreshDatasets();
-      // The canvas opens as the call is *announced*, not when it finishes.
-      // That is the whole feel of the feature: "open the readme" puts the
-      // readme on screen while the model is still typing the sentence about
-      // it, rather than a beat later once a tool has returned.
-      const open = opened(events);
-      if (open) set((s) => ({ opening: { ...open, at: (s.opening?.at ?? 0) + 1 } }));
-      // Every path this batch wrote, so a document open on one of them can
-      // reload — or, if it has unsaved typing in it, say so rather than lose
-      // it. Folded here with the rest rather than watched separately, so a
-      // write costs no extra render.
-      const paths = events.flatMap((e) => (e.type === "files_changed" ? e.paths : []));
-      if (paths.length > 0) {
-        set((s) => ({ wrote: { paths, at: (s.wrote?.at ?? 0) + 1 } }));
-      }
-    });
+    const stream = turnStream(session.id, get, set);
 
     let died = false;
     try {
@@ -827,20 +965,33 @@ export const useStore = create<Store>((set, get) => ({
       // Before the notice, so it reads after whatever the turn had already
       // streamed rather than in front of it.
       stream.flush();
-      set((s) => ({
-        entries: [
-          ...s.entries,
-          {
-            kind: "notice",
-            id: nextId(),
-            tone: "error",
-            text: String(e),
-            failed: true,
-          },
-        ],
-      }));
+      // Drawn only if this is still the conversation on screen. A turn left
+      // running in another one says how it ended in its own transcript, and a
+      // banner over somebody else's conversation would be the wrong place for
+      // it — the same rule the `finally` below follows.
+      if (get().session?.id === session.id) {
+        set((s) => ({
+          entries: [
+            ...s.entries,
+            {
+              kind: "notice",
+              id: nextId(),
+              tone: "error",
+              text: String(e),
+              failed: true,
+            },
+          ],
+        }));
+      }
     } finally {
       stream.flush();
+      // Everything past here is about the conversation on screen — the
+      // composer, the open bubble, a message typed ahead. A turn can now be
+      // left running while the window moves to another conversation, and this
+      // is the moment that turn ends: none of it belongs to whatever is being
+      // shown instead. Its own state is put back when it is reopened, by
+      // `attach`.
+      if (get().session?.id !== session.id) return;
       // Read before the `set` below clears it. A turn the user stopped is not
       // a turn that finished, and the difference decides the drain.
       const stopped = get().stopping;

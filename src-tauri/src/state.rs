@@ -6,6 +6,7 @@
 //! a command from the webview.
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -21,6 +22,7 @@ use taurus_skills::proposal::SkillProposal;
 use taurus_tools::{Answer, PermissionDecision, PermissionPrompt};
 
 use crate::bridge::{UiAgentProposalSink, UiAsker, UiPermissionPrompt, UiProposalSink};
+use crate::live::Live;
 use crate::terminal::Terminals;
 
 /// One live conversation.
@@ -58,6 +60,21 @@ pub struct SessionEntry {
     /// The transcript this conversation appends to. Its own lock rather than
     /// the session's, so a listing or a close does not wait behind a turn.
     pub log: Arc<Mutex<SessionLog>>,
+    /// The turn running in this conversation, and every view watching it.
+    ///
+    /// `Some` for exactly as long as a turn runs. It is here rather than inside
+    /// the call that started the turn because a turn outlives the view of it:
+    /// the window can reload, or move to another conversation, and find its way
+    /// back to this. See [`crate::live`].
+    pub live: Mutex<Option<Arc<Live>>>,
+    /// Set when the window has let go of this conversation while a turn was
+    /// still running.
+    ///
+    /// Closing a conversation releases the live copy of it — every message and
+    /// every image, otherwise held for the life of the process. A conversation
+    /// mid-turn is still using all of it, so the release waits for the turn and
+    /// this is what remembers that it was asked for. See `close_session`.
+    pub released: AtomicBool,
     /// Where this conversation has changed model, oldest first.
     ///
     /// Held as well as written down, so that reopening a conversation that is

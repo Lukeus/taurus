@@ -27,6 +27,7 @@ const state = {
   agentProposals: [],
   datasets: [] as unknown[],
   busy: false,
+  running: [] as string[],
   stopping: false,
   error: null,
   init: vi.fn(),

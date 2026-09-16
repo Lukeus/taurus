@@ -5,6 +5,7 @@
 
 mod bridge;
 mod commands;
+mod live;
 mod state;
 mod terminal;
 
@@ -258,6 +259,8 @@ pub fn run() {
             commands::resume_session,
             commands::read_subagent_transcript,
             commands::send_message,
+            commands::attach_session,
+            commands::running_sessions,
             commands::cancel_session,
             commands::close_session,
             commands::delete_session,

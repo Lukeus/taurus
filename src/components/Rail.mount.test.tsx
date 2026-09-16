@@ -32,6 +32,7 @@ const mount = (props: Partial<Parameters<typeof Rail>[0]> = {}) => {
         width={236}
         workspace="/Users/x/code/taurus-ai-shell"
         sessions={[session("a", "Rename it"), session("b", "Summarize it")]}
+        running={[]}
         currentId={undefined}
         changedCount={0}
         branch={null}

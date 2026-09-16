@@ -184,6 +184,7 @@ export default function App() {
       wrote: s.wrote,
       noteError: s.noteError,
       busy: s.busy,
+      running: s.running,
       stopping: s.stopping,
       resuming: s.resuming,
       queued: s.queued,
@@ -1137,6 +1138,7 @@ export default function App() {
         width={rail.size}
         workspace={workspace}
         sessions={store.sessions}
+        running={store.running}
         currentId={store.session?.id}
         changedCount={store.changed.length}
         branch={store.status?.branch ?? null}
@@ -1962,7 +1964,11 @@ function Attention() {
       s.agentProposals.length +
       (isAsking(s.entries) ? 1 : 0),
   );
-  const busy = useStore((s) => s.busy);
+  // Any conversation, not only the one on screen. A turn is no longer tied to
+  // being looked at, and the case this whole component exists for — somebody
+  // walks away from a long run — is now most likely to be a turn in a
+  // conversation they left open behind another one.
+  const busy = useStore((s) => s.busy || s.running.length > 0);
 
   // Seeded from the platform rather than assumed: a window can be opened
   // behind something, and a first turn finishing in a window that never had

@@ -17,7 +17,7 @@ import { TableCard } from "./TableCard";
 import { duration, plural } from "../lib/format";
 import { useStable } from "../lib/stable";
 import type { Answer, LineRange } from "../lib/api";
-import type { Entry } from "../state/store";
+import { useStore, type Entry } from "../state/store";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
@@ -582,11 +582,46 @@ const TurnView = memo(function TurnView({
               read the row above to find out. See `Waveform`. */}
           <Waveform mode={waveFor(stopping ? null : busyWith(turn))} bars={8} />
           <span>{stopping ? "stopping…" : "working…"}</span>
+          <Elapsed />
         </div>
       )}
     </section>
   );
 });
+
+/**
+ * How long the turn has been running.
+ *
+ * Its own subscription and its own timer, so a clock that moves every second
+ * redraws one span rather than the transcript around it.
+ *
+ * What it counts from is the backend's answer, in Unix seconds, rather than
+ * from when this window started watching. The two used to be the same thing
+ * and are not any more: a turn survives a reload and survives being left for
+ * another conversation, and "how long has this been going" is a question about
+ * the turn.
+ *
+ * Nothing for the first half minute. Under that the answer is "a moment", the
+ * motion beside it already says so, and a number ticking up from one is noise
+ * on the short turns that are most of them.
+ */
+function Elapsed() {
+  const startedAt = useStore((s) => s.turn?.started_at ?? null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (startedAt === null) return;
+    // Reset on a new turn, so the first tick is not up to a second late.
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+
+  if (startedAt === null) return null;
+  const seconds = Math.floor(now / 1000) - startedAt;
+  if (seconds < 30) return null;
+  return <span className="elapsed font-mono text-11 text-faint">{duration(seconds * 1000)}</span>;
+}
 
 /** The question, at the head of the thread that answers it. */
 function Prompt({

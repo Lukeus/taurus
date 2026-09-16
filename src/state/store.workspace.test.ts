@@ -63,6 +63,11 @@ const backend = (overrides: Record<string, unknown> = {}) => {
         return Promise.resolve({ ...OPEN, id: "fresh" });
       case "list_checkpoints":
         return Promise.resolve([]);
+      // Every conversation these tests open is idle; attaching to one says so.
+      case "attach_session":
+        return Promise.resolve({ turn: null, dropped: 0 });
+      case "running_sessions":
+        return Promise.resolve([]);
       case "list_models":
         return Promise.resolve([{ id: "qwen3.6:27b", display_name: "Qwen" }]);
       default:

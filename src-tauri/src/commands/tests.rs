@@ -27,6 +27,8 @@ fn open(model: &str) -> SessionEntry {
         workspace: std::path::PathBuf::from("/src/a"),
         cancel: Arc::new(Mutex::new(CancellationToken::new())),
         log: Arc::new(Mutex::new(SessionLog::disabled())),
+        live: Mutex::new(None),
+        released: AtomicBool::new(false),
         switches: Mutex::new(Vec::new()),
     }
 }

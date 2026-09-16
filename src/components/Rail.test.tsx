@@ -21,6 +21,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       width={236}
       workspace="/Users/x/code/taurus-ai-shell"
       sessions={[]}
+      running={[]}
       currentId={undefined}
       changedCount={0}
       branch={null}

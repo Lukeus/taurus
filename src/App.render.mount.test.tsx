@@ -95,6 +95,7 @@ const state = {
   opening: { path: "src/main.rs", lines: null, at: 1 },
   resuming: null,
   busy: false,
+  running: [] as string[],
   stopping: false,
   error: null,
   init: vi.fn(),
