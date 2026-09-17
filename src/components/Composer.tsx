@@ -434,7 +434,7 @@ export function Composer({
           <button
             className="pill"
             // The same rule the rail's workspace row follows: a switch closes
-            // the conversation and reconnects every MCP server.
+            // the conversation and restarts the MCP servers it changes.
             disabled={busy}
             onClick={onPickWorkspace}
             data-tip={

@@ -1186,10 +1186,10 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   setWorkspace: async (path) => {
-    // Refused rather than queued. The switch reconnects every MCP server, so
-    // the tools a running turn is holding would start failing mid-call — and
-    // the turn would go on editing the folder being left while the app claimed
-    // to be in the new one.
+    // Refused rather than queued. The switch restarts every MCP server the new
+    // folder configures differently, so the tools a running turn is holding
+    // could start failing mid-call — and the turn would go on editing the
+    // folder being left while the app claimed to be in the new one.
     //
     // Any turn, not only this conversation's. A turn left running in another
     // conversation is just as dead when the servers go, and it is not on
