@@ -12,8 +12,30 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus>
     Ok(status_of(&state).await)
 }
 
+/// Everything a window needs to draw the folder it has just moved to.
+///
+/// One answer rather than three questions. The window used to follow a switch
+/// with `get_status` and `workspace_trust`, and only then ask for the listing —
+/// while the switch itself had already built and pushed a status nobody was
+/// waiting for. The listing could not simply be asked for alongside the switch
+/// either: it is read against whatever folder the backend is in when it
+/// arrives, which a race could make the old one. Answered here, all three are
+/// about the folder this call resolved, and are built at once.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct WorkspaceOpened {
+    pub status: AppStatus,
+    pub trust: TrustStatus,
+    /// This folder's conversations, newest first — what `list_sessions` would
+    /// say.
+    pub sessions: Vec<SessionMeta>,
+}
+
 #[tauri::command]
-pub async fn set_workspace(state: State<'_, Arc<AppState>>, path: String) -> CmdResult<String> {
+pub async fn set_workspace(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> CmdResult<WorkspaceOpened> {
     // Refused here rather than only in the window. The move reconnects every
     // MCP server, so a turn running through it starts failing mid-call, and a
     // turn is no longer something one screen can account for: it keeps running
@@ -33,12 +55,29 @@ pub async fn set_workspace(state: State<'_, Arc<AppState>>, path: String) -> Cmd
     let resolved = state.host.set_workspace(&PathBuf::from(path)).await?;
     let shown = taurus_tools::path_guard::plain(&resolved);
     info!(workspace = %shown.display(), "workspace changed");
-    // Everything the shell shows about the app belongs to the folder, so all of
-    // it has just changed at once.
-    emit_status(&state).await;
-    // The new folder's servers, once the shell has everything else.
+    // The new folder's servers, started now and not waited for. Nothing below
+    // needs them, and their tool counts arrive on the status they push when
+    // they answer.
     reconnect_mcp(&state);
-    Ok(shown.display().to_string())
+
+    // Everything the shell shows about the app belongs to the folder, so all of
+    // it has just changed at once — and it is answered rather than pushed,
+    // because the window is waiting on it: which model this folder opens on is
+    // decided from these settings, and a pushed status lands a tick too late
+    // for that. Listed against `resolved` rather than the host's current
+    // folder, so a second switch landing in between cannot answer this one
+    // with its listing.
+    let listed = resolved.clone();
+    let (status, trust, sessions) = tokio::join!(
+        status_of(&state),
+        state.host.trust_status(),
+        off_runtime(move || Ok(sessions::list(Some(&listed)))),
+    );
+    Ok(WorkspaceOpened {
+        status,
+        trust,
+        sessions: sessions?,
+    })
 }
 
 /// Reconnects the MCP servers in the background, then tells the window.

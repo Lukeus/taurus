@@ -132,6 +132,7 @@ import type { Finding } from "../bindings/Finding";
 import type { ReviewReport } from "../bindings/ReviewReport";
 import type { PendingConfig } from "../bindings/PendingConfig";
 import type { TrustStatus } from "../bindings/TrustStatus";
+import type { WorkspaceOpened } from "../bindings/WorkspaceOpened";
 import type { RunningTurn } from "../bindings/RunningTurn";
 import type { TurnChange } from "../bindings/TurnChange";
 import type { TurnState } from "../bindings/TurnState";
@@ -260,6 +261,7 @@ export type {
   ToolResultBlock,
   TranscriptView,
   TrustStatus,
+  WorkspaceOpened,
   RunningTurn,
   TurnChange,
   TurnState,
@@ -309,8 +311,12 @@ export const EVENT_CHANGED = "taurus://changed";
 
 export const getStatus = () => invoke<AppStatus>("get_status");
 
+/**
+ * Moves to another folder, and answers with what drawing it needs: its status,
+ * whether its config is trusted, and its conversations.
+ */
 export const setWorkspace = (path: string) =>
-  invoke<string>("set_workspace", { path });
+  invoke<WorkspaceOpened>("set_workspace", { path });
 
 /**
  * Whether this workspace's own config is being read, and what it holds.

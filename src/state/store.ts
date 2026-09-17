@@ -1225,21 +1225,21 @@ export const useStore = create<Store>((set, get) => ({
     });
     await release(previous);
 
-    await api.setWorkspace(path);
-    // Both asked for rather than waited for, even though `set_workspace` also
-    // pushes the status. `adoptWorkspace` below reads `status.settings` to
-    // decide which provider and model this folder was last worked in, and a
-    // pushed status is delivered on a later tick — so left to arrive on its
-    // own it would still hold the *previous* folder's settings at the moment
-    // that decision is made, and the new folder would open on the old one's
-    // model. A push is for state nothing is waiting on; this is sequenced.
-    const [status, trust] = await Promise.all([api.getStatus(), api.workspaceTrust()]);
+    // The switch answers with the new folder's status, trust and listing, all
+    // at once. The status is taken from the answer rather than left to a push
+    // because `adoptWorkspace` below reads `status.settings` to decide which
+    // provider and model this folder was last worked in, and a pushed status is
+    // delivered on a later tick — so it would still hold the *previous*
+    // folder's settings at the moment that decision is made, and the new folder
+    // would open on the old one's model. A push is for state nothing is waiting
+    // on; this is sequenced.
+    const { status, trust, sessions } = await api.setWorkspace(path);
     // Emptied rather than left standing: the previous folder's datasets are
     // not this one's, and a pane drawn from them would name files that are not
     // here. Refilled by the fetch below.
     set({ status, trust, datasets: [] });
     void get().refreshDatasets();
-    await get().adoptWorkspace();
+    await get().adoptWorkspace(Promise.resolve(sessions));
   },
 
   refresh: async () => {
