@@ -30,6 +30,11 @@ url = "2"
 tracing.workspace = true
 ts-rs.workspace = true
 
+[features]
+# The stand-in server in `testing`, for another crate's tests. Named in that
+# crate's dev-dependencies only, so nothing that ships compiles it.
+testing = []
+
 [dev-dependencies]
 base64.workspace = true
 tempfile = "3"

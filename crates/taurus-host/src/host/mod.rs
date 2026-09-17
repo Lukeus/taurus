@@ -247,12 +247,14 @@ pub struct Host {
     mcp: McpManager,
     /// Held for the whole of an MCP reload, so two cannot interleave.
     ///
-    /// A reload shuts every server down, spends seconds starting them again,
-    /// then swaps their tools into the registry — and the MCP panel starts one
+    /// A reload shuts servers down, spends seconds starting them again, then
+    /// swaps their tools into the registry — and the MCP panel starts one
     /// on every save. Two at once let the second's shutdown drop connections
     /// the first had just made, while the first went on to register tools
     /// pointing at them: tools that failed on every call, under a panel that
-    /// said connected.
+    /// said connected. It also keeps a reload's plan true: which servers are
+    /// left running is decided before anything stops, and a second reload in
+    /// between could stop one of them.
     ///
     /// The local half never takes this. It carries the MCP tools across at the
     /// moment it swaps the registry — see [`Self::reload_local`] — so a
@@ -345,8 +347,8 @@ impl Host {
         candidate.canonicalize().unwrap_or(candidate)
     }
 
-    /// Re-resolves both config layers, rescans skills, reconnects MCP servers,
-    /// and rebuilds the registry.
+    /// Re-resolves both config layers, rescans skills, restarts the MCP servers
+    /// whose entries changed, and rebuilds the registry.
     ///
     /// Every layered file is re-read here rather than only at startup: the
     /// workspace layer belongs to a directory the user can change at any time,
@@ -375,7 +377,7 @@ impl Host {
     /// MCP tools that are running survive this half — it carries them across
     /// rather than rebuilding them — so a change that cannot affect a server
     /// calls this alone, and [`Host::reload`] is for when the servers should
-    /// restart too.
+    /// be brought in line with their config too.
     pub async fn reload_local(&self) {
         let workspace = self.workspace.read().await.clone();
 

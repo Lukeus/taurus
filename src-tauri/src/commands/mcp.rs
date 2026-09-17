@@ -1,6 +1,7 @@
 //! MCP servers: the panel, the catalogue, sign-in and reconnecting.
 
 use super::*;
+use taurus_mcp::Restart;
 
 /// Opens a layer's `mcp.json` in whatever the OS uses for it, creating it first
 /// if it is not there yet.
@@ -117,9 +118,14 @@ pub async fn save_mcp_server(
         taurus_host::config::delete_mcp_server(source.scope, Some(&workspace), source.name.trim())?;
     }
 
+    // Restarted by name even when the entry came back identical: the button
+    // says "Save and reconnect", and pressing it on a server that has hung is
+    // a reasonable way to ask for that. A rename stops the old name by the
+    // ordinary rule, since it is no longer in the file.
+    //
     // The panel is handed the listing directly; this is for the rail's badge,
     // which is showing the same servers from somewhere else on screen.
-    after_mcp_change(&state).await
+    after_mcp_change(&state, Restart::Server(draft.name.trim())).await
 }
 
 /// One layer's stored entry for a server, for the secrets the panel was never
@@ -145,7 +151,7 @@ pub async fn delete_mcp_server(
 ) -> CmdResult<Vec<McpServerView>> {
     let workspace = state.host.workspace().await;
     taurus_host::config::delete_mcp_server(scope, Some(&workspace), &name)?;
-    after_mcp_change(&state).await
+    after_mcp_change(&state, Restart::Changed).await
 }
 
 #[tauri::command]
@@ -157,7 +163,7 @@ pub async fn set_mcp_server_disabled(
 ) -> CmdResult<Vec<McpServerView>> {
     let workspace = state.host.workspace().await;
     taurus_host::config::set_mcp_server_disabled(scope, Some(&workspace), &name, disabled)?;
-    after_mcp_change(&state).await
+    after_mcp_change(&state, Restart::Changed).await
 }
 
 /// Connects to one entry, reports what it offers, and disconnects.
@@ -214,8 +220,10 @@ pub async fn mcp_sign_in(
 
     // Reconnected rather than left for the user to press Reconnect: the whole
     // point of signing in is the server working, and it cannot work until it is
-    // reconnected with the credentials that did not exist a moment ago.
-    after_mcp_change(&state).await
+    // reconnected with the credentials that did not exist a moment ago. By
+    // name, because the entry has not changed and an ordinary reload would
+    // leave a connected server holding the old ones.
+    after_mcp_change(&state, Restart::Server(&name)).await
 }
 
 /// Forgets one server's sign-in.
@@ -229,7 +237,9 @@ pub async fn mcp_sign_out(
     name: String,
 ) -> CmdResult<Vec<McpServerView>> {
     state.host.mcp_sign_out(&name)?;
-    after_mcp_change(&state).await
+    // By name, for the reason signing in is: a connection goes on carrying the
+    // credentials it was opened with.
+    after_mcp_change(&state, Restart::Server(&name)).await
 }
 
 /// Which of these programs are on the PATH this application inherited.
@@ -266,23 +276,29 @@ pub async fn mcp_catalog() -> CmdResult<taurus_mcp::Catalog> {
     Ok(taurus_mcp::catalog())
 }
 
-/// Reconnects every MCP server without rescanning anything else.
+/// Restarts every MCP server without rescanning anything else.
 ///
-/// Narrower than [`reload_config`] on purpose — see `Host::reload_mcp`.
+/// Narrower than [`reload_config`] on purpose — see `Host::reload_mcp`. And
+/// broader than the reload every other command here ends with: this is
+/// **Reconnect**, which is pressed for a server that has hung or is misbehaving
+/// while its entry says exactly what it said before, so nothing is kept.
 #[tauri::command]
 pub async fn reload_mcp(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<McpServerView>> {
-    after_mcp_change(&state).await
+    after_mcp_change(&state, Restart::All).await
 }
 
 /// What every command that changes an MCP entry does last: reconnect, tell the
 /// rail, and hand the panel the listing it will redraw from.
 ///
+/// `restart` names what to restart beyond the servers whose entries changed.
+/// See `Host::restart_mcp`.
+///
 /// One function rather than three lines in each, because the next command that
 /// edits `mcp.json` would otherwise copy the three lines, and a copy that
 /// forgets the status push leaves the rail's badge counting yesterday's
 /// servers.
-async fn after_mcp_change(state: &AppState) -> CmdResult<Vec<McpServerView>> {
-    state.host.reload_mcp().await;
+async fn after_mcp_change(state: &AppState, restart: Restart<'_>) -> CmdResult<Vec<McpServerView>> {
+    state.host.restart_mcp(restart).await;
     emit_status(state).await;
     Ok(state.host.mcp_servers().await)
 }

@@ -128,20 +128,44 @@ impl Host {
         (merged, defined_in, problems)
     }
 
-    /// Reconnects the MCP servers without rebuilding anything else.
+    /// Brings the MCP servers in line with the config, without rebuilding
+    /// anything else.
     ///
-    /// What the MCP panel calls after a save, and the second half of a
+    /// What the MCP panel calls after a save, what a folder switch and a trust
+    /// decision call once the window has redrawn, and the second half of a
     /// [`Host::reload`]. It would also be done by a full reload, which would
     /// also rescan every skill directory and re-read both provider layers —
     /// none of which a change to `mcp.json` can affect. The narrower call is the
     /// same argument `rescan_agents` makes in the other direction: editing one
     /// thing should not restart the rest.
     ///
-    /// The swap is by name. Every MCP tool carries the `mcp__` prefix, so the
-    /// old set can be lifted out of the live registry and a new one put back
-    /// without touching the built-ins, the skill tools, or the web tools beside
-    /// them.
+    /// The same argument, one level down, is why this restarts only the servers
+    /// whose entries changed. A folder switch reloads every server, and most of
+    /// them are global ones the switch does nothing to. Restarting them all left
+    /// no MCP tools at all for as long as the slowest took to start — 1.7
+    /// seconds, measured with four — and put every one of those launches in
+    /// competition with the window redrawing for the new folder. What counts as
+    /// changed, and why the open folder is not part of it, is
+    /// [`taurus_mcp::McpManager::plan`]'s to say. A server that is not running
+    /// is always started again, so this is still how a broken one is retried.
     pub async fn reload_mcp(&self) {
+        self.restart_mcp(taurus_mcp::Restart::Changed).await;
+    }
+
+    /// [`Self::reload_mcp`], restarting `restart`'s servers whether or not they
+    /// changed.
+    ///
+    /// For the moments someone is asking for a restart rather than a reload:
+    /// **Reconnect** in the panel, which is pressed for a server that has hung
+    /// while its entry stayed the same, and a sign-in, whose credentials only a
+    /// new connection reads.
+    ///
+    /// The swap is by name. Every MCP tool carries the `mcp__` prefix, so the
+    /// tools of the servers going down can be lifted out of the live registry
+    /// and the new ones put back without touching the built-ins, the skill
+    /// tools, or the web tools beside them — or the tools of a server left
+    /// running.
+    pub async fn restart_mcp(&self, restart: taurus_mcp::Restart<'_>) {
         // One at a time — see the field.
         let _reloading = self.mcp_reload.lock().await;
         let workspace = self.workspace.read().await.clone();
@@ -159,10 +183,14 @@ impl Host {
         let (config, merge_problems) = config::merge_mcp(layers);
         problems.extend(Problem::tag(ProblemSource::Mcp, merge_problems));
 
+        let plan = self.mcp.plan(&config, restart).await;
+
         // Out of the registry before the servers go down, rather than after
         // they come back. The other order left a turn that started in between
         // holding tools whose connections were already closed, and those fail
-        // on every call; this way it sees no MCP tools, and works without.
+        // on every call; this way it sees none of that server's tools, and
+        // works without. A kept server's tools stay, because its connection
+        // does.
         let before: HashSet<String> = {
             let mut registry = self.registry.write().await;
             let before: HashSet<String> = registry
@@ -171,28 +199,37 @@ impl Host {
                 .map(str::to_string)
                 .collect();
             for name in &before {
-                registry.remove(name);
+                if !plan.keeps_tool(name) {
+                    registry.remove(name);
+                }
             }
             before
         };
 
-        // Reconnecting drops the previous connections, stopping the old child
+        // Stopping drops the previous connections, ending their child
         // processes; leaving them would leak one per workspace change.
-        self.mcp.shutdown().await;
-        let tools = self.mcp.connect_all(&config).await;
+        let tools = self.mcp.reconnect(&config, &plan).await;
 
-        // Applied to the new tools only. `reload_local` applies it to everything
-        // else, and a tool the user turned off must not come back because its
-        // server reconnected.
+        // Read now rather than before the servers started, so a tool switched
+        // off while they were starting does not come back. Applied to the MCP
+        // tools only: `reload_local` applies it to everything else, and a tool
+        // the user turned off must not come back because its server
+        // reconnected. It runs over a kept server's tools as well, which are
+        // already registered, so this is also what brings back one the user has
+        // switched on again since.
         let disabled = self.settings.read().await.disabled_tools.clone();
         let mut registry = self.registry.write().await;
         let mut after: HashSet<String> = HashSet::new();
         for tool in tools {
-            if disabled.iter().any(|off| off == tool.name()) {
+            let name = tool.name().to_string();
+            if disabled.contains(&name) {
+                registry.remove(&name);
                 continue;
             }
-            after.insert(tool.name().to_string());
-            registry.register(tool);
+            if registry.get(&name).is_none() {
+                registry.register(tool);
+            }
+            after.insert(name);
         }
         let available: Vec<String> = registry.names().map(str::to_string).collect();
         drop(registry);

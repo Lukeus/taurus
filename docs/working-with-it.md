@@ -81,8 +81,9 @@ its own folder's rail, and reopening it there picks up where it stopped. A
 turn sent to a conversation from another folder is refused. The backend
 enforces that, not the window.
 
-You can't change folders mid-turn either. The move reconnects every MCP
-server, so the turn's tools would start failing mid-call. Stop the turn first —
+You can't change folders mid-turn either. The move restarts every MCP server
+the new folder configures differently, so the turn's tools could start failing
+mid-call. Servers it leaves the same keep running. Stop the turn first —
 any turn, in any conversation, not only the one on screen. The rail's workspace
 button says so while something is running.
 

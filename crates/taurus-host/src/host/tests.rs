@@ -1058,6 +1058,206 @@ async fn a_second_mcp_reload_waits_for_the_one_in_flight() {
     .await;
 }
 
+/// What this binary does when a test below starts it as an MCP server. See
+/// `taurus_mcp::testing`.
+#[test]
+#[ignore = "started as a server by the MCP reload tests, not run on its own"]
+fn stand_in_mcp_server() {
+    taurus_mcp::testing::serve();
+}
+
+fn stand_in(tools: &[&str]) -> taurus_mcp::ServerConfig {
+    taurus_mcp::testing::stand_in("host::tests::stand_in_mcp_server", tools)
+}
+
+/// Writes one layer's `mcp.json`. Built as JSON rather than formatted, because
+/// the stand-in's command is a path, and on Windows a path is backslashes.
+fn write_mcp(dir: &Path, servers: &[(&str, taurus_mcp::ServerConfig)]) {
+    let servers: serde_json::Map<String, serde_json::Value> = servers
+        .iter()
+        .map(|(name, server)| (name.to_string(), serde_json::to_value(server).unwrap()))
+        .collect();
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        taurus_mcp::config::config_file(dir),
+        serde_json::json!({ "mcpServers": servers }).to_string(),
+    )
+    .unwrap();
+}
+
+/// The registered tool of that name, to compare by identity: a server left
+/// running hands back the very tool it registered, and one started again
+/// makes a new one.
+async fn registered(host: &Host, name: &str) -> Option<Arc<dyn Tool>> {
+    host.registry.read().await.get(name)
+}
+
+async fn connected(host: &Host, server: &str) -> bool {
+    host.mcp_statuses()
+        .await
+        .iter()
+        .any(|status| status.name == server && status.connected)
+}
+
+#[tokio::test]
+async fn a_folder_switch_leaves_a_global_server_running() {
+    // The finding this closes: a switch restarted every server, global ones
+    // included, and four of them took 1.7 seconds to come back with nothing
+    // about them changed.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, home) = host(&workspace);
+    write_mcp(home.path(), &[("notes", stand_in(&["search"]))]);
+    host.reload_mcp().await;
+    let search = taurus_mcp::namespaced("notes", "search");
+    let before = registered(&host, &search)
+        .await
+        .expect("the server connected");
+
+    let other = TempDir::new().unwrap();
+    host.set_workspace(other.path()).await.unwrap();
+    host.reload_mcp().await;
+
+    let after = registered(&host, &search)
+        .await
+        .expect("its tool survived the switch");
+    assert!(
+        Arc::ptr_eq(&before, &after),
+        "a server nothing about had changed was started again"
+    );
+    assert!(connected(&host, "notes").await);
+}
+
+#[tokio::test]
+async fn a_folder_that_changes_or_drops_a_server_restarts_or_stops_it() {
+    // What a folder does to a server, it does through its layer of
+    // `mcp.json`. So a switch is a restart for exactly the servers whose
+    // merged entry differs between the two folders, and a stop for the ones
+    // only the old folder named.
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().canonicalize().unwrap();
+    let (host, home) = host(&first);
+    write_mcp(home.path(), &[("notes", stand_in(&["search"]))]);
+    write_mcp(
+        &config::workspace_dir(&first),
+        &[("project", stand_in(&["build"]))],
+    );
+    host.reload_mcp().await;
+    let search = taurus_mcp::namespaced("notes", "search");
+    let build = taurus_mcp::namespaced("project", "build");
+    let before = registered(&host, &search).await.unwrap();
+    assert!(registered(&host, &build).await.is_some());
+
+    // The second folder overrides the global server with an entry of its own.
+    let other = TempDir::new().unwrap();
+    let second = other.path().canonicalize().unwrap();
+    let mut overridden = stand_in(&["search"]);
+    if let taurus_mcp::ServerConfig::Stdio { env, .. } = &mut overridden {
+        env.insert("NOTES_DIR".into(), "docs".into());
+    }
+    write_mcp(&config::workspace_dir(&second), &[("notes", overridden)]);
+    crate::trust::trust(&second).unwrap();
+    host.set_workspace(&second).await.unwrap();
+    host.reload_mcp().await;
+
+    let after = registered(&host, &search)
+        .await
+        .expect("the override connected");
+    assert!(
+        !Arc::ptr_eq(&before, &after),
+        "a server whose entry the folder changed kept running as it was"
+    );
+    assert!(
+        registered(&host, &build).await.is_none(),
+        "a server only the old folder named still offers its tools"
+    );
+    let names: Vec<String> = host
+        .mcp_statuses()
+        .await
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(names, ["notes"]);
+}
+
+#[tokio::test]
+async fn reconnect_restarts_a_server_whose_entry_did_not_change() {
+    // Pressed for a server that has hung while its entry stayed the same, and
+    // done after a sign-in, whose credentials only a new connection reads. A
+    // reload that kept it would be a button that does nothing.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, home) = host(&workspace);
+    write_mcp(
+        home.path(),
+        &[
+            ("notes", stand_in(&["search"])),
+            ("git", stand_in(&["log"])),
+        ],
+    );
+    host.reload_mcp().await;
+    let search = taurus_mcp::namespaced("notes", "search");
+    let log = taurus_mcp::namespaced("git", "log");
+    let notes = registered(&host, &search).await.unwrap();
+    let git = registered(&host, &log).await.unwrap();
+
+    host.restart_mcp(taurus_mcp::Restart::Server("git")).await;
+    assert!(Arc::ptr_eq(
+        &notes,
+        &registered(&host, &search).await.unwrap()
+    ));
+    let git_again = registered(&host, &log).await.unwrap();
+    assert!(!Arc::ptr_eq(&git, &git_again), "the named server was kept");
+
+    host.restart_mcp(taurus_mcp::Restart::All).await;
+    assert!(!Arc::ptr_eq(
+        &notes,
+        &registered(&host, &search).await.unwrap()
+    ));
+    assert!(!Arc::ptr_eq(
+        &git_again,
+        &registered(&host, &log).await.unwrap()
+    ));
+    assert!(connected(&host, "notes").await && connected(&host, "git").await);
+}
+
+#[tokio::test]
+async fn a_kept_servers_tool_follows_the_disabled_setting() {
+    // A kept server's tools were registered by an earlier reload, under an
+    // earlier reading of the settings. Switching one off must take it out
+    // without restarting the server, and switching it back on must bring it
+    // back the same way — the local half cannot, having nothing to carry.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, home) = host(&workspace);
+    write_mcp(home.path(), &[("notes", stand_in(&["search", "write"]))]);
+    host.reload().await;
+    let search = taurus_mcp::namespaced("notes", "search");
+    let write = taurus_mcp::namespaced("notes", "write");
+    let kept = registered(&host, &write).await.unwrap();
+
+    let settings = config::workspace_dir(&workspace).join("settings.json");
+    std::fs::create_dir_all(config::workspace_dir(&workspace)).unwrap();
+    std::fs::write(&settings, format!(r#"{{"disabled_tools": ["{search}"]}}"#)).unwrap();
+    host.reload().await;
+    assert!(registered(&host, &search).await.is_none());
+    assert!(Arc::ptr_eq(
+        &kept,
+        &registered(&host, &write).await.unwrap()
+    ));
+
+    std::fs::write(&settings, r#"{"disabled_tools": []}"#).unwrap();
+    host.reload().await;
+    assert!(
+        registered(&host, &search).await.is_some(),
+        "a tool switched back on stayed off because its server was kept"
+    );
+    assert!(Arc::ptr_eq(
+        &kept,
+        &registered(&host, &write).await.unwrap()
+    ));
+}
+
 #[tokio::test]
 async fn reloading_mcp_leaves_every_other_tool_where_it_was() {
     // The reason this is narrower than `reload`: a change to `mcp.json`

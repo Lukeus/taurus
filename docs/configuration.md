@@ -407,6 +407,19 @@ agent can be scoped to an MCP tool, so adding its server has to make that agent
 usable, and deleting the server has to stop the roster claiming a tool that's
 gone.
 
+Saving restarts the server you saved, plus any other server whose entry changed.
+Everything else keeps running. The same goes for switching folders and for
+trusting or revoking one: a server only restarts when its merged entry is
+different, so your global servers carry on across a switch. "Different" means
+what would actually start. A `${VAR}` whose value changed counts, and so does a
+folder's own entry for a server with the same name. The folder itself doesn't:
+a server starts in Taurus's own working directory, and nothing tells it which
+folder is open. A server that isn't connected, because it never started or
+stopped answering, is always started again. **Reconnect** restarts every
+server regardless, which is what you want for one that's hung. Signing in or
+out restarts that server, since a connection keeps the credentials it opened
+with.
+
 ### When a server will not start
 
 The most common failure isn't a wrong entry. An app launched from the Dock or
