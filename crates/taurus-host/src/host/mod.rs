@@ -381,8 +381,20 @@ impl Host {
 
         let (providers, provider_problems) = config::load_providers(Some(&workspace));
         let mut problems = Problem::tag(ProblemSource::Providers, provider_problems);
-        *self.providers.write().await = providers;
-        self.forget_providers();
+        // Forgotten only when the list moved. Most reloads — a folder switch, a
+        // saved setting, a trust decision — leave every provider as it was, and
+        // forgetting them anyway cost each one a keychain read and a fresh
+        // connection pool the next time a conversation opened, plus the
+        // capabilities round trip that pool had already paid for. A key changed
+        // through Taurus forgets on its own; see `set_provider_key`.
+        let mut held = self.providers.write().await;
+        if *held != providers {
+            *held = providers;
+            drop(held);
+            self.forget_providers();
+        } else {
+            drop(held);
+        }
         *self.settings.write().await = config::load_settings(Some(&workspace));
 
         // Through the same two loaders a turn calls, so a reload and a turn
@@ -505,8 +517,10 @@ impl Host {
             // thing to keep in step.
             let id = self.embedding_provider_id().await;
             match id {
-                Some(id) => match self.provider(&id).await {
-                    Ok(provider) => {
+                // Deferred: this runs on every reload, including the one the
+                // window waits on, and building the provider reads its key.
+                Some(id) => match self.deferred_provider(&id).await {
+                    Some(provider) => {
                         info!(model = %embedding_model, provider = %id, "semantic search enabled");
                         let mut search = taurus_index::SearchCode::new(
                             provider.clone(),
@@ -536,9 +550,12 @@ impl Host {
                         }
                         registry.register(Arc::new(search));
                     }
-                    Err(e) => problems.push(Problem {
+                    None => problems.push(Problem {
                         source: ProblemSource::Providers,
-                        message: format!("semantic search is configured but {e}"),
+                        message: format!(
+                            "semantic search is configured but no provider configured with id \
+                             '{id}'"
+                        ),
                     }),
                 },
                 None => problems.push(Problem {

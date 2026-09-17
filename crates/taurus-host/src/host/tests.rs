@@ -194,6 +194,79 @@ async fn a_provider_is_built_once_so_a_turn_does_not_reach_the_keychain() {
     assert!(!Arc::ptr_eq(&rekeyed, &edited));
 }
 
+#[tokio::test]
+async fn a_reload_that_changes_no_provider_keeps_the_ones_already_built() {
+    // A folder switch reloads everything. Rebuilding every provider on it cost
+    // a keychain read and a fresh connection pool each, and threw away the
+    // capabilities the old one had already asked its backend for.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let id = "kept-across-reloads";
+    host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:9")])
+        .await;
+    host.set_provider_key(id, "sk-kept").await.unwrap();
+
+    let before = secrets::reads(id);
+    let first = host.provider(id).await.unwrap();
+    host.reload_local().await;
+    let again = host.provider(id).await.unwrap();
+    assert!(
+        Arc::ptr_eq(&first, &again),
+        "an unchanged provider was rebuilt"
+    );
+    assert_eq!(secrets::reads(id) - before, 1);
+
+    // And a folder whose own config changes it is not handed the old one.
+    let other = TempDir::new().unwrap();
+    let other = other.path().canonicalize().unwrap();
+    crate::trust::trust(&other).unwrap();
+    std::fs::create_dir_all(other.join(".taurus")).unwrap();
+    std::fs::write(
+        other.join(".taurus/providers.json"),
+        format!(r#"[{{"id": "{id}", "base_url": "http://127.0.0.1:10"}}]"#),
+    )
+    .unwrap();
+    host.set_workspace(&other).await.unwrap();
+    let moved = host.provider(id).await.unwrap();
+    assert!(!Arc::ptr_eq(&first, &moved), "a changed provider was kept");
+}
+
+#[tokio::test]
+async fn wiring_in_semantic_search_reads_no_key_until_something_is_embedded() {
+    // Every reload wires the embedding backend in, including the one a window
+    // waits on before it can draw — and building a provider reads its key,
+    // which on a keychain that does not trust this build is a dialog.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let id = "embeds-later";
+    host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:9")])
+        .await;
+    host.set_provider_key(id, "sk-embed").await.unwrap();
+
+    let before = secrets::reads(id);
+    host.set_embedding_model("nomic-embed-text", id).await;
+    host.reload_local().await;
+    assert!(
+        host.registry.read().await.get("search_code").is_some(),
+        "search_code should be registered on the provider's config alone"
+    );
+    assert_eq!(
+        secrets::reads(id) - before,
+        0,
+        "the key was read to wire search in"
+    );
+
+    // The first use reads it, once. Nothing answers on this port; the call
+    // failing is fine, it is the read being counted.
+    let deferred = host.deferred_provider(id).await.unwrap();
+    assert_eq!(deferred.id(), id);
+    let _ = deferred.embed("nomic-embed-text", &["x".into()]).await;
+    let _ = deferred.embed("nomic-embed-text", &["y".into()]).await;
+    assert_eq!(secrets::reads(id) - before, 1);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn the_theme_in_force_is_read_again_only_when_its_file_moves() {

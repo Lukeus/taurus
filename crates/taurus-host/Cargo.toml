@@ -46,6 +46,7 @@ ts-rs.workspace = true
 # rather than hides.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { workspace = true, features = ["apple-native"] }
+security-framework.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { workspace = true, features = ["windows-native"] }

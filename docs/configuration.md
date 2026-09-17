@@ -265,7 +265,10 @@ Two platform details:
 
 - On macOS the keychain grants access per binary. The first time the `taurus`
   CLI reads a key the desktop app stored (or the reverse), the OS asks you to
-  allow it. "Always Allow" makes that once.
+  allow it. "Always Allow" makes that once. An update is a new binary, so it
+  can ask again. Loading never waits on that dialog: Taurus checks that a key
+  is saved without reading it, and reads it the first time it's used (a
+  provider's on its first request, a search backend's on the first search).
 - On Linux the Secret Service is a running D-Bus service, not a file, and a
   headless box may have none. Then storing fails, `taurus key status` says so,
   and environment variables are the whole story.

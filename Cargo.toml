@@ -71,6 +71,11 @@ directories = "6"
 # there is no default backend, and the wrong one is a compile error rather than
 # a silent no-op.
 keyring = { version = "3.6", default-features = false }
+# The macOS keychain, below `keyring`, for the one question `keyring` cannot ask:
+# whether an entry exists, without reading the secret in it — which is the read
+# that raises a permission dialog. The same major `keyring` itself uses, so this
+# adds no second copy.
+security-framework = "3"
 # Line diffing for the permission prompt and the Changes drawer. The pre-image
 # it reads is the one the checkpoint log takes a moment later, so showing a diff
 # costs a read that was going to happen anyway.

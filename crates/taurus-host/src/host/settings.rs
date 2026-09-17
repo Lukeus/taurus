@@ -385,11 +385,14 @@ impl Host {
         if named.is_empty() {
             return Ok(Some((Arc::clone(embedding), model)));
         }
-        match self.provider(&named).await {
-            Ok(provider) => Ok(Some((provider, model))),
-            Err(e) => Err(format!(
-                "reranking is configured on '{named}' but {e}. Search still works; results are \
-                 ordered by similarity alone until this resolves."
+        // Deferred, for the reason the embedding provider is: this is wired in
+        // on every reload, and building a provider reads its key.
+        match self.deferred_provider(&named).await {
+            Some(provider) => Ok(Some((provider, model))),
+            None => Err(format!(
+                "reranking is configured on '{named}' but no provider configured with id \
+                 '{named}'. Search still works; results are ordered by similarity alone until \
+                 this resolves."
             )),
         }
     }
