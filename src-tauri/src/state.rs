@@ -369,7 +369,7 @@ impl AppState {
 
     /// Marks the first reload done, releasing anything waiting on it.
     pub fn mark_loaded(&self) {
-        let _ = self.loaded.send(true);
+        finish_load(&self.loaded);
     }
 
     /// Waits for the first reload, so a status cannot answer from an empty
@@ -379,24 +379,84 @@ impl AppState {
     /// undercounts: past the wait this degrades to reporting whatever has
     /// loaded so far, which is where it started.
     pub async fn loaded(&self) {
-        let mut rx = self.loaded.subscribe();
-        let _ = tokio::time::timeout(FIRST_LOAD_WAIT, async {
-            loop {
-                if *rx.borrow_and_update() {
-                    return;
-                }
-                if rx.changed().await.is_err() {
-                    return;
-                }
-            }
-        })
-        .await;
+        wait_for_load(&self.loaded, FIRST_LOAD_WAIT).await;
     }
+}
+
+/// Records that the first load is done, whether or not anyone is waiting yet.
+///
+/// `send_replace` rather than `send`, and that is the whole of the fix this
+/// exists for. `send` refuses when nothing is subscribed — and refuses by
+/// dropping the value, not by keeping it for later. The load finishing before
+/// the window's first `get_status` arrived is the ordinary case, so the flag
+/// was ordinarily lost: every status after it subscribed to a `false` that
+/// would never change, and waited out the whole of `FIRST_LOAD_WAIT`. That was
+/// ten seconds on every launch and every page reload, and it looked like a
+/// slow load rather than a missed signal.
+fn finish_load(loaded: &watch::Sender<bool>) {
+    loaded.send_replace(true);
+}
+
+/// Waits until [`finish_load`] has run, or `limit` passes.
+async fn wait_for_load(loaded: &watch::Sender<bool>, limit: std::time::Duration) {
+    let mut rx = loaded.subscribe();
+    let _ = tokio::time::timeout(limit, async {
+        loop {
+            if *rx.borrow_and_update() {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_load_that_finished_before_anyone_asked_is_not_forgotten() {
+        // The ordinary order: the reload is done before the window's first
+        // status request arrives, so nothing is subscribed when it finishes.
+        let (loaded, _) = watch::channel(false);
+        finish_load(&loaded);
+
+        let started = std::time::Instant::now();
+        wait_for_load(&loaded, std::time::Duration::from_secs(5)).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "waited {:?} for a load that had already finished",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_status_asked_for_mid_load_is_answered_when_it_finishes() {
+        let (loaded, _) = watch::channel(false);
+        let loaded = Arc::new(loaded);
+        let waiting = tokio::spawn({
+            let loaded = loaded.clone();
+            async move {
+                let started = std::time::Instant::now();
+                wait_for_load(&loaded, std::time::Duration::from_secs(5)).await;
+                started.elapsed()
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        finish_load(&loaded);
+        assert!(waiting.await.unwrap() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_load_that_never_finishes_gives_up_at_the_limit() {
+        let (loaded, _) = watch::channel(false);
+        let started = std::time::Instant::now();
+        wait_for_load(&loaded, std::time::Duration::from_millis(100)).await;
+        assert!(started.elapsed() >= std::time::Duration::from_millis(100));
+    }
 
     #[test]
     fn stopping_a_job_cancels_its_token_and_no_other() {
