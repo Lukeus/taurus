@@ -247,12 +247,14 @@ pub struct Host {
     mcp: McpManager,
     /// Held for the whole of an MCP reload, so two cannot interleave.
     ///
-    /// A reload shuts every server down, spends seconds starting them again,
-    /// then swaps their tools into the registry — and the MCP panel starts one
+    /// A reload shuts servers down, spends seconds starting them again, then
+    /// swaps their tools into the registry — and the MCP panel starts one
     /// on every save. Two at once let the second's shutdown drop connections
     /// the first had just made, while the first went on to register tools
     /// pointing at them: tools that failed on every call, under a panel that
-    /// said connected.
+    /// said connected. It also keeps a reload's plan true: which servers are
+    /// left running is decided before anything stops, and a second reload in
+    /// between could stop one of them.
     ///
     /// The local half never takes this. It carries the MCP tools across at the
     /// moment it swaps the registry — see [`Self::reload_local`] — so a
@@ -345,8 +347,8 @@ impl Host {
         candidate.canonicalize().unwrap_or(candidate)
     }
 
-    /// Re-resolves both config layers, rescans skills, reconnects MCP servers,
-    /// and rebuilds the registry.
+    /// Re-resolves both config layers, rescans skills, restarts the MCP servers
+    /// whose entries changed, and rebuilds the registry.
     ///
     /// Every layered file is re-read here rather than only at startup: the
     /// workspace layer belongs to a directory the user can change at any time,
@@ -375,14 +377,26 @@ impl Host {
     /// MCP tools that are running survive this half — it carries them across
     /// rather than rebuilding them — so a change that cannot affect a server
     /// calls this alone, and [`Host::reload`] is for when the servers should
-    /// restart too.
+    /// be brought in line with their config too.
     pub async fn reload_local(&self) {
         let workspace = self.workspace.read().await.clone();
 
         let (providers, provider_problems) = config::load_providers(Some(&workspace));
         let mut problems = Problem::tag(ProblemSource::Providers, provider_problems);
-        *self.providers.write().await = providers;
-        self.forget_providers();
+        // Forgotten only when the list moved. Most reloads — a folder switch, a
+        // saved setting, a trust decision — leave every provider as it was, and
+        // forgetting them anyway cost each one a keychain read and a fresh
+        // connection pool the next time a conversation opened, plus the
+        // capabilities round trip that pool had already paid for. A key changed
+        // through Taurus forgets on its own; see `set_provider_key`.
+        let mut held = self.providers.write().await;
+        if *held != providers {
+            *held = providers;
+            drop(held);
+            self.forget_providers();
+        } else {
+            drop(held);
+        }
         *self.settings.write().await = config::load_settings(Some(&workspace));
 
         // Through the same two loaders a turn calls, so a reload and a turn
@@ -505,8 +519,10 @@ impl Host {
             // thing to keep in step.
             let id = self.embedding_provider_id().await;
             match id {
-                Some(id) => match self.provider(&id).await {
-                    Ok(provider) => {
+                // Deferred: this runs on every reload, including the one the
+                // window waits on, and building the provider reads its key.
+                Some(id) => match self.deferred_provider(&id).await {
+                    Some(provider) => {
                         info!(model = %embedding_model, provider = %id, "semantic search enabled");
                         let mut search = taurus_index::SearchCode::new(
                             provider.clone(),
@@ -536,9 +552,12 @@ impl Host {
                         }
                         registry.register(Arc::new(search));
                     }
-                    Err(e) => problems.push(Problem {
+                    None => problems.push(Problem {
                         source: ProblemSource::Providers,
-                        message: format!("semantic search is configured but {e}"),
+                        message: format!(
+                            "semantic search is configured but no provider configured with id \
+                             '{id}'"
+                        ),
                     }),
                 },
                 None => problems.push(Problem {

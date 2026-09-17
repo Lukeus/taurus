@@ -15,7 +15,8 @@ mod http;
 pub mod search;
 
 pub use config::{
-    env_key, load, merge, merge_with, starter_file, Backend, BackendEntry, BackendKind, SearchFile,
+    env_key, load, merge, merge_with, starter_file, ApiKey, Backend, BackendEntry, BackendKind,
+    Environment, KeySource, SearchFile,
 };
 pub use fetch::FetchUrl;
 pub use search::WebSearch;

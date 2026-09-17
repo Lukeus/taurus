@@ -503,6 +503,16 @@ cargo run -p taurus-mcp --example mcp-probe -- path/to/mcp.json
 # Web: one real search, then fetch the first result it returns.
 cargo run -p taurus-web --example web-probe -- ~/.taurus/search.json "rust async book"
 
+# Whether asking after a stored key raises the macOS keychain dialog. Reads
+# your real credential store, writes nothing, never prints a key. Every
+# `cargo run` is a binary the keychain hasn't been told to trust, which is the
+# state a window is in after an update. `present` has to come back in
+# milliseconds with no dialog on screen, because a window's first reload asks
+# exactly that. `--read` reads each key the way the first search does, and
+# that one is expected to ask.
+cargo run -p taurus-host --example keychain                  # the selected search backend
+cargo run -p taurus-host --example keychain -- search:brave openai --read
+
 # Reading a turn back to an agent that did not write it. Needs Ollama; writes
 # only inside a temp directory. It plants a defect that is invisible from the
 # hunk and visible from the doc comment two lines above it, then asserts the

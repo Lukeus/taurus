@@ -46,6 +46,7 @@ ts-rs.workspace = true
 # rather than hides.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { workspace = true, features = ["apple-native"] }
+security-framework.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { workspace = true, features = ["windows-native"] }
@@ -55,6 +56,9 @@ keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] 
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+# The stand-in server, so a reload can be tested against one that is running.
+# See `taurus_mcp::testing`.
+taurus-mcp = { workspace = true, features = ["testing"] }
 # For one integration test, and only that: the seam between the spans the
 # harness emits and the report drawn from them runs through the recorder in
 # that crate, and neither side's unit tests cross it. See `tests/spans.rs`.

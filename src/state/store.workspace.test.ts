@@ -49,8 +49,14 @@ const backend = (overrides: Record<string, unknown> = {}) => {
     switch (command) {
       case "get_status":
         return Promise.resolve(STATUS);
+      // The switch answers with the listing, so a folder's conversations are
+      // overridden here rather than on `list_sessions`.
       case "set_workspace":
-        return Promise.resolve(STATUS.workspace);
+        return Promise.resolve({
+          status: STATUS,
+          trust: { workspace: STATUS.workspace },
+          sessions: "sessions" in overrides ? overrides.sessions : [SAVED],
+        });
       case "list_sessions":
         return Promise.resolve([SAVED]);
       case "resume_session":
@@ -106,7 +112,7 @@ describe("switching workspace", () => {
   });
 
   it("clears everything that described the old folder", async () => {
-    backend({ list_sessions: [] });
+    backend({ sessions: [] });
     await useStore.getState().setWorkspace("/src/project-b");
     const state = useStore.getState();
     expect(state.entries).toHaveLength(0);
@@ -128,7 +134,7 @@ describe("switching workspace", () => {
   });
 
   it("starts a fresh conversation in a folder that has none", async () => {
-    backend({ list_sessions: [] });
+    backend({ sessions: [] });
     await useStore.getState().setWorkspace("/src/project-b");
     expect(useStore.getState().session?.id).toBe("fresh");
     expect(calls("resume_session")).toHaveLength(0);
@@ -140,10 +146,13 @@ describe("switching workspace", () => {
     // the backend also pushes: that lands on a later tick, and the folder would
     // open on the model the *previous* one was last worked in.
     backend({
-      list_sessions: [],
-      get_status: {
-        ...STATUS,
-        settings: { last_provider: "ollama", last_model: "llama4:70b" },
+      set_workspace: {
+        status: {
+          ...STATUS,
+          settings: { last_provider: "ollama", last_model: "llama4:70b" },
+        },
+        trust: { workspace: STATUS.workspace },
+        sessions: [],
       },
       list_models: [
         { id: "qwen3.6:27b", display_name: "Qwen" },
@@ -152,13 +161,22 @@ describe("switching workspace", () => {
     });
     await useStore.getState().setWorkspace("/src/project-b");
 
-    const order = invoke.mock.calls.map(([name]) => name);
-    expect(order.indexOf("get_status")).toBeGreaterThan(
-      order.indexOf("set_workspace"),
-    );
     expect(calls("create_session")[0][1]).toMatchObject({
       model: "llama4:70b",
     });
+  });
+
+  it("asks nothing the switch already answered", async () => {
+    // Status, trust and the listing come back from `set_workspace`, built
+    // against the folder it resolved. Asking again was two round trips and a
+    // second status build — and a listing asked for separately is read
+    // against whatever folder the backend is in when it lands.
+    backend();
+    await useStore.getState().setWorkspace("/src/project-b");
+    expect(calls("get_status")).toHaveLength(0);
+    expect(calls("workspace_trust")).toHaveLength(0);
+    expect(calls("list_sessions")).toHaveLength(0);
+    expect(useStore.getState().sessions.map((s) => s.id)).toEqual(["in-project-b"]);
   });
 
   it("switches after the old conversation is closed, never before", async () => {

@@ -72,6 +72,46 @@ mod backend {
         Some(key).filter(|k| !k.trim().is_empty())
     }
 
+    /// Whether an entry is stored, asked of the keychain without reading it.
+    ///
+    /// Reading a secret is what macOS guards with a dialog — "Taurus wants to
+    /// use your confidential information" — which is raised for every build
+    /// whose signature the keychain has not been told to trust. Its attributes
+    /// are not guarded. So a question that only needs "is there one" asks for
+    /// those, and never puts a dialog in front of a window that is still
+    /// loading.
+    ///
+    /// An answer this cannot interpret falls back to the read, which is what
+    /// every caller did before this existed: slower, and possibly a dialog, but
+    /// never a key reported missing when it is there.
+    #[cfg(target_os = "macos")]
+    pub fn exists(provider_id: &str) -> bool {
+        use security_framework::item::{ItemClass, ItemSearchOptions};
+
+        /// `errSecItemNotFound`, the ordinary answer for a key never saved.
+        const NOT_FOUND: i32 = -25300;
+
+        match ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service(SERVICE)
+            .account(provider_id)
+            .load_attributes(true)
+            .limit(1)
+            .search()
+        {
+            Ok(found) => !found.is_empty(),
+            Err(e) if e.code() == NOT_FOUND => false,
+            Err(_) => stored(provider_id).is_some(),
+        }
+    }
+
+    /// Whether an entry is stored. Neither of these stores guards a read with
+    /// a prompt of its own, so reading it is the honest way to ask.
+    #[cfg(not(target_os = "macos"))]
+    pub fn exists(provider_id: &str) -> bool {
+        stored(provider_id).is_some()
+    }
+
     pub fn store(provider_id: &str, key: &str) -> Result<(), String> {
         entry(provider_id)?
             .set_password(key)
@@ -103,6 +143,10 @@ mod backend {
 mod backend {
     pub fn stored(_provider_id: &str) -> Option<String> {
         None
+    }
+
+    pub fn exists(_provider_id: &str) -> bool {
+        false
     }
 
     pub fn store(_provider_id: &str, _key: &str) -> Result<(), String> {
@@ -153,6 +197,13 @@ mod backend {
         store_map().lock().unwrap().get(provider_id).cloned()
     }
 
+    /// Not counted as a read: on a real store this asks after the entry
+    /// without touching the secret, and the count is what tests use to prove a
+    /// secret was not touched.
+    pub fn exists(provider_id: &str) -> bool {
+        store_map().lock().unwrap().contains_key(provider_id)
+    }
+
     /// How many times `provider_id`'s key has been looked up — each one a
     /// keychain call on a real store. Counted per id, because the suite runs
     /// in parallel and shares this store.
@@ -194,6 +245,22 @@ pub(crate) fn reads(provider_id: &str) -> usize {
     backend::reads(provider_id)
 }
 
+/// Whether a key is stored, without reading it. See the macOS backend for why
+/// that is a different question from [`stored`].
+pub fn exists(provider_id: &str) -> bool {
+    backend::exists(provider_id)
+}
+
+/// Whether a key will be found when one is asked for, without reading it.
+///
+/// For deciding whether to offer something that needs a key — a tool, a row
+/// marked ready — at a moment when nobody has asked to use it yet. The read
+/// itself is left to the moment somebody does.
+pub fn present(provider_id: &str, variable: Option<&str>) -> bool {
+    variable.is_some_and(|name| std::env::var(name).is_ok_and(|value| !value.trim().is_empty()))
+        || exists(provider_id)
+}
+
 /// Stores a key, replacing any previous one for this provider.
 pub fn store(provider_id: &str, key: &str) -> Result<(), String> {
     if key.trim().is_empty() {
@@ -224,7 +291,9 @@ pub fn status(provider_id: &str, variable: Option<&str>) -> KeyStatus {
         .filter(|name| std::env::var(name).is_ok_and(|value| !value.trim().is_empty()))
         .map(str::to_string);
 
-    match (from_env, stored(provider_id).is_some()) {
+    // Whether one is stored, not what it is. A settings screen drawing a row
+    // per provider must not raise a keychain dialog per row to say "saved".
+    match (from_env, exists(provider_id)) {
         (Some(variable), true) => KeyStatus::Overridden { variable },
         (Some(variable), false) => KeyStatus::Environment { variable },
         (None, true) => KeyStatus::Keychain,
@@ -258,6 +327,39 @@ mod tests {
         store(&id, "sk-secret").unwrap();
         assert_eq!(stored(&id).as_deref(), Some("sk-secret"));
         assert_eq!(status(&id, None), KeyStatus::Keychain);
+    }
+
+    #[test]
+    fn a_status_asks_whether_there_is_a_key_without_reading_it() {
+        // The read is what raises the macOS keychain dialog. A settings row
+        // saying "saved", and a tool offered because a key is there, have no
+        // use for the key itself.
+        let id = id("status-unread");
+        store(&id, "sk-secret").unwrap();
+        let before = reads(&id);
+        assert_eq!(status(&id, None), KeyStatus::Keychain);
+        assert!(present(&id, None));
+        assert_eq!(reads(&id), before, "the key was read to learn it exists");
+    }
+
+    #[test]
+    fn a_key_is_present_from_either_source_and_absent_from_neither() {
+        let id = id("present");
+        assert!(!present(&id, Some("TAURUS_TEST_SECRET_PRESENT_UNSET")));
+
+        std::env::set_var("TAURUS_TEST_SECRET_PRESENT_BLANK", "  ");
+        assert!(
+            !present(&id, Some("TAURUS_TEST_SECRET_PRESENT_BLANK")),
+            "a blank variable is not a key, here any more than in `resolve`"
+        );
+
+        std::env::set_var("TAURUS_TEST_SECRET_PRESENT_SET", "from-env");
+        assert!(present(&id, Some("TAURUS_TEST_SECRET_PRESENT_SET")));
+
+        store(&id, "from-keychain").unwrap();
+        assert!(present(&id, None));
+        clear(&id).unwrap();
+        assert!(!present(&id, None));
     }
 
     #[test]

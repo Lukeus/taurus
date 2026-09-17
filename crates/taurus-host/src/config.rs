@@ -455,11 +455,26 @@ pub fn load_search(workspace: Option<&Path>) -> (Option<taurus_web::Backend>, Ve
         }
     }
 
-    let (backend, merge_problems) = taurus_web::merge_with(layers, |id, variable| {
-        crate::secrets::resolve(&search_key_id(id), variable)
-    });
+    let (backend, merge_problems) = taurus_web::merge_with(layers, std::sync::Arc::new(SearchKeys));
     problems.extend(merge_problems);
     (backend, problems)
+}
+
+/// Search backend keys, from the environment and then the credential store.
+///
+/// The same precedence rule model providers follow, which is why both go
+/// through [`crate::secrets`] rather than each reading the keychain its own
+/// way.
+struct SearchKeys;
+
+impl taurus_web::KeySource for SearchKeys {
+    fn present(&self, id: &str, variable: Option<&str>) -> bool {
+        crate::secrets::present(&search_key_id(id), variable)
+    }
+
+    fn read(&self, id: &str, variable: Option<&str>) -> Option<String> {
+        crate::secrets::resolve(&search_key_id(id), variable)
+    }
 }
 
 /// Credential-store id for a search backend's key.
@@ -478,7 +493,7 @@ pub fn search_key_status(backend_id: &str, api_key_env: Option<&str>) -> crate::
 }
 
 /// How to reach one model backend.
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub struct ProviderConfig {

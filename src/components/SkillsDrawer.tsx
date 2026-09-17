@@ -45,8 +45,8 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
    * Whether a rescan is in flight.
    *
    * Worth a state of its own because the call is not the directory read its
-   * name suggests: `reloadConfig` reconnects every MCP server on the way, so a
-   * rescan can take seconds. Without this the button stayed live and unchanged
+   * name suggests: `reloadConfig` restarts every MCP server whose entry changed
+   * on the way, so a rescan can take seconds. Without this the button stayed live and unchanged
    * through all of them, and pressing it again did the whole thing twice.
    * `McpDrawer` has always done this; this is the same shape.
    */

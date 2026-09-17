@@ -40,6 +40,26 @@ impl Host {
         Ok(provider)
     }
 
+    /// The provider configured under `id`, built the first time it is used
+    /// rather than now.
+    ///
+    /// For what a reload wires in and a turn may never call: the embedding and
+    /// reranking backends behind `search_code`. Building one reads its API key,
+    /// a reload is what a window waits on before it can draw, and a keychain
+    /// that has not been told to trust this build answers that read with a
+    /// dialog. [`Self::provider`] is the right call from anything a person is
+    /// already waiting on; this is for everything else.
+    ///
+    /// `None` when nothing is configured under `id`, the one thing that can be
+    /// known without the key.
+    pub(super) async fn deferred_provider(&self, id: &str) -> Option<Arc<dyn Provider>> {
+        let config = self.provider_config(id).await?;
+        Some(Arc::new(DeferredProvider {
+            config,
+            built: tokio::sync::OnceCell::new(),
+        }))
+    }
+
     /// Forgets every provider built so far, so the next call builds afresh.
     ///
     /// Called wherever what they were built from can change: the provider
@@ -288,5 +308,82 @@ impl Host {
             .ok_or_else(|| format!("provider '{chosen}' has no models available"))?;
 
         Ok((chosen, preferred))
+    }
+}
+
+/// A provider that reads its key and builds itself on first use.
+///
+/// Kept apart from [`Host::provider`]'s cache rather than filling it, because
+/// nothing here holds the host. The cost is one extra key read per reload for
+/// a backend that both a turn and `search_code` use — once, off the runtime,
+/// at a moment somebody asked for something — against a reload that reads no
+/// key at all. See [`Host::deferred_provider`].
+struct DeferredProvider {
+    config: ProviderConfig,
+    built: tokio::sync::OnceCell<Arc<dyn Provider>>,
+}
+
+impl DeferredProvider {
+    async fn get(&self) -> taurus_provider::Result<&Arc<dyn Provider>> {
+        self.built
+            .get_or_try_init(|| async {
+                // Off the runtime, as `Host::provider` does it: with a keychain
+                // dialog open this blocks for as long as it stays open.
+                let lookup = self.config.clone();
+                let key = tokio::task::spawn_blocking(move || lookup.api_key())
+                    .await
+                    .map_err(|e| {
+                        taurus_provider::ProviderError::Protocol(format!(
+                            "reading the API key for '{}' failed: {e}",
+                            self.config.id
+                        ))
+                    })?;
+                Ok(Host::build_provider(self.config.clone(), key))
+            })
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for DeferredProvider {
+    fn id(&self) -> &str {
+        &self.config.id
+    }
+
+    async fn models(&self) -> taurus_provider::Result<Vec<taurus_provider::ModelInfo>> {
+        self.get().await?.models().await
+    }
+
+    async fn capabilities(
+        &self,
+        model: &str,
+    ) -> taurus_provider::Result<taurus_provider::Capabilities> {
+        self.get().await?.capabilities(model).await
+    }
+
+    async fn stream(
+        &self,
+        request: taurus_provider::ChatRequest,
+        tx: tokio::sync::mpsc::Sender<taurus_provider::StreamEvent>,
+        cancel: CancellationToken,
+    ) -> taurus_provider::Result<taurus_provider::StopReason> {
+        self.get().await?.stream(request, tx, cancel).await
+    }
+
+    async fn embed(
+        &self,
+        model: &str,
+        inputs: &[String],
+    ) -> taurus_provider::Result<Vec<Vec<f32>>> {
+        self.get().await?.embed(model, inputs).await
+    }
+
+    async fn rerank(
+        &self,
+        model: &str,
+        query: &str,
+        documents: &[String],
+    ) -> taurus_provider::Result<Vec<taurus_provider::RerankScore>> {
+        self.get().await?.rerank(model, query, documents).await
     }
 }

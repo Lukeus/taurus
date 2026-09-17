@@ -6462,6 +6462,7 @@ dependencies = [
  "keyring",
  "same-file",
  "schemars 1.2.2",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "taurus-agents",

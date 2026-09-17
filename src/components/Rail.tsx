@@ -352,8 +352,9 @@ export const Rail = memo(function Rail({
       <div className="rail-pad px-2 pt-2.5 pb-2.5">
         <button
           className="rail-workspace w-full flex items-center gap-2 py-2 px-3 rounded-md bg-hover text-left hover:not-disabled:bg-active"
-          // Switching folders closes the conversation and reconnects every MCP
-          // server, neither of which a running turn survives.
+          // Switching folders closes the conversation and restarts every MCP
+          // server the new folder configures differently, neither of which a
+          // running turn survives.
           //
           // Any running turn, not only this conversation's: a turn left
           // working in another one is just as dead when the servers go, and it

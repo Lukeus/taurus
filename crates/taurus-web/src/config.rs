@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use taurus_tools::expand_env;
@@ -103,21 +104,110 @@ impl BackendEntry {
     }
 }
 
-/// A backend with everything resolved, including the key read out of the
-/// environment. Holding the key rather than its variable name means the tool
-/// cannot be built in a state where it discovers at call time that it has no
-/// credential.
+/// A backend with everything resolved that can be resolved without spending
+/// anything: the URL, the limits, and whether a key is there to be read.
+///
+/// The key itself is not read here. Where it comes from can be the macOS
+/// keychain, whose reads raise a permission dialog, and this is built on every
+/// config reload — including the one a window waits on before it can show
+/// anything. A dialog nobody has noticed yet held that window for as long as it
+/// stayed open. So the question asked at build time is only "is there a key",
+/// which is enough to keep a tool that is guaranteed to fail from being offered,
+/// and the read happens on the first search, when there is a person waiting on
+/// the answer to explain a dialog to. See [`ApiKey`].
 #[derive(Clone, Debug)]
 pub struct Backend {
     pub id: String,
     pub kind: BackendKind,
     pub base_url: String,
-    pub api_key: Option<String>,
+    /// `None` for a backend that sends no key, which today is SearXNG.
+    pub api_key: Option<ApiKey>,
     pub max_results: u8,
     /// File-level, not really the backend's own — but the web tools are
     /// registered together and only when a backend resolves, so this is the one
     /// value that reaches them both.
     pub allow_private_hosts: bool,
+}
+
+/// Where a backend's key comes from, asked the two questions that cost
+/// different amounts to answer.
+///
+/// Implemented by the host, where the credential store lives; see
+/// [`merge_with`] for why it cannot be reached from this crate.
+pub trait KeySource: Send + Sync {
+    /// Whether [`Self::read`] would find a key, without reading one.
+    fn present(&self, id: &str, variable: Option<&str>) -> bool;
+
+    /// The key. Can block — on a keychain, for as long as its dialog is open —
+    /// so it is only ever called off the async runtime.
+    fn read(&self, id: &str, variable: Option<&str>) -> Option<String>;
+}
+
+/// The environment alone, which is where keys come from when no richer source
+/// is supplied. Nothing in it can block, so both answers are the same read.
+pub struct Environment;
+
+impl KeySource for Environment {
+    fn present(&self, id: &str, variable: Option<&str>) -> bool {
+        env_key(id, variable).is_some()
+    }
+
+    fn read(&self, id: &str, variable: Option<&str>) -> Option<String> {
+        env_key(id, variable)
+    }
+}
+
+/// A backend's key, read the first time a search needs it and kept after that.
+///
+/// Kept per backend rather than per search, because a keychain read is not free
+/// even once allowed. A key saved or cleared through Taurus rebuilds the backend
+/// and so starts a fresh one of these; nothing else needs to invalidate it.
+///
+/// A read that finds nothing is not kept: a key the keychain refused because a
+/// dialog was dismissed is exactly the one to ask for again on the next search.
+#[derive(Clone)]
+pub struct ApiKey {
+    id: String,
+    variable: Option<String>,
+    source: Arc<dyn KeySource>,
+    read: Arc<OnceLock<String>>,
+}
+
+impl ApiKey {
+    pub fn new(id: &str, variable: Option<&str>, source: Arc<dyn KeySource>) -> Self {
+        Self {
+            id: id.to_string(),
+            variable: variable.map(str::to_string),
+            source,
+            read: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// The key, reading it if this is the first time it has been asked for.
+    /// Blocks on that first read; see [`KeySource::read`].
+    pub fn read(&self) -> Option<String> {
+        if let Some(key) = self.read.get() {
+            return Some(key.clone());
+        }
+        let key = self.source.read(&self.id, self.variable.as_deref())?;
+        Some(self.read.get_or_init(|| key).clone())
+    }
+
+    /// What to tell somebody whose search has no key to send.
+    pub fn missing(&self) -> String {
+        missing_key(self.variable.as_deref())
+    }
+}
+
+/// Never the key: a `Backend` is logged, and this is inside it.
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKey")
+            .field("id", &self.id)
+            .field("variable", &self.variable)
+            .field("read", &self.read.get().is_some())
+            .finish()
+    }
 }
 
 /// Results returned when neither the model nor the config asks for a number.
@@ -145,7 +235,7 @@ pub fn load(dir: &Path) -> Result<SearchFile, String> {
 /// simply has not turned it on, and one that got `None` with a problem has
 /// something to show them.
 pub fn merge(layers: Vec<SearchFile>) -> (Option<Backend>, Vec<String>) {
-    merge_with(layers, env_key)
+    merge_with(layers, Arc::new(Environment))
 }
 
 /// Reads a key straight out of the environment. The behaviour when no richer
@@ -164,11 +254,12 @@ pub fn env_key(_id: &str, variable: Option<&str>) -> Option<String> {
 /// to the identical one for model providers, instead of implemented twice and
 /// drifting.
 ///
-/// `key_source` is handed the backend's id and the variable name its config
-/// names, if any, and returns the key to use.
+/// `keys` is handed the backend's id and the variable name its config names,
+/// if any. Only [`KeySource::present`] is asked here; the read waits for a
+/// search.
 pub fn merge_with(
     layers: Vec<SearchFile>,
-    key_source: impl Fn(&str, Option<&str>) -> Option<String>,
+    keys: Arc<dyn KeySource>,
 ) -> (Option<Backend>, Vec<String>) {
     let mut problems = Vec::new();
     let mut selected: Option<String> = None;
@@ -202,7 +293,7 @@ pub fn merge_with(
         return (None, problems);
     };
 
-    match resolve(&id, entry, &key_source, allow_private_hosts) {
+    match resolve(&id, entry, keys, allow_private_hosts) {
         Ok(backend) => (Some(backend), problems),
         Err(e) => {
             problems.push(format!("search backend '{id}': {e}"));
@@ -216,7 +307,7 @@ pub fn merge_with(
 fn resolve(
     id: &str,
     entry: &BackendEntry,
-    key_source: impl Fn(&str, Option<&str>) -> Option<String>,
+    keys: Arc<dyn KeySource>,
     allow_private_hosts: bool,
 ) -> Result<Backend, String> {
     let kind = entry
@@ -231,16 +322,17 @@ fn resolve(
             .to_string(),
     };
 
-    let api_key = key_source(id, entry.api_key_env.as_deref());
-
+    let variable = entry.api_key_env.as_deref();
     // Reported rather than shrugged off: a search that goes out without a key
     // comes back 401, which reads as a bad key rather than a missing one.
-    if api_key.is_none() && kind.needs_key() {
-        return Err(match entry.api_key_env.as_deref() {
-            Some(name) => format!("needs a key — none saved, and {name} is not set"),
-            None => "needs a key; save one in Settings › Search".into(),
-        });
-    }
+    let api_key = if kind.needs_key() {
+        if !keys.present(id, variable) {
+            return Err(missing_key(variable));
+        }
+        Some(ApiKey::new(id, variable, keys))
+    } else {
+        None
+    };
 
     Ok(Backend {
         id: id.to_string(),
@@ -250,6 +342,14 @@ fn resolve(
         max_results: entry.max_results.unwrap_or(DEFAULT_MAX_RESULTS),
         allow_private_hosts,
     })
+}
+
+/// Why a backend has no key, in terms of the two places one can come from.
+fn missing_key(variable: Option<&str>) -> String {
+    match variable {
+        Some(name) => format!("needs a key — none saved, and {name} is not set"),
+        None => "needs a key; save one in Settings › Search".into(),
+    }
 }
 
 /// The file a first run leaves behind: every backend spelled out, none of them
@@ -359,7 +459,10 @@ mod tests {
         )]);
         let backend = backend.unwrap();
         assert_eq!(backend.base_url, "https://api.search.brave.com");
-        assert_eq!(backend.api_key.as_deref(), Some("bsa-key"));
+        assert_eq!(
+            backend.api_key.as_ref().and_then(ApiKey::read).as_deref(),
+            Some("bsa-key")
+        );
         assert_eq!(backend.max_results, DEFAULT_MAX_RESULTS);
     }
 
@@ -375,6 +478,86 @@ mod tests {
             problems[0].contains("TAURUS_TEST_SEARCH_DEFINITELY_UNSET"),
             "{problems:?}"
         );
+    }
+
+    /// A source that counts what it is asked, and answers from a slot a test
+    /// can empty.
+    #[derive(Default)]
+    struct Counted {
+        key: std::sync::Mutex<Option<String>>,
+        present: std::sync::atomic::AtomicUsize,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl KeySource for Counted {
+        fn present(&self, _: &str, _: Option<&str>) -> bool {
+            self.present
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.key.lock().unwrap().is_some()
+        }
+
+        fn read(&self, _: &str, _: Option<&str>) -> Option<String> {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.key.lock().unwrap().clone()
+        }
+    }
+
+    const KEYED: &str = r#"{"backend": "tavily", "backends": {"tavily": {"kind": "tavily"}}}"#;
+
+    #[test]
+    fn building_a_backend_asks_whether_there_is_a_key_and_never_reads_it() {
+        // The read is the one that can wait on a keychain dialog, and this is
+        // built on the reload a window waits on before it can draw.
+        let keys = Arc::new(Counted::default());
+        *keys.key.lock().unwrap() = Some("tvly-key".into());
+        let (backend, problems) = merge_with(vec![file(KEYED)], keys.clone());
+        let backend = backend.unwrap_or_else(|| panic!("{problems:?}"));
+        assert_eq!(keys.present.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(keys.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        let key = backend.api_key.unwrap();
+        assert_eq!(key.read().as_deref(), Some("tvly-key"));
+        assert_eq!(key.read().as_deref(), Some("tvly-key"));
+        assert_eq!(
+            keys.reads.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a key already read was read again"
+        );
+    }
+
+    #[test]
+    fn a_key_that_could_not_be_read_is_asked_for_again() {
+        // A dismissed keychain dialog is a `None` that the next search should
+        // not inherit.
+        let keys = Arc::new(Counted::default());
+        *keys.key.lock().unwrap() = Some("tvly-key".into());
+        let (backend, _) = merge_with(vec![file(KEYED)], keys.clone());
+        let key = backend.unwrap().api_key.unwrap();
+
+        let saved = keys.key.lock().unwrap().take();
+        assert_eq!(key.read(), None);
+        *keys.key.lock().unwrap() = saved;
+        assert_eq!(key.read().as_deref(), Some("tvly-key"));
+    }
+
+    #[test]
+    fn a_backend_with_no_key_present_is_not_built() {
+        let keys = Arc::new(Counted::default());
+        let (backend, problems) = merge_with(vec![file(KEYED)], keys.clone());
+        assert!(backend.is_none());
+        assert!(problems[0].contains("Settings › Search"), "{problems:?}");
+        assert_eq!(keys.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_key_never_appears_in_a_logged_backend() {
+        let keys = Arc::new(Counted::default());
+        *keys.key.lock().unwrap() = Some("tvly-secret-value".into());
+        let (backend, _) = merge_with(vec![file(KEYED)], keys);
+        let backend = backend.unwrap();
+        backend.api_key.as_ref().unwrap().read();
+        assert!(!format!("{backend:?}").contains("tvly-secret-value"));
     }
 
     #[test]

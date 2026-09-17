@@ -13,7 +13,7 @@ use serde::Deserialize;
 use taurus_tools::tool::{parse_input, schema_for};
 use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolResult};
 
-use crate::config::{Backend, BackendKind};
+use crate::config::{ApiKey, Backend, BackendKind};
 use crate::http;
 
 /// More than this and the results stop being a list the model reads and start
@@ -96,7 +96,15 @@ impl Tool for WebSearch {
             .unwrap_or(self.backend.max_results)
             .clamp(1, MAX_RESULTS);
 
-        let response = http::send(self.request(query, count), ctx).await?;
+        // After the input is checked and before anything is sent: a query that
+        // was never going to go out should not be the thing that raises a
+        // keychain dialog.
+        let key = match &self.backend.api_key {
+            Some(key) => Some(self.key(key, ctx).await?),
+            None => None,
+        };
+
+        let response = http::send(self.request(query, count, key.as_deref()), ctx).await?;
         let status = response.status();
         let body = http::text(response, ctx, MAX_RESPONSE_BYTES).await?;
 
@@ -132,21 +140,50 @@ struct Hit {
 }
 
 impl WebSearch {
-    fn request(&self, query: &str, count: u8) -> reqwest::RequestBuilder {
+    /// The backend's key, read now.
+    ///
+    /// Off the runtime, because the first read can be a keychain dialog and
+    /// that waits on a person. Raced against Stop for the same reason: a turn
+    /// somebody has given up on must not stay open until they find the dialog.
+    /// The read itself cannot be abandoned — the thread stays parked on the
+    /// dialog — but nothing is waiting on it any more.
+    async fn key(&self, key: &ApiKey, ctx: &ToolContext) -> Result<String, ToolError> {
+        let reading = key.clone();
+        let read = tokio::task::spawn_blocking(move || reading.read());
+        let found = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
+            found = read => found.map_err(|e| {
+                ToolError::Failed(format!(
+                    "reading the key for {} failed: {e}",
+                    self.backend.describe()
+                ))
+            })?,
+        };
+        // Present when the tool was registered and gone now: cleared since, or
+        // a keychain that refused to hand it over.
+        found.ok_or_else(|| {
+            ToolError::Failed(format!(
+                "{} {}. If a key is saved, the keychain may have refused access to it — allow \
+                 Taurus when it asks, or save the key again.",
+                self.backend.describe(),
+                key.missing()
+            ))
+        })
+    }
+
+    fn request(&self, query: &str, count: u8, key: Option<&str>) -> reqwest::RequestBuilder {
         let client = http::client();
         let base = &self.backend.base_url;
         match self.backend.kind {
             BackendKind::Brave => client
                 .get(format!("{base}/res/v1/web/search"))
                 .header("Accept", "application/json")
-                .header(
-                    "X-Subscription-Token",
-                    self.backend.api_key.clone().unwrap_or_default(),
-                )
+                .header("X-Subscription-Token", key.unwrap_or_default())
                 .query(&[("q", query), ("count", &count.to_string())]),
             BackendKind::Tavily => client
                 .post(format!("{base}/search"))
-                .bearer_auth(self.backend.api_key.clone().unwrap_or_default())
+                .bearer_auth(key.unwrap_or_default())
                 .json(&serde_json::json!({
                     "query": query,
                     "max_results": count,
@@ -267,15 +304,36 @@ fn truncate(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use crate::config::BackendKind;
+    use crate::config::{BackendKind, KeySource};
+
+    /// A key source that has one key, or has lost it.
+    struct Fixed(Option<&'static str>);
+
+    impl KeySource for Fixed {
+        fn present(&self, _: &str, _: Option<&str>) -> bool {
+            self.0.is_some()
+        }
+
+        fn read(&self, _: &str, _: Option<&str>) -> Option<String> {
+            self.0.map(str::to_string)
+        }
+    }
 
     fn backend(kind: BackendKind) -> Backend {
+        backend_keyed(kind, Some("key"))
+    }
+
+    fn backend_keyed(kind: BackendKind, key: Option<&'static str>) -> Backend {
         Backend {
             id: "test".into(),
             kind,
             base_url: "http://example.invalid".into(),
-            api_key: Some("key".into()),
+            api_key: kind
+                .needs_key()
+                .then(|| ApiKey::new("test", Some("TEST_KEY"), Arc::new(Fixed(key)))),
             max_results: 5,
             allow_private_hosts: false,
         }
@@ -407,6 +465,50 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn a_key_gone_by_search_time_is_explained_before_a_request_goes_out() {
+        // The backend is built on "a key is there" and reads it on the search;
+        // in between, a key can be cleared or a keychain dialog dismissed.
+        let (ctx, _dir) = crate::test_support::allowing_ctx();
+        let err = WebSearch::new(backend_keyed(BackendKind::Tavily, None))
+            .execute(serde_json::json!({"query": "rust"}), &ctx)
+            .await
+            .unwrap_err();
+        let ToolError::Failed(message) = err else {
+            panic!("expected a failure naming the key, got {err:?}");
+        };
+        assert!(message.contains("TEST_KEY"), "{message}");
+        assert!(message.contains("keychain"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_turn_does_not_wait_for_a_key() {
+        struct Parked;
+        impl KeySource for Parked {
+            fn present(&self, _: &str, _: Option<&str>) -> bool {
+                true
+            }
+            fn read(&self, _: &str, _: Option<&str>) -> Option<String> {
+                // A keychain dialog nobody has answered.
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                None
+            }
+        }
+
+        let (ctx, _dir) = crate::test_support::allowing_ctx();
+        let mut parked = backend(BackendKind::Tavily);
+        parked.api_key = Some(ApiKey::new("test", None, Arc::new(Parked)));
+        ctx.cancel.cancel();
+
+        let started = std::time::Instant::now();
+        let err = WebSearch::new(parked)
+            .execute(serde_json::json!({"query": "rust"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Canceled), "{err:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]

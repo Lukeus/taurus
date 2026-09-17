@@ -265,7 +265,10 @@ Two platform details:
 
 - On macOS the keychain grants access per binary. The first time the `taurus`
   CLI reads a key the desktop app stored (or the reverse), the OS asks you to
-  allow it. "Always Allow" makes that once.
+  allow it. "Always Allow" makes that once. An update is a new binary, so it
+  can ask again. Loading never waits on that dialog: Taurus checks that a key
+  is saved without reading it, and reads it the first time it's used (a
+  provider's on its first request, a search backend's on the first search).
 - On Linux the Secret Service is a running D-Bus service, not a file, and a
   headless box may have none. Then storing fails, `taurus key status` says so,
   and environment variables are the whole story.
@@ -403,6 +406,19 @@ agent roster, and only when a save changes which tools the servers offer. An
 agent can be scoped to an MCP tool, so adding its server has to make that agent
 usable, and deleting the server has to stop the roster claiming a tool that's
 gone.
+
+Saving restarts the server you saved, plus any other server whose entry changed.
+Everything else keeps running. The same goes for switching folders and for
+trusting or revoking one: a server only restarts when its merged entry is
+different, so your global servers carry on across a switch. "Different" means
+what would actually start. A `${VAR}` whose value changed counts, and so does a
+folder's own entry for a server with the same name. The folder itself doesn't:
+a server starts in Taurus's own working directory, and nothing tells it which
+folder is open. A server that isn't connected, because it never started or
+stopped answering, is always started again. **Reconnect** restarts every
+server regardless, which is what you want for one that's hung. Signing in or
+out restarts that server, since a connection keeps the credentials it opened
+with.
 
 ### When a server will not start
 

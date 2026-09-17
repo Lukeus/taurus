@@ -9,6 +9,8 @@ pub mod catalog;
 pub mod config;
 pub mod draft;
 pub mod oauth;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -85,15 +87,157 @@ pub fn is_mcp_tool(name: &str) -> bool {
 
 /// A live connection to one server.
 ///
-/// Exists only to own the `RunningService`: dropping it shuts the child
-/// process down, so the manager must hold one per server for as long as its
-/// tools are registered.
+/// Owns the `RunningService`: dropping it shuts the child process down, so the
+/// manager must hold one per server for as long as its tools are registered.
 struct Connection {
     _service: RunningService<RoleClient, ()>,
     /// A stdio server's process, which ends when this is dropped: spawned with
     /// `kill_on_drop`, and after the service so its pipes close first. `None`
     /// for an HTTP server, which has no process here to end.
     _child: Option<tokio::process::Child>,
+    /// What it was started from, with every variable filled in. What a reload
+    /// compares against to decide whether starting it again would start
+    /// anything different. `None` if the entry would not resolve a second
+    /// time, which never matches, so the server is restarted rather than
+    /// trusted.
+    resolved: Option<Resolved>,
+    /// What it offered when it connected. Kept so a reload that leaves the
+    /// server running can hand the same tools back without asking it again.
+    tools: Vec<Arc<dyn Tool>>,
+}
+
+/// One server entry as it would actually be started: every `${VAR}` replaced.
+///
+/// The comparison a reload makes is on this rather than on the entry as
+/// written, because the entry is not what runs. `"${GITHUB_TOKEN}"` is the same
+/// text before and after the token changes, and a server started with the old
+/// one would go on using it.
+///
+/// Nothing about the open folder is in here, because nothing about the open
+/// folder reaches a server except through its entry. A stdio server is started
+/// in the application's own working directory, which a folder switch does not
+/// change. Variables come from the process environment, not the workspace. The
+/// client declares no `roots`, so a server has no way to ask where the
+/// workspace is. And sign-in is keyed by the server's name alone. So two
+/// folders whose layers merge to the same entry get the same server, and it
+/// can be left running across the switch. A folder whose layers merge to a
+/// different one resolves differently, and that is a restart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Resolved {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    },
+    Http {
+        url: String,
+        headers: BTreeMap<String, String>,
+    },
+}
+
+/// Fills in an entry's variables, naming the field that could not be.
+///
+/// One function for the handshake and for the comparison a reload makes, so
+/// the two cannot come to disagree about what a server is started from.
+fn resolve(name: &str, server: &ServerConfig) -> Result<Resolved, String> {
+    match server {
+        ServerConfig::Stdio {
+            command, args, env, ..
+        } => {
+            // Expanded for the same reason HTTP headers are: the workspace
+            // layer of `mcp.json` is meant to be committed, and a server that
+            // needs a token would otherwise need that token written into the
+            // repository. An unset variable names itself here rather than
+            // handing the server an empty string it will report as a bad
+            // credential.
+            let command = expand_env(command).map_err(|e| format!("command: {e}"))?;
+            let mut expanded_args = Vec::with_capacity(args.len());
+            for (i, arg) in args.iter().enumerate() {
+                expanded_args.push(expand_env(arg).map_err(|e| format!("args[{i}]: {e}"))?);
+            }
+            let mut expanded_env = Vec::with_capacity(env.len());
+            for (key, value) in env {
+                expanded_env.push((
+                    key.clone(),
+                    expand_env(value).map_err(|e| format!("env {key}: {e}"))?,
+                ));
+            }
+            Ok(Resolved::Stdio {
+                command,
+                args: expanded_args,
+                env: expanded_env,
+            })
+        }
+        ServerConfig::Http { url, headers, .. } => {
+            let url = expand_env(url).map_err(|e| format!("url: {e}"))?;
+            let mut expanded = BTreeMap::new();
+            for (header, value) in headers {
+                expanded.insert(
+                    header.clone(),
+                    expand_env(value).map_err(|e| format!("header '{header}': {e}"))?,
+                );
+            }
+            Ok(Resolved::Http {
+                url,
+                headers: expanded,
+            })
+        }
+        // Layer merging resolves toggles against the server they name, so
+        // one reaching this far means it named nothing.
+        ServerConfig::Toggle(_) => Err(format!(
+            "'{name}' only sets `disabled`; it needs a `command` or a `url`"
+        )),
+    }
+}
+
+/// Which servers a reload restarts even though nothing about them changed.
+///
+/// A reload on its own leaves a server running when its entry resolves to what
+/// it was started from. That is right for a folder switch, which would
+/// otherwise stop and start every global server for nothing, and wrong for
+/// the times someone is asking for a restart: pressing Reconnect on a server
+/// that hung, or signing in to one whose credentials only take effect on a
+/// new connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Restart<'a> {
+    /// Only what changed, and anything not running.
+    Changed,
+    /// That, and this server whatever its state.
+    Server(&'a str),
+    /// Every server.
+    All,
+}
+
+impl Restart<'_> {
+    fn includes(&self, name: &str) -> bool {
+        match self {
+            Self::Changed => false,
+            Self::Server(only) => *only == name,
+            Self::All => true,
+        }
+    }
+}
+
+/// Which running servers a reload leaves alone, and what they offer.
+///
+/// Worked out before anything is stopped, so the layer holding the tool
+/// registry can take out the tools of every server about to go down while
+/// those servers are still up. See [`McpManager::plan`].
+#[derive(Default)]
+pub struct Plan {
+    keep: BTreeMap<String, Vec<Arc<dyn Tool>>>,
+}
+
+impl Plan {
+    /// The servers that stay running.
+    pub fn kept(&self) -> impl Iterator<Item = &str> {
+        self.keep.keys().map(String::as_str)
+    }
+
+    /// Whether this tool belongs to a server that stays running.
+    pub fn keeps_tool(&self, name: &str) -> bool {
+        self.keep.values().flatten().any(|tool| tool.name() == name)
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]
@@ -125,6 +269,18 @@ impl ServerStatus {
             tool_count: 0,
             error: Some(error),
             disabled: server.disabled(),
+            tools: Vec::new(),
+        }
+    }
+
+    fn switched_off(name: &str, server: &ServerConfig) -> Self {
+        Self {
+            name: name.to_string(),
+            description: server.describe(),
+            connected: false,
+            tool_count: 0,
+            error: None,
+            disabled: true,
             tools: Vec::new(),
         }
     }
@@ -189,13 +345,66 @@ impl McpManager {
         oauth::sign_out(vault, name)
     }
 
-    /// Connects to every enabled server and returns the tools they expose.
+    /// Restarts every server, and returns the tools they expose.
+    ///
+    /// [`Self::reconnect`] with nothing kept. For a caller that has no running
+    /// servers to compare against, or wants none of them trusted.
+    pub async fn connect_all(&self, config: &McpConfig) -> Vec<Arc<dyn Tool>> {
+        self.reconnect(config, &Plan::default()).await
+    }
+
+    /// Works out which running servers `config` can leave alone.
+    ///
+    /// A server is kept when it is up, is not switched off, is not named by
+    /// `restart`, and its entry resolves to exactly what it was started from.
+    /// Everything else is restarted. "Up" is the status map's word rather than
+    /// the connection map's: a server a tool call found dead still holds its
+    /// connection, and a reload is how somebody retries it. A server that never
+    /// started holds no connection at all, so it is retried by the same rule.
+    ///
+    /// Nothing is stopped here. See [`Plan`] for why that is a second step.
+    pub async fn plan(&self, config: &McpConfig, restart: Restart<'_>) -> Plan {
+        // Copied out before the connections are read, so this never holds both
+        // locks at once.
+        let up: Vec<String> = self
+            .status
+            .read()
+            .await
+            .values()
+            .filter(|status| status.connected)
+            .map(|status| status.name.clone())
+            .collect();
+
+        let connections = self.connections.read().await;
+        let keep = config
+            .servers
+            .iter()
+            .filter(|(name, server)| {
+                !server.disabled() && !restart.includes(name) && up.contains(name)
+            })
+            .filter_map(|(name, server)| {
+                let connection = connections.get(name)?;
+                let now = resolve(name, server).ok()?;
+                (connection.resolved.as_ref() == Some(&now))
+                    .then(|| (name.clone(), connection.tools.clone()))
+            })
+            .collect();
+        Plan { keep }
+    }
+
+    /// Stops every server `plan` does not keep, starts every enabled one in
+    /// `config` it does not keep, and returns the tools of both.
     ///
     /// A server that fails to start is recorded and skipped rather than
     /// failing the whole load: one broken entry in `mcp.json` must not cost
     /// the user their other servers.
     ///
-    /// All of them at once. A connection is almost entirely waiting — spawn
+    /// Stopped before anything starts, as a restart has always been. A server
+    /// whose entry changed is often holding something its replacement wants —
+    /// a port, a lock file, a database — and the two overlapping would be a
+    /// failure that only happens on a reload.
+    ///
+    /// All the starts at once. A connection is almost entirely waiting — spawn
     /// `npx`, wait for it to be ready, then a round trip for `tools/list` — so
     /// serially this cost the *sum* of every server's startup, each with its
     /// own timeout, and that sum sat in front of the first thing the window
@@ -206,24 +415,37 @@ impl McpManager {
     /// servers happened to answer in — `join_all` yields results in the order
     /// the futures were given. A tool list that reshuffles between launches
     /// would be a prompt that changes for no reason anyone could see.
-    pub async fn connect_all(&self, config: &McpConfig) -> Vec<Arc<dyn Tool>> {
+    pub async fn reconnect(&self, config: &McpConfig, plan: &Plan) -> Vec<Arc<dyn Tool>> {
+        // Dropping a connection is what ends its process.
+        self.connections
+            .write()
+            .await
+            .retain(|name, _| plan.keep.contains_key(name));
+        {
+            let mut status = self.status.write().await;
+            status.retain(|name, _| plan.keep.contains_key(name));
+            // The entry as written can differ from the one the server was
+            // started from while resolving to the same thing, and the panel
+            // shows the one in the file.
+            for (name, entry) in status.iter_mut() {
+                if let Some(server) = config.servers.get(name) {
+                    entry.description = server.describe();
+                }
+            }
+        }
+
         let connecting = config.servers.iter().map(|(name, server)| async move {
+            if let Some(kept) = plan.keep.get(name) {
+                return kept.clone();
+            }
             if server.disabled() {
                 // Listed but not started. A server that vanished from the status
                 // list when switched off looked exactly like one that was never
                 // configured at all.
-                self.status.write().await.insert(
-                    name.clone(),
-                    ServerStatus {
-                        name: name.clone(),
-                        description: server.describe(),
-                        connected: false,
-                        tool_count: 0,
-                        error: None,
-                        disabled: true,
-                        tools: Vec::new(),
-                    },
-                );
+                self.status
+                    .write()
+                    .await
+                    .insert(name.clone(), ServerStatus::switched_off(name, server));
                 return Vec::new();
             }
             match self.connect(name, server).await {
@@ -293,6 +515,11 @@ impl McpManager {
             Arc::new(Connection {
                 _service: service,
                 _child: child,
+                // Resolved again rather than handed back by the handshake, which
+                // would have failed already if this could. Nothing it reads
+                // changes in between.
+                resolved: resolve(name, server).ok(),
+                tools: tools.clone(),
             }),
         );
 
@@ -333,29 +560,14 @@ async fn handshake(
 > {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
         let mut child = None;
-        let service = match server {
-            ServerConfig::Stdio {
-                command, args, env, ..
+        // Resolved through the same function a reload compares with, so what
+        // is started here is what that comparison describes.
+        let service = match resolve(name, server)? {
+            Resolved::Stdio {
+                command,
+                args: expanded_args,
+                env: expanded_env,
             } => {
-                // Expanded for the same reason HTTP headers are: the workspace
-                // layer of `mcp.json` is meant to be committed, and a server that
-                // needs a token would otherwise need that token written into the
-                // repository. An unset variable names itself here rather than
-                // handing the server an empty string it will report as a bad
-                // credential.
-                let command = expand_env(command).map_err(|e| format!("command: {e}"))?;
-                let mut expanded_args = Vec::with_capacity(args.len());
-                for (i, arg) in args.iter().enumerate() {
-                    expanded_args.push(expand_env(arg).map_err(|e| format!("args[{i}]: {e}"))?);
-                }
-                let mut expanded_env = Vec::with_capacity(env.len());
-                for (key, value) in env {
-                    expanded_env.push((
-                        key.clone(),
-                        expand_env(value).map_err(|e| format!("env {key}: {e}"))?,
-                    ));
-                }
-
                 let mut process = spawn_command(&command).configure(|c| {
                     c.args(&expanded_args);
                     for (key, value) in &expanded_env {
@@ -398,10 +610,9 @@ async fn handshake(
                     }
                 }
             }
-            ServerConfig::Http { url, headers, .. } => {
-                let url = expand_env(url).map_err(|e| format!("url: {e}"))?;
+            Resolved::Http { url, headers } => {
                 let config = StreamableHttpClientTransportConfig::with_uri(url.clone())
-                    .custom_headers(http_headers(headers)?);
+                    .custom_headers(http_headers(&headers)?);
 
                 /*
                  * Signed in, so every request carries a token that is refreshed
@@ -432,13 +643,6 @@ async fn handshake(
                             .map_err(|e| handshake_failure(e, true))?
                     }
                 }
-            }
-            // Layer merging resolves toggles against the server they name, so
-            // one reaching this far means it named nothing.
-            ServerConfig::Toggle(_) => {
-                return Err(format!(
-                    "'{name}' only sets `disabled`; it needs a `command` or a `url`"
-                ))
             }
         };
 
@@ -670,15 +874,15 @@ pub async fn probe(
     Ok(tools)
 }
 
+/// Headers as HTTP carries them, from values [`resolve`] has already filled in.
 fn http_headers(
-    raw: &BTreeMap<String, String>,
+    expanded: &BTreeMap<String, String>,
 ) -> Result<HashMap<HeaderName, HeaderValue>, String> {
-    let mut headers = HashMap::with_capacity(raw.len());
-    for (name, value) in raw {
+    let mut headers = HashMap::with_capacity(expanded.len());
+    for (name, value) in expanded {
         let header = HeaderName::try_from(name.as_str())
             .map_err(|_| format!("'{name}' is not a valid HTTP header name"))?;
-        let expanded = expand_env(value).map_err(|e| format!("header '{name}': {e}"))?;
-        let mut value = HeaderValue::try_from(expanded)
+        let mut value = HeaderValue::try_from(value.as_str())
             .map_err(|_| format!("header '{name}' has a value HTTP does not allow"))?;
         // These carry credentials. Marking them keeps the value out of the
         // `{:?}` rendering that reqwest and rmcp use when tracing a request.
@@ -1438,12 +1642,27 @@ mod tests {
         assert!(statuses[0].error.is_some());
     }
 
+    /// Headers the way a handshake builds them: resolved, then made HTTP.
+    fn headers_of(
+        raw: &BTreeMap<String, String>,
+    ) -> Result<HashMap<HeaderName, HeaderValue>, String> {
+        let server = ServerConfig::Http {
+            url: "https://example.com/mcp".into(),
+            headers: raw.clone(),
+            disabled: false,
+        };
+        match resolve("remote", &server)? {
+            Resolved::Http { headers, .. } => http_headers(&headers),
+            other => panic!("an HTTP entry resolved to {other:?}"),
+        }
+    }
+
     #[test]
     fn a_header_can_name_an_environment_variable_instead_of_holding_the_secret() {
         // Unique per test: these mutate process-wide state, and the suite runs
         // its tests in parallel threads.
         std::env::set_var("TAURUS_TEST_MCP_TOKEN", "s3cret");
-        let headers = http_headers(&BTreeMap::from([(
+        let headers = headers_of(&BTreeMap::from([(
             "Authorization".to_string(),
             "Bearer ${TAURUS_TEST_MCP_TOKEN}".to_string(),
         )]))
@@ -1460,7 +1679,7 @@ mod tests {
     #[test]
     fn a_literal_header_still_passes_through_unchanged() {
         // The format's whole point is that someone else's config pastes in.
-        let headers = http_headers(&BTreeMap::from([(
+        let headers = headers_of(&BTreeMap::from([(
             "X-Api-Key".to_string(),
             "literal-value".to_string(),
         )]))
@@ -1475,7 +1694,7 @@ mod tests {
 
     #[test]
     fn an_unset_variable_names_itself_rather_than_sending_an_empty_credential() {
-        let err = http_headers(&BTreeMap::from([(
+        let err = headers_of(&BTreeMap::from([(
             "Authorization".to_string(),
             "Bearer ${TAURUS_TEST_MCP_DEFINITELY_UNSET}".to_string(),
         )]))
@@ -1615,6 +1834,235 @@ mod tests {
             error.contains("TOKEN"),
             "the key has to be named too: {error}"
         );
+    }
+
+    /// What this binary does when a test below starts it as a server. See
+    /// [`testing`].
+    #[test]
+    #[ignore = "started as a server by the reload tests, not run on its own"]
+    fn stand_in_server() {
+        testing::serve();
+    }
+
+    fn stand_in(tools: &[&str]) -> ServerConfig {
+        testing::stand_in("tests::stand_in_server", tools)
+    }
+
+    fn config_of(entries: impl IntoIterator<Item = (&'static str, ServerConfig)>) -> McpConfig {
+        McpConfig {
+            servers: entries
+                .into_iter()
+                .map(|(name, server)| (name.to_string(), server))
+                .collect(),
+            invalid: BTreeMap::new(),
+        }
+    }
+
+    /// The process id behind a tool, which the stand-in answers every call
+    /// with.
+    async fn pid_behind(tools: &[Arc<dyn Tool>], name: &str) -> Result<String, ToolError> {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .unwrap_or_else(|| panic!("no tool called {name}"));
+        let out = tool
+            .execute(serde_json::json!({}), &ctx_in(dir.path()))
+            .await?;
+        Ok(out.to_text().into_owned())
+    }
+
+    fn kept(plan: &Plan) -> Vec<&str> {
+        plan.kept().collect()
+    }
+
+    #[tokio::test]
+    async fn a_reload_leaves_a_server_whose_entry_did_not_change_running() {
+        // The reason a reload is not a restart. A folder switch reloads every
+        // server, and four global ones took 1.7 seconds to come back while
+        // nothing about them had changed.
+        let manager = McpManager::new();
+        let config = config_of([("notes", stand_in(&["search"]))]);
+        let tools = manager.connect_all(&config).await;
+        let tool = namespaced("notes", "search");
+        let before = pid_behind(&tools, &tool).await.unwrap();
+
+        let plan = manager.plan(&config, Restart::Changed).await;
+        assert_eq!(kept(&plan), ["notes"]);
+        assert!(plan.keeps_tool(&tool));
+        let after = manager.reconnect(&config, &plan).await;
+
+        assert_eq!(pid_behind(&after, &tool).await.unwrap(), before);
+        assert!(
+            Arc::ptr_eq(&tools[0], &after[0]),
+            "a kept server hands back the tools it already registered"
+        );
+        let statuses = manager.statuses().await;
+        assert!(statuses[0].connected);
+        assert_eq!(statuses[0].tools, ["search"]);
+    }
+
+    #[tokio::test]
+    async fn a_server_whose_entry_changed_is_stopped_and_started_again() {
+        let manager = McpManager::new();
+        let config = config_of([
+            ("notes", stand_in(&["search"])),
+            ("git", stand_in(&["log"])),
+        ]);
+        let tools = manager.connect_all(&config).await;
+        let log = namespaced("git", "log");
+        let before = pid_behind(&tools, &log).await.unwrap();
+
+        // One variable more is a different process environment, and so a
+        // different server, though the command line reads the same.
+        let mut changed = stand_in(&["log"]);
+        if let ServerConfig::Stdio { env, .. } = &mut changed {
+            env.insert("GIT_DIR".into(), "elsewhere".into());
+        }
+        let edited = config_of([("notes", stand_in(&["search"])), ("git", changed)]);
+        let plan = manager.plan(&edited, Restart::Changed).await;
+        assert_eq!(kept(&plan), ["notes"]);
+        assert!(!plan.keeps_tool(&log));
+        let after = manager.reconnect(&edited, &plan).await;
+
+        assert_ne!(pid_behind(&after, &log).await.unwrap(), before);
+        assert!(
+            pid_behind(&tools, &log).await.is_err(),
+            "the old process is still answering"
+        );
+        assert_eq!(after.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_variable_an_entry_names_is_compared_by_its_value() {
+        // `${TOKEN}` reads the same before and after the token changes, and a
+        // server started with the old one goes on using it.
+        std::env::set_var("TAURUS_TEST_MCP_RELOAD_TOKEN", "first");
+        let manager = McpManager::new();
+        let mut server = stand_in(&["search"]);
+        if let ServerConfig::Stdio { env, .. } = &mut server {
+            env.insert("TOKEN".into(), "${TAURUS_TEST_MCP_RELOAD_TOKEN}".into());
+        }
+        let config = config_of([("notes", server)]);
+        manager.connect_all(&config).await;
+        assert_eq!(
+            kept(&manager.plan(&config, Restart::Changed).await),
+            ["notes"]
+        );
+
+        std::env::set_var("TAURUS_TEST_MCP_RELOAD_TOKEN", "second");
+        assert!(kept(&manager.plan(&config, Restart::Changed).await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_removed_server_is_stopped_and_an_added_one_started() {
+        let manager = McpManager::new();
+        let tools = manager
+            .connect_all(&config_of([("old", stand_in(&["gone"]))]))
+            .await;
+
+        let config = config_of([("new", stand_in(&["here"]))]);
+        let plan = manager.plan(&config, Restart::Changed).await;
+        assert!(kept(&plan).is_empty());
+        let after = manager.reconnect(&config, &plan).await;
+
+        assert!(pid_behind(&after, &namespaced("new", "here")).await.is_ok());
+        assert!(
+            pid_behind(&tools, &namespaced("old", "gone"))
+                .await
+                .is_err(),
+            "a server taken out of the file is still running"
+        );
+        let names: Vec<String> = manager
+            .statuses()
+            .await
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["new"], "and still listed");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_died_or_never_started_is_retried_rather_than_kept() {
+        // A reload is how somebody retries a broken server. Keeping one because
+        // its entry had not changed would make Reconnect a button that leaves
+        // the thing it is pressed for exactly as it was.
+        let manager = McpManager::new();
+        let config = config_of([
+            ("notes", stand_in(&["search"])),
+            (
+                "broken",
+                ServerConfig::Stdio {
+                    command: "definitely-not-a-real-program-xyz".into(),
+                    args: vec![],
+                    env: BTreeMap::new(),
+                    disabled: false,
+                },
+            ),
+        ]);
+        let tools = manager.connect_all(&config).await;
+        let search = namespaced("notes", "search");
+        let before = pid_behind(&tools, &search).await.unwrap();
+        // What a tool call that found the pipe closed writes.
+        note_gone(
+            &mut *manager.status.write().await,
+            "notes",
+            &"transport closed",
+        );
+
+        let plan = manager.plan(&config, Restart::Changed).await;
+        assert!(kept(&plan).is_empty(), "kept {:?}", kept(&plan));
+        let after = manager.reconnect(&config, &plan).await;
+
+        assert_ne!(pid_behind(&after, &search).await.unwrap(), before);
+        let notes = manager
+            .statuses()
+            .await
+            .into_iter()
+            .find(|s| s.name == "notes")
+            .unwrap();
+        assert!(notes.connected);
+        assert!(notes.error.is_none(), "{:?}", notes.error);
+    }
+
+    #[tokio::test]
+    async fn a_restart_that_was_asked_for_happens_whatever_changed() {
+        // Reconnect on a server that hung, and a sign-in whose credentials only
+        // a new connection reads. Neither changes the entry.
+        let manager = McpManager::new();
+        let config = config_of([
+            ("notes", stand_in(&["search"])),
+            ("git", stand_in(&["log"])),
+        ]);
+        manager.connect_all(&config).await;
+
+        assert_eq!(
+            kept(&manager.plan(&config, Restart::Server("git")).await),
+            ["notes"]
+        );
+        assert!(kept(&manager.plan(&config, Restart::All).await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_server_switched_off_is_stopped_and_listed_as_off() {
+        let manager = McpManager::new();
+        let tools = manager
+            .connect_all(&config_of([("notes", stand_in(&["search"]))]))
+            .await;
+
+        let mut off = stand_in(&["search"]);
+        off.set_disabled(true);
+        let config = config_of([("notes", off)]);
+        let plan = manager.plan(&config, Restart::Changed).await;
+        assert!(kept(&plan).is_empty());
+        assert!(manager.reconnect(&config, &plan).await.is_empty());
+
+        assert!(pid_behind(&tools, &namespaced("notes", "search"))
+            .await
+            .is_err());
+        let statuses = manager.statuses().await;
+        assert!(statuses[0].disabled);
+        assert!(!statuses[0].connected);
     }
 
     #[tokio::test]
