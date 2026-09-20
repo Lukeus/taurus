@@ -221,6 +221,15 @@ pub struct FakeProvider {
     /// see would let that path go untested in every test but the one written
     /// for it.
     vision: bool,
+    /// What this backend's tokenizer makes of the messages, against the
+    /// harness's four-characters-a-token estimate of the same text.
+    ///
+    /// 1.0 — perfect agreement — everywhere it is not the thing under test,
+    /// which is not what any real backend does: over code and JSON a real
+    /// tokenizer runs nearer three characters a token, so the harness
+    /// under-counts, and by more as the conversation grows. See
+    /// [`FakeProvider::dense`].
+    density: f32,
 }
 
 impl FakeProvider {
@@ -232,6 +241,7 @@ impl FakeProvider {
             fallback_text: "(script exhausted)".into(),
             cancel_after_requests: None,
             vision: false,
+            density: 1.0,
         })
     }
 
@@ -251,6 +261,7 @@ impl FakeProvider {
             fallback_text: "(script exhausted)".into(),
             cancel_after_requests: Some(n),
             vision: false,
+            density: 1.0,
         })
     }
 
@@ -263,7 +274,22 @@ impl FakeProvider {
             fallback_text: "(script exhausted)".into(),
             cancel_after_requests: None,
             vision: false,
+            density: 1.0,
         })
+    }
+
+    /// A provider whose tokenizer counts `density` times what the harness
+    /// estimates for the same messages, on a window of `context_length`.
+    ///
+    /// For the budget tests, where the whole question is what happens when the
+    /// estimate and the real count disagree — and disagree by more the longer
+    /// the conversation runs, which is the case every other fake here cannot
+    /// produce.
+    pub fn dense(turns: Vec<ScriptedTurn>, context_length: u32, density: f32) -> Arc<Self> {
+        let mut provider =
+            Arc::into_inner(Self::with_context_length(turns, context_length)).expect("just built");
+        provider.density = density;
+        Arc::new(provider)
     }
 
     pub async fn request_count(&self) -> usize {
@@ -308,7 +334,7 @@ impl Provider for FakeProvider {
         // for is the whole thing it was sent — the system prompt and every
         // tool schema included, which is the half a session cannot see by
         // looking at its own messages.
-        let counted = count_request(&request);
+        let counted = count_request(&request, self.density);
         let served = {
             let mut seen = self.seen.lock().await;
             seen.push(request);
@@ -371,7 +397,11 @@ impl Provider for FakeProvider {
 /// everything the request actually carries. A fake that reported only the
 /// messages would agree with the estimate by construction, and the one thing
 /// worth testing here is what happens when the two differ.
-fn count_request(request: &ChatRequest) -> u32 {
+///
+/// `density` is applied to the messages and not to the fixed part, because
+/// that is where the two can drift apart without bound: the system prompt and
+/// the schemas are the same text on every request, while the history grows.
+fn count_request(request: &ChatRequest, density: f32) -> u32 {
     let system = request.system.as_deref().unwrap_or("").len();
     let tools: usize = request
         .tools
@@ -383,5 +413,6 @@ fn count_request(request: &ChatRequest) -> u32 {
         .iter()
         .map(crate::session::estimate_message)
         .sum();
+    let messages = (messages as f32 * density) as u32;
     messages.saturating_add(((system + tools) / 4) as u32)
 }

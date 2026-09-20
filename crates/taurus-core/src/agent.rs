@@ -12,7 +12,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use taurus_provider::prompted::MALFORMED_TOOL;
 use taurus_provider::{
     ChatRequest, ContentBlock, Message, Provider, Role, StopReason, StreamAccumulator, StreamEvent,
-    TokenUsage,
+    TokenUsage, ToolDef,
 };
 use taurus_tools::{
     Effect, OutputBudget, PlanBoard, ToolContext, ToolError, ToolProgress, ToolRegistry,
@@ -169,8 +169,9 @@ const DEFAULT_REPLY_RESERVE: u32 = 32_000;
 ///
 /// The estimate the budget is kept in is four-characters-a-token, and the
 /// difference between that and a real tokenizer grows with the conversation.
-/// Most of it is absorbed by [`Session::measured_overhead`], which is measured
-/// against what the provider actually counted — but "most" is not "all", and on
+/// Most of it is corrected by [`Session::calibration`], which is derived from
+/// what the provider actually counted — but "most" is not "all": a calibration
+/// is one reading, taken on the conversation as it was an iteration ago, and on
 /// a large window a few percent is tens of thousands of tokens.
 const MIN_RESERVE_SHARE: f32 = 0.05;
 
@@ -347,6 +348,13 @@ pub struct Agent {
     /// Where this turn is written down, when somebody is keeping it. `None` for
     /// the top-level agent, whose transcript its frontend records itself.
     recorder: Option<Arc<dyn TurnRecorder>>,
+    /// What a request costs before any message is added to it, once computed.
+    ///
+    /// A `OnceLock` rather than a field set in [`Agent::new`] because it is
+    /// worth nothing to an agent whose turns never fill a window, and
+    /// answering it means rendering every tool schema to a string. See
+    /// [`Agent::request_overhead`].
+    overhead: std::sync::OnceLock<u32>,
 }
 
 /// What a completed turn produced.
@@ -371,6 +379,7 @@ impl Agent {
             config,
             plan: None,
             recorder: None,
+            overhead: std::sync::OnceLock::new(),
         }
     }
 
@@ -604,7 +613,7 @@ impl Agent {
             // Before the answer is pushed: what the provider counted is what
             // was sent, and the estimate it is paired with has to be of the
             // same messages. See `Session::record_request`.
-            session.record_request(usage.input_tokens);
+            session.record_request(usage.input_tokens, self.request_overhead());
             session.add_usage(usage);
 
             let has_tools = assistant.has_tool_use();
@@ -977,6 +986,20 @@ impl Agent {
         Ok((message, usage, stop))
     }
 
+    /// The tools every request of this turn advertises.
+    ///
+    /// One definition, because two callers need the same answer: the request
+    /// itself, and [`Agent::request_overhead`], which prices it. A budget
+    /// computed over a different set than the one being sent is a budget for
+    /// a request nobody made.
+    fn request_tools(&self) -> Vec<ToolDef> {
+        if self.config.allowed_tools.is_empty() {
+            self.registry.definitions()
+        } else {
+            self.registry.definitions_for(&self.config.allowed_tools)
+        }
+    }
+
     /// Assembles the request for one iteration.
     ///
     /// The plan is re-read here rather than captured when the turn started,
@@ -984,11 +1007,7 @@ impl Agent {
     /// as it stands on iteration nine, including the step it marked done on
     /// iteration eight.
     fn build_request(&self, session: &Session, vision: bool) -> ChatRequest {
-        let tools = if self.config.allowed_tools.is_empty() {
-            self.registry.definitions()
-        } else {
-            self.registry.definitions_for(&self.config.allowed_tools)
-        };
+        let tools = self.request_tools();
 
         let mut messages = if vision {
             session.messages.clone()
@@ -1317,8 +1336,10 @@ impl Agent {
         // was quietly paying for them. It cannot: what they cost is a fact
         // about how much configuration a workspace has, and the headroom is a
         // fraction of a window.
-        let overhead = self.request_overhead(session);
-        let used = session.estimated_tokens().saturating_add(overhead);
+        let overhead = self.request_overhead();
+        let used = session
+            .calibrated(session.estimated_tokens())
+            .saturating_add(overhead);
         let _ = ui
             .send(UiEvent::ContextUsed {
                 used,
@@ -1391,7 +1412,11 @@ impl Agent {
         }
         // Free and cannot fail, so it runs however the summarizing went: what
         // one round trims is what the next round does not have to hold.
-        if session.estimated_tokens().saturating_add(overhead) < budget {
+        if session
+            .calibrated(session.estimated_tokens())
+            .saturating_add(overhead)
+            < budget
+        {
             return summarizing;
         }
 
@@ -1412,10 +1437,12 @@ impl Agent {
         // tail. If the tail alone will not fit, the request will not fit
         // however good the summary is — so say so once rather than spending a
         // request per iteration proving it.
-        let tail: u32 = session.messages[drop_count..]
-            .iter()
-            .map(crate::session::estimate_message)
-            .sum();
+        let tail: u32 = session.calibrated(
+            session.messages[drop_count..]
+                .iter()
+                .map(crate::session::estimate_message)
+                .sum(),
+        );
         if tail.saturating_add(overhead) >= budget {
             warn!(
                 tail,
@@ -1476,17 +1503,28 @@ impl Agent {
 
     /// What the next request will carry besides its messages.
     ///
-    /// Measured wherever a request has already been answered, because the
-    /// provider counted the real thing — its own tokenizer, its own envelope,
-    /// the tools as it renders them — and no estimate here can do better than
-    /// that. Estimated only for the first request of a session, from the two
-    /// things that make up nearly all of it.
-    fn request_overhead(&self, session: &Session) -> u32 {
-        session.measured_overhead().unwrap_or_else(|| {
+    /// Estimated directly from the two things that make up nearly all of it,
+    /// rather than taken as the leftover when the message estimate is
+    /// subtracted from what the provider charged. That leftover is the more
+    /// accurate number for the fixed part *plus* however wrong the estimator
+    /// was about the messages, and those two cannot be separated again
+    /// afterwards. Keeping them apart is what lets
+    /// [`Session::calibration`] correct the half that is actually wrong. See
+    /// [`crate::session::Measured`].
+    ///
+    /// Over the tools this request will really send, not every registered one:
+    /// a sub-agent is given a handful, and charging it for the whole registry
+    /// would have it summarizing against a window it was never spending.
+    ///
+    /// Memoized, because it is asked on every iteration and nothing it reads
+    /// changes within a turn — the system prompt is fixed at construction and
+    /// the registry is not edited while a turn runs — while `definitions()`
+    /// clones every schema to answer.
+    fn request_overhead(&self) -> u32 {
+        *self.overhead.get_or_init(|| {
             let system = crate::session::estimate_tokens(&self.config.system_prompt);
             let tools: u32 = self
-                .registry
-                .definitions()
+                .request_tools()
                 .iter()
                 .map(|tool| {
                     crate::session::estimate_tokens(&tool.name)

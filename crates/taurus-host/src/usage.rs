@@ -11,6 +11,15 @@
 //! per-tool figures are estimates — the provider reports one number for a whole
 //! request and never says which part of the prompt was whose.
 //!
+//! They are estimates corrected by what that session's own requests showed,
+//! which matters most on exactly the transcripts worth reading: four
+//! characters a token under-counts code and JSON, and a session that is mostly
+//! build logs and file reads is the one where the raw estimate and the window
+//! it is being measured against drift furthest apart. The correction is one
+//! ratio over the whole session, so it moves every figure together and leaves
+//! the shares — which is what the ordering and the bars are drawn from —
+//! exactly where they were.
+//!
 //! It lives in the host rather than in either frontend because both of them ask
 //! it. `taurus usage` prints it and the desktop app draws it, and the one thing
 //! that must not happen is the two of them disagreeing about what a tool cost —
@@ -233,10 +242,12 @@ impl Tally {
         let mut seen: HashMap<String, u32> = HashMap::new();
 
         for message in &session.messages {
-            // The whole message, envelope included, so this total is the one
-            // the compaction trigger is working from and not four tokens a
-            // message off it.
-            self.history += estimate_message(message);
+            // The whole message, envelope included, and corrected by what this
+            // session's own requests revealed about the estimator — so this
+            // total is the one the compaction trigger is working from, rather
+            // than four tokens a message off it or, on a long code-heavy
+            // session, a third light. See `Session::calibration`.
+            self.history += session.calibrated(estimate_message(message));
 
             // A user message that is not a tool result is somebody typing.
             if message.role == Role::User
@@ -253,7 +264,7 @@ impl Tally {
                     ContentBlock::ToolUse {
                         id, name, input, ..
                     } => {
-                        let cost = estimate_block(block);
+                        let cost = session.calibrated(estimate_block(block));
                         let entry = self.by_tool.entry(name.to_string()).or_default();
                         entry.name = name.to_string();
                         entry.calls += 1;
@@ -280,7 +291,7 @@ impl Tally {
                         };
                         let entry = self.by_tool.entry(name.to_string()).or_default();
                         entry.name = name.to_string();
-                        entry.tokens += estimate_block(block);
+                        entry.tokens += session.calibrated(estimate_block(block));
                         if *is_error {
                             entry.failures += 1;
                         }

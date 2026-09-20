@@ -77,19 +77,25 @@ the backlog, and they're the minority.
   pre-image. The cost is the command's own change to such a file. Undoing the
   command's turn doesn't touch it. Undoing the other call's turn restores the
   file as it stood then, the command's change so far included.
-- **What a message costs is estimated, at four characters a token.** The fixed
-  part of a request is measured. A response reports the whole prompt's size,
-  and its difference from the estimate for the same messages is exactly the
-  system prompt, the tools, and the envelope. What isn't measured is the drift
-  *inside* the messages. A tokenizer that gets 3.2 characters a token out of
-  minified JSON leaves the estimate a fifth low on a conversation full of it.
-  The overhead can't absorb that, because it grows with the messages instead
-  of sitting beside them.
+- **What a message costs is estimated at four characters a token, then
+  corrected by a single ratio.** The fixed part of a request — the system
+  prompt, the tool schemas, the envelope — is estimated directly from the text
+  it's made of. A response reports the whole prompt's size, so taking the
+  fixed part off it leaves what the messages really cost, and the ratio
+  between that and the estimate for the same messages is how far four
+  characters a token is off on this conversation's mix of prose, code, and
+  JSON. Every later estimate is scaled by it, including estimates of *part* of
+  the history.
 
-  Closing it takes one of two things. Either a tokenizer per model in the
+  What's left is that it's one ratio for a whole session. A conversation whose
+  last turn was minified JSON and whose next one is prose gets the JSON's
+  correction applied to the prose. It lags by a request, it needs a few
+  hundred tokens of history before it means anything, and it's held between
+  one and three times so a stale reading can't run away with the budget.
+  Closing the rest takes one of two things: a tokenizer per model in the
   harness, kept in step with every backend forever, or a count-tokens round
   trip before each request, which is the cost the estimate exists to avoid.
-  The threshold covers the error, and the meter above the composer shows you
+  The threshold covers what's left, and the meter above the composer shows you
   when it's wrong.
 - **A hook can refuse a tool call but can't approve one.** There's no `allow`
   verdict, so a hook can't skip a permission prompt the way hooks in some
