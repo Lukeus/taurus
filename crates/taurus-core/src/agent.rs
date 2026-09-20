@@ -1024,6 +1024,10 @@ impl Agent {
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             stop_sequences: Vec::new(),
+            // Free-form by construction: this turn may answer in prose, call
+            // any tool, or both, and a schema over the whole response could
+            // not describe that. The tool schemas are what shape it.
+            response_schema: None,
         }
     }
 
@@ -1542,11 +1546,14 @@ impl Agent {
     /// account of a request the user never sees listed: the summarizer's turn
     /// is not in the transcript, so a failure here has no other way to be read.
     async fn summarize(&self, model: &str, messages: Vec<Message>) -> Result<String, String> {
-        let mut request = ChatRequest::new(model, messages);
+        let mut request = ChatRequest::new(model, messages).with_response_schema(summary_schema());
         request.system = Some(
-            "Summarize the conversation so far for your own future reference. Preserve: the \
-             user's goal, decisions made, files read or changed, and anything still outstanding. \
-             Drop pleasantries and superseded detail. Write prose, under 400 words."
+            "Summarize the conversation so far for your own future reference, as JSON matching \
+             the schema. `goal` is what the user is trying to achieve, in one sentence. \
+             `decisions` is what was settled and must not be reopened. `files` names every file \
+             read or changed. `outstanding` is what is left to do — leave it empty only if the \
+             work is genuinely finished. Drop pleasantries and superseded detail. Keep each entry \
+             to a line."
                 .into(),
         );
         request.messages.push(Message::user(
@@ -1572,8 +1579,94 @@ impl Agent {
         if text.trim().is_empty() {
             return Err("the model returned an empty summary".into());
         }
-        Ok(text)
+        Ok(render_summary(&text))
     }
+}
+
+/// The shape a compaction summary has to have.
+///
+/// Four fields, all required, because the failure worth designing against is
+/// not a summary that reads badly — it is one with a section missing.
+/// `outstanding` is the section that matters and the first one a small model
+/// drops, and a turn that resumes from a summary claiming nothing is left does
+/// not ask again: it stops.
+///
+/// Flat and small on purpose. A schema is a constraint on sampling, so an
+/// elaborate one spends the model's capacity on bookkeeping — which is the
+/// capacity this exists to protect.
+fn summary_schema() -> serde_json::Value {
+    let lines = serde_json::json!({ "type": "array", "items": { "type": "string" } });
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "goal": { "type": "string" },
+            "decisions": lines,
+            "files": lines,
+            "outstanding": lines,
+        },
+        "required": ["goal", "decisions", "files", "outstanding"],
+    })
+}
+
+/// Turns a structured summary back into the prose the next request carries.
+///
+/// The model reads a conversation, not a data structure, so the schema buys
+/// the *completeness* and this buys back the readability.
+///
+/// Anything that is not the agreed shape is passed through untouched. A
+/// backend that cannot enforce a schema answered in prose, and that prose is
+/// the summary — the constraint is an improvement on this path and never a
+/// requirement of it. See [`taurus_provider::ChatRequest::response_schema`].
+fn render_summary(text: &str) -> String {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return text.to_string();
+    };
+    let Some(object) = parsed.as_object() else {
+        return text.to_string();
+    };
+    let goal = object.get("goal").and_then(|v| v.as_str()).unwrap_or("");
+    if goal.trim().is_empty() {
+        // Whatever this is, it is not the shape that was asked for, and
+        // rendering a half-filled one would put a confident empty summary in
+        // front of the model. The raw text is at least what it meant to say.
+        return text.to_string();
+    }
+
+    let section = |name: &str, heading: &str, empty: &str| {
+        let items: Vec<&str> = object
+            .get(name)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if items.is_empty() {
+            return format!("\n\n{heading}\n{empty}");
+        }
+        let body = items
+            .iter()
+            .map(|line| format!("- {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\n\n{heading}\n{body}")
+    };
+
+    let mut out = format!("Goal: {}", goal.trim());
+    out.push_str(&section("decisions", "Settled:", "- Nothing recorded."));
+    out.push_str(&section("files", "Files touched:", "- None."));
+    // Spelled out when empty rather than left out. An absent section reads as
+    // "not mentioned", and this is the one section that must never be mistaken
+    // for "nothing left to do".
+    out.push_str(&section(
+        "outstanding",
+        "Still outstanding:",
+        "- Nothing recorded — check the work before treating it as finished.",
+    ));
+    out
 }
 
 /// Whether summarizing the older history is still worth attempting this turn.
@@ -1663,5 +1756,97 @@ impl ToolProgress for CallProgress {
                 label,
             })
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_structured_summary_reads_as_prose() {
+        let rendered = render_summary(
+            &serde_json::json!({
+                "goal": "Make the parser accept trailing commas.",
+                "decisions": ["Fix it in the lexer, not the grammar."],
+                "files": ["src/lex.rs", "src/parse.rs"],
+                "outstanding": ["Run the test suite."],
+            })
+            .to_string(),
+        );
+        assert!(rendered.starts_with("Goal: Make the parser"), "{rendered}");
+        assert!(rendered.contains("- Fix it in the lexer"), "{rendered}");
+        assert!(rendered.contains("- src/parse.rs"), "{rendered}");
+        assert!(rendered.contains("- Run the test suite."), "{rendered}");
+    }
+
+    #[test]
+    fn nothing_outstanding_is_said_out_loud() {
+        // An absent section reads as "not mentioned". This one must never be
+        // read as "nothing left to do" unless that is what it means, because a
+        // turn resuming from it stops rather than asking again.
+        let rendered = render_summary(
+            &serde_json::json!({
+                "goal": "g",
+                "decisions": [],
+                "files": [],
+                "outstanding": [],
+            })
+            .to_string(),
+        );
+        assert!(rendered.contains("Still outstanding:"), "{rendered}");
+        assert!(rendered.contains("check the work"), "{rendered}");
+    }
+
+    #[test]
+    fn a_backend_that_ignored_the_schema_still_summarizes() {
+        // The whole fallback: a schema is an improvement on this path, never a
+        // requirement of it. Plain prose is passed through as the summary it
+        // is.
+        let prose = "We were fixing the parser. Nothing else has happened yet.";
+        assert_eq!(render_summary(prose), prose);
+    }
+
+    #[test]
+    fn json_that_is_not_the_agreed_shape_is_left_alone() {
+        // A summary that happens to be valid JSON but has no `goal` is not a
+        // summary this can render. Filling the gaps would put a confident
+        // empty account in front of the model; the raw text is at least what
+        // it meant to say.
+        for text in [
+            r#"{"summary": "we did some things"}"#,
+            r#"{"goal": "   ", "decisions": [], "files": [], "outstanding": []}"#,
+            r#"["a", "b"]"#,
+        ] {
+            assert_eq!(render_summary(text), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn blank_entries_do_not_become_empty_bullets() {
+        let rendered = render_summary(
+            &serde_json::json!({
+                "goal": "g",
+                "decisions": ["", "  ", "a real one"],
+                "files": [],
+                "outstanding": [],
+            })
+            .to_string(),
+        );
+        assert!(rendered.contains("- a real one"), "{rendered}");
+        assert!(!rendered.contains("- \n"), "{rendered}");
+    }
+
+    #[test]
+    fn the_schema_requires_the_section_a_small_model_drops() {
+        let schema = summary_schema();
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .expect("a required list")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(required.contains(&"outstanding"), "{schema}");
+        assert!(required.contains(&"goal"), "{schema}");
     }
 }

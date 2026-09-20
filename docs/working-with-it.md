@@ -773,6 +773,15 @@ Only if that doesn't get under budget is the older half summarized. The
 block itself always stays. Replacing its text keeps every tool call paired
 with a result, which is what providers actually validate.
 
+The summary is asked for as four fields — the goal, what's settled, the files
+touched, and what's still outstanding — and on Ollama the schema is sent as
+the `format` the answer is sampled against, so the model can't emit anything
+that leaves a field out. The last field is why. A summary that quietly drops
+what's left to do doesn't read as wrong; the turn resumes from it, decides
+it's finished, and stops. Backends that can't enforce a schema answer in prose
+and that prose is used as it stands, so this improves the summary where it's
+supported and never gates it.
+
 **Nothing is advertised that the prompt can't explain.** Every tool schema
 goes out on every iteration of every turn, not once per session, so it's the
 one part of the prompt that's pure overhead. Three things keep it down.

@@ -77,6 +77,7 @@ async fn main() {
         temperature: Some(0.0),
         max_tokens: None,
         stop_sequences: Vec::new(),
+        response_schema: None,
     };
 
     let streaming = tokio::spawn(async move {
