@@ -18,6 +18,15 @@ use crate::stream::StreamEvent;
 const OPEN: &str = "<tool_call>";
 const CLOSE: &str = "</tool_call>";
 
+/// What a tool's answer is wrapped in when it is replayed as text.
+///
+/// Also the stop sequences. The two must be the same strings, which is why
+/// they are named here rather than written into the `format!` that renders
+/// them: a tag that drifted from its stop sequence would fail open, quietly,
+/// as the exact behavior this exists to prevent.
+const RESULT: &str = "tool_result";
+const ERROR: &str = "tool_error";
+
 /// Name reported when a `<tool_call>` block contains unparseable JSON.
 ///
 /// Emitting a call with this name (rather than swallowing the block) keeps the
@@ -47,6 +56,39 @@ impl PromptedTools {
         });
         request.messages = request.messages.iter().map(Self::flatten_message).collect();
         request.tools.clear();
+        Self::add_stop_sequences(&mut request.stop_sequences);
+    }
+
+    /// Stops generation at the one thing a prompted model must never write.
+    ///
+    /// The system prompt says "never write the result yourself", and a small
+    /// model ignores it — writes the call, then writes the answer it imagines
+    /// the call returned, then acts on the answer. The history it is imitating
+    /// renders every real result in these tags, so those are the strings it
+    /// reaches for, and a stop sequence turns the instruction into something
+    /// the sampler enforces rather than something the model is asked to
+    /// remember.
+    ///
+    /// Not `</tool_call>`, which would also work and costs more than it saves:
+    /// it would end the turn at the first call, and the loop runs read-only
+    /// calls concurrently, so a model asking for six files at once would go
+    /// back to six round trips. On a local backend, where a round trip is the
+    /// expensive part, that trade is the wrong way round.
+    ///
+    /// The cost is real but small: an assistant answer that quotes
+    /// `<tool_result>` as *prose* — explaining this wire format, say — stops
+    /// there and arrives truncated. A model with no native tool support,
+    /// mid-task, is far likelier to fabricate a result than to document the
+    /// harness it is running inside.
+    fn add_stop_sequences(stop_sequences: &mut Vec<String>) {
+        for tag in [RESULT, ERROR] {
+            let sequence = format!("<{tag}>");
+            // Some backends cap how many of these they accept — four, on the
+            // OpenAI route — so a duplicate is not free.
+            if !stop_sequences.contains(&sequence) {
+                stop_sequences.push(sequence);
+            }
+        }
     }
 
     pub fn system_suffix(tools: &[ToolDef]) -> String {
@@ -103,11 +145,7 @@ impl PromptedTools {
                 ContentBlock::ToolResult {
                     content, is_error, ..
                 } => {
-                    let label = if *is_error {
-                        "tool_error"
-                    } else {
-                        "tool_result"
-                    };
+                    let label = if *is_error { ERROR } else { RESULT };
                     text.push_str(&format!("<{label}>\n{}\n</{label}>\n", content.to_text()));
                 }
                 ContentBlock::Text { text: t } => {
@@ -456,5 +494,103 @@ mod tests {
         let mut req = ChatRequest::new("gemma3", vec![Message::user("hi")]).with_system("S");
         PromptedTools::rewrite(&mut req);
         assert_eq!(req.system.as_deref(), Some("S"));
+    }
+
+    /// A request with one tool and a history holding one result of each kind.
+    fn rewritten(is_error: bool) -> ChatRequest {
+        let mut req = ChatRequest::new(
+            "gemma3",
+            vec![
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "t1",
+                        "read_file",
+                        serde_json::json!({"path": "a.txt"}),
+                    )],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![if is_error {
+                        ContentBlock::tool_error("t1", "no such file")
+                    } else {
+                        ContentBlock::tool_result("t1", "file contents")
+                    }],
+                ),
+            ],
+        )
+        .with_tools(vec![ToolDef {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }]);
+        PromptedTools::rewrite(&mut req);
+        req
+    }
+
+    #[test]
+    fn rewrite_stops_the_model_at_a_result_it_would_have_written_itself() {
+        let req = rewritten(false);
+        assert!(
+            req.stop_sequences.iter().any(|s| s == "<tool_result>"),
+            "a prompted model that fabricates a result has to be cut off at \
+             it: {:?}",
+            req.stop_sequences
+        );
+        assert!(
+            req.stop_sequences.iter().any(|s| s == "<tool_error>"),
+            "{:?}",
+            req.stop_sequences
+        );
+    }
+
+    #[test]
+    fn the_stop_sequences_are_the_tags_the_history_really_uses() {
+        // The whole mechanism is that the model imitates its own history, so a
+        // tag that drifted from its stop sequence would leave the model
+        // imitating one string while the sampler watched for another — and it
+        // would fail open, with no test between here and a fabricated result
+        // being acted on.
+        for is_error in [false, true] {
+            let req = rewritten(is_error);
+            let replayed = req.messages[1].text();
+            let fired = req
+                .stop_sequences
+                .iter()
+                .find(|s| replayed.contains(s.as_str()));
+            assert!(
+                fired.is_some(),
+                "nothing in {:?} matches the rendered result {replayed:?}",
+                req.stop_sequences
+            );
+        }
+    }
+
+    #[test]
+    fn rewrite_adds_no_stop_sequence_without_tools() {
+        // No tools, no tool-call protocol, so nothing to stop at — and a
+        // backend that caps how many stop sequences it takes should not spend
+        // two of them on a turn that cannot call anything.
+        let mut req = ChatRequest::new("gemma3", vec![Message::user("hi")]);
+        PromptedTools::rewrite(&mut req);
+        assert!(req.stop_sequences.is_empty());
+    }
+
+    #[test]
+    fn a_caller_s_own_stop_sequences_survive_and_are_not_doubled() {
+        let mut req =
+            ChatRequest::new("gemma3", vec![Message::user("hi")]).with_tools(vec![ToolDef {
+                name: "read_file".into(),
+                description: "Read a file".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }]);
+        req.stop_sequences = vec!["STOP".into(), "<tool_result>".into()];
+        PromptedTools::rewrite(&mut req);
+
+        assert_eq!(
+            req.stop_sequences,
+            vec!["STOP", "<tool_result>", "<tool_error>"],
+            "the caller's own sequences come first and nothing is repeated"
+        );
     }
 }

@@ -1109,7 +1109,10 @@ that don't look like configuration errors:
   model served without one, with `native_tools` left at its default of true,
   narrates tool calls it never actually makes. Set it to `false` and Taurus
   switches to prompted tool calling, the same fallback it uses for `gemma3` on
-  Ollama.
+  Ollama. That fallback teaches the protocol in the system prompt and sends
+  the tags a result is wrapped in as stop sequences, so a model that starts
+  writing the answer to its own call is cut off at the first character of it
+  instead of carrying on as though the call had run.
 
 `api_prefix` isn't OpenVINO-specific. Any server behind a reverse proxy that
 mounts the API elsewhere needs it. `""` puts the routes directly on the base

@@ -541,6 +541,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_prompted_model_is_stopped_at_a_result_it_starts_writing() {
+        // A model with no `tools` capability is taught the protocol through
+        // the system prompt, and the one thing it does wrong is write the
+        // result of its own call and carry on as though the call had run. The
+        // instruction not to is in the prompt and gets ignored; the stop
+        // sequence is what actually ends the turn there.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "capabilities": ["completion"],
+                "model_info": { "gemma3.context_length": 8192 },
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"done\":true,\"done_reason\":\"stop\"}\n",
+                "application/x-ndjson",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(server.uri());
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        provider
+            .stream(
+                ChatRequest::new("gemma3", vec![Message::user("go")]).with_tools(vec![
+                    taurus_provider::ToolDef {
+                        name: "read_file".into(),
+                        description: "Read a file".into(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    },
+                ]),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let chat = requests
+            .iter()
+            .find(|r| r.url.path() == "/api/chat")
+            .expect("a chat request");
+        let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
+        let stop = body["options"]["stop"]
+            .as_array()
+            .expect("stop sequences on a prompted request");
+        assert!(
+            stop.iter().any(|s| s == "<tool_result>") && stop.iter().any(|s| s == "<tool_error>"),
+            "{stop:?}"
+        );
+        // And the tools went into the prompt rather than the `tools` field,
+        // which is the path these sequences belong to.
+        assert!(body.get("tools").is_none(), "{body}");
+    }
+
+    #[tokio::test]
     async fn a_backend_that_never_answers_ends_the_request_on_its_own() {
         // No Stop is pressed and nothing is ever sent back: only the stall
         // timeout can end this, and the test's own deadline is the proof.
