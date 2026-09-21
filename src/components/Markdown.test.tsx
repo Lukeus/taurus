@@ -250,3 +250,39 @@ describe("a mermaid fence", () => {
     expect(html).toContain("md-code-lang");
   });
 });
+
+describe("a sketch on a line of its own", () => {
+  // Markdown has no block image, so `![x](x.excalidraw)` parses as a paragraph
+  // with one image in it. The measure in `styles.css` caps top-level children
+  // that are text, and a code fence and a table opt out of it by name — which
+  // a sketch could not do while the element the rule matched was the paragraph
+  // around it rather than the card. A sketch came out at the width of a
+  // sentence beside a Mermaid fence taking the whole note.
+
+  it("is not wrapped in a paragraph, so it can opt out of the measure", () => {
+    const html = render("![How a sign-in goes](<Auth flow.excalidraw>)");
+    expect(html).toContain("sketch-embed");
+    expect(html).not.toContain("<p>");
+  });
+
+  it("is still unwrapped with blank lines around it", () => {
+    const html = render("Before.\n\n![x](<Auth flow.excalidraw>)\n\nAfter.");
+    // The prose keeps its paragraphs; only the sketch's own is dropped.
+    expect(html).toContain("<p>Before.</p>");
+    expect(html).toContain("<p>After.</p>");
+    expect(html).not.toMatch(/<p>[^<]*<span class="sketch-embed"/);
+  });
+
+  it("keeps its paragraph when it is part of a sentence", () => {
+    // That paragraph is still prose, and prose is what the measure is for.
+    const html = render("See ![x](<Auth flow.excalidraw>) for the shape.");
+    expect(html).toMatch(/<p>/);
+    expect(html).toContain("sketch-embed");
+  });
+
+  it("leaves an ordinary image in its paragraph", () => {
+    const html = render("![a picture](shot.png)");
+    expect(html).toContain('src="shot.png"');
+    expect(html).toContain("<p>");
+  });
+});

@@ -673,11 +673,22 @@ a workspace's configuration, the headroom is a fraction of the window, and on
 a small window the two cross. The nine built-in tools are about 1,650 tokens
 before any message.
 
-So the first request of a session estimates them, and every later one is
-measured. A response reports the whole prompt's size as the backend counted
-it: its tokenizer, its envelope, its rendering of the tools, cache hits
-included. The gap between that and the estimate for the same messages is the
-overhead, exact and self-correcting per provider.
+So the fixed part is estimated from the text it's made of, and what a request
+really cost is spent correcting the *messages* instead. A response reports the
+whole prompt's size as the backend counted it: its tokenizer, its envelope,
+its rendering of the tools, cache hits included. Take the fixed part off that
+and what's left is what the messages really cost, so the ratio between it and
+the estimate for the same messages is how far four characters a token is off
+here. Every later estimate is scaled by it, which is self-correcting per
+provider and per conversation.
+
+Keeping the two apart is what makes the harder question answerable. "Does the
+whole prompt fit" comes out right either way, because the drift is added back
+to a conversation about the size it was measured on. "Would the recent
+messages fit on their own, once everything older is summarized" doesn't:
+charging a whole conversation's worth of drift to the eight messages that
+can't be summarized makes a turn with plenty of room report a window too small
+for its own recent history, and stop.
 
 A reported zero is ignored. A canceled stream, or a gateway that strips the
 field, would otherwise say the whole prompt cost nothing.
@@ -762,6 +773,15 @@ Only if that doesn't get under budget is the older half summarized. The
 block itself always stays. Replacing its text keeps every tool call paired
 with a result, which is what providers actually validate.
 
+The summary is asked for as four fields — the goal, what's settled, the files
+touched, and what's still outstanding — and on Ollama the schema is sent as
+the `format` the answer is sampled against, so the model can't emit anything
+that leaves a field out. The last field is why. A summary that quietly drops
+what's left to do doesn't read as wrong; the turn resumes from it, decides
+it's finished, and stops. Backends that can't enforce a schema answer in prose
+and that prose is used as it stands, so this improves the summary where it's
+supported and never gates it.
+
 **Nothing is advertised that the prompt can't explain.** Every tool schema
 goes out on every iteration of every turn, not once per session, so it's the
 one part of the prompt that's pure overhead. Three things keep it down.
@@ -816,9 +836,11 @@ That half is read from the live configuration, not a transcript, so it
 describes the *next* request. It's worth opening even where nothing has run
 yet, and the panel says so instead of showing an empty frame.
 
-Everything but the billed row is estimated at four characters a token, since
-the provider reports one number per request and never says which part of the
-prompt was whose. The same account prints in the terminal:
+Everything but the billed row is estimated at four characters a token and then
+corrected by what this session's own requests revealed, since the provider
+reports one number per request and never says which part of the prompt was
+whose. The correction is one ratio across the session, so it moves every
+figure together and leaves the shares exactly where they were. The same account prints in the terminal:
 
 ![The Context panel: what the tools cost, the calls that repeated an earlier
 one, and what every request pays before the conversation

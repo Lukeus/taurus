@@ -729,25 +729,20 @@ async fn what_a_request_really_cost_replaces_the_estimate() {
     ]);
 
     let mut session = Session::new("fake");
-    assert!(
-        session.measured_overhead().is_none(),
-        "nothing measured yet"
-    );
+    assert!(session.last_request.is_none(), "nothing measured yet");
 
     let (outcome, _) = run(&h, &mut session, "hello").await;
     assert!(outcome.is_ok());
 
-    // The fake charges for the system prompt and every tool schema, so the
-    // overhead it reports is what the messages could never have shown.
-    let overhead = session
-        .measured_overhead()
-        .expect("a request was answered, so its cost is known");
-    assert!(
-        overhead > 1_000,
-        "the built-in tool schemas alone are around 1,650 tokens; got {overhead}"
-    );
-
     let measured = session.last_request.expect("a measurement");
+    // The fake charges for the system prompt and every tool schema, so the
+    // anchor recorded beside the count is what the messages could never have
+    // shown.
+    assert!(
+        measured.estimated_overhead > 1_000,
+        "the built-in tool schemas alone are around 1,650 tokens; got {}",
+        measured.estimated_overhead
+    );
     assert_eq!(
         measured.input_tokens,
         h.provider
@@ -780,12 +775,28 @@ async fn a_backend_that_reports_nothing_leaves_the_estimate_alone() {
     // Zero is not a measurement. Taking it at face value would say the whole
     // prompt cost nothing and turn compaction off for the rest of the session.
     let mut session = Session::new("fake");
-    session.push(Message::user("something"));
-    session.record_request(0);
-    assert!(session.measured_overhead().is_none());
+    // Enough history for a reading to mean something; see
+    // `MIN_CALIBRATION_SAMPLE`.
+    session.push(Message::user("y".repeat(40_000)));
+    let estimated = session.estimated_tokens();
 
-    session.record_request(900);
-    assert_eq!(session.estimated_prompt_tokens(50), 900);
+    session.record_request(0, 50);
+    assert!(session.last_request.is_none());
+    assert_eq!(
+        session.estimated_prompt_tokens(50),
+        estimated + 50,
+        "with nothing measured the estimate stands on its own"
+    );
+
+    // And a real one is used: this backend counted half again what the
+    // messages were estimated at, over a 50-token fixed part.
+    session.record_request((estimated as f32 * 1.5) as u32 + 50, 50);
+    let expected = (estimated as f32 * 1.5) as u32 + 50;
+    assert!(
+        session.estimated_prompt_tokens(50).abs_diff(expected) <= 2,
+        "the measurement did not replace the estimate: {} vs {expected}",
+        session.estimated_prompt_tokens(50)
+    );
 }
 
 #[tokio::test]
@@ -2600,4 +2611,115 @@ async fn a_turn_that_failed_is_recorded_too() {
     // nothing still leaves what was asked.
     let snapshots = spy.snapshots.lock().await.clone();
     assert_eq!(snapshots, vec![1, session.messages.len()]);
+}
+
+/// What the harness estimates a request's fixed part at, the way the loop
+/// does: the system prompt plus every tool it advertises.
+fn fixed_part(system_prompt: &str) -> u32 {
+    use taurus_core::session::estimate_tokens;
+    let tools: u32 = ToolRegistry::with_builtins()
+        .definitions()
+        .iter()
+        .map(|t| {
+            estimate_tokens(&t.name)
+                + estimate_tokens(&t.description)
+                + estimate_tokens(&t.input_schema.to_string())
+        })
+        .sum();
+    estimate_tokens(system_prompt).saturating_add(tools)
+}
+
+#[tokio::test]
+async fn a_long_history_on_a_dense_tokenizer_compacts_instead_of_giving_up() {
+    // The failure this exists for, on the setup that produced it: a 32k local
+    // model, a long conversation, and a real tokenizer that runs denser over
+    // code and JSON than four-characters-a-token predicts.
+    //
+    // The loop refuses to summarize when the recent messages it *cannot*
+    // summarize would not fit on their own — a good check, because no summary
+    // can rescue that. It used to price those messages by adding the whole
+    // prompt's measured overhead to them, and that overhead was a leftover:
+    // the provider's count minus the estimate for the messages, so it carried
+    // every token the estimator had been wrong by across the entire history.
+    // On a conversation this size that is tens of thousands of tokens, all of
+    // them charged against eight messages that come to eight thousand. The
+    // turn then reported a window too small for its own recent history, which
+    // was not true and not what had happened.
+    const DENSITY: f32 = 1.35;
+    let system_prompt = "x".repeat(4_000);
+    let h = harness_on(
+        FakeProvider::dense(vec![ScriptedTurn::text("Done.")], 32_768, DENSITY),
+        Box::new(AllowAll),
+        AgentConfig {
+            system_prompt: system_prompt.clone(),
+            ..Default::default()
+        },
+    );
+
+    let mut session = Session::new("fake");
+    for i in 0..60 {
+        session.push(Message::user(format!("message {i} {}", "y".repeat(4_200))));
+    }
+
+    // A request on this history has already been answered, which is the
+    // ordinary state of any turn past its first iteration and the state the
+    // failure needs: the reading has to have been taken while the
+    // conversation was already long.
+    let overhead = fixed_part(&system_prompt);
+    let estimated = session.estimated_tokens();
+    session.record_request((estimated as f32 * DENSITY) as u32 + overhead, overhead);
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let complaints: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Error { message } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        complaints.is_empty(),
+        "summarizing would have made room; the turn gave up instead: {complaints:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "the history was far over the window and nothing was compacted: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_tail_that_really_is_too_big_still_says_so() {
+    // The other side of the same check, so the fix above cannot have been to
+    // stop checking. One recent message larger than the whole budget is not a
+    // thing summarizing can help with, however well the estimate is corrected,
+    // and saying so once beats spending a request per iteration proving it.
+    let system_prompt = "x".repeat(4_000);
+    let h = harness_on(
+        FakeProvider::dense(vec![ScriptedTurn::text("Done.")], 32_768, 1.0),
+        Box::new(AllowAll),
+        AgentConfig {
+            system_prompt: system_prompt.clone(),
+            ..Default::default()
+        },
+    );
+
+    let mut session = Session::new("fake");
+    session.push(Message::user("older".repeat(100)));
+    // Comfortably past the whole budget on its own: 32,768 less the reply
+    // reserve leaves about 24,500, and this is 30,000.
+    session.push(Message::user("z".repeat(120_000)));
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            UiEvent::Error { message } if message.contains("most recent messages")
+        )),
+        "a tail past the budget has to be reported, not summarized at: {events:?}"
+    );
 }

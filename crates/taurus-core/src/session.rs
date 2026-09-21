@@ -21,22 +21,30 @@ pub struct Session {
     pub last_request: Option<Measured>,
 }
 
-/// A request's real size, beside the estimate for the messages that were in it.
+/// A request's real size, beside the estimates that were made of it.
 ///
-/// The difference between the two is everything the budget cannot see by
-/// looking at the conversation: the system prompt, every tool's schema, the
-/// plan appended to the end of the request, the envelope the provider wraps it
-/// all in, and the gap between four-characters-a-token and what the model's
-/// own tokenizer makes of the same text.
+/// Three numbers rather than two, because the one thing a pair cannot do is
+/// tell its two unknowns apart. `input_tokens - estimated_messages` folds
+/// together the fixed part of a request — the system prompt, every tool's
+/// schema, the plan appended to the end, the envelope the provider wraps it
+/// all in — and the gap between four-characters-a-token and what the model's
+/// own tokenizer makes of the *messages*. Those two behave nothing alike: the
+/// fixed part is the same on every request of a session, and the gap grows
+/// with the conversation.
 ///
-/// That difference used to be unmeasured, and the compaction threshold was
-/// absorbing it — which works while it is small relative to the window and
-/// stops working exactly where it matters: the overhead is a fact about how
-/// much configuration a workspace has, and the headroom is a fraction of a
-/// window, so on a small one they cross.
+/// Folded together they still answer "does the whole prompt fit", because the
+/// gap is added back to a conversation of about the size it was measured on.
+/// They are wrong for every question about a *part* of the history, and
+/// [`crate::agent`] asks one: before summarizing, whether the recent messages
+/// it cannot summarize would fit on their own. Charging a whole
+/// conversation's worth of estimator error against eight messages made that
+/// check fail on long code-heavy sessions where compaction would have worked
+/// fine — and fail by reporting a window too small for the conversation,
+/// which was not what had happened.
 ///
-/// The pair is kept rather than the difference, so a reading can be checked
-/// against what it was a reading *of*.
+/// So the fixed part is estimated directly and kept, and what is left over is
+/// attributed to the messages, where it belongs, as a ratio. See
+/// [`Session::calibration`].
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Measured {
     /// The whole prompt as the provider counted it, cache hits included.
@@ -44,7 +52,36 @@ pub struct Measured {
     /// What [`Session::estimated_tokens`] said about the messages alone at the
     /// moment that request was sent.
     pub estimated_messages: u32,
+    /// What the caller estimated the fixed part of that same request at.
+    ///
+    /// Defaulted for sessions written before it was recorded: zero reads as
+    /// "no anchor", [`Session::calibration`] answers 1.0, and the next
+    /// answered request replaces the whole reading.
+    #[serde(default)]
+    pub estimated_overhead: u32,
 }
+
+/// The least estimated history a calibration may be drawn from.
+///
+/// [`Session::calibration`] divides by the message estimate, so on a
+/// conversation of two short messages any error in the overhead anchor is
+/// multiplied by a large number. Below this a reading says more about the
+/// anchor than about the tokenizer, and 1.0 is the better answer. A working
+/// session passes this within a turn or two.
+const MIN_CALIBRATION_SAMPLE: u32 = 500;
+
+/// How far a calibration may correct an estimate, at each end.
+///
+/// These guard against a wrong anchor; they are not a belief about how
+/// tokenizers work. The floor is 1.0 rather than something lower on purpose.
+/// A ratio below one says the provider counted *fewer* tokens than
+/// four-characters-a-token predicted, which over a history of code and JSON
+/// nearly always means the fixed part was over-estimated rather than that the
+/// model's tokenizer is unusually efficient — and the two ways of being wrong
+/// do not cost the same. Correcting too far up compacts a turn earlier than it
+/// had to and loses some history; too far down never compacts at all, and the
+/// provider refuses the request outright.
+const CALIBRATION_BOUNDS: (f32, f32) = (1.0, 3.0);
 
 impl Session {
     pub fn new(model: impl Into<String>) -> Self {
@@ -65,43 +102,78 @@ impl Session {
         self.usage.add(&usage);
     }
 
-    /// Records what a request cost, against what was in it.
+    /// Records what a request cost, against what was estimated for it.
     ///
     /// Called with the messages still exactly as they were sent — before the
     /// answer is pushed — because the estimate has to be of the same thing the
-    /// provider counted.
+    /// provider counted. `estimated_overhead` is the caller's estimate of the
+    /// fixed part of that same request, and it is the anchor that lets the two
+    /// unknowns in [`Measured`] be told apart.
     ///
     /// A report of zero is not a measurement. Every backend here reports usage
     /// on a completed stream, but a cancelled one, a gateway that strips the
     /// field, and a prompted-tools fallback can all leave it empty, and taking
     /// that at face value would say the entire prompt cost nothing.
-    pub fn record_request(&mut self, input_tokens: u32) {
+    pub fn record_request(&mut self, input_tokens: u32, estimated_overhead: u32) {
         if input_tokens == 0 {
             return;
         }
         self.last_request = Some(Measured {
             input_tokens,
             estimated_messages: self.estimated_tokens(),
+            estimated_overhead,
         });
     }
 
-    /// What a request carries beyond its messages, as last measured.
+    /// What to multiply an estimate of history by to get what the provider
+    /// would count.
     ///
-    /// `None` until a request has been answered — on the first one there is
-    /// nothing to have measured, and the caller estimates it instead.
-    pub fn measured_overhead(&self) -> Option<u32> {
-        self.last_request
-            .map(|m| m.input_tokens.saturating_sub(m.estimated_messages))
+    /// Everything in the last answered request that was not its fixed part was
+    /// messages, so the ratio of that to what those messages were estimated at
+    /// is how wrong four-characters-a-token is on *this* conversation's
+    /// particular mix of prose, code and JSON. Code and JSON run denser than
+    /// four, so on a working session this is normally above one.
+    ///
+    /// 1.0 until there is a reading worth trusting, which is the honest answer
+    /// rather than a cautious one: with no measurement, the estimate is all
+    /// there is.
+    pub fn calibration(&self) -> f32 {
+        let Some(m) = self.last_request else {
+            return 1.0;
+        };
+        // No anchor, nothing to divide, or an anchor that claims the fixed
+        // part was the whole request. The last is not arithmetic being
+        // careful: it is what a stale reading looks like after the tool set
+        // grew, and dividing through it would invert the correction.
+        if m.estimated_overhead == 0
+            || m.estimated_messages < MIN_CALIBRATION_SAMPLE
+            || m.input_tokens <= m.estimated_overhead
+        {
+            return 1.0;
+        }
+        let counted = (m.input_tokens - m.estimated_overhead) as f32;
+        let ratio = counted / m.estimated_messages as f32;
+        ratio.clamp(CALIBRATION_BOUNDS.0, CALIBRATION_BOUNDS.1)
+    }
+
+    /// An estimate of some or all of the history, corrected by
+    /// [`Self::calibration`].
+    pub fn calibrated(&self, estimate: u32) -> u32 {
+        // Saturating: an `f32` past `u32::MAX` casts to `u32::MAX` rather than
+        // wrapping, and the bounds keep it nowhere near either way.
+        (estimate as f32 * self.calibration()) as u32
     }
 
     /// What the next request will cost, as closely as this can be known.
     ///
-    /// `fallback_overhead` is used only until the first answer arrives; after
-    /// that the measurement replaces it, which is also what makes this correct
-    /// on a provider whose tokenizer disagrees with four-characters-a-token.
-    pub fn estimated_prompt_tokens(&self, fallback_overhead: u32) -> u32 {
-        self.estimated_tokens()
-            .saturating_add(self.measured_overhead().unwrap_or(fallback_overhead))
+    /// `overhead` is the fixed part, which the caller estimates directly
+    /// because it is holding the two things that make it up. Once a request
+    /// has been answered the *messages* half of this is corrected against what
+    /// the provider really counted, which is what makes it right on a backend
+    /// whose tokenizer disagrees with four-characters-a-token.
+    pub fn estimated_prompt_tokens(&self, overhead: u32) -> u32 {
+        self.calibrated(self.estimated_tokens())
+            .saturating_add(overhead)
     }
 
     /// Rough token count for the whole history.
@@ -1005,5 +1077,108 @@ mod tests {
         ];
         let (dropped, _) = split_for_compaction(&messages, 3, u32::MAX);
         assert!(!starts_with_tool_result(&messages[dropped]));
+    }
+
+    /// A session whose history estimates to at least `tokens`.
+    fn sized(tokens: u32) -> Session {
+        let mut session = Session::new("m");
+        session.push(Message::user("z".repeat(tokens as usize * 4)));
+        session
+    }
+
+    #[test]
+    fn an_unmeasured_session_corrects_nothing() {
+        // The estimate is all there is, so it is the answer. Guessing a
+        // correction would be guessing at a tokenizer nobody has met yet.
+        let session = sized(2_000);
+        assert_eq!(session.calibration(), 1.0);
+        assert_eq!(session.calibrated(1_000), 1_000);
+    }
+
+    #[test]
+    fn the_correction_is_what_the_provider_counted_over_what_was_estimated() {
+        let mut session = sized(2_000);
+        let estimated = session.estimated_tokens();
+        // A backend that counted half again what four-characters-a-token
+        // predicted for the messages, on top of a 300-token fixed part.
+        session.record_request((estimated as f32 * 1.5) as u32 + 300, 300);
+
+        assert!((session.calibration() - 1.5).abs() < 0.01);
+        // And it applies to a slice of the history, not only to all of it.
+        // That is the whole reason this is a ratio: the reading was taken on
+        // the whole conversation, and the question asked of it is about eight
+        // messages.
+        assert_eq!(session.calibrated(1_000), 1_500);
+    }
+
+    #[test]
+    fn a_reading_with_no_anchor_corrects_nothing() {
+        // What a session stored before the anchor was recorded deserializes
+        // to. Correcting by `input_tokens / estimated_messages` here would
+        // charge the whole fixed part to the messages and compact a turn that
+        // had room.
+        let mut session = sized(2_000);
+        let estimated = session.estimated_tokens();
+        session.last_request = Some(Measured {
+            input_tokens: estimated + 4_000,
+            estimated_messages: estimated,
+            estimated_overhead: 0,
+        });
+        assert_eq!(session.calibration(), 1.0);
+    }
+
+    #[test]
+    fn too_little_history_to_read_anything_from_corrects_nothing() {
+        // Two short messages against a large fixed part: the ratio here is
+        // almost entirely a statement about the anchor's error, amplified by
+        // dividing by a small number.
+        let mut session = Session::new("m");
+        session.push(Message::user("hello"));
+        session.record_request(4_200, 4_000);
+        assert_eq!(
+            session.calibration(),
+            1.0,
+            "a reading this small is noise, not a measurement"
+        );
+    }
+
+    #[test]
+    fn an_anchor_larger_than_the_whole_request_corrects_nothing() {
+        // What a stale reading looks like after the tool set grew. The
+        // subtraction would go negative, and a ratio built on it would invert
+        // the correction rather than merely get its size wrong.
+        let mut session = sized(2_000);
+        session.record_request(1_000, 4_000);
+        assert_eq!(session.calibration(), 1.0);
+    }
+
+    #[test]
+    fn a_wild_reading_is_held_inside_the_bounds() {
+        let mut session = sized(2_000);
+        let estimated = session.estimated_tokens();
+
+        // Far denser than any tokenizer: the anchor must be wrong.
+        session.record_request(estimated * 40, 300);
+        assert_eq!(session.calibration(), CALIBRATION_BOUNDS.1);
+
+        // And the other way. An estimate that already covers the count is not
+        // evidence to spend history on — the floor keeps the budget honest
+        // when the anchor is the thing that is off.
+        session.record_request(estimated / 2 + 300, 300);
+        assert_eq!(session.calibration(), CALIBRATION_BOUNDS.0);
+    }
+
+    #[test]
+    fn the_prompt_estimate_is_the_corrected_history_plus_the_fixed_part() {
+        let mut session = sized(2_000);
+        let estimated = session.estimated_tokens();
+        session.record_request((estimated as f32 * 1.5) as u32 + 300, 300);
+
+        let expected = (estimated as f32 * 1.5) as u32 + 300;
+        let got = session.estimated_prompt_tokens(300);
+        assert!(
+            got.abs_diff(expected) <= 2,
+            "the next request is the same size as the one measured: {got} vs {expected}"
+        );
     }
 }

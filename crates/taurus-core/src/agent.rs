@@ -12,7 +12,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use taurus_provider::prompted::MALFORMED_TOOL;
 use taurus_provider::{
     ChatRequest, ContentBlock, Message, Provider, Role, StopReason, StreamAccumulator, StreamEvent,
-    TokenUsage,
+    TokenUsage, ToolDef,
 };
 use taurus_tools::{
     Effect, OutputBudget, PlanBoard, ToolContext, ToolError, ToolProgress, ToolRegistry,
@@ -169,8 +169,9 @@ const DEFAULT_REPLY_RESERVE: u32 = 32_000;
 ///
 /// The estimate the budget is kept in is four-characters-a-token, and the
 /// difference between that and a real tokenizer grows with the conversation.
-/// Most of it is absorbed by [`Session::measured_overhead`], which is measured
-/// against what the provider actually counted — but "most" is not "all", and on
+/// Most of it is corrected by [`Session::calibration`], which is derived from
+/// what the provider actually counted — but "most" is not "all": a calibration
+/// is one reading, taken on the conversation as it was an iteration ago, and on
 /// a large window a few percent is tens of thousands of tokens.
 const MIN_RESERVE_SHARE: f32 = 0.05;
 
@@ -347,6 +348,13 @@ pub struct Agent {
     /// Where this turn is written down, when somebody is keeping it. `None` for
     /// the top-level agent, whose transcript its frontend records itself.
     recorder: Option<Arc<dyn TurnRecorder>>,
+    /// What a request costs before any message is added to it, once computed.
+    ///
+    /// A `OnceLock` rather than a field set in [`Agent::new`] because it is
+    /// worth nothing to an agent whose turns never fill a window, and
+    /// answering it means rendering every tool schema to a string. See
+    /// [`Agent::request_overhead`].
+    overhead: std::sync::OnceLock<u32>,
 }
 
 /// What a completed turn produced.
@@ -371,6 +379,7 @@ impl Agent {
             config,
             plan: None,
             recorder: None,
+            overhead: std::sync::OnceLock::new(),
         }
     }
 
@@ -604,7 +613,7 @@ impl Agent {
             // Before the answer is pushed: what the provider counted is what
             // was sent, and the estimate it is paired with has to be of the
             // same messages. See `Session::record_request`.
-            session.record_request(usage.input_tokens);
+            session.record_request(usage.input_tokens, self.request_overhead());
             session.add_usage(usage);
 
             let has_tools = assistant.has_tool_use();
@@ -977,6 +986,20 @@ impl Agent {
         Ok((message, usage, stop))
     }
 
+    /// The tools every request of this turn advertises.
+    ///
+    /// One definition, because two callers need the same answer: the request
+    /// itself, and [`Agent::request_overhead`], which prices it. A budget
+    /// computed over a different set than the one being sent is a budget for
+    /// a request nobody made.
+    fn request_tools(&self) -> Vec<ToolDef> {
+        if self.config.allowed_tools.is_empty() {
+            self.registry.definitions()
+        } else {
+            self.registry.definitions_for(&self.config.allowed_tools)
+        }
+    }
+
     /// Assembles the request for one iteration.
     ///
     /// The plan is re-read here rather than captured when the turn started,
@@ -984,11 +1007,7 @@ impl Agent {
     /// as it stands on iteration nine, including the step it marked done on
     /// iteration eight.
     fn build_request(&self, session: &Session, vision: bool) -> ChatRequest {
-        let tools = if self.config.allowed_tools.is_empty() {
-            self.registry.definitions()
-        } else {
-            self.registry.definitions_for(&self.config.allowed_tools)
-        };
+        let tools = self.request_tools();
 
         let mut messages = if vision {
             session.messages.clone()
@@ -1005,6 +1024,10 @@ impl Agent {
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             stop_sequences: Vec::new(),
+            // Free-form by construction: this turn may answer in prose, call
+            // any tool, or both, and a schema over the whole response could
+            // not describe that. The tool schemas are what shape it.
+            response_schema: None,
         }
     }
 
@@ -1317,8 +1340,10 @@ impl Agent {
         // was quietly paying for them. It cannot: what they cost is a fact
         // about how much configuration a workspace has, and the headroom is a
         // fraction of a window.
-        let overhead = self.request_overhead(session);
-        let used = session.estimated_tokens().saturating_add(overhead);
+        let overhead = self.request_overhead();
+        let used = session
+            .calibrated(session.estimated_tokens())
+            .saturating_add(overhead);
         let _ = ui
             .send(UiEvent::ContextUsed {
                 used,
@@ -1391,7 +1416,11 @@ impl Agent {
         }
         // Free and cannot fail, so it runs however the summarizing went: what
         // one round trims is what the next round does not have to hold.
-        if session.estimated_tokens().saturating_add(overhead) < budget {
+        if session
+            .calibrated(session.estimated_tokens())
+            .saturating_add(overhead)
+            < budget
+        {
             return summarizing;
         }
 
@@ -1412,10 +1441,12 @@ impl Agent {
         // tail. If the tail alone will not fit, the request will not fit
         // however good the summary is — so say so once rather than spending a
         // request per iteration proving it.
-        let tail: u32 = session.messages[drop_count..]
-            .iter()
-            .map(crate::session::estimate_message)
-            .sum();
+        let tail: u32 = session.calibrated(
+            session.messages[drop_count..]
+                .iter()
+                .map(crate::session::estimate_message)
+                .sum(),
+        );
         if tail.saturating_add(overhead) >= budget {
             warn!(
                 tail,
@@ -1476,17 +1507,28 @@ impl Agent {
 
     /// What the next request will carry besides its messages.
     ///
-    /// Measured wherever a request has already been answered, because the
-    /// provider counted the real thing — its own tokenizer, its own envelope,
-    /// the tools as it renders them — and no estimate here can do better than
-    /// that. Estimated only for the first request of a session, from the two
-    /// things that make up nearly all of it.
-    fn request_overhead(&self, session: &Session) -> u32 {
-        session.measured_overhead().unwrap_or_else(|| {
+    /// Estimated directly from the two things that make up nearly all of it,
+    /// rather than taken as the leftover when the message estimate is
+    /// subtracted from what the provider charged. That leftover is the more
+    /// accurate number for the fixed part *plus* however wrong the estimator
+    /// was about the messages, and those two cannot be separated again
+    /// afterwards. Keeping them apart is what lets
+    /// [`Session::calibration`] correct the half that is actually wrong. See
+    /// [`crate::session::Measured`].
+    ///
+    /// Over the tools this request will really send, not every registered one:
+    /// a sub-agent is given a handful, and charging it for the whole registry
+    /// would have it summarizing against a window it was never spending.
+    ///
+    /// Memoized, because it is asked on every iteration and nothing it reads
+    /// changes within a turn — the system prompt is fixed at construction and
+    /// the registry is not edited while a turn runs — while `definitions()`
+    /// clones every schema to answer.
+    fn request_overhead(&self) -> u32 {
+        *self.overhead.get_or_init(|| {
             let system = crate::session::estimate_tokens(&self.config.system_prompt);
             let tools: u32 = self
-                .registry
-                .definitions()
+                .request_tools()
                 .iter()
                 .map(|tool| {
                     crate::session::estimate_tokens(&tool.name)
@@ -1504,11 +1546,14 @@ impl Agent {
     /// account of a request the user never sees listed: the summarizer's turn
     /// is not in the transcript, so a failure here has no other way to be read.
     async fn summarize(&self, model: &str, messages: Vec<Message>) -> Result<String, String> {
-        let mut request = ChatRequest::new(model, messages);
+        let mut request = ChatRequest::new(model, messages).with_response_schema(summary_schema());
         request.system = Some(
-            "Summarize the conversation so far for your own future reference. Preserve: the \
-             user's goal, decisions made, files read or changed, and anything still outstanding. \
-             Drop pleasantries and superseded detail. Write prose, under 400 words."
+            "Summarize the conversation so far for your own future reference, as JSON matching \
+             the schema. `goal` is what the user is trying to achieve, in one sentence. \
+             `decisions` is what was settled and must not be reopened. `files` names every file \
+             read or changed. `outstanding` is what is left to do — leave it empty only if the \
+             work is genuinely finished. Drop pleasantries and superseded detail. Keep each entry \
+             to a line."
                 .into(),
         );
         request.messages.push(Message::user(
@@ -1534,8 +1579,94 @@ impl Agent {
         if text.trim().is_empty() {
             return Err("the model returned an empty summary".into());
         }
-        Ok(text)
+        Ok(render_summary(&text))
     }
+}
+
+/// The shape a compaction summary has to have.
+///
+/// Four fields, all required, because the failure worth designing against is
+/// not a summary that reads badly — it is one with a section missing.
+/// `outstanding` is the section that matters and the first one a small model
+/// drops, and a turn that resumes from a summary claiming nothing is left does
+/// not ask again: it stops.
+///
+/// Flat and small on purpose. A schema is a constraint on sampling, so an
+/// elaborate one spends the model's capacity on bookkeeping — which is the
+/// capacity this exists to protect.
+fn summary_schema() -> serde_json::Value {
+    let lines = serde_json::json!({ "type": "array", "items": { "type": "string" } });
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "goal": { "type": "string" },
+            "decisions": lines,
+            "files": lines,
+            "outstanding": lines,
+        },
+        "required": ["goal", "decisions", "files", "outstanding"],
+    })
+}
+
+/// Turns a structured summary back into the prose the next request carries.
+///
+/// The model reads a conversation, not a data structure, so the schema buys
+/// the *completeness* and this buys back the readability.
+///
+/// Anything that is not the agreed shape is passed through untouched. A
+/// backend that cannot enforce a schema answered in prose, and that prose is
+/// the summary — the constraint is an improvement on this path and never a
+/// requirement of it. See [`taurus_provider::ChatRequest::response_schema`].
+fn render_summary(text: &str) -> String {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return text.to_string();
+    };
+    let Some(object) = parsed.as_object() else {
+        return text.to_string();
+    };
+    let goal = object.get("goal").and_then(|v| v.as_str()).unwrap_or("");
+    if goal.trim().is_empty() {
+        // Whatever this is, it is not the shape that was asked for, and
+        // rendering a half-filled one would put a confident empty summary in
+        // front of the model. The raw text is at least what it meant to say.
+        return text.to_string();
+    }
+
+    let section = |name: &str, heading: &str, empty: &str| {
+        let items: Vec<&str> = object
+            .get(name)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if items.is_empty() {
+            return format!("\n\n{heading}\n{empty}");
+        }
+        let body = items
+            .iter()
+            .map(|line| format!("- {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\n\n{heading}\n{body}")
+    };
+
+    let mut out = format!("Goal: {}", goal.trim());
+    out.push_str(&section("decisions", "Settled:", "- Nothing recorded."));
+    out.push_str(&section("files", "Files touched:", "- None."));
+    // Spelled out when empty rather than left out. An absent section reads as
+    // "not mentioned", and this is the one section that must never be mistaken
+    // for "nothing left to do".
+    out.push_str(&section(
+        "outstanding",
+        "Still outstanding:",
+        "- Nothing recorded — check the work before treating it as finished.",
+    ));
+    out
 }
 
 /// Whether summarizing the older history is still worth attempting this turn.
@@ -1625,5 +1756,97 @@ impl ToolProgress for CallProgress {
                 label,
             })
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_structured_summary_reads_as_prose() {
+        let rendered = render_summary(
+            &serde_json::json!({
+                "goal": "Make the parser accept trailing commas.",
+                "decisions": ["Fix it in the lexer, not the grammar."],
+                "files": ["src/lex.rs", "src/parse.rs"],
+                "outstanding": ["Run the test suite."],
+            })
+            .to_string(),
+        );
+        assert!(rendered.starts_with("Goal: Make the parser"), "{rendered}");
+        assert!(rendered.contains("- Fix it in the lexer"), "{rendered}");
+        assert!(rendered.contains("- src/parse.rs"), "{rendered}");
+        assert!(rendered.contains("- Run the test suite."), "{rendered}");
+    }
+
+    #[test]
+    fn nothing_outstanding_is_said_out_loud() {
+        // An absent section reads as "not mentioned". This one must never be
+        // read as "nothing left to do" unless that is what it means, because a
+        // turn resuming from it stops rather than asking again.
+        let rendered = render_summary(
+            &serde_json::json!({
+                "goal": "g",
+                "decisions": [],
+                "files": [],
+                "outstanding": [],
+            })
+            .to_string(),
+        );
+        assert!(rendered.contains("Still outstanding:"), "{rendered}");
+        assert!(rendered.contains("check the work"), "{rendered}");
+    }
+
+    #[test]
+    fn a_backend_that_ignored_the_schema_still_summarizes() {
+        // The whole fallback: a schema is an improvement on this path, never a
+        // requirement of it. Plain prose is passed through as the summary it
+        // is.
+        let prose = "We were fixing the parser. Nothing else has happened yet.";
+        assert_eq!(render_summary(prose), prose);
+    }
+
+    #[test]
+    fn json_that_is_not_the_agreed_shape_is_left_alone() {
+        // A summary that happens to be valid JSON but has no `goal` is not a
+        // summary this can render. Filling the gaps would put a confident
+        // empty account in front of the model; the raw text is at least what
+        // it meant to say.
+        for text in [
+            r#"{"summary": "we did some things"}"#,
+            r#"{"goal": "   ", "decisions": [], "files": [], "outstanding": []}"#,
+            r#"["a", "b"]"#,
+        ] {
+            assert_eq!(render_summary(text), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn blank_entries_do_not_become_empty_bullets() {
+        let rendered = render_summary(
+            &serde_json::json!({
+                "goal": "g",
+                "decisions": ["", "  ", "a real one"],
+                "files": [],
+                "outstanding": [],
+            })
+            .to_string(),
+        );
+        assert!(rendered.contains("- a real one"), "{rendered}");
+        assert!(!rendered.contains("- \n"), "{rendered}");
+    }
+
+    #[test]
+    fn the_schema_requires_the_section_a_small_model_drops() {
+        let schema = summary_schema();
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .expect("a required list")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(required.contains(&"outstanding"), "{schema}");
+        assert!(required.contains(&"goal"), "{schema}");
     }
 }

@@ -2319,9 +2319,15 @@ body.resizing-y * {
  * whole `.markdown` box gave the paragraph the right width by giving the code
  * block the wrong one — it scrolled sideways inside 80ch with half the window
  * unused beside it. So the cap lands on the top-level children that are text,
- * and the two that are not opt out by name.
+ * and the three that are not opt out by name.
+ *
+ * A sketch is the third, and it is the reason `Markdown.tsx` unwraps a
+ * paragraph that holds nothing but one: Markdown has no block image, so a
+ * sketch on its own line arrives inside a `<p>`, and the rule below would
+ * otherwise cap the paragraph rather than the card — leaving a sketch at the
+ * width of a sentence beside a Mermaid fence taking the whole note.
  */
-.markdown > :not(.md-code):not(.md-table-wrap) {
+.markdown > :not(.md-code):not(.md-table-wrap):not(.sketch-embed) {
   max-width: var(--measure);
 }
 

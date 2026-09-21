@@ -15,6 +15,11 @@ pub struct ChatBody {
     pub tools: Vec<WireTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub think: Option<bool>,
+    /// A JSON Schema the answer is sampled against, when the caller asked for
+    /// one. Ollama also accepts the string `"json"` here; the harness always
+    /// sends a schema, because "some JSON" is not a shape anything can rely on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
 }

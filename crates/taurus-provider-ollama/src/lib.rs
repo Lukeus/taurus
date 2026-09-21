@@ -310,6 +310,13 @@ impl Provider for OllamaProvider {
             stream: true,
             tools: convert::tools_to_wire(&request.tools),
             think: caps.thinking.then_some(true),
+            // Never on the prompted path: the answer there is text with
+            // `<tool_call>` blocks in it, and forcing that whole response to
+            // be one JSON document would make every tool call unparseable.
+            // Nothing asks for both today; this is what keeps that true.
+            format: (!prompted)
+                .then(|| request.response_schema.clone())
+                .flatten(),
             options: (!options.is_empty()).then_some(options),
         };
 
@@ -538,6 +545,172 @@ mod tests {
             .expect("a chat request");
         let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
         assert_eq!(body["options"]["num_ctx"], planned.context_length);
+    }
+
+    #[tokio::test]
+    async fn a_response_schema_is_sent_as_the_format_to_sample_against() {
+        let server = server_reporting(8192).await;
+        let provider = OllamaProvider::new(server.uri());
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+        let schema = serde_json::json!({ "type": "object", "required": ["goal"] });
+        provider
+            .stream(
+                ChatRequest::new("qwen3-coder", vec![Message::user("go")])
+                    .with_response_schema(schema.clone()),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let chat = requests
+            .iter()
+            .find(|r| r.url.path() == "/api/chat")
+            .expect("a chat request");
+        let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
+        assert_eq!(body["format"], schema);
+    }
+
+    #[tokio::test]
+    async fn a_request_with_no_schema_sends_no_format_at_all() {
+        // Ollama reads a `format` of `null` as a request to be unconstrained,
+        // but an omitted field is the only thing every gateway in front of it
+        // agrees about.
+        let server = server_reporting(8192).await;
+        let provider = OllamaProvider::new(server.uri());
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        provider
+            .stream(
+                ChatRequest::new("qwen3-coder", vec![Message::user("go")]),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let chat = requests
+            .iter()
+            .find(|r| r.url.path() == "/api/chat")
+            .expect("a chat request");
+        let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
+        assert!(body.get("format").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_prompted_turn_is_never_forced_into_one_json_document() {
+        // The two mechanisms cannot both hold: prompted tool calling answers
+        // with text carrying `<tool_call>` blocks, and a whole-response schema
+        // would make every one of them unparseable. Nothing asks for both
+        // today, and this is what keeps that from becoming a silent break.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "capabilities": ["completion"],
+                "model_info": { "gemma3.context_length": 8192 },
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"done\":true,\"done_reason\":\"stop\"}\n",
+                "application/x-ndjson",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(server.uri());
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        provider
+            .stream(
+                ChatRequest::new("gemma3", vec![Message::user("go")])
+                    .with_tools(vec![taurus_provider::ToolDef {
+                        name: "read_file".into(),
+                        description: "Read a file".into(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    }])
+                    .with_response_schema(serde_json::json!({ "type": "object" })),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let chat = requests
+            .iter()
+            .find(|r| r.url.path() == "/api/chat")
+            .expect("a chat request");
+        let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
+        assert!(body.get("format").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_prompted_model_is_stopped_at_a_result_it_starts_writing() {
+        // A model with no `tools` capability is taught the protocol through
+        // the system prompt, and the one thing it does wrong is write the
+        // result of its own call and carry on as though the call had run. The
+        // instruction not to is in the prompt and gets ignored; the stop
+        // sequence is what actually ends the turn there.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "capabilities": ["completion"],
+                "model_info": { "gemma3.context_length": 8192 },
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"done\":true,\"done_reason\":\"stop\"}\n",
+                "application/x-ndjson",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(server.uri());
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        provider
+            .stream(
+                ChatRequest::new("gemma3", vec![Message::user("go")]).with_tools(vec![
+                    taurus_provider::ToolDef {
+                        name: "read_file".into(),
+                        description: "Read a file".into(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    },
+                ]),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let chat = requests
+            .iter()
+            .find(|r| r.url.path() == "/api/chat")
+            .expect("a chat request");
+        let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
+        let stop = body["options"]["stop"]
+            .as_array()
+            .expect("stop sequences on a prompted request");
+        assert!(
+            stop.iter().any(|s| s == "<tool_result>") && stop.iter().any(|s| s == "<tool_error>"),
+            "{stop:?}"
+        );
+        // And the tools went into the prompt rather than the `tools` field,
+        // which is the path these sequences belong to.
+        assert!(body.get("tools").is_none(), "{body}");
     }
 
     #[tokio::test]
