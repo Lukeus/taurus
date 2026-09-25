@@ -19,6 +19,20 @@ pub struct Session {
     /// [`Measured`].
     #[serde(default)]
     pub last_request: Option<Measured>,
+    /// How far a transcript's numbering runs ahead of `messages`.
+    ///
+    /// Compaction takes messages off the front and puts one summary in their
+    /// place, and the summary is never written down. So the transcript still
+    /// holds everything that was dropped, and message `i` here is message
+    /// `i + summarized_away` there, for every message a compaction kept. A
+    /// writer that counted by position alone lost the round after each
+    /// compaction: the list had shrunk under its offset, so it found nothing
+    /// new, then moved its offset past the round it had skipped.
+    ///
+    /// Zero for a session loaded from disk, because what was loaded is the
+    /// whole transcript.
+    #[serde(default)]
+    pub summarized_away: usize,
 }
 
 /// A request's real size, beside the estimates that were made of it.
@@ -91,11 +105,29 @@ impl Session {
             messages: Vec::new(),
             usage: TokenUsage::default(),
             last_request: None,
+            summarized_away: 0,
         }
     }
 
     pub fn push(&mut self, message: Message) {
         self.messages.push(message);
+    }
+
+    /// Replaces the first `drop` messages with `summary`, and keeps
+    /// [`Self::summarized_away`] in step with it.
+    ///
+    /// One method rather than two edits at the call site, because the offset
+    /// is only right if it moves in the same step as the list.
+    pub fn summarize_front(&mut self, drop: usize, summary: Message) {
+        let drop = drop.min(self.messages.len());
+        let rest = self.messages.split_off(drop);
+        self.messages.clear();
+        self.messages.push(summary);
+        self.messages.extend(rest);
+        // `drop` messages left and one arrived that no transcript will hold.
+        // A summary of an earlier summary drops that one too; it was never
+        // written, so it was never counted.
+        self.summarized_away = (self.summarized_away + drop).saturating_sub(1);
     }
 
     pub fn add_usage(&mut self, usage: TokenUsage) {

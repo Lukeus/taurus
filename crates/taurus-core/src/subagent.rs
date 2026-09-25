@@ -219,6 +219,36 @@ impl Tool for SpawnSubagent {
         Effect::Read
     }
 
+    /// Only a delegate that can do nothing but read runs beside the rest of
+    /// its round. One that can write runs alone, because two in the same
+    /// working tree would each edit files the other is halfway through.
+    ///
+    /// Anything that can't be read cleanly here answers "alone": an agent
+    /// with no `tools:` key inherits the parent's writers, an unknown agent is
+    /// about to be refused anyway, and a registry being written to right now
+    /// is one this can't see into. Serializing a reader costs time; letting a
+    /// writer through costs files.
+    fn runs_concurrently(&self, input: &serde_json::Value) -> bool {
+        let Some(definition) = input
+            .get("agent_type")
+            .and_then(|v| v.as_str())
+            .and_then(|name| self.definition(name))
+        else {
+            return false;
+        };
+        let Some(tools) = &definition.frontmatter.tools else {
+            return false;
+        };
+        let Ok(registry) = self.registry.try_read() else {
+            return false;
+        };
+        tools.iter().all(|name| {
+            registry
+                .get(name)
+                .is_none_or(|tool| tool.effect().is_concurrent_safe())
+        })
+    }
+
     fn preview(&self, input: &serde_json::Value) -> String {
         let kind = input
             .get("agent_type")
@@ -313,6 +343,7 @@ impl Tool for SpawnSubagent {
                 ),
                 max_iterations: definition.frontmatter.max_iterations,
                 allowed_tools: allowed,
+                turn_hooks: false,
                 ..self.defaults.clone()
             },
         );
@@ -935,5 +966,105 @@ mod tests {
             "read_file".to_string(),
         ];
         assert_eq!(summarize(&tools), "grep, read_file ×2");
+    }
+
+    /// A hook for `on` that appends `word` to `log`.
+    #[cfg(unix)]
+    fn logging_hook(
+        dir: &std::path::Path,
+        log: &std::path::Path,
+        word: &str,
+        on: taurus_hooks::HookEvent,
+    ) -> (String, taurus_hooks::Hook) {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join(format!("{word}.sh"));
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho {word} >> '{}'\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (
+            word.to_string(),
+            taurus_hooks::Hook {
+                on,
+                command: script.display().to_string(),
+                args: vec![],
+                matches: None,
+                timeout_seconds: 5,
+                disabled: false,
+            },
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_delegate_meets_the_tool_hooks_but_not_the_turn_hooks() {
+        use taurus_hooks::HookEvent;
+        let (tool, ctx, _dir) = fixture(vec![
+            ScriptedTurn::tool_call("t1", "list_dir", serde_json::json!({})),
+            ScriptedTurn::text("Nothing in it."),
+        ]);
+        let scripts = TempDir::new().unwrap();
+        let log = scripts.path().join("fired.log");
+        let runner = taurus_hooks::HookRunner::new(vec![
+            logging_hook(scripts.path(), &log, "pre", HookEvent::PreToolUse),
+            logging_hook(scripts.path(), &log, "prompt", HookEvent::UserPromptSubmit),
+            logging_hook(scripts.path(), &log, "stop", HookEvent::Stop),
+        ]);
+        let ctx = ctx.with_hooks(Arc::new(runner));
+
+        tool.execute(
+            serde_json::json!({
+                "agent_type": "explorer",
+                "prompt": "List the workspace and say what is in it."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let fired = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            fired.contains("pre"),
+            "a guard must still see the child's calls"
+        );
+        assert!(
+            !fired.contains("prompt") && !fired.contains("stop"),
+            "a delegation is one call inside the conversation's turn, not a turn: {fired:?}"
+        );
+    }
+
+    fn alone(tool: &SpawnSubagent, agent_type: &str) -> bool {
+        !tool.runs_concurrently(&serde_json::json!({
+            "agent_type": agent_type,
+            "prompt": "Whatever the task is, it is long enough."
+        }))
+    }
+
+    #[test]
+    fn only_a_delegate_that_cannot_write_shares_its_round() {
+        let (tool, _ctx, _dir) = fixture(vec![]);
+        assert!(!alone(&tool, builtin::EXPLORER), "explorer only reads");
+        assert!(alone(&tool, builtin::CODER), "coder writes");
+        // No `tools:` key: it inherits the parent's writers.
+        assert!(alone(&tool, builtin::WORKER), "worker inherits writers");
+        assert!(alone(&tool, "wizard"), "an unknown agent runs alone");
+        assert!(alone(&tool, ""), "so does a call with no agent named");
+    }
+
+    #[test]
+    fn a_custom_agent_is_judged_by_the_tools_it_names() {
+        let (tool, _, _ctx, _dir) = fixture_with(
+            vec![],
+            Some(vec![
+                custom("reader", "Read.", Some(vec!["read_file", "grep"])),
+                custom("editor", "Edit.", Some(vec!["read_file", "edit_file"])),
+                custom("everything", "Do it.", None),
+            ]),
+        );
+        assert!(!alone(&tool, "reader"));
+        assert!(alone(&tool, "editor"));
+        assert!(alone(&tool, "everything"));
     }
 }

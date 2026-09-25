@@ -2723,3 +2723,90 @@ async fn a_tail_that_really_is_too_big_still_says_so() {
         "a tail past the budget has to be reported, not summarized at: {events:?}"
     );
 }
+
+/// A read-only tool that says, per call, whether it may share its round, and
+/// counts how many of its calls were ever running at the same moment.
+struct Probe {
+    running: std::sync::atomic::AtomicUsize,
+    most: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl taurus_tools::Tool for Probe {
+    fn name(&self) -> &str {
+        "probe"
+    }
+    fn description(&self) -> &str {
+        "Test probe."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object" })
+    }
+    fn effect(&self) -> taurus_tools::Effect {
+        taurus_tools::Effect::Read
+    }
+    fn runs_concurrently(&self, input: &serde_json::Value) -> bool {
+        !input["alone"].as_bool().unwrap_or(false)
+    }
+    async fn execute(
+        &self,
+        _input: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> taurus_tools::ToolResult {
+        use std::sync::atomic::Ordering;
+        let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        Ok("done".into())
+    }
+}
+
+/// The most calls to the probe that ran at once, over one round of two calls
+/// that both ask for `alone`.
+async fn most_at_once(alone: bool) -> usize {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
+    let tools = ToolContext::new(workspace, permissions, CancellationToken::new());
+    let provider = FakeProvider::with_context_length(
+        vec![
+            ScriptedTurn::tool_calls(vec![
+                ("p1", "probe", serde_json::json!({ "alone": alone })),
+                ("p2", "probe", serde_json::json!({ "alone": alone })),
+            ]),
+            ScriptedTurn::text("Both finished."),
+        ],
+        128_000,
+    );
+    let probe = Arc::new(Probe {
+        running: 0.into(),
+        most: 0.into(),
+    });
+    let mut registry = ToolRegistry::with_builtins();
+    registry.register(probe.clone());
+    let h = Harness {
+        agent: Agent::new(provider.clone(), registry, tools, AgentConfig::default()),
+        provider,
+        cancel: CancellationToken::new(),
+        _dir: dir,
+        workspace: std::path::PathBuf::new(),
+    };
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "probe twice").await;
+    outcome.unwrap();
+    probe.most.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tokio::test]
+async fn a_read_only_call_that_asks_to_run_alone_does() {
+    // The effect says "read", which on its own would put both calls in the
+    // concurrent batch. `spawn_subagent` is the real case: spawning reads,
+    // and a child that writes must still not share the working tree.
+    assert_eq!(most_at_once(true).await, 1);
+    assert_eq!(most_at_once(false).await, 2);
+}
