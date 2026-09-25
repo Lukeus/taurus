@@ -172,6 +172,24 @@ enum Record {
         /// question anybody asks of a switch afterwards is when it happened.
         at: u64,
     },
+    /// A turn started. With no [`Record::TurnEnd`] for the same `id` after
+    /// it, the process died during it.
+    ///
+    /// Skipped by a build that predates it, as [`Record::Model`] is, so no
+    /// format bump: an older build just can't tell an interrupted turn from a
+    /// finished one, which is what it couldn't do before either.
+    Turn {
+        id: String,
+        at: u64,
+        /// It continues an interrupted turn. How attempts are counted.
+        #[serde(default)]
+        continues: bool,
+    },
+    /// A turn ended: `finished`, `canceled`, or an error's kind.
+    TurnEnd {
+        id: String,
+        outcome: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -281,6 +299,10 @@ pub struct SessionLog {
     off: bool,
     /// Set after a failure, so one broken log does not narrate every turn.
     warned: bool,
+    /// A turn's start, held until the transcript has a header to put it
+    /// under. A new conversation's first turn starts before anything is
+    /// written, and the header goes down with its first message.
+    held_turn: Option<Record>,
 }
 
 impl SessionLog {
@@ -308,6 +330,7 @@ impl SessionLog {
             persisted: 0,
             off: false,
             warned: false,
+            held_turn: None,
         }
     }
 
@@ -332,6 +355,7 @@ impl SessionLog {
             persisted: loaded.session.messages.len(),
             off: false,
             warned: false,
+            held_turn: None,
         }
     }
 
@@ -356,6 +380,7 @@ impl SessionLog {
             persisted: 0,
             off: false,
             warned: false,
+            held_turn: None,
         }
     }
 
@@ -367,6 +392,7 @@ impl SessionLog {
             persisted: 0,
             off: true,
             warned: false,
+            held_turn: None,
         }
     }
 
@@ -471,6 +497,12 @@ impl SessionLog {
         let Some(mut file) = self.open() else {
             return created;
         };
+        // Straight after the header, before the turn's first message.
+        if let Some(turn) = self.held_turn.take() {
+            if !self.append(&mut file, &turn) {
+                self.held_turn = Some(turn);
+            }
+        }
         for message in pending.messages {
             if !self.append(&mut file, &Record::Message(message)) {
                 // Left pointing at the message that did not land, so the next
@@ -506,6 +538,39 @@ impl SessionLog {
             model: model.to_string(),
             at: now(),
         })
+    }
+
+    /// Records that a turn is starting. See [`Record::Turn`].
+    pub fn start_turn(&mut self, id: &str, continues: bool) {
+        if self.off {
+            return;
+        }
+        let record = Record::Turn {
+            id: id.to_string(),
+            at: now(),
+            continues,
+        };
+        if has_header(&self.path) {
+            self.write(&record);
+        } else {
+            self.held_turn = Some(record);
+        }
+    }
+
+    /// Records that a turn ended. See [`Record::TurnEnd`].
+    pub fn end_turn(&mut self, id: &str, outcome: &str) {
+        if self.off {
+            return;
+        }
+        // A turn whose start never got written has nothing to close: its
+        // start is still held because nothing about it reached disk.
+        if self.held_turn.take().is_some() {
+            return;
+        }
+        self.write(&Record::TurnEnd {
+            id: id.to_string(),
+            outcome: outcome.to_string(),
+        });
     }
 
     /// Appends one record. Returns whether it landed.
@@ -674,6 +739,9 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     let mut messages = Vec::new();
     let mut usage = TokenUsage::default();
     let mut switches: Vec<Switch> = Vec::new();
+    // Turns spent on the current request, and the turn with no end yet.
+    let mut attempts = 0u32;
+    let mut open_turn: Option<String> = None;
 
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         if line.trim().is_empty() {
@@ -696,11 +764,33 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
                 model,
                 at,
             }),
+            Ok(Record::Turn { id, continues, .. }) => {
+                attempts = if continues { attempts + 1 } else { 1 };
+                open_turn = Some(id);
+            }
+            Ok(Record::TurnEnd { id, .. }) => {
+                if open_turn.as_deref() == Some(id.as_str()) {
+                    open_turn = None;
+                }
+            }
             Err(e) => {
                 tracing::debug!(error = %e, "skipping an unreadable transcript line");
             }
         }
     }
+
+    // Calls written down before they ran and never answered: the process
+    // died while they were running. Answered here, not replayed. See
+    // `Session::owed`.
+    let owed = messages
+        .last()
+        .filter(|m| m.role == taurus_provider::Role::Assistant && m.has_tool_use())
+        .map(taurus_core::owed_results)
+        .unwrap_or_default();
+    let interrupted = open_turn.map(|_| taurus_core::Interrupted {
+        attempts,
+        unanswered: owed.len(),
+    });
 
     let header = header.ok_or_else(|| format!("{} has no header", path.display()))?;
     if header.version > FORMAT_VERSION {
@@ -734,6 +824,8 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
             last_request: None,
             // What was loaded is the whole transcript.
             summarized_away: 0,
+            owed,
+            interrupted,
         },
         switches,
         path,
@@ -1185,6 +1277,31 @@ fn find(id: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// A transcript the agent loop records into while its owner holds onto it.
+///
+/// For a caller that keeps its [`SessionLog`] between turns and wants the
+/// loop to write as it goes, rather than once the turn is over: the CLI. The
+/// app has its own, which also tells the window about a new conversation.
+pub struct SharedLog(pub Arc<Mutex<SessionLog>>);
+
+#[async_trait]
+impl TurnRecorder for SharedLog {
+    async fn record(&self, session: &Session) {
+        let mut log = self.0.clone().lock_owned().await;
+        let pending = log.unrecorded(session);
+        // A round is many lines, so off the runtime carrying the stream.
+        let _ = tokio::task::spawn_blocking(move || log.record_unrecorded(pending)).await;
+    }
+
+    async fn turn_started(&self, id: &str, continues: bool) {
+        self.0.lock().await.start_turn(id, continues);
+    }
+
+    async fn turn_ended(&self, id: &str, outcome: &str) {
+        self.0.lock().await.end_turn(id, outcome);
+    }
+}
+
 /// Keeps a conversation's delegates, under the conversation that spawned them.
 ///
 /// Built per turn by [`crate::Host::build_agent`], so the CLI and the desktop
@@ -1525,6 +1642,115 @@ mod tests {
 
         let loaded = load("append1").unwrap().session;
         assert_eq!(loaded.messages.len(), 4, "a message was duplicated or lost");
+    }
+
+    #[test]
+    fn a_turn_with_no_end_is_one_the_process_died_in() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let mut session = Session::new("test-model");
+        session.id = "turns1".into();
+        let mut log = SessionLog::create(&session, workspace, None);
+
+        // Started before anything is on disk: held until the header is.
+        log.start_turn("t1", false);
+        session.push(Message::user("look"));
+        log.record(&session);
+        session.push(Message::assistant("done"));
+        log.record(&session);
+        log.end_turn("t1", "finished");
+        assert!(load("turns1").unwrap().session.interrupted.is_none());
+
+        log.start_turn("t2", false);
+        session.push(Message::user("write it"));
+        log.record(&session);
+        // The process dies here.
+        let interrupted = load("turns1").unwrap().session.interrupted;
+        assert_eq!(
+            interrupted,
+            Some(taurus_core::Interrupted {
+                attempts: 1,
+                unanswered: 0
+            })
+        );
+    }
+
+    #[test]
+    fn attempts_are_counted_across_continuations_from_disk() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let mut session = session_with("turns2", &["go"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+
+        log.start_turn("a", false);
+        session.push(Message::user("do the thing"));
+        log.record(&session);
+        // Died; continued; died again.
+        log.start_turn("b", true);
+        session.push(Message::user(taurus_core::CONTINUE_PROMPT));
+        log.record(&session);
+        let first = load("turns2").unwrap().session.interrupted.unwrap();
+        assert_eq!(first.attempts, 2);
+        assert!(first.can_continue());
+
+        log.start_turn("c", true);
+        let spent = load("turns2").unwrap().session.interrupted.unwrap();
+        assert_eq!(spent.attempts, 3);
+        assert!(!spent.can_continue(), "three turns is all one request gets");
+
+        // A message you type is a new request.
+        log.end_turn("c", "finished");
+        log.start_turn("d", false);
+        assert_eq!(
+            load("turns2")
+                .unwrap()
+                .session
+                .interrupted
+                .unwrap()
+                .attempts,
+            1
+        );
+    }
+
+    #[test]
+    fn calls_written_down_before_they_ran_are_owed_results() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let mut session = session_with("turns3", &["go"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.start_turn("t", false);
+        session.push(Message::new(
+            Role::Assistant,
+            vec![
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "run_command".into(),
+                    input: serde_json::json!({ "command": "make install" }),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "c2".into(),
+                    name: "edit_file".into(),
+                    input: serde_json::json!({ "path": "a.rs" }),
+                    signature: None,
+                },
+            ],
+        ));
+        log.record(&session);
+
+        let loaded = load("turns3").unwrap().session;
+        assert_eq!(loaded.interrupted.as_ref().unwrap().unanswered, 2);
+        let owed: Vec<String> = loaded
+            .owed
+            .iter()
+            .map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => content.to_text().into_owned(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert!(owed[0].contains("`make install`"), "{}", owed[0]);
+        assert!(owed[1].contains("`a.rs`"), "{}", owed[1]);
     }
 
     #[test]

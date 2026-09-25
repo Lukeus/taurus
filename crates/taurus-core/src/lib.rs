@@ -16,6 +16,9 @@ pub use agent::{Agent, AgentConfig, AgentError, TurnOutcome, TurnRecorder};
 pub use event::UiEvent;
 pub use finish::FINISH_TOOL;
 pub use propose::{ProposeAgent, PROPOSE_AGENT_TOOL};
-pub use session::{estimate_block, estimate_message, estimate_tokens, Session, Trimmed};
+pub use session::{
+    estimate_block, estimate_message, estimate_tokens, owed_results, Interrupted, Session, Trimmed,
+    CONTINUE_PROMPT, MAX_ATTEMPTS,
+};
 pub use subagent::{AgentModel, ModelOverrides, SpawnSubagent, SubagentRecorder, SPAWN_TOOL};
 pub use telemetry::Capture;

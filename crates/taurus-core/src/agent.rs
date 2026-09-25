@@ -348,6 +348,24 @@ struct FailedAttempt {
 #[async_trait::async_trait]
 pub trait TurnRecorder: Send + Sync {
     async fn record(&self, session: &Session);
+
+    /// A turn is starting, under `id`. Before its first message is recorded.
+    ///
+    /// Together with [`Self::turn_ended`], this is how a transcript tells a
+    /// turn that finished from one the process died in: a start with no end.
+    /// `continues` marks a turn that continues an interrupted one, which is
+    /// how the attempts spent on one request are counted from disk.
+    ///
+    /// Defaulted to nothing, for a recorder that has nowhere to say it.
+    async fn turn_started(&self, id: &str, continues: bool) {
+        let _ = (id, continues);
+    }
+
+    /// The turn `id` ended, however it ended: `finished`, `canceled`, or an
+    /// error's kind. After its last message is recorded.
+    async fn turn_ended(&self, id: &str, outcome: &str) {
+        let _ = (id, outcome);
+    }
 }
 
 pub struct Agent {
@@ -439,6 +457,56 @@ impl Agent {
         user_message: Message,
         ui: mpsc::Sender<UiEvent>,
     ) -> Result<TurnOutcome, AgentError> {
+        self.run(session, user_message, ui, false).await
+    }
+
+    /// Continues a turn the process stopped in the middle of.
+    ///
+    /// Nothing is replayed. The model gets the history, where every call the
+    /// process never answered now reads "outcome unknown", and
+    /// [`crate::session::CONTINUE_PROMPT`], and decides what is left. Refused
+    /// when there's nothing to continue, and once the request has had
+    /// [`crate::session::MAX_ATTEMPTS`] turns.
+    pub async fn continue_turn(
+        &self,
+        session: &mut Session,
+        ui: mpsc::Sender<UiEvent>,
+    ) -> Result<TurnOutcome, AgentError> {
+        let refusal = match &session.interrupted {
+            None => {
+                Some("There's no interrupted turn to continue in this conversation.".to_string())
+            }
+            Some(interrupted) if !interrupted.can_continue() => Some(format!(
+                "This request has had {} turns, the most one gets, so it isn't continued \
+                 again. Send a message to pick it up from here.",
+                interrupted.attempts
+            )),
+            Some(_) => None,
+        };
+        if let Some(refusal) = refusal {
+            let _ = ui
+                .send(UiEvent::Error {
+                    message: refusal.clone(),
+                })
+                .await;
+            return Err(AgentError::Refused(refusal));
+        }
+        self.run(
+            session,
+            Message::user(crate::session::CONTINUE_PROMPT),
+            ui,
+            true,
+        )
+        .await
+    }
+
+    async fn run(
+        &self,
+        session: &mut Session,
+        user_message: Message,
+        ui: mpsc::Sender<UiEvent>,
+        continues: bool,
+    ) -> Result<TurnOutcome, AgentError> {
         // Before the message is pushed, so a hook that refuses one leaves the
         // conversation exactly as it was rather than with a message in it that
         // was never answered.
@@ -457,6 +525,10 @@ impl Agent {
         // rather than a flat list somebody reassembles by timestamp.
         let span = crate::telemetry::turn_span(self.provider.id(), &session.model, &session.id);
         let pending = Arc::new(Pending::new(&self.tools.cancel));
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        if let Some(recorder) = &self.recorder {
+            recorder.turn_started(&turn_id, continues).await;
+        }
         let outcome = self
             .turn(session, user_message, ui, &pending)
             .instrument(span.clone())
@@ -494,6 +566,14 @@ impl Agent {
         // forgotten is the one that matters most. A turn that failed is a turn
         // somebody will want to read.
         self.persist(session).await;
+        if let Some(recorder) = &self.recorder {
+            let ended = match &outcome {
+                Ok(done) if done.stop_reason == StopReason::Canceled => "canceled",
+                Ok(_) => "finished",
+                Err(error) => error.kind(),
+            };
+            recorder.turn_ended(&turn_id, ended).await;
+        }
         // After the transcript is written, not before. A `stop` hook that reads
         // the session — which is most of the reason to write one — must see the
         // turn that just ended rather than the one before it.
@@ -568,6 +648,18 @@ impl Agent {
         ui: mpsc::Sender<UiEvent>,
         pending: &Arc<Pending>,
     ) -> Result<TurnOutcome, AgentError> {
+        // A new turn, typed or continued, is the end of the interrupted one.
+        session.interrupted = None;
+        // Results owed to calls a stopped process never answered go in front
+        // of this message, straight after the calls they answer. See
+        // `Session::owed`.
+        let user_message = if session.owed.is_empty() {
+            user_message
+        } else {
+            let mut content = std::mem::take(&mut session.owed);
+            content.extend(user_message.content);
+            Message::new(Role::User, content)
+        };
         session.push(user_message);
         // Before the first request, not after the last one. Two things follow
         // from writing the question down at the moment it is asked rather than
@@ -685,6 +777,15 @@ impl Agent {
                     usage: total,
                     iterations: iteration,
                 });
+            }
+
+            // The calls go on disk before they run, not with their results.
+            // A process that dies mid-call then leaves a transcript that says
+            // what was running, which the loader answers "outcome unknown";
+            // written afterwards, the calls and whatever they did were lost
+            // together.
+            if has_tools {
+                self.persist(session).await;
             }
 
             // A provider can report ToolUse without emitting a parseable call,
