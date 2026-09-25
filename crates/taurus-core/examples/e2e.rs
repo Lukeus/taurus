@@ -119,6 +119,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 UiEvent::ToolTranscript { session, agent, .. } => {
                     println!("      · {agent} transcript: {session}")
                 }
+                UiEvent::DelegateReport { report, .. } => {
+                    println!("      · delegate: {}", report.disposition.as_str())
+                }
                 UiEvent::IterationStarted { .. } | UiEvent::ThinkingDelta { .. } => {}
             }
         }

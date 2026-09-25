@@ -214,11 +214,13 @@ impl ToolRegistry {
 
         // After the permission check, so a denied call leaves no trace, and
         // before execution, so what is recorded is what was there first.
+        let recorded: Vec<String> = touched
+            .iter()
+            .map(|path| crate::path_guard::display(&ctx.workspace, path))
+            .collect();
         if let Some(recorder) = &ctx.checkpoints {
-            let mut recorded = Vec::new();
             for path in &touched {
                 recorder.capture(path).await;
-                recorded.push(crate::path_guard::display(&ctx.workspace, path));
             }
             // A background command still running will see this file change
             // too. It is this call's to undo. See `Jobs::claim`.
@@ -262,6 +264,14 @@ impl ToolRegistry {
             vet_images(name, output);
         }
 
+        // Only a write that worked. The recorder keeps a pre-image for any
+        // named path, because a failed edit may still have half-landed; a
+        // delegate's report is a list of what it changed, and a refused edit
+        // didn't change anything.
+        if let (Some(into), true) = (&ctx.touched, result.is_ok()) {
+            into.add(recorded.iter().map(String::as_str));
+        }
+
         // First among the notes, because it was said first: before the call
         // ran, about the call.
         for note in &pre_notes {
@@ -275,6 +285,10 @@ impl ToolRegistry {
             let change = sweep.after(&ctx.workspace, recorder).await;
             if let Some(jobs) = &ctx.jobs {
                 jobs.claim(change.files.iter().map(String::as_str));
+            }
+            // Whatever the command's outcome: the sweep saw these change.
+            if let Some(into) = &ctx.touched {
+                into.add(change.files.iter().map(String::as_str));
             }
 
             // What it *did* record needs no announcement: the changed-file

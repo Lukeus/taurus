@@ -63,6 +63,17 @@ pub enum UiEvent {
         /// Which kind of sub-agent it was.
         agent: String,
     },
+    /// A delegation's child has stopped, and this is how.
+    ///
+    /// Only delegation emits this, just before its `ToolCallFinished`. The
+    /// result's text carries the same report for the model; this is the shape
+    /// of it, so the card can say "blocked: needs you to…" without parsing
+    /// prose.
+    DelegateReport {
+        /// The call this belongs under, matching its `ToolCallStarted`.
+        id: String,
+        report: taurus_tools::DelegateReport,
+    },
     ToolCallFinished {
         id: String,
         ok: bool,

@@ -1397,6 +1397,27 @@ body.resizing-y * {
 .run-row.error .run-row-status {
   color: var(--danger);
 }
+/* A delegation's report, by how it stopped. Blocked is the warning color
+   because it's the one that's waiting on somebody; a stop or a missing
+   report is neither good nor bad news, so it stays faint. Scoped under
+   `.run-row` to match `.run-row.ok .run-row-status`, which a delegation that
+   returned fine also carries, and which would otherwise paint "Needs you" in
+   the success color. */
+.run-row .run-row-status[data-report="blocked"] {
+  color: var(--warn);
+}
+.run-row .run-row-status[data-report="failed"] {
+  color: var(--danger);
+}
+.run-row .run-row-status[data-report="cancelled"],
+.run-row .run-row-status[data-report="unreported"] {
+  color: var(--text-faint);
+}
+.run-row-needs {
+  margin: 0 12px 6px var(--run-indent);
+  font-size: 11.5px;
+  color: var(--warn);
+}
 .run-row .tool-output {
   margin: 0 12px 10px;
 }

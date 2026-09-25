@@ -305,6 +305,46 @@ as the parent's, so it can't route around a guard. It doesn't fire
 `user_prompt_submit` or `stop`: a delegation is one call inside your turn,
 not a turn of its own.
 
+### How a delegate reports back
+
+A delegate ends by calling `finish`, a tool only delegates have. It says one
+of three things:
+
+- `done`, with what it found or changed.
+- `blocked`, with who has to act (`waiting_on`: the agent that called it, or
+  you) and the one thing they have to do (`needs`). A blocked report missing
+  either is refused, and the delegate is asked again. A stop that names
+  nobody reaches nobody.
+- `failed`, with why it can't be done.
+
+The files a report lists aren't the delegate's account of them. They're the
+files the harness saw it change: every named write that worked, and
+everything a command's sweep caught. A file the parent already touched
+earlier in the turn is still listed if the delegate changed it too.
+
+Two things keep a small model on this path. Calling `finish` ends the
+delegate's turn, so it doesn't spend a round trip on a closing paragraph
+nobody reads. And a delegate that tries to stop in prose is asked, once, to
+call it. On `qwen3.5:9b`, that ask took reports from 7 of 9 delegations to
+14 of 15, and the one miss was Ollama failing to parse the model's own tool
+call. The ask comes after the verify nudge, so a delegate that reports `done`
+on work it never ran is asked to check it first, and reports again.
+
+When there's no report because it ignored the ask, ran out of rounds, or you
+pressed Stop, the harness builds one: `unreported` with its last message,
+`failed` with why it stopped, or `cancelled`. The parent reads a status
+either way, never prose passed off as a report.
+
+The card shows the status where the tick would be: Done, Needs you, Blocked,
+Failed, Stopped, or No report. A delegate blocked on you also puts what it
+needs on the card itself, and the CLI prints that one as a warning. A
+reopened conversation keeps the status, because it's the first line of the
+result the transcript holds.
+
+To measure it on your own machine, run
+`cargo run -p taurus-host --example delegate -- <model> [runs]`. It counts
+how often a model calls `finish`.
+
 You can add your own. An agent is a markdown file in `~/.taurus/agents` or
 `<workspace>/.taurus/agents`. The file name is the agent's name, and the body
 below the frontmatter is its system prompt:

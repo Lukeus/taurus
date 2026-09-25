@@ -154,6 +154,15 @@ pub trait ToolProgress: Send + Sync {
     async fn transcript(&self, session: String, agent: String) {
         let _ = (session, agent);
     }
+
+    /// This call's delegate has stopped, and this is what it handed back.
+    ///
+    /// Delegation is the only caller, as with [`Self::transcript`]. Sent once,
+    /// when the delegate stops, so the card can say how it stopped without
+    /// reading the result's prose.
+    async fn delegate_report(&self, report: crate::delegate::DelegateReport) {
+        let _ = report;
+    }
 }
 
 /// Everything a tool needs at call time.
@@ -256,6 +265,13 @@ pub struct ToolContext {
     /// cloning the context and then its own loop replaces it with its own
     /// model's window on the first call it makes.
     pub budget: OutputBudget,
+    /// Where a delegate's changed files are collected, when this context
+    /// belongs to one. See [`crate::delegate::Touched`].
+    ///
+    /// Set by the delegation on the context it hands its child, and `None`
+    /// everywhere else. Not shared with the parent: a clone the child makes
+    /// shares the child's, which is the point.
+    pub touched: Option<Arc<crate::delegate::Touched>>,
 }
 
 impl ToolContext {
@@ -280,6 +296,7 @@ impl ToolContext {
             unattended: Arc::new(AtomicBool::new(false)),
             call_id: None,
             budget: OutputBudget::unknown(),
+            touched: None,
         }
     }
 
@@ -287,6 +304,14 @@ impl ToolContext {
     #[must_use]
     pub fn with_budget(mut self, budget: OutputBudget) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// Collects the files this context's calls change, for a delegate's
+    /// report. See [`crate::delegate::Touched`].
+    #[must_use]
+    pub fn with_touched(mut self, touched: Arc<crate::delegate::Touched>) -> Self {
+        self.touched = Some(touched);
         self
     }
 
@@ -406,6 +431,14 @@ impl ToolContext {
     pub async fn report_transcript(&self, session: impl Into<String>, agent: impl Into<String>) {
         if let Some(progress) = &self.progress {
             progress.transcript(session.into(), agent.into()).await;
+        }
+    }
+
+    /// Hands this call's delegate report to whatever draws the call. See
+    /// [`ToolProgress::delegate_report`].
+    pub async fn report_delegate(&self, report: crate::delegate::DelegateReport) {
+        if let Some(progress) = &self.progress {
+            progress.delegate_report(report).await;
         }
     }
 
@@ -534,6 +567,17 @@ pub trait Tool: Send + Sync {
     /// — which agent is being started.
     fn runs_concurrently(&self, _input: &serde_json::Value) -> bool {
         self.effect().is_concurrent_safe()
+    }
+
+    /// Whether a successful call to this tool ends the turn it was made in.
+    ///
+    /// Only a delegate's `finish` does. Without it, a small model that has
+    /// handed its report back goes on to write a closing paragraph nobody
+    /// reads, which is a round trip. The turn still ends on the loop's terms:
+    /// once the round's results are recorded, and not while there's unchecked
+    /// work the model would have been asked to check before stopping.
+    fn ends_turn(&self) -> bool {
+        false
     }
 
     /// What this call wants drawn in the transcript, instead of a row saying it

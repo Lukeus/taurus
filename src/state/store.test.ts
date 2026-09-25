@@ -1128,6 +1128,54 @@ describe("a delegation's own transcript", () => {
     });
   });
 
+  it("takes the report its child stopped with", () => {
+    const entries = run(started, {
+      type: "delegate_report",
+      id: "d1",
+      report: {
+        disposition: "blocked",
+        owner: "user",
+        needs: "say which config is canonical",
+        summary: "Two disagree.",
+        files: [],
+      },
+    });
+    expect(entries[0]).toMatchObject({
+      kind: "tool",
+      report: { disposition: "blocked", owner: "user" },
+    });
+  });
+
+  it("reads its report back when the conversation is reopened", () => {
+    const [tool] = entriesFromMessages([
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "d1", name: "spawn_subagent", input: {} }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "d1",
+            is_error: false,
+            content: [
+              {
+                type: "text",
+                text: "Status: blocked. It needs the user to: pick one\n\nTwo disagree.",
+              },
+            ],
+          },
+        ],
+      },
+    ]) as Extract<Entry, { kind: "tool" }>[];
+    expect(tool.report).toMatchObject({
+      disposition: "blocked",
+      owner: "user",
+      needs: "pick one",
+    });
+  });
+
   it("ignores a reference to a call that is not there", () => {
     // Events can outlive the entry they name — a cleared transcript, a resumed
     // conversation — and an unknown id must be nothing rather than a new row.

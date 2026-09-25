@@ -14,6 +14,7 @@ import { Markdown } from "./Markdown";
 import { Attachments } from "./Attachments";
 import { QuestionsCard } from "./QuestionsCard";
 import { TableCard } from "./TableCard";
+import { reportLabel } from "../lib/delegate";
 import { duration, plural } from "../lib/format";
 import { useStable } from "../lib/stable";
 import type { Answer, LineRange } from "../lib/api";
@@ -954,10 +955,28 @@ function ToolRow({
       >
         <span className="glyph">{TOOL_GLYPH[step.name] ?? "●"}</span>
         <span className="run-row-text">{step.preview}</span>
-        <span className="run-row-status">
-          {step.status === "running" ? "…" : step.status === "ok" ? "✓" : "failed"}
+        {/* A delegation's report says more than "it returned": done and
+            blocked both return fine. The word is the report's own. */}
+        <span className="run-row-status" data-report={step.report?.disposition}>
+          {step.status === "running"
+            ? "…"
+            : step.report
+              ? reportLabel(step.report)
+              : step.status === "ok"
+                ? "✓"
+                : "failed"}
         </span>
       </button>
+
+      {/* A blocked delegate names who moves next and what they have to do,
+          which is the one part of its report that asks something of the
+          reader. On the row, not behind it. */}
+      {step.report?.disposition === "blocked" && step.report.needs && (
+        <p className="run-row-needs">
+          {step.report.owner === "user" ? "Needs you to: " : "Needs the agent to: "}
+          {step.report.needs}
+        </p>
+      )}
 
       {/* Pictures a tool handed back, shown without needing the row opened.
           The same argument the chart and table cards make: a tool returned an

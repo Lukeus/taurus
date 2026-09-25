@@ -428,6 +428,28 @@ describe("a delegation", () => {
     expect(opened).toEqual([{ session: "child1", agent: "explorer" }]);
   });
 
+  it("says how its child stopped, and what a blocked one needs", () => {
+    const { host } = mount([
+      delegation({
+        status: "ok",
+        output: "Status: blocked.",
+        report: {
+          disposition: "blocked",
+          owner: "user",
+          needs: "say which config is canonical",
+          summary: "Two disagree.",
+          files: [],
+        },
+      }),
+    ]);
+    const status = host.querySelector(".run-row-status");
+    expect(status?.textContent).toBe("Needs you");
+    expect(status?.getAttribute("data-report")).toBe("blocked");
+    expect(host.querySelector(".run-row-needs")?.textContent).toBe(
+      "Needs you to: say which config is canonical",
+    );
+  });
+
   it("offers nothing when nothing was recorded", () => {
     // No recorder, no transcript, no offer to open one. An affordance that
     // opened an error is worse than no affordance.
