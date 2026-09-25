@@ -74,6 +74,13 @@ pub enum UiEvent {
         id: String,
         report: taurus_tools::DelegateReport,
     },
+    /// A call has returned, and its work goes on in the background: a
+    /// delegate started with `background`. Its card stays live until the
+    /// matching `DelegateReport` arrives, which may be several rounds later.
+    ToolDetached {
+        /// The call this belongs under, matching its `ToolCallStarted`.
+        id: String,
+    },
     ToolCallFinished {
         id: String,
         ok: bool,

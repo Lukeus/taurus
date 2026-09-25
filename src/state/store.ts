@@ -9,7 +9,7 @@
 import { create } from "zustand";
 
 import * as api from "../lib/api";
-import { reportFromText } from "../lib/delegate";
+import { reportFromText, takeBackgroundReports } from "../lib/delegate";
 import type {
   Answer,
   AppStatus,
@@ -99,6 +99,12 @@ export type Entry =
        * delegation, not where its child was written.
        */
       transcript?: { session: string; agent: string };
+      /**
+       * The call returned but its work goes on: a background delegation. The
+       * card stays live until `report` arrives. Live only: a reopened
+       * conversation draws what arrived and nothing as still running.
+       */
+      detached?: boolean;
       /**
        * How a delegation's child stopped: done, blocked on someone, failed.
        *
@@ -1360,10 +1366,26 @@ export function entriesFromMessages(
 
       for (const block of message.content) {
         if (block.type === "text") {
+          // A report the harness delivered goes back on its delegation's card.
+          // It was never something the user said.
+          const { reports, rest } = takeBackgroundReports(block.text);
+          for (const report of reports) {
+            const index = entries.findIndex(
+              (e) => e.kind === "tool" && e.id === report.call,
+            );
+            if (index < 0) continue;
+            const call = entries[index] as Extract<Entry, { kind: "tool" }>;
+            entries[index] = {
+              ...call,
+              output: report.text,
+              report: reportFromText(report.text),
+            };
+          }
+          if (rest === "") continue;
           entries.push({
             kind: "user",
             id: nextId(),
-            text: block.text,
+            text: rest,
             // On the first text block only. A user message has one, but a
             // hand-written transcript could have two, and repeating the images
             // under each would double them.
@@ -1380,10 +1402,13 @@ export function entriesFromMessages(
               ...call,
               status: block.is_error ? "error" : "ok",
               output,
+              // A background delegation's own report may already be on the
+              // card, if it arrived in the same message as this result.
               report:
-                call.name === "spawn_subagent" && !block.is_error
+                call.report ??
+                (call.name === "spawn_subagent" && !block.is_error
                   ? reportFromText(output)
-                  : undefined,
+                  : undefined),
               images: toolImages(block.content),
               // The same rule the live reducer applies: a call the harness
               // refused drew nothing, so a reopened conversation must not
@@ -2143,9 +2168,24 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           : e,
       );
 
+    case "tool_detached":
+      return entries.map((e) =>
+        e.kind === "tool" && e.id === event.id ? { ...e, detached: true } : e,
+      );
+
     case "delegate_report":
       return entries.map((e) =>
-        e.kind === "tool" && e.id === event.id ? { ...e, report: event.report } : e,
+        e.kind === "tool" && e.id === event.id
+          ? {
+              ...e,
+              report: event.report,
+              // A background delegation's result only said it started. What
+              // it found is this, and it's what opening the row should show.
+              output: e.detached
+                ? `Status: ${event.report.disposition}.\n\n${event.report.summary}`
+                : e.output,
+            }
+          : e,
       );
 
     case "tool_progress":

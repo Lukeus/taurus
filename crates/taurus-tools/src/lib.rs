@@ -12,6 +12,7 @@ pub mod jobs;
 pub mod login_path;
 pub mod overflow;
 pub mod path_guard;
+pub mod pending;
 pub mod permission;
 pub mod plan;
 pub mod registry;
@@ -29,6 +30,7 @@ pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::expand_env;
 pub use jobs::{BackgroundJob, JobOutput, Jobs};
 pub use login_path::Outcome as LoginPath;
+pub use pending::{Arrival, Pending, Ticket};
 pub use permission::{
     compound_reason, AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine,
     PermissionPrompt, PermissionRequest, Scope,

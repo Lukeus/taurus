@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { reportFromText, reportLabel } from "./delegate";
+import { reportFromText, reportLabel, takeBackgroundReports } from "./delegate";
 
 describe("reportFromText", () => {
   it("reads a done report with files and a tool summary", () => {
@@ -49,5 +49,26 @@ describe("reportLabel", () => {
     expect(
       reportLabel({ disposition: "blocked", owner: "parent", summary: "", files: [] }),
     ).toBe("Blocked");
+  });
+});
+
+describe("takeBackgroundReports", () => {
+  const block = (call: string) =>
+    `<background-report call="${call}" agent="explorer">\nStatus: done.\n\nFound it.\n</background-report>`;
+
+  it("takes every report out and leaves nothing when that was all", () => {
+    const { reports, rest } = takeBackgroundReports(`${block("a")}\n\n${block("b")}`);
+    expect(reports.map((r) => r.call)).toEqual(["a", "b"]);
+    expect(reports[0]).toEqual({
+      call: "a",
+      agent: "explorer",
+      text: "Status: done.\n\nFound it.",
+    });
+    expect(rest).toBe("");
+  });
+
+  it("leaves text that isn't a report alone", () => {
+    const text = "Please look at <background-report> handling.";
+    expect(takeBackgroundReports(text)).toEqual({ reports: [], rest: text });
   });
 });
