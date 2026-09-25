@@ -22,6 +22,7 @@ pub async fn run(
     host: &Host,
     session: Option<&str>,
     turn: Option<u32>,
+    again: bool,
     provider: Option<&str>,
     model: Option<&str>,
 ) -> Result<ExitCode, String> {
@@ -71,6 +72,7 @@ pub async fn run(
             &model,
             &session_id,
             turn,
+            again,
             CancellationToken::new(),
         )
         .await?;
@@ -79,12 +81,24 @@ pub async fn run(
     println!("{}", report.text.trim());
     println!();
     println!(
-        "— {} file{} reviewed by {}, without the conversation that produced {}.",
+        "— {} file{} reviewed by {}, without the conversation that produced {}{}.",
         report.files,
         if report.files == 1 { "" } else { "s" },
         report.model,
-        if report.files == 1 { "it" } else { "them" }
+        if report.files == 1 { "it" } else { "them" },
+        if report.read_claims {
+            ", checking what the turn claimed against what it ran"
+        } else {
+            ""
+        }
     );
+    if report.cached {
+        // A review already made of this same question, not a new one.
+        println!(
+            "  This is the review made {} of the same diff and claims. `--again` asks again.",
+            ago(report.at)
+        );
+    }
     if !report.omitted.is_empty() {
         // Last, so it is the thing still on screen. This is the sentence that
         // stops the review above being read as covering the whole turn.
@@ -123,4 +137,19 @@ fn list(turns: &[Checkpoint], session_id: &str) {
     }
     println!();
     println!("Review one with: taurus review --turn <n>");
+}
+
+/// "3 minutes ago", roughly, for a Unix time in the past.
+fn ago(at: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(at);
+    let secs = now.saturating_sub(at);
+    match secs {
+        0..=59 => "just now".into(),
+        60..=3599 => format!("{} minutes ago", secs / 60),
+        3600..=86_399 => format!("{} hours ago", secs / 3600),
+        _ => format!("{} days ago", secs / 86_400),
+    }
 }

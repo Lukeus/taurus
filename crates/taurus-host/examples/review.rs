@@ -18,6 +18,12 @@
 //! 3. **It read the file, not only the hunk.** The defect is only visible from
 //!    the surrounding code, which is what the brief tells it to go and read.
 //!
+//! Then a second review of the same diff, this time shown what the turn
+//! claimed ("fixed, and the tests pass") beside a recorded test run that
+//! failed. Printed, not asserted: whether the reviewer calls the claim
+//! contradicted. That's the thing claims were added to catch, and the thing a
+//! diff alone can't show.
+//!
 //! Needs Ollama. It writes only inside a temporary directory.
 
 use std::sync::Arc;
@@ -130,6 +136,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "found"
         } else {
             "did NOT find — worth a look at the brief in `review.rs`, or a larger model for"
+        }
+    );
+
+    // The same diff, shown with what the turn said and what it ran.
+    let claims = review::Claims {
+        said: "Simplified `average`. The tests pass.".into(),
+        evidence: vec!["`cargo test` failed: test average_of_nothing ... FAILED ⏎ \
+             assertion failed: average(&[]).is_none() ⏎ test result: FAILED. 4 passed; 1 failed"
+            .into()],
+    };
+    let changes = vec![TurnChange::Diff {
+        diff: diff::of_change("average.rs".into(), Some(BEFORE), Some(AFTER)),
+    }];
+    let prepared = review::prepare(changes, Some(&claims), 1, &model)?;
+    let context = ToolContext::new(
+        workspace.path().to_path_buf(),
+        Arc::new(PermissionEngine::new(
+            workspace.path(),
+            workspace.path().join(".taurus"),
+            Box::new(AllowAll),
+        )),
+        CancellationToken::new(),
+    );
+    println!("\nReviewing it again, shown a claim its own test run contradicts…\n");
+    let report = review::run(
+        Arc::new(OllamaProvider::new(DEFAULT_BASE_URL.to_string())),
+        &model,
+        ToolRegistry::with_builtins(),
+        context,
+        prepared,
+        1,
+        CancellationToken::new(),
+    )
+    .await?;
+    println!("{}\n", report.text.trim());
+    let text = report.text.to_lowercase();
+    let caught = text.contains("contradict") || text.contains("fail");
+    println!(
+        "It {} the claim that the tests pass.",
+        if caught {
+            "contradicted"
+        } else {
+            "did NOT contradict — worth a look at the brief, or a larger model for"
         }
     );
 

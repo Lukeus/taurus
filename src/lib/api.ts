@@ -1034,8 +1034,12 @@ export const turnChanges = (sessionId: string, turn: number) =>
  * conversation is a review in the context window of every request after it,
  * which is the cost the whole design exists to avoid. See `taurus_host::review`.
  */
-export const reviewTurn = (sessionId: string, turn: number) =>
-  invoke<ReviewReport>("review_turn", { sessionId, turn });
+/**
+ * Reviews one turn. Returns the review already made of the same diff, claims
+ * and model unless `again` is set; that one comes back marked `cached`.
+ */
+export const reviewTurn = (sessionId: string, turn: number, again = false) =>
+  invoke<ReviewReport>("review_turn", { sessionId, turn, again });
 
 /** Ends a review `reviewTurn` is still waiting on. Safe when none is. */
 export const stopReview = (sessionId: string, turn: number) =>

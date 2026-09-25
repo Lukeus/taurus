@@ -175,14 +175,23 @@ the backlog, and they're the minority.
   it to say "if this was intended, ignore me" instead of asserting. That
   softens the wording, not the fact. Covering it means giving the reviewer
   the request back, which gives it the context that wrote the code, and then
-  there'd be no point running it. See
+  there'd be no point running it. What it does get is what the turn
+  *claimed*, checked against what the turn actually ran, which catches the
+  other half of it: "the tests pass" beside a test run that failed. See
   [Reading it back](safety.md#reading-it-back-to-somebody-who-did-not-write-it).
 - **A review reads; it does not run.** Its tool list is `explorer`'s: no
-  build, no tests, no reproducing anything. It's told not to claim a test
-  passes, but that's a prompt, not a guarantee. What stops it *changing*
+  build, no tests, no reproducing anything. It's shown the results of the
+  commands the turn ran, and told not to claim anything past them, but that's
+  a prompt, not a guarantee. What stops it *changing*
   anything is structural, not an instruction. The scope holds no writing
   tool, and the context carries no checkpoint recorder, so there's nothing to
   record a write into.
+- **A turn that changed nothing can't be reviewed.** Reviews hang off the
+  Changes drawer, which lists the turns that changed files, so a turn that
+  only *said* something ("I couldn't, because…", "it's already correct") has
+  nowhere to be reviewed from, though its claims are exactly what a review
+  now checks. Reaching one needs an entry point on the conversation itself,
+  not the drawer.
 - **A review sees at most 24 KB of diff, and at most 160 lines of any one
   file.** The per-file cap is `FileDiff`'s own. The total is the reviewer's,
   and it keeps whole files instead of cutting one mid-hunk, because a diff
@@ -192,8 +201,10 @@ the backlog, and they're the minority.
   one most worth reviewing. A turn past both caps gets a partial review that
   says which parts it covers.
 - **A review costs a model round trip, on your own provider.** It's a button
-  that takes a minute on a local model. Nothing about it is free or cached:
-  asking twice asks twice. It's deliberately not a roster line the model can
+  that takes a minute on a local model. Asking again about the same diff,
+  claims, and model returns the review already made, and says when; **Review
+  again** (`--again` in the CLI) pays for a new one. It's deliberately not a
+  roster line the model can
   reach. A `reviewer` sub-agent would add a line to every request's
   spawn-tool description, charging every conversation for a button pressed
   once an hour. The trade is that the model can't decide to review something
