@@ -430,12 +430,18 @@ impl SessionLog {
                 usage: session.usage,
             };
         }
-        // Guards a resumed or replaced session whose history is shorter than
-        // what has been written; appending from a stale offset would duplicate.
-        let from = self.persisted.min(session.messages.len());
+        // `persisted` counts the transcript, which still holds what a
+        // compaction took out of the session; `summarized_away` is how far the
+        // two numberings have drifted apart. The `min` guards a resumed or
+        // replaced session whose history is shorter than what has been
+        // written; appending from a stale offset would duplicate.
+        let start = self
+            .persisted
+            .saturating_sub(session.summarized_away)
+            .min(session.messages.len());
         Unrecorded {
-            from,
-            messages: session.messages[from..].to_vec(),
+            from: start + session.summarized_away,
+            messages: session.messages[start..].to_vec(),
             usage: session.usage,
         }
     }
@@ -726,6 +732,8 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
             // here to restore it from — and the first request of the resumed
             // conversation measures it again anyway.
             last_request: None,
+            // What was loaded is the whole transcript.
+            summarized_away: 0,
         },
         switches,
         path,
@@ -1517,6 +1525,37 @@ mod tests {
 
         let loaded = load("append1").unwrap().session;
         assert_eq!(loaded.messages.len(), 4, "a message was duplicated or lost");
+    }
+
+    #[test]
+    fn the_round_after_a_compaction_is_written_down() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+
+        // one, ok, two, ok
+        let mut session = session_with("compact1", &["one", "two"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+
+        // The first two become a summary.
+        session.summarize_front(2, Message::user("Summary: one, two."));
+        session.push(Message::user("five"));
+        session.push(Message::assistant("ok"));
+        log.record(&session);
+
+        // And a second compaction, which drops the first summary with the rest.
+        session.summarize_front(3, Message::user("Summary: up to four."));
+        session.push(Message::user("six"));
+        log.record(&session);
+
+        let loaded = load("compact1").unwrap().session;
+        let texts: Vec<String> = loaded.messages.iter().map(|m| m.text()).collect();
+        assert_eq!(
+            texts,
+            ["one", "ok", "two", "ok", "five", "ok", "six"],
+            "the transcript keeps what was summarized, never the summary, and \
+             loses nothing written after it"
+        );
     }
 
     #[test]

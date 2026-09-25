@@ -632,7 +632,8 @@ the build.
 Checking means a command that ran with nothing written after it: the model
 asked the project a question and got an answer, with no edit since. Order
 decides, and it's the order the calls ran. Calls that only read run first,
-side by side. Everything else runs one at a time, in the order the message
+side by side. A delegation counts as one of those only when its agent can't
+write. Everything else runs one at a time, in the order the message
 lists it. So a round that ran the tests and then edited still owes a check,
 as if the edit had come in its own round. A write listed before a
 `check_command` still lands after it.

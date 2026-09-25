@@ -128,6 +128,11 @@ hook file safe to honor at all once you trust the project.
 | `user_prompt_submit` | When you send a message | Yes |
 | `stop` | When a turn ends | No |
 
+A turn here is one of yours: a message sent and answered. A delegation
+inside it and a review of it aren't turns, so neither fires
+`user_prompt_submit` or `stop`. Their tool calls still meet `pre_tool_use` and
+`post_tool_use`.
+
 `matches` narrows which calls a hook is about. Every field is optional.
 Without `matches`, the hook applies to everything on its event.
 

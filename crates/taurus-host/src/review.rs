@@ -198,6 +198,9 @@ pub async fn review(
             // Nothing was changed, so there is nothing to check afterwards.
             // Left on, the nudge asks a read-only agent to go and run its work.
             verify_changes: false,
+            // A review is not a turn of the conversation it reads. Its tool
+            // calls still meet the tool hooks.
+            turn_hooks: false,
             ..Default::default()
         },
     );

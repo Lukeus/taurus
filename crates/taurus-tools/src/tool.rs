@@ -520,6 +520,22 @@ pub trait Tool: Send + Sync {
         self.touches_unpredictably()
     }
 
+    /// Whether this call may run alongside the others in its round.
+    ///
+    /// Follows [`Tool::effect`] by default: a tool that only reads can't
+    /// trip over another call. Separate from it because the two answer
+    /// different questions for a tool whose effect is a statement about the
+    /// call and not about what the call sets in motion. `spawn_subagent` is
+    /// the case: spawning is a read, since the child's own calls are gated one
+    /// by one, but a child that can write is a writer, and two of them in one
+    /// working tree at once edit the same files blind.
+    ///
+    /// Given the input because that is where the answer lives for such a tool
+    /// — which agent is being started.
+    fn runs_concurrently(&self, _input: &serde_json::Value) -> bool {
+        self.effect().is_concurrent_safe()
+    }
+
     /// What this call wants drawn in the transcript, instead of a row saying it
     /// happened.
     ///

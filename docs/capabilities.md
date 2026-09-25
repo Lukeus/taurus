@@ -293,6 +293,18 @@ them through `spawn_subagent`.
 them apart is who decides. Hand `worker` a decision it wasn't given and it's
 told to stop and say what's missing, not guess.
 
+Two delegations in one round run side by side only if neither agent can
+write. `explorer` can't, so two searches run together. `coder` and `worker`
+can, so each runs on its own: two agents editing one working tree at once
+would each write over files the other is halfway through. Your own agents are
+judged by the tools they name. An agent with no `tools:` key inherits
+everything the parent has, writers included, so it runs on its own too.
+
+A delegate's tool calls meet the same `pre_tool_use` and `post_tool_use` hooks
+as the parent's, so it can't route around a guard. It doesn't fire
+`user_prompt_submit` or `stop`: a delegation is one call inside your turn,
+not a turn of its own.
+
 You can add your own. An agent is a markdown file in `~/.taurus/agents` or
 `<workspace>/.taurus/agents`. The file name is the agent's name, and the body
 below the frontmatter is its system prompt:

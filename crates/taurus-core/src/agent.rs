@@ -126,6 +126,16 @@ pub struct AgentConfig {
     /// Configurable because it costs a round trip, and a turn that only ever
     /// edits prose has nothing to run.
     pub verify_changes: bool,
+    /// Whether this agent's turns are the conversation's turns, for hooks.
+    ///
+    /// Off for a delegate. Its tool calls still go through the same
+    /// `pre_tool_use` and `post_tool_use` hooks as the parent's, which is what
+    /// stops it routing around a guard. But `user_prompt_submit` and `stop`
+    /// mark the conversation's turns, and a delegation is one tool call inside
+    /// one of those: firing `stop` once per child would break any hook that
+    /// counts turns, and a prompt hook would be shown the parent's brief as if
+    /// the user had typed it.
+    pub turn_hooks: bool,
 }
 
 /// Asked once per turn, when the model stops having changed files it never
@@ -197,6 +207,7 @@ impl Default for AgentConfig {
             retry_backoff: Duration::from_millis(500),
             stall_limit: 3,
             verify_changes: true,
+            turn_hooks: true,
             capture: crate::telemetry::Capture::MetadataOnly,
         }
     }
@@ -473,6 +484,9 @@ impl Agent {
     /// which is what makes "attach the current branch to every prompt" a
     /// three-line script rather than a feature.
     async fn before_prompt(&self, message: &Message) -> Option<String> {
+        if !self.config.turn_hooks {
+            return None;
+        }
         let runner = self.tools.hooks.as_ref()?;
         if !runner.has(taurus_hooks::HookEvent::UserPromptSubmit) {
             return None;
@@ -493,6 +507,9 @@ impl Agent {
     /// so anything they say goes to the log rather than into a conversation
     /// that has already been answered.
     async fn after_turn(&self) {
+        if !self.config.turn_hooks {
+            return;
+        }
         let Some(runner) = self.tools.hooks.as_ref() else {
             return;
         };
@@ -1114,7 +1131,7 @@ impl Agent {
 
         let (concurrent, sequential): (Vec<_>, Vec<_>) = calls
             .into_iter()
-            .partition(|(_, n, _)| self.runs_concurrently(n));
+            .partition(|(_, n, input)| self.runs_concurrently(n, input));
 
         let mut results: Vec<(String, ContentBlock)> = Vec::new();
 
@@ -1153,10 +1170,10 @@ impl Agent {
 
     /// Whether a call runs alongside the others in its round, ahead of the ones
     /// that run one at a time. See [`Self::run_tool_calls`].
-    fn runs_concurrently(&self, name: &str) -> bool {
+    fn runs_concurrently(&self, name: &str, input: &serde_json::Value) -> bool {
         self.registry
             .get(name)
-            .is_some_and(|t| t.effect().is_concurrent_safe())
+            .is_some_and(|t| t.runs_concurrently(input))
     }
 
     /// Whether this round ran something that checks the project — a build, a
@@ -1187,7 +1204,7 @@ impl Agent {
     fn checked_with_nothing_written_after(&self, assistant: &Message) -> bool {
         let (first, then): (Vec<_>, Vec<_>) = assistant
             .tool_uses()
-            .partition(|(_, name, _)| self.runs_concurrently(name));
+            .partition(|(_, name, input)| self.runs_concurrently(name, input));
         let mut checked = false;
         for (_, name, input) in first.into_iter().chain(then) {
             let Some(tool) = self.registry.get(name) else {
@@ -1490,12 +1507,10 @@ impl Agent {
             }
         };
 
-        let mut rest = session.messages.split_off(drop_count);
-        session.messages.clear();
-        session.messages.push(Message::user(format!(
-            "Summary of the earlier conversation:\n\n{summary}"
-        )));
-        session.messages.append(&mut rest);
+        session.summarize_front(
+            drop_count,
+            Message::user(format!("Summary of the earlier conversation:\n\n{summary}")),
+        );
 
         let _ = ui
             .send(UiEvent::Compacted {

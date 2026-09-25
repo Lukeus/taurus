@@ -119,8 +119,8 @@ the backlog, and they're the minority.
   guard. `user_prompt_submit` and `stop` fire for the conversation, not once
   per child. From the outside a delegation is one tool call, and firing "the
   turn ended" four times for one turn would break any `stop` hook that
-  counts. Covering it properly needs an event pair of its own, and nothing
-  needs one yet.
+  counts. A review of a turn is treated the same way. Covering it properly
+  needs an event pair of its own, and nothing needs one yet.
 - **Trust is per folder, and it's answered once.** A workspace you've vouched
   for stays vouched for. So a `git pull` that adds a server to
   `.taurus/mcp.json` is read on the next turn without asking again.
