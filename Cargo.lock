@@ -6385,6 +6385,7 @@ dependencies = [
  "taurus-skills",
  "taurus-telemetry",
  "taurus-tools",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing-subscriber",

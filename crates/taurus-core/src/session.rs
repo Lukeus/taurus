@@ -33,6 +33,86 @@ pub struct Session {
     /// whole transcript.
     #[serde(default)]
     pub summarized_away: usize,
+    /// Results owed to calls a stopped process never answered.
+    ///
+    /// A transcript whose last message is a call with no result is one the
+    /// process died in the middle of. Sending it as it stands is a request
+    /// every provider rejects, and replaying the call would repeat something
+    /// that may already have happened. So the loader answers each call with
+    /// "outcome unknown", and the answers ride in front of the next user
+    /// message, whatever it is. A message of their own would put two user
+    /// messages in a row. See [`owed_results`].
+    #[serde(skip)]
+    pub owed: Vec<ContentBlock>,
+    /// The turn this conversation was in when the process running it stopped,
+    /// as the transcript tells it. Cleared by the next turn to start.
+    #[serde(skip)]
+    pub interrupted: Option<Interrupted>,
+}
+
+/// How many turns one request gets, counting the one that was interrupted and
+/// every continuation of it.
+///
+/// A restart doesn't reset it, because it's counted from the transcript. A
+/// message you type does, because that's a new request.
+pub const MAX_ATTEMPTS: u32 = 3;
+
+/// What a continuation says. Nothing is replayed: the model reads the history,
+/// including which calls have unknown outcomes, and decides what's left.
+pub const CONTINUE_PROMPT: &str =
+    "Your previous run was interrupted. Continue from where you left off.";
+
+/// A turn that was running when the process stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Interrupted {
+    /// Turns spent on this request so far: the original, and each
+    /// continuation. Continuing is refused at [`MAX_ATTEMPTS`].
+    pub attempts: u32,
+    /// Calls that were running, whose outcome is unknown.
+    pub unanswered: usize,
+}
+
+impl Interrupted {
+    pub fn can_continue(&self) -> bool {
+        self.attempts < MAX_ATTEMPTS
+    }
+}
+
+/// "Outcome unknown" answers for every call in `assistant`, which the process
+/// stopped before answering.
+///
+/// Marked as errors, because the one thing known is that nothing reported
+/// success. Each says what to check before trying again, from the call's own
+/// input: the path a file tool named, the command a shell call ran.
+pub fn owed_results(assistant: &Message) -> Vec<ContentBlock> {
+    assistant
+        .tool_uses()
+        .map(|(id, name, input)| {
+            let mut text = String::from(
+                "Outcome unknown: Taurus stopped while this call was running, so it may or may not \
+                 have taken effect.",
+            );
+            let path = input.get("path").and_then(|v| v.as_str());
+            let command = input.get("command").and_then(|v| v.as_str());
+            match (path, command) {
+                (Some(path), _) => text.push_str(&format!(
+                    " It named `{path}`. Read it before doing this again."
+                )),
+                (None, Some(command)) => text.push_str(&format!(
+                    " It ran `{command}`, and what a command changes isn't known until it \
+                     finishes. Check before running it again."
+                )),
+                _ => text.push_str(&format!(
+                    " Check what `{name}` did before calling it again."
+                )),
+            }
+            ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: text.into(),
+                is_error: true,
+            }
+        })
+        .collect()
 }
 
 /// A request's real size, beside the estimates that were made of it.
@@ -106,6 +186,8 @@ impl Session {
             usage: TokenUsage::default(),
             last_request: None,
             summarized_away: 0,
+            owed: Vec::new(),
+            interrupted: None,
         }
     }
 

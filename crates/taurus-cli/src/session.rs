@@ -85,8 +85,32 @@ async fn open_session(
         session.messages.len(),
         session.model
     );
+    if let Some(interrupted) = &session.interrupted {
+        eprintln!("  {}", interrupted_notice(interrupted));
+    }
     Ok((session, log))
 }
+
+/// What to say about a conversation whose last turn the process died in.
+fn interrupted_notice(interrupted: &taurus_core::Interrupted) -> String {
+    let calls = match interrupted.unanswered {
+        0 => String::new(),
+        1 => " One call was running, and its outcome is unknown.".to_string(),
+        n => format!(" {n} calls were running, and their outcome is unknown."),
+    };
+    if interrupted.can_continue() {
+        format!("Its last turn was interrupted.{calls} Send {CONTINUE_COMMAND} to pick it up, or any message to go on.")
+    } else {
+        format!(
+            "Its last turn was interrupted.{calls} It has had {} turns already, so it won't be \
+             continued again; send a message to go on.",
+            interrupted.attempts
+        )
+    }
+}
+
+/// Continues an interrupted turn instead of sending a message.
+const CONTINUE_COMMAND: &str = "/continue";
 
 /// Runs one task and exits.
 pub async fn run_once(
@@ -238,10 +262,15 @@ async fn turn(
     // Resolved before the turn starts so a mistyped command costs nothing: the
     // user gets told, and no request is made. `task` stays what names the turn,
     // being what was actually asked.
-    let prompt = match runtime.host.expand_command(task).await {
-        Some(Ok(invocation)) => invocation.prompt,
-        Some(Err(e)) => return Err(e.to_string()),
-        None => task.to_string(),
+    let continuing = task.trim() == CONTINUE_COMMAND;
+    let prompt = if continuing {
+        String::new()
+    } else {
+        match runtime.host.expand_command(task).await {
+            Some(Ok(invocation)) => invocation.prompt,
+            Some(Err(e)) => return Err(e.to_string()),
+            None => task.to_string(),
+        }
     };
 
     let agent = runtime
@@ -267,13 +296,24 @@ async fn turn(
         renderer.finish();
     });
 
-    let outcome = agent.run_turn(session, Message::user(prompt), tx).await;
+    // Lent to the loop for the turn, which records each round as it happens
+    // rather than all of it at the end: a CLI turn killed half way used to
+    // leave nothing of itself behind.
+    let shared = Arc::new(tokio::sync::Mutex::new(std::mem::replace(
+        log,
+        SessionLog::disabled(),
+    )));
+    let agent = agent.with_recorder(Arc::new(sessions::SharedLog(shared.clone())));
+    let outcome = if continuing {
+        agent.continue_turn(session, tx).await
+    } else {
+        agent.run_turn(session, Message::user(prompt), tx).await
+    };
     printer.await.map_err(|e| e.to_string())?;
-
-    // Recorded whatever the outcome: an interrupted or failed turn still
-    // produced the messages that led there, and those are the ones worth
-    // resuming from.
-    log.record(session);
+    drop(agent);
+    *log = Arc::try_unwrap(shared)
+        .map_err(|_| "the transcript was still in use after the turn".to_string())?
+        .into_inner();
 
     match outcome {
         Ok(_) => Ok(true),
