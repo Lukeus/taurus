@@ -79,9 +79,9 @@ pub fn definitions() -> Vec<AgentDefinition> {
                 provider: None,
             },
             system_prompt: "You are a research sub-agent. Search and read to answer the question \
-                            you were given, then reply with the answer and the paths that support \
-                            it. You cannot modify files. Be specific and brief; the agent that \
-                            called you sees only your reply, not your tool calls."
+                            you were given, then report the answer and the paths that support it. \
+                            You cannot modify files. Be specific and brief; the agent that called \
+                            you sees only your report, not your tool calls."
                 .into(),
             tier: AgentTier::Builtin,
             path: None,
@@ -109,9 +109,10 @@ pub fn definitions() -> Vec<AgentDefinition> {
             },
             system_prompt: "You are a sub-agent carrying out one specific task. You cannot ask \
                             questions, so work from the instructions you were given. If they turn \
-                            out not to cover something you have to decide, stop and say what is \
-                            missing rather than guessing. When done, reply with what you changed. \
-                            Be brief; the agent that called you sees only your reply."
+                            out not to cover something you have to decide, stop and report it as \
+                            blocked on the agent that called you, naming what is missing, rather \
+                            than guessing. When done, report what you changed. Be brief; the \
+                            agent that called you sees only your report."
                 .into(),
             tier: AgentTier::Builtin,
             path: None,
@@ -146,10 +147,10 @@ pub fn definitions() -> Vec<AgentDefinition> {
                             Then make the change and check it — build it, run the tests, or run \
                             the thing you changed. You cannot ask questions, so where the task \
                             leaves something open, take the option most consistent with the code \
-                            already there and say which you took. Reply with what you changed, \
-                            what you ran, and what it said; if you could not check it, say that \
-                            instead of implying you did. Be brief; the agent that called you sees \
-                            only your reply, not your tool calls."
+                            already there and say which you took. Report what you changed, what \
+                            you ran, and what it said; if you could not check it, say that instead \
+                            of implying you did. Be brief; the agent that called you sees only \
+                            your report, not your tool calls."
                 .into(),
             tier: AgentTier::Builtin,
             path: None,

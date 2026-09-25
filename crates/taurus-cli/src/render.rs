@@ -201,6 +201,24 @@ impl Renderer {
                 self.dim(&format!("    · {label}"));
             }
 
+            // The finished line below already starts with the report's status.
+            // A delegate blocked on the user is the one worth more than that:
+            // it's asking the person reading this to do something, and the
+            // finished line cuts at 100 characters.
+            UiEvent::DelegateReport { report, .. } => {
+                if self.quiet {
+                    return;
+                }
+                if let (taurus_tools::Owner::User, Some(needs)) = (
+                    report.owner.unwrap_or(taurus_tools::Owner::Parent),
+                    &report.needs,
+                ) {
+                    self.break_text();
+                    self.break_thinking();
+                    self.warn(&format!("    ! waiting on you: {needs}"));
+                }
+            }
+
             UiEvent::ToolCallFinished { id, ok, output, .. } => {
                 if self.quiet || self.drawn.remove(id) {
                     return;

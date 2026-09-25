@@ -17,11 +17,25 @@ use tracing::info;
 use taurus_agents::{builtin, AgentDefinition};
 use taurus_provider::{Message, Provider};
 use taurus_tools::tool::{parse_input, schema_for};
-use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
+use taurus_tools::{
+    DelegateReport, Disposition, Effect, Tool, ToolContext, ToolError, ToolRegistry, ToolResult,
+    Touched,
+};
 
-use crate::agent::{Agent, AgentConfig, TurnRecorder};
+use crate::agent::{Agent, AgentConfig, AgentError, TurnOutcome, TurnRecorder};
 use crate::event::UiEvent;
+use crate::finish::{Finish, Reported, Slot, FINISH_TOOL};
 use crate::session::Session;
+
+/// Appended to every delegate's system prompt, whoever wrote the agent.
+///
+/// Here rather than in each built-in's prompt because an agent file on disk
+/// was written before `finish` existed and can't be relied on to mention it.
+const REPORT_BACK: &str = "\
+When you're done, call `finish`. Report `done` with what you found or \
+changed; `blocked` with who has to act (`waiting_on`) and the one thing they \
+have to do (`needs`); or `failed` with why it can't be done. Its `summary` is \
+all the agent that called you will read.";
 
 pub const SPAWN_TOOL: &str = "spawn_subagent";
 
@@ -287,7 +301,10 @@ impl Tool for SpawnSubagent {
 
         // Depth cap, enforced structurally: the child's registry has no spawn
         // tool, so it cannot delegate no matter what it decides to do.
-        let child_registry = self.registry.read().await.without(SPAWN_TOOL);
+        let mut child_registry = self.registry.read().await.without(SPAWN_TOOL);
+        // Its own, per delegation: the report it holds is this child's.
+        let slot = Slot::default();
+        child_registry.register(Arc::new(Finish::new(slot.clone())));
 
         // `allowed_tools` empty means "everything the parent has", which is what
         // an agent with no `tools:` key wants. An agent that *did* name its
@@ -305,6 +322,8 @@ impl Tool for SpawnSubagent {
                     .filter(|name| child_registry.get(name).is_some())
                     .cloned()
                     .collect();
+                // Counted before `finish` joins it: a scope that named nothing
+                // available is still one that would otherwise run wide open.
                 if available.is_empty() {
                     return Err(ToolError::Failed(format!(
                         "The sub-agent '{}' is scoped to tools that are not available here ({}), \
@@ -314,6 +333,8 @@ impl Tool for SpawnSubagent {
                         wanted.join(", ")
                     )));
                 }
+                let mut available = available;
+                available.push(FINISH_TOOL.to_string());
                 available
             }
         };
@@ -331,13 +352,15 @@ impl Tool for SpawnSubagent {
         // Before the agent, because opening a recorder needs the id of the
         // conversation it is recording.
         let mut session = Session::new(&model);
+        let touched = Arc::new(Touched::default());
+        let child_ctx = ctx.clone().with_touched(touched.clone());
         let agent = Agent::new(
             provider,
             child_registry,
-            ctx.clone(),
+            child_ctx,
             AgentConfig {
                 system_prompt: format!(
-                    "{}\n\nYou are working in `{}`.",
+                    "{}\n\n{REPORT_BACK}\n\nYou are working in `{}`.",
                     definition.system_prompt,
                     ctx.workspace.display()
                 ),
@@ -388,31 +411,74 @@ impl Tool for SpawnSubagent {
             .await;
         let tools_used = collector.await.unwrap_or_default();
 
-        let answer = session
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == taurus_provider::Role::Assistant && !m.text().trim().is_empty())
-            .map(|m| m.text())
-            .unwrap_or_default();
+        let reported = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let report = report_for(reported, &outcome, &session, touched.paths());
+        ctx.report_delegate(report.clone()).await;
 
-        let mut report = match outcome {
-            Ok(_) if !answer.trim().is_empty() => answer,
-            Ok(_) => "The sub-agent finished without reporting anything.".into(),
-            Err(e) => format!(
-                "The sub-agent stopped early ({e}). Partial result:\n\n{}",
-                if answer.trim().is_empty() {
-                    "(none)"
-                } else {
-                    &answer
-                }
-            ),
-        };
-
+        let mut text = report.render();
         if !tools_used.is_empty() {
-            report.push_str(&format!("\n\n[sub-agent used: {}]", summarize(&tools_used)));
+            text.push_str(&format!("\n\n[sub-agent used: {}]", summarize(&tools_used)));
         }
-        Ok(report.into())
+        Ok(text.into())
+    }
+}
+
+/// The report a delegation hands back, from what the child said and how its
+/// turn ended.
+///
+/// What the child reported wins whenever there is one, even if the turn went
+/// on to fail or be stopped: a report is a claim about the task, and a nudge
+/// that ran out of iterations afterwards doesn't unmake it. Without one, the
+/// outcome decides, and the child's last message goes along as the summary,
+/// labeled as what it is.
+fn report_for(
+    reported: Option<Reported>,
+    outcome: &Result<TurnOutcome, AgentError>,
+    session: &Session,
+    files: Vec<String>,
+) -> DelegateReport {
+    if let Some(reported) = reported {
+        return DelegateReport {
+            disposition: reported.disposition,
+            owner: reported.owner,
+            needs: reported.needs,
+            summary: reported.summary,
+            files,
+        };
+    }
+
+    let last = session
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == taurus_provider::Role::Assistant && !m.text().trim().is_empty())
+        .map(|m| m.text())
+        .unwrap_or_default();
+    let (disposition, summary) = match outcome {
+        Ok(done) if done.stop_reason == taurus_provider::StopReason::Canceled => (
+            Disposition::Cancelled,
+            if last.trim().is_empty() {
+                "Stopped before it said anything.".to_string()
+            } else {
+                format!("Stopped before it finished. Its last message:\n\n{last}")
+            },
+        ),
+        Ok(_) => (Disposition::Unreported, last),
+        Err(e) => (
+            Disposition::Failed,
+            if last.trim().is_empty() {
+                format!("It stopped early ({e}) without saying anything.")
+            } else {
+                format!("It stopped early ({e}). Its last message:\n\n{last}")
+            },
+        ),
+    };
+    DelegateReport {
+        disposition,
+        owner: None,
+        needs: None,
+        summary,
+        files,
     }
 }
 
@@ -538,6 +604,7 @@ mod tests {
     #[derive(Default)]
     struct SpyProgress {
         transcripts: tokio::sync::Mutex<Vec<(String, String)>>,
+        reports: tokio::sync::Mutex<Vec<DelegateReport>>,
     }
 
     #[async_trait]
@@ -547,6 +614,226 @@ mod tests {
         async fn transcript(&self, session: String, agent: String) {
             self.transcripts.lock().await.push((session, agent));
         }
+
+        async fn delegate_report(&self, report: DelegateReport) {
+            self.reports.lock().await.push(report);
+        }
+    }
+
+    fn finish(id: &str, input: serde_json::Value) -> ScriptedTurn {
+        ScriptedTurn::tool_call(id, FINISH_TOOL, input)
+    }
+
+    fn write(id: &str, path: &str) -> ScriptedTurn {
+        ScriptedTurn::tool_call(
+            id,
+            "write_file",
+            serde_json::json!({ "path": path, "content": "new\n" }),
+        )
+    }
+
+    /// Opens a checkpointed turn on the context, as the host does, and returns
+    /// the recorder so a test can play the parent's part in it.
+    fn checkpointed(
+        ctx: ToolContext,
+        logs: &TempDir,
+    ) -> (ToolContext, Arc<taurus_tools::TurnRecorder>) {
+        let store = taurus_tools::CheckpointStore::new(logs.path());
+        let recorder = store.begin_turn("parent", &ctx.workspace, "the parent's prompt");
+        (ctx.with_checkpoints(recorder.clone()), recorder)
+    }
+
+    #[tokio::test]
+    async fn a_delegate_that_answers_in_prose_is_asked_once_to_report() {
+        let (tool, provider, ctx, _dir) = fixture_with(
+            vec![
+                ScriptedTurn::text("It's in src/lib.rs."),
+                finish(
+                    "f1",
+                    serde_json::json!({ "disposition": "done", "summary": "It's in src/lib.rs." }),
+                ),
+            ],
+            None,
+        );
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "explorer",
+                    "prompt": "Find where the parser lives and report the file."
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+        assert!(out.starts_with("Status: done."), "{out}");
+        assert_eq!(provider.request_count().await, 2);
+        let asked = provider.last_request().await.unwrap();
+        let nudge = asked.messages.last().unwrap().text();
+        assert!(nudge.contains("without calling `finish`"), "{nudge}");
+    }
+
+    #[tokio::test]
+    async fn a_report_ends_the_delegates_turn() {
+        let (tool, provider, ctx, _dir) = fixture_with(
+            vec![finish(
+                "f1",
+                serde_json::json!({ "disposition": "done", "summary": "It's in src/lib.rs." }),
+            )],
+            None,
+        );
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "explorer",
+                    "prompt": "Find where the parser lives and report the file."
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+        assert!(
+            out.starts_with("Status: done.\n\nIt's in src/lib.rs."),
+            "{out}"
+        );
+        // No second request to write a closing paragraph nobody reads.
+        assert_eq!(provider.request_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_blocked_report_reaches_the_card_with_who_and_what() {
+        let (tool, ctx, _dir) = fixture(vec![finish(
+            "f1",
+            serde_json::json!({
+                "disposition": "blocked",
+                "summary": "Two config files disagree about the port.",
+                "waiting_on": "user",
+                "needs": "say which of config.toml and local.toml is canonical"
+            }),
+        )]);
+        let progress = Arc::new(SpyProgress::default());
+        let ctx = ctx.with_progress(progress.clone());
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "explorer",
+                    "prompt": "Work out which port the server listens on."
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+
+        assert!(
+            out.starts_with("Status: blocked. It needs the user to: say which"),
+            "{out}"
+        );
+        let reports = progress.reports.lock().await;
+        assert_eq!(reports.len(), 1, "one report, sent once");
+        assert_eq!(reports[0].disposition, Disposition::Blocked);
+        assert_eq!(reports[0].owner, Some(taurus_tools::Owner::User));
+    }
+
+    #[tokio::test]
+    async fn the_files_listed_are_the_ones_the_delegate_changed() {
+        let (tool, ctx, dir) = fixture(vec![
+            ScriptedTurn::tool_calls(vec![
+                (
+                    "w1",
+                    "write_file",
+                    serde_json::json!({ "path": "old.txt", "content": "b\n" }),
+                ),
+                (
+                    "w2",
+                    "write_file",
+                    serde_json::json!({ "path": "new.txt", "content": "c\n" }),
+                ),
+            ]),
+            finish(
+                "f1",
+                serde_json::json!({ "disposition": "done", "summary": "Wrote both." }),
+            ),
+        ]);
+        let tool = tool.with_defaults(AgentConfig {
+            verify_changes: false,
+            ..Default::default()
+        });
+        std::fs::write(dir.path().join("old.txt"), "a\n").unwrap();
+        std::fs::write(dir.path().join("parents.txt"), "a\n").unwrap();
+        let logs = TempDir::new().unwrap();
+        let (ctx, recorder) = checkpointed(ctx, &logs);
+        // The parent touched both earlier in this turn. The recorder keeps one
+        // pre-image per file per turn, so it won't record `old.txt` again —
+        // which is exactly why it can't be what a report is read from.
+        recorder.capture(&ctx.workspace.join("old.txt")).await;
+        recorder.capture(&ctx.workspace.join("parents.txt")).await;
+
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "worker",
+                    "prompt": "Write old.txt and new.txt with the contents given."
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+        assert!(out.contains("Files changed: new.txt, old.txt"), "{out}");
+        assert!(
+            !out.contains("parents.txt"),
+            "the parent's own edit is not the child's"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delegate_that_reports_done_on_unchecked_work_is_asked_to_check_it() {
+        let (tool, provider, ctx, _dir) = fixture_with(
+            vec![
+                write("w1", "a.txt"),
+                finish(
+                    "f1",
+                    serde_json::json!({ "disposition": "done", "summary": "Wrote it." }),
+                ),
+                finish(
+                    "f2",
+                    serde_json::json!({
+                        "disposition": "done",
+                        "summary": "Wrote it. There's nothing to run against a text file."
+                    }),
+                ),
+            ],
+            None,
+        );
+        let logs = TempDir::new().unwrap();
+        let (ctx, _recorder) = checkpointed(ctx, &logs);
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "worker",
+                    "prompt": "Write a.txt with the word new in it."
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+        assert_eq!(
+            provider.request_count().await,
+            3,
+            "write, report, nudge, report"
+        );
+        assert!(
+            out.contains("nothing to run against"),
+            "the later report wins: {out}"
+        );
     }
 
     #[tokio::test]
@@ -629,7 +916,10 @@ mod tests {
     async fn a_delegates_conversation_is_kept_not_dropped_with_the_tool_result() {
         let (tool, ctx, _dir) = fixture(vec![
             ScriptedTurn::tool_call("t1", "list_dir", serde_json::json!({"path": "."})),
-            ScriptedTurn::text("There are three files."),
+            finish(
+                "f1",
+                serde_json::json!({ "disposition": "done", "summary": "There are three files." }),
+            ),
         ]);
         let spy = Arc::new(SpyRecorder::default());
         let tool = tool.with_recorder(spy.clone());
@@ -686,6 +976,7 @@ mod tests {
             .await
             .unwrap();
         assert!(out.to_text().contains("stopped early"), "{out}");
+        assert!(out.to_text().starts_with("Status: failed."), "{out}");
 
         let kept = spy.kept.lock().await.clone();
         assert!(!kept.is_empty(), "a turn that failed is still a transcript");
@@ -693,8 +984,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_the_childs_final_answer() {
-        let (tool, ctx, _dir) = fixture(vec![ScriptedTurn::text("The answer is 42.")]);
+    async fn a_delegate_that_ignores_the_ask_to_report_is_passed_on_as_unreported() {
+        // Asked once to call `finish`, and it answers in prose again: what it
+        // said the second time goes along, labeled as what it is.
+        let (tool, ctx, _dir) = fixture(vec![
+            ScriptedTurn::text("I think it's 41."),
+            ScriptedTurn::text("The answer is 42."),
+        ]);
         let out = tool
             .execute(
                 serde_json::json!({
@@ -706,6 +1002,9 @@ mod tests {
             .await
             .unwrap();
         assert!(out.to_text().contains("The answer is 42."));
+        // It never called `finish`, and the parent is told so rather than
+        // handed prose as though it were a report.
+        assert!(out.to_text().starts_with("Status: unreported."));
     }
 
     #[tokio::test]
@@ -737,7 +1036,10 @@ mod tests {
                 SPAWN_TOOL,
                 serde_json::json!({"agent_type": "worker", "prompt": "recurse forever please"}),
             ),
-            ScriptedTurn::text("I could not delegate."),
+            finish(
+                "f1",
+                serde_json::json!({ "disposition": "failed", "summary": "I could not delegate." }),
+            ),
         ]);
         let out = tool
             .execute(
@@ -835,7 +1137,11 @@ mod tests {
             .into_iter()
             .map(|t| t.name)
             .collect();
-        assert_eq!(offered, vec!["read_file".to_string()]);
+        // What it named, and the one tool every delegate has to report with.
+        assert_eq!(
+            offered,
+            vec![FINISH_TOOL.to_string(), "read_file".to_string()]
+        );
     }
 
     #[tokio::test]

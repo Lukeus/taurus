@@ -586,6 +586,9 @@ impl Agent {
         // Tracked separately from `nudged`: they answer different questions and
         // a turn can earn both. See `PLAN_NUDGE`.
         let mut plan_nudged = false;
+        // Whether a turn that could end through a tool — a delegate's
+        // `finish` — has been asked to, having tried to stop in prose.
+        let mut report_nudged = false;
 
         loop {
             if self.tools.cancel.is_cancelled() {
@@ -668,22 +671,28 @@ impl Agent {
                 // and being told to in the system prompt demonstrably does not
                 // make a small model do it. Once per turn, it is asked
                 // directly, and the turn continues.
-                if unverified && !nudged && self.config.verify_changes {
-                    nudged = true;
-                    info!("asking the model to check work it has not verified");
-                    session.push(Message::user(VERIFY_NUDGE));
+                if let Some(nudge) = self.owed_nudge(unverified, &mut nudged, &mut plan_nudged) {
+                    session.push(Message::user(nudge));
                     continue;
                 }
 
-                // After the verify nudge, not before: checking the work can
-                // change what the plan should say, and a turn asked to close
-                // its list and then told to go and run something would have
-                // closed it one round too early.
-                if !plan_nudged && self.plan.as_ref().is_some_and(|b| b.unfinished()) {
-                    plan_nudged = true;
-                    info!("asking the model to close the steps it left open");
-                    session.push(Message::user(PLAN_NUDGE));
-                    continue;
+                // Last, because it asks for the thing the others would have
+                // changed: a report written before the work was checked, or
+                // with the plan still open, would be a report of the wrong
+                // state. Measured on a 9B model, about one delegation in five
+                // answered in prose instead; asked once, a report arrives
+                // for the price of one round trip, and only on a miss.
+                if !report_nudged {
+                    if let Some(tool) = self.ending_tool() {
+                        report_nudged = true;
+                        info!(%tool, "asking the model to end through its report tool");
+                        session.push(Message::user(format!(
+                            "You stopped without calling `{tool}`. Call it now: it's how your \
+                             result reaches whoever gave you this task, and what you just wrote \
+                             doesn't. Put that in it."
+                        )));
+                        continue;
+                    }
                 }
 
                 let _ = ui
@@ -744,6 +753,8 @@ impl Agent {
             // row. What matters is that the model has been told this answer
             // before and has learned nothing since; whether it tried something
             // else and came back does not change that.
+            let ended = self.ended_by_a_tool(&assistant, &results);
+
             let repeats = match all_failed(&assistant, &results) {
                 Some(calls) => {
                     let seen = failures.iter().filter(|round| **round == calls).count() + 1;
@@ -773,6 +784,28 @@ impl Agent {
                 let _ = ui.send(UiEvent::Error { message }).await;
                 info!(repeats, "stopping a stalled turn");
                 return Err(AgentError::Stalled(repeats));
+            }
+
+            // A tool that ends the turn — a delegate's `finish` — ends it
+            // here, with its result on record. The nudges a plain answer would
+            // have met still apply: a delegate that reports done on work it
+            // never ran gets asked to check it, and reports again.
+            if ended {
+                if let Some(nudge) = self.owed_nudge(unverified, &mut nudged, &mut plan_nudged) {
+                    session.push(Message::user(nudge));
+                    continue;
+                }
+                let _ = ui
+                    .send(UiEvent::TurnFinished {
+                        stop_reason: StopReason::EndTurn,
+                        usage: total,
+                    })
+                    .await;
+                return Ok(TurnOutcome {
+                    stop_reason: StopReason::EndTurn,
+                    usage: total,
+                    iterations: iteration,
+                });
             }
         }
     }
@@ -1166,6 +1199,55 @@ impl Agent {
         }
         ordered.extend(results.into_iter().map(|(_, block)| block));
         ordered
+    }
+
+    /// The nudge a turn that is about to finish still owes, if any, marking it
+    /// sent.
+    ///
+    /// Verify first, then the plan: checking the work can change what the
+    /// plan should say, and a turn asked to close its list and then told to go
+    /// and run something would have closed it one round too early.
+    fn owed_nudge(
+        &self,
+        unverified: bool,
+        nudged: &mut bool,
+        plan_nudged: &mut bool,
+    ) -> Option<&'static str> {
+        if unverified && !*nudged && self.config.verify_changes {
+            *nudged = true;
+            info!("asking the model to check work it has not verified");
+            return Some(VERIFY_NUDGE);
+        }
+        if !*plan_nudged && self.plan.as_ref().is_some_and(|b| b.unfinished()) {
+            *plan_nudged = true;
+            info!("asking the model to close the steps it left open");
+            return Some(PLAN_NUDGE);
+        }
+        None
+    }
+
+    /// The tool this turn offers that ends it, if there is one. See
+    /// [`taurus_tools::Tool::ends_turn`].
+    fn ending_tool(&self) -> Option<String> {
+        self.request_tools()
+            .into_iter()
+            .map(|def| def.name)
+            .find(|name| self.registry.get(name).is_some_and(|t| t.ends_turn()))
+    }
+
+    /// Whether this round made a successful call to a tool that ends the
+    /// turn. See [`taurus_tools::Tool::ends_turn`].
+    fn ended_by_a_tool(&self, assistant: &Message, results: &[ContentBlock]) -> bool {
+        assistant.tool_uses().any(|(id, name, _)| {
+            self.registry.get(name).is_some_and(|t| t.ends_turn())
+                && results.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::ToolResult { tool_use_id, is_error: false, .. }
+                            if tool_use_id == id
+                    )
+                })
+        })
     }
 
     /// Whether a call runs alongside the others in its round, ahead of the ones
@@ -1757,6 +1839,16 @@ impl ToolProgress for CallProgress {
                 id: self.id.clone(),
                 session,
                 agent,
+            })
+            .await;
+    }
+
+    async fn delegate_report(&self, report: taurus_tools::DelegateReport) {
+        let _ = self
+            .ui
+            .send(UiEvent::DelegateReport {
+                id: self.id.clone(),
+                report,
             })
             .await;
     }

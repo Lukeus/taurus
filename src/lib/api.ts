@@ -18,6 +18,8 @@ import type { Attached } from "../bindings/Attached";
 import type { Attachment } from "../bindings/Attachment";
 import type { Background } from "../bindings/Background";
 import type { BackgroundJob } from "../bindings/BackgroundJob";
+import type { DelegateDisposition } from "../bindings/DelegateDisposition";
+import type { DelegateReport } from "../bindings/DelegateReport";
 import type { JobOutput } from "../bindings/JobOutput";
 import type { ChangedFiles } from "../bindings/ChangedFiles";
 import type { Checkpoint } from "../bindings/Checkpoint";
@@ -156,6 +158,8 @@ export type {
   Background,
   BackgroundJob,
   ChangedFiles,
+  DelegateDisposition,
+  DelegateReport,
   Checkpoint,
   CommandKind,
   CommandSummary,

@@ -9,10 +9,12 @@
 import { create } from "zustand";
 
 import * as api from "../lib/api";
+import { reportFromText } from "../lib/delegate";
 import type {
   Answer,
   AppStatus,
   CreatedSession,
+  DelegateReport,
   Message,
   LineRange,
   OnScreen,
@@ -97,6 +99,13 @@ export type Entry =
        * delegation, not where its child was written.
        */
       transcript?: { session: string; agent: string };
+      /**
+       * How a delegation's child stopped: done, blocked on someone, failed.
+       *
+       * Live, from its own event. On a reopened conversation, read back from
+       * the result's first line, which is written in a fixed shape for this.
+       */
+      report?: DelegateReport;
       /**
        * Wall-clock bounds of the call, in epoch milliseconds, so a run of
        * steps can report how long it took. Absent on a resumed conversation:
@@ -1366,10 +1375,15 @@ export function entriesFromMessages(
           );
           if (index >= 0) {
             const call = entries[index] as Extract<Entry, { kind: "tool" }>;
+            const output = toolText(block.content);
             entries[index] = {
               ...call,
               status: block.is_error ? "error" : "ok",
-              output: toolText(block.content),
+              output,
+              report:
+                call.name === "spawn_subagent" && !block.is_error
+                  ? reportFromText(output)
+                  : undefined,
               images: toolImages(block.content),
               // The same rule the live reducer applies: a call the harness
               // refused drew nothing, so a reopened conversation must not
@@ -2127,6 +2141,11 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
         e.kind === "tool" && e.id === event.id
           ? { ...e, transcript: { session: event.session, agent: event.agent } }
           : e,
+      );
+
+    case "delegate_report":
+      return entries.map((e) =>
+        e.kind === "tool" && e.id === event.id ? { ...e, report: event.report } : e,
       );
 
     case "tool_progress":
