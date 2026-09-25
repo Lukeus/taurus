@@ -96,6 +96,9 @@ pub async fn review_turn(
     state: State<'_, Arc<AppState>>,
     session_id: String,
     turn: u32,
+    // Ask again even when this question has been answered. See
+    // `taurus_host::review::stored`.
+    again: Option<bool>,
 ) -> CmdResult<taurus_host::review::ReviewReport> {
     let entry = state.session(&session_id)?;
     check_workspace(&entry.workspace, &state.host.workspace().await)?;
@@ -112,7 +115,14 @@ pub async fn review_turn(
 
     state
         .host
-        .review_turn(provider, &model, &session_id, turn, running.cancel.clone())
+        .review_turn(
+            provider,
+            &model,
+            &session_id,
+            turn,
+            again.unwrap_or(false),
+            running.cancel.clone(),
+        )
         .await
 }
 

@@ -539,6 +539,29 @@ describe("reviewing a turn", () => {
     expect(drawer.text()).toContain("cannot know what was asked for");
   });
 
+  it("says when a review is the one already made, and offers another", async () => {
+    // The same diff and claims asked about twice come back without a second
+    // model call, and a review that looks new but isn't would mislead.
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+      review_turn: {
+        ...REPORT,
+        read_claims: true,
+        cached: true,
+        at: Math.floor(Date.now() / 1000) - 180,
+      },
+    });
+    const drawer = await open();
+    await drawer.click("View changes");
+    await drawer.click("Review this turn");
+
+    expect(drawer.text()).toContain("Made 3 minutes ago for this same diff and claims");
+    expect(drawer.text()).toContain("checked against what it actually ran");
+    expect(drawer.text()).toContain("Review again");
+  });
+
   it("names the files the reviewer was not shown", async () => {
     // A review that covered one of two files and did not say so reads as a
     // clean bill of health for both.

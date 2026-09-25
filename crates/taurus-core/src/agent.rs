@@ -529,6 +529,12 @@ impl Agent {
         if let Some(recorder) = &self.recorder {
             recorder.turn_started(&turn_id, continues).await;
         }
+        // The same id on the turn's checkpoint, so what the turn changed can
+        // be found beside what it said about it. First name wins, so a
+        // delegate's own turn doesn't rename its parent's.
+        if let Some(checkpoints) = &self.tools.checkpoints {
+            checkpoints.name(&turn_id).await;
+        }
         let outcome = self
             .turn(session, user_message, ui, &pending)
             .instrument(span.clone())

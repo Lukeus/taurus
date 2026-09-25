@@ -3178,3 +3178,122 @@ async fn an_explicit_model_short_circuits_the_backend_query() {
     assert_eq!(model, "some-model");
     assert!(!provider.is_empty());
 }
+
+#[tokio::test]
+async fn a_review_is_shown_what_the_turn_claimed_and_answered_once_per_question() {
+    use taurus_core::testing::{FakeProvider, ScriptedTurn};
+
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+    std::fs::write(
+        workspace.join(".taurus/permissions.json"),
+        r#"{"allowed":["write_file"]}"#,
+    )
+    .unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload_local().await;
+
+    // A turn that writes a file and then claims more than it did.
+    let provider = FakeProvider::new(vec![
+        ScriptedTurn::tool_call(
+            "w1",
+            "write_file",
+            serde_json::json!({ "path": "a.txt", "content": "new\n" }),
+        ),
+        ScriptedTurn::text("Wrote a.txt."),
+        // Asked to check its work; it claims instead.
+        ScriptedTurn::text("Wrote a.txt, and the tests pass."),
+    ]);
+    let mut session = taurus_core::Session::new("fake");
+    session.id = "conversation1".into();
+    let log = crate::sessions::SessionLog::create(&session, &workspace, None);
+    let agent = host
+        .build_agent(
+            provider,
+            "fake",
+            CancellationToken::new(),
+            TurnRef {
+                session_id: "conversation1",
+                prompt: "write a.txt",
+                unattended: None,
+            },
+        )
+        .await
+        .with_recorder(Arc::new(crate::sessions::SharedLog(Arc::new(
+            tokio::sync::Mutex::new(log),
+        ))));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(
+            &mut session,
+            taurus_provider::Message::user("write a.txt"),
+            tx,
+        )
+        .await
+        .expect("the turn should finish");
+    drain.await.unwrap();
+
+    // Reviewed: shown the diff and what the turn ended on.
+    let reviewer = FakeProvider::new(vec![ScriptedTurn::text(
+        "Nothing ran, so \"the tests pass\" is unsupported.",
+    )]);
+    let report = host
+        .review_turn(
+            reviewer.clone(),
+            "fake",
+            "conversation1",
+            1,
+            false,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("a review");
+    assert!(report.read_claims, "{report:?}");
+    assert!(!report.cached);
+    let sent = reviewer.last_request().await.unwrap();
+    let asked = sent.messages[0].text();
+    assert!(
+        asked.contains("the tests pass"),
+        "the claim is shown: {asked}"
+    );
+    assert!(
+        asked.contains("It ran no commands"),
+        "and that nothing backs it: {asked}"
+    );
+    assert!(asked.contains("a.txt"), "beside the diff: {asked}");
+
+    // The same question again: the same answer, and no model call.
+    let unasked = FakeProvider::new(vec![]);
+    let again = host
+        .review_turn(
+            unasked.clone(),
+            "fake",
+            "conversation1",
+            1,
+            false,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the kept review");
+    assert!(again.cached);
+    assert_eq!(again.text, report.text);
+    assert_eq!(unasked.request_count().await, 0);
+
+    // Asked again on purpose: a new review.
+    let fresh = FakeProvider::new(vec![ScriptedTurn::text("Still unsupported.")]);
+    let redone = host
+        .review_turn(
+            fresh.clone(),
+            "fake",
+            "conversation1",
+            1,
+            true,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("a second review");
+    assert!(!redone.cached);
+    assert_eq!(redone.text, "Still unsupported.");
+}

@@ -832,6 +832,32 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     })
 }
 
+/// The messages of one turn of a saved conversation, by the id its `turn`
+/// record carries: everything after that record, up to the next turn's.
+///
+/// `None` when the transcript has no such turn, which covers one written
+/// before turns had ids.
+pub fn turn_messages(session_id: &str, turn_id: &str) -> Option<Vec<Message>> {
+    let file = std::fs::File::open(find(session_id)?).ok()?;
+    let mut messages = Vec::new();
+    let mut inside = false;
+    let mut found = false;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        match serde_json::from_str::<Record>(&line) {
+            Ok(Record::Turn { id, .. }) => {
+                if inside {
+                    break;
+                }
+                inside = id == turn_id;
+                found |= inside;
+            }
+            Ok(Record::Message(message)) if inside => messages.push(message),
+            _ => {}
+        }
+    }
+    found.then_some(messages)
+}
+
 /// The workspace a saved conversation belongs to, read from its header alone.
 ///
 /// A cheap answer to the one question [`load`] is otherwise the only way to

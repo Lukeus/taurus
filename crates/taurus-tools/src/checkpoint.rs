@@ -92,6 +92,11 @@ enum Record {
         /// which is that there is nothing to compare and so nothing to say.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
+        /// The conversation turn this is, as the transcript's own `turn`
+        /// record names it. How a turn's diff is found beside what the turn
+        /// said about it. `None` in a log written before turns had ids.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     Before {
         path: String,
@@ -391,6 +396,17 @@ impl CheckpointStore {
     /// The turn numbers are the ones [`Self::turns`] hands out, and the files
     /// are that turn's own — the ones it was the first to touch. See
     /// [`TurnChange`] for where the after-image comes from.
+    /// The conversation turn checkpoint `turn` was recorded under, when the
+    /// log says. `None` for a log written before turns had ids.
+    pub fn conversation_turn(&self, session_id: &str, turn: u32) -> Result<Option<String>, String> {
+        let Some(path) = self.log_path(session_id) else {
+            return Err(format!("'{session_id}' is not a usable session id"));
+        };
+        let turns = read_log::<State>(&path)?.turns;
+        let index = check_turn(session_id, turn, turns.len())?;
+        Ok(turns[index].id.clone())
+    }
+
     pub fn changes(
         &self,
         session_id: &str,
@@ -739,6 +755,7 @@ struct ReadTurn<S = State> {
     changes: Vec<(String, S)>,
     branch: Option<String>,
     moved_git: bool,
+    id: Option<String>,
 }
 
 /// A whole log as read back off disk.
@@ -894,12 +911,18 @@ fn read_log<S: Preimage>(path: &Path) -> Result<ReadLog<S>, String> {
                 }
                 header_seen = true;
             }
-            Ok(Record::Turn { prompt, at, branch }) => turns.push(ReadTurn {
+            Ok(Record::Turn {
+                prompt,
+                at,
+                branch,
+                id,
+            }) => turns.push(ReadTurn {
                 prompt,
                 at,
                 changes: Vec::new(),
                 branch,
                 moved_git: false,
+                id,
             }),
             // Written some other way than `append` writes it, so not caught by
             // its first bytes above. The same rule applies.
@@ -950,6 +973,8 @@ struct TurnState {
     /// one turn can each move it, and the warning reads the same once as
     /// three times.
     moved_git: bool,
+    /// The conversation turn this is. See [`TurnRecorder::name`].
+    id: Option<String>,
 }
 
 /// The open turn that tools record into.
@@ -968,6 +993,18 @@ pub struct TurnRecorder {
 }
 
 impl TurnRecorder {
+    /// Names the conversation turn this is, for its `Turn` record.
+    ///
+    /// The first name wins. A delegate records into its parent's turn and runs
+    /// a turn of its own, and the one being recorded is the parent's, which
+    /// names it before any tool runs.
+    pub async fn name(&self, id: &str) {
+        let mut state = self.state.lock().await;
+        if state.id.is_none() {
+            state.id = Some(id.to_string());
+        }
+    }
+
     /// How many distinct files this turn has recorded a pre-image for.
     ///
     /// The authority on "did this turn change anything", because it counts what
@@ -1078,6 +1115,7 @@ impl TurnRecorder {
                 prompt: self.prompt.clone(),
                 at: now(),
                 branch: self.branch.clone(),
+                id: state.id.clone(),
             });
         }
         records.extend(fresh);
@@ -1137,6 +1175,7 @@ impl TurnRecorder {
                     prompt: self.prompt.clone(),
                     at: now(),
                     branch: self.branch.clone(),
+                    id: state.id.clone(),
                 },
             ) {
                 state.disabled = true;
@@ -2080,6 +2119,7 @@ mod tests {
                     prompt: "one".into(),
                     at: 1,
                     branch: None,
+                    id: None,
                 }),
                 &cut[..cut.len() / 2],
             ),
@@ -2172,6 +2212,7 @@ mod tests {
         let headerless = [
             Record::Turn {
                 branch: None,
+                id: None,
                 prompt: "earlier turn".into(),
                 at: 1,
             },
@@ -2218,6 +2259,7 @@ mod tests {
         let records = [
             Record::Turn {
                 branch: None,
+                id: None,
                 prompt: "a turn".into(),
                 at: 1,
             },
@@ -2277,6 +2319,7 @@ mod tests {
             }),
             Record::Turn {
                 branch: None,
+                id: None,
                 prompt: "hostile".into(),
                 at: 1,
             },
