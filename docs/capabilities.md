@@ -343,7 +343,44 @@ result the transcript holds.
 
 To measure it on your own machine, run
 `cargo run -p taurus-host --example delegate -- <model> [runs]`. It counts
-how often a model calls `finish`.
+how often a model calls `finish`, and runs the background case below.
+
+### Delegating in the background
+
+A delegation normally holds the turn until the child reports. With
+`background: true`, the call returns at once and the parent keeps working.
+The report arrives on its own when the child finishes, and it's delivered
+once:
+
+- If the parent is mid-turn, the report rides along with its next round's
+  tool results.
+- If the parent tries to finish while a background delegate is still out,
+  the turn waits for it and hands the report over first, so the answer is
+  written from it. A turn never ends with a report it hasn't read.
+
+There's nothing to poll and nothing to check. The parent is told it can't
+read the report sooner and shouldn't ask.
+
+Only an agent that can't write runs in the background. That's `explorer`,
+or your own agent if every tool it names only reads. A background `coder`
+would be editing the working tree while the parent does too, and the call is
+refused with a message saying so.
+
+Background work belongs to the turn that started it. Stop reaches it. A
+turn that ends any other way (an error, the iteration ceiling, a stall)
+stops its background work and waits up to ten seconds for it to wind down,
+so nothing outlives the turn it was started in.
+
+The card stays live, with the child's steps under it, until the report
+arrives. Then it shows the report's status like any other delegation. In a
+reopened conversation, the delivered report is back on its card, not drawn
+as a message you sent. The CLI prints a line when a background report lands.
+
+On `ornith-1.5:9b`, a parent asked to start an explorer in the background
+and read a file meanwhile did both and answered from the report in 3 of 3
+turns. On `qwen3.5:9b` it was 2 of 3: the third died on Ollama failing to
+parse the model's tool call, and it ended at once instead of waiting on the
+delegate.
 
 You can add your own. An agent is a markdown file in `~/.taurus/agents` or
 `<workspace>/.taurus/agents`. The file name is the agent's name, and the body

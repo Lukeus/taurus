@@ -26,7 +26,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use taurus_core::SpawnSubagent;
+use taurus_core::{Agent, AgentConfig, Session, SpawnSubagent};
+use taurus_provider::Message;
 use taurus_provider_ollama::{OllamaProvider, DEFAULT_BASE_URL};
 use taurus_tools::{
     AllowAll, CheckpointStore, DelegateReport, Disposition, PermissionEngine, Tool, ToolContext,
@@ -191,5 +192,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
          to an `unreported` or `failed` report built by the harness.",
         100.0 * called as f32 / total.max(1) as f32
     );
+
+    // A parent turn, this time, because background delegation only exists
+    // inside one: the report has to reach a turn that is still going.
+    println!("\nBackground: a parent turn that starts an explorer and keeps working…\n");
+    let mut delivered = 0;
+    for run in 1..=runs {
+        let dir = workspace()?;
+        let ctx = ToolContext::new(
+            dir.path().to_path_buf(),
+            Arc::new(PermissionEngine::new(
+                dir.path(),
+                dir.path().join(".taurus"),
+                Box::new(AllowAll),
+            )),
+            CancellationToken::new(),
+        );
+        let mut registry = ToolRegistry::with_builtins();
+        registry.register(Arc::new(SpawnSubagent::new(
+            provider.clone(),
+            Arc::new(RwLock::new(ToolRegistry::with_builtins())),
+            model.clone(),
+            2,
+        )));
+        let agent = Agent::new(provider.clone(), registry, ctx, AgentConfig::default());
+        let mut session = Session::new(&model);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let started = std::time::Instant::now();
+        let outcome = agent
+            .run_turn(&mut session, Message::user(BACKGROUND_PROMPT), tx)
+            .await;
+        drain.await?;
+
+        let used_background = session.messages.iter().any(|m| {
+            m.tool_uses()
+                .any(|(_, name, input)| name == "spawn_subagent" && input["background"] == true)
+        });
+        let reports = session
+            .messages
+            .iter()
+            .filter(|m| m.text().contains("<background-report"))
+            .count();
+        let answer = session
+            .messages
+            .last()
+            .map(|m| m.text())
+            .unwrap_or_default();
+        // The turn must never end with a report it hasn't read.
+        if used_background {
+            assert!(
+                outcome.is_err() || reports == 1,
+                "a finished turn that started background work read {reports} reports"
+            );
+        }
+        if used_background && reports == 1 {
+            delivered += 1;
+        }
+        println!(
+            "run {run}  background={used_background}  reports={reports}  answer names net.rs={}  \
+             {:.1}s{}",
+            answer.contains("net.rs"),
+            started.elapsed().as_secs_f32(),
+            outcome.err().map(|e| format!("  ({e})")).unwrap_or_default()
+        );
+    }
+    println!("\nA background report was started and read in {delivered} of {runs} turns.");
     Ok(())
 }
+
+const BACKGROUND_PROMPT: &str = "\
+Use spawn_subagent with background set to true to have an explorer find which \
+file defines the function `parse_port`. While it works, read src/main.rs \
+yourself. Then answer with both: the file that defines parse_port, and what \
+src/main.rs contains.";

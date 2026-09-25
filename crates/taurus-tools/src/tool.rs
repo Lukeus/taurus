@@ -163,6 +163,10 @@ pub trait ToolProgress: Send + Sync {
     async fn delegate_report(&self, report: crate::delegate::DelegateReport) {
         let _ = report;
     }
+
+    /// This call has returned, and its work goes on in the background. Its
+    /// report comes later, through [`Self::delegate_report`].
+    async fn detached(&self) {}
 }
 
 /// Everything a tool needs at call time.
@@ -272,6 +276,12 @@ pub struct ToolContext {
     /// everywhere else. Not shared with the parent: a clone the child makes
     /// shares the child's, which is the point.
     pub touched: Option<Arc<crate::delegate::Touched>>,
+    /// The turn's outstanding background work. See [`crate::pending`].
+    ///
+    /// Set by the agent loop on the contexts it hands its tools, and `None`
+    /// everywhere nothing waits for a report — a delegate, an example, a
+    /// tool run directly — where background work is refused.
+    pub pending: Option<Arc<crate::pending::Pending>>,
 }
 
 impl ToolContext {
@@ -297,6 +307,7 @@ impl ToolContext {
             call_id: None,
             budget: OutputBudget::unknown(),
             touched: None,
+            pending: None,
         }
     }
 
@@ -312,6 +323,13 @@ impl ToolContext {
     #[must_use]
     pub fn with_touched(mut self, touched: Arc<crate::delegate::Touched>) -> Self {
         self.touched = Some(touched);
+        self
+    }
+
+    /// Gives this context's calls somewhere to report background work into.
+    #[must_use]
+    pub fn with_pending(mut self, pending: Arc<crate::pending::Pending>) -> Self {
+        self.pending = Some(pending);
         self
     }
 
@@ -439,6 +457,14 @@ impl ToolContext {
     pub async fn report_delegate(&self, report: crate::delegate::DelegateReport) {
         if let Some(progress) = &self.progress {
             progress.delegate_report(report).await;
+        }
+    }
+
+    /// Says this call's work goes on after it returns. See
+    /// [`ToolProgress::detached`].
+    pub async fn report_detached(&self) {
+        if let Some(progress) = &self.progress {
+            progress.detached().await;
         }
     }
 

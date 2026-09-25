@@ -72,3 +72,29 @@ export function reportLabel(report: DelegateReport): string {
       return "No report";
   }
 }
+
+/** A report the harness delivered from a background delegate. */
+export type BackgroundReport = { call: string; agent: string; text: string };
+
+const BACKGROUND = /<background-report call="([^"]*)" agent="([^"]*)">\n([\s\S]*?)\n<\/background-report>/g;
+
+/**
+ * Takes the background reports out of a message's text, and returns them with
+ * whatever text is left.
+ *
+ * The harness writes these into the conversation so the model can read them,
+ * shaped by `Arrival::render` in `crates/taurus-tools/src/pending.rs`. They
+ * aren't anything the user said, so a reopened conversation puts each one
+ * back on the card of the call that started it instead of drawing a bubble.
+ */
+export function takeBackgroundReports(text: string): {
+  reports: BackgroundReport[];
+  rest: string;
+} {
+  const reports: BackgroundReport[] = [];
+  const rest = text.replace(BACKGROUND, (_, call: string, agent: string, body: string) => {
+    reports.push({ call, agent, text: body });
+    return "";
+  });
+  return { reports, rest: reports.length > 0 ? rest.trim() : text };
+}

@@ -450,6 +450,20 @@ describe("a delegation", () => {
     );
   });
 
+  it("in the background, stays live until its report arrives", () => {
+    const { host } = mount([
+      delegation({
+        status: "ok",
+        detached: true,
+        output: "Started explorer in the background.",
+        steps: ["Search for parse"],
+      }),
+    ]);
+    expect(host.querySelector(".run-row")?.classList.contains("running")).toBe(true);
+    expect(host.querySelector(".run-row-status")?.textContent).toBe("…");
+    expect(host.querySelector(".run-substeps")?.textContent).toContain("Search for parse");
+  });
+
   it("offers nothing when nothing was recorded", () => {
     // No recorder, no transcript, no offer to open one. An affordance that
     // opened an error is worse than no affordance.

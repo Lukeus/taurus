@@ -15,7 +15,8 @@ use taurus_provider::{
     TokenUsage, ToolDef,
 };
 use taurus_tools::{
-    Effect, OutputBudget, PlanBoard, ToolContext, ToolError, ToolProgress, ToolRegistry,
+    Arrival, Effect, OutputBudget, Pending, PlanBoard, ToolContext, ToolError, ToolProgress,
+    ToolRegistry,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn, Instrument};
@@ -45,6 +46,11 @@ const COALESCE: Duration = Duration::from_millis(16);
 /// that sat through it would look hung for the whole hour. Past this the
 /// failure surfaces with the backend's number in it, and the user decides.
 const LONGEST_REQUESTED_WAIT: Duration = Duration::from_secs(120);
+
+/// How long a turn that's ending some way other than finishing gives its
+/// background work to stop. Work that honors its cancel stops in well under a
+/// second; this is for a tool that doesn't.
+const BACKGROUND_STOP_WAIT: Duration = Duration::from_secs(10);
 
 /// Deltas of one kind, gathered but not yet handed on.
 struct Held {
@@ -450,10 +456,28 @@ impl Agent {
         // tool's span. A nine-step turn that delegated twice reads as a tree
         // rather than a flat list somebody reassembles by timestamp.
         let span = crate::telemetry::turn_span(self.provider.id(), &session.model, &session.id);
+        let pending = Arc::new(Pending::new(&self.tools.cancel));
         let outcome = self
-            .turn(session, user_message, ui)
+            .turn(session, user_message, ui, &pending)
             .instrument(span.clone())
             .await;
+        // A turn that finished normally waited for its background work, so
+        // there's nothing left here. Every other way out — Stop, an error, the
+        // ceiling, a stall — leaves it running, sharing this turn's event
+        // stream. Bounded, because a turn must end even if a tool ignores its
+        // cancel.
+        if pending.running() > 0 {
+            info!(
+                running = pending.running(),
+                "stopping background work the turn left"
+            );
+            if tokio::time::timeout(BACKGROUND_STOP_WAIT, pending.stop_all())
+                .await
+                .is_err()
+            {
+                warn!("background work did not stop in time; the turn ends without it");
+            }
+        }
         match &outcome {
             Ok(finished) => {
                 crate::telemetry::record_usage(&span, &finished.usage);
@@ -542,6 +566,7 @@ impl Agent {
         session: &mut Session,
         user_message: Message,
         ui: mpsc::Sender<UiEvent>,
+        pending: &Arc<Pending>,
     ) -> Result<TurnOutcome, AgentError> {
         session.push(user_message);
         // Before the first request, not after the last one. Two things follow
@@ -666,6 +691,38 @@ impl Agent {
             // and a prompted model can emit one without the provider noticing.
             // The message itself is the authority.
             if !has_tools {
+                // Background work is waited for before anything else: the
+                // model is about to answer, and a report it hasn't read yet
+                // is part of what it should be answering from.
+                if pending.running() > 0 || pending.has_arrived() {
+                    info!(
+                        running = pending.running(),
+                        "waiting for background work before finishing"
+                    );
+                    tokio::select! {
+                        () = pending.wait() => {}
+                        () = self.tools.cancel.cancelled() => {}
+                    }
+                    let arrived = pending.take();
+                    if !arrived.is_empty() {
+                        let text = arrived
+                            .iter()
+                            .map(Arrival::render)
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        session.push(Message::user(text));
+                        continue;
+                    }
+                    // Canceled is caught at the top of the loop, where every
+                    // other Stop is. Anything else that ended the wait with
+                    // nothing delivered — work that went away without a
+                    // report — leaves the answer the model already gave, and
+                    // the turn finishes on it.
+                    if self.tools.cancel.is_cancelled() {
+                        continue;
+                    }
+                }
+
                 // The model thinks it is done. If it changed files and never
                 // ran anything afterwards, it has not checked its own work —
                 // and being told to in the system prompt demonstrably does not
@@ -708,7 +765,19 @@ impl Agent {
                 });
             }
 
-            let results = self.run_tool_calls(&assistant, &session.model, &ui).await;
+            let mut results = self
+                .run_tool_calls(&assistant, &session.model, &ui, pending)
+                .await;
+            // Reports from background work ride along with this round's
+            // results rather than as a message of their own, which would put
+            // two user messages in a row. Every provider's converter already
+            // puts text that shares a message with tool results after them.
+            results.extend(
+                pending
+                    .take()
+                    .iter()
+                    .map(|arrival| ContentBlock::text(arrival.render())),
+            );
 
             // Did this round change anything, and did it check anything?
             //
@@ -1128,6 +1197,7 @@ impl Agent {
         assistant: &Message,
         model: &str,
         ui: &mpsc::Sender<UiEvent>,
+        background: &Arc<Pending>,
     ) -> Vec<ContentBlock> {
         // Once per round rather than per call, and cached by every adapter, so
         // after the first turn this is a map lookup. A window that cannot be
@@ -1171,7 +1241,7 @@ impl Agent {
         let mut pending: FuturesUnordered<_> = concurrent
             .into_iter()
             .map(|(id, name, input)| {
-                let ctx = self.context_for(&id, budget, ui);
+                let ctx = self.context_for(&id, budget, ui, background);
                 async move {
                     let outcome = self.execute_one(&name, input, &ctx).await;
                     (id, outcome)
@@ -1183,7 +1253,7 @@ impl Agent {
         }
 
         for (id, name, input) in sequential {
-            let ctx = self.context_for(&id, budget, ui);
+            let ctx = self.context_for(&id, budget, ui, background);
             let outcome = self.execute_one(&name, input, &ctx).await;
             results.push((id.clone(), self.report(&id, outcome, ui).await));
         }
@@ -1308,9 +1378,11 @@ impl Agent {
         id: &str,
         budget: OutputBudget,
         ui: &mpsc::Sender<UiEvent>,
+        pending: &Arc<Pending>,
     ) -> ToolContext {
         self.tools
             .clone()
+            .with_pending(pending.clone())
             .with_progress(Arc::new(CallProgress {
                 id: id.to_string(),
                 ui: ui.clone(),
@@ -1839,6 +1911,15 @@ impl ToolProgress for CallProgress {
                 id: self.id.clone(),
                 session,
                 agent,
+            })
+            .await;
+    }
+
+    async fn detached(&self) {
+        let _ = self
+            .ui
+            .send(UiEvent::ToolDetached {
+                id: self.id.clone(),
             })
             .await;
     }

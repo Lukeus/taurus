@@ -119,6 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 UiEvent::ToolTranscript { session, agent, .. } => {
                     println!("      · {agent} transcript: {session}")
                 }
+                UiEvent::ToolDetached { .. } => println!("      · running in the background"),
                 UiEvent::DelegateReport { report, .. } => {
                     println!("      · delegate: {}", report.disposition.as_str())
                 }

@@ -1146,6 +1146,54 @@ describe("a delegation's own transcript", () => {
     });
   });
 
+  it("in the background, trades its 'started' result for the report", () => {
+    const entries = run(
+      started,
+      { type: "tool_detached", id: "d1" },
+      { type: "tool_call_finished", id: "d1", ok: true, output: "Started explorer in the background." },
+      {
+        type: "delegate_report",
+        id: "d1",
+        report: { disposition: "done", summary: "It's in parse.rs.", files: [] },
+      },
+    );
+    expect(entries[0]).toMatchObject({
+      detached: true,
+      report: { disposition: "done" },
+      output: "Status: done.\n\nIt's in parse.rs.",
+    });
+  });
+
+  it("puts a delivered background report back on its card, not in a bubble", () => {
+    const report =
+      '<background-report call="d1" agent="explorer">\nStatus: done.\n\nIt\'s in parse.rs.\n</background-report>';
+    const entries = entriesFromMessages([
+      { role: "user", content: [{ type: "text", text: "Find the parser." }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "d1", name: "spawn_subagent", input: {} }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "d1",
+            is_error: false,
+            content: [{ type: "text", text: "Started explorer in the background." }],
+          },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: "Waiting." }] },
+      { role: "user", content: [{ type: "text", text: report }] },
+      { role: "assistant", content: [{ type: "text", text: "It's in parse.rs." }] },
+    ]);
+    expect(entries.filter((e) => e.kind === "user")).toHaveLength(1);
+    const card = entries.find((e) => e.kind === "tool") as Extract<Entry, { kind: "tool" }>;
+    expect(card.report).toMatchObject({ disposition: "done", summary: "It's in parse.rs." });
+    expect(card.output).toBe("Status: done.\n\nIt's in parse.rs.");
+  });
+
   it("reads its report back when the conversation is reopened", () => {
     const [tool] = entriesFromMessages([
       {

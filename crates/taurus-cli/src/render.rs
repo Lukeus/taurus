@@ -40,6 +40,10 @@ pub struct Renderer {
     /// written for a model that cannot see the table. Echoing it under a table
     /// the reader is looking at describes the thing above it back to them.
     drawn: HashSet<String>,
+    /// Calls whose work went on after they returned. Their report arrives
+    /// rounds later, detached from the line that started them, so it gets a
+    /// line of its own.
+    detached: HashSet<String>,
     quiet: bool,
     verbose: bool,
 }
@@ -90,6 +94,7 @@ impl Renderer {
             mid_text: false,
             mid_thinking: false,
             drawn: HashSet::new(),
+            detached: HashSet::new(),
             pending: String::new(),
             styler: MarkdownStyler::new(color),
             quiet,
@@ -205,9 +210,23 @@ impl Renderer {
             // A delegate blocked on the user is the one worth more than that:
             // it's asking the person reading this to do something, and the
             // finished line cuts at 100 characters.
-            UiEvent::DelegateReport { report, .. } => {
+            // The finished line that follows says it started. What it found
+            // comes later, as its own report line.
+            UiEvent::ToolDetached { id } => {
+                self.detached.insert(id.clone());
+            }
+
+            UiEvent::DelegateReport { id, report } => {
                 if self.quiet {
                     return;
+                }
+                if self.detached.remove(id) {
+                    self.break_text();
+                    self.break_thinking();
+                    self.dim(&format!(
+                        "    · background delegate reported: {}",
+                        report.disposition.as_str()
+                    ));
                 }
                 if let (taurus_tools::Owner::User, Some(needs)) = (
                     report.owner.unwrap_or(taurus_tools::Owner::Parent),

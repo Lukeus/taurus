@@ -686,6 +686,15 @@ export function group(entries: Entry[]): (Entry | ToolEntry[])[] {
 }
 
 /**
+ * A call's status as the reader should see it. A background delegation has
+ * returned, but it's still working until its report arrives, and says so the
+ * same way a running call does.
+ */
+function working(step: ToolEntry): ToolEntry["status"] {
+  return step.detached && !step.report ? "running" : step.status;
+}
+
+/**
  * What category of work a turn is doing right now, or `null` for none.
  *
  * The last tool call in the body, if it is still running. Last rather than a
@@ -872,7 +881,7 @@ const ToolRun = memo(function ToolRun({
   const [touched, setTouched] = useState<boolean | null>(null);
 
   const failed = steps.some((s) => s.status === "error");
-  const running = steps.some((s) => s.status === "running");
+  const running = steps.some((s) => working(s) === "running");
   // A run that broke stays open wherever it is. The heading says a step failed
   // and not which one, and folding away the answer to the question the heading
   // just raised is the one case where tidiness costs more than it saves.
@@ -938,7 +947,8 @@ function ToolRow({
   // alone. Same place on screen either way, so the row does not jump when the
   // command exits.
   const streamed = step.steps.join("");
-  const body = step.status === "running" ? streamed : (step.output ?? streamed);
+  const status = working(step);
+  const body = status === "running" ? streamed : (step.output ?? streamed);
 
   return (
     // `live` marks a call that started and finished in front of the reader,
@@ -946,7 +956,7 @@ function ToolRow({
     // did and not when. It is the difference between a check that draws itself
     // once as the call lands and forty of them drawing at once when a
     // conversation is reopened.
-    <div className={`run-row ${kind} ${step.status}${step.endedAt ? " live" : ""}`}>
+    <div className={`run-row ${kind} ${status}${step.endedAt ? " live" : ""}`}>
       <button
         className="run-row-head"
         disabled={!step.output}
@@ -958,7 +968,7 @@ function ToolRow({
         {/* A delegation's report says more than "it returned": done and
             blocked both return fine. The word is the report's own. */}
         <span className="run-row-status" data-report={step.report?.disposition}>
-          {step.status === "running"
+          {status === "running"
             ? "…"
             : step.report
               ? reportLabel(step.report)
@@ -996,7 +1006,7 @@ function ToolRow({
           the row opened: the point is that a long call looks alive, and that
           is no use behind a click. Dropped once it finishes, when the result
           is the more useful thing to have in the same space. */}
-      {!terminal && step.status === "running" && step.steps.length > 0 && (
+      {!terminal && status === "running" && step.steps.length > 0 && (
         <ul className="run-substeps">
           {step.steps.slice(-MAX_VISIBLE_SUBSTEPS).map((label, i) => (
             <li key={`${i}-${label}`}>{label}</li>

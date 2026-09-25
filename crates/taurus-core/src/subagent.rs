@@ -18,8 +18,8 @@ use taurus_agents::{builtin, AgentDefinition};
 use taurus_provider::{Message, Provider};
 use taurus_tools::tool::{parse_input, schema_for};
 use taurus_tools::{
-    DelegateReport, Disposition, Effect, Tool, ToolContext, ToolError, ToolRegistry, ToolResult,
-    Touched,
+    Arrival, DelegateReport, Disposition, Effect, Tool, ToolContext, ToolError, ToolRegistry,
+    ToolResult, Touched,
 };
 
 use crate::agent::{Agent, AgentConfig, AgentError, TurnOutcome, TurnRecorder};
@@ -64,6 +64,10 @@ pub struct SpawnInput {
     /// The complete task. The sub-agent shares none of your context and cannot
     /// ask follow-up questions, so include every detail it needs.
     pub prompt: String,
+    /// Start it and keep working; its report arrives on its own when it
+    /// finishes. Only for an agent that can't write.
+    #[serde(default)]
+    pub background: bool,
 }
 
 /// Where a delegate's conversation is kept.
@@ -243,24 +247,11 @@ impl Tool for SpawnSubagent {
     /// is one this can't see into. Serializing a reader costs time; letting a
     /// writer through costs files.
     fn runs_concurrently(&self, input: &serde_json::Value) -> bool {
-        let Some(definition) = input
+        input
             .get("agent_type")
             .and_then(|v| v.as_str())
             .and_then(|name| self.definition(name))
-        else {
-            return false;
-        };
-        let Some(tools) = &definition.frontmatter.tools else {
-            return false;
-        };
-        let Ok(registry) = self.registry.try_read() else {
-            return false;
-        };
-        tools.iter().all(|name| {
-            registry
-                .get(name)
-                .is_none_or(|tool| tool.effect().is_concurrent_safe())
-        })
+            .is_some_and(|definition| self.reads_only(definition))
     }
 
     fn preview(&self, input: &serde_json::Value) -> String {
@@ -293,18 +284,95 @@ impl Tool for SpawnSubagent {
             ));
         }
 
-        let _permit = self
-            .permits
-            .acquire()
-            .await
-            .map_err(|_| ToolError::Failed("sub-agent pool is shut down".into()))?;
+        if input.background && !self.reads_only(definition) {
+            return Err(ToolError::InvalidInput(format!(
+                "Only an agent that can't write runs in the background, and '{}' can. Two agents \
+                 editing one working tree at once would each write over the other. Run it \
+                 without `background`, or delegate the reading to `{}` in the background.",
+                definition.name(),
+                builtin::EXPLORER
+            )));
+        }
 
+        let launch = self.prepare(definition, ctx).await?;
+
+        if !input.background {
+            return Ok(launch.run(input.prompt, ctx.clone()).await.into());
+        }
+
+        let Some(pending) = ctx.pending.clone() else {
+            return Err(ToolError::InvalidInput(
+                "Background delegation isn't available here: nothing would be waiting for the \
+                 report. Run it without `background`."
+                    .into(),
+            ));
+        };
+        // Counted before this call returns, so the turn never sees the work
+        // out but uncounted.
+        let ticket = pending.start();
+        let call = ctx.call_id.clone().unwrap_or_default();
+        let agent = definition.name().to_string();
+        // Its own stop: the turn's Stop still reaches it, and the turn can stop
+        // it on any other way out without cancelling itself.
+        let mut child = ctx.clone();
+        child.cancel = pending.stop_token();
+        ctx.report_detached().await;
+        tokio::spawn(async move {
+            let text = launch.run(input.prompt, child).await;
+            ticket.deliver(Arrival { call, agent, text });
+        });
+
+        Ok(format!(
+            "Started {} in the background. Keep working: its report arrives on its own when it \
+             finishes, tagged with this call's id. There's no way to read it sooner, so don't \
+             wait for it or ask about it.",
+            definition.name()
+        )
+        .into())
+    }
+}
+
+/// Everything one delegation needs, owned, so it can run where the call that
+/// started it can't follow: in a task, after that call has returned.
+struct Launch {
+    name: String,
+    provider: Arc<dyn Provider>,
+    model: String,
+    registry: ToolRegistry,
+    slot: Slot,
+    config: AgentConfig,
+    recorder: Option<Arc<dyn SubagentRecorder>>,
+    permits: Arc<Semaphore>,
+}
+
+impl SpawnSubagent {
+    /// Whether every tool this agent names only reads. See
+    /// [`Tool::runs_concurrently`] for why the doubtful cases answer no.
+    fn reads_only(&self, definition: &AgentDefinition) -> bool {
+        let Some(tools) = &definition.frontmatter.tools else {
+            return false;
+        };
+        let Ok(registry) = self.registry.try_read() else {
+            return false;
+        };
+        tools.iter().all(|name| {
+            registry
+                .get(name)
+                .is_none_or(|tool| tool.effect().is_concurrent_safe())
+        })
+    }
+
+    async fn prepare(
+        &self,
+        definition: &AgentDefinition,
+        ctx: &ToolContext,
+    ) -> Result<Launch, ToolError> {
         // Depth cap, enforced structurally: the child's registry has no spawn
         // tool, so it cannot delegate no matter what it decides to do.
-        let mut child_registry = self.registry.read().await.without(SPAWN_TOOL);
+        let mut registry = self.registry.read().await.without(SPAWN_TOOL);
         // Its own, per delegation: the report it holds is this child's.
         let slot = Slot::default();
-        child_registry.register(Arc::new(Finish::new(slot.clone())));
+        registry.register(Arc::new(Finish::new(slot.clone())));
 
         // `allowed_tools` empty means "everything the parent has", which is what
         // an agent with no `tools:` key wants. An agent that *did* name its
@@ -317,9 +385,9 @@ impl Tool for SpawnSubagent {
         let allowed: Vec<String> = match &definition.frontmatter.tools {
             None => Vec::new(),
             Some(wanted) => {
-                let available: Vec<String> = wanted
+                let mut available: Vec<String> = wanted
                     .iter()
-                    .filter(|name| child_registry.get(name).is_some())
+                    .filter(|name| registry.get(name).is_some())
                     .cloned()
                     .collect();
                 // Counted before `finish` joins it: a scope that named nothing
@@ -333,7 +401,6 @@ impl Tool for SpawnSubagent {
                         wanted.join(", ")
                     )));
                 }
-                let mut available = available;
                 available.push(FINISH_TOOL.to_string());
                 available
             }
@@ -349,16 +416,13 @@ impl Tool for SpawnSubagent {
             None => (self.default_provider.clone(), self.default_model.clone()),
         };
 
-        // Before the agent, because opening a recorder needs the id of the
-        // conversation it is recording.
-        let mut session = Session::new(&model);
-        let touched = Arc::new(Touched::default());
-        let child_ctx = ctx.clone().with_touched(touched.clone());
-        let agent = Agent::new(
+        Ok(Launch {
+            name: definition.name().to_string(),
             provider,
-            child_registry,
-            child_ctx,
-            AgentConfig {
+            model,
+            registry,
+            slot,
+            config: AgentConfig {
                 system_prompt: format!(
                     "{}\n\n{REPORT_BACK}\n\nYou are working in `{}`.",
                     definition.system_prompt,
@@ -369,16 +433,42 @@ impl Tool for SpawnSubagent {
                 turn_hooks: false,
                 ..self.defaults.clone()
             },
+            recorder: self.recorder.clone(),
+            permits: self.permits.clone(),
+        })
+    }
+}
+
+impl Launch {
+    /// Runs the delegate to its end and returns its report as the parent
+    /// reads it.
+    ///
+    /// `ctx` is the context of the call that started it, whose progress and
+    /// report land on that call's card, and whose cancel stops it.
+    async fn run(self, prompt: String, ctx: ToolContext) -> String {
+        // Held for the whole run, in whichever task that is. A background
+        // delegate waiting for a permit hasn't started, which is still right:
+        // the cap is on children running, not children asked for.
+        let _permit = self.permits.acquire_owned().await;
+
+        // Before the agent, because opening a recorder needs the id of the
+        // conversation it is recording.
+        let mut session = Session::new(&self.model);
+        let touched = Arc::new(Touched::default());
+        let agent = Agent::new(
+            self.provider,
+            self.registry,
+            ctx.clone().with_touched(touched.clone()),
+            self.config,
         );
 
         let agent = match &self.recorder {
-            Some(recorder) => match recorder.open(definition.name(), &session).await {
+            Some(recorder) => match recorder.open(&self.name, &session).await {
                 // Announced only once there is somewhere to read: a card that
                 // offered to open a transcript nobody was writing would be a
                 // worse answer than one that offers nothing.
                 Some(sink) => {
-                    ctx.report_transcript(session.id.clone(), definition.name())
-                        .await;
+                    ctx.report_transcript(session.id.clone(), &self.name).await;
                     agent.with_recorder(sink)
                 }
                 None => agent,
@@ -386,7 +476,7 @@ impl Tool for SpawnSubagent {
             None => agent,
         };
 
-        info!(kind = definition.name(), %model, "spawning sub-agent");
+        info!(kind = %self.name, model = %self.model, "spawning sub-agent");
 
         // The child's own text and results stay inside the child — the parent's
         // transcript should show one delegation, not a second conversation. But
@@ -407,11 +497,11 @@ impl Tool for SpawnSubagent {
         });
 
         let outcome = agent
-            .run_turn(&mut session, Message::user(&input.prompt), tx)
+            .run_turn(&mut session, Message::user(&prompt), tx)
             .await;
         let tools_used = collector.await.unwrap_or_default();
 
-        let reported = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let reported = self.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
         let report = report_for(reported, &outcome, &session, touched.paths());
         ctx.report_delegate(report.clone()).await;
 
@@ -419,7 +509,7 @@ impl Tool for SpawnSubagent {
         if !tools_used.is_empty() {
             text.push_str(&format!("\n\n[sub-agent used: {}]", summarize(&tools_used)));
         }
-        Ok(text.into())
+        text
     }
 }
 
@@ -1338,6 +1428,226 @@ mod tests {
         assert!(
             !fired.contains("prompt") && !fired.contains("stop"),
             "a delegation is one call inside the conversation's turn, not a turn: {fired:?}"
+        );
+    }
+
+    /// A parent agent whose only way to delegate is a spawn tool on a provider
+    /// of its own, so the parent's and the child's scripts can't interleave.
+    fn parent(
+        parent_turns: Vec<ScriptedTurn>,
+        child_turns: Vec<ScriptedTurn>,
+        config: AgentConfig,
+    ) -> (Agent, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let permissions = Arc::new(PermissionEngine::new(
+            &workspace,
+            workspace.join(".taurus"),
+            Box::new(AllowAll),
+        ));
+        let ctx = ToolContext::new(workspace, permissions, CancellationToken::new());
+        let spawn = SpawnSubagent::new(
+            FakeProvider::new(child_turns),
+            Arc::new(RwLock::new(ToolRegistry::with_builtins())),
+            "fake",
+            2,
+        );
+        let mut registry = ToolRegistry::with_builtins();
+        registry.register(Arc::new(spawn));
+        (
+            Agent::new(FakeProvider::new(parent_turns), registry, ctx, config),
+            dir,
+        )
+    }
+
+    fn in_background(agent_type: &str) -> ScriptedTurn {
+        ScriptedTurn::tool_call(
+            "bg1",
+            SPAWN_TOOL,
+            serde_json::json!({
+                "agent_type": agent_type,
+                "prompt": "Find which file defines the parser and report it.",
+                "background": true
+            }),
+        )
+    }
+
+    async fn drive(agent: &Agent, session: &mut Session) -> Result<crate::TurnOutcome, AgentError> {
+        let (tx, mut rx) = mpsc::channel(256);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let outcome = agent.run_turn(session, Message::user("Go."), tx).await;
+        drain.await.unwrap();
+        outcome
+    }
+
+    #[tokio::test]
+    async fn a_turn_waits_for_its_background_delegate_and_reads_the_report() {
+        let (agent, _dir) = parent(
+            vec![
+                in_background(builtin::EXPLORER),
+                ScriptedTurn::text("Started it; waiting."),
+                ScriptedTurn::text("It's in src/parse.rs."),
+            ],
+            vec![
+                // Slow enough that the parent tries to finish first.
+                ScriptedTurn::rate_limited(std::time::Duration::from_millis(300)),
+                finish(
+                    "f1",
+                    serde_json::json!({ "disposition": "done", "summary": "src/parse.rs" }),
+                ),
+            ],
+            AgentConfig::default(),
+        );
+        let mut session = Session::new("fake");
+        drive(&agent, &mut session).await.unwrap();
+
+        let texts: Vec<String> = session.messages.iter().map(|m| m.text()).collect();
+        let at = texts
+            .iter()
+            .position(|t| t.contains("<background-report call=\"bg1\" agent=\"explorer\">"))
+            .expect("the report reaches the parent");
+        assert!(texts[at].contains("Status: done."), "{}", texts[at]);
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| t.contains("<background-report"))
+                .count(),
+            1,
+            "delivered exactly once"
+        );
+        assert_eq!(
+            texts.last().unwrap(),
+            "It's in src/parse.rs.",
+            "the turn ends on an answer written after the report"
+        );
+        let started = session
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|block| match block {
+                taurus_provider::ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "bg1" => Some(content.to_text().into_owned()),
+                _ => None,
+            })
+            .expect("the call has a result");
+        assert!(
+            started.contains("Started explorer in the background"),
+            "{started}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_report_that_lands_mid_turn_rides_with_the_next_results() {
+        // Not a message of its own: that would be two user messages in a row.
+        let (agent, _dir) = parent(
+            vec![
+                in_background(builtin::EXPLORER),
+                ScriptedTurn::tool_call(
+                    "r1",
+                    "run_command",
+                    serde_json::json!({ "command": "sleep 0.5" }),
+                ),
+                ScriptedTurn::text("It's in src/parse.rs."),
+            ],
+            vec![finish(
+                "f1",
+                serde_json::json!({ "disposition": "done", "summary": "src/parse.rs" }),
+            )],
+            AgentConfig {
+                verify_changes: false,
+                ..Default::default()
+            },
+        );
+        let mut session = Session::new("fake");
+        drive(&agent, &mut session).await.unwrap();
+
+        let carrier = session
+            .messages
+            .iter()
+            .find(|m| m.text().contains("<background-report"))
+            .expect("the report reaches the parent");
+        assert!(
+            carrier.content.iter().any(|b| matches!(
+                b,
+                taurus_provider::ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "r1"
+            )),
+            "it shares the message that answers the next round's call"
+        );
+        for pair in session.messages.windows(2) {
+            assert!(
+                !(pair[0].role == taurus_provider::Role::User
+                    && pair[1].role == taurus_provider::Role::User),
+                "two user messages in a row"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn only_an_agent_that_cannot_write_runs_in_the_background() {
+        let (tool, ctx, _dir) = fixture(vec![]);
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "coder",
+                    "prompt": "Add a test for the retry path and run it.",
+                    "background": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput(_)));
+        assert!(err.to_string().contains("can't write"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn background_is_refused_where_nothing_waits_for_the_report() {
+        let (tool, ctx, _dir) = fixture(vec![]);
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "explorer",
+                    "prompt": "Find which file defines the parser.",
+                    "background": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("nothing would be waiting"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_fails_stops_its_background_work_rather_than_waiting_for_it() {
+        let (agent, _dir) = parent(
+            vec![in_background(builtin::EXPLORER)],
+            // A child that would take a minute to get anywhere.
+            vec![ScriptedTurn::rate_limited(std::time::Duration::from_secs(
+                60,
+            ))],
+            AgentConfig {
+                max_iterations: 1,
+                ..Default::default()
+            },
+        );
+        let mut session = Session::new("fake");
+        let started = std::time::Instant::now();
+        let outcome = drive(&agent, &mut session).await;
+        assert!(
+            matches!(outcome, Err(AgentError::IterationLimit(1))),
+            "{outcome:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?}: the turn waited for work it should have stopped",
+            started.elapsed()
         );
     }
 
