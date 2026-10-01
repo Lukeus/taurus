@@ -82,6 +82,8 @@ const provider = (id: string): ProviderConfig => ({
   vision: null,
   api_prefix: null,
   thinking: null,
+  wire_api: null,
+  reasoning_effort: null,
 });
 
 const configured = [provider("ollama"), provider("openai"), provider("azure")];

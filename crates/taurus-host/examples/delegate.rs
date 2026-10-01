@@ -254,7 +254,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              {:.1}s{}",
             answer.contains("net.rs"),
             started.elapsed().as_secs_f32(),
-            outcome.err().map(|e| format!("  ({e})")).unwrap_or_default()
+            outcome
+                .err()
+                .map(|e| format!("  ({e})"))
+                .unwrap_or_default()
         );
     }
     println!("\nA background report was started and read in {delivered} of {runs} turns.");

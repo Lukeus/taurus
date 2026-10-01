@@ -69,6 +69,11 @@ export const FIELDS: Record<
      */
     contextCap: boolean;
     thinking: boolean;
+    /**
+     * Which OpenAI route chat goes to, and how hard the model reasons. Only
+     * an OpenAI-compatible provider has two routes to choose between.
+     */
+    openaiRoute: boolean;
   }
 > = {
   // Probes everything about itself, locally, with no credential. The one
@@ -84,6 +89,7 @@ export const FIELDS: Record<
     contextFallback: false,
     contextCap: true,
     thinking: false,
+    openaiRoute: false,
   },
   // Reports nothing about itself, so all of it has to be declared.
   open_ai_compatible: {
@@ -103,6 +109,7 @@ export const FIELDS: Record<
     contextCap: false,
     contextFallback: false,
     thinking: false,
+    openaiRoute: true,
   },
   // Reports its own window and capabilities per model. The route is fixed at
   // the API itself — `x-api-key`, under `/v1` — but not through a gateway in
@@ -124,6 +131,7 @@ export const FIELDS: Record<
     contextCap: false,
     contextFallback: true,
     thinking: true,
+    openaiRoute: false,
   },
   gemini: {
     key: true,
@@ -135,6 +143,7 @@ export const FIELDS: Record<
     contextCap: false,
     contextFallback: true,
     thinking: false,
+    openaiRoute: false,
   },
 };
 
@@ -368,6 +377,51 @@ export function ProviderForm({
                 <option value="no">Prompted — model has no tool support</option>
               </select>
             </Field>
+          )}
+
+          {fields.openaiRoute && (
+            <>
+              <Field
+                label="Chat route"
+                hint="Chat completions is what every OpenAI-compatible server answers. OpenAI's reasoning models need the Responses API to call tools while they reason, and Azure OpenAI serves it too. Models, embeddings and reranking stay where they are."
+              >
+                <select
+                  value={provider.wire_api ?? ""}
+                  onChange={(e) =>
+                    onChange({
+                      wire_api:
+                        e.target.value === "responses" ? "responses" : null,
+                    })
+                  }
+                >
+                  <option value="">Chat completions</option>
+                  <option value="responses">Responses API</option>
+                </select>
+              </Field>
+
+              <Field
+                label="Reasoning effort"
+                hint={
+                  provider.wire_api === "responses"
+                    ? "Leave on the model's default unless you have a reason. Which efforts a model takes depends on the model, and one it doesn't take is refused with the list it does."
+                    : "On chat completions, None is how a reasoning model gets tools at all: this route refuses tools on those models at any other effort. Switch the route to Responses to keep both."
+                }
+              >
+                <select
+                  value={provider.reasoning_effort ?? ""}
+                  onChange={(e) =>
+                    onChange({ reasoning_effort: blank(e.target.value) })
+                  }
+                >
+                  <option value="">Model's default</option>
+                  {effortOptions(provider.reasoning_effort).map((effort) => (
+                    <option key={effort} value={effort}>
+                      {EFFORT_LABELS[effort] ?? effort}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </>
           )}
 
           {fields.declareVision && (
@@ -611,6 +665,9 @@ export function overrideOf(
     "context_length",
     "vision",
     "api_prefix",
+    "thinking",
+    "wire_api",
+    "reasoning_effort",
   ];
   return fields.filter((field) => !same(global[field], match[field]));
 }
@@ -672,7 +729,31 @@ export function blankProvider(existing: ProviderConfig[]): ProviderConfig {
     vision: null,
     api_prefix: null,
     thinking: null,
+    wire_api: null,
+    reasoning_effort: null,
   };
+}
+
+/** The efforts OpenAI's models take, mildest first. */
+const EFFORT_LABELS: Record<string, string> = {
+  none: "None — no reasoning",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+};
+
+/**
+ * The effort choices, plus whatever the config already says.
+ *
+ * A value written by hand that isn't in the list is still the value in
+ * force. Leaving it out of the menu would show "Model's default" over a
+ * setting that's being sent.
+ */
+export function effortOptions(current: string | null): string[] {
+  const known = Object.keys(EFFORT_LABELS);
+  return current && !known.includes(current) ? [...known, current] : known;
 }
 
 export function listSentence(items: string[]): string {

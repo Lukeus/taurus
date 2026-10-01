@@ -43,6 +43,8 @@ const ollama = {
   vision: null,
   api_prefix: null,
   thinking: null,
+  wire_api: null,
+  reasoning_effort: null,
 };
 
 const state = {

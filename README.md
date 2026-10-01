@@ -388,6 +388,8 @@ any sketch a note embeds.
 web search.
 
 - Local Ollama, anything OpenAI-compatible, Anthropic, or Google Gemini.
+- [**OpenAI's reasoning models**](docs/configuration.md#openais-reasoning-models)
+  call tools while they reason, over the Responses API.
 - Keys live in the OS keychain or an env var, never in a config file.
 - Everything the Settings drawer writes is a plain file the CLI reads too.
 - [**MCP servers**](docs/configuration.md#mcp-servers): add and test them in
@@ -413,7 +415,7 @@ can read about it before you run into it.
 crates/
   taurus-provider/          Provider trait + normalized message/stream types
   taurus-provider-ollama/   Ollama adapter (NDJSON, per-model capabilities)
-  taurus-provider-openai/   OpenAI-compatible adapter (SSE, vLLM/LM Studio/…)
+  taurus-provider-openai/   OpenAI-compatible adapter (chat completions, Responses)
   taurus-provider-anthropic/ Anthropic Messages API (probed capabilities, caching)
   taurus-provider-gemini/   Google Gemini (generateContent, OpenAPI-subset schemas)
   taurus-tools/             Tool registry, built-in tools, permission gate, undo

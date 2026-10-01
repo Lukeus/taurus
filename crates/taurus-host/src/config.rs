@@ -568,6 +568,32 @@ pub struct ProviderConfig {
     /// by every other kind.
     #[serde(default)]
     pub thinking: Option<String>,
+    /// Which OpenAI route chat goes to: `chat_completions`, the default and
+    /// the one every compatible server answers, or `responses`. OpenAI's
+    /// reasoning models need `responses` to call tools while they reason.
+    /// Ignored by every other kind.
+    #[serde(default)]
+    pub wire_api: Option<WireApi>,
+    /// How hard an OpenAI-compatible model reasons: `none`, `minimal`, `low`,
+    /// `medium`, `high`, or `xhigh`, as the model allows. Unset leaves it to
+    /// the model. On `chat_completions`, `none` is how a reasoning model gets
+    /// tools at all. Ignored by every other kind.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+}
+
+/// The two OpenAI chat routes. See [`ProviderConfig::wire_api`].
+///
+/// An enum rather than a string read leniently, because a misspelled route
+/// isn't a preference to fall back from: it would send every request to the
+/// route somebody was trying to leave.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum WireApi {
+    #[default]
+    ChatCompletions,
+    Responses,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -729,6 +755,10 @@ pub struct ProviderEntry {
     pub api_prefix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_api: Option<WireApi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 impl ProviderEntry {
@@ -770,6 +800,12 @@ impl ProviderEntry {
         if self.thinking.is_some() {
             base.thinking = self.thinking.clone();
         }
+        if self.wire_api.is_some() {
+            base.wire_api = self.wire_api;
+        }
+        if self.reasoning_effort.is_some() {
+            base.reasoning_effort = self.reasoning_effort.clone();
+        }
     }
 
     /// Turns a standalone entry into a provider, or explains what it is missing.
@@ -799,6 +835,8 @@ impl ProviderEntry {
             vision: self.vision,
             api_prefix: self.api_prefix,
             thinking: self.thinking,
+            wire_api: self.wire_api,
+            reasoning_effort: self.reasoning_effort,
         })
     }
 }
@@ -820,6 +858,8 @@ impl From<&ProviderConfig> for ProviderEntry {
             vision: config.vision,
             api_prefix: config.api_prefix.clone(),
             thinking: config.thinking.clone(),
+            wire_api: config.wire_api,
+            reasoning_effort: config.reasoning_effort.clone(),
         }
     }
 }
@@ -838,6 +878,8 @@ fn default_providers() -> Vec<ProviderConfig> {
         vision: None,
         api_prefix: None,
         thinking: None,
+        wire_api: None,
+        reasoning_effort: None,
     }]
 }
 
@@ -1500,6 +1542,8 @@ mod tests {
             vision: Some(false),
             api_prefix: Some("/v3".into()),
             thinking: Some("adaptive".into()),
+            wire_api: Some(WireApi::Responses),
+            reasoning_effort: Some("high".into()),
         }
     }
 
@@ -1711,6 +1755,8 @@ mod tests {
             vision: None,
             api_prefix: None,
             thinking: None,
+            wire_api: None,
+            reasoning_effort: None,
         };
 
         ProviderEntry {

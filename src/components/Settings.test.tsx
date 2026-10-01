@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import type { ProviderConfig, SearchSettings } from "../lib/api";
-import { FIELDS, ModelList, blankProvider, overrideOf, parseContextLength, validate } from "./settings/ProvidersTab";
+import { FIELDS, ModelList, blankProvider, effortOptions, overrideOf, parseContextLength, validate } from "./settings/ProvidersTab";
 import { Settings } from "./Settings";
 import { keepEdits, statusHint } from "./settings/SearchTab";
 import { keyHint } from "./settings/ApiKeyField";
@@ -27,6 +27,8 @@ const provider = (patch: Partial<ProviderConfig> = {}): ProviderConfig => ({
   vision: null,
   api_prefix: null,
   thinking: null,
+  wire_api: null,
+  reasoning_effort: null,
   ...patch,
 });
 
@@ -334,6 +336,28 @@ describe("which settings each provider kind shows", () => {
     expect(FIELDS.anthropic.thinking).toBe(true);
     expect(FIELDS.gemini.thinking).toBe(false);
     expect(FIELDS.ollama.thinking).toBe(false);
+  });
+
+  it("offers a chat route and an effort only to an OpenAI-compatible provider", () => {
+    expect(FIELDS.open_ai_compatible.openaiRoute).toBe(true);
+    expect(FIELDS.anthropic.openaiRoute).toBe(false);
+    expect(FIELDS.gemini.openaiRoute).toBe(false);
+    expect(FIELDS.ollama.openaiRoute).toBe(false);
+  });
+
+  it("keeps an effort written by hand on the menu", () => {
+    // Shown as "Model's default" it would hide a setting that is being sent.
+    expect(effortOptions("turbo")).toContain("turbo");
+    expect(effortOptions("high").filter((e) => e === "high")).toHaveLength(1);
+    expect(effortOptions(null)[0]).toBe("none");
+  });
+
+  it("marks a route or effort the workspace overrides", () => {
+    const global = provider({ kind: "open_ai_compatible" });
+    const effective = [
+      provider({ kind: "open_ai_compatible", wire_api: "responses", reasoning_effort: "high" }),
+    ];
+    expect(overrideOf(global, effective)).toEqual(["wire_api", "reasoning_effort"]);
   });
 });
 

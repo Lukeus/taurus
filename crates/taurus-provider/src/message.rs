@@ -9,6 +9,22 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+/// Marks a [`ContentBlock::Thinking`] signature as OpenAI's encrypted
+/// reasoning rather than a signature in the usual sense.
+///
+/// The slot is shared, and a conversation can change provider halfway. Each
+/// adapter replays only what its own API issued: the Responses route reads
+/// past this prefix, and every other adapter leaves a block carrying it out,
+/// the way it leaves out one that was never signed. Sent to the wrong API,
+/// either would be a 400 on every request for the rest of the conversation.
+pub const OPENAI_REASONING_PREFIX: &str = "openai-reasoning:";
+
+/// Whether a signature is OpenAI's encrypted reasoning, which only its
+/// Responses route can replay.
+pub fn is_openai_reasoning(signature: &str) -> bool {
+    signature.starts_with(OPENAI_REASONING_PREFIX)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -48,6 +64,10 @@ pub enum ContentBlock {
         /// signed and unedited, and dropping them is a 400 rather than a
         /// degradation. Carried rather than regenerated because it is a
         /// signature — the whole point is that this harness cannot produce one.
+        ///
+        /// OpenAI's Responses route is the other: its reasoning comes back
+        /// encrypted, and is carried here behind [`OPENAI_REASONING_PREFIX`]
+        /// so no other adapter mistakes it for a signature of its own.
         ///
         /// `None` on every other backend, and on transcripts written before
         /// this field existed, which is why it defaults rather than being

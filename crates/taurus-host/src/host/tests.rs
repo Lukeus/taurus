@@ -153,6 +153,8 @@ fn keyed_provider(id: &str, base_url: &str) -> ProviderConfig {
         vision: None,
         api_prefix: None,
         thinking: None,
+        wire_api: None,
+        reasoning_effort: None,
     }
 }
 
@@ -3177,4 +3179,72 @@ async fn an_explicit_model_short_circuits_the_backend_query() {
         .expect("an explicit model needs no backend round trip");
     assert_eq!(model, "some-model");
     assert!(!provider.is_empty());
+}
+
+#[tokio::test]
+async fn an_openai_provider_set_to_responses_sends_chat_there_with_its_effort() {
+    // The two settings travel config → adapter through a mapping written out
+    // by hand, and one dropped on the way leaves the provider on the route
+    // somebody was trying to leave, with nothing failing to say so. Read off
+    // the request itself, so the claim is about what reached the wire.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 4096];
+        // Headers, then as much body as they promised.
+        loop {
+            let n = socket.read(&mut buf).await.unwrap();
+            seen.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&seen);
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text[..end]
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if seen.len() >= end + 4 + length || n == 0 {
+                    break;
+                }
+            }
+        }
+        socket
+            .write_all(
+                b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&seen).into_owned()
+    });
+
+    let mut config = keyed_provider("openai", &base_url);
+    config.wire_api = Some(WireApi::Responses);
+    config.reasoning_effort = Some("high".into());
+    let provider = Host::build_provider(config, None);
+
+    assert!(
+        provider.capabilities("gpt-6.1-sol").await.unwrap().thinking,
+        "only the Responses route reports reasoning it can show"
+    );
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let _ = provider
+        .stream(
+            taurus_provider::ChatRequest::new(
+                "gpt-6.1-sol",
+                vec![taurus_provider::Message::user("hi")],
+            ),
+            tx,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+
+    let request = server.await.unwrap();
+    assert!(request.starts_with("POST /v1/responses "), "{request}");
+    assert!(request.contains(r#""effort":"high""#), "{request}");
 }

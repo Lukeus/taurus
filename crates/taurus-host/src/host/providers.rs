@@ -100,6 +100,11 @@ impl Host {
                     )
                     .with_api_prefix(config.api_prefix.clone())
                     .with_api_key_header(config.api_key_header.clone())
+                    .with_api(match config.wire_api.unwrap_or_default() {
+                        WireApi::ChatCompletions => OpenAiApi::ChatCompletions,
+                        WireApi::Responses => OpenAiApi::Responses,
+                    })
+                    .with_reasoning_effort(config.reasoning_effort.as_deref())
                     .with_models(
                         config
                             .models
