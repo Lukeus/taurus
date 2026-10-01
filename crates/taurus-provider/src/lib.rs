@@ -16,7 +16,10 @@ pub mod request;
 pub mod stream;
 
 pub use error::{brief, ProviderError, Result};
-pub use message::{relocated_note, ContentBlock, Message, Role, ToolOutput, ToolResultBlock};
+pub use message::{
+    is_openai_reasoning, relocated_note, ContentBlock, Message, Role, ToolOutput, ToolResultBlock,
+    OPENAI_REASONING_PREFIX,
+};
 pub use prompted::PromptedTools;
 pub use provider::{Capabilities, ModelInfo, Provider, RerankScore};
 pub use request::{ChatRequest, ToolDef};

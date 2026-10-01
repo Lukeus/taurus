@@ -6,7 +6,7 @@
 //! loss. This file is mostly renaming fields.
 
 use serde_json::{json, Value};
-use taurus_provider::{ChatRequest, ContentBlock, Message, Role, ToolDef};
+use taurus_provider::{is_openai_reasoning, ChatRequest, ContentBlock, Message, Role, ToolDef};
 
 /// Marks a prefix worth caching on the way out.
 ///
@@ -119,8 +119,11 @@ fn block_list(message: &Message) -> Vec<Value> {
             // provider returned redacted, and it is the known gap in this
             // adapter rather than a silent one: the request that follows may be
             // rejected, with an error that says so.
+            // OpenAI's encrypted reasoning, from earlier in a conversation that
+            // changed provider, is left out like an unsigned block: this API
+            // can't verify it, and sending it is a 400.
             ContentBlock::Thinking { text, signature } => {
-                if let Some(signature) = signature {
+                if let Some(signature) = signature.as_deref().filter(|s| !is_openai_reasoning(s)) {
                     blocks.push(json!({
                         "type": "thinking",
                         "thinking": text,
@@ -283,6 +286,33 @@ mod tests {
         assert_eq!(blocks[0]["type"], "thinking");
         assert_eq!(blocks[0]["signature"], "sig-abc");
         assert_eq!(blocks[1]["text"], "answer");
+    }
+
+    #[test]
+    fn openai_reasoning_from_earlier_in_the_conversation_is_left_out() {
+        // A conversation that started on OpenAI's Responses route and moved
+        // here. That reasoning is sealed for another API, and passing it off
+        // as a signature fails every request from now on.
+        let request = ChatRequest::new(
+            "m",
+            vec![Message::new(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Thinking {
+                        text: "reasoned on OpenAI".into(),
+                        signature: Some(format!(
+                            "{}sealed",
+                            taurus_provider::OPENAI_REASONING_PREFIX
+                        )),
+                    },
+                    ContentBlock::text("answer"),
+                ],
+            )],
+        );
+        let wire = messages_to_wire(&request);
+        let blocks = wire[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1, "{blocks:#?}");
+        assert_eq!(blocks[0]["text"], "answer");
     }
 
     #[test]

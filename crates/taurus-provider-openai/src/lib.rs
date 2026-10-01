@@ -8,11 +8,18 @@
 //!
 //! This crate is the load-bearing proof that [`taurus_provider::Provider`] is
 //! not Ollama-shaped: adding it required no change to `taurus-core`.
+//!
+//! Two routes. Chat completions is the one every imitator serves. The
+//! Responses API is OpenAI's newer one, and on its reasoning models the only
+//! one that takes function tools and reasoning in the same request — see
+//! [`OpenAiApi`].
 
 mod convert;
+mod responses;
 mod wire;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -26,6 +33,7 @@ use taurus_provider::{
     StreamEvent, TokenUsage,
 };
 
+use responses::{Decoder, Ending, Piece, Reasoning, Stopper};
 use wire::{
     ChatBody, EmbedBody, EmbedResponse, ModelsResponse, RerankBody, RerankResponse, StreamChunk,
 };
@@ -58,6 +66,22 @@ impl Default for OpenAiCapabilities {
             context_length: 128_000,
         }
     }
+}
+
+/// Which of the two OpenAI routes a provider's chat goes to.
+///
+/// Chat completions by default, because it's the one every OpenAI-compatible
+/// server answers. The Responses API is OpenAI's newer route, which Azure
+/// OpenAI and some self-hosted servers also serve. OpenAI's reasoning models
+/// need it to use tools while they reason: chat completions refuses function
+/// tools on those models unless reasoning is turned off.
+///
+/// Models, embeddings and reranking are unaffected. Only chat moves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpenAiApi {
+    #[default]
+    ChatCompletions,
+    Responses,
 }
 
 /// A model the config named, rather than one the server offered.
@@ -95,6 +119,18 @@ pub struct OpenAiProvider {
     capabilities: OpenAiCapabilities,
     /// Declared models. Non-empty means `/v1/models` is never called.
     models: Vec<ModelSpec>,
+    api: OpenAiApi,
+    /// Sent as the reasoning effort when set. Unset leaves it to the model.
+    reasoning_effort: Option<String>,
+    /// Models that refused the reasoning parameters on the Responses route,
+    /// because they don't reason.
+    ///
+    /// Learned rather than declared: which models reason isn't something the
+    /// listing says, and asking someone to mark every non-reasoning model in a
+    /// config is asking them to know the API's model table. One refused
+    /// request per model per launch costs less, and it's retried without them
+    /// at once, so nobody sees it.
+    unreasoned: Mutex<HashSet<String>>,
 }
 
 impl OpenAiProvider {
@@ -113,7 +149,34 @@ impl OpenAiProvider {
             client: http::Client::new(),
             capabilities,
             models: Vec::new(),
+            api: OpenAiApi::default(),
+            reasoning_effort: None,
+            unreasoned: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Sends chat to the Responses API instead of chat completions.
+    pub fn with_api(mut self, api: OpenAiApi) -> Self {
+        self.api = api;
+        self
+    }
+
+    /// Names the reasoning effort every request asks for.
+    ///
+    /// Passed through as written, lowercased: which values a model takes
+    /// (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) depends on the
+    /// model, and the API's own refusal names the ones it accepts better than
+    /// a list here would stay current. `None`, or a blank value, leaves the
+    /// effort to the model.
+    ///
+    /// On chat completions this is `reasoning_effort`, which is how a
+    /// reasoning model there gets tools at all: `none` turns reasoning off.
+    /// On the Responses route it's `reasoning.effort`.
+    pub fn with_reasoning_effort(mut self, effort: Option<impl AsRef<str>>) -> Self {
+        self.reasoning_effort = effort
+            .map(|e| e.as_ref().trim().to_ascii_lowercase())
+            .filter(|e| !e.is_empty());
+        self
     }
 
     /// Talks through `client` instead of the shared one. For a test of a
@@ -189,6 +252,10 @@ impl OpenAiProvider {
 
     fn chat_url(&self) -> String {
         self.url("/chat/completions")
+    }
+
+    fn responses_url(&self) -> String {
+        self.url("/responses")
     }
 
     fn rerank_url(&self) -> String {
@@ -273,9 +340,11 @@ impl Provider for OpenAiProvider {
             vision: declared
                 .and_then(|m| m.vision)
                 .unwrap_or(self.capabilities.vision),
-            // No OpenAI-compatible endpoint exposes reasoning as a separate
-            // stream field, so thinking is always folded into text here.
-            thinking: false,
+            // Chat completions has no standard field for reasoning; some
+            // servers send it anyway and it's shown, but nothing can be asked
+            // of it. The Responses route has one, on every model that hasn't
+            // refused it.
+            thinking: self.api == OpenAiApi::Responses && !self.refused_reasoning(model),
             context_length: declared
                 .and_then(|m| m.context_length)
                 .unwrap_or(self.capabilities.context_length),
@@ -426,6 +495,20 @@ impl Provider for OpenAiProvider {
 
     async fn stream(
         &self,
+        request: ChatRequest,
+        tx: mpsc::Sender<StreamEvent>,
+        cancel: CancellationToken,
+    ) -> Result<StopReason> {
+        match self.api {
+            OpenAiApi::ChatCompletions => self.stream_chat(request, tx, cancel).await,
+            OpenAiApi::Responses => self.stream_responses(request, tx, cancel).await,
+        }
+    }
+}
+
+impl OpenAiProvider {
+    async fn stream_chat(
+        &self,
         mut request: ChatRequest,
         tx: mpsc::Sender<StreamEvent>,
         cancel: CancellationToken,
@@ -440,7 +523,8 @@ impl Provider for OpenAiProvider {
             PromptedTools::rewrite(&mut request);
         }
 
-        let body = ChatBody::from_request(&request);
+        let mut body = ChatBody::from_request(&request);
+        body.reasoning_effort = self.reasoning_effort.clone();
         let response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Ok(StopReason::Canceled),
@@ -562,6 +646,195 @@ impl Provider for OpenAiProvider {
                 _ => StopReason::EndTurn,
             }
         })
+    }
+
+    /// Whether this model has refused the reasoning parameters this launch.
+    fn refused_reasoning(&self, model: &str) -> bool {
+        self.unreasoned
+            .lock()
+            .map(|set| set.contains(model))
+            .unwrap_or(false)
+    }
+
+    /// What to ask of a model's reasoning on the Responses route.
+    fn reasoning_for(&self, model: &str) -> Reasoning {
+        match &self.reasoning_effort {
+            // Named in the config, so it's sent whatever happened last time.
+            // A model that refuses it gets the API's own refusal, which says
+            // what to change; quietly dropping a setting somebody wrote down
+            // would be worse.
+            Some(effort) => Reasoning::Effort(effort.clone()),
+            None if self.refused_reasoning(model) => Reasoning::Omit,
+            None => Reasoning::Default,
+        }
+    }
+
+    /// Posts to the Responses route. `None` when canceled first.
+    async fn post_responses(
+        &self,
+        body: &serde_json::Value,
+        cancel: &CancellationToken,
+    ) -> Result<Option<reqwest::Response>> {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Ok(None),
+            r = self.authorize(self.client.post(self.responses_url()).json(body)).send() => {
+                self.check_status(r.map_err(|e| self.unreachable(e))?).await.map(Some)
+            }
+        }
+    }
+
+    async fn stream_responses(
+        &self,
+        mut request: ChatRequest,
+        tx: mpsc::Sender<StreamEvent>,
+        cancel: CancellationToken,
+    ) -> Result<StopReason> {
+        let native = self.capabilities(&request.model).await?.native_tools;
+        let prompted = !native && !request.tools.is_empty();
+        if prompted {
+            PromptedTools::rewrite(&mut request);
+        }
+
+        let reasoning = self.reasoning_for(&request.model);
+        let sent = self
+            .post_responses(&responses::body(&request, &reasoning), &cancel)
+            .await;
+        let response = match sent {
+            // A model that doesn't reason refuses to be asked how. Only when
+            // the config didn't name an effort: then the parameters were this
+            // adapter's idea, and it can take them back.
+            Err(e) if reasoning == Reasoning::Default && refuses_reasoning(&e) => {
+                warn!(model = %request.model, error = %e, "model refused reasoning; asking again without it");
+                if let Ok(mut set) = self.unreasoned.lock() {
+                    set.insert(request.model.clone());
+                }
+                self.post_responses(&responses::body(&request, &Reasoning::Omit), &cancel)
+                    .await?
+            }
+            other => other?,
+        };
+        let Some(response) = response else {
+            return Ok(StopReason::Canceled);
+        };
+
+        let mut reader = http::SseReader::new(response.bytes_stream());
+        let mut scanner = prompted.then(PromptedScanner::new);
+        let mut stopper = Stopper::new(&request.stop_sequences);
+        let mut decoder = Decoder::new();
+        let mut stopped = false;
+
+        'read: loop {
+            let data = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(StopReason::Canceled),
+                next = reader.next_event() => next,
+            };
+            let Some(data) = data.map_err(|e| self.unreachable(e))? else {
+                break;
+            };
+            if data == "[DONE]" {
+                break;
+            }
+            let event: serde_json::Value = match serde_json::from_str(&data) {
+                Ok(event) => event,
+                Err(e) => {
+                    warn!(error = %e, "skipping malformed SSE event");
+                    continue;
+                }
+            };
+
+            for piece in decoder.feed(&event) {
+                match piece {
+                    Piece::Event(event) => send(&tx, event).await?,
+                    Piece::Text(text) => {
+                        let (text, hit) = stopper.feed(&text);
+                        emit_text(&tx, scanner.as_mut(), text).await?;
+                        if hit {
+                            // What the server would have done with `stop`:
+                            // the answer ends here and the rest isn't read.
+                            stopped = true;
+                            break 'read;
+                        }
+                    }
+                }
+            }
+            if decoder.ending().is_some() {
+                break;
+            }
+        }
+
+        if !stopped {
+            emit_text(&tx, scanner.as_mut(), stopper.finish()).await?;
+        }
+        for event in decoder.unclosed() {
+            send(&tx, event).await?;
+        }
+        let mut saw_tool_call = decoder.saw_call();
+        if let Some(scanner) = scanner.as_mut() {
+            for event in scanner.finish() {
+                send(&tx, event).await?;
+            }
+            saw_tool_call |= scanner.saw_tool_call();
+        }
+        send(
+            &tx,
+            StreamEvent::Usage {
+                usage: decoder.usage(),
+            },
+        )
+        .await?;
+
+        match decoder.ending() {
+            Some(Ending::Failed(message)) => Err(ProviderError::Stream {
+                provider: self.id.clone(),
+                message: message.clone(),
+            }),
+            _ if saw_tool_call => Ok(StopReason::ToolUse),
+            Some(Ending::Incomplete(Some(reason))) if reason == "max_output_tokens" => {
+                Ok(StopReason::MaxTokens)
+            }
+            Some(_) => Ok(StopReason::EndTurn),
+            // Ended by a stop sequence on purpose.
+            None if stopped => Ok(StopReason::EndTurn),
+            // The route always says how a response ended. A stream that closed
+            // without saying was cut off, and what arrived may be half an
+            // answer: retried, not kept.
+            None => Err(ProviderError::Stream {
+                provider: self.id.clone(),
+                message: "the stream closed before the response finished".into(),
+            }),
+        }
+    }
+}
+
+/// Whether a refusal is about the reasoning parameters.
+///
+/// The message is all there is to go on: it names the parameter (`Unsupported
+/// parameter: 'reasoning.summary' is not supported with this model`), and a
+/// 400 that mentions reasoning on a request whose only reasoning content is
+/// those parameters is about them.
+fn refuses_reasoning(error: &ProviderError) -> bool {
+    matches!(error, ProviderError::Api { status: 400, body, .. } if body.contains("reasoning"))
+}
+
+/// Answer text, through the prompted-tool scanner when there is one.
+async fn emit_text(
+    tx: &mpsc::Sender<StreamEvent>,
+    scanner: Option<&mut PromptedScanner>,
+    text: String,
+) -> Result<()> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    match scanner {
+        Some(scanner) => {
+            for event in scanner.feed(&text) {
+                send(tx, event).await?;
+            }
+            Ok(())
+        }
+        None => send(tx, StreamEvent::TextDelta { text }).await,
     }
 }
 
@@ -1142,5 +1415,370 @@ mod tests {
             forbidden.to_string().contains("do not have access"),
             "{forbidden}"
         );
+    }
+
+    /// An SSE body in the Responses route's shape: a named event per frame.
+    fn sse(events: &[serde_json::Value]) -> String {
+        events
+            .iter()
+            .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap()))
+            .collect()
+    }
+
+    fn completed(usage: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"type": "response.completed", "response": {"status": "completed", "usage": usage}})
+    }
+
+    /// Runs one request through `provider` and keeps what it streamed.
+    async fn run(
+        provider: &OpenAiProvider,
+        request: ChatRequest,
+    ) -> (Result<StopReason>, taurus_provider::Message, TokenUsage) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let collect = tokio::spawn(async move {
+            let mut acc = taurus_provider::StreamAccumulator::new();
+            while let Some(event) = rx.recv().await {
+                acc.push(event);
+            }
+            acc.finish()
+        });
+        let stop = provider
+            .stream(request, tx, tokio_util::sync::CancellationToken::new())
+            .await;
+        let (message, usage, _) = collect.await.unwrap();
+        (stop, message, usage)
+    }
+
+    fn responses_provider(uri: String) -> OpenAiProvider {
+        OpenAiProvider::new("openai", uri, None, OpenAiCapabilities::default())
+            .with_api(OpenAiApi::Responses)
+    }
+
+    fn read_file_tool() -> taurus_provider::ToolDef {
+        taurus_provider::ToolDef {
+            name: "read_file".into(),
+            description: "Reads a file.".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    async fn bodies(server: &wiremock::MockServer) -> Vec<serde_json::Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_responses_route_carries_reasoning_and_a_call_together() {
+        // The request chat completions refuses on a reasoning model: tools and
+        // reasoning at once. Here it's a summary, a sealed copy of the
+        // reasoning for the next request, and the call it led to.
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let body = sse(&[
+            json!({"type": "response.created", "response": {"status": "in_progress"}}),
+            json!({"type": "response.output_item.added", "output_index": 0,
+                   "item": {"type": "reasoning", "id": "rs_1", "summary": []}}),
+            json!({"type": "response.reasoning_summary_text.delta", "output_index": 0,
+                   "summary_index": 0, "delta": "Need the "}),
+            json!({"type": "response.reasoning_summary_text.delta", "output_index": 0,
+                   "summary_index": 0, "delta": "file."}),
+            json!({"type": "response.output_item.done", "output_index": 0,
+                   "item": {"type": "reasoning", "id": "rs_1", "encrypted_content": "gAAA-sealed"}}),
+            json!({"type": "response.output_item.added", "output_index": 1,
+                   "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1",
+                            "name": "read_file", "arguments": ""}}),
+            json!({"type": "response.function_call_arguments.delta", "output_index": 1,
+                   "delta": "{\"path\":"}),
+            json!({"type": "response.function_call_arguments.delta", "output_index": 1,
+                   "delta": "\"a.rs\"}"}),
+            json!({"type": "response.output_item.done", "output_index": 1,
+                   "item": {"type": "function_call", "call_id": "call_1",
+                            "arguments": "{\"path\":\"a.rs\"}"}}),
+            completed(json!({"input_tokens": 120, "output_tokens": 40,
+                             "input_tokens_details": {"cached_tokens": 100},
+                             "output_tokens_details": {"reasoning_tokens": 30}})),
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let provider = responses_provider(server.uri());
+        let request = ChatRequest::new("gpt-6.1-sol", vec![taurus_provider::Message::user("go")])
+            .with_system("Be brief.")
+            .with_tools(vec![read_file_tool()]);
+        let (stop, message, usage) = run(&provider, request).await;
+
+        assert_eq!(stop.unwrap(), StopReason::ToolUse);
+        assert_eq!(
+            message.content[0],
+            taurus_provider::ContentBlock::Thinking {
+                text: "Need the file.".into(),
+                signature: Some(format!(
+                    "{}gAAA-sealed",
+                    taurus_provider::OPENAI_REASONING_PREFIX
+                )),
+            }
+        );
+        let calls = message.tool_uses().collect::<Vec<_>>();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "call_1");
+        assert_eq!(calls[0].2, &json!({"path": "a.rs"}));
+        assert_eq!(usage.input_tokens, 120);
+        assert_eq!(usage.cache_read_input_tokens, Some(100));
+        assert_eq!(usage.reasoning_tokens, Some(30));
+
+        let sent = &bodies(&server).await[0];
+        assert_eq!(sent["instructions"], "Be brief.");
+        assert_eq!(sent["store"], false);
+        assert_eq!(sent["reasoning"]["summary"], "auto");
+        assert_eq!(sent["tools"][0]["name"], "read_file");
+        assert!(provider.capabilities("gpt-6.1-sol").await.unwrap().thinking);
+
+        // And the turn goes back the way it came: reasoning, then the call.
+        let mut history = vec![taurus_provider::Message::user("go"), message];
+        history.push(taurus_provider::Message::new(
+            taurus_provider::Role::User,
+            vec![taurus_provider::ContentBlock::tool_result(
+                "call_1",
+                "fn main() {}",
+            )],
+        ));
+        let items = responses::input_items(&ChatRequest::new("gpt-6.1-sol", history));
+        let kinds = items
+            .iter()
+            .map(|i| i["type"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [
+                "message",
+                "reasoning",
+                "function_call",
+                "function_call_output"
+            ]
+        );
+        assert_eq!(items[1]["encrypted_content"], "gAAA-sealed");
+    }
+
+    #[tokio::test]
+    async fn a_model_that_refuses_reasoning_is_asked_again_without_it_and_remembered() {
+        // A model with no reasoning on this route, and a 400 for asking. The turn
+        // must not see that, and the next turn must not pay for it again.
+        use serde_json::json;
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(body_partial_json(json!({"reasoning": {"summary": "auto"}})))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": {
+                "message": "Unsupported parameter: 'reasoning.summary' is not supported with this model.",
+                "type": "invalid_request_error", "param": "reasoning.summary"}})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                sse(&[
+                    json!({"type": "response.output_text.delta", "output_index": 0, "delta": "hi"}),
+                    completed(json!({"input_tokens": 3, "output_tokens": 1})),
+                ]),
+                "text/event-stream",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = responses_provider(server.uri());
+        let ask = || ChatRequest::new("gpt-4.1", vec![taurus_provider::Message::user("hi")]);
+        let (stop, message, _) = run(&provider, ask()).await;
+        assert_eq!(stop.unwrap(), StopReason::EndTurn);
+        assert_eq!(message.text(), "hi");
+        let (stop, _, _) = run(&provider, ask()).await;
+        assert_eq!(stop.unwrap(), StopReason::EndTurn);
+
+        let sent = bodies(&server).await;
+        assert_eq!(
+            sent.len(),
+            3,
+            "one refusal, then two plain requests: {sent:#?}"
+        );
+        assert!(sent[1].get("reasoning").is_none() && sent[1].get("include").is_none());
+        assert!(sent[2].get("reasoning").is_none());
+        assert!(!provider.capabilities("gpt-4.1").await.unwrap().thinking);
+    }
+
+    #[tokio::test]
+    async fn a_configured_effort_is_never_dropped_quietly() {
+        // Somebody wrote it down. The API's refusal says which values the
+        // model takes, which is the useful thing to show them.
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": {
+                "message": "Unsupported value: 'reasoning.effort' does not support 'xhigh' with this model."}})))
+            .mount(&server)
+            .await;
+
+        let provider = responses_provider(server.uri()).with_reasoning_effort(Some(" XHigh "));
+        let (stop, _, _) = run(
+            &provider,
+            ChatRequest::new("gpt-6.1-sol", vec![taurus_provider::Message::user("hi")]),
+        )
+        .await;
+        let error = stop.expect_err("the refusal surfaces");
+        assert!(
+            error.to_string().contains("does not support 'xhigh'"),
+            "{error}"
+        );
+        let sent = bodies(&server).await;
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["reasoning"]["effort"], "xhigh");
+    }
+
+    #[tokio::test]
+    async fn chat_completions_sends_the_effort_when_one_is_named() {
+        // The other way to give a reasoning model tools: on this route,
+        // `none` is the only effort that takes them.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let named =
+            OpenAiProvider::new("openai", server.uri(), None, OpenAiCapabilities::default())
+                .with_reasoning_effort(Some("none"));
+        let silent =
+            OpenAiProvider::new("openai", server.uri(), None, OpenAiCapabilities::default());
+        let ask = || ChatRequest::new("m", vec![taurus_provider::Message::user("hi")]);
+        run(&named, ask()).await.0.unwrap();
+        run(&silent, ask()).await.0.unwrap();
+
+        let sent = bodies(&server).await;
+        assert_eq!(sent[0]["reasoning_effort"], "none");
+        assert!(sent[1].get("reasoning_effort").is_none(), "{}", sent[1]);
+    }
+
+    #[tokio::test]
+    async fn a_prompted_model_on_this_route_still_stops_at_a_fabricated_result() {
+        // The route takes no `stop`, and the prompted fallback relies on one.
+        // The adapter enforces it on the text instead.
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                sse(&[
+                    json!({"type": "response.output_text.delta", "output_index": 0,
+                           "delta": "<tool_call>{\"name\":\"read_file\",\"input\":{}}</tool_call><tool_"}),
+                    json!({"type": "response.output_text.delta", "output_index": 0,
+                           "delta": "result>made up</tool_result> so the answer is 42"}),
+                    completed(json!({"input_tokens": 3, "output_tokens": 30})),
+                ]),
+                "text/event-stream",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiProvider::new(
+            "local",
+            server.uri(),
+            None,
+            OpenAiCapabilities {
+                native_tools: false,
+                ..OpenAiCapabilities::default()
+            },
+        )
+        .with_api(OpenAiApi::Responses);
+        let request = ChatRequest::new("m", vec![taurus_provider::Message::user("go")])
+            .with_tools(vec![read_file_tool()]);
+        let (stop, message, _) = run(&provider, request).await;
+
+        assert_eq!(stop.unwrap(), StopReason::ToolUse);
+        assert_eq!(message.tool_uses().count(), 1);
+        assert!(!message.text().contains("42"), "{}", message.text());
+        let sent = &bodies(&server).await[0];
+        assert!(sent.get("tools").is_none(), "{sent}");
+        assert!(sent.get("stop").is_none(), "{sent}");
+    }
+
+    #[tokio::test]
+    async fn how_a_response_ends_decides_the_stop_reason() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        async fn ending(events: Vec<serde_json::Value>) -> Result<StopReason> {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/responses"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_raw(sse(&events), "text/event-stream"),
+                )
+                .mount(&server)
+                .await;
+            let provider = responses_provider(server.uri());
+            run(
+                &provider,
+                ChatRequest::new("m", vec![taurus_provider::Message::user("hi")]),
+            )
+            .await
+            .0
+        }
+        let text =
+            json!({"type": "response.output_text.delta", "output_index": 0, "delta": "partial"});
+
+        let cut = ending(vec![
+            text.clone(),
+            json!({"type": "response.incomplete", "response": {
+                "incomplete_details": {"reason": "max_output_tokens"}}}),
+        ])
+        .await;
+        assert_eq!(cut.unwrap(), StopReason::MaxTokens);
+
+        let failed = ending(vec![
+            text.clone(),
+            json!({"type": "response.failed", "response": {
+                "error": {"code": "server_error", "message": "The model had a problem."}}}),
+        ])
+        .await
+        .expect_err("a failed response is an error");
+        assert!(failed.is_transient(), "{failed:?}");
+        assert!(
+            failed
+                .to_string()
+                .contains("The model had a problem. (server_error)"),
+            "{failed}"
+        );
+
+        // Closed with no ending at all: half an answer, which is retried
+        // rather than kept as though it were the whole one.
+        let dropped = ending(vec![text])
+            .await
+            .expect_err("a cut-off stream is an error");
+        assert!(dropped.is_transient(), "{dropped:?}");
     }
 }

@@ -961,6 +961,75 @@ Two things a gateway can't paper over:
 Gemini has no equivalent. Its key rides `x-goog-api-key` and its route is
 fixed. If you need it behind a gateway, say so.
 
+## OpenAI's reasoning models
+
+An `open_ai_compatible` provider sends chat to `/chat/completions` by
+default, because that's the route every OpenAI-compatible server answers.
+OpenAI's reasoning models refuse function tools there unless reasoning is
+off:
+
+```text
+Function tools with reasoning_effort are not supported for <model> in
+/v1/chat/completions. To use function tools, use /v1/responses or set
+reasoning_effort to 'none'.
+```
+
+Taurus sends tools on every turn, so with one of these models every turn
+fails until you pick one of the two ways out:
+
+```jsonc
+{
+  "id": "openai",
+  "kind": "open_ai_compatible",
+  "base_url": "https://api.openai.com",
+  "wire_api": "responses",
+  "models": ["gpt-6.1-sol"]
+}
+```
+
+- **`"wire_api": "responses"`** sends chat to the Responses API, the route
+  that takes tools and reasoning together. Use this one. Models, embeddings,
+  and reranking stay where they were, so only the chat route moves. Azure
+  OpenAI serves the route under the same `/openai/v1` prefix, and some
+  self-hosted servers (Ollama, vLLM) serve it too.
+- **`"reasoning_effort": "none"`** keeps chat completions and turns
+  reasoning off. Tools work again, and the model answers without thinking
+  first.
+
+`reasoning_effort` works on both routes. Set it to `none`, `minimal`, `low`,
+`medium`, `high`, or `xhigh`, as the model allows. Taurus passes the value
+through as written, because the set of efforts differs by model and the API's
+refusal names the ones a model takes. Leave it unset and the model picks its
+own effort. Settings offers both fields on an OpenAI-compatible provider as
+"Chat route" and "Reasoning effort".
+
+On the Responses route:
+
+- **Nothing is stored at OpenAI.** Every request carries `store: false`, so
+  the conversation lives in Taurus the way it does for every other backend.
+  That's also what an organization with zero data retention requires.
+- **Reasoning carries across tool calls.** The model's reasoning comes back
+  encrypted, and Taurus sends it in front of the call it led to on the next
+  request. Without it, a reasoning model works out its plan again after every
+  tool result. The summary shows up as thinking in the transcript.
+- **A model that doesn't reason is detected, not configured.** Taurus asks
+  every model for a reasoning summary. One that refuses, because it doesn't
+  reason, gets the same request again without it, and Taurus remembers that
+  model until the app restarts. You don't see the refusal. That only happens when
+  `reasoning_effort` is unset. An effort you named is always sent, and a
+  model that refuses it shows you the API's error.
+- **Stop sequences are enforced by Taurus.** The route has no `stop`
+  parameter, so Taurus cuts the text at the first stop sequence itself. The
+  prompted-tool fallback (`native_tools: false`) depends on that to keep a
+  model from writing its own tool results, so it works here too.
+- **A cut-off stream is retried.** The route always says how a response
+  ended. A stream that closes without saying is treated as a dropped
+  connection, not as a short answer.
+
+Reasoning from one provider isn't replayed to another. If a conversation
+moves between OpenAI and Anthropic or Gemini, each leaves out the other's
+reasoning blocks rather than sending something the API can't verify.
+
 ## Azure OpenAI, and gateways in front of it
 
 Azure is an OpenAI-compatible backend that disagrees about one thing: where the

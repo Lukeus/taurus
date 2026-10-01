@@ -19,6 +19,10 @@ pub struct ChatBody {
     /// Ask for a final usage frame; servers that do not know this option
     /// ignore it, and we simply report zeros.
     pub stream_options: serde_json::Value,
+    /// Only when the config names one. A reasoning model on this route takes
+    /// function tools only with this set to `none`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 impl ChatBody {
@@ -32,6 +36,7 @@ impl ChatBody {
             max_tokens: request.max_tokens,
             stop: request.stop_sequences.clone(),
             stream_options: serde_json::json!({ "include_usage": true }),
+            reasoning_effort: None,
         }
     }
 }

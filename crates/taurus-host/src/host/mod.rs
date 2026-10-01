@@ -27,7 +27,7 @@ use taurus_provider_anthropic::{
 };
 use taurus_provider_gemini::{GeminiCapabilities, GeminiProvider};
 use taurus_provider_ollama::OllamaProvider;
-use taurus_provider_openai::{ModelSpec, OpenAiCapabilities, OpenAiProvider};
+use taurus_provider_openai::{ModelSpec, OpenAiApi, OpenAiCapabilities, OpenAiProvider};
 use taurus_skills::catalog::SkillCatalog;
 use taurus_skills::proposal::ProposalSink;
 use taurus_skills::skill::SkillSummary;
@@ -42,7 +42,7 @@ use taurus_tools::{
 };
 
 use crate::command;
-use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme};
+use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme, WireApi};
 use crate::document::{fingerprint, Document, Saved, MAX_DOCUMENT_BYTES};
 use crate::freshness::Freshness;
 use crate::instructions::{self, Instructions};

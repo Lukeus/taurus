@@ -20,7 +20,9 @@
 use std::collections::HashMap;
 
 use serde_json::{json, Map, Value};
-use taurus_provider::{relocated_note, ChatRequest, ContentBlock, Role, ToolDef};
+use taurus_provider::{
+    is_openai_reasoning, relocated_note, ChatRequest, ContentBlock, Role, ToolDef,
+};
 
 /// The one `tools` entry, holding every declaration.
 pub fn tools_to_wire(tools: &[ToolDef]) -> Vec<Value> {
@@ -343,8 +345,10 @@ fn part_list(message: &taurus_provider::Message, names: &HashMap<&str, &str>) ->
             // also validates that a turn which reasoned before calling a tool
             // comes back intact. Without one there is nothing to prove the
             // block's origin, so it is left out rather than sent unsigned.
+            // OpenAI's encrypted reasoning, from a conversation that changed
+            // provider, proves nothing here either.
             ContentBlock::Thinking { text, signature } => {
-                if let Some(signature) = signature {
+                if let Some(signature) = signature.as_deref().filter(|s| !is_openai_reasoning(s)) {
                     parts.push(json!({
                         "text": text,
                         "thought": true,
@@ -787,6 +791,31 @@ mod tests {
         let wire = contents_to_wire(&request);
         assert_eq!(wire[0]["parts"][0]["thoughtSignature"], "sig-call");
         assert_eq!(wire[0]["parts"][0]["functionCall"]["name"], "run_command");
+    }
+
+    #[test]
+    fn openai_reasoning_from_earlier_in_the_conversation_is_left_out() {
+        // Sealed for OpenAI's Responses route, and no thought signature here.
+        let request = ChatRequest::new(
+            "gemini-2.5-pro",
+            vec![Message::new(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Thinking {
+                        text: "reasoned on OpenAI".into(),
+                        signature: Some(format!(
+                            "{}sealed",
+                            taurus_provider::OPENAI_REASONING_PREFIX
+                        )),
+                    },
+                    ContentBlock::text("answer"),
+                ],
+            )],
+        );
+        let wire = contents_to_wire(&request);
+        let parts = wire[0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1, "{parts:#?}");
+        assert_eq!(parts[0]["text"], "answer");
     }
 
     #[test]

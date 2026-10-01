@@ -478,8 +478,13 @@ change didn't break what unit tests can't reach.
 cargo run -p taurus-provider-ollama --example ollama-smoke -- qwen3.6:27b
 cargo run -p taurus-provider-ollama --example ollama-smoke -- gemma3      # prompted fallback
 
-# The OpenAI adapter, against Ollama's own /v1 endpoint.
+# The OpenAI adapter, against Ollama's own /v1 endpoint. Two rounds: the tool
+# call, then the answer that reads its result. --responses takes the Responses
+# route, where round two also carries round one's sealed reasoning back.
 cargo run -p taurus-provider-openai --example openai-smoke -- llama3.2:latest
+cargo run -p taurus-provider-openai --example openai-smoke -- gpt-oss:20b --responses
+OPENAI_API_KEY=… cargo run -p taurus-provider-openai --example openai-smoke -- \
+  gpt-6.1-sol https://api.openai.com --responses
 
 # The hosted adapters. Each prints the capabilities it probed before the turn,
 # which is the half of these two that has no local equivalent.
