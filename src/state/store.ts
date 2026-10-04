@@ -837,16 +837,19 @@ export const useStore = create<Store>((set, get) => ({
     // `set` below replaces it, and that is the whole of what this marks.
     set({ resuming: true });
     try {
-      const { messages, switches, interrupted, ...session } =
+      const { messages, switches, interrupted, delegates = [], ...session } =
         await api.resumeSession(sessionId);
       // As in `startSession`: a resume that fails must leave the conversation
       // on screen exactly as it was.
       await release(previous, session.id);
       set({
         session,
-        entries: interrupted
-          ? unknownOutcomes(entriesFromMessages(messages, switches))
-          : entriesFromMessages(messages, switches),
+        entries: linkDelegates(
+          interrupted
+            ? unknownOutcomes(entriesFromMessages(messages, switches))
+            : entriesFromMessages(messages, switches),
+          delegates,
+        ),
         interrupted: interrupted ?? null,
         changed: [],
   opening: null,
@@ -1419,6 +1422,24 @@ function continuingText(interrupted: InterruptedTurn | null): string {
   return interrupted?.cause === "ceiling"
     ? "Continuing the turn past its round-trip limit."
     : "Continuing the turn Taurus stopped in.";
+}
+
+/**
+ * Puts each delegate's transcript back on the card of the call that started
+ * it, as `tool_transcript` did while the turn ran. Nothing in the parent's own
+ * messages says where a child was written; the child's header does.
+ */
+export function linkDelegates(entries: Entry[], delegates: SessionMeta[]): Entry[] {
+  const byCall = new Map(
+    delegates.flatMap((d) => (d.call ? [[d.call, d] as const] : [])),
+  );
+  if (byCall.size === 0) return entries;
+  return entries.map((e) => {
+    const delegate = e.kind === "tool" ? byCall.get(e.id) : undefined;
+    return delegate && e.kind === "tool"
+      ? { ...e, transcript: { session: delegate.id, agent: delegate.agent ?? "" } }
+      : e;
+  });
 }
 
 /**

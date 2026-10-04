@@ -432,10 +432,10 @@ the backlog, and they're the minority.
   they are instead of rendering one, because the terminal has no second pane
   for a conversation inside a conversation.
 
-  A *resumed* conversation loses the link, not the transcripts. The parent's
-  own record says a delegation happened, not where its child was written, so
-  a reopened conversation's cards don't offer to open one. The files are
-  still there, and `--agents` still lists them.
+  A reopened conversation's cards open their transcripts too. Each delegate
+  records the call that started it, and reopening matches them back up. A
+  delegate recorded by an older build didn't keep that, so its card has
+  nothing to open. Its file is still there, and `--agents` still lists it.
 - **A custom agent's roster is frozen for the turn, on purpose.** The set of
   sub-agents is snapshotted when a turn starts, so an agent file saved
   mid-turn isn't visible until the next one. That's all. The directories are

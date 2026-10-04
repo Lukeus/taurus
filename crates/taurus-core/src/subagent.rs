@@ -85,7 +85,14 @@ pub struct SpawnInput {
 /// one, which is what a host with nowhere to write says.
 #[async_trait]
 pub trait SubagentRecorder: Send + Sync {
-    async fn open(&self, agent_type: &str, child: &Session) -> Option<Arc<dyn TurnRecorder>>;
+    /// `call` is the parent's tool call that started this child, so a
+    /// conversation reopened later can put each transcript back on its card.
+    async fn open(
+        &self,
+        agent_type: &str,
+        child: &Session,
+        call: Option<&str>,
+    ) -> Option<Arc<dyn TurnRecorder>>;
 }
 
 pub struct SpawnSubagent {
@@ -463,7 +470,10 @@ impl Launch {
         );
 
         let agent = match &self.recorder {
-            Some(recorder) => match recorder.open(&self.name, &session).await {
+            Some(recorder) => match recorder
+                .open(&self.name, &session, ctx.call_id.as_deref())
+                .await
+            {
                 // Announced only once there is somewhere to read: a card that
                 // offered to open a transcript nobody was writing would be a
                 // worse answer than one that offers nothing.
@@ -668,7 +678,12 @@ mod tests {
 
     #[async_trait]
     impl SubagentRecorder for SpyRecorder {
-        async fn open(&self, agent_type: &str, child: &Session) -> Option<Arc<dyn TurnRecorder>> {
+        async fn open(
+            &self,
+            agent_type: &str,
+            child: &Session,
+            _call: Option<&str>,
+        ) -> Option<Arc<dyn TurnRecorder>> {
             self.opened
                 .lock()
                 .await
