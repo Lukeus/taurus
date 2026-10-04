@@ -139,9 +139,17 @@ impl Credit {
         // Saturating, so a pane that acknowledges more than it was sent frees
         // what it was sent and no more, rather than wrapping to "nothing owed"
         // forever.
-        let _ = self
-            .in_flight
-            .fetch_update(SeqCst, SeqCst, |n| Some(n.saturating_sub(bytes)));
+        //
+        // A compare-and-swap loop rather than `fetch_update`, which newer
+        // toolchains deprecate in favor of `try_update` — a name that doesn't
+        // exist on the oldest Rust this builds with.
+        let mut owed = self.in_flight.load(SeqCst);
+        while let Err(now) =
+            self.in_flight
+                .compare_exchange_weak(owed, owed.saturating_sub(bytes), SeqCst, SeqCst)
+        {
+            owed = now;
+        }
         self.changed.notify_waiters();
     }
 
