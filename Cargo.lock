@@ -6539,6 +6539,7 @@ name = "taurus-process"
 version = "0.3.0"
 dependencies = [
  "process-wrap",
+ "tempfile",
  "tokio",
  "windows 0.62.2",
 ]

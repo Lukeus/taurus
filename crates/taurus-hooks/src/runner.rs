@@ -394,7 +394,7 @@ async fn execute(
     let body = serde_json::to_vec(payload).unwrap_or_else(|_| b"{}".to_vec());
 
     let mut command = tokio::process::Command::new(&hook.command);
-    command
+    taurus_process::path::apply(&mut command)
         .args(&hook.args)
         // Run where the work is. A hook that checks a file has to be able to
         // name it the way every other tool in the turn does.

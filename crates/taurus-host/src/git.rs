@@ -466,7 +466,7 @@ async fn launch_with(
     use tokio::io::AsyncWriteExt;
 
     let mut command = Command::new("git");
-    command
+    taurus_tools::login_path::apply(&mut command)
         .args(args)
         .current_dir(workspace)
         // A commit must never open an editor or a credential prompt: there is

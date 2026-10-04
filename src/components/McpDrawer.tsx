@@ -158,8 +158,16 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
               heavier thing than rereading a directory and should say so. */}
           <button
             disabled={busy}
-            onClick={() => apply(api.reloadMcp)}
-            data-tip="Restart every server and ask each one what it offers"
+            onClick={() =>
+              apply(async () => {
+                const found = await api.reloadMcp();
+                // Reconnect read the login shell's PATH again, so the search
+                // path below may have grown.
+                setEnvironment(await api.mcpEnvironment());
+                return found;
+              })
+            }
+            data-tip="Read your shell's PATH again, then restart every server"
           >
             {busy ? "Connecting…" : "Reconnect"}
           </button>
@@ -497,8 +505,8 @@ function ServerCard({
  * Collapsed by default, because on a healthy setup it is a list of directories
  * nobody needs — and opened by default when something above it is missing, which
  * is exactly when it is the answer. A window started from the Dock inherits the
- * launcher's PATH, so Taurus asks the login shell for the real one at startup;
- * this says whether that worked and what it added.
+ * launcher's PATH, so Taurus asks the login shell for the real one at startup,
+ * and again on Reconnect; this says whether that worked and what it added.
  */
 export function PathSection({
   environment,
@@ -534,13 +542,15 @@ export function PathSection({
         </p>
       ) : environment.added.length > 0 ? (
         <p className="hint">
-          Taurus read your login shell's PATH at startup and added{" "}
+          Taurus read your login shell's PATH and added{" "}
           {plural(environment.added.length, "directory", "directories")} the
-          launcher did not have.
+          launcher did not have. Installed something since? Reconnect reads it
+          again.
         </p>
       ) : (
         <p className="hint">
-          Started with a complete PATH — your login shell had nothing to add.
+          Your login shell had nothing to add. Installed something since?
+          Reconnect reads it again.
         </p>
       )}
 
@@ -560,8 +570,8 @@ export function PathSection({
       {missing.length > 0 && (
         <p className="hint warn">
           {missing.map((s) => s.command).join(", ")} could not be found here. If
-          it was installed after Taurus started, restart Taurus; otherwise give
-          the full path to the program as the command.
+          it was installed after Taurus started, press Reconnect; otherwise
+          give the full path to the program as the command.
         </p>
       )}
     </section>

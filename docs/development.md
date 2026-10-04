@@ -665,6 +665,15 @@ cargo run -p taurus-host --example search -- "something you said"
 # emptying the buffer the model was going to read.
 cargo run -p taurus-tools --example background
 
+# Reading your login shell's PATH again, what Reconnect in the MCP panel does,
+# against your real shell. Needs no provider; runs your profile twice and
+# writes nothing. It starts from launchd's PATH, the way a Dock launch does,
+# runs the startup probe, then the rescan, and checks a child started
+# afterwards is handed the new PATH while the process environment is left
+# alone. Writing that environment with threads running is the race the rescan
+# exists to avoid.
+cargo run -p taurus-tools --example path_rescan
+
 # Memory, across two conversations: one turn leaves a note, and a second one —
 # a new session, told not to read anything — answers from it. The second half is
 # the check that matters. A note that is written and never carried is a file

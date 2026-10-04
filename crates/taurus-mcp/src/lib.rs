@@ -915,6 +915,7 @@ fn spawn_command(command: &str) -> tokio::process::Command {
         tokio::process::Command::new(command)
     };
     taurus_tools::no_console(&mut c);
+    taurus_tools::login_path::apply(&mut c);
     c
 }
 
@@ -922,6 +923,9 @@ fn spawn_command(command: &str) -> tokio::process::Command {
 fn spawn_command(command: &str) -> tokio::process::Command {
     let mut c = tokio::process::Command::new(command);
     taurus_tools::no_console(&mut c);
+    // The PATH read again on Reconnect, so a server installed after launch
+    // starts without a restart. See `taurus_tools::login_path::rescan`.
+    taurus_tools::login_path::apply(&mut c);
     c
 }
 

@@ -490,6 +490,16 @@ fn windows_shell(find: impl Fn(&str) -> Option<std::path::PathBuf>) -> Option<st
 /// that is unset. A login shell is a preference already stated, and there is
 /// nothing for the search above to improve on.
 fn shell() -> CommandBuilder {
+    let mut builder = default_shell();
+    // A tab opened after Reconnect re-read the login shell's PATH gets it, so
+    // a program installed since launch is on it there too.
+    if let Some(path) = taurus_tools::login_path::replaced() {
+        builder.env("PATH", path);
+    }
+    builder
+}
+
+fn default_shell() -> CommandBuilder {
     #[cfg(windows)]
     if let Some(path) = windows_shell(taurus_tools::login_path::which) {
         let mut builder = CommandBuilder::new(path);
