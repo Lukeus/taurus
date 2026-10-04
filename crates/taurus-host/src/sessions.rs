@@ -237,6 +237,14 @@ struct Header {
     /// Which kind of sub-agent this was, by the name in its definition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
+    /// The parent's tool call that started this delegate.
+    ///
+    /// The parent's own record says a delegation happened, not where its
+    /// child was written, so without this a reopened conversation's cards
+    /// couldn't offer to open their transcripts. `None` for an ordinary
+    /// conversation, and for a delegate recorded before this was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call: Option<String>,
 }
 
 /// What a listing shows, read from a transcript's own opening lines.
@@ -267,6 +275,10 @@ pub struct SessionMeta {
     /// [`list_subagents`]. `None` for an ordinary conversation.
     #[ts(optional)]
     pub agent: Option<String>,
+    /// The parent's tool call that started this delegate. See
+    /// [`Header::call`].
+    #[ts(optional)]
+    pub call: Option<String>,
 }
 
 /// What a transcript has not yet written of a session: the messages past what
@@ -370,10 +382,17 @@ impl SessionLog {
     /// No branch: a delegate runs inside its parent's turn, on whatever the
     /// parent recorded, and a second copy of that answer is one more thing that
     /// can disagree.
-    pub fn for_subagent(child: &Session, workspace: &Path, parent: &str, agent: &str) -> Self {
+    pub fn for_subagent(
+        child: &Session,
+        workspace: &Path,
+        parent: &str,
+        agent: &str,
+        call: Option<&str>,
+    ) -> Self {
         let mut header = header_for(child, workspace, None);
         header.parent = Some(parent.to_string());
         header.agent = Some(agent.to_string());
+        header.call = call.map(str::to_string);
         Self {
             path: subagent_path(workspace, parent, &child.id),
             header: Some(header),
@@ -658,6 +677,7 @@ fn header_for(session: &Session, workspace: &Path, branch: Option<String>) -> He
         title: None,
         parent: None,
         agent: None,
+        call: None,
     }
 }
 
@@ -1086,6 +1106,7 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
             .unwrap_or_default(),
         branch: header.branch,
         agent: header.agent,
+        call: header.call,
     })
 }
 
@@ -1381,7 +1402,12 @@ impl SubagentLogs {
 
 #[async_trait]
 impl SubagentRecorder for SubagentLogs {
-    async fn open(&self, agent_type: &str, child: &Session) -> Option<Arc<dyn TurnRecorder>> {
+    async fn open(
+        &self,
+        agent_type: &str,
+        child: &Session,
+        call: Option<&str>,
+    ) -> Option<Arc<dyn TurnRecorder>> {
         if self.off {
             return None;
         }
@@ -1391,6 +1417,7 @@ impl SubagentRecorder for SubagentLogs {
                 &self.workspace,
                 &self.parent,
                 agent_type,
+                call,
             ))),
         }))
     }
@@ -1454,6 +1481,7 @@ mod tests {
             title: String::new(),
             branch: None,
             agent: None,
+            call: None,
         };
         let ids = |listed: &[SessionMeta]| listed.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
         // The same three, found in two different directory orders.
@@ -1508,7 +1536,7 @@ mod tests {
         SessionLog::create(&parent, workspace, None).record(&parent);
 
         let child = session_with("child1", &["search everything"]);
-        let mut log = SessionLog::for_subagent(&child, workspace, "parent1", "explorer");
+        let mut log = SessionLog::for_subagent(&child, workspace, "parent1", "explorer", None);
         log.record(&child);
 
         let loaded = load_subagent("parent1", "child1").expect("the delegate should reload");
@@ -1529,7 +1557,7 @@ mod tests {
         SessionLog::create(&parent, workspace, None).record(&parent);
 
         let child = session_with("child2", &["the delegated part"]);
-        SessionLog::for_subagent(&child, workspace, "parent2", "explorer").record(&child);
+        SessionLog::for_subagent(&child, workspace, "parent2", "explorer", None).record(&child);
 
         // The rail shows conversations somebody had. A delegate is part of one.
         let listed = list(Some(workspace));
@@ -1541,6 +1569,21 @@ mod tests {
         assert_eq!(delegates[0].id, "child2");
         assert_eq!(delegates[0].agent.as_deref(), Some("explorer"));
         assert_eq!(delegates[0].title, "the delegated part");
+        assert_eq!(delegates[0].call, None, "recorded without one");
+    }
+
+    #[test]
+    fn a_delegate_remembers_the_call_that_started_it() {
+        // What lets a reopened conversation put each transcript back on its
+        // card: the parent's own record never says where the child went.
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/linked");
+        let child = session_with("child9", &["look around"]);
+        SessionLog::for_subagent(&child, workspace, "parent9", "explorer", Some("toolu_7"))
+            .record(&child);
+
+        let delegates = list_subagents("parent9");
+        assert_eq!(delegates[0].call.as_deref(), Some("toolu_7"));
     }
 
     #[test]
@@ -1551,7 +1594,7 @@ mod tests {
         let parent = session_with("parent3", &["delegate this"]);
         SessionLog::create(&parent, workspace, None).record(&parent);
         let child = session_with("child3", &["work"]);
-        SessionLog::for_subagent(&child, workspace, "parent3", "explorer").record(&child);
+        SessionLog::for_subagent(&child, workspace, "parent3", "explorer", None).record(&child);
 
         delete("parent3").expect("the conversation should delete");
 
@@ -1570,7 +1613,7 @@ mod tests {
         // What a child looks like part-way through: one round done, more to
         // come. The process dying here must still leave the round that landed.
         let mut child = session_with("child4", &["first round"]);
-        let mut log = SessionLog::for_subagent(&child, workspace, "parent4", "explorer");
+        let mut log = SessionLog::for_subagent(&child, workspace, "parent4", "explorer", None);
         log.record(&child);
 
         let midflight = load_subagent("parent4", "child4").expect("the first round is on disk");
@@ -1594,10 +1637,10 @@ mod tests {
         let child = session_with("child5", &["work"]);
 
         let off = SubagentLogs::disabled();
-        assert!(off.open("explorer", &child).await.is_none());
+        assert!(off.open("explorer", &child, None).await.is_none());
 
         let on = SubagentLogs::new(PathBuf::from("/tmp/recording"), "parent5");
-        assert!(on.open("explorer", &child).await.is_some());
+        assert!(on.open("explorer", &child, None).await.is_some());
     }
 
     #[test]
@@ -2363,6 +2406,7 @@ mod tests {
             title: None,
             parent: None,
             agent: None,
+            call: None,
         }))
         .unwrap();
         std::fs::write(dir.join("ooo1.jsonl"), format!("{message}\n{header}\n")).unwrap();

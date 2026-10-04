@@ -114,6 +114,11 @@ pub struct ResumedSession {
     /// right now, which has an open turn on disk too.
     #[ts(optional)]
     pub interrupted: Option<InterruptedTurn>,
+    /// This conversation's delegates that know which call started them, so
+    /// each delegation card can offer its transcript again. A delegate
+    /// recorded before that was kept isn't here; `taurus sessions --agents`
+    /// still lists it.
+    pub delegates: Vec<SessionMeta>,
 }
 
 /// A turn that ended before its work did, as the window offers to continue
@@ -256,6 +261,17 @@ pub async fn resume_session(
         .capabilities(&session.model)
         .await
         .map_err(|e| e.to_string())?;
+    // One header read per delegate, off the runtime like the transcript was.
+    let parent = session.id.clone();
+    let delegates = off_runtime(move || {
+        Ok::<_, String>(
+            sessions::list_subagents(&parent)
+                .into_iter()
+                .filter(|meta| meta.call.is_some())
+                .collect::<Vec<_>>(),
+        )
+    })
+    .await?;
 
     let resumed = ResumedSession {
         id: session.id.clone(),
@@ -267,6 +283,7 @@ pub async fn resume_session(
         messages: session.messages.clone(),
         switches: switches.clone(),
         interrupted: session.interrupted.as_ref().map(InterruptedTurn::from),
+        delegates,
     };
 
     // Only if it is still absent. The awaits above are where a second resume of
