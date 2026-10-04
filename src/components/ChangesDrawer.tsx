@@ -502,13 +502,13 @@ export function TurnDetail({
    * reach the model must not read as a commit that failed, and the two can be
    * in flight at once.
    */
-  const runReview = async () => {
+  const runReview = async (again = false) => {
     setReviewError(null);
     setReviewing(true);
     reviewingNow.current = true;
     stopped.current = false;
     try {
-      setReview(await api.reviewTurn(sessionId, turn.turn));
+      setReview(await api.reviewTurn(sessionId, turn.turn, again));
     } catch (e) {
       // A stopped review ends in an error on purpose, so it can never be
       // mistaken for a finished one. It is not news to whoever pressed Stop.
@@ -570,8 +570,8 @@ export function TurnDetail({
             <button
               className="quiet"
               disabled={reviewing}
-              data-tip="Hands this diff to an agent with none of this conversation's context. Costs a model round trip."
-              onClick={runReview}
+              data-tip="Hands this diff, and what the turn said it did, to an agent with none of this conversation's context. Costs a model round trip, once per question."
+              onClick={() => runReview()}
             >
               {reviewing ? "Reading it over…" : "Review this turn"}
             </button>
@@ -590,7 +590,24 @@ export function TurnDetail({
                 {plural(review.files, "file")} read by <b>{review.model}</b>,
                 without the conversation that produced them — so it cannot know
                 what was asked for, and may call a deliberate choice a defect.
+                {review.read_claims &&
+                  " What the turn said it did was checked against what it actually ran."}
               </p>
+              {/* Said, because the alternative is a review that looks new
+                  and isn't: the same question answered earlier, returned
+                  without a second model call. */}
+              {review.cached && (
+                <p className="drawer-foot">
+                  Made {since(review.at)} for this same diff and claims.{" "}
+                  <button
+                    className="link"
+                    disabled={reviewing}
+                    onClick={() => runReview(true)}
+                  >
+                    Review again
+                  </button>
+                </p>
+              )}
               {/* A review that covered four of six files and did not say so
                   reads as a clean bill of health for all six. */}
               {review.omitted.map((path) => (
@@ -750,4 +767,13 @@ export function Outcome({ outcome }: { outcome: Restored }) {
         </>
       );
   }
+}
+
+/** "3 minutes ago", roughly, for a Unix time in seconds. */
+function since(at: number): string {
+  const secs = Math.max(0, Math.floor(Date.now() / 1000) - at);
+  if (secs < 60) return "just now";
+  if (secs < 3600) return `${Math.floor(secs / 60)} minutes ago`;
+  if (secs < 86_400) return `${Math.floor(secs / 3600)} hours ago`;
+  return `${Math.floor(secs / 86_400)} days ago`;
 }

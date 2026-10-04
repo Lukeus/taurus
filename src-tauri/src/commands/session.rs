@@ -108,6 +108,34 @@ pub struct ResumedSession {
     /// the transcript came before it — so a reopened conversation shows the
     /// change where it happened rather than only what it ended on.
     pub switches: Vec<Switch>,
+    /// The turn the process died in, when this conversation's transcript ends
+    /// in one. `None` for one that finished, and for one whose turn is running
+    /// right now, which has an open turn on disk too.
+    #[ts(optional)]
+    pub interrupted: Option<InterruptedTurn>,
+}
+
+/// A turn the process running it stopped in the middle of, as the window
+/// offers to continue it.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct InterruptedTurn {
+    /// Calls that were running, whose outcome is unknown.
+    pub unanswered: u32,
+    /// Turns spent on this request already, counting the interrupted one.
+    pub attempts: u32,
+    /// The most one request gets. See `taurus_core::MAX_ATTEMPTS`.
+    pub max_attempts: u32,
+}
+
+impl From<&taurus_core::Interrupted> for InterruptedTurn {
+    fn from(interrupted: &taurus_core::Interrupted) -> Self {
+        Self {
+            unanswered: interrupted.unanswered as u32,
+            attempts: interrupted.attempts,
+            max_attempts: taurus_core::MAX_ATTEMPTS,
+        }
+    }
 }
 
 /// The conversation one delegate had, for reading.
@@ -174,7 +202,11 @@ pub async fn resume_session(
                     // Deliberately not `Some(loaded)`: that is what opens a log
                     // and installs a session entry, and this conversation
                     // already has both — with a turn running through them.
-                    (loaded.session, provider_id, switches, None)
+                    // Which is also why its open turn on disk is not an
+                    // interrupted one.
+                    let mut session = loaded.session;
+                    session.interrupted = None;
+                    (session, provider_id, switches, None)
                 }
             }
         }
@@ -217,6 +249,7 @@ pub async fn resume_session(
         context_length: capabilities.context_length,
         messages: session.messages.clone(),
         switches: switches.clone(),
+        interrupted: session.interrupted.as_ref().map(InterruptedTurn::from),
     };
 
     // Only if it is still absent. The awaits above are where a second resume of
@@ -262,9 +295,14 @@ pub async fn send_message(
     // reaches the model and not the transcript — see `taurus_host::onscreen`,
     // which explains the split and what it costs.
     on_screen: Option<OnScreen>,
+    // Continue the turn this conversation was interrupted in, instead of
+    // sending `text`. See `taurus_core::Agent::continue_turn`, which refuses
+    // when there's nothing to continue or the request is out of turns.
+    continue_interrupted: Option<bool>,
     on_event: Channel<UiEvent>,
 ) -> CmdResult<()> {
     let entry = state.session(&session_id)?;
+    let continuing = continue_interrupted.unwrap_or(false);
 
     check_workspace(&entry.workspace, &state.host.workspace().await)?;
 
@@ -277,7 +315,12 @@ pub async fn send_message(
     // delegate to that sub-agent — before the model sees it. The user's own
     // line stays what the transcript shows and what names the turn: an
     // expansion is how the request is carried out, not what was asked.
-    let prompt = match state.host.expand_command(&text).await {
+    let expanded = if continuing {
+        None
+    } else {
+        state.host.expand_command(&text).await
+    };
+    let prompt = match expanded {
         Some(Ok(invocation)) => {
             info!(
                 session = %session_id,
@@ -406,7 +449,11 @@ pub async fn send_message(
     // above — once per round and once at the end, whatever the outcome. An
     // interrupted turn still produced the messages that led there, and they are
     // already on disk in the order they happened.
-    let outcome = agent.run_turn(&mut session, message, tx).await;
+    let outcome = if continuing {
+        agent.continue_turn(&mut session, tx).await
+    } else {
+        agent.run_turn(&mut session, message, tx).await
+    };
     drop(session);
     // Ends on its own once the loop's sender goes with the turn, so awaiting it
     // is what makes sure the last events reached every view before the

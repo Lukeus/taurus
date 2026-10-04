@@ -265,6 +265,16 @@ impl TurnRecorder for UiSessionLog {
             warn!(error = %e, "could not announce a new conversation");
         }
     }
+
+    // One line each, so on the runtime: `record` moves its writes off it
+    // because a round is many lines, which these aren't.
+    async fn turn_started(&self, id: &str, continues: bool) {
+        self.log.lock().await.start_turn(id, continues);
+    }
+
+    async fn turn_ended(&self, id: &str, outcome: &str) {
+        self.log.lock().await.end_turn(id, outcome);
+    }
 }
 
 #[cfg(test)]

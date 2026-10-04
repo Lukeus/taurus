@@ -191,6 +191,7 @@ export default function App() {
       stopping: s.stopping,
       resuming: s.resuming,
       queued: s.queued,
+      interrupted: s.interrupted,
       error: s.error,
       permission: s.permission,
       proposals: s.proposals,
@@ -198,6 +199,7 @@ export default function App() {
       init: s.init,
       send: s.send,
       retry: s.retry,
+      continueInterrupted: s.continueInterrupted,
       unqueue: s.unqueue,
       stop: s.stop,
       resume: s.resume,
@@ -1481,6 +1483,8 @@ export default function App() {
           parked={parked[sessionKey] ?? null}
           onPark={park}
           queued={store.queued}
+          interrupted={store.interrupted}
+          onContinue={store.continueInterrupted}
           onSendQueued={sendQueued}
           onUnqueue={store.unqueue}
           focus={focusComposer}

@@ -82,6 +82,11 @@ enum Command {
         /// The turn to review. Omit to list what there is.
         #[arg(long, value_name = "TURN")]
         turn: Option<u32>,
+
+        /// Review it again even if the same diff and claims have been
+        /// reviewed on this model before. Without it, that review is shown.
+        #[arg(long)]
+        again: bool,
     },
 
     /// List file changes a session made, and undo them.
@@ -375,7 +380,12 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
 
-        Command::Review { session, id, turn } => {
+        Command::Review {
+            session,
+            id,
+            turn,
+            again,
+        } => {
             let provider = session.provider.clone();
             let model = session.model.clone();
             let host = build_host(&session, Policy::default(), servers).await?.host;
@@ -383,6 +393,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 &host,
                 id.as_deref(),
                 turn,
+                again,
                 provider.as_deref(),
                 model.as_deref(),
             )

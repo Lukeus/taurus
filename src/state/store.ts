@@ -15,6 +15,7 @@ import type {
   AppStatus,
   CreatedSession,
   DelegateReport,
+  InterruptedTurn,
   Message,
   LineRange,
   OnScreen,
@@ -297,6 +298,12 @@ interface Store {
    * different question.
    */
   sent: Outgoing | null;
+  /**
+   * The turn this conversation was in when Taurus stopped, from its
+   * transcript. Offered to continue above the composer; cleared by the next
+   * turn to start, continued or typed.
+   */
+  interrupted: InterruptedTurn | null;
   /** Set while a turn is running so the composer can show Stop instead of Send. */
   permission: PermissionRequest | null;
   proposals: SkillProposal[];
@@ -361,6 +368,8 @@ interface Store {
     images?: Attachment[],
     /** What the Data pane was showing, when the message came from it. */
     onScreen?: OnScreen | null,
+    /** Continue the interrupted turn instead. See `continueInterrupted`. */
+    continuing?: boolean,
   ) => Promise<void>;
   /**
    * Sends the last message again, for a turn that died before answering.
@@ -373,6 +382,11 @@ interface Store {
    * twice as much as its label said.
    */
   retry: () => Promise<void>;
+  /**
+   * Continues the turn Taurus stopped in the middle of. Nothing is replayed:
+   * the model reads which calls have unknown outcomes and decides what's left.
+   */
+  continueInterrupted: () => Promise<void>;
   /** Throws away a message typed ahead, without sending it. */
   unqueue: () => void;
   stop: () => Promise<void>;
@@ -628,6 +642,7 @@ export const useStore = create<Store>((set, get) => ({
   resuming: false,
   queued: null,
   sent: null,
+  interrupted: null,
   permission: null,
   proposals: [],
   agentProposals: [],
@@ -774,6 +789,7 @@ export const useStore = create<Store>((set, get) => ({
       // is not offered for a turn that is no longer on screen.
       queued: null,
       sent: null,
+      interrupted: null,
       // The same: each conversation carries its own answer, and `attach` fills
       // this in with the one being opened. Cleared rather than kept, so the
       // moment between the two shows the safe answer.
@@ -808,13 +824,17 @@ export const useStore = create<Store>((set, get) => ({
     // `set` below replaces it, and that is the whole of what this marks.
     set({ resuming: true });
     try {
-      const { messages, switches, ...session } = await api.resumeSession(sessionId);
+      const { messages, switches, interrupted, ...session } =
+        await api.resumeSession(sessionId);
       // As in `startSession`: a resume that fails must leave the conversation
       // on screen exactly as it was.
       await release(previous, session.id);
       set({
         session,
-        entries: entriesFromMessages(messages, switches),
+        entries: interrupted
+          ? unknownOutcomes(entriesFromMessages(messages, switches))
+          : entriesFromMessages(messages, switches),
+        interrupted: interrupted ?? null,
         changed: [],
   opening: null,
   wrote: null,
@@ -976,7 +996,7 @@ export const useStore = create<Store>((set, get) => ({
     }));
   },
 
-  send: async (text, images = [], onScreen = null) => {
+  send: async (text, images = [], onScreen = null, continuing = false) => {
     const { session, busy } = get();
     // Text is still required with an image attached. "What is wrong with this?"
     // is a question; a bare screenshot is a guess about what was wanted.
@@ -999,15 +1019,30 @@ export const useStore = create<Store>((set, get) => ({
       // was waiting for, whether it arrived from the box or from the drain
       // below.
       queued: null,
-      sent: { text, images, onScreen },
-      entries: [...s.entries, { kind: "user", id: nextId(), text, images }],
+      // A continuation isn't a message to try again: its retry is another
+      // continuation, which the banner offers while there are turns left.
+      sent: continuing ? null : { text, images, onScreen },
+      // Any turn that starts ends the interrupted one. A typed message
+      // carries the unknown outcomes with it, just as a continuation does.
+      interrupted: null,
+      entries: [
+        ...s.entries,
+        continuing
+          ? {
+              kind: "notice",
+              id: nextId(),
+              tone: "info",
+              text: "Continuing the turn Taurus stopped in.",
+            }
+          : { kind: "user", id: nextId(), text, images },
+      ],
     }));
 
     const stream = turnStream(session.id, get, set);
 
     let died = false;
     try {
-      await api.sendMessage(session.id, text, stream.push, images, onScreen);
+      await api.sendMessage(session.id, text, stream.push, images, onScreen, continuing);
     } catch (e) {
       died = true;
       // Before the notice, so it reads after whatever the turn had already
@@ -1088,6 +1123,12 @@ export const useStore = create<Store>((set, get) => ({
     // minute later is not one anybody asked for.
     if (!sent || busy) return;
     await get().send(sent.text, sent.images, sent.onScreen);
+  },
+
+  continueInterrupted: async () => {
+    const { interrupted, busy } = get();
+    if (!interrupted || busy) return;
+    await get().send(CONTINUE_PROMPT, [], null, true);
   },
 
   unqueue: () => set({ queued: null }),
@@ -1340,6 +1381,33 @@ export const useStore = create<Store>((set, get) => ({
  * down. Defaulted, so a delegate's transcript, which never moves, can be
  * rebuilt without passing an empty list to say so.
  */
+/**
+ * What a continuation says, the same words as `CONTINUE_PROMPT` in
+ * `crates/taurus-core/src/session.rs`. Drawn as a notice on a reopened
+ * conversation: it's the harness speaking, not the user.
+ */
+export const CONTINUE_PROMPT =
+  "Your previous run was interrupted. Continue from where you left off.";
+
+/**
+ * Marks the calls a stopped process never answered.
+ *
+ * Their results aren't on disk, so a rebuilt transcript would draw them
+ * running forever. The backend answers them "outcome unknown" when the next
+ * turn starts; until then, this says the same.
+ */
+export function unknownOutcomes(entries: Entry[]): Entry[] {
+  return entries.map((e) =>
+    e.kind === "tool" && e.status === "running"
+      ? {
+          ...e,
+          status: "error",
+          output: "Outcome unknown: Taurus stopped while this was running.",
+        }
+      : e,
+  );
+}
+
 export function entriesFromMessages(
   messages: Message[],
   switches: Switch[] = [],
@@ -1382,6 +1450,15 @@ export function entriesFromMessages(
             };
           }
           if (rest === "") continue;
+          if (rest === CONTINUE_PROMPT) {
+            entries.push({
+              kind: "notice",
+              id: nextId(),
+              tone: "info",
+              text: "Continued the turn Taurus stopped in.",
+            });
+            continue;
+          }
           entries.push({
             kind: "user",
             id: nextId(),
