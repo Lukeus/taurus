@@ -739,9 +739,11 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     let mut messages = Vec::new();
     let mut usage = TokenUsage::default();
     let mut switches: Vec<Switch> = Vec::new();
-    // Turns spent on the current request, and the turn with no end yet.
+    // Turns spent on the current request, the turn with no end yet, and
+    // whether the last turn to end ran out of round trips.
     let mut attempts = 0u32;
     let mut open_turn: Option<String> = None;
+    let mut out_of_rounds = false;
 
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         if line.trim().is_empty() {
@@ -767,10 +769,13 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
             Ok(Record::Turn { id, continues, .. }) => {
                 attempts = if continues { attempts + 1 } else { 1 };
                 open_turn = Some(id);
+                out_of_rounds = false;
             }
-            Ok(Record::TurnEnd { id, .. }) => {
+            Ok(Record::TurnEnd { id, outcome }) => {
                 if open_turn.as_deref() == Some(id.as_str()) {
                     open_turn = None;
+                    // The kind `AgentError::IterationLimit` records itself as.
+                    out_of_rounds = outcome == "iteration_limit";
                 }
             }
             Err(e) => {
@@ -787,10 +792,21 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
         .filter(|m| m.role == taurus_provider::Role::Assistant && m.has_tool_use())
         .map(taurus_core::owed_results)
         .unwrap_or_default();
-    let interrupted = open_turn.map(|_| taurus_core::Interrupted {
-        attempts,
-        unanswered: owed.len(),
-    });
+    let interrupted = if open_turn.is_some() {
+        Some(taurus_core::Interrupted {
+            attempts,
+            unanswered: owed.len(),
+            cause: taurus_core::Cause::Stopped,
+        })
+    } else if out_of_rounds {
+        Some(taurus_core::Interrupted {
+            attempts,
+            unanswered: 0,
+            cause: taurus_core::Cause::Ceiling,
+        })
+    } else {
+        None
+    };
 
     let header = header.ok_or_else(|| format!("{} has no header", path.display()))?;
     if header.version > FORMAT_VERSION {
@@ -1696,9 +1712,52 @@ mod tests {
             interrupted,
             Some(taurus_core::Interrupted {
                 attempts: 1,
-                unanswered: 0
+                unanswered: 0,
+                cause: taurus_core::Cause::Stopped,
             })
         );
+    }
+
+    #[test]
+    fn a_turn_that_ran_out_of_rounds_reopens_as_one_to_continue() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let mut session = Session::new("test-model");
+        session.id = "rounds1".into();
+        let mut log = SessionLog::create(&session, workspace, None);
+
+        log.start_turn("t1", false);
+        session.push(Message::user("refactor it"));
+        log.record(&session);
+        log.end_turn("t1", "iteration_limit");
+        let first = load("rounds1").unwrap().session.interrupted;
+        assert_eq!(
+            first,
+            Some(taurus_core::Interrupted {
+                attempts: 1,
+                unanswered: 0,
+                cause: taurus_core::Cause::Ceiling,
+            })
+        );
+
+        // Continued, and out of rounds again: the second of three.
+        log.start_turn("t2", true);
+        log.end_turn("t2", "iteration_limit");
+        assert_eq!(
+            load("rounds1")
+                .unwrap()
+                .session
+                .interrupted
+                .unwrap()
+                .attempts,
+            2
+        );
+
+        // Any other ending leaves nothing to continue: a stall is a model
+        // going in circles, which more rounds don't fix.
+        log.start_turn("t3", true);
+        log.end_turn("t3", "stalled");
+        assert!(load("rounds1").unwrap().session.interrupted.is_none());
     }
 
     #[test]

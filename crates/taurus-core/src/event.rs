@@ -175,6 +175,17 @@ pub enum UiEvent {
     Error {
         message: String,
     },
+    /// The turn used every tool round trip it gets, and can be continued.
+    ///
+    /// Sent once, after the [`UiEvent::Error`] that says it stopped, so a
+    /// window can offer Continue without reopening the conversation. A
+    /// reopened one learns the same from its transcript.
+    OutOfRounds {
+        /// Turns spent on this request, counting this one.
+        attempts: u32,
+        /// The most one request gets. See [`crate::MAX_ATTEMPTS`].
+        max_attempts: u32,
+    },
 }
 
 /// One picture a tool handed back, on its way to the card that draws it.

@@ -460,13 +460,14 @@ impl Agent {
         self.run(session, user_message, ui, false).await
     }
 
-    /// Continues a turn the process stopped in the middle of.
+    /// Continues a turn that ended before its work did: one the process
+    /// stopped in the middle of, or one that used every round trip it gets.
     ///
     /// Nothing is replayed. The model gets the history, where every call the
     /// process never answered now reads "outcome unknown", and
-    /// [`crate::session::CONTINUE_PROMPT`], and decides what is left. Refused
-    /// when there's nothing to continue, and once the request has had
-    /// [`crate::session::MAX_ATTEMPTS`] turns.
+    /// [`Interrupted::prompt`](crate::Interrupted::prompt), and decides what is
+    /// left. Refused when there's nothing to continue, and once the request has
+    /// had [`crate::session::MAX_ATTEMPTS`] turns.
     pub async fn continue_turn(
         &self,
         session: &mut Session,
@@ -474,7 +475,7 @@ impl Agent {
     ) -> Result<TurnOutcome, AgentError> {
         let refusal = match &session.interrupted {
             None => {
-                Some("There's no interrupted turn to continue in this conversation.".to_string())
+                Some("There's no unfinished turn to continue in this conversation.".to_string())
             }
             Some(interrupted) if !interrupted.can_continue() => Some(format!(
                 "This request has had {} turns, the most one gets, so it isn't continued \
@@ -491,13 +492,11 @@ impl Agent {
                 .await;
             return Err(AgentError::Refused(refusal));
         }
-        self.run(
-            session,
-            Message::user(crate::session::CONTINUE_PROMPT),
-            ui,
-            true,
-        )
-        .await
+        let prompt = session
+            .interrupted
+            .as_ref()
+            .map_or(crate::session::CONTINUE_PROMPT, |i| i.prompt());
+        self.run(session, Message::user(prompt), ui, true).await
     }
 
     async fn run(
@@ -535,10 +534,30 @@ impl Agent {
         if let Some(checkpoints) = &self.tools.checkpoints {
             checkpoints.name(&turn_id).await;
         }
+        // Counted the way the loader counts them from disk, so a turn out of
+        // rounds offers the same Continue live as it does once reopened.
+        let attempts = match (&session.interrupted, continues) {
+            (Some(previous), true) => previous.attempts + 1,
+            _ => 1,
+        };
         let outcome = self
-            .turn(session, user_message, ui, &pending)
+            .turn(session, user_message, ui.clone(), &pending)
             .instrument(span.clone())
             .await;
+        if matches!(outcome, Err(AgentError::IterationLimit(_))) {
+            let out_of_rounds = crate::Interrupted {
+                attempts,
+                unanswered: 0,
+                cause: crate::Cause::Ceiling,
+            };
+            let _ = ui
+                .send(UiEvent::OutOfRounds {
+                    attempts,
+                    max_attempts: crate::session::MAX_ATTEMPTS,
+                })
+                .await;
+            session.interrupted = Some(out_of_rounds);
+        }
         // A turn that finished normally waited for its background work, so
         // there's nothing left here. Every other way out — Stop, an error, the
         // ceiling, a stall — leaves it running, sharing this turn's event

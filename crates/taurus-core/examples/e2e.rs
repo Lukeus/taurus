@@ -110,6 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  [context {used}/{window}]")
                 }
                 UiEvent::Error { message } => println!("  [error] {message}"),
+                UiEvent::OutOfRounds { .. } => println!("  [out of rounds; continuable]"),
                 UiEvent::TurnFinished { stop_reason, usage } => {
                     println!(
                         "\n\n--- {stop_reason:?}, {} in / {} out ---",

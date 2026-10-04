@@ -62,19 +62,51 @@ pub const MAX_ATTEMPTS: u32 = 3;
 pub const CONTINUE_PROMPT: &str =
     "Your previous run was interrupted. Continue from where you left off.";
 
-/// A turn that was running when the process stopped.
+/// What continuing a turn that ran out of round trips says.
+///
+/// It follows the harness's own request to summarize, which nothing answered,
+/// so it says that request is withdrawn rather than leaving the model to
+/// guess which of two instructions in a row is the one in force.
+pub const CEILING_CONTINUE_PROMPT: &str = "You've been given more tool round trips, so don't \
+     summarize yet. Continue the task from where you left off.";
+
+/// A turn that ended before its work did, and can be continued.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Interrupted {
     /// Turns spent on this request so far: the original, and each
     /// continuation. Continuing is refused at [`MAX_ATTEMPTS`].
     pub attempts: u32,
-    /// Calls that were running, whose outcome is unknown.
+    /// Calls that were running, whose outcome is unknown. Always zero for
+    /// [`Cause::Ceiling`], which ends between rounds.
     pub unanswered: usize,
+    pub cause: Cause,
+}
+
+/// Why a turn ended before its work did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// The process running it stopped: a crash, a kill, a quit.
+    Stopped,
+    /// It used every tool round trip one turn gets (`max_iterations`).
+    ///
+    /// Continuable for the same reason a stopped turn is: the work isn't
+    /// finished and nothing about it is broken. It shares the attempt count,
+    /// so a model going in circles gets at most [`MAX_ATTEMPTS`] times the
+    /// ceiling for one request, and only with a click each time.
+    Ceiling,
 }
 
 impl Interrupted {
     pub fn can_continue(&self) -> bool {
         self.attempts < MAX_ATTEMPTS
+    }
+
+    /// What the continuation turn says to the model.
+    pub fn prompt(&self) -> &'static str {
+        match self.cause {
+            Cause::Stopped => CONTINUE_PROMPT,
+            Cause::Ceiling => CEILING_CONTINUE_PROMPT,
+        }
     }
 }
 

@@ -91,19 +91,23 @@ async fn open_session(
     Ok((session, log))
 }
 
-/// What to say about a conversation whose last turn the process died in.
+/// What to say about a conversation whose last turn ended before its work did.
 fn interrupted_notice(interrupted: &taurus_core::Interrupted) -> String {
+    let what = match interrupted.cause {
+        taurus_core::Cause::Stopped => "Its last turn was interrupted.",
+        taurus_core::Cause::Ceiling => "Its last turn used every tool round trip one turn gets.",
+    };
     let calls = match interrupted.unanswered {
         0 => String::new(),
         1 => " One call was running, and its outcome is unknown.".to_string(),
         n => format!(" {n} calls were running, and their outcome is unknown."),
     };
     if interrupted.can_continue() {
-        format!("Its last turn was interrupted.{calls} Send {CONTINUE_COMMAND} to pick it up, or any message to go on.")
+        format!("{what}{calls} Send {CONTINUE_COMMAND} to pick it up, or any message to go on.")
     } else {
         format!(
-            "Its last turn was interrupted.{calls} It has had {} turns already, so it won't be \
-             continued again; send a message to go on.",
+            "{what}{calls} It has had {} turns already, so it won't be continued again; send a \
+             message to go on.",
             interrupted.attempts
         )
     }
@@ -319,6 +323,11 @@ async fn turn(
         Ok(_) => Ok(true),
         Err(e) => {
             eprintln!("taurus: {e}");
+            // Only a turn out of rounds leaves one behind live; a stopped
+            // process has nobody left to tell.
+            if let Some(interrupted) = &session.interrupted {
+                eprintln!("  {}", interrupted_notice(interrupted));
+            }
             Ok(false)
         }
     }

@@ -416,6 +416,72 @@ async fn the_iteration_ceiling_stops_a_model_stuck_in_a_tool_loop() {
 }
 
 #[tokio::test]
+async fn a_turn_out_of_rounds_can_be_continued_until_the_request_is_out_of_turns() {
+    let turns = (0..30)
+        .map(|_| ScriptedTurn::tool_call("t", "list_dir", serde_json::json!({})))
+        .collect();
+    let config = AgentConfig {
+        max_iterations: 2,
+        ..Default::default()
+    };
+    let h = harness_with(turns, Box::new(AllowAll), config, 128_000);
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "spin").await;
+
+    assert!(matches!(outcome, Err(AgentError::IterationLimit(2))));
+    assert_eq!(
+        session.interrupted,
+        Some(taurus_core::Interrupted {
+            attempts: 1,
+            unanswered: 0,
+            cause: taurus_core::Cause::Ceiling,
+        }),
+        "continuable live, without reopening"
+    );
+    assert!(
+        matches!(
+            events.last(),
+            Some(UiEvent::OutOfRounds {
+                attempts: 1,
+                max_attempts: 3
+            })
+        ),
+        "the window is told after the error, so it can offer Continue: {events:?}"
+    );
+
+    // Continued: a fresh set of rounds, under words that withdraw the
+    // harness's request to summarize.
+    let (tx, _rx) = mpsc::channel(256);
+    let again = h.agent.continue_turn(&mut session, tx).await;
+    assert!(matches!(again, Err(AgentError::IterationLimit(2))));
+    assert_eq!(h.provider.request_count().await, 4);
+    assert!(session
+        .messages
+        .iter()
+        .any(|m| m.text() == taurus_core::CEILING_CONTINUE_PROMPT));
+    assert_eq!(session.interrupted.as_ref().unwrap().attempts, 2);
+
+    let (tx, _rx) = mpsc::channel(256);
+    let _ = h.agent.continue_turn(&mut session, tx).await;
+    assert_eq!(session.interrupted.as_ref().unwrap().attempts, 3);
+
+    // The third was the last one this request gets.
+    let (tx, _rx) = mpsc::channel(256);
+    let spent = h.agent.continue_turn(&mut session, tx).await;
+    assert!(matches!(spent, Err(AgentError::Refused(_))), "{spent:?}");
+    assert_eq!(
+        h.provider.request_count().await,
+        6,
+        "a refusal asks nothing"
+    );
+
+    // A typed message is a new request, and gets its own three.
+    let (outcome, _) = run(&h, &mut session, "try a different approach").await;
+    assert!(matches!(outcome, Err(AgentError::IterationLimit(2))));
+    assert_eq!(session.interrupted.as_ref().unwrap().attempts, 1);
+}
+
+#[tokio::test]
 async fn cancellation_before_a_turn_starts_returns_immediately() {
     let h = harness(vec![ScriptedTurn::text("should not be reached")]);
     h.cancel.cancel();
@@ -2632,6 +2698,7 @@ async fn owed_results_ride_in_front_of_the_next_message() {
     session.interrupted = Some(taurus_core::Interrupted {
         attempts: 1,
         unanswered: 1,
+        cause: taurus_core::Cause::Stopped,
     });
 
     let (tx, _rx) = mpsc::channel(256);
@@ -2669,13 +2736,14 @@ async fn a_request_is_continued_at_most_three_turns_in_all() {
     let (tx, _rx) = mpsc::channel(256);
     let nothing = h.agent.continue_turn(&mut session, tx).await;
     assert!(
-        matches!(&nothing, Err(AgentError::Refused(m)) if m.contains("no interrupted turn")),
+        matches!(&nothing, Err(AgentError::Refused(m)) if m.contains("no unfinished turn")),
         "{nothing:?}"
     );
 
     session.interrupted = Some(taurus_core::Interrupted {
         attempts: taurus_core::MAX_ATTEMPTS,
         unanswered: 0,
+        cause: taurus_core::Cause::Stopped,
     });
     let (tx, _rx) = mpsc::channel(256);
     let spent = h.agent.continue_turn(&mut session, tx).await;

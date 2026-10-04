@@ -540,5 +540,9 @@ export function interruptedText(interrupted: InterruptedTurn): string {
     interrupted.attempts < interrupted.max_attempts
       ? ""
       : ` It's had ${interrupted.attempts} turns, so send a message to go on.`;
-  return `This turn stopped when Taurus did.${calls}${rest}`;
+  const what =
+    interrupted.cause === "ceiling"
+      ? "This turn used every tool round trip one turn gets."
+      : "This turn stopped when Taurus did.";
+  return `${what}${calls}${rest}`;
 }
