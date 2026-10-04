@@ -200,6 +200,9 @@ export default function App() {
       send: s.send,
       retry: s.retry,
       continueInterrupted: s.continueInterrupted,
+      away: s.away,
+      fork: s.fork,
+      switchHere: s.switchHere,
       unqueue: s.unqueue,
       stop: s.stop,
       resume: s.resume,
@@ -1408,6 +1411,13 @@ export default function App() {
                     sessionId={store.session.id}
                     busy={store.busy}
                     onClose={() => setChangesOpen(false)}
+                    // The new conversation opens with the question it was
+                    // forked before, ready to be asked again or differently.
+                    onFork={async (turn) => {
+                      const forked = await store.fork(store.session!.id, turn);
+                      setDraft({ text: forked.prompt });
+                      return forked;
+                    }}
                   />
                 </Suspense>
               </div>
@@ -1485,6 +1495,8 @@ export default function App() {
           queued={store.queued}
           interrupted={store.interrupted}
           onContinue={store.continueInterrupted}
+          away={store.away}
+          onSwitch={store.switchHere}
           onSendQueued={sendQueued}
           onUnqueue={store.unqueue}
           focus={focusComposer}

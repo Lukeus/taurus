@@ -344,6 +344,8 @@ pub fn run() {
             commands::reload_mcp,
             commands::list_checkpoints,
             commands::rewind_to,
+            commands::fork_turn,
+            commands::switch_to,
             commands::turn_changes,
             commands::review_turn,
             commands::stop_review,

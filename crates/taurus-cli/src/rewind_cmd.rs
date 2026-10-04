@@ -138,7 +138,7 @@ fn list(turns: &[Checkpoint], session_id: &str) {
     );
 }
 
-fn resolve_turn(raw: &str, turns: &[Checkpoint]) -> Result<u32, String> {
+pub(crate) fn resolve_turn(raw: &str, turns: &[Checkpoint]) -> Result<u32, String> {
     if raw.eq_ignore_ascii_case("last") {
         return turns
             .last()
@@ -161,7 +161,7 @@ fn resolve_turn(raw: &str, turns: &[Checkpoint]) -> Result<u32, String> {
 /// A fixed width rather than the terminal's. Asking would mean a dependency for
 /// a number that is wrong the moment the output is piped, and 72 leaves room
 /// for the marker inside the 80 columns that is still the narrow case.
-fn wrapped(warning: &str) -> String {
+pub(crate) fn wrapped(warning: &str) -> String {
     const WIDTH: usize = 72;
     const HANGING: &str = "\n    ";
 
@@ -182,7 +182,7 @@ fn wrapped(warning: &str) -> String {
     lines.join(HANGING)
 }
 
-fn describe(outcome: &Restored) -> String {
+pub(crate) fn describe(outcome: &Restored) -> String {
     match outcome {
         Restored::Reverted { path } => format!("reverted  {path}"),
         Restored::Deleted { path } => format!("deleted   {path}"),

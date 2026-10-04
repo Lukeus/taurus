@@ -245,6 +245,30 @@ struct Header {
     /// conversation, and for a delegate recorded before this was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     call: Option<String>,
+    /// The conversation this one was forked from, and where.
+    ///
+    /// An older build ignores the field and opens a fork as an ordinary
+    /// conversation, which is what it is: everything before the fork point is
+    /// a copy, not a reference, so nothing about reading it depends on knowing
+    /// where it came from.
+    ///
+    /// Boxed so the header record doesn't make every message record as large
+    /// as itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    forked_from: Option<Box<ForkedFrom>>,
+}
+
+/// Where a fork came from: the conversation, and the turn it was forked before.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ForkedFrom {
+    pub session: String,
+    /// The transcript's own id for the turn, which is what the fork stops
+    /// short of.
+    pub turn: String,
+    /// The same turn as `taurus rewind` and the Changes panel number it, for
+    /// saying "turn 3" to a person.
+    pub checkpoint: u32,
 }
 
 /// What a listing shows, read from a transcript's own opening lines.
@@ -279,6 +303,10 @@ pub struct SessionMeta {
     /// [`Header::call`].
     #[ts(optional)]
     pub call: Option<String>,
+    /// Where this conversation was forked from, if it was. See
+    /// [`ForkedFrom`].
+    #[ts(optional)]
+    pub forked_from: Option<ForkedFrom>,
 }
 
 /// What a transcript has not yet written of a session: the messages past what
@@ -678,6 +706,7 @@ fn header_for(session: &Session, workspace: &Path, branch: Option<String>) -> He
         parent: None,
         agent: None,
         call: None,
+        forked_from: None,
     }
 }
 
@@ -894,6 +923,133 @@ pub fn turn_messages(session_id: &str, turn_id: &str) -> Option<Vec<Message>> {
     found.then_some(messages)
 }
 
+/// Starts a new conversation as a copy of `source`'s, up to the turn named in
+/// `from`, and returns what that turn asked.
+///
+/// Everything before the turn is copied line for line under a new header:
+/// the messages, the token totals, the model switches, and the turn records.
+/// Nothing at or after it is. A turn that continued an interrupted one isn't
+/// a place a request starts, so the cut moves back to the turn that began it.
+///
+/// The delegates that ran in the copied part come too, so their cards still
+/// open. The source is only read.
+pub fn fork_transcript(new_id: &str, from: &ForkedFrom) -> Result<String, String> {
+    if !usable_as_filename(new_id) {
+        return Err(format!("'{new_id}' is not a usable session id"));
+    }
+    let source =
+        find(&from.session).ok_or_else(|| format!("no saved session '{}'", from.session))?;
+    let contents =
+        std::fs::read_to_string(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let lines: Vec<&str> = contents.lines().collect();
+
+    let mut header: Option<Header> = None;
+    let mut turns: Vec<(usize, String, bool)> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        match serde_json::from_str::<Record>(line) {
+            Ok(Record::Header(found)) if header.is_none() => header = Some(found),
+            Ok(Record::Turn { id, continues, .. }) => turns.push((index, id, continues)),
+            _ => {}
+        }
+    }
+    let mut header = header.ok_or_else(|| format!("{} has no header", source.display()))?;
+    let mut at = turns
+        .iter()
+        .position(|(_, id, _)| *id == from.turn)
+        .ok_or_else(|| {
+            format!(
+                "the transcript of '{}' has no turn '{}', so there's nowhere to fork it",
+                from.session, from.turn
+            )
+        })?;
+    while turns[at].2 && at > 0 {
+        at -= 1;
+    }
+    let cut = turns[at].0;
+
+    // What the turn asked: its first user message's words.
+    let prompt = lines[cut..]
+        .iter()
+        .find_map(|line| match serde_json::from_str::<Record>(line) {
+            Ok(Record::Message(m)) if m.role == Role::User && !m.text().trim().is_empty() => {
+                Some(m.text())
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let workspace = PathBuf::from(&header.workspace);
+    header.id = new_id.to_string();
+    header.started = now();
+    header.title = None;
+    header.forked_from = Some(Box::new(from.clone()));
+    let mut out = serde_json::to_string(&Record::Header(header))
+        .map_err(|e| format!("could not write the fork's header: {e}"))?;
+    out.push('\n');
+    let mut calls: Vec<String> = Vec::new();
+    for line in &lines[..cut] {
+        match serde_json::from_str::<Record>(line) {
+            Ok(Record::Header(_)) => continue,
+            Ok(Record::Message(m)) => {
+                calls.extend(m.tool_uses().map(|(id, _, _)| id.to_string()));
+            }
+            _ => {}
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    let target = sessions_dir()
+        .join(workspace_key(&workspace))
+        .join(format!("{new_id}.{EXTENSION}"));
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    crate::config::replace_file(&target, &out).map_err(|e| format!("{}: {e}", target.display()))?;
+
+    // The delegates that ran before the cut, so a copied card still opens its
+    // transcript. Best-effort: a card whose delegate didn't copy says so when
+    // it's opened, and that's no reason to fail the fork.
+    if let Some(dir) = subagents_dir(&from.session) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Some(meta) = read_meta(&path) else {
+                continue;
+            };
+            if !meta.call.as_ref().is_some_and(|call| calls.contains(call)) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let rewritten: String = text
+                .split_inclusive('\n')
+                .map(
+                    |line| match serde_json::from_str::<Record>(line.trim_end()) {
+                        Ok(Record::Header(mut child)) => {
+                            child.parent = Some(new_id.to_string());
+                            serde_json::to_string(&Record::Header(child))
+                                .map(|mut l| {
+                                    l.push('\n');
+                                    l
+                                })
+                                .unwrap_or_else(|_| line.to_string())
+                        }
+                        _ => line.to_string(),
+                    },
+                )
+                .collect();
+            let copy = subagent_path(&workspace, new_id, &meta.id);
+            if let Some(parent) = copy.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = crate::config::replace_file(&copy, &rewritten);
+        }
+    }
+
+    Ok(prompt)
+}
+
 /// The workspace a saved conversation belongs to, read from its header alone.
 ///
 /// A cheap answer to the one question [`load`] is otherwise the only way to
@@ -1107,6 +1263,7 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
         branch: header.branch,
         agent: header.agent,
         call: header.call,
+        forked_from: header.forked_from.map(|from| *from),
     })
 }
 
@@ -1482,6 +1639,7 @@ mod tests {
             branch: None,
             agent: None,
             call: None,
+            forked_from: None,
         };
         let ids = |listed: &[SessionMeta]| listed.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
         // The same three, found in two different directory orders.
@@ -2407,6 +2565,7 @@ mod tests {
             parent: None,
             agent: None,
             call: None,
+            forked_from: None,
         }))
         .unwrap();
         std::fs::write(dir.join("ooo1.jsonl"), format!("{message}\n{header}\n")).unwrap();

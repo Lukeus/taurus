@@ -63,6 +63,60 @@ pub async fn rewind_to(
     Ok(rewind)
 }
 
+/// Starts a new conversation from just before `turn`, keeping this one.
+///
+/// Refused under a running turn for the reason a rewind is: its tool calls
+/// could still be writing the files this puts back. See [`taurus_host::fork`].
+#[tauri::command]
+pub async fn fork_turn(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    turn: u32,
+) -> CmdResult<taurus_host::Forked> {
+    if let Ok(entry) = state.session(&session_id) {
+        let _ = entry.idle("stop it before forking")?;
+    }
+    let workspace = session_workspace(&state, &session_id).await;
+    let store = state.host.checkpoints_for(&workspace);
+    let forked = {
+        let session_id = session_id.clone();
+        off_runtime(move || taurus_host::fork::fork(&store, &workspace, &session_id, turn, false))
+            .await?
+    };
+    // The original's files went aside and an earlier set came back, so both
+    // conversations' counts have moved.
+    emit_changed(&state, &session_id).await;
+    Ok(forked)
+}
+
+/// Puts a conversation's files back, setting aside whichever branch of it is
+/// in the workspace now.
+#[tauri::command]
+pub async fn switch_to(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> CmdResult<taurus_host::Switched> {
+    let workspace = session_workspace(&state, &session_id).await;
+    let store = state.host.checkpoints_for(&workspace);
+    // The branch being set aside may be mid-turn in another window.
+    let away = {
+        let (store, id) = (store.clone(), session_id.clone());
+        off_runtime(move || store.away(&id)).await?
+    };
+    if let Some(other) = &away {
+        if let Ok(entry) = state.session(other) {
+            let _ = entry.idle("stop it before switching away from it")?;
+        }
+    }
+    let switched = {
+        let session_id = session_id.clone();
+        off_runtime(move || taurus_host::fork::switch(&store, &workspace, &session_id, false))
+            .await?
+    };
+    emit_changed(&state, &session_id).await;
+    Ok(switched)
+}
+
 /// What one turn changed, file by file, as a diff.
 ///
 /// Read on demand rather than sent with the listing: a session of thirty turns

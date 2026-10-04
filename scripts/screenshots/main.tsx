@@ -252,6 +252,22 @@ window.__TAURI_INTERNALS__ = {
     // stub that handed over the same log every quarter second would draw it
     // again every quarter second. Honouring the cursor is not extra fidelity
     // here; it is the feature the shot is of.
+    // The fork scene: the open conversation's files are set aside because a
+    // fork of it, listed first in the rail, has the workspace.
+    if (shot === "fork" && cmd === "list_sessions") {
+      return [
+        {
+          ...SESSIONS[0],
+          id: "s4",
+          updated: SESSIONS[0].updated + 30,
+          forked_from: { session: "s1", turn: "t2", checkpoint: 2 },
+        },
+        ...SESSIONS,
+      ];
+    }
+    if (shot === "fork" && cmd === "resume_session") {
+      return { ...ANSWERS.resume_session, away: "s4" };
+    }
     if (cmd === "background") {
       const first = !args?.cursor;
       return {
@@ -625,6 +641,19 @@ requestAnimationFrame(() => {
       // the header chip a user presses, then unfolding the conversation-wide
       // diff: the turn list above it is the part that already existed, and the
       // one diff spanning two turns is the part that did not.
+      // The turn list rather than the whole diff, because the button beside
+      // Rewind is what's new; and the set-aside banner above the composer.
+      fork: async () => {
+        await until(() => document.querySelector(".composer-away"));
+        (await click(".topbar .chip", (b) => b.includes("changed")))();
+        await until(() =>
+          [...document.querySelectorAll(".changes-pane button")].some((b) =>
+            b.textContent?.includes("Fork here"),
+          )
+            ? true
+            : null,
+        );
+      },
       changes: async () => {
         (await click(".topbar .chip", (b) => b.includes("changed")))();
         (await click(".everything-head", (b) => b.includes("whole diff")))();

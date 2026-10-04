@@ -688,6 +688,75 @@ anything quoted back weeks later.
 None of this refuses the rewind. It's your tree, and there are good reasons to
 want the files back regardless. There's no good reason to find out afterwards.
 
+## Forking a turn
+
+A rewind throws the turns it undoes away. Sometimes that's the point. But
+often what you want is to try a turn again, a different way or on a different
+model, and still have the first attempt to go back to. That's a fork:
+
+```bash
+taurus fork                                # turns you can fork before
+taurus fork --at last --dry-run            # what it would put back
+taurus fork --at 3                         # a new conversation from before turn 3
+taurus fork --at 3 --resend -m qwen3.6:27b # and ask turn 3 again, on another model
+taurus fork --switch --id <ID>             # put that conversation's files back
+```
+
+In the desktop app it's **Fork here**, beside **Rewind to before this** on
+each turn in the **Changes** panel. The new conversation opens with that
+turn's question in the composer, ready to ask again or ask differently.
+
+![A conversation whose files are set aside because a fork of it has the
+workspace: the fork in the rail, the banner offering to switch back, and Fork
+here beside each turn](screenshots/fork.png)
+
+A fork is a new conversation that starts as a copy of everything before the
+turn: the messages, and the checkpoints behind them. It's a copy, not a
+pointer, so the fork's turns number, list, diff and rewind exactly as the
+original's do, back past the point where the two part. The workspace goes back
+to how it was before that turn, the same files a rewind to it would restore.
+The original conversation isn't touched. In the rail, the fork reads **fork at
+turn 3**, because otherwise it would have the same title as the original.
+
+**Nothing is lost, so nothing asks first.** A rewind asks before it writes
+because it discards what's in those files now. A fork doesn't. Before it
+writes anything, it keeps what every file the original changed holds right
+then, your own edits included, in the original's checkpoint log. That's a
+*set-aside*. A file that can't be kept (one that isn't text, say) is left as
+it is and reported, never written over.
+
+**One branch has the workspace at a time.** A folder has one copy of each
+file, so after a fork the original's files are set aside, and its
+conversation says so above the composer. A message sent there is refused
+until you switch, because its model would be reading another branch's files
+and taking them for its own:
+
+```
+taurus: this conversation's files were set aside when another branch of it
+        (9e44f34f-…) took the workspace, so its model would be reading files
+        that aren't its own. Switch to it first: `taurus fork --switch --id
+        c1323426-…`, or Switch in the app.
+```
+
+Switching sets aside whichever branch has the workspace now, then writes back
+what the other one kept. For a file only the branch being left ever changed,
+it writes back what that file held before the change. So switching back and
+forth between a conversation and its forks, forks of forks included, always
+lands each one on its own files. That includes a hand edit you made while it
+had the workspace. It costs nothing per turn. The work happens when you
+switch, and only for the files those branches touched.
+
+Files no branch has touched are shared, and so is everything a rewind leaves
+alone: ignored directories and `.git`. A fork doesn't move `HEAD`, and the
+plan carries the same warnings a rewind to that turn would: a commit that
+will be left behind, a turn that moved git's own state, a branch that has
+changed underneath.
+
+A conversation's checkpoint log only gains a newer format when it gains a
+set-aside. So a build from before forks existed refuses that one log, rather
+than misreading it, and goes on reading every conversation that was never
+forked.
+
 ## What a trace carries
 
 Tracing is off until you name a collector. Naming one sends the *shape* of a

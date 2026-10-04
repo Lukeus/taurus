@@ -75,6 +75,7 @@ taurus repl                                     # interactive
 taurus run "summarize the modules in src/"      # one-shot
 taurus run --json "count the rust files" | jq   # for scripts
 taurus rewind --to last                         # undo what the last turn wrote
+taurus fork --at last                           # try it again, keeping the first try
 ```
 
 Both use `~/.taurus`, so they share providers, skills, and the permission
@@ -226,6 +227,9 @@ you put things back afterwards.
   they were before it ran.
 - [**Rewinding a turn**](docs/safety.md#rewinding-a-turn): every file a turn
   touches is recorded first, so you can undo any turn.
+- [**Forking a turn**](docs/safety.md#forking-a-turn): try a turn again in a
+  new conversation, a different way or on a different model, and switch back
+  to the first attempt with its files whenever you like.
 - [**Keeping a turn**](docs/safety.md#keeping-a-turn): read a turn back as a
   diff and commit it on its own.
 - [**Reviewing a turn**](docs/safety.md#reading-it-back-to-somebody-who-did-not-write-it):

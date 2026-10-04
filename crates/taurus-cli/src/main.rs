@@ -7,6 +7,7 @@
 mod agents_cmd;
 mod ask;
 mod data_cmd;
+mod fork_cmd;
 mod hooks_cmd;
 mod key_cmd;
 mod markdown;
@@ -110,6 +111,43 @@ enum Command {
         /// Skip the confirmation. Required to rewind without a terminal.
         #[arg(long)]
         yes: bool,
+    },
+    /// Start a new conversation from before a turn, keeping the original; or
+    /// put a conversation's files back after a fork took the workspace.
+    ///
+    /// With no `--at` or `--switch`, lists the turns there are to fork before.
+    Fork {
+        #[command(flatten)]
+        session: SessionArgs,
+
+        /// Session to fork, or with `--switch`, to switch to. Defaults to this
+        /// workspace's most recent for a fork.
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+
+        /// Fork before this turn: the new conversation has everything up to
+        /// it, and the files go back to how they were then. `last` forks
+        /// before the most recent turn.
+        #[arg(long, value_name = "TURN|last", conflicts_with = "switch")]
+        at: Option<String>,
+
+        /// Ask the forked turn's question again in the new conversation, on
+        /// `--provider` and `--model` if given.
+        #[arg(long, requires = "at")]
+        resend: bool,
+
+        /// What the resent turn may do without asking, as for `taurus run`.
+        #[command(flatten)]
+        policy: PolicyArgs,
+
+        /// Put this conversation's files back in the workspace, setting aside
+        /// the branch of it that's there now.
+        #[arg(long)]
+        switch: bool,
+
+        /// Show what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show or change whether this workspace's own config is read.
     Trust {
@@ -376,6 +414,18 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 if all {
                     println!("{:38} {}", "", meta.workspace);
                 }
+                // A fork starts with its original's title, so this is the line
+                // that tells the two apart.
+                if let Some(from) = &meta.forked_from {
+                    println!(
+                        "{:38} fork of {} at turn {}",
+                        "", from.session, from.checkpoint
+                    );
+                }
+                let store = host.checkpoints_for(std::path::Path::new(&meta.workspace));
+                if let Ok(Some(other)) = store.away(&meta.id) {
+                    println!("{:38} files set aside when {other} took the workspace", "");
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -409,6 +459,41 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         } => {
             let host = build_host(&session, Policy::default(), servers).await?.host;
             rewind_cmd::run(&host, id.as_deref(), to.as_deref(), dry_run, yes).await
+        }
+
+        Command::Fork {
+            session,
+            id,
+            at,
+            resend,
+            policy,
+            switch,
+            dry_run,
+        } => {
+            let runtime = build_host(&session, Policy::from(&policy), servers).await?;
+            let action = match (&at, switch) {
+                (Some(turn), _) => fork_cmd::Action::At { turn, resend },
+                (None, true) => fork_cmd::Action::Switch,
+                (None, false) => fork_cmd::Action::List,
+            };
+            let (code, again) =
+                fork_cmd::run(&runtime.host, id.as_deref(), action, dry_run).await?;
+            match again {
+                Some((fork, prompt)) => {
+                    println!("\nAsking it again: {prompt}\n");
+                    session::run_once(
+                        &runtime,
+                        &session,
+                        Some(&Some(fork)),
+                        &prompt,
+                        Format::Human,
+                        false,
+                        false,
+                    )
+                    .await
+                }
+                None => Ok(code),
+            }
         }
 
         Command::Trust { args, session } => {
@@ -557,6 +642,9 @@ impl Servers {
             // What the servers offer: their status, the tools they add, and
             // what those tools' schemas cost the context window.
             Command::Mcp { .. } | Command::Tools { .. } | Command::Usage { .. } => Self::Start,
+            // Only when the forked turn is asked again, which is a turn.
+            Command::Fork { resend: true, .. } => Self::Start,
+            Command::Fork { .. } => Self::Leave,
             Command::Sessions { .. }
             | Command::Review { .. }
             | Command::Rewind { .. }

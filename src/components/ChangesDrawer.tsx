@@ -4,6 +4,7 @@ import * as api from "../lib/api";
 import type {
   Checkpoint,
   Commit,
+  Forked,
   RepoStatus,
   Restored,
   ReviewReport,
@@ -46,10 +47,17 @@ export function ChangesDrawer({
   sessionId,
   busy,
   onClose,
+  onFork,
 }: {
   sessionId: string;
   busy: boolean;
   onClose: () => void;
+  /**
+   * Starts a new conversation from before `turn` and opens it. One click,
+   * unlike a rewind, because it loses nothing: this conversation and its
+   * files are kept, set aside, and can be switched back to.
+   */
+  onFork?: (turn: number) => Promise<Forked>;
 }) {
   const [turns, setTurns] = useState<Checkpoint[] | null>(null);
   const [repo, setRepo] = useState<RepoStatus | null>(null);
@@ -103,6 +111,20 @@ export function ChangesDrawer({
   // not allowed to become two either: a second press while the first is in
   // flight would be a second rewind racing the first over the same files.
   const [applying, setApplying] = useState(false);
+  const [forking, setForking] = useState<number | null>(null);
+
+  const fork = async (turn: number) => {
+    if (!onFork || forking !== null) return;
+    setError(null);
+    setForking(turn);
+    try {
+      await onFork(turn);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setForking(null);
+    }
+  };
   // Which preview was asked for last. Two quick presses on different turns
   // are two requests, and the one that answers last is not always the one
   // asked last; a plan for the earlier turn landing second would put the
@@ -289,6 +311,20 @@ export function ChangesDrawer({
                         >
                           Rewind to before this
                         </button>
+                        {onFork && (
+                          <button
+                            className="quiet"
+                            disabled={busy || forking !== null}
+                            data-tip={
+                              busy
+                                ? "Wait for the current turn to finish"
+                                : "Try it again in a new conversation. This one is kept, and its files are set aside until you switch back."
+                            }
+                            onClick={() => fork(turn.turn)}
+                          >
+                            {forking === turn.turn ? "Forking…" : "Fork here"}
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>

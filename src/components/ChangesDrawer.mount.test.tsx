@@ -676,3 +676,64 @@ describe("closing the pane with Escape", () => {
     drawer.unmount();
   });
 });
+
+describe("forking from a turn", () => {
+  /** The drawer with a fork handler, as App mounts it. */
+  async function openWithFork(onFork: (turn: number) => Promise<unknown>) {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <ChangesDrawer
+          sessionId="s1"
+          busy={false}
+          onClose={() => {}}
+          onFork={onFork as never}
+        />,
+      );
+    });
+    const click = async (text: string) => {
+      const button = [...host.querySelectorAll("button")].find((b) =>
+        (b.textContent ?? "").includes(text),
+      );
+      if (!button) throw new Error(`no button reading "${text}"`);
+      await act(async () => button.click());
+    };
+    return { host, click, text: () => host.textContent ?? "" };
+  }
+
+  it("forks in one click, without a rewind's plan, and never twice at once", async () => {
+    // A fork keeps everything it replaces, so it doesn't ask first the way a
+    // rewind does. But a second press mid-fork would be a second fork.
+    backend({ list_checkpoints: [TURN, LATER_TURN] });
+    let finish: () => void = () => {};
+    const onFork = vi.fn(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+    );
+    const pane = await openWithFork(onFork);
+
+    await pane.click("Fork here");
+    expect(onFork).toHaveBeenCalledWith(2);
+    expect(pane.text()).toContain("Forking…");
+    expect(invoke).not.toHaveBeenCalledWith("rewind_to", expect.anything());
+    await pane.click("Forking…");
+    expect(onFork).toHaveBeenCalledTimes(1);
+    await act(async () => finish());
+  });
+
+  it("says why a fork was refused", async () => {
+    backend({ list_checkpoints: [TURN] });
+    const pane = await openWithFork(() =>
+      Promise.reject("session 's1' was recorded before Taurus named its turns"),
+    );
+    await pane.click("Fork here");
+    expect(pane.text()).toContain("recorded before Taurus named its turns");
+  });
+
+  it("offers no fork where nothing could open the new conversation", async () => {
+    backend({ list_checkpoints: [TURN] });
+    const pane = await open();
+    expect(pane.text()).not.toContain("Fork here");
+  });
+});

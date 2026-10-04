@@ -1261,9 +1261,39 @@ the backlog, and they're the minority.
   truncating the conversation at that turn: dropping the later messages from
   the transcript on disk and from the model's next request. That's a
   different feature with a different failure mode, where a mis-click
-  discards an hour of work. The files a discarded turn wrote are already
-  recoverable through [Rewinding a turn](safety.md#rewinding-a-turn); the
-  words aren't.
+  discards an hour of work. What's here instead is a fork: **Fork here** on a
+  turn in the Changes panel starts a new conversation from before it, with its
+  question back in the composer, and keeps the original whole. See
+  [Forking a turn](safety.md#forking-a-turn). Two halves of that aren't
+  built yet. "Edit in a fork" beside this button, and forking from a review
+  finding, are the next slice.
+- **A fork starts only from a turn that changed files.** The fork point is a
+  turn in the checkpoint log, the same numbers `taurus rewind` uses, and a
+  turn that only read or answered isn't in it. Forking before a question that
+  changed nothing means forking before the next turn that did. The desktop's
+  transcript would need to know each message's turn to offer it anywhere, and
+  that's the same piece "Edit in a fork" needs.
+- **A conversation recorded before turns had ids can't be forked.** Its
+  checkpoints can't be matched to its transcript, so there's no telling where
+  to cut the copy. `taurus fork` says so, and `taurus rewind` still works on
+  it.
+- **Two branches of a conversation can't both have the workspace.** A folder
+  has one copy of each file, so a fork sets the original's files aside and
+  switching swaps them. Working on two attempts at once would need a second
+  copy of the folder, which is the isolation that write-capable background
+  delegates are also waiting on. Until then, running several models from one
+  fork point side by side isn't possible: each is its own fork, tried one at
+  a time.
+- **Comparing two branches isn't built.** Each branch's files can be
+  recovered (what's on disk for one, its set-aside for the other), so a diff
+  between their latest states needs no new record, only a view. It's the
+  slice after "Edit in a fork".
+- **Ignored directories and `.git` are shared between branches.** A switch
+  puts back what the branches' turns recorded, which is everything a rewind
+  covers and nothing it doesn't. A `target/` built on one branch is still
+  there after switching to the other, and a commit one branch made stays in
+  `HEAD`. Run the build again, and see the warnings the plan gives for
+  commits.
 - **A "try again" is a resend, not a resume.** The harness can't pick a turn
   up partway, so retrying a turn that died runs it from the top. If the turn
   had already written files before it broke, those writes stay. Both turns

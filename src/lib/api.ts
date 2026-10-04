@@ -115,6 +115,9 @@ import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
 import type { TerminalEvent } from "../bindings/TerminalEvent";
+import type { Forked } from "../bindings/Forked";
+import type { ForkedFrom } from "../bindings/ForkedFrom";
+import type { Switched } from "../bindings/Switched";
 import type { Theme } from "../bindings/Theme";
 import type { CustomTheme } from "../bindings/CustomTheme";
 import type { ThemeFile } from "../bindings/ThemeFile";
@@ -259,6 +262,9 @@ export type {
   StepState,
   Switch,
   TerminalEvent,
+  Forked,
+  ForkedFrom,
+  Switched,
   Theme,
   Finding,
   PendingConfig,
@@ -1015,6 +1021,19 @@ export const listCheckpoints = (sessionId: string) =>
  */
 export const rewindTo = (sessionId: string, turn: number, dryRun: boolean) =>
   invoke<Rewind>("rewind_to", { sessionId, turn, dryRun });
+
+/**
+ * Starts a new conversation from just before `turn`, keeping this one. The
+ * workspace goes back to that point; this conversation's files are set aside,
+ * and `switchTo` puts them back. See `taurus_host::fork`.
+ */
+export const forkTurn = (sessionId: string, turn: number) =>
+  invoke<Forked>("fork_turn", { sessionId, turn });
+
+/** Puts a conversation's files back, setting aside the branch of it that's
+ *  in the workspace now. */
+export const switchTo = (sessionId: string) =>
+  invoke<Switched>("switch_to", { sessionId });
 
 /**
  * What one turn changed, file by file, as a diff.

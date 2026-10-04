@@ -261,6 +261,9 @@ async fn turn(
     cancel: CancellationToken,
 ) -> Result<bool, String> {
     runtime.host.remember_session(provider_id, model).await;
+    // Before anything is spent: a forked conversation whose files are set
+    // aside would have its model reading another branch's.
+    runtime.host.ensure_on_disk(&session.id).await?;
 
     // A leading `/name` runs that skill, or hands the line to that sub-agent.
     // Resolved before the turn starts so a mistyped command costs nothing: the

@@ -184,6 +184,20 @@ impl Host {
         .with_plan(plan)
     }
 
+    /// Refuses a turn in a conversation whose files are set aside because
+    /// another branch of it is in the workspace. Both frontends ask before
+    /// building a turn. See [`crate::fork::ensure_on_disk`].
+    ///
+    /// Read from the conversation's own workspace, where its checkpoint log
+    /// is, the same way a rewind finds it.
+    pub async fn ensure_on_disk(&self, session_id: &str) -> Result<(), String> {
+        let workspace = match crate::sessions::workspace_of(session_id) {
+            Some(workspace) => workspace,
+            None => self.workspace.read().await.clone(),
+        };
+        crate::fork::ensure_on_disk(&self.checkpoints_for(&workspace), session_id)
+    }
+
     /// The open workspace's checkpoint logs, for the turn about to record into
     /// them.
     pub async fn checkpoints(&self) -> CheckpointStore {

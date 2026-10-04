@@ -14,6 +14,7 @@ import type {
   Answer,
   AppStatus,
   CreatedSession,
+  Forked,
   DelegateReport,
   InterruptedTurn,
   Message,
@@ -164,6 +165,12 @@ interface Store {
    */
   trust: TrustStatus | null;
   session: CreatedSession | null;
+  /**
+   * The branch of this conversation that took the workspace when this one's
+   * files were set aside. `null` when its files are the ones on disk. Shown above the composer with a way to
+   * switch; the backend refuses a turn until then. See `taurus_host::fork`.
+   */
+  away: string | null;
   /** This workspace's saved conversations, newest first. Drives the rail. */
   sessions: SessionMeta[];
   entries: Entry[];
@@ -387,6 +394,14 @@ interface Store {
    * the model reads which calls have unknown outcomes and decides what's left.
    */
   continueInterrupted: () => Promise<void>;
+  /**
+   * Starts a new conversation from just before `turn` of `sessionId`, puts
+   * the files back to that point, and opens it. The original is kept, with
+   * its files set aside. Rejects with the backend's sentence.
+   */
+  fork: (sessionId: string, turn: number) => Promise<Forked>;
+  /** Puts this conversation's files back in the workspace. See `away`. */
+  switchHere: () => Promise<void>;
   /** Throws away a message typed ahead, without sending it. */
   unqueue: () => void;
   stop: () => Promise<void>;
@@ -641,6 +656,7 @@ export const useStore = create<Store>((set, get) => ({
   status: null,
   trust: null,
   session: null,
+  away: null,
   sessions: [],
   entries: [],
   changed: [],
@@ -793,6 +809,7 @@ export const useStore = create<Store>((set, get) => ({
     await release(previous, session.id);
     set({
       session,
+      away: null,
       entries: [],
       changed: [],
   opening: null,
@@ -837,13 +854,21 @@ export const useStore = create<Store>((set, get) => ({
     // `set` below replaces it, and that is the whole of what this marks.
     set({ resuming: true });
     try {
-      const { messages, switches, interrupted, delegates = [], ...session } =
-        await api.resumeSession(sessionId);
+      const {
+        messages,
+        switches,
+        interrupted,
+        delegates = [],
+        away,
+        forked_from: _forkedFrom,
+        ...session
+      } = await api.resumeSession(sessionId);
       // As in `startSession`: a resume that fails must leave the conversation
       // on screen exactly as it was.
       await release(previous, session.id);
       set({
         session,
+        away: away ?? null,
         entries: linkDelegates(
           interrupted
             ? unknownOutcomes(entriesFromMessages(messages, switches))
@@ -1145,6 +1170,27 @@ export const useStore = create<Store>((set, get) => ({
     const { interrupted, busy } = get();
     if (!interrupted || busy) return;
     await get().send(continuePrompt(interrupted), [], null, true);
+  },
+
+  fork: async (sessionId, turn) => {
+    const forked = await api.forkTurn(sessionId, turn);
+    // The fork is a conversation like any other, opened the way the rail
+    // opens one. The listing is re-read for the new row and its label.
+    if (forked.id) await get().resume(forked.id);
+    await get().reload();
+    return forked;
+  },
+
+  switchHere: async () => {
+    const { session, away } = get();
+    if (!session || !away) return;
+    try {
+      await api.switchTo(session.id);
+      if (get().session?.id === session.id) set({ away: null });
+      await get().reload();
+    } catch (e) {
+      set({ error: String(e) });
+    }
   },
 
   unqueue: () => set({ queued: null }),
