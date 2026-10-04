@@ -65,6 +65,9 @@ taurus-mcp = { workspace = true, features = ["testing"] }
 taurus-telemetry.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# The terminal live check drives a real shell the way the dock does. See
+# `examples/terminal.rs`.
+portable-pty.workspace = true
 
 [lints]
 workspace = true

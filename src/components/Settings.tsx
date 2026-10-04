@@ -300,6 +300,27 @@ export function Settings({ onClose }: { onClose: () => void }) {
             </span>
           </label>
 
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={status?.settings.shell_integration ?? true}
+              onChange={(e) => {
+                const on = e.target.checked;
+                run(async () => {
+                  await api.setShellIntegration(on);
+                  await refresh();
+                });
+              }}
+            />
+            <span>
+              Mark each command in the terminal
+              <span className="hint">
+                Lets you ask Taurus about a command you ran, and lets Taurus
+                read them. Applies to the next shell you open.
+              </span>
+            </span>
+          </label>
+
           <IterationLimit
             limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
           />

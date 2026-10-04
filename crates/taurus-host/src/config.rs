@@ -1022,6 +1022,16 @@ pub struct Settings {
     /// written until the user approves the card.
     #[serde(default = "default_true")]
     pub agent_synthesis_enabled: bool,
+    /// Whether the terminal dock starts its shell with Taurus's integration:
+    /// a few hooks that mark where each command starts and ends, which is
+    /// what turns the scrollback into commands. Read when a shell starts, so
+    /// changing it takes effect on the next one.
+    ///
+    /// On by default, and a switch at all because it runs inside someone's
+    /// own shell. The hooks only print, but a startup file that fights them is
+    /// the user's to keep, and this is how.
+    #[serde(default = "default_true")]
+    pub shell_integration: bool,
     /// Tools to leave out of the harness entirely, by the exact name
     /// `taurus tools` prints.
     ///
@@ -1170,6 +1180,7 @@ impl Default for Settings {
             last_model: None,
             skill_synthesis_enabled: true,
             agent_synthesis_enabled: true,
+            shell_integration: true,
             disabled_tools: Vec::new(),
             theme: Theme::System,
             theme_id: String::new(),
@@ -1200,6 +1211,8 @@ pub struct StoredSettings {
     pub skill_synthesis_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_synthesis_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_integration: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1250,6 +1263,7 @@ impl StoredSettings {
         self.agent_synthesis_enabled = other
             .agent_synthesis_enabled
             .or(self.agent_synthesis_enabled);
+        self.shell_integration = other.shell_integration.or(self.shell_integration);
         // Replaced rather than merged, like every other field: a workspace that
         // sets this is stating the list it wants, and a merge would make a
         // global entry impossible to undo for one project.
@@ -1277,6 +1291,7 @@ impl StoredSettings {
             agent_synthesis_enabled: self
                 .agent_synthesis_enabled
                 .unwrap_or(defaults.agent_synthesis_enabled),
+            shell_integration: self.shell_integration.unwrap_or(defaults.shell_integration),
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
             theme: self.theme.unwrap_or(defaults.theme),
             theme_id: self.theme_id.unwrap_or(defaults.theme_id),
@@ -1583,6 +1598,7 @@ mod tests {
             last_model: Some("gpt-x".into()),
             skill_synthesis_enabled: Some(false),
             agent_synthesis_enabled: Some(false),
+            shell_integration: Some(false),
             disabled_tools: Some(vec!["fetch_url".into()]),
             theme: Some(Theme::Light),
             theme_id: Some("midnight".into()),

@@ -38,6 +38,16 @@
 //! webview is handed over and forgotten — nothing waits for it to be drawn —
 //! so the pane says what it has drawn, and the forwarder stops sending while
 //! more than a megabyte of output is outstanding. See [`Credit`].
+//!
+//! # Commands
+//!
+//! Every chunk also passes through a [`BlockTracker`] on its way out, which
+//! reads the shell-integration marks and keeps each command as a block: its
+//! line, status, time and output. The pane hears about a block in the same
+//! stream as the output around it, after the bytes that ended it, so it can
+//! place its gutter mark on the right line. The agent reads the same blocks
+//! through [`TerminalReader`]. See [`taurus_tools::shell_integration`] for how the
+//! shell is made to send the marks.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -48,6 +58,7 @@ use dashmap::DashMap;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::ipc::Channel;
+use taurus_tools::blocks::{Block, BlockEvent, BlockText, BlockTracker, TerminalReader};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use ts_rs::TS;
@@ -166,6 +177,9 @@ impl Credit {
 pub enum TerminalEvent {
     /// Raw terminal output, base64. See the module note on why it is not text.
     Output { data: String },
+    /// A command started or finished. Sent after the output that carried its
+    /// mark, so the emulator has already drawn the line it belongs to.
+    Block { block: Block },
     /// The shell ended, and this session is gone. A pane that receives this has
     /// nothing left to write to.
     Exited {
@@ -205,6 +219,11 @@ struct Shell {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     /// Output sent to the pane and not yet drawn. Shared with the forwarder.
     credit: Arc<Credit>,
+    /// The commands it has run. Written by the read loop, read by the agent
+    /// and by the pane's "ask about this".
+    blocks: Arc<Mutex<BlockTracker>>,
+    /// The shell's name, for what the agent is told: `zsh`.
+    name: String,
 }
 
 impl Shell {
@@ -213,12 +232,15 @@ impl Shell {
         writer: Box<dyn Write + Send>,
         killer: Box<dyn ChildKiller + Send + Sync>,
         credit: Arc<Credit>,
+        name: String,
     ) -> Result<Self, String> {
         Ok(Self {
             master: Mutex::new(master),
             input: pump_input(writer)?,
             killer: Mutex::new(killer),
             credit,
+            blocks: Arc::new(Mutex::new(BlockTracker::default())),
+            name,
         })
     }
 
@@ -280,6 +302,10 @@ fn pump_input(
 #[derive(Default)]
 pub struct Terminals {
     open: DashMap<String, Arc<Shell>>,
+    /// The shell opened most recently, which is the one the agent reads. The
+    /// dock holds one at a time, so in practice this is *the* shell; a
+    /// restart replaces it.
+    latest: Mutex<Option<String>>,
 }
 
 impl Terminals {
@@ -292,16 +318,20 @@ impl Terminals {
     /// what makes it interactive and so what makes it read the rc file it would
     /// read in any other terminal.
     ///
-    /// It is *not* started as a login shell. A login shell would re-read the
-    /// profile to rebuild `PATH`, and that has already happened: the app asks
-    /// the login shell for its `PATH` once at startup and adopts it, so this
-    /// child inherits a repaired environment rather than repairing it again.
-    /// See [`taurus_tools::login_path`].
+    /// It's started as a login shell, the way Terminal.app starts one: that's
+    /// what `portable-pty` does with the default program, and what
+    /// [`taurus_tools::shell_integration`] keeps doing when it adds its hooks. The
+    /// app has also adopted the login shell's `PATH` by then (see
+    /// [`taurus_tools::login_path`]), so reading the profile again changes
+    /// nothing a profile would normally set.
+    ///
+    /// `integrate` says whether to add the hooks that mark each command.
     pub fn open(
         self: &Arc<Self>,
         cwd: &Path,
         rows: u16,
         cols: u16,
+        integrate: bool,
         events: Channel<TerminalEvent>,
     ) -> Result<String, String> {
         let pair = native_pty_system()
@@ -313,7 +343,7 @@ impl Terminals {
             })
             .map_err(|e| format!("could not open a terminal: {e}"))?;
 
-        let mut builder = shell();
+        let (mut builder, name) = shell(integrate);
         // A child process is an edge, so the path crosses it in the plain form
         // rather than the verbatim one the workspace is canonicalized into. See
         // `taurus_tools::path_guard::plain`.
@@ -355,8 +385,10 @@ impl Terminals {
 
         let id = uuid::Uuid::new_v4().to_string();
         let credit = Arc::new(Credit::default());
-        let shell = Shell::new(pair.master, writer, killer, credit.clone())?;
+        let shell = Shell::new(pair.master, writer, killer, credit.clone(), name)?;
+        let blocks = shell.blocks.clone();
         self.open.insert(id.clone(), Arc::new(shell));
+        *lock(&self.latest) = Some(id.clone());
 
         let (tx, rx) = mpsc::channel::<Pump>(READ_BACKLOG);
 
@@ -371,13 +403,26 @@ impl Terminals {
                     // Blocking rather than dropping — see the module note.
                     // A closed channel means the pane is gone.
                     Ok(n) => {
+                        // Read before the bytes are sent, and sent after them,
+                        // so a block event never reaches the pane ahead of the
+                        // line it marks.
+                        let marked = lock(&blocks).feed(&buf[..n]);
                         if tx.blocking_send(Pump::Data(buf[..n].to_vec())).is_err() {
                             return;
+                        }
+                        for event in marked {
+                            if tx.blocking_send(Pump::Block(event)).is_err() {
+                                return;
+                            }
                         }
                     }
                 }
             }
             let code = child.wait().ok().map(|status| status.exit_code() as i32);
+            // A command still running when the shell went has ended too.
+            if let Some(event) = lock(&blocks).close() {
+                let _ = tx.blocking_send(Pump::Block(event));
+            }
             let _ = tx.blocking_send(Pump::Exit(code));
         });
 
@@ -401,6 +446,24 @@ impl Terminals {
 
     pub fn resize(&self, id: &str, rows: u16, cols: u16) -> Result<(), String> {
         self.get(id)?.resize(rows.max(1), cols.max(1))
+    }
+
+    /// One command a shell ran, with its output, for "ask Taurus about this".
+    pub fn block(&self, id: &str, block: u64) -> Result<BlockText, String> {
+        let shell = self.get(id)?;
+        let text = lock(&shell.blocks).get(block);
+        text.ok_or_else(|| {
+            format!(
+                "that command is no longer kept; the terminal remembers the last {}",
+                taurus_tools::blocks::MAX_BLOCKS
+            )
+        })
+    }
+
+    /// The shell the agent reads, if one is open.
+    fn reading(&self) -> Option<Arc<Shell>> {
+        let latest = lock(&self.latest).clone()?;
+        self.open.get(&latest).map(|e| e.clone())
     }
 
     /// Credits `bytes` of output the pane has drawn, so the shell can send
@@ -489,29 +552,52 @@ fn windows_shell(find: impl Fn(&str) -> Option<std::path::PathBuf>) -> Option<st
 /// Everywhere else this is unchanged: `$SHELL`, and the password database when
 /// that is unset. A login shell is a preference already stated, and there is
 /// nothing for the search above to improve on.
-fn shell() -> CommandBuilder {
-    let mut builder = default_shell();
+fn shell(integrate: bool) -> (CommandBuilder, String) {
+    let (mut builder, name) = default_shell(integrate);
     // A tab opened after Reconnect re-read the login shell's PATH gets it, so
     // a program installed since launch is on it there too.
     if let Some(path) = taurus_tools::login_path::replaced() {
         builder.env("PATH", path);
     }
-    builder
+    (builder, name)
 }
 
-fn default_shell() -> CommandBuilder {
+/// The shell to start, and its name.
+///
+/// `integrate` is honored for the shells [`taurus_tools::shell_integration`] knows;
+/// any other starts the way it always has.
+fn default_shell(integrate: bool) -> (CommandBuilder, String) {
     #[cfg(windows)]
-    if let Some(path) = windows_shell(taurus_tools::login_path::which) {
-        let mut builder = CommandBuilder::new(path);
-        builder.arg("-NoLogo");
-        return builder;
+    {
+        let _ = integrate;
+        if let Some(path) = windows_shell(taurus_tools::login_path::which) {
+            let name = taurus_tools::shell_integration::name_of(&path.to_string_lossy());
+            let mut builder = CommandBuilder::new(path);
+            builder.arg("-NoLogo");
+            return (builder, name);
+        }
+        (CommandBuilder::new_default_prog(), "cmd".into())
     }
-    CommandBuilder::new_default_prog()
+    #[cfg(not(windows))]
+    {
+        let builder = CommandBuilder::new_default_prog();
+        let program = builder.get_shell();
+        let name = taurus_tools::shell_integration::name_of(&program);
+        if integrate {
+            if let Some(integrated) =
+                taurus_tools::shell_integration::command(&program, &taurus_host::config::home_dir())
+            {
+                return (integrated, name);
+            }
+        }
+        (builder, name)
+    }
 }
 
 /// What the read loop hands to the forwarder.
 enum Pump {
     Data(Vec<u8>),
+    Block(BlockEvent),
     Exit(Option<i32>),
 }
 
@@ -531,10 +617,17 @@ async fn forward(
         match next {
             Pump::Data(chunk) => {
                 held.extend_from_slice(&chunk);
-                // Only what is already waiting; this never waits for more.
+                // Only what is already waiting; this never waits for more. A
+                // block stops the gathering, because it has to follow the
+                // output before it and precede the output after it.
+                let mut marked = None;
                 while held.len() < COALESCE_BYTES {
                     match rx.try_recv() {
                         Ok(Pump::Data(more)) => held.extend_from_slice(&more),
+                        Ok(Pump::Block(event)) => {
+                            marked = Some(event);
+                            break;
+                        }
                         Ok(Pump::Exit(code)) => {
                             send(&events, &mut held, &credit);
                             let _ = events.send(TerminalEvent::Exited { code });
@@ -549,6 +642,16 @@ async fn forward(
                 if !send(&events, &mut held, &credit) {
                     return;
                 }
+                if let Some(event) = marked {
+                    if !send_block(&events, event) {
+                        return;
+                    }
+                }
+            }
+            Pump::Block(event) => {
+                if !send_block(&events, event) {
+                    return;
+                }
             }
             Pump::Exit(code) => {
                 send(&events, &mut held, &credit);
@@ -557,6 +660,14 @@ async fn forward(
             }
         }
     }
+}
+
+/// Tells the pane a command started or finished.
+fn send_block(events: &Channel<TerminalEvent>, event: BlockEvent) -> bool {
+    let block = match event {
+        BlockEvent::Started(block) | BlockEvent::Finished(block) => block,
+    };
+    events.send(TerminalEvent::Block { block }).is_ok()
 }
 
 /// Sends what has been gathered, and says whether anyone was listening.
@@ -579,6 +690,29 @@ fn send(events: &Channel<TerminalEvent>, held: &mut Vec<u8>, credit: &Credit) ->
             warn!(error = %e, "terminal output had nowhere to go");
             false
         }
+    }
+}
+
+impl TerminalReader for Terminals {
+    fn shell(&self) -> String {
+        self.reading()
+            .map(|shell| shell.name.clone())
+            .unwrap_or_else(|| "shell".into())
+    }
+
+    fn integrated(&self) -> bool {
+        self.reading()
+            .is_some_and(|shell| lock(&shell.blocks).integrated())
+    }
+
+    fn recent(&self, limit: usize) -> Vec<BlockText> {
+        self.reading()
+            .map(|shell| lock(&shell.blocks).recent(limit))
+            .unwrap_or_default()
+    }
+
+    fn get(&self, id: u64) -> Option<BlockText> {
+        self.reading().and_then(|shell| lock(&shell.blocks).get(id))
     }
 }
 
@@ -632,7 +766,7 @@ mod tests {
         let terminals = Arc::new(Terminals::default());
         let (channel, seen) = recorder();
         let id = terminals
-            .open(&std::env::temp_dir(), 24, 80, channel)
+            .open(&std::env::temp_dir(), 24, 80, false, channel)
             .expect("a shell must start");
 
         // Buffered by the pty until the shell is ready to read it, so there is
@@ -721,7 +855,7 @@ mod tests {
         let terminals = Arc::new(Terminals::default());
         let (channel, seen) = recorder();
         let id = terminals
-            .open(&std::env::temp_dir(), 24, 80, channel)
+            .open(&std::env::temp_dir(), 24, 80, false, channel)
             .expect("a shell must start");
         // Four times the high mark, from a program that ends when it is done.
         terminals
@@ -764,7 +898,7 @@ mod tests {
         let terminals = Arc::new(Terminals::default());
         let (channel, _seen) = recorder();
         let id = terminals
-            .open(&std::env::temp_dir(), 24, 80, channel)
+            .open(&std::env::temp_dir(), 24, 80, false, channel)
             .expect("a shell must start");
 
         terminals.resize(&id, 40, 120).expect("a resize must land");
@@ -836,7 +970,7 @@ mod tests {
         let terminals = Arc::new(Terminals::default());
         let (channel, _seen) = recorder();
         let id = terminals
-            .open(&std::env::temp_dir(), 24, 80, channel)
+            .open(&std::env::temp_dir(), 24, 80, false, channel)
             .expect("a shell must start");
 
         // The pane closing and the shell exiting race, and neither is a
@@ -855,7 +989,7 @@ mod tests {
             let (channel, seen) = recorder();
             ids.push(
                 terminals
-                    .open(&std::env::temp_dir(), 24, 80, channel)
+                    .open(&std::env::temp_dir(), 24, 80, false, channel)
                     .expect("a shell must start"),
             );
             sinks.push(seen);
@@ -910,6 +1044,7 @@ mod tests {
             writer,
             Box::new(NoChild),
             Arc::new(Credit::default()),
+            "sh".into(),
         )
         .expect("the input thread starts");
         let terminals = Arc::new(Terminals::default());

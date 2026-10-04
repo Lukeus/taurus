@@ -64,7 +64,31 @@ pub async fn terminal_open(
     // otherwise fail inside the spawn as a message about the shell, which is
     // the wrong thing to name.
     let cwd = if cwd.is_dir() { cwd } else { root };
-    state.terminals.open(&cwd, rows, cols, on_event)
+    let integrate = state.host.shell_integration().await;
+    state.terminals.open(&cwd, rows, cols, integrate, on_event)
+}
+
+/// A command and what it printed, escape sequences stripped.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct TerminalBlock {
+    pub block: taurus_tools::blocks::Block,
+    pub output: String,
+}
+
+/// One command the shell ran, with its output: what "Ask Taurus about this"
+/// puts in the composer.
+#[tauri::command]
+pub fn terminal_block(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    block: u64,
+) -> CmdResult<TerminalBlock> {
+    let text = state.terminals.block(&id, block)?;
+    Ok(TerminalBlock {
+        block: text.block,
+        output: text.output,
+    })
 }
 
 /// Sends keystrokes. `data` is the text the emulator produced, escape

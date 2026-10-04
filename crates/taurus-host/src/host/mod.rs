@@ -92,6 +92,7 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_tools::builtin::present::ASK_USER_TOOL,
     taurus_tools::builtin::present::OPEN_FILE_TOOL,
     taurus_tools::builtin::plan::UPDATE_PLAN_TOOL,
+    taurus_tools::builtin::terminal::READ_TERMINAL_TOOL,
 ];
 
 /// Makes a permission prompt on demand.
@@ -237,6 +238,13 @@ pub struct Host {
     /// Shared rather than owned so sub-agents can be handed the same registry:
     /// it has no spawn tool, which is what caps delegation depth.
     registry: Arc<RwLock<ToolRegistry>>,
+    /// The terminal beside the conversation, for a frontend that has one.
+    ///
+    /// Set once by the desktop app and never by the CLI, which has no dock.
+    /// Whether `read_terminal` is offered is decided per turn from this,
+    /// because a shell opens and closes between turns. See
+    /// [`Self::set_terminal`].
+    terminal: std::sync::RwLock<Option<Arc<dyn taurus_tools::blocks::TerminalReader>>>,
     /// The user's configured hooks, rebuilt on every reload.
     ///
     /// Held rather than read per call for the reason the registry is: a tool
@@ -318,6 +326,7 @@ impl Host {
             hooks_seen: RwLock::new(Freshness::default()),
             theme_seen: RwLock::new(None),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
+            terminal: std::sync::RwLock::new(None),
             hooks: RwLock::new(Arc::new(taurus_hooks::HookRunner::default())),
             permissions: RwLock::new(permissions),
             // Handed the keychain, so a server that wants OAuth can be signed

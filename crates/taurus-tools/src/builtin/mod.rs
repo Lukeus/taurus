@@ -7,3 +7,4 @@ pub mod present;
 pub mod pty;
 pub mod search;
 pub mod shell;
+pub mod terminal;

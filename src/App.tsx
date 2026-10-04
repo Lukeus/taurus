@@ -1532,6 +1532,7 @@ export default function App() {
                   onWatch={setWatching}
                   onStop={api.stopBackground}
                   onClose={() => setTerminalOpen(false)}
+                  onAsk={ask}
                 />
               </div>
             </Suspense>
