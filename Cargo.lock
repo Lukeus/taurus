@@ -6504,6 +6504,7 @@ dependencies = [
  "serde_json",
  "taurus-provider",
  "taurus-provider-ollama",
+ "taurus-provider-openai",
  "taurus-tools",
  "tempfile",
  "tokio",

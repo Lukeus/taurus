@@ -940,12 +940,15 @@ default, and a second stage, not a replacement:
 Embeddings score a query and a passage separately and compare the numbers.
 That's what makes an index possible, since every vector is computed once and
 kept, and it's also what caps its quality. A reranker reads the query and the
-passage *together*: markedly better, and far too expensive to run over a whole
-repository.
+passage *together*: better in principle, and far too expensive to run over a
+whole repository.
 
 So the cosine pass draws up a shortlist of thirty, and the reranker picks
-five. That's worth the extra round trip at 8k for the same reason the index
-is: being wrong costs a `read_file` on a file that wasn't the answer.
+five. Check it actually helps before you leave it on. Measured on this
+repository it didn't: `bge-reranker-v2-m3` scored worse than cosine alone,
+which is why the default is empty. See
+[Known gaps](known-gaps.md) for the numbers, and run the retrieval harness in
+[Development](development.md) against your own workspace and reranker.
 
 `rerank_provider` is separate from the embedding provider because the common
 local setup can't serve both: Ollama has no reranking route at all. A
@@ -953,6 +956,15 @@ llama.cpp server started with `--reranking` is the usual second entry, and
 anything speaking the Cohere-shaped `/rerank` route works:
 text-embeddings-inference, Jina, Voyage, Cohere itself. Leave it empty if one
 server does everything, and it resolves to the one the index embeds on.
+
+Start llama.cpp with a batch size larger than its default of 512 tokens:
+
+```bash
+llama-server --reranking --port 8012 -b 8192 -ub 8192 -hf gpustack/bge-reranker-v2-m3-GGUF
+```
+
+A passage longer than the batch is refused with a 500, and the whole search
+falls back to similarity order. Code passages routinely run past 512 tokens.
 
 Scores aren't comparable across backends, and two things follow:
 

@@ -633,11 +633,15 @@ cargo test --release -p taurus-core --lib estimate_cost -- --ignored --nocapture
 # Needs Ollama and an embedding model; reads the workspace and writes nothing.
 # Fifteen questions phrased the way somebody asks them, each with the file that
 # answers it, reported as the rank that file came back at. Run it, change
-# something about chunking or ranking, run it again. It is the gate that
-# `rerank_model` has been waiting for since it shipped, and it is what showed
-# that structure-aware chunking retrieved worse than the line windows it would
-# have replaced — see `docs/known-gaps.md`.
+# something about chunking or ranking, run it again. It showed that
+# structure-aware chunking retrieved worse than the line windows it would have
+# replaced, and that reranking with bge-reranker-v2-m3 retrieved worse than
+# cosine alone — see `docs/known-gaps.md`. With `RERANK_URL` set it scores the
+# reranked order beside the cosine one, in the same run, against the same
+# corpus. Start the reranker with `-b 8192 -ub 8192`, or long passages fail.
 cargo run -p taurus-index --example retrieval -- . nomic-embed-text
+RERANK_URL=http://localhost:8012 RERANK_MODEL=bge-reranker-v2-m3 \
+    cargo run -p taurus-index --example retrieval -- . nomic-embed-text
 
 # What searching your real transcripts costs, and what it finds. Needs no
 # provider. It reads `~/.taurus/sessions` and writes nothing. Two numbers, and
