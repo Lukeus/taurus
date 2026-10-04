@@ -64,6 +64,20 @@ use crate::diff::FileDiff;
 /// than under-report it. See [`ensure_header`].
 const FORMAT_VERSION: u32 = 2;
 
+/// The format a log moves to when it gains a [`Record::SetAside`].
+///
+/// A set-aside changes what the log means: the files on disk are no longer
+/// this conversation's, and a build that skipped the record would rewind one
+/// branch's pre-images over another branch's files without knowing it had. So
+/// a log that gains one gains a format-3 header, and older builds refuse it.
+/// Only that log: an ordinary turn still writes format 2, so a conversation
+/// that was never forked stays readable by every build that could read it
+/// before. See [`ensure_header_at`].
+const SET_ASIDE_FORMAT: u32 = 3;
+
+/// The newest format this build reads.
+const NEWEST_FORMAT: u32 = SET_ASIDE_FORMAT;
+
 const EXTENSION: &str = "jsonl";
 
 /// How much of the prompt is kept to label a turn in a listing.
@@ -120,6 +134,30 @@ enum Record {
         turn: u32,
         sha: String,
     },
+    /// This conversation's files left the workspace, because another branch of
+    /// it was put there. `files` is what each path held at that moment, which
+    /// is what putting this branch back writes.
+    ///
+    /// `for` is written first so a listing can read it without reading the
+    /// files. See [`away_up_front`].
+    SetAside {
+        #[serde(rename = "for")]
+        for_session: String,
+        at: u64,
+        files: Vec<Held>,
+    },
+    /// The files came back: a switch put this branch on disk again.
+    Entered {
+        at: u64,
+    },
+}
+
+/// A path and what it held, as a set-aside keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Held {
+    pub path: String,
+    #[serde(flatten)]
+    pub state: State,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -130,7 +168,7 @@ struct Header {
 }
 
 /// What a file looked like before the turn touched it.
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "state", rename_all = "snake_case")]
 #[ts(export)]
 pub enum State {
@@ -274,6 +312,7 @@ pub struct Rewind {
 /// Holds a directory and nothing else: which session is being written is
 /// decided per turn by [`Self::begin_turn`], because one workspace outlives
 /// many conversations.
+#[derive(Clone)]
 pub struct CheckpointStore {
     dir: PathBuf,
 }
@@ -540,6 +579,225 @@ impl CheckpointStore {
             },
         );
     }
+
+    /// Every file this conversation's log has touched, with the first
+    /// pre-image recorded for it, in the order it first touched them.
+    ///
+    /// What a file held before this conversation's first change to it. A
+    /// switch between branches uses it for a path the branch being entered
+    /// never set aside: that path is one only the branch being left changed,
+    /// so its value on the other branch is whatever came before that change.
+    pub fn first_preimages(&self, session_id: &str) -> Result<Vec<(String, State)>, String> {
+        let path = self.usable(session_id)?;
+        let mut first: Vec<(String, State)> = Vec::new();
+        for turn in read_log::<State>(&path)?.turns {
+            for (file, before) in turn.changes {
+                if !first.iter().any(|(seen, _)| *seen == file) {
+                    first.push((file, before));
+                }
+            }
+        }
+        Ok(first)
+    }
+
+    /// The conversation turn each checkpointed turn was recorded under, in
+    /// order. `None` for a turn recorded before turns had ids.
+    pub fn turn_ids(&self, session_id: &str) -> Result<Vec<Option<String>>, String> {
+        let path = self.usable(session_id)?;
+        Ok(read_log::<()>(&path)?
+            .turns
+            .into_iter()
+            .map(|turn| turn.id)
+            .collect())
+    }
+
+    /// Whom this conversation's files are set aside for, if they are. `None`
+    /// means its files are the ones on disk, which is every conversation that
+    /// was never forked.
+    pub fn away(&self, session_id: &str) -> Result<Option<String>, String> {
+        let path = self.usable(session_id)?;
+        Ok(read_log::<()>(&path)?.away)
+    }
+
+    /// The files this conversation's latest set-aside kept, when its files
+    /// are set aside. `None` when they're on disk.
+    pub fn aside(&self, session_id: &str) -> Result<Option<Vec<Held>>, String> {
+        let path = self.usable(session_id)?;
+        if read_log::<()>(&path)?.away.is_none() {
+            return Ok(None);
+        }
+        let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut latest = None;
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            if !line.starts_with(SET_ASIDE_PREFIX) {
+                continue;
+            }
+            if let Ok(Record::SetAside { files, .. }) = serde_json::from_slice::<Record>(&line) {
+                latest = Some(files);
+            }
+        }
+        // Said rather than answered with nothing: the log says the files were
+        // set aside, so a set-aside that can't be read is a damaged log, and
+        // carrying on would put this branch back without its files.
+        latest.map(Some).ok_or_else(|| {
+            format!(
+                "{} says its files were set aside, but the record of them can't be read",
+                path.display()
+            )
+        })
+    }
+
+    /// Keeps what `paths` hold now in this conversation's log, because another
+    /// branch of it is about to be written over them. Returns what was kept.
+    ///
+    /// A file that can't be kept (not text, unreadable) is kept as
+    /// [`State::Opaque`], and the caller must leave it alone: writing over a
+    /// file that couldn't be set aside would lose it.
+    pub fn set_aside(
+        &self,
+        session_id: &str,
+        workspace: &Path,
+        paths: &[String],
+        for_session: &str,
+    ) -> Result<Vec<Held>, String> {
+        let log = self.usable(session_id)?;
+        let files: Vec<Held> = paths
+            .iter()
+            .map(|path| Held {
+                path: path.clone(),
+                state: match crate::path_guard::resolve(workspace, path) {
+                    Ok(full) => read_state(&full),
+                    Err(e) => State::Opaque {
+                        reason: e.to_string(),
+                    },
+                },
+            })
+            .collect();
+        let written = ensure_header_at(&log, session_id, workspace, SET_ASIDE_FORMAT)
+            && append(
+                &log,
+                &Record::SetAside {
+                    for_session: for_session.to_string(),
+                    at: now(),
+                    files: files.clone(),
+                },
+            );
+        // Unlike a turn's checkpoint, this one is load-bearing: the files are
+        // about to be overwritten, and a set-aside that didn't land is the
+        // only copy of them that would have existed.
+        if !written {
+            return Err(format!(
+                "couldn't keep this conversation's files in {}, so nothing was changed",
+                log.display()
+            ));
+        }
+        Ok(files)
+    }
+
+    /// Records that this conversation's files are on disk again.
+    pub fn mark_entered(&self, session_id: &str, workspace: &Path) -> Result<(), String> {
+        let log = self.usable(session_id)?;
+        if ensure_header_at(&log, session_id, workspace, SET_ASIDE_FORMAT)
+            && append(&log, &Record::Entered { at: now() })
+        {
+            Ok(())
+        } else {
+            Err(format!("couldn't write to {}", log.display()))
+        }
+    }
+
+    /// Starts `to`'s log as a copy of `from`'s first `keep` turns, with the
+    /// commits recorded against them.
+    ///
+    /// A copy rather than a reference: a fork's log is then an ordinary log,
+    /// so its turns are numbered, listed, diffed and rewound exactly as the
+    /// original's were, across the point where the two part. The pre-images
+    /// are valid for both, because up to that point both conversations did
+    /// the same things to the same files.
+    pub fn copy_prefix(
+        &self,
+        from: &str,
+        to: &str,
+        keep: usize,
+        workspace: &Path,
+    ) -> Result<(), String> {
+        let source = self.usable(from)?;
+        let target = self.usable(to)?;
+        if keep == 0 {
+            return Ok(());
+        }
+        let log = read_log::<State>(&source)?;
+        let mut records = vec![Record::Header(Header {
+            version: FORMAT_VERSION,
+            session: to.to_string(),
+            workspace: workspace.display().to_string(),
+        })];
+        for turn in log.turns.into_iter().take(keep) {
+            records.push(Record::Turn {
+                prompt: turn.prompt,
+                at: turn.at,
+                branch: turn.branch,
+                id: turn.id,
+            });
+            for (path, state) in turn.changes {
+                records.push(Record::Before { path, state });
+            }
+            if turn.moved_git {
+                records.push(Record::MovedGit);
+            }
+        }
+        for (turn, sha) in log.commits {
+            if turn as usize <= keep {
+                records.push(Record::Committed { turn, sha });
+            }
+        }
+        if append_all(&target, &records) {
+            Ok(())
+        } else {
+            Err(format!("couldn't write {}", target.display()))
+        }
+    }
+
+    /// What a rewind to before `turn` would write, without writing it: the
+    /// earliest pre-image of each file touched from `turn` on.
+    pub fn rewind_plan(&self, session_id: &str, turn: u32) -> Result<Vec<Held>, String> {
+        let path = self.usable(session_id)?;
+        let log = read_log::<State>(&path)?;
+        let index = check_turn(session_id, turn, log.turns.len())?;
+        let mut earliest: Vec<Held> = Vec::new();
+        for entry in &log.turns[index..] {
+            for (file, state) in &entry.changes {
+                if !earliest.iter().any(|held| held.path == *file) {
+                    earliest.push(Held {
+                        path: file.clone(),
+                        state: state.clone(),
+                    });
+                }
+            }
+        }
+        Ok(earliest)
+    }
+
+    /// The log's path, or why `session_id` can't name one.
+    fn usable(&self, session_id: &str) -> Result<PathBuf, String> {
+        self.log_path(session_id)
+            .ok_or_else(|| format!("'{session_id}' is not a usable session id"))
+    }
+}
+
+/// Writes each file in `files`, through the same path guard a rewind uses.
+pub fn apply(workspace: &Path, files: &[Held], dry_run: bool) -> Vec<Restored> {
+    files
+        .iter()
+        .map(|held| restore(workspace, &held.path, &held.state, dry_run))
+        .collect()
 }
 
 /// What this rewind cannot put back, as complete sentences.
@@ -767,11 +1025,32 @@ struct ReadTurn<S = State> {
 struct ReadLog<S = State> {
     turns: Vec<ReadTurn<S>>,
     commits: Vec<(u32, String)>,
+    /// Whom this conversation's files are set aside for, when they are. See
+    /// [`Record::SetAside`].
+    away: Option<String>,
 }
 
 /// The first bytes of a `before` line, as [`append`] writes one. See
 /// [`HEADER_PREFIX`] for why a line can be told apart by these.
 const BEFORE_PREFIX: &[u8] = br#"{"type":"before""#;
+
+/// The first bytes of a set-aside line, as [`append`] writes one.
+const SET_ASIDE_PREFIX: &[u8] = br#"{"type":"set_aside""#;
+
+/// Whom a set-aside line was written for, without reading the files it holds.
+/// `None` for a line in any other shape, which is then read in full.
+fn away_up_front(line: &[u8]) -> Option<String> {
+    if !line.ends_with(b"\n") {
+        return None;
+    }
+    let rest = line
+        .strip_prefix(SET_ASIDE_PREFIX)?
+        .strip_prefix(br#","for":"#)?;
+    serde_json::Deserializer::from_slice(rest)
+        .into_iter::<String>()
+        .next()?
+        .ok()
+}
 
 /// What a read keeps of each `before` line.
 ///
@@ -861,6 +1140,7 @@ fn read_log<S: Preimage>(path: &Path) -> Result<ReadLog<S>, String> {
             return Ok(ReadLog {
                 turns: Vec::new(),
                 commits: Vec::new(),
+                away: None,
             })
         }
         Err(e) => return Err(format!("{}: {e}", path.display())),
@@ -868,6 +1148,7 @@ fn read_log<S: Preimage>(path: &Path) -> Result<ReadLog<S>, String> {
 
     let mut turns: Vec<ReadTurn<S>> = Vec::new();
     let mut commits: Vec<(u32, String)> = Vec::new();
+    let mut away: Option<String> = None;
     let mut header_seen = false;
 
     // Bytes rather than `lines()`: one buffer for every line instead of a new
@@ -885,6 +1166,14 @@ fn read_log<S: Preimage>(path: &Path) -> Result<ReadLog<S>, String> {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
+        // A set-aside carries every file it kept, which a read of turns has
+        // no use for: only whom the files were set aside *for* is taken.
+        if line.starts_with(SET_ASIDE_PREFIX) {
+            if let Some(for_session) = away_up_front(&line) {
+                away = Some(for_session);
+                continue;
+            }
+        }
         if line.starts_with(BEFORE_PREFIX) {
             match S::from_line(&line) {
                 // A `before` with no open turn is a torn log; there is nothing
@@ -901,10 +1190,10 @@ fn read_log<S: Preimage>(path: &Path) -> Result<ReadLog<S>, String> {
         }
         match serde_json::from_slice::<Record>(&line) {
             Ok(Record::Header(header)) => {
-                if header.version > FORMAT_VERSION {
+                if header.version > NEWEST_FORMAT {
                     return Err(format!(
                         "{} was written by a newer version of Taurus (format {} > \
-                         {FORMAT_VERSION}); refusing to restore from it",
+                         {NEWEST_FORMAT}); refusing to restore from it",
                         path.display(),
                         header.version
                     ));
@@ -941,6 +1230,10 @@ fn read_log<S: Preimage>(path: &Path) -> Result<ReadLog<S>, String> {
             // Position-independent, so it is collected wherever it lands and
             // matched to its turn by number afterwards.
             Ok(Record::Committed { turn, sha }) => commits.push((turn, sha)),
+            // Reached only for a set-aside written some other way than
+            // `append` writes it; the usual shape is caught by its prefix.
+            Ok(Record::SetAside { for_session, .. }) => away = Some(for_session),
+            Ok(Record::Entered { .. }) => away = None,
             Err(e) => {
                 tracing::debug!(error = %e, "skipping an unreadable checkpoint line");
             }
@@ -958,7 +1251,11 @@ fn read_log<S: Preimage>(path: &Path) -> Result<ReadLog<S>, String> {
             "checkpoint log has no header; reading it as the current format"
         );
     }
-    Ok(ReadLog { turns, commits })
+    Ok(ReadLog {
+        turns,
+        commits,
+        away,
+    })
 }
 
 #[derive(Default)]
@@ -1204,7 +1501,13 @@ impl TurnRecorder {
 /// something else and can be passed over without being parsed.
 const HEADER_PREFIX: &[u8] = br#"{"type":"header""#;
 
-/// Whether a log carries a header at the current format.
+/// Whether a log carries a header at the current format. See [`has_header_at`].
+#[cfg(test)]
+fn has_current_header(path: &Path) -> bool {
+    has_header_at(path, FORMAT_VERSION)
+}
+
+/// Whether a log carries a header at `version` or newer.
 ///
 /// Reads past line one when it has to, because a log repaired after a failed
 /// first write carries its header after the turns it was missing from, and a
@@ -1213,7 +1516,7 @@ const HEADER_PREFIX: &[u8] = br#"{"type":"header""#;
 /// lines only. This runs before the first write of every turn that changes a
 /// file, and parsing every pre-image in the log to learn that it was not a
 /// header made that wait grow with the length of the session.
-fn has_current_header(path: &Path) -> bool {
+fn has_header_at(path: &Path, version: u32) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
@@ -1229,7 +1532,7 @@ fn has_current_header(path: &Path) -> bool {
             continue;
         }
         if let Ok(Record::Header(header)) = serde_json::from_slice::<Record>(&line) {
-            if header.version == FORMAT_VERSION {
+            if header.version >= version {
                 return true;
             }
         }
@@ -1243,17 +1546,22 @@ fn has_current_header(path: &Path) -> bool {
 /// it is about to gain a record that older build would skip rather than
 /// understand, and [`read_log`]'s version guard is the only thing that can stop
 /// it. Appending rather than rewriting keeps the file append-only, and
-/// [`has_current_header`] looks past an older header to find the current one.
+/// [`has_header_at`] looks past an older header to find the current one.
 ///
 /// Returns whether the log is safe to append to.
 fn ensure_header(path: &Path, session: &str, workspace: &Path) -> bool {
-    if has_current_header(path) {
+    ensure_header_at(path, session, workspace, FORMAT_VERSION)
+}
+
+/// [`ensure_header`], for a record that needs at least `version`.
+fn ensure_header_at(path: &Path, session: &str, workspace: &Path, version: u32) -> bool {
+    if has_header_at(path, version) {
         return true;
     }
     append(
         path,
         &Record::Header(Header {
-            version: FORMAT_VERSION,
+            version,
             session: session.to_string(),
             workspace: workspace.display().to_string(),
         }),
@@ -2288,6 +2596,132 @@ mod tests {
         std::fs::write(&file, "the model's version").unwrap();
         f.store.rewind("s1", &f.root, 1, false).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
+    }
+
+    fn header_versions(path: &Path) -> Vec<u32> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter_map(|line| match serde_json::from_str::<Record>(line) {
+                Ok(Record::Header(h)) => Some(h.version),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_set_aside_keeps_the_files_and_says_whom_it_was_for() {
+        let f = Fixture::new();
+        f.turn("first", "one").await;
+        assert_eq!(
+            f.store.away("s1").unwrap(),
+            None,
+            "never forked, so on disk"
+        );
+
+        let kept = f
+            .store
+            .set_aside("s1", &f.root, &["a.txt".into(), "gone.txt".into()], "s2")
+            .unwrap();
+        assert_eq!(
+            kept[0].state,
+            State::Text {
+                content: "one".into()
+            }
+        );
+        assert_eq!(kept[1].state, State::Absent);
+        assert_eq!(f.store.away("s1").unwrap().as_deref(), Some("s2"));
+        assert_eq!(f.store.aside("s1").unwrap(), Some(kept));
+        // The listing still reads, and still lists the turn.
+        assert_eq!(f.store.turns("s1").unwrap().len(), 1);
+
+        f.store.mark_entered("s1", &f.root).unwrap();
+        assert_eq!(f.store.away("s1").unwrap(), None);
+        assert_eq!(f.store.aside("s1").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn only_a_log_that_gains_a_set_aside_moves_to_format_3() {
+        // An older build refuses a format-3 log. A conversation that was never
+        // forked has nothing it would misread, so it must stay at format 2.
+        let f = Fixture::new();
+        f.turn("first", "one").await;
+        f.turn("second", "two").await;
+        assert_eq!(header_versions(&f.log("s1")), vec![FORMAT_VERSION]);
+
+        f.store
+            .set_aside("s1", &f.root, &["a.txt".into()], "s2")
+            .unwrap();
+        assert_eq!(
+            header_versions(&f.log("s1")),
+            vec![FORMAT_VERSION, SET_ASIDE_FORMAT]
+        );
+        // And it doesn't gain another for every turn after.
+        f.store.mark_entered("s1", &f.root).unwrap();
+        f.turn("third", "three").await;
+        assert_eq!(header_versions(&f.log("s1")).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_copied_prefix_is_an_ordinary_log_that_rewinds_across_the_copy() {
+        let f = Fixture::new();
+        f.turn("first", "one").await;
+        f.turn("second", "two").await;
+        f.turn("third", "three").await;
+        f.store.record_commit("s1", &f.root, 1, "abc1234");
+        f.store.record_commit("s1", &f.root, 3, "def5678");
+
+        f.store.copy_prefix("s1", "fork", 2, &f.root).unwrap();
+        let turns = f.store.turns("fork").unwrap();
+        assert_eq!(
+            turns.iter().map(|t| t.prompt.as_str()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert_eq!(turns[0].commit.as_deref(), Some("abc1234"));
+        assert_eq!(turns.len(), 2, "turn 3's commit didn't come with it");
+        assert!(f.store.copy_prefix("s1", "empty", 0, &f.root).is_ok());
+        assert!(f.store.turns("empty").unwrap().is_empty());
+
+        // Rewinding the fork to its first turn uses the copied pre-image.
+        let plan = f.store.rewind_plan("fork", 1).unwrap();
+        assert_eq!(
+            plan,
+            vec![Held {
+                path: "a.txt".into(),
+                state: State::Absent
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plan_names_the_oldest_pre_image_from_the_turn_on() {
+        let f = Fixture::new();
+        f.turn("first", "one").await;
+        f.turn("second", "two").await;
+        f.turn("third", "three").await;
+        assert_eq!(
+            f.store.rewind_plan("s1", 2).unwrap(),
+            vec![Held {
+                path: "a.txt".into(),
+                state: State::Text {
+                    content: "one".into()
+                }
+            }]
+        );
+        assert_eq!(
+            f.store.first_preimages("s1").unwrap(),
+            vec![("a.txt".to_string(), State::Absent)]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_set_aside_that_cannot_be_written_changes_nothing() {
+        let f = Fixture::new();
+        let err = f
+            .store
+            .set_aside("../escape", &f.root, &["a.txt".into()], "s2")
+            .unwrap_err();
+        assert!(err.contains("not a usable session id"), "{err}");
     }
 
     #[tokio::test]

@@ -54,6 +54,8 @@ export function Composer({
   queued,
   interrupted = null,
   onContinue,
+  away = null,
+  onSwitch,
   onPark,
   onPickWorkspace,
   onUnattended,
@@ -144,6 +146,14 @@ export function Composer({
    */
   interrupted?: InterruptedTurn | null;
   onContinue?: () => void;
+  /**
+   * The branch of this conversation whose files are in the workspace, when
+   * this one's are set aside. Said above the box, with the way back, because
+   * a message sent now would be refused: its model would be reading another
+   * branch's files.
+   */
+  away?: string | null;
+  onSwitch?: () => void;
   onPark: (sessionKey: string, draft: Parked) => void;
   onPickWorkspace: () => void;
   onUnattended: (unattended: boolean) => void;
@@ -337,6 +347,21 @@ export function Composer({
         */}
       {/* Only between turns: a turn that has started, continued or typed, is
           the end of the interrupted one. */}
+      {away && (
+        <div className="composer-queued held composer-away" role="status">
+          <span className="dataset-mark">⑂</span>
+          <span className="composer-queued-text">
+            Another branch of this conversation has the workspace. Its files are
+            set aside, not lost.
+          </span>
+          <div className="spacer" />
+          {onSwitch && (
+            <button className="quiet" onClick={onSwitch} disabled={busy}>
+              Switch to this one
+            </button>
+          )}
+        </div>
+      )}
       {interrupted && !busy && (
         <div className="composer-queued held composer-interrupted" role="status">
           <span className="dataset-mark">↺</span>

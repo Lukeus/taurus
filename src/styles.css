@@ -3684,8 +3684,15 @@ body.resizing-y * {
   color: var(--accent);
   letter-spacing: var(--tracking-mono);
 }
+/* Three actions now: view, rewind, fork. Each label stays on one line and
+   the row wraps instead, because a button whose label breaks in two reads as
+   two buttons. */
 .rewind-open {
   margin-top: 6px;
+  flex-wrap: wrap;
+}
+.rewind-open button {
+  white-space: nowrap;
 }
 .card-add {
   width: 100%;

@@ -491,6 +491,22 @@ fn reviews_path(workspace: &Path, session_id: &str) -> Option<PathBuf> {
     )
 }
 
+/// Gives a fork the reviews its source had.
+///
+/// Every review is keyed by a fingerprint of what it was sent, so carrying all
+/// of them is safe: one is only ever shown again for a turn whose diff and
+/// claims are the same, which in a fork means one of the turns it copied.
+/// Best-effort, like the reviews themselves: a fork without them asks again.
+pub(crate) fn copy_reviews(workspace: &Path, from: &str, to: &str) {
+    let (Some(source), Some(target)) = (reviews_path(workspace, from), reviews_path(workspace, to))
+    else {
+        return;
+    };
+    if source.is_file() {
+        let _ = std::fs::copy(&source, &target);
+    }
+}
+
 /// The review already made with this fingerprint, if there is one. The most
 /// recent, when there are several.
 pub fn stored(workspace: &Path, session_id: &str, fingerprint: &str) -> Option<ReviewReport> {

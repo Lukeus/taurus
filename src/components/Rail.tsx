@@ -756,6 +756,10 @@ function Section({
  * any other says where it came from. Printing the branch on every row instead
  * would make the common case noisier to make the rare case visible, which is
  * the wrong trade in a list this dense.
+ *
+ * A fork says so first. It starts as a copy of the conversation it came from,
+ * so it has the same first question and the same title, and this is the line
+ * that tells the two rows apart.
  */
 function subtitle(
   session: SessionMeta,
@@ -765,8 +769,10 @@ function subtitle(
   const ago = when(session.updated);
   // Only when both are known. A session with no recorded branch predates the
   // field or was started outside a repository, and neither is "elsewhere".
+  const fork = session.forked_from ? `fork at turn ${session.forked_from.checkpoint} · ` : "";
   const elsewhere =
-    session.branch && branch && session.branch !== branch ? `on ${session.branch} · ` : "";
+    fork +
+    (session.branch && branch && session.branch !== branch ? `on ${session.branch} · ` : "");
   if (changed === null) return `${elsewhere}${session.model} · ${ago}`;
   return changed === 0
     ? `${elsewhere}read-only · ${ago}`

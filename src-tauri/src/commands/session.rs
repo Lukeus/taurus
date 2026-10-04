@@ -119,6 +119,14 @@ pub struct ResumedSession {
     /// recorded before that was kept isn't here; `taurus sessions --agents`
     /// still lists it.
     pub delegates: Vec<SessionMeta>,
+    /// The branch of this conversation that took the workspace, when this
+    /// one's files are set aside. The window offers to switch, and won't
+    /// send a message until it has. See [`taurus_host::fork`].
+    #[ts(optional)]
+    pub away: Option<String>,
+    /// Where this conversation was forked from, if it was.
+    #[ts(optional)]
+    pub forked_from: Option<taurus_host::ForkedFrom>,
 }
 
 /// A turn that ended before its work did, as the window offers to continue
@@ -273,7 +281,25 @@ pub async fn resume_session(
     })
     .await?;
 
+    // Both read off disk: whose files are in the workspace, from this
+    // conversation's checkpoint log, and where it came from, from its header.
+    let (away, forked_from) = {
+        let id = session.id.clone();
+        let store = state
+            .host
+            .checkpoints_for(&session_workspace(&state, &session.id).await);
+        off_runtime(move || {
+            Ok::<_, String>((
+                store.away(&id).unwrap_or(None),
+                sessions::meta(&id).and_then(|meta| meta.forked_from),
+            ))
+        })
+        .await?
+    };
+
     let resumed = ResumedSession {
+        away,
+        forked_from,
         id: session.id.clone(),
         model: session.model.clone(),
         provider_id: provider_id.clone(),
@@ -407,6 +433,10 @@ pub async fn send_message(
     // now do the same to the turn's stream. Both are the same mistake: a turn
     // has not begun until it owns the conversation.
     let mut session = entry.session.lock().await;
+
+    // Refused before the conversation reads as running: a fork whose files
+    // are set aside would have its model reading another branch's.
+    state.host.ensure_on_disk(&session_id).await?;
 
     // The turn's stream belongs to the conversation rather than to this call,
     // and this call's channel is its first view — see `crate::live`.

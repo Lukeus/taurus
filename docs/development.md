@@ -505,6 +505,17 @@ GEMINI_API_KEY=…    cargo run -p taurus-provider-gemini    --example gemini-sm
 # The whole harness: read files, write a file, report what happened.
 cargo run -p taurus-core --example e2e -- qwen3.6:27b
 
+# Forking, end to end through the real CLI, under a throwaway TAURUS_HOME so
+# your own last-workspace setting isn't touched. Two turns, a fork before the
+# second, a different second turn on the fork, the original refusing a turn,
+# and switching both ways. Check plan.txt after each step.
+export TAURUS_HOME=$(mktemp -d) W=$(mktemp -d); cp ~/.taurus/providers.json $TAURUS_HOME/
+taurus run -w $W -m ornith-1.5:9b --allow write_file -q "Create plan.txt containing: alpha"
+taurus run -w $W -m ornith-1.5:9b --allow write_file --allow edit_file --resume -q \
+  "Rewrite plan.txt as two lines: alpha, then beta"
+taurus fork -w $W --at last          # plan.txt is alpha again
+taurus fork -w $W --switch --id <the original>   # alpha, beta
+
 # The terminal dock's shell integration: your own shell, started with your
 # real startup files and Taurus's hooks, two commands run in it, and a model
 # asked why the second one failed. Asserts the blocks and the read_terminal
