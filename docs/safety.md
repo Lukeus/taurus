@@ -15,6 +15,18 @@ names a URL is keyed the same way, by that URL's host. Approving `fetch_url`
 for `docs.rs` is a decision about one site, not a standing grant to reach
 anywhere.
 
+**What you run in the dock, the model can read.** `read_terminal` is a read
+tool, so it isn't gated either. While the terminal dock has a shell open with
+its commands marked, the model can list them and read their output (see
+[The commands you ran](capabilities.md#the-commands-you-ran)). That's on
+purpose: the dock is part of the window the agent works in, and "why did that
+fail?" shouldn't need a paste. But it means a secret you type or print there
+is visible to the model while the dock is open, the same way one pasted into
+the composer is. Close the dock, use another terminal, or turn off
+**Mark each command in the terminal** in Settings for anything you'd rather
+keep out. Sub-agents never get the tool: the terminal belongs to the person
+watching this conversation, and a delegate has no such person.
+
 **A write is shown as a diff.** `Write src/widget.rs (2140 bytes)` tells you a
 file is about to be replaced, but not with what. For a new file that's enough.
 For an overwrite it's the least informative moment in the product: the bytes

@@ -724,18 +724,30 @@ the backlog, and they're the minority.
   and both are re-read when you save them there. A hand edit to
   `providers.json` while the app is open is the case that waits.
 
-- **The terminal dock is a terminal, not part of the conversation.** It runs
-  your shell in the window the agent works in, and that's the whole
-  connection. The agent can't read what you ran there. You can't hand it a
-  failed command without copying the text across. And its own `run_command`
-  calls show up in the transcript, not in the pane. All three come from the
-  same missing piece: the shell has no way to say where one command ended and
-  the next began, so there's nothing for either side to point at.
-
-  Closing it means shell integration: the `OSC 133` marks a prompt emits
-  around each command, injected per shell. That would turn scrollback into
-  addressable blocks, each with an exit code and a duration. It's the next
-  thing to build here, not a limit. See [Terminal](capabilities.md#terminal).
+- **Only zsh and bash mark their commands.** The dock's blocks, the
+  **Ask Taurus** button and `read_terminal` all come from shell integration:
+  hooks that mark where each command starts and ends. They're written for zsh
+  and bash. fish has its own event hooks and PowerShell can wrap its prompt
+  function, and both are the next shells to write. Neither is here yet,
+  because a script that hasn't been run in the shell it's for isn't one to
+  ship. `cmd.exe` has no hook to hang anything on. In all three the dock is
+  the terminal it was before: it works, and has no blocks. bash older than
+  4.4 (macOS ships 3.2) marks commands through a `DEBUG` trap, and leaves
+  them unmarked if you already have a `DEBUG` trap of your own rather than
+  replace it. See [The commands you ran](capabilities.md#the-commands-you-ran).
+- **An `ssh` session in the dock is one long command.** The marks come from
+  the shell Taurus started. A shell on another machine wasn't started with
+  the hooks, so everything you do there lands in the block for `ssh` itself,
+  and `read_terminal` sees it as that one command's output. Covering it would
+  mean installing the hooks on the far side, which isn't Taurus's machine to
+  change.
+- **The agent's own commands aren't drawn in the dock.** Its `run_command`
+  calls appear in the transcript, and a background one gets a tab, but a
+  foreground one isn't drawn in the dock beside yours. The boundaries this
+  needed exist now. What's left is a read-only block for each call that
+  can't be confused with your own prompt. It's agreed and not built:
+  mirrored, not run in your shell, because the agent's path needs a stable
+  folder and output it can capture exactly.
 - **What you run in the terminal is outside the undo history.** Every command
   the *agent* runs is bracketed by a sweep of the workspace, so a rewind can
   put back anything it changed. A command you type in the dock isn't. The
@@ -743,8 +755,10 @@ the backlog, and they're the minority.
   a `sed -i` there is invisible to the Changes panel and to every checkpoint.
   The dock doesn't pretend otherwise. It's a terminal, and a terminal has
   never had an undo. But the two halves of the window keep different
-  promises. Covering it needs the same command boundaries as the entry above,
-  and it would cost a read of the workspace per command you type. See
+  promises. The command boundaries this would need exist now (see
+  [The commands you ran](capabilities.md#the-commands-you-ran)). What stops
+  it is the cost: a read of the workspace before and after every command you
+  type, including the hundred `ls` and `git status` that change nothing. See
   [Rewinding a turn](safety.md#rewinding-a-turn).
 - **One shell, and it ends when the dock does.** There are no tabs and no
   splits. Hiding the pane isn't hiding it: closing the dock ends the shell,

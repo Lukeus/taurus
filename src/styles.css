@@ -4650,6 +4650,85 @@ button.link:where(:not(.excalidraw *)):hover {
 .dock-screen .xterm {
   height: 100%;
 }
+
+/*
+ * A command's mark, in the margin beside the line it was typed on.
+ *
+ * xterm places a decoration over the first cell of its line and sizes it
+ * inline; this pulls it out into the screen's left padding and narrows it to a
+ * bar, so it never covers the prompt. Colored by how the command ended, with
+ * the chosen one wider so the bar's command can be found in the scrollback.
+ */
+.dock-screen .dock-mark {
+  width: 3px !important;
+  margin-left: -8px;
+  border-radius: 2px;
+  background: var(--text-faint);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.dock-screen .dock-mark[data-state="ok"] {
+  background: var(--ok);
+}
+.dock-screen .dock-mark[data-state="failed"] {
+  background: var(--danger);
+}
+.dock-screen .dock-mark[data-state="running"] {
+  background: var(--accent);
+}
+.dock-screen .dock-mark[data-chosen="true"] {
+  width: 5px !important;
+}
+.dock-screen .dock-mark:hover {
+  outline: 1px solid var(--text-dim);
+}
+
+/*
+ * The command in the bar: how it ended, what it was, and the button that
+ * hands it to the conversation. Shrinks before anything else in the bar,
+ * because a long command line is the one thing here that can be cut.
+ */
+.dock-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+.dock-block-mark {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.dock-block[data-state="ok"] .dock-block-mark {
+  color: var(--ok);
+}
+.dock-block[data-state="failed"] .dock-block-mark {
+  color: var(--danger);
+}
+.dock-block[data-state="running"] .dock-block-mark {
+  color: var(--accent);
+}
+.dock-block-command {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  color: var(--text);
+}
+.dock-block-meta {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.dock-block[data-state="failed"] .dock-block-meta {
+  color: var(--danger);
+}
+.dock-block .pill {
+  flex: none;
+}
 .dock-screen .xterm-viewport {
   /* The emulator ships its own scrollbar; this is only to keep it from being
      the one loud element in a quiet window. */

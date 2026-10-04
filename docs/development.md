@@ -516,6 +516,13 @@ taurus run -w $W -m ornith-1.5:9b --allow write_file --allow edit_file --resume 
 taurus fork -w $W --at last          # plan.txt is alpha again
 taurus fork -w $W --switch --id <the original>   # alpha, beta
 
+# The terminal dock's shell integration: your own shell, started with your
+# real startup files and Taurus's hooks, two commands run in it, and a model
+# asked why the second one failed. Asserts the blocks and the read_terminal
+# call; prints the answer. Pass a shell to try the other one.
+cargo run -p taurus-host --example terminal -- qwen3.6:27b
+cargo run -p taurus-host --example terminal -- ornith-1.5:9b /bin/bash
+
 # Skill authoring: propose, validate, save, rediscover.
 cargo run -p taurus-skills --example synthesis -- qwen3.6:27b
 

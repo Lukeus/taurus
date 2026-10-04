@@ -6461,6 +6461,7 @@ dependencies = [
  "directories",
  "futures",
  "keyring",
+ "portable-pty",
  "same-file",
  "schemars 1.2.2",
  "security-framework 3.7.0",

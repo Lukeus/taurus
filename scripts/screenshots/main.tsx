@@ -247,11 +247,6 @@ window.__TAURI_INTERNALS__ = {
     // The event plugin's listen/unlisten. Nothing is ever emitted here — a
     // permission prompt or a proposal card would be a different screenshot.
     if (cmd.startsWith("plugin:event|")) return 0;
-    // The one answer that has to read what it was asked. A background command
-    // is polled with a cursor, and the pane appends whatever comes back — so a
-    // stub that handed over the same log every quarter second would draw it
-    // again every quarter second. Honouring the cursor is not extra fidelity
-    // here; it is the feature the shot is of.
     // The fork scene: the open conversation's files are set aside because a
     // fork of it, listed first in the rail, has the workspace.
     if (shot === "fork" && cmd === "list_sessions") {
@@ -268,6 +263,19 @@ window.__TAURI_INTERNALS__ = {
     if (shot === "fork" && cmd === "resume_session") {
       return { ...ANSWERS.resume_session, away: "s4" };
     }
+    // The terminal scene's shell, played down the channel the dock opened. A
+    // stub that answered with an id and said nothing would leave the pane
+    // empty, and the marks are the thing being photographed.
+    if (cmd === "terminal_open" && shot === "terminal") {
+      const channel = args?.onEvent as { id: number } | undefined;
+      if (channel) setTimeout(() => playShell(channel.id), 50);
+      return "shell-1";
+    }
+    // The one answer that has to read what it was asked. A background command
+    // is polled with a cursor, and the pane appends whatever comes back — so a
+    // stub that handed over the same log every quarter second would draw it
+    // again every quarter second. Honouring the cursor is not extra fidelity
+    // here; it is the feature the shot is of.
     if (cmd === "background") {
       const first = !args?.cursor;
       return {
@@ -330,6 +338,58 @@ window.__TAURI_INTERNALS__ = {
   unregisterCallback: () => {},
   convertFileSrc: (path: string) => path,
 };
+
+/**
+ * A short session at a zsh prompt with shell integration on: one command that
+ * passed and one that failed, each wrapped in the marks the hooks print, and
+ * the block events the backend sends after them. Byte for byte what the dock
+ * receives, so the scene draws through the same code a real shell does.
+ */
+function playShell(id: number) {
+  const deliver = (window as unknown as Record<string, (m: unknown) => void>)[`_${id}`];
+  let index = 0;
+  const send = (message: unknown) => deliver({ index: index++, message });
+  const out = (text: string) =>
+    send({ kind: "output", data: btoa(unescape(encodeURIComponent(text))) });
+  const OSC = "\x1b]";
+  const BEL = "\x07";
+  const prompt = (dir: string) =>
+    `${OSC}133;D;0${BEL}${OSC}7;file://mac/Users/me/src/${dir}${BEL}${OSC}133;A${BEL}` +
+    `\x1b[36m${dir}\x1b[0m \x1b[35m❯\x1b[0m ${OSC}133;B${BEL}`;
+  const block = (id: number, command: string, extra: object) => ({
+    kind: "block",
+    block: {
+      id,
+      command,
+      cwd: "/Users/me/src/taurus",
+      started_at: 0,
+      running: false,
+      full_screen: false,
+      dropped_bytes: 0,
+      ...extra,
+    },
+  });
+
+  out(prompt("taurus") + "git status\r\n");
+  out(`${OSC}133;C;cmdline_url=git%20status${BEL}`);
+  out("On branch feat/terminal-blocks\r\nnothing to commit, working tree clean\r\n");
+  out(prompt("taurus"));
+  send(block(1, "git status", { exit: 0, duration_ms: 41 }));
+  out("cargo test -p taurus-tools blocks\r\n");
+  out(`${OSC}133;C;cmdline_url=cargo%20test%20-p%20taurus-tools%20blocks${BEL}`);
+  out(
+    "\x1b[32m   Compiling\x1b[0m taurus-tools v0.3.0\r\n" +
+      "\x1b[32m    Finished\x1b[0m `test` profile in 4.82s\r\n" +
+      "running 14 tests\r\n" +
+      "test blocks::tests::a_command_becomes_a_block ... ok\r\n" +
+      "test blocks::tests::marks_split_across_reads_are_still_found ... \x1b[31mFAILED\x1b[0m\r\n" +
+      "\r\nfailures:\r\n    blocks::tests::marks_split_across_reads_are_still_found\r\n" +
+      "\r\ntest result: \x1b[31mFAILED\x1b[0m. 13 passed; 1 failed\r\n",
+  );
+  out(`${OSC}133;D;101${BEL}${OSC}7;file://mac/Users/me/src/taurus${BEL}${OSC}133;A${BEL}`);
+  out(`\x1b[36mtaurus\x1b[0m \x1b[31m❯\x1b[0m ${OSC}133;B${BEL}`);
+  send(block(2, "cargo test -p taurus-tools blocks", { exit: 101, duration_ms: 6_240 }));
+}
 
 // Set before the app boots so the first paint is already in the right palette;
 // App re-applies it from the settings above on mount.
@@ -767,6 +827,20 @@ requestAnimationFrame(() => {
       // The command that failed rather than the dev server beside it: the
       // whole reason this pane exists is that the model could read this and
       // the user could not.
+      // Opened from the keyboard: with nothing running in the background, the
+      // rail row that would open it sits in a shut group.
+      terminal: async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "`", ctrlKey: true, bubbles: true }));
+        // The failed command in the bar, and its mark drawn. Only marks on
+        // lines in view are drawn, and `git status` has scrolled above a dock
+        // this short, so one is what there is to wait for.
+        await until(() =>
+          document.querySelector('.dock-block[data-state="failed"]') &&
+          document.querySelector('.dock-mark[data-state="failed"]')
+            ? true
+            : null,
+        );
+      },
       background: async () => {
         (await click(".rail-link", (b) => b.startsWith("Terminal")))();
         (await click(".dock-tab", (b) => b.includes("cargo test")))();
