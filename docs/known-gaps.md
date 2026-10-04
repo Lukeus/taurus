@@ -1315,13 +1315,29 @@ the backlog, and they're the minority.
   process. The corpus is the working tree, and editing a doc page between two
   runs was measured moving MRR by 0.03. That's the size of the differences it
   exists to detect.
-- **Reranking is off by default, and ungated.** `rerank_model` is empty
-  because the plan that added it said to beat cosine before turning it on by
-  default, and that comparison hasn't been run. There's somewhere to run it.
-  The retrieval harness above scores whatever the index currently does, so
-  the gate is one command with the setting on and one with it off. Until
-  somebody does that, an empty default is the honest state, not a forgotten
-  one.
+- **Reranking is off by default, because it measured worse.** The plan that
+  added `rerank_model` said to beat cosine before turning it on by default.
+  The retrieval harness above now scores both orders in one run when
+  `RERANK_URL` is set. On this repository, with `nomic-embed-text` embeddings
+  and `bge-reranker-v2-m3` on llama.cpp, reranking lost:
+
+  | | MRR | hit@1 | hit@5 |
+  |---|---|---|---|
+  | cosine (the default) | 0.540 | 33% | 80% |
+  | reranked shortlist of 30 | 0.506 | 33% | 67% |
+
+  It helped where the question was abstract ("deciding whether a cloned
+  repository may configure the agent" went from 22nd to 10th). It hurt where
+  the answer is one part of a large file ("shortening the older messages"
+  went from 10th to 24th, in `agent.rs`). A cross-encoder judges the passage
+  it's shown, and the best passage of a big file is often not the one that
+  says what the file is for.
+
+  This is the same small sample as the chunking result: fifteen questions,
+  one embedding model, one reranker. A different reranker, or a workspace
+  that isn't Rust and TypeScript, could land differently. So the setting
+  stays, and the default stays empty. Run the harness with your own reranker
+  before trusting it.
 - **A theme sets fourteen colors, three typefaces, a wordmark and a corner
   radius, and nothing else.** That's not a stub; the ceiling is the point.
   Everything below the top of `src/styles.css` speaks in roles, so those
