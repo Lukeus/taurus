@@ -108,15 +108,16 @@ pub struct ResumedSession {
     /// the transcript came before it — so a reopened conversation shows the
     /// change where it happened rather than only what it ended on.
     pub switches: Vec<Switch>,
-    /// The turn the process died in, when this conversation's transcript ends
-    /// in one. `None` for one that finished, and for one whose turn is running
+    /// The turn that ended before its work did — the process died in it, or
+    /// it ran out of round trips — when this conversation's transcript ends in
+    /// one. `None` for one that finished, and for one whose turn is running
     /// right now, which has an open turn on disk too.
     #[ts(optional)]
     pub interrupted: Option<InterruptedTurn>,
 }
 
-/// A turn the process running it stopped in the middle of, as the window
-/// offers to continue it.
+/// A turn that ended before its work did, as the window offers to continue
+/// it.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 pub struct InterruptedTurn {
@@ -126,6 +127,18 @@ pub struct InterruptedTurn {
     pub attempts: u32,
     /// The most one request gets. See `taurus_core::MAX_ATTEMPTS`.
     pub max_attempts: u32,
+    pub cause: InterruptedCause,
+}
+
+/// Why it ended early. See `taurus_core::Cause`.
+#[derive(Debug, Clone, Copy, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum InterruptedCause {
+    /// The process running it stopped.
+    Stopped,
+    /// It used every tool round trip one turn gets.
+    Ceiling,
 }
 
 impl From<&taurus_core::Interrupted> for InterruptedTurn {
@@ -134,6 +147,10 @@ impl From<&taurus_core::Interrupted> for InterruptedTurn {
             unanswered: interrupted.unanswered as u32,
             attempts: interrupted.attempts,
             max_attempts: taurus_core::MAX_ATTEMPTS,
+            cause: match interrupted.cause {
+                taurus_core::Cause::Stopped => InterruptedCause::Stopped,
+                taurus_core::Cause::Ceiling => InterruptedCause::Ceiling,
+            },
         }
     }
 }

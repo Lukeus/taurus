@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 
-import { CONTINUE_PROMPT, useStore } from "./store";
+import { CEILING_CONTINUE_PROMPT, CONTINUE_PROMPT, useStore } from "./store";
 
 const LISTS = new Set(["list_sessions", "list_checkpoints", "running_sessions"]);
 
@@ -42,7 +42,7 @@ const OPEN = {
   context_length: 32_000,
 };
 
-const INTERRUPTED = { unanswered: 1, attempts: 1, max_attempts: 3 };
+const INTERRUPTED = { unanswered: 1, attempts: 1, max_attempts: 3, cause: "stopped" as const };
 
 describe("a turn Taurus stopped in", () => {
   it("is offered on reopening, with its running call marked unknown", async () => {
@@ -97,5 +97,45 @@ describe("a turn Taurus stopped in", () => {
     const sent = invoke.mock.calls.find(([name]) => name === "send_message");
     expect(sent?.[1]).toMatchObject({ continueInterrupted: false });
     expect(useStore.getState().interrupted).toBeNull();
+  });
+});
+
+describe("a turn that ran out of round trips", () => {
+  it("offers Continue as it ends, in place of sending the message again", async () => {
+    invoke.mockImplementation((command: string, args: { onEvent?: { onmessage: (e: unknown) => void } }) => {
+      if (command !== "send_message") return idle(command);
+      args.onEvent?.onmessage({ type: "error", message: "Stopped after 25 tool round trips." });
+      args.onEvent?.onmessage({ type: "out_of_rounds", attempts: 1, max_attempts: 3 });
+      return Promise.resolve();
+    });
+    useStore.setState({ session: OPEN, entries: [], busy: false, interrupted: null });
+    await useStore.getState().send("refactor the parser");
+
+    const state = useStore.getState();
+    expect(state.interrupted).toEqual({
+      unanswered: 0,
+      attempts: 1,
+      max_attempts: 3,
+      cause: "ceiling",
+    });
+    const notice = state.entries.find((e) => e.kind === "notice");
+    expect(notice).toMatchObject({ tone: "error", failed: false });
+  });
+
+  it("continues with the words that withdraw the request to summarize", async () => {
+    useStore.setState({
+      session: OPEN,
+      entries: [],
+      busy: false,
+      interrupted: { unanswered: 0, attempts: 1, max_attempts: 3, cause: "ceiling" },
+    });
+    await useStore.getState().continueInterrupted();
+
+    const sent = invoke.mock.calls.find(([name]) => name === "send_message");
+    expect(sent?.[1]).toMatchObject({ text: CEILING_CONTINUE_PROMPT, continueInterrupted: true });
+    expect(useStore.getState().entries[0]).toMatchObject({
+      kind: "notice",
+      text: "Continuing the turn past its round-trip limit.",
+    });
   });
 });

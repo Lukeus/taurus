@@ -577,6 +577,9 @@ The CLI does the same: resuming an interrupted conversation says so, and
 `/continue` picks it up. A CLI turn is now written down as it runs, round by
 round, instead of all at once when it ends.
 
+A turn that ran out of round trips is offered the same way, from the same
+three turns. See [When a turn stops](#when-a-turn-stops).
+
 ## When a turn stops
 
 A turn runs until the model stops asking for tools. Three things end one
@@ -598,6 +601,20 @@ an explanation, not a conversation that just stops:
   is validated against. A larger number is clamped, not refused, because a
   settings file that won't load is a worse answer to a typo than a number
   brought back into range.
+
+  Reaching it doesn't end the request. The strip above the composer says
+  "This turn used every tool round trip one turn gets" and offers
+  **Continue**, which starts a new turn with a fresh set of rounds. It tells
+  the model it's been given more rounds and shouldn't summarize yet, since the
+  harness's last word was a request to summarize that nothing answered. The
+  failure loses its **Try again**: that would send the message again and start
+  the whole request over, and Continue is what you want.
+
+  It shares the three turns a request gets with
+  [Picking up a turn Taurus stopped in](#picking-up-a-turn-taurus-stopped-in),
+  so one request runs at most three times the ceiling, a click each time. The
+  same strip shows on a conversation reopened later, because the transcript
+  records how the turn ended. In the CLI, `/continue` does the same.
 
   This is the *conversation's* limit. A sub-agent has its own, and a delegate
   with thirty rounds spends one of the parent's, not thirty. Each agent's

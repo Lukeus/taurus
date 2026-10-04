@@ -591,6 +591,19 @@ function turnStream(
     if (paths.length > 0) {
       set((s) => ({ wrote: { paths, at: (s.wrote?.at ?? 0) + 1 } }));
     }
+    // Out of round trips: the strip above the composer offers Continue once
+    // the turn ends, the same one a reopened conversation shows.
+    const out = events.filter((e) => e.type === "out_of_rounds").pop();
+    if (out?.type === "out_of_rounds") {
+      set({
+        interrupted: {
+          unanswered: 0,
+          attempts: out.attempts,
+          max_attempts: out.max_attempts,
+          cause: "ceiling",
+        },
+      });
+    }
   });
 }
 
@@ -1032,7 +1045,7 @@ export const useStore = create<Store>((set, get) => ({
               kind: "notice",
               id: nextId(),
               tone: "info",
-              text: "Continuing the turn Taurus stopped in.",
+              text: continuingText(s.interrupted),
             }
           : { kind: "user", id: nextId(), text, images },
       ],
@@ -1128,7 +1141,7 @@ export const useStore = create<Store>((set, get) => ({
   continueInterrupted: async () => {
     const { interrupted, busy } = get();
     if (!interrupted || busy) return;
-    await get().send(CONTINUE_PROMPT, [], null, true);
+    await get().send(continuePrompt(interrupted), [], null, true);
   },
 
   unqueue: () => set({ queued: null }),
@@ -1390,6 +1403,25 @@ export const CONTINUE_PROMPT =
   "Your previous run was interrupted. Continue from where you left off.";
 
 /**
+ * What continuing a turn that ran out of round trips says, the same words as
+ * `CEILING_CONTINUE_PROMPT` in `crates/taurus-core/src/session.rs`.
+ */
+export const CEILING_CONTINUE_PROMPT =
+  "You've been given more tool round trips, so don't summarize yet. Continue the task from where you left off.";
+
+/** What the backend will say to the model when this turn is continued. */
+export function continuePrompt(interrupted: InterruptedTurn): string {
+  return interrupted.cause === "ceiling" ? CEILING_CONTINUE_PROMPT : CONTINUE_PROMPT;
+}
+
+/** The notice a continuation is drawn as while it runs. */
+function continuingText(interrupted: InterruptedTurn | null): string {
+  return interrupted?.cause === "ceiling"
+    ? "Continuing the turn past its round-trip limit."
+    : "Continuing the turn Taurus stopped in.";
+}
+
+/**
  * Marks the calls a stopped process never answered.
  *
  * Their results aren't on disk, so a rebuilt transcript would draw them
@@ -1450,12 +1482,15 @@ export function entriesFromMessages(
             };
           }
           if (rest === "") continue;
-          if (rest === CONTINUE_PROMPT) {
+          if (rest === CONTINUE_PROMPT || rest === CEILING_CONTINUE_PROMPT) {
             entries.push({
               kind: "notice",
               id: nextId(),
               tone: "info",
-              text: "Continued the turn Taurus stopped in.",
+              text:
+                rest === CONTINUE_PROMPT
+                  ? "Continued the turn Taurus stopped in."
+                  : "Continued the turn past its round-trip limit.",
             });
             continue;
           }
@@ -2332,6 +2367,21 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           },
         },
       ];
+
+    // Follows the `error` that said the turn stopped. That turn is continued,
+    // not sent again — sending the message again starts the whole request
+    // over — so the notice loses its retry and the composer's strip offers
+    // Continue instead. See `turnStream`.
+    case "out_of_rounds": {
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        if (entry.kind !== "notice" || !entry.failed) continue;
+        const next = entries.slice();
+        next[i] = { ...entry, failed: false };
+        return next;
+      }
+      return entries;
+    }
 
     case "error":
       // `failed`, like the notice `send` writes when the call itself throws:

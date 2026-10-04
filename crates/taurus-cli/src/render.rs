@@ -302,6 +302,11 @@ impl Renderer {
                 self.warn(&format!("  error: {message}"));
             }
 
+            // The session says what to do about it once the turn is over —
+            // see `interrupted_notice` — and it needs the transcript written
+            // first, so nothing is drawn here.
+            UiEvent::OutOfRounds { .. } => {}
+
             // Not drawn per iteration: this arrives before every request, and
             // a line each would be most of a transcript. The CLI reports the
             // turn's usage when it ends, which is the moment it can be read.
