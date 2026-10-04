@@ -93,15 +93,10 @@ example (see "What belongs to a component").
    got `docs/screenshots/providers.png` and four IPC stubs for this reason:
    most of the Settings form had never been photographed.
 
-   Six baselines are unreliable, and trusting them will waste an afternoon:
-
-   - `canvas.png` and `motion.png` don't reproduce on every machine. They
-     differ by the same amount at a clean `HEAD`: environment drift, not you.
-   - `app-light`, `palette`, `query-run`, `query-complete`, `mcp-catalog` and
-     `canvas-conflict` are flaky between runs. A "Jump to the end" pill and
-     some mid-animation frames come and go.
-
-   Re-run before believing any of the six.
+   Every baseline reproduces between runs on the same machine except
+   `motion.png`, whose waveform never stops. A different Chrome or font stack
+   still rewrites every file, so take the baseline on your own machine before
+   you change anything, and compare against that.
 
 ### What belongs to a component
 
@@ -333,7 +328,8 @@ step. Keep an `.ico` first in that list.
 ## The README's screenshots
 
 ```bash
-pnpm screenshots     # rewrites docs/screenshots/*.png
+pnpm screenshots              # rewrites docs/screenshots/*.png
+pnpm screenshots notes mcp    # just these, by name
 ```
 
 The images are the real frontend (the real `App`, store and stylesheet),
@@ -356,21 +352,37 @@ the PNG in the diff. Commit only the images your change is about. A different
 Chrome or font stack rewrites every file, and five unrelated PNGs in a diff
 make the one that matters unreviewable.
 
-A shot that has to *click* through something waits on a timer, not
-`requestAnimationFrame`. That's counter-intuitive, so know it before you write
-the next one. The shots run under Chrome's `--virtual-time-budget`, and a
-frame loop that reschedules itself every frame spends the whole budget without
-ever letting the fetch it's waiting on land.
+The shots are taken from a build, served with the app's own CSP: the string
+in `src-tauri/tauri.conf.json`, sent on every response. The run fails if the
+page reports a single refusal, and names the shot and what was refused. A
+refused font draws in a fallback face and a refused image draws as nothing,
+and a picture of either still looks like a picture. Sketch embeds drew in a
+serif in the packaged app for as long as the shots were taken without the
+policy. The dev server can't be put under the CSP, because its hot-reload
+preamble is an inline script, so the harness is built into
+`node_modules/.cache/` instead.
 
-A scene also runs on a page shorter than the shot. With `--window-size` at 840
-tall, the page measures about 750 while a scene runs (read with
-`--dump-dom`), and the PNG is the full 840. So anything that sizes itself from
-its own box decides at the shorter height. The note editor's list opens above
-the caret when there's no room below, and in the picture there is. Every
-sketch canvas is under Excalidraw's 500-pixel line. Put what a scene
-photographs high enough to fit either way. And don't read a decision made on
-resize off a `--dump-dom`: the `sketch-wide` scene dumps in Excalidraw's
-compact layout and photographs in its full one.
+Chrome is driven over the DevTools protocol, in real time. Each shot gets a
+fresh browser context and a viewport of exactly its size, and the picture is
+taken once the page sets `data-ready` on the body. A scene sets it after its
+last step, once the DOM has stopped changing, the fonts have loaded, and every
+animation that ends has ended. A scene that never sets it within 30 seconds
+gets no picture: the run fails and prints what the page threw, usually
+`nothing turned up to click`. The old way, `--screenshot` with
+`--virtual-time-budget`, couldn't take pictures of a build at all. Virtual time
+raced ahead while a large lazy chunk compiled off the main thread, so a quarter
+to a third of the shots were of the moment before their scene.
+
+Two runs on the same machine produce identical files, except `motion`, whose
+waveform never stops. If a shot differs between runs, something on the page is
+still moving when it's taken. Find it rather than retaking until it matches:
+the canvas's selection fade was one.
+
+The viewport is the shot's own size, so what a scene measures is what the
+picture shows. Anything that sizes itself from its own box decides at that
+size. Excalidraw's compact layout is the one to know: under 730 wide, or under
+500 tall and under 1000 wide. At 840 tall a sketch canvas is 574, so only the
+width rule applies, which is why `sketch-wide` is taken at 1200.
 
 Some shots are the only check a behavior has. That's on purpose, not a gap.
 
@@ -431,10 +443,9 @@ fonts and translations:
   is pinned to English, and the other fifty-two are a megabyte of files
   nothing reads.
 
-These scenes wait for the editor to appear before pressing **Read**. That's the
-same virtual-time trap again: two spinning waits in a row exhaust the budget
-between them, and the shot comes out as an empty pane, not a failure anyone
-would notice. Gate each step on what the last one fetched.
+These scenes wait for the editor to appear before pressing **Read**. Pressing
+it while the note is still in flight reads the wrong note, or none. Gate each
+step on what the last one fetched.
 
 `palette` is the only check that a keyboard shortcut is bound at all. It opens
 the box by dispatching the chord on `window`, not by pressing a key: the half

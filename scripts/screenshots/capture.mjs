@@ -13,15 +13,34 @@
 // screenshots is that they quietly describe a version of the app that no longer
 // exists.
 //
-//   pnpm screenshots
+// It is a build, served under the app's own CSP, and the run fails if the page
+// reports a single refusal. A refused font draws in a fallback face and a
+// refused image draws as nothing, and a picture of either still looks like a
+// picture: sketch embeds drew in a serif in the packaged app for as long as
+// these were taken without the policy. The dev server cannot be put under it —
+// its hot-reload preamble is an inline script — which is why this builds.
+//
+// Chrome is driven over the DevTools protocol, in real time: each picture is
+// taken once the page says its scene is finished (`data-ready` on the body),
+// not when a clock runs out. The previous way, `--screenshot` with
+// `--virtual-time-budget`, could not take pictures of a build at all: virtual
+// time raced ahead while a large lazily loaded chunk compiled off the main
+// thread, and a quarter to a third of the shots were of the moment before their
+// scene, a different set every run.
+//
+//   pnpm screenshots            every shot
+//   pnpm screenshots notes mcp  just these, by name
 //
 // Chrome is located rather than depended on. A machine without it gets a clear
 // message and no images, which is correct: this is a documentation chore, not
 // part of the build.
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { stat } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -31,6 +50,9 @@ const PORT = 5177;
 /** The window the design is drawn at. */
 const WIDTH = 1280;
 const HEIGHT = 840;
+
+/** How long a scene gets to report itself finished before the run fails on it. */
+const SCENE_TIMEOUT_MS = 30_000;
 
 // One image per thing worth seeing, and the two palettes split across them
 // rather than shown twice: a second copy of the same frame in the other theme
@@ -107,11 +129,12 @@ const SHOTS = [
   { name: "notes-kept", shot: "notes-kept", theme: "dark" },
   // A sketch with the list folded: the check that folding it is enough to take
   // Excalidraw out of its compact layout and give it back its zoom controls.
-  // The one shot taken wider than the rest. Headless Chrome leaves the page
-  // about 750 of the window's 840, so every canvas here is under 500 tall, and
-  // then only a width of 1000 clears the line — which a 1280 window does not
-  // reach even with the list folded, and a 1440 one does.
-  { name: "sketch-wide", shot: "sketch-wide", theme: "dark", width: 1440 },
+  // The one shot taken narrower than the rest. At 840 tall the canvas is 574,
+  // so only Excalidraw's width rule applies: compact under 730. The canvas is
+  // the window less 520 beside the list and less 304 with it folded, so a
+  // 1200 window is compact before the fold (680) and not after it (896) —
+  // which is the check. A 1280 one is never compact at all.
+  { name: "sketch-wide", shot: "sketch-wide", theme: "dark", width: 1200 },
   // The moment the two writers meet: Taurus wrote the file while there was
   // typing in it, so both versions exist and neither has been chosen. The only
   // picture of the rule the whole write slice is built around.
@@ -172,71 +195,297 @@ if (CHROME.length === 0) {
 }
 const chrome = CHROME[0];
 
+const wanted = process.argv.slice(2);
+const unknown = wanted.filter((name) => !SHOTS.some((s) => s.name === name));
+if (unknown.length > 0) {
+  console.error(`no such shot: ${unknown.join(", ")}`);
+  process.exit(1);
+}
+const shots = wanted.length > 0 ? SHOTS.filter((s) => wanted.includes(s.name)) : SHOTS;
+
 mkdirSync(out, { recursive: true });
+
+// Kept out of the repository, and rebuilt every run so a picture is never of a
+// stale build.
+const dist = join(root, "node_modules", ".cache", "taurus-screenshots");
 
 // No shell, so a repository path containing a space survives the trip — the
 // same reason `scripts/bindings.mjs` spawns cargo directly.
-const vite = spawn(
+await run(
   "npx",
-  ["vite", "--config", "scripts/screenshots/vite.config.ts", "--port", String(PORT), "--strictPort"],
-  { cwd: root, stdio: ["ignore", "pipe", "inherit"] },
+  [
+    "vite", "build",
+    "--config", "scripts/screenshots/vite.config.ts",
+    "--outDir", dist, "--emptyOutDir",
+    "--sourcemap", "false",
+    "--logLevel", "warn",
+  ],
+  { cwd: root, stdio: ["ignore", "inherit", "inherit"] },
 );
-vite.on("error", (error) => {
-  console.error(`could not start vite: ${error.message}`);
-  process.exit(1);
+
+/**
+ * The policy the app ships with, read from the file it ships in rather than
+ * copied here, so the two cannot drift. Tauri adds hashes for inline scripts
+ * and styles to it at runtime; this page has neither kind of script, so the
+ * string as written is the stricter of the two and the right one to test under.
+ */
+const CSP = JSON.parse(readFileSync(join(root, "src-tauri", "tauri.conf.json"), "utf8")).app
+  .security.csp;
+
+/** Where the page posts a refusal — see `csp.ts` beside this file. */
+const REPORT = "/__csp-violation";
+
+const TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".ttf": "font/ttf",
+  ".wasm": "application/wasm",
+};
+
+/** What the page reported as refused, by the shot being taken at the time. */
+const refused = new Map();
+let taking = "";
+
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  if (req.method === "POST" && url.pathname === REPORT) {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    if (!refused.has(taking)) refused.set(taking, new Set());
+    refused.get(taking).add(body);
+    res.writeHead(204).end();
+    return;
+  }
+  let file = join(dist, decodeURIComponent(url.pathname));
+  if (!file.startsWith(dist + sep) || !(await isFile(file))) {
+    // A path with no extension is the app's own page, the way a Tauri window
+    // has it. Anything else that is missing is a 404 rather than that page —
+    // a font answered with HTML fails to parse instead of plainly being
+    // absent, which is what Xiaolai is meant to be.
+    if (extname(url.pathname) !== "") {
+      res.writeHead(404, { "Content-Security-Policy": CSP }).end();
+      return;
+    }
+    file = join(dist, "index.html");
+  }
+  res.writeHead(200, {
+    "Content-Type": TYPES[extname(file)] ?? "application/octet-stream",
+    "Content-Security-Policy": CSP,
+  });
+  createReadStream(file).pipe(res);
 });
+await new Promise((resolve) => server.listen(PORT, resolve));
 
-const stop = () => vite.kill();
-process.on("exit", stop);
-process.on("SIGINT", () => {
-  stop();
-  process.exit(130);
-});
-
-await waitForServer(`http://localhost:${PORT}/`);
-
-for (const { name, shot, theme, width = WIDTH } of SHOTS) {
-  const file = join(out, `${name}.png`);
-  await run(chrome, [
-    "--headless",
+// A throwaway profile, so nothing of the person's own Chrome — extensions,
+// flags, a remembered zoom — reaches a picture.
+const profile = mkdtempSync(join(tmpdir(), "taurus-screenshots-"));
+const browser = spawn(
+  chrome,
+  [
+    "--headless=new",
     "--disable-gpu",
     "--hide-scrollbars",
     // Deterministic text rendering, so a rerun on the same machine produces an
     // identical file and git does not see a diff in every image every time.
-    "--force-device-scale-factor=2",
     "--font-render-hinting=none",
-    `--window-size=${width},${HEIGHT}`,
-    `--screenshot=${file}`,
-    // Generous: the page marks itself ready after its startup round trips, and
-    // virtual time runs far faster than the wall clock.
-    "--virtual-time-budget=8000",
-    `http://localhost:${PORT}/?shot=${shot}&theme=${theme}`,
-  ]);
-  console.log(`wrote docs/screenshots/${name}.png`);
-}
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--remote-debugging-port=0",
+    `--user-data-dir=${profile}`,
+    "about:blank",
+  ],
+  { stdio: ["ignore", "ignore", "pipe"] },
+);
 
-stop();
+const exited = new Promise((resolve) => browser.on("exit", resolve));
+let stopped = false;
+/**
+ * Ends Chrome and the server, and removes the profile once Chrome has let go
+ * of it — removing it while Chrome is still writing its last files fails.
+ */
+const stop = async () => {
+  if (stopped) return;
+  stopped = true;
+  browser.kill();
+  server.close();
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
+  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+};
+process.on("SIGINT", () => {
+  void stop().finally(() => process.exit(130));
+});
 
-/** Resolves once the dev server answers, or gives up rather than hanging. */
-async function waitForServer(url) {
-  for (let attempt = 0; attempt < 60; attempt++) {
-    try {
-      await fetch(url);
-      return;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+/** Shots whose scene never reported itself finished, with what the page said. */
+const unfinished = [];
+let cdp;
+
+// In a `finally`, so a failure part way through doesn't leave a headless Chrome
+// running with nothing to end it.
+try {
+  cdp = await connect(await devtoolsUrl(browser));
+  for (const { name, shot, theme, width = WIDTH } of shots) {
+    taking = name;
+    const result = await take(`http://localhost:${PORT}/?shot=${shot}&theme=${theme}`, width);
+    if (result.ready) {
+      writeFileSync(join(out, `${name}.png`), Buffer.from(result.png, "base64"));
+      console.log(`wrote docs/screenshots/${name}.png`);
+    } else {
+      unfinished.push({ name, errors: result.errors });
     }
   }
-  stop();
-  console.error(`vite did not come up on ${url}`);
-  process.exit(1);
+} finally {
+  await stop();
 }
 
-function run(command, args) {
+if (unfinished.length > 0) {
+  console.error("\nthese scenes never reported themselves finished, so no picture was taken:");
+  for (const { name, errors } of unfinished) {
+    console.error(`  ${name}${errors.length > 0 ? `: ${errors.join("; ")}` : ""}`);
+  }
+}
+
+// Reported after every picture rather than at the first refusal, so one run
+// shows all of them — and the images are still written, since a refused font
+// is easier to understand beside the picture it spoiled.
+const spoiled = [...refused].filter(([, seen]) => seen.size > 0);
+if (spoiled.length > 0) {
+  console.error("\nthe app's CSP refused something the page asked for:");
+  for (const [name, seen] of spoiled) {
+    for (const what of seen) console.error(`  ${name}: ${what}`);
+  }
+}
+if (spoiled.length > 0 || unfinished.length > 0) process.exit(1);
+
+/**
+ * One picture: a fresh browser context (so no shot inherits another's local
+ * storage), the window at its size, and the screenshot once the page has said
+ * its scene is finished.
+ */
+async function take(url, width) {
+  const { browserContextId } = await cdp.send("Target.createBrowserContext");
+  const { targetId } = await cdp.send("Target.createTarget", {
+    url: "about:blank",
+    browserContextId,
+  });
+  const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+  const page = (method, params) => cdp.send(method, params, sessionId);
+
+  // What the page threw, so a scene that never finishes says why.
+  const errors = [];
+  const unlisten = cdp.on(sessionId, "Runtime.exceptionThrown", ({ exceptionDetails }) => {
+    errors.push(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+  });
+
+  try {
+    await page("Runtime.enable");
+    await page("Emulation.setDeviceMetricsOverride", {
+      width,
+      height: HEIGHT,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+    // Asked of the page as well as by flag: an overlay scrollbar caught part
+    // way through fading out was the one thing that differed between runs.
+    await page("Emulation.setScrollbarsHidden", { hidden: true });
+    await page("Page.navigate", { url });
+
+    const deadline = Date.now() + SCENE_TIMEOUT_MS;
+    let ready = false;
+    while (!ready && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const { result } = await page("Runtime.evaluate", {
+        expression: "document.body?.dataset.ready === 'true'",
+        returnByValue: true,
+      });
+      ready = result.value === true;
+    }
+    if (!ready) return { ready, errors };
+
+    const { data } = await page("Page.captureScreenshot", { format: "png" });
+    return { ready, png: data, errors };
+  } finally {
+    unlisten();
+    await cdp.send("Target.closeTarget", { targetId });
+    await cdp.send("Target.disposeBrowserContext", { browserContextId });
+  }
+}
+
+/** The browser's DevTools endpoint, from the line Chrome prints when it is up. */
+function devtoolsUrl(child) {
   return new Promise((resolve, reject) => {
-    // Chrome writes its own noise to stderr on every run — a GPU warning, a
-    // sandbox note — none of which is an error here. Only the exit code is.
-    const child = spawn(command, args, { stdio: ["ignore", "ignore", "ignore"] });
+    let seen = "";
+    const timer = setTimeout(() => reject(new Error("Chrome did not start its DevTools server")), 15_000);
+    child.on("error", reject);
+    child.stderr.on("data", (chunk) => {
+      seen += chunk;
+      const found = seen.match(/DevTools listening on (ws:\/\/\S+)/);
+      if (found) {
+        clearTimeout(timer);
+        resolve(found[1]);
+      }
+    });
+  });
+}
+
+/**
+ * The smallest DevTools client this needs: commands answered by id, and events
+ * handed to whoever is listening for that session. Node's own `WebSocket`, so
+ * there is nothing to install.
+ */
+async function connect(url) {
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+  let next = 0;
+  const pending = new Map();
+  const listeners = new Set();
+  socket.addEventListener("message", ({ data }) => {
+    const message = JSON.parse(data);
+    if (message.id !== undefined) {
+      const waiting = pending.get(message.id);
+      pending.delete(message.id);
+      if (message.error) waiting?.reject(new Error(`${waiting.method}: ${message.error.message}`));
+      else waiting?.resolve(message.result);
+      return;
+    }
+    for (const listener of listeners) listener(message);
+  });
+  return {
+    send(method, params = {}, sessionId) {
+      const id = ++next;
+      socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      return new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
+    },
+    on(sessionId, method, handle) {
+      const listener = (message) => {
+        if (message.sessionId === sessionId && message.method === method) handle(message.params);
+      };
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+/** Whether a path is a file that exists. */
+async function isFile(path) {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function run(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "ignore", "ignore"], ...options });
     child.on("error", reject);
     child.on("close", (code) =>
       code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)),
