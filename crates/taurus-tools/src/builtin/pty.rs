@@ -113,6 +113,10 @@ pub async fn run(
         builder.arg(arg.as_ref());
     }
     builder.cwd(cwd);
+    // portable-pty looks the program up on the PATH the builder carries.
+    if let Some(path) = crate::login_path::replaced() {
+        builder.env("PATH", path);
+    }
     // Named so the child believes in a terminal it can actually drive. Left
     // unset, a curses program assumes the most primitive terminal there is and
     // either degrades or refuses; set to something exotic, it looks for a

@@ -209,7 +209,7 @@ impl Tool for RunSkillScript {
         })?;
 
         let mut command = tokio::process::Command::new(&interpreter.program);
-        command.args(&interpreter.leading_args);
+        taurus_tools::login_path::apply(&mut command).args(&interpreter.leading_args);
         command.arg(&script_path);
         command.args(&input.args);
         // Scripts run against the workspace, not their own directory: a skill

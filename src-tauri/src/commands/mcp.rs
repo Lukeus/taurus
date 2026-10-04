@@ -76,9 +76,10 @@ pub struct McpEnvironment {
 
 #[tauri::command]
 pub async fn mcp_environment() -> CmdResult<McpEnvironment> {
-    // `adopt` ran at startup; this returns that same answer rather than probing
-    // again, so the panel shows the PATH the servers were actually started with.
-    let outcome = taurus_tools::login_path::adopt();
+    // The answer already in force — startup's, or Reconnect's since — rather
+    // than probing again, so the panel shows the PATH the servers were
+    // actually started with.
+    let outcome = taurus_tools::login_path::latest();
     Ok(McpEnvironment {
         path: taurus_tools::login_path::entries()
             .iter()
@@ -282,8 +283,18 @@ pub async fn mcp_catalog() -> CmdResult<taurus_mcp::Catalog> {
 /// broader than the reload every other command here ends with: this is
 /// **Reconnect**, which is pressed for a server that has hung or is misbehaving
 /// while its entry says exactly what it said before, so nothing is kept.
+///
+/// It reads the login shell's PATH again first, because the commonest reason to
+/// press it is a server installed in a terminal since Taurus started. The new
+/// PATH reaches every program started afterwards, not only MCP servers. See
+/// `taurus_tools::login_path::rescan`.
 #[tauri::command]
 pub async fn reload_mcp(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<McpServerView>> {
+    off_runtime(|| {
+        taurus_tools::login_path::rescan();
+        Ok(())
+    })
+    .await?;
     after_mcp_change(&state, Restart::All).await
 }
 

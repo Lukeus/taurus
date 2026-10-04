@@ -433,9 +433,14 @@ Finder inherits the launcher's environment. On macOS that PATH is
 `~/.local/bin`. `npx` and `uvx` live in exactly those places, so a correct
 entry for an installed program fails with "command not found".
 
-Taurus asks your login shell for its PATH once at startup and merges what it
+Taurus asks your login shell for its PATH at startup and merges what it
 finds, which fixes this for most setups. It uses `-l -i`, because nvm and pyenv
 install themselves into `.zshrc`, not `.zprofile`.
+
+Installed something since? Press **Reconnect**. It asks your shell again
+before restarting the servers. The new PATH reaches every program Taurus
+starts from then on, not only MCP servers: `run_command`, skill scripts,
+hooks, git, and a new terminal tab. It only ever adds directories.
 
 The panel's **Program search path** section shows the result:
 

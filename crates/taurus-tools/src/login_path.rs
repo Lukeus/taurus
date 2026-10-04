@@ -32,9 +32,17 @@
 //! the very entries this exists to find, so `-i` is asked for too, and the
 //! output is fenced with markers because an interactive shell also prints
 //! whatever the user's profile prints.
+//!
+//! # Asking again
+//!
+//! A program installed after launch (`npm i -g` in a terminal beside the app)
+//! isn't on the PATH read at startup. [`rescan`] asks the shell again. It can't
+//! write the answer into the process environment the way startup does, because
+//! other threads are running by then, so it goes to
+//! [`taurus_process::path`], which every place Taurus starts a program reads.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 /// Set to any non-empty value to skip the probe entirely.
@@ -57,6 +65,9 @@ const END: &str = "__TAURUS_PATH_END__";
 
 /// What the probe found, once it has run.
 static RESOLVED: OnceLock<Outcome> = OnceLock::new();
+
+/// What the last [`rescan`] found, once one has run.
+static RESCANNED: RwLock<Option<Outcome>> = RwLock::new(None);
 
 /// What asking the shell came to.
 ///
@@ -86,19 +97,83 @@ pub fn adopt() -> &'static Outcome {
     RESOLVED.get_or_init(resolve)
 }
 
+/// Asks the login shell for its PATH again, and gives it to every program
+/// started from now on.
+///
+/// Only ever adds: the shell's directories come first, in its order, and
+/// nothing already searched is dropped. Blocks for as long as the shell takes,
+/// up to [`TIMEOUT`], so call it off the async runtime.
+pub fn rescan() -> Outcome {
+    // Read, never run: running startup's probe here would write the process
+    // environment with other threads alive, which is what this exists to avoid.
+    let startup_added = RESOLVED.get().map(|o| o.added.clone()).unwrap_or_default();
+    let before = current();
+    let outcome = match skip_reason().map_or_else(ask_shell, Err) {
+        Err(reason) => Outcome {
+            path: before,
+            added: startup_added,
+            skipped: Some(reason),
+        },
+        Ok(from_shell) => {
+            let (path, new) = merge(&from_shell, &before);
+            if !new.is_empty() {
+                tracing::info!(added = ?new, "login shell PATH read again");
+            }
+            taurus_process::path::set(&path);
+            // Everything the shell has contributed since launch, not only this
+            // time, which is what the panel's "added" has always meant.
+            let mut added = startup_added;
+            for dir in new {
+                if !added.contains(&dir) {
+                    added.push(dir);
+                }
+            }
+            Outcome {
+                path,
+                added,
+                skipped: None,
+            }
+        }
+    };
+    if let Ok(mut last) = RESCANNED.write() {
+        *last = Some(outcome.clone());
+    }
+    outcome
+}
+
+/// Gives a command the PATH read again, when there is one. See
+/// [`taurus_process::path::apply`].
+pub use taurus_process::path::apply;
+
+/// The PATH read again, for a child built some other way (a pty's
+/// `CommandBuilder`). `None` until a [`rescan`] has run.
+pub fn replaced() -> Option<std::ffi::OsString> {
+    taurus_process::path::replaced()
+}
+
+/// The latest answer: the last [`rescan`], else the startup one.
+pub fn latest() -> Outcome {
+    RESCANNED
+        .read()
+        .ok()
+        .and_then(|last| last.clone())
+        .unwrap_or_else(|| adopt().clone())
+}
+
 /// The PATH in force, whether or not [`adopt`] has run.
 ///
 /// What a diagnostic should print: the question being answered is "where did
-/// Taurus look", and that is this process's PATH regardless of how it got there.
+/// Taurus look", and that is the PATH a child gets regardless of how it got
+/// there — the one read again, when there is one.
 pub fn current() -> String {
-    std::env::var("PATH").unwrap_or_default()
+    taurus_process::path::current()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Every directory on the current PATH, for a panel that lists them.
 pub fn entries() -> Vec<PathBuf> {
-    std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default()
+    std::env::split_paths(&taurus_process::path::current()).collect()
 }
 
 /// Whether `program` can be found on the PATH in force, and where.
@@ -428,6 +503,47 @@ mod tests {
         if cfg!(unix) {
             assert_eq!(which("/bin/sh"), Some(PathBuf::from("/bin/sh")));
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn asking_again_adds_what_was_installed_since_and_reaches_children() {
+        // A stand-in for the user's shell that knows one directory more than
+        // this process does — the state after `npm i -g` in a terminal. A
+        // stand-in rather than the real one, so the developer's profile isn't
+        // what's being tested.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let shell = dir.path().join("fake-shell");
+        std::fs::write(
+            &shell,
+            format!("#!/bin/sh\nprintf '{BEGIN}%s{END}' \"/installed/later:$PATH\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let before = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", &shell);
+        let outcome = rescan();
+        match before {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
+
+        assert_eq!(outcome.skipped, None);
+        assert!(
+            outcome.added.contains(&"/installed/later".to_string()),
+            "{outcome:?}"
+        );
+        assert!(
+            entries().contains(&PathBuf::from("/installed/later")),
+            "what children get"
+        );
+        assert_eq!(latest(), outcome, "what the panel shows");
+        assert!(
+            !std::env::var("PATH").unwrap().contains("/installed/later"),
+            "the process environment is never written after startup"
+        );
     }
 
     #[test]

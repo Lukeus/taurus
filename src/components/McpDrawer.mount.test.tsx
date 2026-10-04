@@ -274,3 +274,30 @@ describe("what a server costs", () => {
     expect(host.textContent).toContain("~0 tokens of every request");
   });
 });
+
+describe("Reconnect", () => {
+  it("reads the PATH again, and the search path shows what it found", async () => {
+    // `npm i -g` in a terminal after launch: the program is there, and only a
+    // fresh read of the login shell's PATH can see it.
+    const { host, unmount } = await mount([]);
+    const grown = {
+      path: ["/Users/me/.npm-global/bin", "/opt/homebrew/bin", "/usr/bin"],
+      added: ["/opt/homebrew/bin", "/Users/me/.npm-global/bin"],
+    };
+    invoke.mockImplementation((command: string) => {
+      if (command === "reload_mcp") return Promise.resolve([]);
+      if (command === "mcp_environment") return Promise.resolve(grown);
+      return Promise.resolve(null);
+    });
+
+    const reconnect = [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "Reconnect",
+    )!;
+    await act(async () => reconnect.click());
+
+    expect(invoke.mock.calls.map(([name]) => name)).toContain("reload_mcp");
+    expect(host.innerHTML).toContain("3 directories");
+    expect(host.innerHTML).toContain("added 2 directories");
+    unmount();
+  });
+});

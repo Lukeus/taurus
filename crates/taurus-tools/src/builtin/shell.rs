@@ -384,7 +384,7 @@ pub(super) fn timed_out(after: Duration, pty: bool, printed: &str) -> String {
 /// the program somebody wanted stopped.
 fn piped(program: String, args: Vec<String>, cwd: &std::path::Path, stdin: bool) -> Command {
     let mut command = Command::new(program);
-    command
+    crate::login_path::apply(&mut command)
         .args(args)
         .current_dir(cwd)
         .stdin(if stdin { Stdio::piped() } else { Stdio::null() })

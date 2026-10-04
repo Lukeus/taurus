@@ -559,12 +559,23 @@ the backlog, and they're the minority.
   catalog never reads it again. A registry search would fix the staleness
   and bring back the unreviewed-package problem. If one is added, it'll be
   marked as such and land in the manual form, not the guided one.
-- **A PATH read from your login shell is a snapshot, not a subscription.**
-  Taurus asks the shell once at startup, because a window launched from the
-  Dock inherits the launcher's PATH, not yours. A server installed after that
-  (`npm i -g` in a terminal beside the app) is invisible until you restart
-  Taurus, or until the entry names the program by its full path. The MCP
-  panel shows which directories it's searching, so you don't have to guess.
+- **A PATH read again only reaches programs started afterwards.** Taurus asks
+  your login shell for its PATH at startup, because a window launched from
+  the Dock inherits the launcher's PATH, not yours. **Reconnect** in the MCP
+  panel asks again, so a server installed since (`npm i -g` in a terminal
+  beside the app) is found without a restart.
+
+  Anything already running keeps the PATH it started with: a shell open in a
+  terminal tab, a background command, a connected server Reconnect didn't
+  restart. And it only ever adds. A directory you removed from your profile
+  stays searched until you restart Taurus. Dropping it would take a program
+  away from something that found it a minute ago.
+
+  It's held by Taurus and handed to each program it starts, not written into
+  its own environment. Changing a process's environment while other threads
+  are reading it is a data race on unix, so that's done exactly once, before
+  anything else starts. The MCP panel shows which directories it's searching,
+  so you don't have to guess.
 - **An agent's tools narrow what it's offered, not what it may do.** Every
   call a child makes goes through the same permission engine as the parent's,
   so `tools:` is a scope, not a sandbox. A per-agent permission policy would
