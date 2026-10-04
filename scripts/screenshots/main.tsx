@@ -12,6 +12,9 @@
  * pulled in dynamically at the bottom rather than with a top-level import that
  * would hoist above the assignment.
  */
+// First, so it is listening before anything can be refused.
+import "./csp";
+
 import { createRoot } from "react-dom/client";
 
 import { APPLE } from "../../src/lib/keys";
@@ -63,14 +66,12 @@ const theme = new URLSearchParams(location.search).get("theme") ?? "dark";
 /**
  * Polls until something is there, or gives up rather than hanging.
  *
- * On a timer rather than on `requestAnimationFrame`, which is the obvious
- * choice and the wrong one here: Chrome runs these shots under
- * `--virtual-time-budget`, and a frame loop that reschedules itself every
- * frame spends the whole budget without ever letting the fetch it is waiting
- * on land. A timer is fast-forwarded instead, so the wait costs nothing and
- * the work in between actually happens.
+ * Generous, because it runs in real time against a production build, where
+ * the first click into a lazily loaded pane waits on that chunk being fetched
+ * and compiled. Giving up throws, so the scene never says it is finished and
+ * `capture.mjs` names it instead of photographing the moment before.
  */
-function until<T>(look: () => T | null | undefined, tries = 200): Promise<T> {
+function until<T>(look: () => T | null | undefined, tries = 500): Promise<T> {
   return new Promise((resolve, reject) => {
     const tick = (left: number) => {
       const found = look();
@@ -80,6 +81,50 @@ function until<T>(look: () => T | null | undefined, tries = 200): Promise<T> {
     };
     tick(tries);
   });
+}
+
+/**
+ * Waits for the page to stop changing.
+ *
+ * A shot that ends on a click — a drawer, a pane, a tab — is done with its
+ * target before what it opened has drawn, when that is a lazily loaded chunk.
+ * Rather than a wait in every scene for whatever each one opens, this waits
+ * until nothing in the document has changed for a few polls in a row. Capped,
+ * so a picture with a loop in it — the waveform in `motion` — is still taken.
+ */
+async function settled(quiet = 6, cap = 150): Promise<void> {
+  let changes = 0;
+  const watch = new MutationObserver((records) => {
+    changes += records.length;
+  });
+  watch.observe(document.body, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    characterData: true,
+  });
+  let still = 0;
+  for (let i = 0; i < cap && still < quiet; i++) {
+    const before = changes;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    still = changes === before ? still + 1 : 0;
+  }
+  watch.disconnect();
+  // And the fonts, so no picture is of the fallback face mid-swap.
+  await document.fonts.ready;
+  // And every animation that ends, which changes pixels without changing the
+  // DOM: the canvas's selected lines fade over 1.8s, and a picture taken part
+  // way through differed from the next run's across the whole selection. One
+  // that never ends — the waveform in `motion` — is left running, and the
+  // wait is capped in case something restarts itself.
+  const ending = document.getAnimations().filter((animation) => {
+    const end = animation.effect?.getComputedTiming().endTime;
+    return animation.playState === "running" && typeof end === "number" && Number.isFinite(end);
+  });
+  await Promise.race([
+    Promise.all(ending.map((animation) => animation.finished.catch(() => undefined))),
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ]);
 }
 
 /** Waits for a button matching `text` to exist, and hands back its click. */
@@ -280,9 +325,8 @@ await import("../../src/styles.css");
 
 createRoot(document.getElementById("root")!).render(<App />);
 
-// Chrome's screenshot fires on a timer, not on a signal from the page, so the
-// marker is what tells `capture.mjs` the app has finished its startup round
-// trips. Without it a slow first paint silently produces an empty window.
+// The marker is what tells `capture.mjs` the scene is finished and the picture
+// can be taken. Without it a slow first paint would produce an empty window.
 requestAnimationFrame(() => {
   setTimeout(() => {
     // The transcript pins itself to the bottom as entries arrive, so framing
@@ -379,8 +423,7 @@ requestAnimationFrame(() => {
       // Pressed rather than seeded, like the MCP drawer below: which pane is
       // showing is local state in `App`, and the picture is more honest for
       // being of a tab somebody clicked. The profile it then fetches is
-      // answered from the stub above, well inside Chrome's virtual-time
-      // budget.
+      // answered from the stub above.
       // Settings, on the tab a theme is picked from. Pressed rather than
       // seeded, like the drawers below: which tab is showing is local state in
       // `Settings`, and the picture is more honest for being of one somebody
@@ -403,11 +446,12 @@ requestAnimationFrame(() => {
         });
         (folds[1] as HTMLButtonElement).click();
       },
-      data: () => {
-        const tab = [...document.querySelectorAll(".pane-switch .seg")].find(
-          (button) => button.textContent?.startsWith("Data"),
-        );
-        (tab as HTMLButtonElement | undefined)?.click();
+      // Gated on the profile's rows, not on the click. The pane is a lazily
+      // loaded chunk, and while it loads nothing on the page changes — so
+      // waiting only for the page to go quiet photographed an empty pane.
+      data: async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Data")))();
+        await until(() => document.querySelector(".profile-row:not(.head)"));
       },
       // Three clicks, so the picture is of a run somebody actually asked for
       // rather than of a report seeded into place. Each one has to wait for
@@ -468,9 +512,7 @@ requestAnimationFrame(() => {
         (await click(".notes-row b", (b) => b === "Auth redesign"))();
         // Gated on the editor before the mode is switched. The note arrives a
         // round trip after the row is pressed, and pressing Read while it is
-        // still in flight leaves both waits spinning out the virtual-time budget
-        // between them — which photographs as an empty pane rather than as a
-        // failure.
+        // still in flight reads the wrong note, or none.
         await until(() => document.querySelector(".prose-input"));
         (await click(".notes-modes .seg", (b) => b === "Read"))();
         await until(() => document.querySelector("svg.flow"));
@@ -553,14 +595,13 @@ requestAnimationFrame(() => {
         );
         await until(() => document.querySelector(".notes-preview svg.flow"));
       },
-      // A sketch with the list folded away, taken 1440 wide — see its entry in
+      // A sketch with the list folded away, taken 1200 wide — see its entry in
       // `capture.mjs`. Excalidraw picks its compact layout, the one without zoom
       // controls, from its own box: under 730 wide, or under 500 tall and under
-      // 1000 wide. Beside the list at this size the canvas is the second, and
-      // folded it is past 1000. So the scene waits for the compact layout
-      // first and for it to go after the fold — which makes it the check that
-      // folding is what did it, rather than a picture of a window that was
-      // never compact.
+      // 1000 wide. Beside the list at this size the canvas is 680 wide, and
+      // folded it is 896. So the scene waits for the compact layout first and
+      // for it to go after the fold — which makes it the check that folding is
+      // what did it, rather than a picture of a window that was never compact.
       "sketch-wide": async () => {
         (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
         (await click(".notes-row b", (b) => b === "Auth flow"))();
@@ -569,6 +610,15 @@ requestAnimationFrame(() => {
         await until(
           () => document.querySelector(".excalidraw") && !document.querySelector(".excalidraw--mobile"),
         );
+        // Excalidraw centered the drawing for the compact canvas and doesn't
+        // again when the box grows, so the right of it is cut off. Shift+1 is
+        // its own zoom-to-fit.
+        // Sent to its own box, which is where it listens for keys.
+        document
+          .querySelector(".excalidraw")!
+          .dispatchEvent(
+            new KeyboardEvent("keydown", { key: "!", code: "Digit1", shiftKey: true, bubbles: true }),
+          );
       },
       // The Changes panel, beside the conversation it is about — which is the
       // whole of what moved, so the shot has to hold both. Opened by pressing
@@ -631,10 +681,8 @@ requestAnimationFrame(() => {
       // picture: open, a section looks like the plain list it replaced.
       //
       // The tooltip that landed alongside it is deliberately not here. It opens
-      // on hover or focus, and neither survives `--virtual-time-budget` — the
-      // tip is in the document on every run of this and at `opacity: 0` in
-      // every image, because the clock the animation reads does not advance
-      // with the one the timers do. It is checked against a real browser
+      // on hover or focus, which no scene does, and a picture of a hover is a
+      // picture of one moment of it. It is checked against a real browser
       // instead; `Tooltip.tsx` says what that check covers.
       rail: async () => {
         (await click(".rail-group", (b) => b.includes("Earlier")))();
@@ -699,11 +747,11 @@ requestAnimationFrame(() => {
             : null,
         );
       },
-      mcp: () => {
-        const link = [...document.querySelectorAll(".rail-link")].find(
-          (button) => button.textContent?.startsWith("MCP"),
-        );
-        (link as HTMLButtonElement | undefined)?.click();
+      // Gated on the server list for the same reason as `data`: the drawer is
+      // a lazily loaded chunk.
+      mcp: async () => {
+        (await click(".rail-link", (b) => b.startsWith("MCP")))();
+        await until(() => document.querySelector(".drawer .card"));
       },
     }[shot];
     // A frame for React to paint the seeded entries before anything is
@@ -711,9 +759,11 @@ requestAnimationFrame(() => {
     // on the target rather than racing it — a shot that clicks through two
     // fetches would otherwise be photographed on the first one.
     requestAnimationFrame(() => {
-      void Promise.resolve(target?.()).then(() => {
-        document.body.dataset.ready = "true";
-      });
+      void Promise.resolve(target?.())
+        .then(() => settled())
+        .then(() => {
+          document.body.dataset.ready = "true";
+        });
     });
   }, 400);
 });
