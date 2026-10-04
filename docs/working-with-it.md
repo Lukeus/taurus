@@ -101,9 +101,9 @@ conversation and survives being copied out. You can rename mid-turn, since
 that touches nothing the turn is writing.
 
 Closing the window still ends everything. A turn lives in the app's process,
-so quitting costs the round in flight — the conversation survives, complete to
-the end of the last recorded round, because the transcript is written as the
-turn goes.
+so quitting stops it where it is. The conversation survives, because the
+transcript is written as the turn goes, and reopening it offers to continue.
+See [Picking up a turn Taurus stopped in](#picking-up-a-turn-taurus-stopped-in).
 
 Transcripts live in `~/.taurus/sessions/<workspace>/<id>.jsonl`, in the
 global config home, not the project. They hold file contents, command output,
@@ -550,6 +550,32 @@ It's a resend, not a resume: the harness can't pick a turn up partway. If the
 first attempt wrote files before it broke, both turns are in the checkpoint
 log and either can be rewound. Merging them would give you a rewind that
 undid twice what its label said.
+
+### Picking up a turn Taurus stopped in
+
+A turn that was running when Taurus quit, crashed, or the machine slept is
+recorded as started and never finished. Reopening the conversation says so
+above the composer: "This turn stopped when Taurus did," and how many calls
+were running. Those calls show as failed, with "outcome unknown", because
+nothing reported what they did.
+
+**Continue** starts a new turn that says "Your previous run was interrupted.
+Continue from where you left off." Nothing is replayed. The model reads the
+history, including a note on each unknown call saying what to check (the path
+a file tool named, the command a shell call ran), and decides what's left.
+
+It's always a click. A conversation reopened days later is one to read before
+anything runs in it again, so continuing never happens on its own.
+
+One request gets three turns in all: the one that was interrupted and two
+continuations. They're counted from the transcript, so restarting Taurus
+doesn't reset them. After that the strip stays but the button goes, and a
+message you type picks it up instead. A typed message is a new request, and it
+carries the unknown outcomes with it just as Continue does.
+
+The CLI does the same: resuming an interrupted conversation says so, and
+`/continue` picks it up. A CLI turn is now written down as it runs, round by
+round, instead of all at once when it ends.
 
 ## When a turn stops
 

@@ -20,6 +20,7 @@ import type { Background } from "../bindings/Background";
 import type { BackgroundJob } from "../bindings/BackgroundJob";
 import type { DelegateDisposition } from "../bindings/DelegateDisposition";
 import type { DelegateReport } from "../bindings/DelegateReport";
+import type { InterruptedTurn } from "../bindings/InterruptedTurn";
 import type { JobOutput } from "../bindings/JobOutput";
 import type { ChangedFiles } from "../bindings/ChangedFiles";
 import type { Checkpoint } from "../bindings/Checkpoint";
@@ -160,6 +161,7 @@ export type {
   ChangedFiles,
   DelegateDisposition,
   DelegateReport,
+  InterruptedTurn,
   Checkpoint,
   CommandKind,
   CommandSummary,
@@ -363,6 +365,12 @@ export function sendMessage(
    * what it costs a conversation reopened later.
    */
   onScreen: OnScreen | null = null,
+  /**
+   * Continue the turn this conversation was interrupted in, instead of
+   * sending `text`. Refused by the backend when there's nothing to continue
+   * or the request is out of turns.
+   */
+  continueInterrupted = false,
 ): Promise<void> {
   const channel = new Channel<UiEvent>();
   channel.onmessage = onEvent;
@@ -371,6 +379,7 @@ export function sendMessage(
     text,
     images,
     onScreen,
+    continueInterrupted,
     onEvent: channel,
   });
 }
@@ -1025,8 +1034,12 @@ export const turnChanges = (sessionId: string, turn: number) =>
  * conversation is a review in the context window of every request after it,
  * which is the cost the whole design exists to avoid. See `taurus_host::review`.
  */
-export const reviewTurn = (sessionId: string, turn: number) =>
-  invoke<ReviewReport>("review_turn", { sessionId, turn });
+/**
+ * Reviews one turn. Returns the review already made of the same diff, claims
+ * and model unless `again` is set; that one comes back marked `cached`.
+ */
+export const reviewTurn = (sessionId: string, turn: number, again = false) =>
+  invoke<ReviewReport>("review_turn", { sessionId, turn, again });
 
 /** Ends a review `reviewTurn` is still waiting on. Safe when none is. */
 export const stopReview = (sessionId: string, turn: number) =>

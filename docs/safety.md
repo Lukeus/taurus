@@ -781,6 +781,16 @@ same definition, and its context carries no checkpoint recorder. So a write
 isn't something it declines to do. It has no way to perform one. It also
 doesn't run anything: no build, no tests.
 
+It does get what the turn *said*. That's the message the turn ended on, plus
+the recorded results of every command it ran and every delegate it sent: the
+command, whether it failed, and the last lines of its output. These are
+claims, not context. The reviewer is told to check each one against the diff,
+the files, and those results, then list it as supported, contradicted, or
+can't tell. "The tests pass" beside a recorded test run that failed shows up
+as contradicted, and a diff alone could never show that. A turn recorded
+before turns were linked to their transcripts is reviewed on its diff alone,
+as every turn used to be.
+
 On a local model a review takes minutes, so **Stop reviewing** sits beside it
 while it runs. Closing the drawer ends it too, since nobody's left to read the
 answer. A stopped review reports nothing, not half of what it found.
@@ -802,8 +812,14 @@ be no point running it. Any file it wasn't shown (binary, or dropped to fit) is
 named under the report. A review that covered four of a turn's six files and
 didn't say so would read as a clean bill of health for all six.
 
+Asking again about the same diff, claims, and model doesn't ask again. It
+returns the review already made, says when it was made, and offers **Review
+again** for when you want a second opinion anyway. Reviews are kept beside
+the conversation's transcript, not in the project.
+
 The terminal does the same thing: `taurus review` lists what there is, and
-`taurus review --turn 3` reads one back. `--model` runs it on a model other
+`taurus review --turn 3` reads one back, or shows the one already made
+(`--again` asks anew). `--model` runs it on a model other
 than the conversation's own. That's how you say "check that with the big one"
 without moving the conversation onto it.
 

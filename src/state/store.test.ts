@@ -11,6 +11,7 @@ import {
   batchEvents,
   closeOpen,
   datasetName,
+  CONTINUE_PROMPT,
   entriesFromMessages,
   foldEvents,
   mergeChanged,
@@ -1104,6 +1105,16 @@ describe("redrawing a flow diagram from a saved call", () => {
   it("refuses a payload with no stages", () => {
     expect(call({ title: "Nothing", stages: [], edges: [] })).toBeUndefined();
     expect(call({ title: "Nothing", edges: [] })).toBeUndefined();
+  });
+});
+
+describe("a continuation, reopened", () => {
+  it("reads as a notice, not something the user said", () => {
+    const entries = entriesFromMessages([
+      { role: "user", content: [{ type: "text", text: CONTINUE_PROMPT }] },
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "notice" });
   });
 });
 

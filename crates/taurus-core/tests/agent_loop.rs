@@ -81,12 +81,25 @@ fn recording(h: Harness, recorder: Arc<dyn TurnRecorder>) -> Harness {
 #[derive(Default)]
 struct Spy {
     snapshots: tokio::sync::Mutex<Vec<usize>>,
+    /// `start <continues>` and `end <outcome>`, in order.
+    boundaries: tokio::sync::Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
 impl TurnRecorder for Spy {
     async fn record(&self, session: &Session) {
         self.snapshots.lock().await.push(session.messages.len());
+    }
+
+    async fn turn_started(&self, _id: &str, continues: bool) {
+        self.boundaries
+            .lock()
+            .await
+            .push(format!("start {continues}"));
+    }
+
+    async fn turn_ended(&self, _id: &str, outcome: &str) {
+        self.boundaries.lock().await.push(format!("end {outcome}"));
     }
 }
 
@@ -2579,19 +2592,98 @@ async fn a_recorded_turn_is_written_down_as_it_runs() {
     assert_eq!(outcome.unwrap().iterations, 2);
 
     let snapshots = spy.snapshots.lock().await.clone();
-    // Three times: the question before the model is asked it, the first round's
-    // results as they land, and the finished turn. Each one is a point a crash
-    // could happen at and still leave something worth having — and the first is
-    // what makes a conversation listable, with its title, while it is being
-    // answered rather than only once it has been.
-    assert_eq!(snapshots.len(), 3, "{snapshots:?}");
+    // Four times: the question before the model is asked it, the first round's
+    // calls before they run, their results as they land, and the finished
+    // turn. Each one is a point a crash could happen at and still leave
+    // something worth having — the first is what makes a conversation
+    // listable, with its title, while it is being answered, and the second is
+    // what lets a reopened conversation say which calls were running.
+    assert_eq!(snapshots, [1, 2, 3, 4]);
     assert_eq!(
-        snapshots[0], 1,
-        "the question is written down before the request that answers it"
+        snapshots[1], 2,
+        "the calls are written down before they run, not with their results"
     );
-    assert!(snapshots[0] < snapshots[1], "{snapshots:?}");
-    assert!(snapshots[1] < snapshots[2], "{snapshots:?}");
-    assert_eq!(snapshots[2], session.messages.len());
+    assert_eq!(snapshots[3], session.messages.len());
+    assert_eq!(
+        *spy.boundaries.lock().await,
+        ["start false", "end finished"],
+        "a turn says where it starts and that it ended"
+    );
+}
+
+#[tokio::test]
+async fn owed_results_ride_in_front_of_the_next_message() {
+    // A transcript the process died in: calls with no results. Sending it as
+    // it stands is a request every provider rejects.
+    let h = harness(vec![ScriptedTurn::text("Picking up.")]);
+    let mut session = Session::new("fake");
+    session.push(Message::user("write it"));
+    let calls = Message::new(
+        Role::Assistant,
+        vec![ContentBlock::ToolUse {
+            id: "w1".into(),
+            name: "write_file".into(),
+            input: serde_json::json!({ "path": "src/a.rs", "content": "x" }),
+            signature: None,
+        }],
+    );
+    session.owed = taurus_core::owed_results(&calls);
+    session.push(calls);
+    session.interrupted = Some(taurus_core::Interrupted {
+        attempts: 1,
+        unanswered: 1,
+    });
+
+    let (tx, _rx) = mpsc::channel(256);
+    h.agent.continue_turn(&mut session, tx).await.unwrap();
+
+    let next = &session.messages[2];
+    assert_eq!(next.role, Role::User);
+    match &next.content[0] {
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => {
+            assert_eq!(tool_use_id, "w1");
+            assert!(*is_error, "nothing reported success");
+            let text = content.to_text();
+            assert!(text.starts_with("Outcome unknown"), "{text}");
+            assert!(
+                text.contains("`src/a.rs`"),
+                "it names what to check: {text}"
+            );
+        }
+        other => panic!("the owed result must come first, straight after the call: {other:?}"),
+    }
+    assert_eq!(next.text(), taurus_core::CONTINUE_PROMPT);
+    assert!(session.owed.is_empty() && session.interrupted.is_none());
+}
+
+#[tokio::test]
+async fn a_request_is_continued_at_most_three_turns_in_all() {
+    let h = harness(vec![]);
+    let mut session = Session::new("fake");
+    session.push(Message::user("do it"));
+
+    let (tx, _rx) = mpsc::channel(256);
+    let nothing = h.agent.continue_turn(&mut session, tx).await;
+    assert!(
+        matches!(&nothing, Err(AgentError::Refused(m)) if m.contains("no interrupted turn")),
+        "{nothing:?}"
+    );
+
+    session.interrupted = Some(taurus_core::Interrupted {
+        attempts: taurus_core::MAX_ATTEMPTS,
+        unanswered: 0,
+    });
+    let (tx, _rx) = mpsc::channel(256);
+    let spent = h.agent.continue_turn(&mut session, tx).await;
+    assert!(
+        matches!(&spent, Err(AgentError::Refused(m)) if m.contains("Send a message")),
+        "{spent:?}"
+    );
+    assert_eq!(session.messages.len(), 1, "a refusal adds nothing");
 }
 
 #[tokio::test]

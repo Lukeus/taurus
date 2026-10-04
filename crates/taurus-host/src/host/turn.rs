@@ -227,28 +227,49 @@ impl Host {
         model: &str,
         session_id: &str,
         turn: u32,
+        // Run it even if the same question has been answered. See
+        // `crate::review::stored`.
+        again: bool,
         cancel: CancellationToken,
     ) -> Result<crate::review::ReviewReport, String> {
         let workspace = self.workspace().await;
-        let changes = self
-            .checkpoints_for(&workspace)
-            .changes(session_id, &workspace, turn)?;
+        let checkpoints = self.checkpoints_for(&workspace);
+        let changes = checkpoints.changes(session_id, &workspace, turn)?;
+
+        // What the turn said about itself, found through the id its
+        // checkpoint shares with its transcript. Absent for a turn recorded
+        // before the two were linked, which is then reviewed on its diff
+        // alone, as every turn used to be.
+        let claims = checkpoints
+            .conversation_turn(session_id, turn)?
+            .and_then(|id| crate::sessions::turn_messages(session_id, &id))
+            .and_then(|messages| crate::review::Claims::from_turn(&messages));
+        let prepared = crate::review::prepare(changes, claims.as_ref(), turn, model)?;
+
+        if !again {
+            if let Some(kept) = crate::review::stored(&workspace, session_id, &prepared.fingerprint)
+            {
+                return Ok(kept);
+            }
+        }
 
         // The shared registry, which is the one a delegate gets: it holds no
         // `ask_user`, no chart tools, and no plan board, because those address
         // the person watching a conversation and a review is not one.
         let registry = self.registry.read().await.clone();
 
-        crate::review::review(
+        let report = crate::review::run(
             provider,
             model,
             registry,
             self.review_context(cancel.clone()).await,
-            changes,
+            prepared,
             turn,
             cancel,
         )
-        .await
+        .await?;
+        crate::review::store(&workspace, session_id, &report);
+        Ok(report)
     }
 
     /// The context a review's tools run in.

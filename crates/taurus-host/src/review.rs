@@ -34,6 +34,19 @@
 //! the context that wrote the code, which is the thing there was no point
 //! running.
 //!
+//! It does get what the turn *claimed*: the message it ended on, and what its
+//! commands and delegates actually returned, as recorded. Those are claims to
+//! check, not context to reason from. "The tests pass" beside a recorded test
+//! run that failed is the review's most useful finding, and it can't be made
+//! from the diff alone. See [`Claims`].
+//!
+//! # Asking twice
+//!
+//! A review is fingerprinted by everything it would be sent, and kept. Asking
+//! again about the same diff, claims, and model returns the review already
+//! made instead of paying for a second model call, and says when it was made.
+//! Asking again on purpose runs it again.
+//!
 //! # Where the answer goes
 //!
 //! Back to the caller, and from there onto the drawer beside the diff — not
@@ -41,6 +54,8 @@
 //! window of every later request in that conversation, which is exactly the
 //! cost this design exists to avoid paying.
 
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -53,7 +68,7 @@ use taurus_core::agent::{Agent, AgentConfig};
 use taurus_core::event::UiEvent;
 use taurus_core::subagent::SPAWN_TOOL;
 use taurus_core::Session;
-use taurus_provider::{Message, Provider};
+use taurus_provider::{ContentBlock, Message, Provider};
 use taurus_tools::checkpoint::TurnChange;
 use taurus_tools::diff::{DiffLineKind, FileDiff};
 use taurus_tools::{ToolContext, ToolRegistry};
@@ -90,6 +105,121 @@ pub struct ReviewReport {
     /// turn's six files and did not say so is worse than no review, because it
     /// reads as a clean bill of health for all six.
     pub omitted: Vec<String>,
+    /// Whether it was shown what the turn claimed as well as its diff. `false`
+    /// for a turn from before turns were linked to their transcript.
+    #[serde(default)]
+    pub read_claims: bool,
+    /// Everything the review was sent, hashed. Two reviews with the same one
+    /// were asked the same question.
+    #[serde(default)]
+    pub fingerprint: String,
+    /// When it was made, in Unix seconds.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub at: u64,
+    /// Returned from an earlier request, not made just now.
+    #[serde(default)]
+    pub cached: bool,
+}
+
+/// Bumped when [`BRIEF`] or the shape of what a review is sent changes, so a
+/// review kept under the old brief isn't returned for the new one.
+const REVIEW_VERSION: u32 = 2;
+
+/// The most command results a review is shown: the last ones, which are the
+/// ones a turn's closing claims are about.
+const MAX_EVIDENCE: usize = 12;
+
+/// How much of one result's end is shown. A test runner's verdict is on its
+/// last lines.
+const EVIDENCE_TAIL_LINES: usize = 3;
+const EVIDENCE_LINE_CHARS: usize = 240;
+
+/// What a turn said about itself, and what it can be checked against.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Claims {
+    /// The message the turn ended on.
+    pub said: String,
+    /// What its commands and delegates returned, one line each, from the
+    /// recorded results rather than the turn's account of them.
+    pub evidence: Vec<String>,
+}
+
+impl Claims {
+    /// Reads a turn's claims out of its messages. `None` when it ended on
+    /// nothing said.
+    pub fn from_turn(messages: &[Message]) -> Option<Self> {
+        let said = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == taurus_provider::Role::Assistant && !m.text().trim().is_empty())
+            .map(|m| m.text().trim().to_string())?;
+
+        let calls: std::collections::HashMap<&str, (&str, &serde_json::Value)> = messages
+            .iter()
+            .flat_map(|m| m.tool_uses())
+            .map(|(id, name, input)| (id, (name, input)))
+            .collect();
+        let mut evidence = Vec::new();
+        for block in messages.iter().flat_map(|m| m.content.iter()) {
+            let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } = block
+            else {
+                continue;
+            };
+            let Some((name, input)) = calls.get(tool_use_id.as_str()) else {
+                continue;
+            };
+            let text = content.to_text();
+            let line = match *name {
+                "run_command" => format!(
+                    "`{}` {}: {}",
+                    input["command"].as_str().unwrap_or("?"),
+                    if *is_error { "failed" } else { "returned" },
+                    tail(&text)
+                ),
+                "check_command" => format!(
+                    "checked a background command, {}: {}",
+                    if *is_error { "failed" } else { "returned" },
+                    tail(&text)
+                ),
+                "spawn_subagent" => format!(
+                    "delegated to {}: {}",
+                    input["agent_type"].as_str().unwrap_or("?"),
+                    text.lines().next().unwrap_or("").trim()
+                ),
+                _ => continue,
+            };
+            evidence.push(line);
+        }
+        let skip = evidence.len().saturating_sub(MAX_EVIDENCE);
+        Some(Self {
+            said,
+            evidence: evidence.split_off(skip),
+        })
+    }
+}
+
+/// The last few non-empty lines of a result, on one line.
+fn tail(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(EVIDENCE_TAIL_LINES);
+    let joined = lines[start..].join(" ⏎ ");
+    if joined.is_empty() {
+        return "(no output)".into();
+    }
+    let mut cut: String = joined.chars().take(EVIDENCE_LINE_CHARS).collect();
+    if cut.len() < joined.len() {
+        cut.push('…');
+    }
+    cut
 }
 
 /// The brief the reviewer works from.
@@ -116,26 +246,34 @@ const BRIEF: &str = "You are reviewing a change you did not write, in a codebase
                      You cannot see why this was done. Where something looks wrong but would be \
                      reasonable under an intent you were not told, say that rather than \
                      asserting it is a defect. You also cannot run anything: do not claim a test \
-                     passes or fails.";
+                     passes or fails beyond what the recorded results below show.\n\n\
+                     When you are shown the message the turn ended on, treat everything it \
+                     says it did as a claim, not a fact: \"the tests pass\", \"fixed\", \"I \
+                     could not, because…\". Check each against the diff, the files, and the \
+                     command results recorded beside it, which are what actually ran rather \
+                     than the turn's account of it. After your findings, list each claim as \
+                     supported, contradicted, or can't tell, with the evidence for it. A claim \
+                     the recorded results contradict is the most important thing you can \
+                     report.";
 
-/// Runs one review, and returns what it found.
-///
-/// `provider` and `model` are the caller's, matching
-/// [`crate::Host::build_agent`]: the host does not decide what a session is on,
-/// and a review that quietly ran somewhere else would be a bill nobody
-/// authorised.
-#[allow(clippy::too_many_arguments)]
-pub async fn review(
-    provider: Arc<dyn Provider>,
-    model: &str,
-    registry: ToolRegistry,
-    // Carries the workspace the reviewer reads in, which is why one is not
-    // passed beside it: two sources for the same path is one that can be wrong.
-    context: ToolContext,
+/// Everything one review will be sent, ready to fingerprint before it's sent.
+pub struct Prepared {
+    message: String,
+    files: u32,
+    omitted: Vec<String>,
+    read_claims: bool,
+    /// See [`ReviewReport::fingerprint`].
+    pub fingerprint: String,
+}
+
+/// Renders what a review of `turn` would be sent. Refuses a turn with nothing
+/// a reviewer could be shown.
+pub fn prepare(
     changes: Vec<TurnChange>,
+    claims: Option<&Claims>,
     turn: u32,
-    cancel: CancellationToken,
-) -> Result<ReviewReport, String> {
+    model: &str,
+) -> Result<Prepared, String> {
     if changes.is_empty() {
         return Err(format!(
             "Turn {turn} changed no files, so there is nothing to review."
@@ -158,6 +296,90 @@ pub async fn review(
         ));
     }
 
+    let message = match claims {
+        None => diff,
+        Some(claims) => {
+            let mut text = format!(
+                "The turn ended with this message:\n\n<<<\n{}\n>>>\n\n",
+                claims.said
+            );
+            if claims.evidence.is_empty() {
+                text.push_str("It ran no commands and delegated nothing.\n\n");
+            } else {
+                text.push_str(
+                    "What its commands and delegates returned, as recorded (not as it \
+                     described them):\n",
+                );
+                for line in &claims.evidence {
+                    text.push_str(&format!("- {line}\n"));
+                }
+                text.push('\n');
+            }
+            text.push_str("Its diff:\n\n");
+            text.push_str(&diff);
+            text
+        }
+    };
+    let fingerprint = fingerprint_of(&[&REVIEW_VERSION.to_string(), BRIEF, model, &message]);
+    Ok(Prepared {
+        message,
+        files,
+        omitted,
+        read_claims: claims.is_some(),
+        fingerprint,
+    })
+}
+
+/// FNV-1a over the parts, each ended by a zero byte so no two splits of the
+/// same text hash alike. Stable across Rust releases, unlike `DefaultHasher`,
+/// which matters for something kept on disk. A collision costs a review
+/// returned for the wrong question once in 2^64, which is not worth a crypto
+/// hash's dependency.
+fn fingerprint_of(parts: &[&str]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for byte in part.as_bytes().iter().chain(std::iter::once(&0)) {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
+/// Runs one review of a turn's diff alone. See [`prepare`] and [`run`] for
+/// the two halves, which a caller that keeps reviews uses directly.
+#[allow(clippy::too_many_arguments)]
+pub async fn review(
+    provider: Arc<dyn Provider>,
+    model: &str,
+    registry: ToolRegistry,
+    // Carries the workspace the reviewer reads in, which is why one is not
+    // passed beside it: two sources for the same path is one that can be wrong.
+    context: ToolContext,
+    changes: Vec<TurnChange>,
+    turn: u32,
+    cancel: CancellationToken,
+) -> Result<ReviewReport, String> {
+    let prepared = prepare(changes, None, turn, model)?;
+    run(provider, model, registry, context, prepared, turn, cancel).await
+}
+
+/// Runs a prepared review, and returns what it found.
+///
+/// `provider` and `model` are the caller's, matching
+/// [`crate::Host::build_agent`]: the host does not decide what a session is on,
+/// and a review that quietly ran somewhere else would be a bill nobody
+/// authorised.
+#[allow(clippy::too_many_arguments)]
+pub async fn run(
+    provider: Arc<dyn Provider>,
+    model: &str,
+    registry: ToolRegistry,
+    context: ToolContext,
+    prepared: Prepared,
+    turn: u32,
+    cancel: CancellationToken,
+) -> Result<ReviewReport, String> {
     // The depth cap the delegate path relies on, applied here for the same
     // reason: a reviewer that could spawn is a reviewer that could spend a
     // conversation's budget on work nobody asked for.
@@ -213,7 +435,9 @@ pub async fn review(
     let (tx, mut rx) = mpsc::channel::<UiEvent>(256);
     let pump = tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
-    let outcome = agent.run_turn(&mut session, Message::user(diff), tx).await;
+    let outcome = agent
+        .run_turn(&mut session, Message::user(prepared.message), tx)
+        .await;
     let _ = pump.await;
 
     if cancel.is_cancelled() {
@@ -233,11 +457,77 @@ pub async fn review(
 
     Ok(ReviewReport {
         turn,
-        files,
+        files: prepared.files,
         model: model.to_string(),
         text,
-        omitted,
+        omitted: prepared.omitted,
+        read_claims: prepared.read_claims,
+        fingerprint: prepared.fingerprint,
+        at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default(),
+        cached: false,
     })
+}
+
+/// Where one conversation's reviews are kept: beside its transcript's
+/// directory, keyed the same way, one line per review.
+fn reviews_path(workspace: &Path, session_id: &str) -> Option<PathBuf> {
+    // The same rule every other per-session file keeps: an id that isn't a
+    // plain name is not turned into a path.
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some(
+        crate::config::home_dir()
+            .join("reviews")
+            .join(crate::sessions::workspace_key(workspace))
+            .join(format!("{session_id}.jsonl")),
+    )
+}
+
+/// The review already made with this fingerprint, if there is one. The most
+/// recent, when there are several.
+pub fn stored(workspace: &Path, session_id: &str, fingerprint: &str) -> Option<ReviewReport> {
+    let file = std::fs::File::open(reviews_path(workspace, session_id)?).ok()?;
+    BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<ReviewReport>(&line).ok())
+        .filter(|report| report.fingerprint == fingerprint)
+        .last()
+        .map(|report| ReviewReport {
+            cached: true,
+            ..report
+        })
+}
+
+/// Keeps a review. A failure is logged and otherwise ignored: losing the copy
+/// costs a second model call later, not the review in hand.
+pub fn store(workspace: &Path, session_id: &str, report: &ReviewReport) {
+    let Some(path) = reviews_path(workspace, session_id) else {
+        return;
+    };
+    let written = (|| {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut line = serde_json::to_vec(report)?;
+        line.push(b'\n');
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?
+            .write_all(&line)
+    })();
+    if let Err(e) = written {
+        tracing::warn!(path = %path.display(), error = %e, "could not keep a review");
+    }
 }
 
 /// The diff as the reviewer receives it.
@@ -464,5 +754,139 @@ mod tests {
         );
         deleted.deleted = true;
         assert!(one_file(&deleted).contains("(deleted)"));
+    }
+
+    fn turn_with_claims() -> Vec<Message> {
+        let call = |id: &str, name: &str, input: serde_json::Value| ContentBlock::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input,
+            signature: None,
+        };
+        let result = |id: &str, text: &str, is_error: bool| ContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: text.into(),
+            is_error,
+        };
+        vec![
+            Message::user("fix the parser and make sure the tests pass"),
+            Message::new(
+                taurus_provider::Role::Assistant,
+                vec![
+                    call("c1", "run_command", serde_json::json!({ "command": "cargo test" })),
+                    call(
+                        "c2",
+                        "spawn_subagent",
+                        serde_json::json!({ "agent_type": "explorer", "prompt": "…" }),
+                    ),
+                    call("c3", "read_file", serde_json::json!({ "path": "a.rs" })),
+                ],
+            ),
+            Message::new(
+                taurus_provider::Role::User,
+                vec![
+                    result(
+                        "c1",
+                        "running 3 tests\ntest a ... ok\ntest b ... FAILED\n\ntest result: FAILED. 2 passed; 1 failed",
+                        true,
+                    ),
+                    result("c2", "Status: done.\n\nThe parser is in src/parse.rs.", false),
+                    result("c3", "fn main() {}", false),
+                ],
+            ),
+            Message::assistant("Fixed the parser. All tests pass."),
+        ]
+    }
+
+    #[test]
+    fn claims_are_what_the_turn_said_and_evidence_is_what_it_ran() {
+        let claims = Claims::from_turn(&turn_with_claims()).unwrap();
+        assert_eq!(claims.said, "Fixed the parser. All tests pass.");
+        assert_eq!(
+            claims.evidence.len(),
+            2,
+            "reads aren't evidence: {:?}",
+            claims.evidence
+        );
+        assert!(
+            claims.evidence[0].starts_with("`cargo test` failed:")
+                && claims.evidence[0].contains("1 failed"),
+            "the verdict is on the last lines: {}",
+            claims.evidence[0]
+        );
+        assert_eq!(claims.evidence[1], "delegated to explorer: Status: done.");
+    }
+
+    #[test]
+    fn a_turn_that_said_nothing_has_no_claims() {
+        assert!(Claims::from_turn(&[Message::user("hi")]).is_none());
+    }
+
+    fn one_change() -> Vec<TurnChange> {
+        vec![TurnChange::Diff {
+            diff: diff(
+                "src/parse.rs",
+                vec![line(DiffLineKind::Added, "fn parse() {}", None, Some(1))],
+            ),
+        }]
+    }
+
+    #[test]
+    fn a_review_with_claims_is_shown_them_beside_the_diff() {
+        let claims = Claims::from_turn(&turn_with_claims()).unwrap();
+        let prepared = prepare(one_change(), Some(&claims), 1, "m").unwrap();
+        assert!(prepared.read_claims);
+        let sent = &prepared.message;
+        let said = sent.find("All tests pass.").unwrap();
+        let ran = sent.find("`cargo test` failed").unwrap();
+        let diff = sent.find("fn parse()").unwrap();
+        assert!(
+            said < ran && ran < diff,
+            "claims, then evidence, then the diff: {sent}"
+        );
+
+        let alone = prepare(one_change(), None, 1, "m").unwrap();
+        assert!(!alone.read_claims);
+        assert!(!alone.message.contains("The turn ended with"));
+    }
+
+    #[test]
+    fn the_fingerprint_changes_with_anything_the_review_is_sent() {
+        let claims = Claims::from_turn(&turn_with_claims()).unwrap();
+        let fp = |claims: Option<&Claims>, model: &str| {
+            prepare(one_change(), claims, 1, model).unwrap().fingerprint
+        };
+        assert_eq!(fp(Some(&claims), "m"), fp(Some(&claims), "m"), "stable");
+        assert_ne!(fp(Some(&claims), "m"), fp(None, "m"));
+        assert_ne!(fp(Some(&claims), "m"), fp(Some(&claims), "other"));
+        let mut said_otherwise = claims.clone();
+        said_otherwise.said.push_str(" Also refactored.");
+        assert_ne!(fp(Some(&claims), "m"), fp(Some(&said_otherwise), "m"));
+    }
+
+    #[test]
+    fn a_kept_review_comes_back_for_the_same_question_only() {
+        let _home = crate::testing::isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let report = ReviewReport {
+            turn: 1,
+            files: 1,
+            model: "m".into(),
+            text: "Looks right.".into(),
+            omitted: vec![],
+            read_claims: true,
+            fingerprint: "abc".into(),
+            at: 1_700_000_000,
+            cached: false,
+        };
+        assert!(stored(workspace, "s1", "abc").is_none());
+        store(workspace, "s1", &report);
+
+        let kept = stored(workspace, "s1", "abc").expect("kept");
+        assert!(kept.cached, "marked as the earlier answer");
+        assert_eq!(kept.text, "Looks right.");
+        assert!(stored(workspace, "s1", "different").is_none());
+        assert!(stored(workspace, "s2", "abc").is_none(), "per conversation");
+        assert!(stored(workspace, "../escape", "abc").is_none());
     }
 }

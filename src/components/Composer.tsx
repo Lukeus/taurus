@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Attachments } from "./Attachments";
 import { CommandMenu, commandQuery, matches } from "./CommandMenu";
 import { ContextMeter } from "./ContextMeter";
-import type { Attachment, CommandSummary, OnScreen } from "../lib/api";
+import type { Attachment, CommandSummary, InterruptedTurn, OnScreen } from "../lib/api";
 import { basename } from "../lib/format";
 import { isImage, toAttachments } from "../lib/images";
 import type { Outgoing } from "../state/store";
@@ -52,6 +52,8 @@ export function Composer({
   sessionKey,
   parked,
   queued,
+  interrupted = null,
+  onContinue,
   onPark,
   onPickWorkspace,
   onUnattended,
@@ -136,6 +138,12 @@ export function Composer({
    * not been sent yet is indistinguishable from one that has.
    */
   queued: Outgoing | null;
+  /**
+   * The turn this conversation was in when Taurus stopped. Offered to continue
+   * above the box, which is where the next thing to send is decided.
+   */
+  interrupted?: InterruptedTurn | null;
+  onContinue?: () => void;
   onPark: (sessionKey: string, draft: Parked) => void;
   onPickWorkspace: () => void;
   onUnattended: (unattended: boolean) => void;
@@ -327,6 +335,22 @@ export function Composer({
         * the sentence is still here with a button to send it by hand. See the
         * drain in `send` for why a turn that broke does not fire it for you.
         */}
+      {/* Only between turns: a turn that has started, continued or typed, is
+          the end of the interrupted one. */}
+      {interrupted && !busy && (
+        <div className="composer-queued held composer-interrupted" role="status">
+          <span className="dataset-mark">↺</span>
+          <span className="composer-queued-text">
+            {interruptedText(interrupted)}
+          </span>
+          <div className="spacer" />
+          {interrupted.attempts < interrupted.max_attempts && onContinue && (
+            <button className="quiet" onClick={onContinue}>
+              Continue
+            </button>
+          )}
+        </div>
+      )}
       {queued && (
         <div className={`composer-queued${busy ? "" : " held"}`}>
           <span className="dataset-mark">↳</span>
@@ -502,4 +526,19 @@ export function Composer({
       </div>
     </footer>
   );
+}
+
+/** What the interrupted-turn strip says. */
+export function interruptedText(interrupted: InterruptedTurn): string {
+  const calls =
+    interrupted.unanswered === 0
+      ? ""
+      : interrupted.unanswered === 1
+        ? " One call was running; its outcome is unknown."
+        : ` ${interrupted.unanswered} calls were running; their outcome is unknown.`;
+  const rest =
+    interrupted.attempts < interrupted.max_attempts
+      ? ""
+      : ` It's had ${interrupted.attempts} turns, so send a message to go on.`;
+  return `This turn stopped when Taurus did.${calls}${rest}`;
 }
