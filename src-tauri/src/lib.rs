@@ -215,6 +215,10 @@ pub fn run() {
 
             let state = Arc::new(state::AppState::new(app.handle().clone(), traces));
             app.manage(state.clone());
+            // The dock's shells, for `read_terminal`. Handed over once: the
+            // host decides per turn whether one is running and marking its
+            // commands, which is when the tool is offered.
+            state.host.set_terminal(Some(state.terminals.clone()));
 
             // Skill discovery touches the filesystem; do it off the setup path
             // so the window paints immediately. `mark_loaded` is what lets
@@ -300,6 +304,8 @@ pub fn run() {
             commands::list_agent_proposals,
             commands::respond_agent_proposal,
             commands::set_agent_synthesis,
+            commands::set_shell_integration,
+            commands::terminal_block,
             commands::list_tools,
             commands::save_agent,
             commands::generate_agent,

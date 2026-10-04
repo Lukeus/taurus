@@ -329,6 +329,20 @@ A save never overwrites a version it hasn't seen. The editor keeps a
 fingerprint of the file as it read it, and a save that no longer matches is
 refused. The race is closed at the write, not papered over.
 
+**[The terminal](docs/capabilities.md#the-commands-you-ran)**: your own shell
+at the bottom of the window, and it knows where each command starts and ends.
+
+<kbd>Ctrl</kbd>+<kbd>`</kbd> opens your shell with your own prompt and
+aliases. zsh and bash also get a few hooks that mark each command, so the
+scrollback becomes commands: a mark beside each one, green or red, and the
+last one in the bar with its exit code. **Ask Taurus** beside it drafts a
+message with the command and the end of its output. While the dock is open,
+the model can read your recent commands itself, so "why did that fail?" is a
+complete question.
+
+![The terminal dock after a failed test run, with a red mark beside the
+command and Ask Taurus in the bar](docs/screenshots/terminal-blocks.png)
+
 **[Notes](docs/working-with-it.md#notes)**: somewhere to write things down, in
 the repo or in your home directory.
 

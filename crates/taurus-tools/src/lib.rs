@@ -1,5 +1,6 @@
 //! Tools the agent can call, and the permission gate in front of them.
 
+pub mod blocks;
 pub mod budget;
 pub mod builtin;
 pub mod capture;
@@ -17,6 +18,7 @@ pub mod permission;
 pub mod plan;
 pub mod registry;
 pub mod schema;
+pub mod shell_integration;
 pub mod sweep;
 pub mod tool;
 pub mod vault;

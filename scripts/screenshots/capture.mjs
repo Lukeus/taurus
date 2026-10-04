@@ -176,6 +176,11 @@ const SHOTS = [
   // The tab strip is the whole feature — a test run that failed, a dev server
   // that will not finish on its own, and the shell they sit beside.
   { name: "background", shot: "background", theme: "dark" },
+  // The shell with shell integration: a mark beside each command's line,
+  // colored by how it ended, and the failed one in the bar with Ask Taurus
+  // beside it. The only check that a mark lands in the margin beside its own
+  // line rather than over the prompt — the line is the emulator's to know.
+  { name: "terminal-blocks", shot: "terminal", theme: "dark" },
 ];
 
 const CHROME = [

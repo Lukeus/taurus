@@ -95,6 +95,14 @@ impl Host {
         // conversation. A delegate opening a file would put it on a screen
         // nobody had asked to change, in the middle of work they cannot see.
         registry.register(Arc::new(OpenFile));
+        // Per turn for the canvas's reason: the dock is the person's own shell,
+        // in this window. A delegate has no window, and reading what somebody
+        // typed is a step past anything it was sent to do.
+        if let Some(terminal) = self.live_terminal() {
+            registry.register(Arc::new(
+                taurus_tools::builtin::terminal::ReadTerminal::new(terminal),
+            ));
+        }
 
         // The *tool* is per turn, like the three above: a delegate writing into
         // the parent's checklist would report progress against a task nobody
@@ -393,6 +401,25 @@ impl Host {
 
     /// Every background command, for the window that draws them.
     ///
+    /// Hands the host the terminal beside the conversation.
+    ///
+    /// The desktop calls this once, at startup, with every shell its dock will
+    /// open. `read_terminal` is then offered on each turn that starts while one
+    /// of those shells is running and marking its commands, and on no other:
+    /// a closed dock, or a shell without integration, has nothing to read.
+    pub fn set_terminal(&self, terminal: Option<Arc<dyn taurus_tools::blocks::TerminalReader>>) {
+        *self.terminal.write().unwrap_or_else(|e| e.into_inner()) = terminal;
+    }
+
+    /// The terminal, if a shell in it is reporting commands right now.
+    fn live_terminal(&self) -> Option<Arc<dyn taurus_tools::blocks::TerminalReader>> {
+        self.terminal
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .filter(|t| t.integrated())
+    }
+
     /// The model reaches these through `check_command`; this is the other
     /// reader, and the two do not move each other's place in the output. See
     /// [`taurus_tools::Jobs`].

@@ -487,6 +487,17 @@ pub async fn respond_agent_proposal(
     Ok(Some(path.display().to_string()))
 }
 
+/// Turns the terminal's shell integration on or off. See
+/// [`taurus_host::Host::set_shell_integration`].
+#[tauri::command]
+pub async fn set_shell_integration(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> CmdResult<()> {
+    state.host.set_shell_integration(enabled).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn set_agent_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
     state.host.set_agent_synthesis(enabled).await;

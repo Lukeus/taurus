@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type IDecoration, type IMarker } from "@xterm/xterm";
 import "../vendor.css";
 
 import * as api from "../lib/api";
-import type { BackgroundJob } from "../lib/api";
+import type { BackgroundJob, Block } from "../lib/api";
 import { useWindowPalette } from "../lib/windowTheme";
 import { basename } from "../lib/format";
-import { acknowledger, bytes, fade } from "../lib/terminal";
+import {
+  acknowledger,
+  askAboutBlock,
+  blockMark,
+  blockState,
+  bytes,
+  describeBlock,
+  duration,
+  fade,
+} from "../lib/terminal";
 import { DockTabs, JobScreen } from "./JobScreen";
 
 /**
@@ -31,6 +40,20 @@ import { DockTabs, JobScreen } from "./JobScreen";
  * is not torn down when another is selected, only hidden: it is a live session
  * whose scrollback is the only record of it, and unmounting it would end the
  * shell.
+ *
+ * # Commands
+ *
+ * A shell started with Taurus's integration marks where each command starts
+ * and ends (see `crates/taurus-tools/src/shell_integration.rs`). The backend turns those
+ * marks into blocks; this pane draws a mark in the left margin beside each
+ * command's line, colored by how it ended, and keeps one command in the bar —
+ * the latest, or whichever mark was clicked — with **Ask Taurus** beside it.
+ * ⌘↑ and ⌘↓ (Ctrl+Shift off macOS) step between commands.
+ *
+ * The line a mark belongs on is only known here, because only the emulator
+ * knows where its cursor was. So this pane watches for the same marks in the
+ * bytes it draws, and pairs the n-th command it sees with the backend's block
+ * number n. Both count the same marks in the same stream, so they agree.
  */
 export function TerminalDock({
   workspace,
@@ -40,6 +63,7 @@ export function TerminalDock({
   onWatch,
   onStop,
   onClose,
+  onAsk,
 }: {
   /**
    * The folder the shell starts in, and the identity of the dock.
@@ -66,6 +90,8 @@ export function TerminalDock({
   onWatch: (id: number | null) => void;
   onStop: (id: number) => Promise<unknown>;
   onClose: () => void;
+  /** Puts a draft in the composer, the way the other panes' "ask" buttons do. */
+  onAsk: (draft: string) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
@@ -112,6 +138,19 @@ export function TerminalDock({
    * spawned a shell would leave the dead terminal's DOM under the new one.
    */
   const [generation, setGeneration] = useState(0);
+  /**
+   * The commands this shell has run, by number, newest last.
+   *
+   * Only what the bar needs. The output stays in the backend, which is the one
+   * place that holds it, and is fetched when somebody asks.
+   */
+  const [blocks, setBlocks] = useState<Block[]>([]);
+  /** The command in the bar, when it isn't simply the latest. */
+  const [chosen, setChosen] = useState<number | null>(null);
+  const chosenRef = useRef<number | null>(null);
+  chosenRef.current = chosen;
+  /** Each command's line in the scrollback, by block number. */
+  const markers = useRef<Map<number, IMarker>>(new Map());
 
   /** Builds the shell, and returns the teardown for it. */
   const start = useCallback(() => {
@@ -135,6 +174,12 @@ export function TerminalDock({
       // asks the backend to hold a second copy of what is already on screen.
       scrollback: 5_000,
       theme: palette(),
+      // Decorations — the marks beside each command — are still flagged as
+      // proposed API in xterm 6, though VS Code's terminal is built on them.
+      // Nothing else proposed is used here.
+      allowProposedApi: true,
+      // The strip beside the scrollbar where a failed command leaves a tick.
+      overviewRuler: { width: 6 },
     });
     const fitter = new FitAddon();
     emulator.loadAddon(fitter);
@@ -143,6 +188,65 @@ export function TerminalDock({
 
     term.current = emulator;
     fit.current = fitter;
+
+    // Watching for the integration's marks, to know which line each command
+    // is on. `B` is where the prompt ends and the command line begins, which
+    // is the line a mark belongs beside; `C` is the command starting. A `B`
+    // with no `C` after it — Enter on an empty line — is let go.
+    setBlocks([]);
+    setChosen(null);
+    const lines = new Map<number, IMarker>();
+    markers.current = lines;
+    const decorations = new Map<number, IDecoration>();
+    let typing: IMarker | null = null;
+    let started = 0;
+    const marks = emulator.parser.registerOscHandler(133, (data) => {
+      if (data === "B") {
+        typing?.dispose();
+        typing = emulator.registerMarker(0);
+      } else if (data === "C" || data.startsWith("C;")) {
+        started += 1;
+        lines.set(started, typing ?? emulator.registerMarker(0));
+        typing = null;
+      }
+      // Not consumed: nothing else here wants them, and the emulator draws
+      // nothing for a mark either way.
+      return false;
+    });
+
+    // Draws, or redraws, one command's mark in the margin.
+    const decorate = (block: Block) => {
+      const line = lines.get(block.id);
+      if (!line || line.isDisposed) return;
+      decorations.get(block.id)?.dispose();
+      const failed = blockState(block) === "failed";
+      const decoration = emulator.registerDecoration({
+        marker: line,
+        width: 1,
+        layer: "top",
+        // A failure is also a tick on the scrollbar, so a red build an hour of
+        // scrollback ago can still be found by eye.
+        overviewRulerOptions: failed ? { color: read("--danger") || "#ff9a9a" } : undefined,
+      });
+      if (!decoration) return;
+      decorations.set(block.id, decoration);
+      decoration.onRender((element) => {
+        element.classList.add("dock-mark");
+        element.dataset.block = String(block.id);
+        element.dataset.state = blockState(block);
+        element.dataset.chosen = String(chosenRef.current === block.id);
+        element.setAttribute("role", "button");
+        element.setAttribute("aria-label", describeBlock(block));
+        element.title = describeBlock(block);
+        element.onmousedown = (event) => {
+          // Before the dock's own mousedown, which would put focus back in
+          // the emulator and start a selection there.
+          event.stopPropagation();
+          event.preventDefault();
+          setChosen(block.id);
+        };
+      });
+    };
 
     // Typed before the shell answers. Held rather than dropped: the open is a
     // round trip, and a keystroke that lands inside it is one the user has
@@ -167,6 +271,33 @@ export function TerminalDock({
       if (id) void api.resizeTerminal(id, rows, cols).catch(() => {});
     });
 
+    // ⌘↑ / ⌘↓ step between commands, the way iTerm2 and Terminal.app step
+    // between marks. Ctrl+Shift elsewhere, because a bare Ctrl+arrow is a
+    // word jump a shell's line editor already owns.
+    const mac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+    emulator.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown") return true;
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return true;
+      const chord = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && event.shiftKey;
+      if (!chord) return true;
+      const live = [...lines.entries()]
+        .filter(([, line]) => !line.isDisposed)
+        .sort(([, a], [, b]) => a.line - b.line);
+      if (live.length === 0) return false;
+      const from =
+        lines.get(chosenRef.current ?? -1)?.line ??
+        (event.key === "ArrowUp" ? Infinity : -Infinity);
+      const next =
+        event.key === "ArrowUp"
+          ? [...live].reverse().find(([, line]) => line.line < from)
+          : live.find(([, line]) => line.line > from);
+      if (next) {
+        setChosen(next[0]);
+        emulator.scrollToLine(Math.max(0, next[1].line - 1));
+      }
+      return false;
+    });
+
     let live = true;
     const acks = acknowledger((id, n) => void api.ackTerminal(id, n).catch(() => {}));
     api
@@ -179,6 +310,23 @@ export function TerminalDock({
           // Without this guard the old shell's exit marked the live pane dead —
           // "shell exited 1" over a working prompt.
           if (!live) return;
+          if (event.kind === "block") {
+            const block = event.block;
+            // After everything already written has been parsed, so the line
+            // its mark was on is known by the time it is drawn.
+            emulator.write(new Uint8Array(0), () => {
+              if (!live) return;
+              setBlocks((all) => {
+                const rest = all.filter((b) => b.id !== block.id);
+                // The backend keeps the last hundred; so does the bar.
+                return [...rest, block].sort((a, b) => a.id - b.id).slice(-100);
+              });
+              // A new command takes the bar back from one that was clicked.
+              if (block.running) setChosen(null);
+              decorate(block);
+            });
+            return;
+          }
           if (event.kind === "output") {
             const chunk = bytes(event.data);
             // Acknowledged once drawn, not once received: what the shell waits
@@ -222,6 +370,7 @@ export function TerminalDock({
       live = false;
       gone = true;
       session.current = null;
+      marks.dispose();
       const shells = [...opened.current];
       opened.current.clear();
       for (const id of shells) void api.closeTerminal(id);
@@ -232,6 +381,14 @@ export function TerminalDock({
   }, [workspace, generation]);
 
   useEffect(() => start(), [start]);
+
+  // A mark is only redrawn when the emulator redraws its line, so choosing a
+  // command from the bar or the keyboard says so to the marks directly.
+  useEffect(() => {
+    host.current?.querySelectorAll<HTMLElement>(".dock-mark").forEach((mark) => {
+      mark.dataset.chosen = String(mark.dataset.block === String(chosen));
+    });
+  }, [chosen]);
 
   // The pane is dragged, the window is resized, and the sidebar opens: all of
   // them change how many columns there are, and a shell that is not told wraps
@@ -268,6 +425,21 @@ export function TerminalDock({
   // an empty frame, because the shell is the tab that is always there.
   const shown = jobs.find((job) => job.id === watching) ?? null;
   const onShell = shown === null;
+  // The command in the bar: the one clicked, else the latest. Not shown once
+  // the shell has gone — its commands went with it, so there is nothing left
+  // to ask about.
+  const current =
+    ended !== null
+      ? null
+      : (blocks.find((b) => b.id === chosen) ?? blocks[blocks.length - 1] ?? null);
+  const ask = (block: Block) => {
+    const id = session.current;
+    if (!id) return;
+    void api
+      .terminalBlock(id, block.id)
+      .then((text) => onAsk(askAboutBlock(text.block, text.output)))
+      .catch((e) => setProblem(String(e)));
+  };
 
   return (
     <section
@@ -295,6 +467,36 @@ export function TerminalDock({
               : ended === 0
                 ? "shell exited"
                 : `shell exited ${ended}`}
+          </span>
+        )}
+        {onShell && current && (
+          <span className="dock-block" data-state={blockState(current)}>
+            <span className="dock-block-mark" aria-hidden="true">
+              {blockMark(current)}
+            </span>
+            <code className="dock-block-command" title={describeBlock(current)}>
+              {current.command || "(command line not reported)"}
+            </code>
+            <span className="dock-block-meta">
+              {current.running
+                ? "running"
+                : [
+                    current.exit !== undefined && current.exit !== 0
+                      ? `exit ${current.exit}`
+                      : null,
+                    current.duration_ms !== undefined ? duration(current.duration_ms) : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+            </span>
+            <button
+              className="pill"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => ask(current)}
+              aria-label={`Ask Taurus about ${describeBlock(current)}`}
+            >
+              Ask Taurus
+            </button>
           </span>
         )}
         <div className="spacer" />

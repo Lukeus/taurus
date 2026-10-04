@@ -115,6 +115,8 @@ import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
 import type { TerminalEvent } from "../bindings/TerminalEvent";
+import type { TerminalBlock } from "../bindings/TerminalBlock";
+import type { Block } from "../bindings/Block";
 import type { Theme } from "../bindings/Theme";
 import type { CustomTheme } from "../bindings/CustomTheme";
 import type { ThemeFile } from "../bindings/ThemeFile";
@@ -259,6 +261,8 @@ export type {
   StepState,
   Switch,
   TerminalEvent,
+  TerminalBlock,
+  Block,
   Theme,
   Finding,
   PendingConfig,
@@ -869,6 +873,8 @@ export const respondAgentProposal = (
 
 export const setAgentSynthesis = (enabled: boolean) =>
   invoke<void>("set_agent_synthesis", { enabled });
+export const setShellIntegration = (enabled: boolean) =>
+  invoke<void>("set_shell_integration", { enabled });
 
 export const setTheme = (theme: Theme) => invoke<void>("set_theme", { theme });
 
@@ -1251,6 +1257,13 @@ export const resizeTerminal = (id: string, rows: number, cols: number) =>
 
 /** Ends a shell, and anything it is running. */
 export const closeTerminal = (id: string) => invoke<void>("terminal_close", { id });
+
+/**
+ * One command a shell ran, with what it printed (escape sequences stripped).
+ * Rejects with a sentence when the shell no longer remembers it.
+ */
+export const terminalBlock = (id: string, block: number) =>
+  invoke<TerminalBlock>("terminal_block", { id, block });
 
 export const onPermissionRequest = (
   handler: (request: PermissionRequest) => void,

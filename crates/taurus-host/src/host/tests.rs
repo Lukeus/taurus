@@ -2145,6 +2145,53 @@ async fn editing_a_file_the_brief_imports_reaches_the_next_turn() {
     );
 }
 
+/// A terminal with no commands in it, live or not.
+struct Terminal {
+    live: bool,
+}
+
+impl taurus_tools::blocks::TerminalReader for Terminal {
+    fn shell(&self) -> String {
+        "zsh".into()
+    }
+    fn integrated(&self) -> bool {
+        self.live
+    }
+    fn recent(&self, _limit: usize) -> Vec<taurus_tools::blocks::BlockText> {
+        Vec::new()
+    }
+    fn get(&self, _id: u64) -> Option<taurus_tools::blocks::BlockText> {
+        None
+    }
+}
+
+#[tokio::test]
+async fn the_terminal_is_offered_only_while_a_shell_is_marking_commands() {
+    // The CLI never sets one, and a dock running a shell with no integration
+    // has nothing to read: either way the model must not be handed a tool
+    // that can only fail.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+    let read = taurus_tools::builtin::terminal::READ_TERMINAL_TOOL.to_string();
+
+    assert!(
+        !turn_tools(&host).await.contains(&read),
+        "no terminal at all"
+    );
+    host.set_terminal(Some(Arc::new(Terminal { live: false })));
+    assert!(
+        !turn_tools(&host).await.contains(&read),
+        "a shell without marks"
+    );
+    host.set_terminal(Some(Arc::new(Terminal { live: true })));
+    assert!(
+        turn_tools(&host).await.contains(&read),
+        "a shell marking commands"
+    );
+}
+
 #[tokio::test]
 async fn a_turn_can_draw_and_ask_but_a_sub_agent_cannot() {
     // The three drawing tools address the person watching this
@@ -2155,6 +2202,9 @@ async fn a_turn_can_draw_and_ask_but_a_sub_agent_cannot() {
     let workspace = dir.path().canonicalize().unwrap();
     let (host, _home) = host(&workspace);
     host.reload().await;
+    // `read_terminal` is per turn only while a dock shell is marking its
+    // commands, so this turn has one.
+    host.set_terminal(Some(Arc::new(Terminal { live: true })));
 
     let turn = turn_tools(&host).await;
     let shared: Vec<String> = host

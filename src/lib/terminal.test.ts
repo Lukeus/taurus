@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { acknowledger, bytes, fade } from "./terminal";
+import { acknowledger, askAboutBlock, bytes, duration, fade } from "./terminal";
 
 describe("decoding what the shell printed", () => {
   it("hands back the bytes rather than a string", () => {
@@ -88,5 +88,54 @@ describe("acknowledging what was drawn", () => {
       ["t1", 64],
       ["t1", 8],
     ]);
+  });
+});
+
+describe("askAboutBlock", () => {
+  const block = { id: 7, command: "cargo test", running: false, full_screen: false };
+
+  it("quotes a failure and asks what went wrong", () => {
+    const text = askAboutBlock({ ...block, exit: 101 }, "test a ... FAILED");
+    expect(text).toBe(
+      "I ran this in the terminal and it exited 101:\n\n```\n$ cargo test\ntest a ... FAILED\n```\n\nWhat went wrong?",
+    );
+  });
+
+  it("leaves a success open for the person to finish", () => {
+    const text = askAboutBlock({ ...block, exit: 0 }, "ok");
+    expect(text.startsWith("I ran this in the terminal:\n")).toBe(true);
+    expect(text.endsWith("```")).toBe(true);
+  });
+
+  it("keeps the end of long output and says where the rest is", () => {
+    const output = Array.from({ length: 200 }, (_, n) => `line ${n}`).join("\n");
+    const text = askAboutBlock({ ...block, exit: 1 }, output);
+    expect(text).toContain("line 199");
+    expect(text).not.toContain("line 0\n");
+    expect(text).toContain("…\n");
+    expect(text).toContain("command #7 in the terminal");
+  });
+
+  it("can't be closed early by a fence in the output", () => {
+    const text = askAboutBlock({ ...block, exit: 0 }, "```js\nx\n```");
+    expect(text).toContain("````\n$ cargo test");
+  });
+
+  it("says when there's nothing to quote", () => {
+    expect(askAboutBlock({ ...block, exit: 0 }, "")).toContain("(no output)");
+    expect(askAboutBlock({ ...block, exit: 0, full_screen: true }, "")).toContain(
+      "full-screen program",
+    );
+    expect(askAboutBlock({ ...block, running: true }, "listening")).toContain(
+      "it's still running",
+    );
+  });
+});
+
+describe("duration", () => {
+  it("reads the way a person says it", () => {
+    expect(duration(850)).toBe("850ms");
+    expect(duration(4_200)).toBe("4.2s");
+    expect(duration(125_000)).toBe("2m05s");
   });
 });

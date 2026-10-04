@@ -807,11 +807,65 @@ anywhere else. So does closing the app. That's worth stating, because a shell
 started under a pty isn't in the app's process tree in any way the operating
 system would clean up on its own.
 
-What it is **not**, yet: the shell isn't wired to the conversation.
+### The commands you ran
 
-- The agent doesn't read what you type there.
-- What you run isn't checkpointed the way the agent's own commands are.
-- Commands are a scrollback, not the blocks a Warp-style terminal groups them
-  into.
+![The terminal dock after a failed test run: a red mark in the margin beside
+the `cargo test` line, a tick on the scrollbar, and the command in the bar
+with its exit code, its time and an Ask Taurus
+button](screenshots/terminal-blocks.png)
 
-Each of those is written down in [Known gaps](known-gaps.md).
+A terminal's output is one stream. The prompt, what you typed, what the
+command printed and the next prompt all arrive as the same bytes, and nothing
+in them says where one command stops and the next begins. So Taurus starts
+your shell with a few hooks that say so. They print invisible marks around
+each command, the `OSC 133` convention iTerm2, kitty, WezTerm and VS Code all
+use. Taurus reads them and keeps each command as a block: what you typed,
+how it exited, how long it took, the folder it ran in, and what it printed.
+
+What that gets you:
+
+- **A mark beside each command**, in the margin next to the line you typed
+  it on. Green passed, red failed, blue is still running. A failure also
+  leaves a tick on the scrollbar, so a red build an hour of scrollback ago
+  can still be found by eye.
+- **The last command in the bar**, with its exit code and time. Click a mark
+  to put that command there instead. <kbd>⌘</kbd>+<kbd>↑</kbd> and
+  <kbd>⌘</kbd>+<kbd>↓</kbd> step between commands (<kbd>Ctrl</kbd>+
+  <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> on Windows and Linux).
+- **Ask Taurus**, beside the command in the bar. It puts a draft in the
+  composer: the command and the end of its output, quoted, with "What went
+  wrong?" after a failure. It's a draft, not a send, so you can say what you
+  actually want to know. The message carries its own evidence, so it still
+  makes sense in the transcript a week later.
+- **`read_terminal`**, a tool the model gets while the dock is open. "Why did
+  that fail?" typed under a red build is a complete question now. The model
+  lists your recent commands with the end of each one's output, and reads any
+  one of them whole. See
+  [What you run in the dock, the model can read](safety.md#permissions).
+
+The hooks run after your own startup files, and they don't edit any of them.
+For zsh, Taurus points `ZDOTDIR` at a folder whose `.zshenv`, `.zprofile`,
+`.zshrc` and `.zlogin` each run yours and then hand back, and `ZDOTDIR` is put
+back how it was found once startup is done. For bash, Taurus's file is passed
+as `--init-file` and reads the files bash would have read. Either way it's
+still a login shell, as it was before, so the `PATH` your profile sets is
+still set. The hooks only print. Your prompt, your aliases and your own
+`precmd` and `PROMPT_COMMAND` all still run.
+
+A command typed with a leading space in bash, with `HISTCONTROL=ignorespace`
+set, is still a block, but without its command line. A leading space is how
+people say "don't keep this", so Taurus doesn't.
+
+A full-screen program (`vim`, `less`, `htop`) is a block with an exit status
+and no output. What it drew was a screen, and as text it's fragments that
+would read like output and mean nothing. Very long output keeps its end, the
+last 256 KB, and says how much went. The dock remembers your last 100
+commands.
+
+zsh and bash are integrated. fish, PowerShell and `cmd.exe` start exactly as
+before, with no marks, so the dock works but has no blocks.
+**Mark each command in the terminal** in Settings → Behavior turns the hooks
+off for the next shell you open. Two things still aren't wired: what you run
+isn't checkpointed the way the agent's own commands are, and the agent's own
+`run_command` calls don't appear in the pane. Both are written down in
+[Known gaps](known-gaps.md).

@@ -175,6 +175,20 @@ impl Host {
         }
     }
 
+    /// Turns the terminal dock's shell integration on or off, everywhere.
+    ///
+    /// Nothing else follows it: a shell already running keeps the hooks it
+    /// started with, and the next one opened reads this.
+    pub async fn set_shell_integration(&self, enabled: bool) {
+        self.edit_global_setting(|s| s.shell_integration = Some(enabled))
+            .await;
+    }
+
+    /// Whether a shell opened now should get the integration.
+    pub async fn shell_integration(&self) -> bool {
+        self.settings.read().await.shell_integration
+    }
+
     /// Toggles sub-agent synthesis for every workspace.
     ///
     /// The twin of [`Host::set_skill_synthesis`], down to not rebuilding the
