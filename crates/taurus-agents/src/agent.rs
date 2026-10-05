@@ -152,6 +152,10 @@ pub struct AgentDefinition {
     /// or a tool it names that this session does not have. Filled in by the
     /// host, which is the only layer that can see either.
     pub degraded: Option<String>,
+    /// The plugin it came with, when it did. Named `plugin:agent`, and not
+    /// edited here: its file is the plugin's, and a copy saved under that name
+    /// would be a file no agent could be loaded from.
+    pub plugin: Option<String>,
 }
 
 impl AgentDefinition {
@@ -213,6 +217,9 @@ pub struct AgentSummary {
     /// the file belongs to another client. What the drawer says before it lets
     /// anyone change anything.
     pub forks_on_edit: bool,
+    /// See [`AgentDefinition::plugin`]. The drawer offers no edit for one.
+    #[ts(optional)]
+    pub plugin: Option<String>,
 }
 
 impl From<&AgentDefinition> for AgentSummary {
@@ -232,6 +239,7 @@ impl From<&AgentDefinition> for AgentSummary {
             shadows: agent.shadows,
             degraded: agent.degraded.clone(),
             path: agent.path.as_ref().map(|p| p.display().to_string()),
+            plugin: agent.plugin.clone(),
         }
     }
 }

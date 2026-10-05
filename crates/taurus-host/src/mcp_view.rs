@@ -130,6 +130,11 @@ pub struct McpServerView {
     /// view is built from config, and this needs the live registry.
     #[ts(optional)]
     pub schema_tokens: Option<u32>,
+    /// The plugin this server came with, when it did. The panel can switch
+    /// it off, which writes a toggle to your own file, but doesn't edit or
+    /// remove it: its definition is the plugin's. See `crate::plugins`.
+    #[ts(optional)]
+    pub plugin: Option<String>,
 }
 
 impl McpServerView {
@@ -169,6 +174,7 @@ impl McpServerView {
                 disabled,
                 status,
                 schema_tokens: None,
+                plugin: None,
             },
             ServerConfig::Http {
                 url,
@@ -190,6 +196,7 @@ impl McpServerView {
                 program: None,
                 status,
                 schema_tokens: None,
+                plugin: None,
             },
             // Merging resolves a toggle against the server it names, so one that
             // survives to here named nothing. Rendered as an empty stdio entry so
@@ -209,6 +216,7 @@ impl McpServerView {
                 program: None,
                 status,
                 schema_tokens: None,
+                plugin: None,
             },
         }
     }

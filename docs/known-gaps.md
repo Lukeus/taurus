@@ -121,6 +121,30 @@ the backlog, and they're the minority.
   turn ended" four times for one turn would break any `stop` hook that
   counts. A review of a turn is treated the same way. Covering it properly
   needs an event pair of its own, and nothing needs one yet.
+- **Plugins come from a folder or a git URL, not a marketplace.** There's no
+  catalog to browse, and Claude Code's `marketplace.json` isn't read. A plugin
+  must sit at the root of the repository it's cloned from: Claude Code's
+  `git-subdir`, npm and archive sources aren't fetched. Clone the repository
+  and `taurus plugin add` the subfolder instead. See
+  [Plugins](configuration.md#plugins).
+- **A plugin's hooks run only in Taurus's format.** Claude Code's `hooks.json`
+  is keyed by its own events, with matchers and exit codes that mean slightly
+  different things, so translating it would make some hooks behave
+  differently from what their author tested. A hooks file in that shape is
+  named on the plugin, and none of it runs. Translating it is the next step
+  for plugins.
+- **Parts of a Claude Code plugin have nothing here to run them.** Command
+  files, LSP servers, output styles, workflows, themes, monitors, `bin/` on
+  `PATH`, a plugin's own settings, `userConfig` and dependencies. Each is
+  listed on the plugin by name, with why. Command files are the one with a
+  near equivalent: a user-invocable skill is a `/command`.
+- **A plugin's skills and agents aren't edited in the app.** Their files are
+  the plugin's, and an edit would be lost on the next `update`. Change the
+  plugin, or copy the part into your own `skills/` or `agents/` under a name of
+  your own.
+- **An MCP server's own OAuth client isn't used.** Taurus registers its own
+  client when you sign in. A plugin server that names one in `oauth` and only
+  accepts it won't let Taurus sign in. The plugin says which servers name one.
 - **Trust is per folder, and it's answered once.** A workspace you've vouched
   for stays vouched for. So a `git pull` that adds a server to
   `.taurus/mcp.json` is read on the next turn without asking again.

@@ -130,6 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tier: SkillTier::Project,
         origin: SkillOrigin::Taurus,
         dir: skills_root.clone(),
+        plugin: None,
     }]);
     println!(
         "\nreloaded {} skill(s), {} problem(s)",

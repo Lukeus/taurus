@@ -65,6 +65,10 @@ pub enum SkillOrigin {
     /// the same `SKILL.md` specification, so a skill written for it is already
     /// a skill Taurus understands. Nothing here parses a second format.
     Copilot,
+    /// A plugin's `skills/`. Which plugin is [`Skill::plugin`], and the skill
+    /// is named `plugin:skill` so two plugins can't collide, with each other
+    /// or with a skill of your own.
+    Plugin,
 }
 
 /// The longest trigger line that may reach the system prompt.
@@ -242,6 +246,9 @@ pub struct Skill {
     /// interpreter. The skill stays usable; the model is told to follow the
     /// written procedure instead of calling the script.
     pub degraded: Option<String>,
+    /// The plugin it came with, when it did. Its files are the plugin's, so
+    /// it's changed by changing the plugin rather than here.
+    pub plugin: Option<String>,
 }
 
 impl Skill {
@@ -390,6 +397,9 @@ pub struct SkillSummary {
     pub warnings: Vec<String>,
     pub degraded: Option<String>,
     pub dir: String,
+    /// See [`Skill::plugin`].
+    #[ts(optional)]
+    pub plugin: Option<String>,
 }
 
 impl From<&Skill> for SkillSummary {
@@ -407,6 +417,7 @@ impl From<&Skill> for SkillSummary {
             warnings: skill.warnings.clone(),
             degraded: skill.degraded.clone(),
             dir: skill.dir.display().to_string(),
+            plugin: skill.plugin.clone(),
         }
     }
 }
@@ -682,6 +693,7 @@ Do the thing.
             resources: Vec::new(),
             warnings: Vec::new(),
             degraded: None,
+            plugin: None,
         }
     }
 

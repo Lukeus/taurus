@@ -239,10 +239,19 @@ fn split_command(text: &str) -> Option<(&str, &str)> {
     let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
     let (name, args) = rest.split_at(end);
 
-    let plausible = name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    // `plugin:skill` is one name: a plugin's skills and agents are named under
+    // it. One colon, with a name on each side, so `/a:b:c` and `/a:` stay
+    // prose.
+    let kebab = |part: &str| {
+        part.starts_with(|c: char| c.is_ascii_lowercase())
+            && part
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    let plausible = match name.split_once(':') {
+        Some((plugin, rest)) => kebab(plugin) && kebab(rest),
+        None => kebab(name),
+    };
     plausible.then_some((name, args))
 }
 
@@ -281,6 +290,7 @@ mod tests {
             tier: SkillTier::User,
             origin: SkillOrigin::Taurus,
             dir: dir.to_path_buf(),
+            plugin: None,
         }])
         .0
     }
@@ -290,6 +300,7 @@ mod tests {
             borrowed: false,
             tier: AgentTier::User,
             dir: dir.to_path_buf(),
+            plugin: None,
         }])
         .0
     }
@@ -338,6 +349,34 @@ mod tests {
                 fixture.rosters().expand(text).is_none(),
                 "'{text}' must be sent as written"
             );
+        }
+    }
+
+    #[test]
+    fn a_plugins_skill_is_a_command_by_its_plugin_name() {
+        let dir = TempDir::new().unwrap();
+        write_skill(dir.path(), "deploy", "Deploy $ARGUMENTS.", "");
+        let skills = SkillCatalog::discover(&[SkillSource {
+            tier: SkillTier::User,
+            origin: SkillOrigin::Plugin,
+            dir: dir.path().to_path_buf(),
+            plugin: Some("ops".into()),
+        }])
+        .0;
+        let agents = AgentCatalog::default();
+        let rosters = Rosters {
+            skills: &skills,
+            agents: &agents,
+            can_delegate: true,
+        };
+
+        let invoked = rosters.expand("/ops:deploy staging").unwrap().unwrap();
+        assert_eq!(invoked.name, "ops:deploy");
+        assert!(invoked.prompt.contains("staging"), "{}", invoked.prompt);
+        // The plugin's name is part of the skill's: the bare one isn't it.
+        assert!(rosters.expand("/deploy staging").unwrap().is_err());
+        for prose in ["/a:b:c", "/ops:", "/:deploy"] {
+            assert!(rosters.expand(prose).is_none(), "'{prose}' is prose");
         }
     }
 

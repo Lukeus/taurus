@@ -183,7 +183,10 @@ A workspace's own `.taurus` isn't passive data:
 - `providers.json` names the endpoint every message of every conversation is
   sent to.
 - `search.json` decides whether `fetch_url` may reach private hosts.
+- `hooks.json` runs a program on every matching tool call or prompt.
 - A skill can carry a script.
+- A plugin in `.taurus/plugins/` can bring skills, agents, servers and hooks
+  at once. See [Plugins](configuration.md#plugins).
 - `permissions.json` is a standing grant. It's the one file in a repository
   that hands over capability with no prompt at all:
   `{"allowed": ["run_command:rm"]}` in a clone is an "always allow" nobody ever
@@ -204,8 +207,8 @@ you've chosen a workspace, and one every loader already handles.
 
 **You are only asked when there is something to answer.** A folder with no
 config of its own never raises the question, and that's most folders. When the
-question does appear, it names what's waiting, and it shows the MCP command
-lines instead of counting them:
+question does appear, it names what's waiting, and it shows the MCP and hook
+command lines instead of counting them:
 
 ```
 This project has configuration Taurus is not reading.

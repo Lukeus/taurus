@@ -37,6 +37,12 @@ export function TrustBanner({
       <div className="trust-body">
         <strong>This project has configuration Taurus is not reading.</strong>
         <ul className="trust-list">
+          {items.plugins.length > 0 && (
+            <li>
+              {count(items.plugins.length, "plugin")} ({items.plugins.join(", ")}) — their
+              parts are counted below
+            </li>
+          )}
           {items.skills > 0 && <li>{count(items.skills, "skill")}</li>}
           {items.agents > 0 && <li>{count(items.agents, "sub-agent")}</li>}
           {items.instructions > 0 && (

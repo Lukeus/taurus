@@ -184,6 +184,24 @@ export function BookmarkIcon({ size }: { size?: number }) {
   );
 }
 
+/**
+ * A package: a box with its lid's seam. Plugins, which arrive as one thing
+ * and hold several — the plug beside it is for what's outside the window.
+ */
+export function PackageIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path
+        d="M8 1.8l5.6 3v6.4L8 14.2l-5.6-3V4.8L8 1.8zM2.4 4.8L8 7.8l5.6-3M8 7.8v6.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+    </Icon>
+  );
+}
+
 export function PlugIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>

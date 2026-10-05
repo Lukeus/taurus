@@ -229,6 +229,9 @@ pub struct PendingConfig {
     pub hooks: usize,
     /// What each would run, and when.
     pub hook_commands: Vec<String>,
+    /// Plugins in the project's `.taurus/plugins/`, by name. Their skills,
+    /// agents, servers and hooks are in the counts and lists above too.
+    pub plugins: Vec<String>,
     pub instructions: usize,
     /// Standing permission grants in `.taurus/permissions.json`.
     pub permission_rules: usize,
@@ -285,6 +288,13 @@ impl PendingConfig {
         }
         if self.hooks > 0 {
             lines.push(plural(self.hooks, "hook", "hooks"));
+        }
+        if !self.plugins.is_empty() {
+            lines.push(format!(
+                "{} ({})",
+                plural(self.plugins.len(), "plugin", "plugins"),
+                self.plugins.join(", ")
+            ));
         }
         if self.instructions > 0 {
             lines.push(plural(
@@ -405,6 +415,31 @@ pub fn pending(workspace: &Path) -> PendingConfig {
             .iter()
             .map(|(name, entry)| format!("{name}: {}", describe_hook(entry)))
             .collect();
+    }
+
+    // The project's plugins. Their skills and agents are already counted:
+    // the source lists above include them. Their servers and hooks are named
+    // here, under the keys they'd run as.
+    for plugin in crate::plugins::active(Some(workspace))
+        .into_iter()
+        .filter(|plugin| plugin.scope() == config::Scope::Workspace)
+    {
+        pending.plugins.push(plugin.name().to_string());
+        let hooks = plugin.hooks().clone();
+        pending.hooks += hooks.hooks.len();
+        pending.hook_commands.extend(
+            hooks
+                .hooks
+                .iter()
+                .map(|(name, entry)| format!("{name}: {}", describe_hook(entry))),
+        );
+        let servers = plugin.into_mcp().servers;
+        pending.mcp_servers += servers.len();
+        pending.mcp_commands.extend(
+            servers
+                .iter()
+                .map(|(name, server)| format!("{name}: {}", describe_server(server))),
+        );
     }
 
     pending.permission_rules = workspace_rule_count(workspace);

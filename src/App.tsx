@@ -87,6 +87,7 @@ const PANELS = {
   agents: () => import("./components/AgentsDrawer"),
   mcp: () => import("./components/McpDrawer"),
   memory: () => import("./components/MemoryDrawer"),
+  plugins: () => import("./components/PluginsDrawer"),
   usage: () => import("./components/UsagePanel"),
   traces: () => import("./components/TracePanel"),
   palette: () => import("./components/CommandPalette"),
@@ -104,6 +105,9 @@ const AgentsDrawer = lazy(() =>
 const McpDrawer = lazy(() => PANELS.mcp().then((m) => ({ default: m.McpDrawer })));
 const MemoryDrawer = lazy(() =>
   PANELS.memory().then((m) => ({ default: m.MemoryDrawer })),
+);
+const PluginsDrawer = lazy(() =>
+  PANELS.plugins().then((m) => ({ default: m.PluginsDrawer })),
 );
 const UsagePanel = lazy(() => PANELS.usage().then((m) => ({ default: m.UsagePanel })));
 const TracePanel = lazy(() => PANELS.traces().then((m) => ({ default: m.TracePanel })));
@@ -385,6 +389,7 @@ export default function App() {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
+  const [pluginsOpen, setPluginsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
   const [tracesOpen, setTracesOpen] = useState(false);
@@ -879,6 +884,13 @@ export default function App() {
         run: () => setMemoryOpen(true),
       },
       {
+        id: "plugins",
+        label: "Plugins",
+        group: "Panels",
+        keywords: "install bundle claude extensions",
+        run: () => setPluginsOpen(true),
+      },
+      {
         id: "mcp",
         label: "MCP servers",
         group: "Panels",
@@ -1138,6 +1150,7 @@ export default function App() {
   const railSkills = useCallback(() => setSkillsOpen(true), []);
   const railAgents = useCallback(() => setAgentsOpen(true), []);
   const railMemory = useCallback(() => setMemoryOpen(true), []);
+  const railPlugins = useCallback(() => setPluginsOpen(true), []);
   const railUsage = useCallback(() => setUsageOpen(true), []);
   const railTraces = useCallback(() => setTracesOpen(true), []);
   const railMcpDrawer = useCallback(() => setMcpOpen(true), []);
@@ -1172,6 +1185,7 @@ export default function App() {
         onSkills={railSkills}
         onAgents={railAgents}
         onMemory={railMemory}
+        onPlugins={railPlugins}
         onUsage={railUsage}
         onTraces={railTraces}
         onMcp={railMcpDrawer}
@@ -1648,6 +1662,14 @@ export default function App() {
         {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
         {agentsOpen && <AgentsDrawer onClose={() => setAgentsOpen(false)} />}
         {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
+
+        {pluginsOpen && (
+          <PluginsDrawer
+            busy={store.busy}
+            trusted={store.trust?.trusted ?? true}
+            onClose={() => setPluginsOpen(false)}
+          />
+        )}
         {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
       </Suspense>
 

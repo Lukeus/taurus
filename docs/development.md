@@ -530,6 +530,16 @@ taurus fork -w $W --id <the fork> --compare <the original>
 cargo run -p taurus-host --example terminal -- qwen3.6:27b
 cargo run -p taurus-host --example terminal -- ornith-1.5:9b /bin/bash
 
+# Plugins, through the real CLI under a throwaway TAURUS_HOME. Validate one
+# without installing it, install it, and run one of its skills by its plugin
+# name. Any of Claude Code's own plugins works as the folder; one with HTTP MCP
+# servers shows them asking to be signed in to under `plugin_<name>_<server>`.
+export TAURUS_HOME=$(mktemp -d) W=$(mktemp -d); cp ~/.taurus/providers.json $TAURUS_HOME/
+taurus plugin validate <plugin folder>     # what loads, what isn't run here
+taurus plugin add <plugin folder> -w $W
+taurus skills list -w $W                   # its skills as <plugin>:<skill>
+taurus run -w $W -m ornith-1.5:9b -q "/<plugin>:<skill> …"
+
 # Skill authoring: propose, validate, save, rediscover.
 cargo run -p taurus-skills --example synthesis -- qwen3.6:27b
 

@@ -361,6 +361,11 @@ function ServerCard({
           <span className={`tag ${server.scope === "workspace" ? "project" : ""}`}>
             {server.scope === "workspace" ? "project" : "all projects"}
           </span>
+          {server.plugin && (
+            <span className="tag" tabIndex={0} data-tip="Switching it off here writes a toggle to your own mcp.json">
+              plugin {server.plugin}
+            </span>
+          )}
           {server.disabled && <span className="tag warn">off</span>}
           {/* Only where a browser flow is possible at all. A stdio server takes
               its credentials from the environment — the MCP authorization
@@ -466,13 +471,18 @@ function ServerCard({
                 {signingIn ? "Waiting for the browser…" : "Sign in"}
               </button>
             ))}
-          <button disabled={busy} onClick={onEdit}>
-            Edit
-          </button>
+          {/* A plugin's server is the plugin's to define: it can be switched
+              off here, which writes a toggle to your own file, and changed or
+              removed only by changing the plugin. */}
+          {!server.plugin && (
+            <button disabled={busy} onClick={onEdit}>
+              Edit
+            </button>
+          )}
           <button disabled={busy} onClick={onToggle}>
             {server.disabled ? "Enable" : "Disable"}
           </button>
-          {arming ? (
+          {server.plugin ? null : arming ? (
             <>
               <button
                 className="danger"

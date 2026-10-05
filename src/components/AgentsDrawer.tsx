@@ -204,6 +204,11 @@ function AgentCard({
           <span className={`tag ${agent.tier === "project" ? "project" : ""}`}>
             {TIER_LABEL[agent.tier]}
           </span>
+          {agent.plugin && (
+            <span className="tag" tabIndex={0} data-tip="Change it by changing the plugin">
+              plugin
+            </span>
+          )}
           {agent.degraded && <span className="tag warn">degraded</span>}
         </div>
         <span className="card-sub">{agent.description}</span>
@@ -229,7 +234,15 @@ function AgentCard({
         {agent.degraded && (
           <span className="card-files warn">{agent.degraded}</span>
         )}
-        <IterationField agent={agent} onChanged={onChanged} />
+        {/* Not for a plugin's agent: its file is the plugin's, and a copy saved
+            under a `plugin:agent` name is a file no agent loads from. */}
+        {agent.plugin ? (
+          <span className="card-files">
+            up to {agent.max_iterations} rounds · from plugin {agent.plugin}
+          </span>
+        ) : (
+          <IterationField agent={agent} onChanged={onChanged} />
+        )}
         <span className="card-files">{meta.join(" · ")}</span>
       </div>
     </li>

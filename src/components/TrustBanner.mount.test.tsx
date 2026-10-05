@@ -22,6 +22,7 @@ const EMPTY: PendingConfig = {
   mcp_commands: [],
   hooks: 0,
   hook_commands: [],
+  plugins: [],
   instructions: 0,
   permission_rules: 0,
   providers: false,

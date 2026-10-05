@@ -665,6 +665,7 @@ mod tests {
             borrowed: false,
             shadows: None,
             degraded: None,
+            plugin: None,
         }
     }
 

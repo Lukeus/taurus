@@ -567,6 +567,7 @@ One `/` namespace covers both libraries, in the app and in `taurus run` alike:
 ```
 /speckit-specify add a dark mode toggle    # runs that skill's procedure
 /reviewer check the auth module            # hands the job to that sub-agent
+/ops:deploy staging                        # a plugin's skill, named under it
 ```
 
 The composer completes as you type `/` and tags each row **skill** or

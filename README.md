@@ -76,6 +76,7 @@ taurus run "summarize the modules in src/"      # one-shot
 taurus run --json "count the rust files" | jq   # for scripts
 taurus rewind --to last                         # undo what the last turn wrote
 taurus fork --at last                           # try it again, keeping the first try
+taurus plugin add <folder or git URL>           # a Claude Code plugin, as it is
 ```
 
 Both use `~/.taurus`, so they share providers, skills, and the permission
@@ -143,6 +144,7 @@ includes:
 - skills from `.claude/skills`, `.copilot/skills`, and `.github/skills`
 - sub-agents from Claude's and Copilot's own directories
 - MCP servers in the `mcpServers` format Claude Desktop uses
+- plugins in Claude Code's layout: their skills, agents and MCP servers
 
 A borrowed file is read and never rewritten. If you retune a Copilot agent,
 Taurus saves its own copy beside the original, and that copy takes precedence.
@@ -414,6 +416,9 @@ web search.
 - Everything the Settings drawer writes is a plain file the CLI reads too.
 - [**MCP servers**](docs/configuration.md#mcp-servers): add and test them in
   the app, in the same `mcpServers` format Claude Desktop uses.
+- [**Plugins**](docs/configuration.md#plugins): skills, sub-agents, MCP
+  servers and hooks under one name, in Claude Code's layout, installed from a
+  folder or a git URL and named under the plugin so they never collide.
 - [**Themes**](docs/configuration.md#themes): fourteen colors, three
   typefaces, a wordmark, and a corner radius, in a file you can commit. A
   workspace can carry its own, so a repo can brand the app for everyone who

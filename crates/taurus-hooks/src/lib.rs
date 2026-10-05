@@ -15,5 +15,7 @@
 pub mod config;
 pub mod runner;
 
-pub use config::{config_file, load, merge, Hook, HookConfig, HookEntry, HookEvent, Match};
+pub use config::{
+    config_file, load, load_file, merge, Hook, HookConfig, HookEntry, HookEvent, Match,
+};
 pub use runner::{HookPayload, HookRunner, HookSummary, Outcome, DENY};

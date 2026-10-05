@@ -55,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         borrowed: false,
         tier: AgentTier::Project,
         dir: agents_dir,
+        plugin: None,
     }]);
     for problem in &problems {
         println!("problem: {problem}");

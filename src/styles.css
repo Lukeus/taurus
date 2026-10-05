@@ -7201,6 +7201,22 @@ button.link:where(:not(.excalidraw *)):hover {
   color: var(--text);
 }
 
+/* The Plugins drawer's add form: a folder or URL, an optional ref, a scope. */
+.plugin-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* A plugin's card is a run of short facts, so they sit together rather than
+   a paragraph's margin apart. */
+.plugin-card .card-body p {
+  margin: 0;
+}
+.plugin-add .card-row input:not([type="checkbox"]) {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ------------------------------------------------------- the MCP catalogue */
 
 .catalog-search {

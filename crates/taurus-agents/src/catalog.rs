@@ -24,6 +24,9 @@ pub struct AgentSource {
     /// This directory belongs to another client, so Taurus reads it and does
     /// not write to it. See [`AgentDefinition::borrowed`].
     pub borrowed: bool,
+    /// The plugin this directory belongs to. Its agents are named
+    /// `plugin:agent`. See [`AgentDefinition::plugin`].
+    pub plugin: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -88,6 +91,10 @@ impl AgentCatalog {
             for path in paths {
                 match load_agent(&path, source.tier, source.borrowed) {
                     Ok(mut agent) => {
+                        if let Some(plugin) = &source.plugin {
+                            agent.frontmatter.name = format!("{plugin}:{}", agent.name());
+                            agent.plugin = Some(plugin.clone());
+                        }
                         debug!(name = agent.name(), ?source.tier, "loaded agent");
                         agent.shadows = catalog.agents.get(agent.name()).map(|prior| prior.tier);
                         catalog.agents.insert(agent.name().to_string(), agent);
@@ -211,6 +218,7 @@ fn load_agent(path: &Path, tier: AgentTier, borrowed: bool) -> Result<AgentDefin
         borrowed,
         shadows: None,
         degraded: None,
+        plugin: None,
     })
 }
 
@@ -242,6 +250,7 @@ mod tests {
                 borrowed: false,
                 tier,
                 dir: dir.to_path_buf(),
+                plugin: None,
             })
             .collect()
     }

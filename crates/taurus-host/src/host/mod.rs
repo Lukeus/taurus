@@ -1127,10 +1127,15 @@ fn disable(registry: &mut ToolRegistry, disabled: &[String]) -> Vec<String> {
 /// the config layer on both sides of the comparison, so that change registers
 /// as a change.
 fn hook_freshness(workspace: &Path) -> Freshness {
-    let files: Vec<PathBuf> = config::config_dirs(Some(workspace))
+    let mut files: Vec<PathBuf> = config::config_dirs(Some(workspace))
         .iter()
         .map(|dir| taurus_hooks::config_file(dir))
         .collect();
+    // And every active plugin's. A plugin switched on or off changes which
+    // files are in this list, which registers as a change too.
+    for plugin in crate::plugins::active(crate::trust::for_reading(Some(workspace))) {
+        files.extend(plugin.hook_files().iter().cloned());
+    }
     Freshness::of_files(files.iter().map(PathBuf::as_path))
 }
 

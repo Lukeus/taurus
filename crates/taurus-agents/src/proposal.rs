@@ -277,6 +277,7 @@ mod tests {
             borrowed: false,
             tier: AgentTier::User,
             dir: dir.path().to_path_buf(),
+            plugin: None,
         }]);
         assert!(problems.is_empty(), "{problems:?}");
         (catalog, dir)
@@ -370,6 +371,7 @@ mod tests {
             borrowed: false,
             tier: AgentTier::User,
             dir: dir.path().to_path_buf(),
+            plugin: None,
         }]);
         assert!(problems.is_empty(), "{problems:?}");
         let saved = catalog.get("diff-reviewer").expect("not on the roster");
