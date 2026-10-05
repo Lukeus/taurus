@@ -89,6 +89,33 @@ pub async fn fork_turn(
     Ok(forked)
 }
 
+/// Starts a new conversation from just before the transcript turn `turn_id`,
+/// keeping this one. The turn may be one that changed no files, which is what
+/// lets a question be edited in a fork wherever it is in the conversation.
+///
+/// Refused under a running turn, as [`fork_turn`] is.
+#[tauri::command]
+pub async fn fork_before(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    turn_id: String,
+) -> CmdResult<taurus_host::Forked> {
+    if let Ok(entry) = state.session(&session_id) {
+        let _ = entry.idle("stop it before forking")?;
+    }
+    let workspace = session_workspace(&state, &session_id).await;
+    let store = state.host.checkpoints_for(&workspace);
+    let forked = {
+        let session_id = session_id.clone();
+        off_runtime(move || {
+            taurus_host::fork::fork_before(&store, &workspace, &session_id, &turn_id, false)
+        })
+        .await?
+    };
+    emit_changed(&state, &session_id).await;
+    Ok(forked)
+}
+
 /// Puts a conversation's files back, setting aside whichever branch of it is
 /// in the workspace now.
 #[tauri::command]

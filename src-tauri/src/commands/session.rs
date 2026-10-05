@@ -108,6 +108,9 @@ pub struct ResumedSession {
     /// the transcript came before it — so a reopened conversation shows the
     /// change where it happened rather than only what it ended on.
     pub switches: Vec<Switch>,
+    /// Where each request starts, positioned the way `switches` are, so each
+    /// question on screen knows the turn a fork made from it names.
+    pub turns: Vec<taurus_host::TurnMark>,
     /// The turn that ended before its work did — the process died in it, or
     /// it ran out of round trips — when this conversation's transcript ends in
     /// one. `None` for one that finished, and for one whose turn is running
@@ -203,7 +206,7 @@ pub async fn resume_session(
 ) -> CmdResult<ResumedSession> {
     // `loaded` is carried alongside so the log below can be opened on the
     // transcript this was actually read from — see `SessionLog::resume`.
-    let (session, provider_id, switches, loaded) = match state.sessions.get(&session_id) {
+    let (session, provider_id, switches, turns, loaded) = match state.sessions.get(&session_id) {
         Some(open) => {
             let entry = open.clone();
             // Reopening is the opposite of letting go: a conversation released
@@ -225,7 +228,11 @@ pub async fn resume_session(
             // stream carries on appending from there.
             let live = entry.session.try_lock().ok().map(|s| s.clone());
             match live {
-                Some(session) => (session, provider_id, switches, None),
+                Some(session) => {
+                    // The log's lock is held a line at a time, never for a turn.
+                    let turns = entry.log.lock().await.marks().to_vec();
+                    (session, provider_id, switches, turns, None)
+                }
                 None => {
                     let id = session_id.clone();
                     let loaded = off_runtime(move || sessions::load(&id)).await?;
@@ -236,7 +243,7 @@ pub async fn resume_session(
                     // interrupted one.
                     let mut session = loaded.session;
                     session.interrupted = None;
-                    (session, provider_id, switches, None)
+                    (session, provider_id, switches, loaded.turns, None)
                 }
             }
         }
@@ -260,7 +267,14 @@ pub async fn resume_session(
                 )
                 .await?;
             let switches = loaded.switches.clone();
-            (loaded.session.clone(), resolved, switches, Some(loaded))
+            let turns = loaded.turns.clone();
+            (
+                loaded.session.clone(),
+                resolved,
+                switches,
+                turns,
+                Some(loaded),
+            )
         }
     };
 
@@ -308,6 +322,7 @@ pub async fn resume_session(
         context_length: capabilities.context_length,
         messages: session.messages.clone(),
         switches: switches.clone(),
+        turns,
         interrupted: session.interrupted.as_ref().map(InterruptedTurn::from),
         delegates,
     };

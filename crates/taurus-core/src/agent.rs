@@ -528,6 +528,12 @@ impl Agent {
         if let Some(recorder) = &self.recorder {
             recorder.turn_started(&turn_id, continues).await;
         }
+        let _ = ui
+            .send(UiEvent::TurnStarted {
+                id: turn_id.clone(),
+                continues,
+            })
+            .await;
         // The same id on the turn's checkpoint, so what the turn changed can
         // be found beside what it said about it. First name wins, so a
         // delegate's own turn doesn't rename its parent's.

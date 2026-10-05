@@ -7051,21 +7051,47 @@ button.link:where(:not(.excalidraw *)):hover {
  * of controls. Kept in the layout at all times — visibility, not display — so
  * revealing it never reflows the sentence beside it.
  */
-.prompt-edit {
+/* A review finding, with its fork offered on hover the way a question's Edit
+   is. Each finding is its own stretch of Markdown, so the list it came from
+   is drawn as one by taking the gaps out between them. */
+.review-finding {
+  position: relative;
+}
+.review-finding .markdown > ol,
+.review-finding .markdown > ul {
+  margin-block: 0.25em;
+}
+.review-fork {
   position: absolute;
   top: 0;
   right: 0;
+  opacity: 0;
+  transition: opacity var(--hover) var(--ease);
+}
+.review-finding:hover .review-fork,
+.review-fork:focus-visible {
+  opacity: 1;
+}
+
+.prompt-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--hover) var(--ease);
+}
+.prompt-edit {
   padding: 2px 8px;
   font-size: 11.5px;
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
   background: var(--bg-raised);
   color: var(--text-dim);
-  opacity: 0;
-  transition: opacity var(--hover) var(--ease);
 }
-.turn-step.prompt:hover .prompt-edit,
-.prompt-edit:focus-visible {
+.turn-step.prompt:hover .prompt-actions,
+.prompt-actions:focus-within {
   opacity: 1;
 }
 .prompt-edit:hover {

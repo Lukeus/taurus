@@ -351,6 +351,7 @@ pub fn run() {
             commands::list_checkpoints,
             commands::rewind_to,
             commands::fork_turn,
+            commands::fork_before,
             commands::switch_to,
             commands::turn_changes,
             commands::review_turn,

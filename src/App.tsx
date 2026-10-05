@@ -55,6 +55,7 @@ import type {
   Theme,
 } from "./lib/api";
 import { basename, plural } from "./lib/format";
+import { withFinding } from "./lib/findings";
 import { extend, sameJobs } from "./lib/jobs";
 import { useStable } from "./lib/stable";
 import { onTabKeys } from "./lib/tabs";
@@ -202,6 +203,7 @@ export default function App() {
       continueInterrupted: s.continueInterrupted,
       away: s.away,
       fork: s.fork,
+      forkBefore: s.forkBefore,
       switchHere: s.switchHere,
       unqueue: s.unqueue,
       stop: s.stop,
@@ -1344,6 +1346,22 @@ export default function App() {
               // way every other offered sentence does, added to whatever is
               // already there rather than replacing it.
               onEditPrompt={ask}
+              // The edit that rewrites nothing: a new conversation from just
+              // before the question, with the question in its box. Not under
+              // a running turn, and not from a branch whose files are set
+              // aside, both of which the backend refuses.
+              onForkPrompt={
+                store.busy || store.away
+                  ? undefined
+                  : async (turn, text) => {
+                      try {
+                        await store.forkBefore(store.session!.id, turn);
+                        setDraft({ text });
+                      } catch (e) {
+                        useStore.setState({ error: String(e) });
+                      }
+                    }
+              }
               empty={
                 <FirstRun
                   workspace={workspace}
@@ -1413,9 +1431,13 @@ export default function App() {
                     onClose={() => setChangesOpen(false)}
                     // The new conversation opens with the question it was
                     // forked before, ready to be asked again or differently.
-                    onFork={async (turn) => {
+                    // From a review finding, the question carries what the
+                    // review found, for the second attempt to take in.
+                    onFork={async (turn, finding) => {
                       const forked = await store.fork(store.session!.id, turn);
-                      setDraft({ text: forked.prompt });
+                      setDraft({
+                        text: finding ? withFinding(forked.prompt, finding) : forked.prompt,
+                      });
                       return forked;
                     }}
                   />

@@ -29,6 +29,7 @@ type Options = {
   busy?: boolean;
   onRetry?: () => void;
   onEditPrompt?: (text: string) => void;
+  onForkPrompt?: (turn: string, text: string) => void;
 };
 
 function mount(entries: Entry[], options: Options = {}) {
@@ -44,6 +45,7 @@ function mount(entries: Entry[], options: Options = {}) {
         onAnswer={() => {}}
         onRetry={opts.onRetry}
         onEditPrompt={opts.onEditPrompt}
+        onForkPrompt={opts.onForkPrompt}
       />,
     );
 
@@ -221,6 +223,36 @@ describe("asking something again", () => {
       { onEditPrompt: () => {} },
     );
     expect(host.querySelectorAll(".prompt-edit")).toHaveLength(2);
+  });
+});
+
+describe("editing a question in a fork", () => {
+  it("names the question's turn, and is offered only where the turn is known", () => {
+    // A question from a transcript recorded before turns had ids has nothing
+    // to fork before, so it has no button rather than one that would fail.
+    const forked: [string, string][] = [];
+    const { host, click } = mount(
+      [
+        { kind: "user", id: "u1", text: "old question" },
+        said("a1", "ok"),
+        { kind: "user", id: "u2", text: "add a login check", turn: "t2" },
+      ],
+      { onEditPrompt: () => {}, onForkPrompt: (turn, text) => forked.push([turn, text]) },
+    );
+
+    const forks = host.querySelectorAll(".prompt-fork");
+    expect(forks).toHaveLength(1);
+    click(forks[0]);
+    expect(forked).toEqual([["t2", "add a login check"]]);
+    // Edit is still on both: it only puts the words back.
+    expect(host.querySelectorAll(".prompt-edit:not(.prompt-fork)")).toHaveLength(2);
+  });
+
+  it("isn't offered where forking isn't", () => {
+    const { host } = mount([{ kind: "user", id: "u1", text: "q", turn: "t1" }], {
+      onEditPrompt: () => {},
+    });
+    expect(host.querySelector(".prompt-fork")).toBeNull();
   });
 });
 

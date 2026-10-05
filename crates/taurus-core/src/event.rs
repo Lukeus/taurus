@@ -13,6 +13,15 @@ use ts_rs::TS;
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum UiEvent {
+    /// A turn has begun, under the id its transcript and checkpoint records
+    /// carry. First, before anything else the turn sends, so a window can tie
+    /// the question it just drew to the turn answering it: that id is what a
+    /// fork made from the question names.
+    TurnStarted {
+        id: String,
+        /// It continues an interrupted turn rather than asking something new.
+        continues: bool,
+    },
     /// A new model request has started. `iteration` counts tool round-trips
     /// within one user turn, so the UI can show "still working" honestly.
     IterationStarted {

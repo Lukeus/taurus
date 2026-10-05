@@ -229,7 +229,8 @@ you put things back afterwards.
   touches is recorded first, so you can undo any turn.
 - [**Forking a turn**](docs/safety.md#forking-a-turn): try a turn again in a
   new conversation, a different way or on a different model, and switch back
-  to the first attempt with its files whenever you like.
+  to the first attempt with its files whenever you like. Edit any question
+  in a fork, or fork from what a review found.
 - [**Keeping a turn**](docs/safety.md#keeping-a-turn): read a turn back as a
   diff and commit it on its own.
 - [**Reviewing a turn**](docs/safety.md#reading-it-back-to-somebody-who-did-not-write-it):
