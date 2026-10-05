@@ -2970,3 +2970,202 @@ async fn a_read_only_call_that_asks_to_run_alone_does() {
     assert_eq!(most_at_once(true).await, 1);
     assert_eq!(most_at_once(false).await, 2);
 }
+
+fn relaying() -> AgentConfig {
+    AgentConfig {
+        context_strategy: taurus_core::ContextStrategy::Relay,
+        ..Default::default()
+    }
+}
+
+/// A history too big for an 8k window that trimming can't shrink, with one
+/// command in it so the brief has something to list.
+fn full_history() -> Session {
+    let mut session = Session::new("fake");
+    session.push(Message::user("Start on the report."));
+    session.push(Message::new(
+        Role::Assistant,
+        vec![ContentBlock::tool_use(
+            "c1",
+            "run_command",
+            serde_json::json!({ "command": "cargo test" }),
+        )],
+    ));
+    session.push(Message::new(
+        Role::User,
+        vec![ContentBlock::tool_result("c1", "Exit code 101\nfailures:")],
+    ));
+    for i in 0..6 {
+        session.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::text(format!(
+                "note {i} {}",
+                "z".repeat(4_000)
+            ))],
+        ));
+        session.push(Message::user(format!("more {i} {}", "y".repeat(4_000))));
+    }
+    session
+}
+
+fn brief_of(session: &Session) -> String {
+    session.messages[0].text()
+}
+
+#[tokio::test]
+async fn a_relay_replaces_the_whole_history_with_a_brief() {
+    let h = harness_with(
+        vec![
+            ScriptedTurn::text(
+                r#"{"goal":"Finish the report","learned":["The totals are off by one"],"next":"Fix sum() in report.py"}"#,
+            ),
+            ScriptedTurn::text("Done."),
+        ],
+        Box::new(AllowAll),
+        relaying(),
+        8_000,
+    );
+    let mut session = full_history();
+    let before = session.messages.len();
+
+    let (outcome, events) = run(&h, &mut session, "Finish the report.").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let relayed = events.iter().find_map(|e| match e {
+        UiEvent::Relayed {
+            leg,
+            messages_removed,
+            notes,
+        } => Some((*leg, *messages_removed, *notes)),
+        _ => None,
+    });
+    // Everything that was there, plus the message this turn added.
+    assert_eq!(relayed, Some((2, before + 1, true)), "{events:?}");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "a relay is instead of a summary, not beside one"
+    );
+
+    // The brief, then the answer the next leg gave from it.
+    assert_eq!(session.messages.len(), 2, "{:?}", session.messages);
+    let brief = brief_of(&session);
+    assert!(brief.contains("leg 2"), "{brief}");
+    assert!(brief.contains("Finish the report."), "{brief}");
+    assert!(brief.contains("The totals are off by one"), "{brief}");
+    assert!(brief.contains("Next: Fix sum() in report.py"), "{brief}");
+    assert!(brief.contains("- `cargo test` → exit 101"), "{brief}");
+    // The transcript offset moves with it, so a rewind still lines up.
+    assert_eq!(session.summarized_away, before);
+}
+
+#[tokio::test]
+async fn a_relay_goes_ahead_when_the_notes_cannot_be_written() {
+    let h = harness_with(
+        vec![
+            ScriptedTurn::permanent_failure(),
+            ScriptedTurn::text("Done."),
+        ],
+        Box::new(AllowAll),
+        relaying(),
+        8_000,
+    );
+    let mut session = full_history();
+
+    let (outcome, events) = run(&h, &mut session, "Finish the report.").await;
+    assert!(
+        outcome.is_ok(),
+        "the leg should go ahead without notes: {outcome:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Relayed { notes: false, .. })),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, UiEvent::Error { .. })),
+        "nothing failed that the user has to act on: {events:?}"
+    );
+    let brief = brief_of(&session);
+    assert!(brief.contains("None were written"), "{brief}");
+    assert!(brief.contains("- `cargo test` → exit 101"), "{brief}");
+}
+
+#[tokio::test]
+async fn a_model_repeating_itself_in_a_half_full_window_is_handed_over_early() {
+    let read = || ScriptedTurn::tool_call("r", "list_dir", serde_json::json!({ "path": "." }));
+    let h = harness_with(
+        vec![
+            read(),
+            read(),
+            read(),
+            read(),
+            ScriptedTurn::text(r#"{"goal":"g","learned":[],"next":"Answer"}"#),
+            ScriptedTurn::text("Done."),
+        ],
+        Box::new(AllowAll),
+        relaying(),
+        20_000,
+    );
+    // About 6,000 tokens of history, so with the tool schemas the window is
+    // past half its 15,000-token budget and nowhere near full.
+    let mut session = Session::new("fake");
+    session.push(Message::user("y".repeat(24_000)));
+    session.push(Message::new(
+        Role::Assistant,
+        vec![ContentBlock::text("ok")],
+    ));
+
+    let (outcome, events) = run(&h, &mut session, "What's here?").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(
+        events.iter().any(|e| matches!(e, UiEvent::Relayed { .. })),
+        "four identical reads in a half-full window should end the leg: {events:?}"
+    );
+    let brief = brief_of(&session);
+    assert!(brief.contains("You called `list_dir`"), "{brief}");
+}
+
+#[tokio::test]
+async fn repeating_itself_in_an_empty_window_is_not_a_reason_to_hand_over() {
+    let read = || ScriptedTurn::tool_call("r", "list_dir", serde_json::json!({ "path": "." }));
+    let h = harness_with(
+        vec![
+            read(),
+            read(),
+            read(),
+            read(),
+            read(),
+            ScriptedTurn::text("Done."),
+        ],
+        Box::new(AllowAll),
+        relaying(),
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "What's here?").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(
+        !events.iter().any(|e| matches!(e, UiEvent::Relayed { .. })),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_default_strategy_still_summarizes() {
+    let h = harness_with(
+        vec![ScriptedTurn::text("SUMMARY"), ScriptedTurn::text("Done.")],
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        8_000,
+    );
+    let mut session = full_history();
+    let (outcome, events) = run(&h, &mut session, "Finish the report.").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, UiEvent::Compacted { .. })));
+    assert!(!events.iter().any(|e| matches!(e, UiEvent::Relayed { .. })));
+}

@@ -142,6 +142,10 @@ pub struct AgentConfig {
     /// counts turns, and a prompt hook would be shown the parent's brief as if
     /// the user had typed it.
     pub turn_hooks: bool,
+    /// How a turn makes room once trimming old tool output isn't enough:
+    /// summarize the older history, or hand the task to a fresh context with a
+    /// brief. See [`crate::relay`].
+    pub context_strategy: crate::relay::ContextStrategy,
 }
 
 /// Asked once per turn, when the model stops having changed files it never
@@ -215,6 +219,7 @@ impl Default for AgentConfig {
             verify_changes: true,
             turn_hooks: true,
             capture: crate::telemetry::Capture::MetadataOnly,
+            context_strategy: crate::relay::ContextStrategy::Compact,
         }
     }
 }
@@ -546,8 +551,11 @@ impl Agent {
             (Some(previous), true) => previous.attempts + 1,
             _ => 1,
         };
+        // What the brief of a relay leg repeats as the request. A continued
+        // turn's message is the harness's own prompt, not the user's ask.
+        let request = (!continues).then(|| user_message.text());
         let outcome = self
-            .turn(session, user_message, ui.clone(), &pending)
+            .turn(session, user_message, request, ui.clone(), &pending)
             .instrument(span.clone())
             .await;
         if matches!(outcome, Err(AgentError::IterationLimit(_))) {
@@ -676,6 +684,7 @@ impl Agent {
         &self,
         session: &mut Session,
         user_message: Message,
+        request: Option<String>,
         ui: mpsc::Sender<UiEvent>,
         pending: &Arc<Pending>,
     ) -> Result<TurnOutcome, AgentError> {
@@ -737,6 +746,8 @@ impl Agent {
         // Whether a turn that could end through a tool — a delegate's
         // `finish` — has been asked to, having tried to stop in prose.
         let mut report_nudged = false;
+        // Only read under `ContextStrategy::Relay`; see `crate::relay`.
+        let mut relay = crate::relay::Relay::new(request);
 
         loop {
             if self.tools.cancel.is_cancelled() {
@@ -773,7 +784,9 @@ impl Agent {
                 return Err(AgentError::IterationLimit(self.config.max_iterations));
             }
 
-            summarizing = self.compact_if_needed(session, &ui, summarizing).await;
+            summarizing = self
+                .compact_if_needed(session, &ui, summarizing, &mut relay)
+                .await;
             let _ = ui.send(UiEvent::IterationStarted { iteration }).await;
 
             let (mut assistant, usage, stop) = self.stream_once(session, &ui).await?;
@@ -967,6 +980,10 @@ impl Agent {
                     0
                 }
             };
+
+            if self.config.context_strategy == crate::relay::ContextStrategy::Relay {
+                relay.observe_round(&assistant, repeats, &|name| self.is_read(name));
+            }
 
             session.push(Message::new(Role::User, results));
             // Once a round, so a long delegation that dies half way through
@@ -1630,7 +1647,9 @@ impl Agent {
         session: &mut Session,
         ui: &mpsc::Sender<UiEvent>,
         summarizing: Summarizing,
+        relay: &mut crate::relay::Relay,
     ) -> Summarizing {
+        let relaying = self.config.context_strategy == crate::relay::ContextStrategy::Relay;
         let Ok(caps) = self.provider.capabilities(&session.model).await else {
             return summarizing;
         };
@@ -1654,6 +1673,18 @@ impl Agent {
             })
             .await;
         if used < budget {
+            // A leg can end before the window is full, when the model is
+            // already showing what a full one does to it. See
+            // `Relay::due_early`.
+            if relaying && relay.due_early(used, budget) {
+                info!(
+                    used,
+                    budget,
+                    symptoms = relay.symptoms,
+                    "handing over early"
+                );
+                self.hand_over(session, ui, relay).await;
+            }
             return summarizing;
         }
 
@@ -1685,16 +1716,8 @@ impl Agent {
             return Summarizing::Failed;
         }
 
-        // Only a read-only tool answers the same question twice: a repeat of
-        // anything else is the model watching the world change, and the two
-        // results are both worth keeping. An unregistered name — an MCP server
-        // that went away, a transcript from another build — reads as unsafe.
-        let registry = &self.registry;
-        let repeats_supersede = |name: &str| {
-            registry
-                .get(name)
-                .is_some_and(|tool| tool.effect() == Effect::Read)
-        };
+        // See `Agent::is_read`.
+        let repeats_supersede = |name: &str| self.is_read(name);
         // The same boundary the summarizer will use, so the two passes cannot
         // disagree about which messages are the recent ones.
         let keep_tokens = budget / 2;
@@ -1724,6 +1747,14 @@ impl Agent {
             .saturating_add(overhead)
             < budget
         {
+            return summarizing;
+        }
+
+        // A handover can't fail the way a summary can: the parts of the brief
+        // the harness writes don't need a model, and the tail the size check
+        // below protects is dropped rather than kept.
+        if relaying {
+            self.hand_over(session, ui, relay).await;
             return summarizing;
         }
 
@@ -1841,25 +1872,119 @@ impl Agent {
         })
     }
 
+    /// Whether a repeat of this tool asks the same question twice.
+    ///
+    /// Only a read-only tool does: a repeat of anything else is the model
+    /// watching the world change, and the two results are both worth keeping.
+    /// An unregistered name — an MCP server that went away, a transcript from
+    /// another build — reads as unsafe.
+    fn is_read(&self, name: &str) -> bool {
+        self.registry
+            .get(name)
+            .is_some_and(|tool| tool.effect() == Effect::Read)
+    }
+
+    /// Replaces the whole history with a brief, and starts the next leg.
+    ///
+    /// The notes are the only part that costs a request, and the only part
+    /// that can fail. When they do, the brief says so and goes out anyway:
+    /// everything else in it is exact.
+    async fn hand_over(
+        &self,
+        session: &mut Session,
+        ui: &mpsc::Sender<UiEvent>,
+        relay: &mut crate::relay::Relay,
+    ) {
+        let messages = session.messages.clone();
+        // The leg this starts. The turn's first leg is leg 1.
+        let leg = relay.handovers + 2;
+        info!(
+            leg,
+            messages = messages.len(),
+            "handing the turn to a fresh context"
+        );
+        let notes = self
+            .ask_for_json(
+                &session.model,
+                messages.clone(),
+                crate::relay::NOTES_SYSTEM,
+                "Write those notes now, as described in the system prompt.",
+                crate::relay::notes_schema(),
+            )
+            .await
+            .and_then(|text| {
+                crate::relay::parse_notes(&text).ok_or_else(|| "the model returned nothing".into())
+            });
+        if let Err(reason) = &notes {
+            warn!(%reason, "handover notes could not be written; handing over without them");
+        }
+        let wrote_notes = notes.is_ok();
+
+        relay.collect_commands(&messages);
+        let files = match &self.tools.checkpoints {
+            Some(recorder) => recorder.changed_paths().await,
+            None => Vec::new(),
+        };
+        let brief = crate::relay::brief(&crate::relay::Baton {
+            leg,
+            request: relay.request.as_deref(),
+            notes,
+            files: &files,
+            commands: &relay.commands,
+            messages: &messages,
+        });
+        session.summarize_front(messages.len(), Message::user(brief));
+        relay.start_leg();
+
+        let _ = ui
+            .send(UiEvent::Relayed {
+                leg,
+                messages_removed: messages.len(),
+                notes: wrote_notes,
+            })
+            .await;
+    }
+
     /// The older half of the conversation, in one paragraph, or why not.
     ///
     /// The reason comes back rather than being dropped because it is the only
     /// account of a request the user never sees listed: the summarizer's turn
     /// is not in the transcript, so a failure here has no other way to be read.
     async fn summarize(&self, model: &str, messages: Vec<Message>) -> Result<String, String> {
-        let mut request = ChatRequest::new(model, messages).with_response_schema(summary_schema());
-        request.system = Some(
-            "Summarize the conversation so far for your own future reference, as JSON matching \
-             the schema. `goal` is what the user is trying to achieve, in one sentence. \
-             `decisions` is what was settled and must not be reopened. `files` names every file \
-             read or changed. `outstanding` is what is left to do — leave it empty only if the \
-             work is genuinely finished. Drop pleasantries and superseded detail. Keep each entry \
-             to a line."
-                .into(),
-        );
-        request.messages.push(Message::user(
-            "Write that summary now, as described in the system prompt.",
-        ));
+        let text = self
+            .ask_for_json(
+                model,
+                messages,
+                "Summarize the conversation so far for your own future reference, as JSON \
+                 matching the schema. `goal` is what the user is trying to achieve, in one \
+                 sentence. `decisions` is what was settled and must not be reopened. `files` \
+                 names every file read or changed. `outstanding` is what is left to do — leave \
+                 it empty only if the work is genuinely finished. Drop pleasantries and \
+                 superseded detail. Keep each entry to a line.",
+                "Write that summary now, as described in the system prompt.",
+                summary_schema(),
+            )
+            .await?;
+        if text.trim().is_empty() {
+            return Err("the model returned an empty summary".into());
+        }
+        Ok(render_summary(&text))
+    }
+
+    /// One request outside the turn, over `messages`, with the answer shaped
+    /// by `schema` where the backend can enforce one. Carries no tools, so it
+    /// costs the history and nothing else.
+    async fn ask_for_json(
+        &self,
+        model: &str,
+        messages: Vec<Message>,
+        system: &str,
+        instruction: &str,
+        schema: serde_json::Value,
+    ) -> Result<String, String> {
+        let mut request = ChatRequest::new(model, messages).with_response_schema(schema);
+        request.system = Some(system.into());
+        request.messages.push(Message::user(instruction));
 
         let (tx, mut rx) = mpsc::channel(64);
         let provider = self.provider.clone();
@@ -1875,12 +2000,7 @@ impl Agent {
             Ok(Err(e)) => return Err(e.to_string()),
             Ok(Ok(_)) => {}
         }
-
-        let text = acc.finish().0.text();
-        if text.trim().is_empty() {
-            return Err("the model returned an empty summary".into());
-        }
-        Ok(render_summary(&text))
+        Ok(acc.finish().0.text())
     }
 }
 

@@ -505,6 +505,16 @@ GEMINI_API_KEY=…    cargo run -p taurus-provider-gemini    --example gemini-sm
 # The whole harness: read files, write a file, report what happened.
 cargo run -p taurus-core --example e2e -- qwen3.6:27b
 
+# The two context strategies on one long task: eight Python functions, a spec,
+# 25 tests, worked one function at a time through the same agent the app
+# builds. Each strategy runs `runs` times (2 by default), alternating, at a
+# window set small on purpose (12,288 by default) so the turn outgrows it.
+# Prints tests passing, rounds, summaries, handovers, tokens and wall time per
+# run, then the means. A measurement, not a gate. A model that thinks at
+# length needs a bigger window than the default: ornith-1.5:9b ends on
+# MaxTokens in its second round at 12k under either strategy.
+cargo run -p taurus-host --example relay -- ornith-1.5:9b 2 20480
+
 # Forking, end to end through the real CLI, under a throwaway TAURUS_HOME so
 # your own last-workspace setting isn't touched. Two turns, a fork before the
 # second, a different second turn on the fork, the original refusing a turn,

@@ -407,6 +407,21 @@ the backlog, and they're the minority.
   The Memory drawer is where you remove a stale one. Expiring notes
   automatically would need a model of what each note is *about*, which is a
   bigger claim than a line of prose supports.
+- **Relaying a long turn is off by default, because it isn't proven yet.**
+  `context_strategy: relay` hands a turn that outgrows its window to a fresh
+  context with a brief, instead of summarizing. The measurement that would
+  justify turning it on, one long task run under both strategies on a 9B
+  model (`cargo run -p taurus-host --example relay`), isn't conclusive yet.
+  At a 12k window, `ornith-1.5:9b` ends on `MaxTokens` in its second round
+  under either strategy, before the window has filled once, so the comparison
+  needs about 20k. The 50%-of-window threshold for an early handover is a
+  starting value, not a measured one. Two more limits:
+  - The notes request, like the compaction summary, sits outside the turn's
+    token accounting, so neither strategy's billed tokens include it.
+  - A handover drops earlier turns of the conversation too. The model's notes
+    carry what matters from them, and a continued turn's brief can't repeat
+    the original request because the turn's message is the harness's own
+    "carry on" prompt.
 - **Nothing makes a model plan.** `update_plan` is offered and the prompt says
   when to use it, and that's as far as the harness's leverage goes. On a
   five-step mechanical task, neither `qwen3.6:27b` nor `qwen3.5:9b` called it

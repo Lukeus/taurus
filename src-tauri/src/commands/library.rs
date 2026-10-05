@@ -490,6 +490,16 @@ pub async fn respond_agent_proposal(
 /// Turns the terminal's shell integration on or off. See
 /// [`taurus_host::Host::set_shell_integration`].
 #[tauri::command]
+pub async fn set_context_strategy(
+    state: State<'_, Arc<AppState>>,
+    strategy: taurus_core::ContextStrategy,
+) -> CmdResult<()> {
+    state.host.set_context_strategy(strategy).await;
+    emit_status(&state).await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn set_shell_integration(
     state: State<'_, Arc<AppState>>,
     enabled: bool,
