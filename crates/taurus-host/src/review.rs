@@ -71,6 +71,7 @@ use taurus_core::Session;
 use taurus_provider::{ContentBlock, Message, Provider};
 use taurus_tools::checkpoint::TurnChange;
 use taurus_tools::diff::{DiffLineKind, FileDiff};
+use taurus_tools::Checkpoint;
 use taurus_tools::{ToolContext, ToolRegistry};
 
 /// How much diff the reviewer is given.
@@ -493,19 +494,34 @@ fn reviews_path(workspace: &Path, session_id: &str) -> Option<PathBuf> {
     )
 }
 
-/// Gives a fork the reviews its source had.
+/// Gives a fork the reviews its source had of the turns it copied: those
+/// numbered below `before`, the first turn it didn't.
 ///
-/// Every review is keyed by a fingerprint of what it was sent, so carrying all
-/// of them is safe: one is only ever shown again for a turn whose diff and
-/// claims are the same, which in a fork means one of the turns it copied.
-/// Best-effort, like the reviews themselves: a fork without them asks again.
-pub(crate) fn copy_reviews(workspace: &Path, from: &str, to: &str) {
+/// A review of a later turn stays behind. The fork's own turns take those
+/// numbers, and a review carried under one would read as the fork's. The
+/// fingerprint keeps a carried review from being *returned* for the wrong
+/// diff, but a listing by turn has no fingerprint to check. Best-effort, like
+/// the reviews themselves: a fork without them asks again.
+pub(crate) fn copy_reviews(workspace: &Path, from: &str, to: &str, before: u32) {
     let (Some(source), Some(target)) = (reviews_path(workspace, from), reviews_path(workspace, to))
     else {
         return;
     };
-    if source.is_file() {
-        let _ = std::fs::copy(&source, &target);
+    let Ok(text) = std::fs::read_to_string(&source) else {
+        return;
+    };
+    let kept: String = text
+        .lines()
+        .filter(|line| {
+            serde_json::from_str::<ReviewReport>(line).is_ok_and(|report| report.turn < before)
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
+    if !kept.is_empty() {
+        if let Some(dir) = target.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&target, kept);
     }
 }
 
@@ -523,6 +539,34 @@ pub fn stored(workspace: &Path, session_id: &str, fingerprint: &str) -> Option<R
             cached: true,
             ..report
         })
+}
+
+/// The latest review kept for each of `turns`, oldest turn first. A turn
+/// nobody reviewed has none.
+///
+/// Matched by turn number. A fork carries only the reviews of the turns it
+/// copied (see [`copy_reviews`]), so a number means the same turn in both.
+/// A fork made before that rule carried all of them, so a review is also
+/// matched only to a turn it doesn't predate: one that came first can't be
+/// of the turn it's numbered like.
+pub fn kept(workspace: &Path, session_id: &str, turns: &[Checkpoint]) -> Vec<ReviewReport> {
+    let Some(file) = reviews_path(workspace, session_id).and_then(|p| std::fs::File::open(p).ok())
+    else {
+        return Vec::new();
+    };
+    let all: Vec<ReviewReport> = BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<ReviewReport>(&line).ok())
+        .collect();
+    turns
+        .iter()
+        .filter_map(|turn| {
+            all.iter()
+                .rfind(|report| report.turn == turn.turn && report.at >= turn.at)
+                .cloned()
+        })
+        .collect()
 }
 
 /// Keeps a review. A failure is logged and otherwise ignored: losing the copy
@@ -572,7 +616,7 @@ fn render(changes: Vec<TurnChange>) -> Rendered {
             // that can be done with it.
             TurnChange::Opaque { path, .. } => omitted.push(path),
             TurnChange::Diff { diff } => {
-                let rendered = one_file(&diff);
+                let rendered = unified(&diff);
                 // Checked before appending rather than truncating mid-hunk: a
                 // diff cut in the middle reads as a change that ends where it
                 // does, and a reviewer would report on the half it was given.
@@ -593,12 +637,13 @@ fn render(changes: Vec<TurnChange>) -> Rendered {
     }
 }
 
-/// One file's diff, in unified form.
+/// One file's diff, in unified form. Also how `taurus fork --compare` prints
+/// the files two branches disagree on.
 ///
 /// The line numbers come from the hunk's own lines rather than a header this
 /// would have to compute, which is what lets a reviewer say "line 91" and mean
 /// the file rather than the diff.
-fn one_file(diff: &FileDiff) -> String {
+pub fn unified(diff: &FileDiff) -> String {
     let mut out = String::new();
     let verb = if diff.created {
         " (new file)"
@@ -673,7 +718,7 @@ mod tests {
     fn a_hunk_carries_the_line_the_file_would_show() {
         // A reviewer that says "line 91" has to mean the file, not the ninety
         // first line of the diff it was handed.
-        let rendered = one_file(&diff(
+        let rendered = unified(&diff(
             "src/lib.rs",
             vec![
                 line(DiffLineKind::Context, "fn main() {", Some(90), Some(90)),
@@ -753,7 +798,7 @@ mod tests {
             vec![line(DiffLineKind::Added, "x", None, Some(1))],
         );
         d.elided = 40;
-        let rendered = one_file(&d);
+        let rendered = unified(&d);
         assert!(rendered.contains("40 further changed lines"), "{rendered}");
     }
 
@@ -764,14 +809,14 @@ mod tests {
             vec![line(DiffLineKind::Added, "x", None, Some(1))],
         );
         created.created = true;
-        assert!(one_file(&created).contains("(new file)"));
+        assert!(unified(&created).contains("(new file)"));
 
         let mut deleted = diff(
             "old.rs",
             vec![line(DiffLineKind::Removed, "x", Some(1), None)],
         );
         deleted.deleted = true;
-        assert!(one_file(&deleted).contains("(deleted)"));
+        assert!(unified(&deleted).contains("(deleted)"));
     }
 
     fn turn_with_claims() -> Vec<Message> {

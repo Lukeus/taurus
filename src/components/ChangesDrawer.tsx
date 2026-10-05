@@ -4,13 +4,17 @@ import * as api from "../lib/api";
 import type {
   Checkpoint,
   Commit,
+  Comparison,
   Forked,
+  SessionMeta,
+  Side,
   RepoStatus,
   Restored,
   ReviewReport,
   Rewind,
   TurnChange,
 } from "../lib/api";
+import { branchLabel } from "../lib/branches";
 import { plural, when } from "../lib/format";
 import { hasFindings, reviewParts } from "../lib/findings";
 import { DiffView } from "./DiffView";
@@ -49,6 +53,8 @@ export function ChangesDrawer({
   busy,
   onClose,
   onFork,
+  branches = [],
+  onOpenBranch,
 }: {
   sessionId: string;
   busy: boolean;
@@ -63,6 +69,13 @@ export function ChangesDrawer({
    * wrong with the first.
    */
   onFork?: (turn: number, finding?: string) => Promise<Forked>;
+  /**
+   * The other branches of this conversation, from the rail's listing. With
+   * one or more, the pane offers to compare this branch with each of them.
+   */
+  branches?: SessionMeta[];
+  /** Opens another branch, where its own pane and banner take over. */
+  onOpenBranch?: (id: string) => void;
 }) {
   const [turns, setTurns] = useState<Checkpoint[] | null>(null);
   const [repo, setRepo] = useState<RepoStatus | null>(null);
@@ -252,6 +265,15 @@ export function ChangesDrawer({
             <Everything sessionId={sessionId} turns={turns.length} />
           )}
 
+          {branches.length > 0 && (
+            <Branches
+              key={sessionId}
+              sessionId={sessionId}
+              branches={branches}
+              onOpen={onOpenBranch}
+            />
+          )}
+
           <ul className="card-list">
             {turns
               ?.slice()
@@ -399,6 +421,149 @@ export function ChangesDrawer({
             before it runs.
           </p>
         </aside>
+  );
+}
+
+/**
+ * This branch beside another one of the same conversation.
+ *
+ * Folded to one row per branch until one is picked, like `Everything`: a
+ * comparison reads every file both branches touched. What it shows is what
+ * each did since they parted, what that cost, which of its turns a review
+ * has read, and how the files differ now, all without switching. The files
+ * are a diff from this branch's to the other's, which is what switching to it
+ * would do to the workspace.
+ */
+function Branches({
+  sessionId,
+  branches,
+  onOpen,
+}: {
+  sessionId: string;
+  branches: SessionMeta[];
+  onOpen?: (id: string) => void;
+}) {
+  const [other, setOther] = useState<string | null>(null);
+  const [compared, setCompared] = useState<Comparison | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!other) return;
+    let live = true;
+    setCompared(null);
+    setError(null);
+    api
+      .compareBranches(sessionId, other)
+      .then((result) => live && setCompared(result))
+      .catch((e) => live && setError(String(e)));
+    return () => {
+      live = false;
+    };
+  }, [sessionId, other]);
+
+  return (
+    <section className="section branches">
+      <p className="micro">Other branches of this conversation</p>
+      <ul className="branch-list">
+        {branches.map((branch) => (
+          <li key={branch.id} className="branch-row">
+            <span className="card-title">{branch.title || branch.id}</span>
+            <span className="card-files">
+              {branchLabel(branch)} · {when(branch.updated)}
+            </span>
+            <div className="spacer" />
+            <button
+              className="quiet"
+              aria-expanded={other === branch.id}
+              onClick={() => setOther(other === branch.id ? null : branch.id)}
+              data-tip="What each did since they parted, and how their files differ, without switching"
+            >
+              {other === branch.id ? "Hide" : "Compare"}
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {other && !compared && !error && <p className="card-files">Reading both branches…</p>}
+      {error && <Problem>{error}</Problem>}
+
+      {other && compared && (
+        <div className="comparison">
+          <p className="card-files">
+            They share {plural(compared.shared, "question")}. From there:
+          </p>
+          <BranchSide label="This branch" side={compared.a} />
+          <BranchSide label="That branch" side={compared.b} />
+
+          {compared.files.length === 0 ? (
+            <p className="card-files">Their files are the same.</p>
+          ) : (
+            <>
+              <p className="micro">
+                {plural(compared.files.length, "file")}{" "}
+                {compared.files.length === 1 ? "differs" : "differ"}, from this branch's to
+                that one's
+              </p>
+              {compared.files.map((change, i) =>
+                change.kind === "diff" ? (
+                  <DiffView key={i} diff={change.diff} />
+                ) : (
+                  <p key={i} className="card-files">
+                    <span className="tag warn">not shown</span> {change.path} —{" "}
+                    {change.reason}
+                  </p>
+                ),
+              )}
+            </>
+          )}
+
+          {onOpen && (
+            <div className="actions">
+              <button className="quiet" onClick={() => onOpen(other)}>
+                Open that branch
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** One side of a comparison: what it asked, changed and spent since the two
+ *  parted, and which of its turns were reviewed. */
+function BranchSide({ label, side }: { label: string; side: Side }) {
+  const reviewed = side.reviews.length;
+  return (
+    <div className="branch-side">
+      <div className="card-row">
+        <span className="micro">{label}</span>
+        <span className="tag">{side.on_disk ? "has the workspace" : "set aside"}</span>
+      </div>
+      {side.asked.length === 0 ? (
+        <p className="card-files">Asked nothing since.</p>
+      ) : (
+        <ol className="branch-asked">
+          {side.asked.map((asked, i) => (
+            <li key={i}>{asked}</li>
+          ))}
+        </ol>
+      )}
+      <p className="card-files">
+        {side.turns.length === 0
+          ? "Changed no files"
+          : `${plural(side.turns.length, "turn")} changed files`}
+        {side.turns.length > 0 &&
+          (reviewed === 0
+            ? ", none reviewed"
+            : `, ${reviewed} reviewed (${side.reviews
+                .map((review) => `turn ${review.turn} by ${review.model}`)
+                .join(", ")})`)}
+        {" · "}
+        {side.usage.input_tokens.toLocaleString()} in /{" "}
+        {side.usage.output_tokens.toLocaleString()} out
+      </p>
+    </div>
   );
 }
 

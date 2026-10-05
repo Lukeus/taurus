@@ -352,6 +352,7 @@ pub fn run() {
             commands::rewind_to,
             commands::fork_turn,
             commands::fork_before,
+            commands::compare_branches,
             commands::switch_to,
             commands::turn_changes,
             commands::review_turn,

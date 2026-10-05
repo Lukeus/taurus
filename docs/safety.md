@@ -793,6 +793,49 @@ plan carries the same warnings a rewind to that turn would: a commit that
 will be left behind, a turn that moved git's own state, a branch that has
 changed underneath.
 
+**Comparing two branches doesn't switch to either.** In **Changes**, a
+conversation with other branches lists them under **Other branches of this
+conversation**, each with **Compare**. On the command line:
+
+```bash
+taurus fork --id <ID> --compare <OTHER>
+```
+
+```
+Two branches of one conversation. They share 2 questions.
+
+  A  3fbe9c65-…  (has the workspace)
+     asked   Rewrite plan.txt as two lines: alpha, then gamma
+     turn 2   1 file
+     spent   47161 in / 294 out
+
+  B  dbfbbc2d-…  (set aside)
+     asked   Rewrite plan.txt as two lines: alpha, then beta
+     turn 2   1 file
+     spent   35294 in / 323 out
+
+1 file differs, from A to B:
+
+--- plan.txt
+@@ line 1 @@
+ alpha
+-gamma
++beta
+```
+
+For each branch, it shows what it asked since the two parted and which of
+its turns changed files. It also shows which of those turns a review has
+read, and what it spent: its running token total now, less the total both
+had when they parted. Then come the files whose latest state differs, as a
+diff from the first branch's to the second's, which is what switching would
+do to the workspace. Each side's files are read where they are: on disk for
+the branch that has the workspace, and from its set-aside for one that
+doesn't. Nothing is written.
+
+The same rule keeps a set-aside conversation's own **Changes** honest. Its
+latest turn's diff ends at what its set-aside kept, not at what's on disk,
+which is another branch's work.
+
 A conversation's checkpoint log only gains a newer format when it gains a
 set-aside. So a build from before forks existed refuses that one log, rather
 than misreading it, and goes on reading every conversation that was never
