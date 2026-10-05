@@ -3,13 +3,15 @@
 //! Listing is the default, the way `taurus rewind` lists. `--at N` starts a
 //! new conversation from just before turn N and puts the files back to that
 //! point; `--switch` puts a conversation's files back after another branch of
-//! it took the workspace. Neither asks first, unlike a rewind, because neither
-//! loses anything: whatever is on disk is set aside before it's written over,
-//! and a file that can't be set aside is left alone. See `taurus_host::fork`.
+//! it took the workspace; `--compare` sets two branches side by side without
+//! switching. Forking and switching don't ask first, unlike a rewind, because
+//! neither loses anything: whatever is on disk is set aside before it's
+//! written over, and a file that can't be set aside is left alone. See
+//! `taurus_host::fork`.
 
 use std::process::ExitCode;
 
-use taurus_host::{fork, sessions, Host, Restored};
+use taurus_host::{fork, review, sessions, Comparison, Host, Restored, TurnChange};
 
 use crate::rewind_cmd::{describe, resolve_turn, wrapped};
 
@@ -23,6 +25,9 @@ pub enum Action<'a> {
         ask: Option<&'a str>,
     },
     Switch,
+    Compare {
+        other: &'a str,
+    },
 }
 
 /// Forks, switches or lists, and says what the next step is.
@@ -140,6 +145,22 @@ pub async fn run(
             Ok((code, asking.map(|prompt| (new_id, prompt))))
         }
 
+        Action::Compare { other } => {
+            let compared = {
+                let (store, workspace, a, b) = (
+                    store.clone(),
+                    workspace.clone(),
+                    session_id.clone(),
+                    other.to_string(),
+                );
+                tokio::task::spawn_blocking(move || fork::compare(&store, &workspace, &a, &b))
+                    .await
+                    .map_err(|e| e.to_string())??
+            };
+            print_comparison(&compared);
+            Ok((ExitCode::SUCCESS, None))
+        }
+
         Action::Switch => {
             let switched = {
                 let (store, workspace, session_id) =
@@ -169,6 +190,79 @@ pub async fn run(
             Ok((exit_code(&switched.restored), None))
         }
     }
+}
+
+fn print_comparison(compared: &Comparison) {
+    println!(
+        "Two branches of one conversation. They share {}.\n",
+        plural(compared.shared as usize, "question")
+    );
+    for (mark, side) in [("A", &compared.a), ("B", &compared.b)] {
+        let place = if side.on_disk {
+            "has the workspace"
+        } else {
+            "set aside"
+        };
+        println!("  {mark}  {}  ({place})", side.id);
+        if side.asked.is_empty() {
+            println!("     Asked nothing since they parted.");
+        }
+        for asked in &side.asked {
+            println!("     asked   {}", first_line(asked));
+        }
+        for turn in &side.turns {
+            let reviewed = side
+                .reviews
+                .iter()
+                .find(|review| review.turn == turn.turn)
+                .map(|review| format!(", reviewed by {}", review.model))
+                .unwrap_or_default();
+            println!(
+                "     turn {:<3} {}{reviewed}",
+                turn.turn,
+                plural(turn.files.len(), "file")
+            );
+        }
+        println!(
+            "     spent   {} in / {} out\n",
+            side.usage.input_tokens, side.usage.output_tokens
+        );
+    }
+
+    if compared.files.is_empty() {
+        println!("Their files are the same.");
+        return;
+    }
+    let n = compared.files.len();
+    println!(
+        "{} {}, from A to B:\n",
+        plural(n, "file"),
+        if n == 1 { "differs" } else { "differ" }
+    );
+    for change in &compared.files {
+        match change {
+            TurnChange::Diff { diff } => print!("{}", review::unified(diff)),
+            TurnChange::Opaque { path, reason } => println!("--- {path}: {reason}\n"),
+        }
+    }
+    for side in [&compared.a, &compared.b] {
+        if !side.on_disk {
+            println!(
+                "Switch to {}:  taurus fork --switch --id {}",
+                side.id, side.id
+            );
+        }
+    }
+}
+
+/// "1 file", "3 files".
+fn plural(n: usize, what: &str) -> String {
+    format!("{n} {what}{}", if n == 1 { "" } else { "s" })
+}
+
+/// A question's first line, for a listing.
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or_default()
 }
 
 fn print_outcomes(restored: &[Restored]) {

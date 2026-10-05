@@ -116,6 +116,8 @@ import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
 import type { TerminalEvent } from "../bindings/TerminalEvent";
 import type { Forked } from "../bindings/Forked";
+import type { Comparison } from "../bindings/Comparison";
+import type { Side } from "../bindings/Side";
 import type { ForkedFrom } from "../bindings/ForkedFrom";
 import type { TurnMark } from "../bindings/TurnMark";
 import type { Switched } from "../bindings/Switched";
@@ -266,6 +268,8 @@ export type {
   Switch,
   TerminalEvent,
   Forked,
+  Comparison,
+  Side,
   ForkedFrom,
   TurnMark,
   Switched,
@@ -1044,6 +1048,14 @@ export const forkTurn = (sessionId: string, turn: number) =>
  */
 export const forkBefore = (sessionId: string, turnId: string) =>
   invoke<Forked>("fork_before", { sessionId, turnId });
+
+/**
+ * Two branches of one conversation side by side, without switching: what
+ * each did since they parted, and their files' differences from this one's
+ * to `other`'s. See `taurus_host::fork::compare`.
+ */
+export const compareBranches = (sessionId: string, other: string) =>
+  invoke<Comparison>("compare_branches", { sessionId, other });
 
 /** Puts a conversation's files back, setting aside the branch of it that's
  *  in the workspace now. */

@@ -116,6 +116,21 @@ pub async fn fork_before(
     Ok(forked)
 }
 
+/// Sets two branches of one conversation side by side without switching:
+/// what each did since they parted, and how their files differ now. Only
+/// reads, so it's offered under a running turn too; the branch that's
+/// running is read as it stands.
+#[tauri::command]
+pub async fn compare_branches(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    other: String,
+) -> CmdResult<taurus_host::Comparison> {
+    let workspace = session_workspace(&state, &session_id).await;
+    let store = state.host.checkpoints_for(&workspace);
+    off_runtime(move || taurus_host::fork::compare(&store, &workspace, &session_id, &other)).await
+}
+
 /// Puts a conversation's files back, setting aside whichever branch of it is
 /// in the workspace now.
 #[tauri::command]

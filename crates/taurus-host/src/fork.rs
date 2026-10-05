@@ -41,10 +41,12 @@
 use std::path::Path;
 
 use serde::Serialize;
+use taurus_provider::TokenUsage;
 use taurus_tools::checkpoint::{apply, Held, State};
-use taurus_tools::{CheckpointStore, Restored};
+use taurus_tools::{Checkpoint, CheckpointStore, Restored, TurnChange};
 use ts_rs::TS;
 
+use crate::review::ReviewReport;
 use crate::sessions::{self, ForkedFrom};
 
 /// What a fork did, or would do.
@@ -209,7 +211,7 @@ pub fn fork_before(
         }
     };
 
-    crate::review::copy_reviews(workspace, source, &id);
+    crate::review::copy_reviews(workspace, source, &id, checkpoint);
     Ok(Forked {
         id: Some(id),
         turn: checkpoint,
@@ -318,6 +320,231 @@ pub fn switch(
         from: current,
         restored,
     })
+}
+
+/// Two branches of one conversation, side by side.
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+pub struct Comparison {
+    /// Questions both asked before they parted.
+    pub shared: u32,
+    pub a: Side,
+    pub b: Side,
+    /// Every file whose latest state differs between the two, as a diff from
+    /// `a`'s to `b`'s. A file both left the same isn't here.
+    pub files: Vec<TurnChange>,
+}
+
+/// One branch, from where it parted from the other.
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+pub struct Side {
+    pub id: String,
+    /// Its files are the ones in the workspace.
+    pub on_disk: bool,
+    /// What it asked since they parted, oldest first.
+    pub asked: Vec<String>,
+    /// Its turns since they parted that changed files, numbered as its own
+    /// Changes panel numbers them.
+    pub turns: Vec<Checkpoint>,
+    /// What it spent since they parted: its running total now, less the total
+    /// both had at the point they parted.
+    pub usage: TokenUsage,
+    /// The latest review of each of `turns` that has one.
+    pub reviews: Vec<ReviewReport>,
+}
+
+/// Compares two branches of one conversation without switching to either:
+/// what each did since they parted, and how their files differ now.
+///
+/// Each branch's files are read where they are. The one in the workspace is
+/// on disk. One set aside is in its set-aside, and for a path it never kept,
+/// it has what a switch to it would write: the first pre-image of the branch
+/// on disk, or, for a path nobody's branch touched, what's on disk. That's
+/// the same rule [`switch`] follows, so a comparison shows exactly what
+/// switching would put in front of you.
+pub fn compare(
+    store: &CheckpointStore,
+    workspace: &Path,
+    a: &str,
+    b: &str,
+) -> Result<Comparison, String> {
+    if a == b {
+        return Err(format!(
+            "'{a}' is the same conversation twice; name another branch of it"
+        ));
+    }
+    let family = family(workspace, a);
+    if !family.iter().any(|member| member == b) {
+        return Err(format!(
+            "'{a}' and '{b}' aren't branches of the same conversation, so there's no point \
+             where they parted to compare from. `taurus sessions` marks which conversations \
+             are forks of which."
+        ));
+    }
+    let (outline_a, outline_b) = (sessions::outline(a)?, sessions::outline(b)?);
+    let shared = outline_a
+        .turns
+        .iter()
+        .zip(&outline_b.turns)
+        .take_while(|(x, y)| x.id == y.id)
+        .count();
+    let shared_ids: Vec<&str> = outline_a.turns[..shared]
+        .iter()
+        .map(|turn| turn.id.as_str())
+        .collect();
+    let parted_usage = outline_a
+        .turns
+        .get(shared)
+        .or(outline_b.turns.get(shared))
+        .map(|turn| turn.usage_before)
+        .unwrap_or(outline_a.usage);
+
+    // The branch whose files are on disk, which may be neither of these two.
+    let mut current = None;
+    for member in &family {
+        if store.away(member)?.is_none() {
+            current = Some(member.clone());
+            break;
+        }
+    }
+    let current_firsts = match &current {
+        Some(current) => store.first_preimages(current)?,
+        None => Vec::new(),
+    };
+
+    let side = |id: &str, outline: &sessions::Outline| -> Result<(Side, Vec<Held>), String> {
+        let ids = store.turn_ids(id)?;
+        let turns: Vec<Checkpoint> = store
+            .turns(id)?
+            .into_iter()
+            .zip(ids)
+            .filter(|(_, turn_id)| {
+                !turn_id
+                    .as_deref()
+                    .is_some_and(|turn_id| shared_ids.contains(&turn_id))
+            })
+            .map(|(checkpoint, _)| checkpoint)
+            .collect();
+        let aside = store.aside(id)?;
+        let on_disk = aside.is_none();
+        let mut paths: Vec<String> = store
+            .first_preimages(id)?
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        for held in aside.iter().flatten() {
+            if !paths.contains(&held.path) {
+                paths.push(held.path.clone());
+            }
+        }
+        let tip = |path: &String| -> State {
+            if on_disk {
+                return now(workspace, path);
+            }
+            aside
+                .iter()
+                .flatten()
+                .find(|held| held.path == *path)
+                .map(|held| held.state.clone())
+                .or_else(|| {
+                    current_firsts
+                        .iter()
+                        .find(|(seen, _)| seen == path)
+                        .map(|(_, state)| state.clone())
+                })
+                .unwrap_or_else(|| now(workspace, path))
+        };
+        let held = paths
+            .iter()
+            .map(|path| Held {
+                path: path.clone(),
+                state: tip(path),
+            })
+            .collect();
+        Ok((
+            Side {
+                id: id.to_string(),
+                on_disk,
+                asked: outline.turns[shared.min(outline.turns.len())..]
+                    .iter()
+                    .filter(|turn| !turn.continues && !turn.asked.is_empty())
+                    .map(|turn| turn.asked.clone())
+                    .collect(),
+                reviews: crate::review::kept(workspace, id, &turns),
+                turns,
+                usage: spent(outline.usage, parted_usage),
+            },
+            held,
+        ))
+    };
+    let (side_a, mut held_a) = side(a, &outline_a)?;
+    let (side_b, mut held_b) = side(b, &outline_b)?;
+
+    // A path only one side has a word about is what the other side would get
+    // from the same rule, read for it.
+    let mut paths: Vec<String> = held_a
+        .iter()
+        .chain(&held_b)
+        .map(|h| h.path.clone())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    let mut files = Vec::new();
+    for path in &paths {
+        let state_of = |held: &mut Vec<Held>, side: &Side| -> State {
+            if let Some(found) = held.iter().find(|h| h.path == *path) {
+                return found.state.clone();
+            }
+            let state = if side.on_disk {
+                now(workspace, path)
+            } else {
+                current_firsts
+                    .iter()
+                    .find(|(seen, _)| seen == path)
+                    .map(|(_, state)| state.clone())
+                    .unwrap_or_else(|| now(workspace, path))
+            };
+            held.push(Held {
+                path: path.clone(),
+                state: state.clone(),
+            });
+            state
+        };
+        let (from, to) = (
+            state_of(&mut held_a, &side_a),
+            state_of(&mut held_b, &side_b),
+        );
+        if from != to {
+            files.push(CheckpointStore::compare(path, &from, &to));
+        }
+    }
+
+    Ok(Comparison {
+        shared: outline_a.turns[..shared]
+            .iter()
+            .filter(|turn| !turn.continues)
+            .count() as u32,
+        a: side_a,
+        b: side_b,
+        files,
+    })
+}
+
+/// What was spent between two running totals.
+fn spent(now: TokenUsage, then: TokenUsage) -> TokenUsage {
+    let less =
+        |now: Option<u32>, then: Option<u32>| now.map(|n| n.saturating_sub(then.unwrap_or(0)));
+    TokenUsage {
+        input_tokens: now.input_tokens.saturating_sub(then.input_tokens),
+        output_tokens: now.output_tokens.saturating_sub(then.output_tokens),
+        cache_read_input_tokens: less(now.cache_read_input_tokens, then.cache_read_input_tokens),
+        cache_creation_input_tokens: less(
+            now.cache_creation_input_tokens,
+            then.cache_creation_input_tokens,
+        ),
+        reasoning_tokens: less(now.reasoning_tokens, then.reasoning_tokens),
+    }
 }
 
 /// Refuses a turn in a conversation whose files are set aside, naming the
@@ -494,6 +721,10 @@ mod tests {
             writes: &[(&str, Option<&str>)],
         ) {
             self.log.start_turn(id, continues);
+            // A hundred in and ten out per turn, so what a branch spent can
+            // be counted from the running totals.
+            self.session.usage.input_tokens += 100;
+            self.session.usage.output_tokens += 10;
             self.session.messages.push(Message::user(prompt));
             self.session.messages.push(Message::assistant("done"));
             self.log.record(&self.session);
@@ -756,6 +987,168 @@ mod tests {
             std::fs::read(world.ws.join("a.txt")).unwrap(),
             [0xff, 0xfe, 0x00]
         );
+    }
+
+    #[tokio::test]
+    async fn a_set_aside_branch_diffs_against_its_own_files_not_the_workspace() {
+        let world = World::new();
+        let talk = three_turns(&world).await;
+        let original = talk.session.id.clone();
+        fork(&world.store, &world.ws, &original, 2, false).unwrap();
+        assert_eq!(world.read("a.txt").as_deref(), Some("one"));
+
+        // Turn 3 of the original left a.txt as "three". The workspace has the
+        // fork's "one" now, and the diff must not say turn 3 wrote that.
+        let changes = world.store.changes(&original, &world.ws, 3).unwrap();
+        let TurnChange::Diff { diff } = &changes[0] else {
+            panic!("{changes:?}")
+        };
+        let added: Vec<&str> = diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.kind == taurus_tools::diff::DiffLineKind::Added)
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(added, ["three"]);
+    }
+
+    #[tokio::test]
+    async fn comparing_shows_what_each_branch_did_since_they_parted() {
+        let world = World::new();
+        let talk = three_turns(&world).await;
+        let original = talk.session.id.clone();
+        let id = fork(&world.store, &world.ws, &original, 2, false)
+            .unwrap()
+            .id
+            .unwrap();
+        let mut branch = Talk::resume(&id);
+        branch
+            .turn(
+                &world,
+                "f2",
+                "try it differently",
+                &[("a.txt", Some("other")), ("b.txt", Some("b"))],
+            )
+            .await;
+
+        let compared = compare(&world.store, &world.ws, &id, &original).unwrap();
+        assert_eq!(compared.shared, 1);
+        assert!(compared.a.on_disk && !compared.b.on_disk);
+        assert_eq!(compared.a.asked, ["try it differently"]);
+        assert_eq!(compared.b.asked, ["change a, add x", "change a again"]);
+        assert_eq!(
+            compared.a.turns.iter().map(|t| t.turn).collect::<Vec<_>>(),
+            [2]
+        );
+        assert_eq!(
+            compared.b.turns.iter().map(|t| t.turn).collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert_eq!(
+            (
+                compared.a.usage.input_tokens,
+                compared.a.usage.output_tokens
+            ),
+            (100, 10)
+        );
+        assert_eq!(compared.b.usage.input_tokens, 200);
+
+        let paths: Vec<&str> = compared.files.iter().map(TurnChange::path).collect();
+        assert_eq!(paths, ["a.txt", "b.txt", "x.txt"]);
+        // Read where each branch's files are, and nothing written.
+        assert_eq!(world.read("a.txt").as_deref(), Some("other"));
+        assert_eq!(world.store.away(&original).unwrap(), Some(id));
+    }
+
+    #[tokio::test]
+    async fn two_set_aside_branches_compare_while_a_third_has_the_workspace() {
+        let world = World::new();
+        let talk = three_turns(&world).await;
+        let original = talk.session.id.clone();
+        let first = fork(&world.store, &world.ws, &original, 3, false)
+            .unwrap()
+            .id
+            .unwrap();
+        let mut branch = Talk::resume(&first);
+        branch
+            .turn(&world, "f3", "first fork's turn", &[("a.txt", Some("f"))])
+            .await;
+        fork(&world.store, &world.ws, &first, 3, false).unwrap();
+        assert_eq!(world.read("a.txt").as_deref(), Some("two"));
+
+        let compared = compare(&world.store, &world.ws, &original, &first).unwrap();
+        assert!(!compared.a.on_disk && !compared.b.on_disk);
+        assert_eq!(compared.shared, 2);
+        let [TurnChange::Diff { diff }] = compared.files.as_slice() else {
+            panic!("{:?}", compared.files)
+        };
+        assert_eq!(diff.path, "a.txt");
+        let text = |kind| -> Vec<String> {
+            diff.hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .filter(|line| line.kind == kind)
+                .map(|line| line.text.clone())
+                .collect()
+        };
+        assert_eq!(text(taurus_tools::diff::DiffLineKind::Removed), ["three"]);
+        assert_eq!(text(taurus_tools::diff::DiffLineKind::Added), ["f"]);
+    }
+
+    #[tokio::test]
+    async fn only_branches_of_one_conversation_compare() {
+        let world = World::new();
+        let one = three_turns(&world).await.session.id;
+        let mut other = Talk::start(&world);
+        other
+            .turn(&world, "o1", "unrelated", &[("z.txt", Some("z"))])
+            .await;
+        let err = compare(&world.store, &world.ws, &one, &other.session.id).unwrap_err();
+        assert!(
+            err.contains("aren't branches of the same conversation"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_review_carried_into_a_fork_isnt_shown_as_the_forks_own() {
+        let world = World::new();
+        let talk = three_turns(&world).await;
+        let original = talk.session.id.clone();
+        let report = |turn: u32, at: u64| ReviewReport {
+            turn,
+            files: 1,
+            model: "m".into(),
+            text: format!("review of turn {turn}"),
+            omitted: Vec::new(),
+            read_claims: false,
+            fingerprint: format!("f{turn}"),
+            at,
+            cached: false,
+        };
+        let made = world.store.turns(&original).unwrap()[1].at;
+        crate::review::store(&world.ws, &original, &report(2, made));
+
+        let id = fork(&world.store, &world.ws, &original, 2, false)
+            .unwrap()
+            .id
+            .unwrap();
+        let mut branch = Talk::resume(&id);
+        branch
+            .turn(&world, "f2", "again", &[("a.txt", Some("other"))])
+            .await;
+
+        // The original's turn 2 was reviewed. The fork has a turn 2 of its
+        // own, so that review stays with the original.
+        let compared = compare(&world.store, &world.ws, &id, &original).unwrap();
+        assert!(compared.a.reviews.is_empty(), "{:?}", compared.a.reviews);
+        assert_eq!(compared.b.reviews.len(), 1);
+
+        let own = world.store.turns(&id).unwrap()[1].at;
+        crate::review::store(&world.ws, &id, &report(2, own + 1));
+        let compared = compare(&world.store, &world.ws, &id, &original).unwrap();
+        assert_eq!(compared.a.reviews[0].at, own + 1);
     }
 
     #[tokio::test]
