@@ -57,6 +57,18 @@ export function TrustBanner({
               </ul>
             </li>
           )}
+          {items.hooks > 0 && (
+            <li>
+              {count(items.hooks, "hook")} — run on tool calls and prompts
+              <ul className="trust-commands">
+                {items.hook_commands.map((command) => (
+                  <li key={command}>
+                    <code>{command}</code>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          )}
           {items.permission_rules > 0 && (
             <li>
               {count(items.permission_rules, "standing permission grant")} —

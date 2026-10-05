@@ -101,8 +101,14 @@ impl Host {
         let mut layers = Vec::new();
         let mut defined_in: LayerOf = BTreeMap::new();
         let mut problems = Vec::new();
+        // Through the trust gate, like every other read of project config. An
+        // untrusted workspace's servers would otherwise be listed as if they
+        // were configured, and offered a sign-in, which expands variables in
+        // the URL a repository wrote and opens it in a browser. The trust
+        // banner is where what's waiting is named.
+        let workspace = crate::trust::for_reading(Some(workspace));
         for scope in [Scope::Global, Scope::Workspace] {
-            let Some(dir) = config::scope_dir(scope, Some(workspace)) else {
+            let Some(dir) = config::scope_dir(scope, workspace) else {
                 continue;
             };
             let layer = match taurus_mcp::load(&dir) {

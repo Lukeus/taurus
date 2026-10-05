@@ -2574,6 +2574,36 @@ async fn an_mcp_file_broken_since_the_last_reload_is_named_when_the_panel_lists(
     );
 }
 
+#[tokio::test]
+async fn an_untrusted_workspaces_mcp_servers_are_neither_listed_nor_signed_in_to() {
+    // Sign-in expands variables in the URL and opens it in a browser, so a
+    // repository's own mcp.json could name `https://…/?k=${SOME_TOKEN}`.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = untrusted_host(&workspace);
+    std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+    std::fs::write(
+        workspace.join(".taurus/mcp.json"),
+        r#"{"mcpServers":{"remote":{"url":"https://example.invalid/mcp"}}}"#,
+    )
+    .unwrap();
+
+    assert!(host.mcp_servers().await.is_empty());
+    let Err(refused) = host.begin_mcp_sign_in("remote").await else {
+        panic!("a sign-in was offered for an untrusted workspace's server");
+    };
+    assert!(refused.contains("not a configured server"), "{refused}");
+
+    host.trust_workspace().await.expect("trust");
+    let listed: Vec<String> = host
+        .mcp_servers()
+        .await
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(listed, ["remote"]);
+}
+
 #[test]
 fn a_recipe_output_that_cannot_be_listed_says_why() {
     // The file is written either way. Dropped, the failure left it missing
