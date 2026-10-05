@@ -54,8 +54,13 @@ pub struct Forked {
     /// The new conversation. `None` for a dry run, which makes nothing.
     #[ts(optional)]
     pub id: Option<String>,
-    /// The turn it was forked before, as `taurus rewind` numbers it.
+    /// The checkpointed turn whose files it went back to before, as `taurus
+    /// rewind` numbers it. One past the last when no turn from the fork point
+    /// on changed files.
     pub turn: u32,
+    /// The turn it was forked at changed no files, so `turn` is the next one
+    /// that did. See [`ForkedFrom::place`].
+    pub read_only: bool,
     /// What that turn asked, to be asked again or asked differently.
     pub prompt: String,
     /// What putting the files back did to each, as a rewind reports it.
@@ -79,6 +84,9 @@ pub struct Switched {
 /// Forks `source` at checkpointed turn `turn`: a new conversation holding
 /// everything before it, with the workspace put back to that point and
 /// `source`'s files set aside.
+///
+/// The numbering `taurus rewind` uses. The turn is matched to its transcript
+/// by the id both logs record, and forked from there with [`fork_before`].
 pub fn fork(
     store: &CheckpointStore,
     workspace: &Path,
@@ -86,29 +94,69 @@ pub fn fork(
     turn: u32,
     dry_run: bool,
 ) -> Result<Forked, String> {
-    ensure_on_disk(store, source)?;
     let ids = store.turn_ids(source)?;
-    let listed = store.turns(source)?;
-    let checkpoint = listed.get((turn as usize).wrapping_sub(1)).ok_or_else(|| {
+    let id = ids.get((turn as usize).wrapping_sub(1)).ok_or_else(|| {
         format!(
             "session '{source}' has {} checkpointed turn{}; {turn} is not one of them",
-            listed.len(),
-            if listed.len() == 1 { "" } else { "s" }
+            ids.len(),
+            if ids.len() == 1 { "" } else { "s" }
         )
     })?;
-    // Every turn's id, not only this one's: the copied prefix is matched to
-    // the transcript by them, and one missing would leave nothing to match.
+    let Some(id) = id else {
+        return Err(unnamed(source));
+    };
+    fork_before(store, workspace, source, &id.clone(), dry_run)
+}
+
+/// Forks `source` before the transcript turn `turn`, which may be one that
+/// changed no files: the question that's to be asked differently is often
+/// one that only read.
+///
+/// The checkpoint log is cut where the transcript is. Its turns before the
+/// fork point come along, and the files go back to before the first one at or
+/// after it. When no turn from there on changed anything, the files are
+/// already right and none are written, but `source` is still set aside: two
+/// branches never both have the workspace, even for a moment when their files
+/// agree.
+pub fn fork_before(
+    store: &CheckpointStore,
+    workspace: &Path,
+    source: &str,
+    turn: &str,
+    dry_run: bool,
+) -> Result<Forked, String> {
+    ensure_on_disk(store, source)?;
+    let point = sessions::fork_point(source, turn)?;
+
+    // Every checkpoint's id, not only the ones after the cut: the copied
+    // prefix is matched to the transcript by them, and one missing would leave
+    // nothing to match.
+    let ids = store.turn_ids(source)?;
     if ids.iter().any(Option::is_none) {
+        return Err(unnamed(source));
+    }
+    let ids: Vec<String> = ids.into_iter().flatten().collect();
+    let kept = ids
+        .iter()
+        .take_while(|id| point.before.contains(id))
+        .count();
+    if ids[kept..].iter().any(|id| point.before.contains(id)) {
         return Err(format!(
-            "session '{source}' was recorded before Taurus named its turns, so its \
-             checkpoints can't be matched to its transcript and it can't be forked. \
-             `taurus rewind` still works on it."
+            "session '{source}' has checkpoints out of step with its transcript, so there's no \
+             telling which files go with the fork. `taurus rewind` still works on it."
         ));
     }
-    let turn_id = ids[turn as usize - 1].clone().expect("checked just above");
+    let checkpoint = kept as u32 + 1;
+    let read_only = ids.get(kept) != Some(&point.turn);
 
-    let plan = store.rewind_plan(source, turn)?;
-    let warnings = store.rewind(source, workspace, turn, true)?.warnings;
+    let (plan, warnings) = if kept < ids.len() {
+        (
+            store.rewind_plan(source, checkpoint)?,
+            store.rewind(source, workspace, checkpoint, true)?.warnings,
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     if dry_run {
         let tips: Vec<Held> = plan
@@ -120,8 +168,9 @@ pub fn fork(
             .collect();
         return Ok(Forked {
             id: None,
-            turn,
-            prompt: checkpoint.prompt.clone(),
+            turn: checkpoint,
+            read_only,
+            prompt: point.prompt,
             restored: write(workspace, &plan, &tips, true),
             warnings,
         });
@@ -134,11 +183,12 @@ pub fn fork(
         &id,
         &ForkedFrom {
             session: source.to_string(),
-            turn: turn_id,
-            checkpoint: turn,
+            turn: point.turn,
+            checkpoint,
+            read_only: read_only.then_some(true),
         },
     )?;
-    if let Err(e) = store.copy_prefix(source, &id, turn as usize - 1, workspace) {
+    if let Err(e) = store.copy_prefix(source, &id, kept, workspace) {
         let _ = sessions::delete(&id);
         return Err(e);
     }
@@ -162,11 +212,22 @@ pub fn fork(
     crate::review::copy_reviews(workspace, source, &id);
     Ok(Forked {
         id: Some(id),
-        turn,
+        turn: checkpoint,
+        read_only,
         prompt,
         restored: write(workspace, &plan, &kept, false),
         warnings,
     })
+}
+
+/// Why a conversation can't be forked: its checkpoints have no ids to match
+/// them to its transcript by.
+fn unnamed(source: &str) -> String {
+    format!(
+        "session '{source}' was recorded before Taurus named its turns, so its \
+         checkpoints can't be matched to its transcript and it can't be forked. \
+         `taurus rewind` still works on it."
+    )
 }
 
 /// Puts `target`'s files back on disk, setting aside whichever branch of the
@@ -420,7 +481,19 @@ mod tests {
             prompt: &str,
             writes: &[(&str, Option<&str>)],
         ) {
-            self.log.start_turn(id, false);
+            self.turn_as(world, id, false, prompt, writes).await;
+        }
+
+        /// [`Talk::turn`], continuing the one before when `continues`.
+        async fn turn_as(
+            &mut self,
+            world: &World,
+            id: &str,
+            continues: bool,
+            prompt: &str,
+            writes: &[(&str, Option<&str>)],
+        ) {
+            self.log.start_turn(id, continues);
             self.session.messages.push(Message::user(prompt));
             self.session.messages.push(Message::assistant("done"));
             self.log.record(&self.session);
@@ -478,7 +551,8 @@ mod tests {
             Some(ForkedFrom {
                 session: original.clone(),
                 turn: "t2".into(),
-                checkpoint: 2
+                checkpoint: 2,
+                read_only: None,
             })
         );
         assert_eq!(
@@ -497,6 +571,86 @@ mod tests {
             refused.contains(&format!("taurus fork --switch --id {original}")),
             "{refused}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_fork_at_a_turn_that_changed_nothing_puts_back_the_files_from_after_it() {
+        let world = World::new();
+        let mut talk = Talk::start(&world);
+        talk.turn(&world, "t1", "make a", &[("a.txt", Some("one"))])
+            .await;
+        talk.turn(&world, "t2", "what does a say?", &[]).await;
+        talk.turn(&world, "t3", "change a", &[("a.txt", Some("three"))])
+            .await;
+        let original = talk.session.id.clone();
+
+        let forked = fork_before(&world.store, &world.ws, &original, "t2", false).unwrap();
+        let id = forked.id.clone().unwrap();
+        assert_eq!(forked.prompt, "what does a say?");
+        assert_eq!((forked.turn, forked.read_only), (2, true));
+        assert_eq!(world.read("a.txt").as_deref(), Some("one"));
+
+        let said: Vec<String> = sessions::load(&id)
+            .unwrap()
+            .session
+            .messages
+            .iter()
+            .map(|m| m.text())
+            .collect();
+        assert_eq!(said, ["make a", "done"]);
+        assert_eq!(world.store.turns(&id).unwrap().len(), 1);
+        let from = sessions::meta(&id).unwrap().forked_from.unwrap();
+        assert_eq!(from.place(), "after turn 1");
+        assert_eq!(world.store.away(&original).unwrap(), Some(id));
+    }
+
+    #[tokio::test]
+    async fn a_fork_after_the_last_change_writes_nothing_but_still_sets_the_original_aside() {
+        let world = World::new();
+        let mut talk = Talk::start(&world);
+        talk.turn(&world, "t1", "make a", &[("a.txt", Some("one"))])
+            .await;
+        talk.turn(&world, "t2", "explain it", &[]).await;
+        let original = talk.session.id.clone();
+
+        let forked = fork_before(&world.store, &world.ws, &original, "t2", false).unwrap();
+        let id = forked.id.clone().unwrap();
+        assert!(forked.restored.is_empty(), "{:?}", forked.restored);
+        assert_eq!(world.read("a.txt").as_deref(), Some("one"));
+        assert_eq!(forked.turn, 2);
+        assert_eq!(
+            sessions::meta(&id).unwrap().forked_from.unwrap().place(),
+            "after turn 1"
+        );
+
+        // One branch has the workspace, even when the two agree on every file.
+        assert_eq!(world.store.away(&original).unwrap(), Some(id.clone()));
+        switch(&world.store, &world.ws, &original, false).unwrap();
+        assert_eq!(world.read("a.txt").as_deref(), Some("one"));
+        assert_eq!(world.store.away(&id).unwrap(), Some(original));
+    }
+
+    #[tokio::test]
+    async fn a_fork_inside_a_continued_turn_cuts_both_logs_where_the_request_began() {
+        let world = World::new();
+        let mut talk = Talk::start(&world);
+        talk.turn(&world, "t1", "make a", &[("a.txt", Some("one"))])
+            .await;
+        talk.turn(&world, "t2", "change a", &[("a.txt", Some("two"))])
+            .await;
+        talk.turn_as(&world, "t3", true, "carry on", &[("a.txt", Some("three"))])
+            .await;
+        let original = talk.session.id.clone();
+
+        // Checkpoint 3 is the continuation. The request it belongs to began
+        // at checkpoint 2, so that's where the transcript is cut, and the
+        // files and the copied checkpoints have to agree with it.
+        let forked = fork(&world.store, &world.ws, &original, 3, false).unwrap();
+        let id = forked.id.clone().unwrap();
+        assert_eq!(forked.prompt, "change a");
+        assert_eq!((forked.turn, forked.read_only), (2, false));
+        assert_eq!(world.read("a.txt").as_deref(), Some("one"));
+        assert_eq!(world.store.turns(&id).unwrap().len(), 1);
     }
 
     #[tokio::test]

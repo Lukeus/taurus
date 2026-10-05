@@ -1,6 +1,6 @@
 import { memo, type ReactNode } from "react";
 
-import type { SessionMeta, Theme } from "../lib/api";
+import type { ForkedFrom, SessionMeta, Theme } from "../lib/api";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
 import { useSections } from "../lib/sections";
 import {
@@ -761,6 +761,15 @@ function Section({
  * so it has the same first question and the same title, and this is the line
  * that tells the two rows apart.
  */
+/**
+ * Where a fork was made, as `ForkedFrom::place` says it: "at turn 3", or for a
+ * turn that changed no files, where it falls between the ones that did.
+ */
+export function forkPlace(from: ForkedFrom): string {
+  if (!from.read_only) return `at turn ${from.checkpoint}`;
+  return from.checkpoint === 1 ? "before any changes" : `after turn ${from.checkpoint - 1}`;
+}
+
 function subtitle(
   session: SessionMeta,
   changed: number | null,
@@ -769,7 +778,7 @@ function subtitle(
   const ago = when(session.updated);
   // Only when both are known. A session with no recorded branch predates the
   // field or was started outside a repository, and neither is "elsewhere".
-  const fork = session.forked_from ? `fork at turn ${session.forked_from.checkpoint} · ` : "";
+  const fork = session.forked_from ? `fork ${forkPlace(session.forked_from)} · ` : "";
   const elsewhere =
     fork +
     (session.branch && branch && session.branch !== branch ? `on ${session.branch} · ` : "");

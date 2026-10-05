@@ -714,7 +714,7 @@ describe("forking from a turn", () => {
     const pane = await openWithFork(onFork);
 
     await pane.click("Fork here");
-    expect(onFork).toHaveBeenCalledWith(2);
+    expect(onFork).toHaveBeenCalledWith(2, undefined);
     expect(pane.text()).toContain("Forking…");
     expect(invoke).not.toHaveBeenCalledWith("rewind_to", expect.anything());
     await pane.click("Forking…");
@@ -729,6 +729,53 @@ describe("forking from a turn", () => {
     );
     await pane.click("Fork here");
     expect(pane.text()).toContain("recorded before Taurus named its turns");
+  });
+
+  it("forks from one review finding, handing on that finding alone", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+      review_turn: {
+        turn: 1,
+        files: 1,
+        model: "qwen3.6:27b",
+        text: "1. `src/main.rs:12` still calls the old name.\n\n2. The error is swallowed.",
+        omitted: [],
+      },
+    });
+    const onFork = vi.fn(() => Promise.resolve({}));
+    const pane = await openWithFork(onFork);
+    await pane.click("View changes");
+    await pane.click("Review this turn");
+
+    const forks = [...pane.host.querySelectorAll("button")].filter(
+      (b) => b.textContent === "Fork with this",
+    );
+    expect(forks).toHaveLength(2);
+    await act(async () => forks[1].click());
+    expect(onFork).toHaveBeenCalledWith(1, "2. The error is swallowed.");
+  });
+
+  it("offers the whole review when it has no findings to pick from", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: [DIFF],
+      review_turn: {
+        turn: 1,
+        files: 1,
+        model: "qwen3.6:27b",
+        text: "The rename misses a caller in src/main.rs.",
+        omitted: [],
+      },
+    });
+    const onFork = vi.fn(() => Promise.resolve({}));
+    const pane = await openWithFork(onFork);
+    await pane.click("View changes");
+    await pane.click("Review this turn");
+    await pane.click("Fork with this review");
+    expect(onFork).toHaveBeenCalledWith(1, "The rename misses a caller in src/main.rs.");
   });
 
   it("offers no fork where nothing could open the new conversation", async () => {

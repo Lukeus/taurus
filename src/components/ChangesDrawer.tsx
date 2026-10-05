@@ -12,6 +12,7 @@ import type {
   TurnChange,
 } from "../lib/api";
 import { plural, when } from "../lib/format";
+import { hasFindings, reviewParts } from "../lib/findings";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { DrawerHead } from "./Drawer";
@@ -56,8 +57,12 @@ export function ChangesDrawer({
    * Starts a new conversation from before `turn` and opens it. One click,
    * unlike a rewind, because it loses nothing: this conversation and its
    * files are kept, set aside, and can be switched back to.
+   *
+   * With `finding`, from a review of that turn: the fork's question is the
+   * turn's own with the finding added, so the second attempt knows what was
+   * wrong with the first.
    */
-  onFork?: (turn: number) => Promise<Forked>;
+  onFork?: (turn: number, finding?: string) => Promise<Forked>;
 }) {
   const [turns, setTurns] = useState<Checkpoint[] | null>(null);
   const [repo, setRepo] = useState<RepoStatus | null>(null);
@@ -113,12 +118,12 @@ export function ChangesDrawer({
   const [applying, setApplying] = useState(false);
   const [forking, setForking] = useState<number | null>(null);
 
-  const fork = async (turn: number) => {
+  const fork = async (turn: number, finding?: string) => {
     if (!onFork || forking !== null) return;
     setError(null);
     setForking(turn);
     try {
-      await onFork(turn);
+      await onFork(turn, finding);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -340,6 +345,11 @@ export function ChangesDrawer({
                       repo={repo}
                       busy={busy}
                       onCommitted={refresh}
+                      onForkWith={
+                        onFork && !busy && forking === null
+                          ? (finding) => fork(turn.turn, finding)
+                          : undefined
+                      }
                     />
                   )}
 
@@ -472,6 +482,64 @@ function Everything({ sessionId, turns }: { sessionId: string; turns: number }) 
 }
 
 /**
+ * A review, with each finding offered as the start of another attempt.
+ *
+ * Each finding is drawn as its own stretch so it can carry its own button,
+ * revealed on hover like a question's Edit. A review with no findings to cut
+ * out, because the model answered in paragraphs, offers the whole of it once
+ * instead. See `reviewParts`.
+ */
+function ReviewText({
+  text,
+  onForkWith,
+}: {
+  text: string;
+  onForkWith?: (finding: string) => void;
+}) {
+  const parts = reviewParts(text);
+  if (!onForkWith) return <Markdown text={text} streaming={false} />;
+  if (!hasFindings(parts)) {
+    return (
+      <>
+        <Markdown text={text} streaming={false} />
+        <div className="actions">
+          <button
+            className="quiet"
+            onClick={() => onForkWith(text)}
+            data-tip={FORK_WITH_TIP}
+          >
+            Fork with this review
+          </button>
+        </div>
+      </>
+    );
+  }
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.finding ? (
+          <div key={i} className="review-finding">
+            <Markdown text={part.text} streaming={false} />
+            <button
+              className="prompt-edit review-fork"
+              onClick={() => onForkWith(part.text)}
+              data-tip={FORK_WITH_TIP}
+            >
+              Fork with this
+            </button>
+          </div>
+        ) : (
+          <Markdown key={i} text={part.text} streaming={false} />
+        ),
+      )}
+    </>
+  );
+}
+
+const FORK_WITH_TIP =
+  "Try this turn again in a new conversation, with this added to its question. This conversation is kept, and its files are set aside until you switch back.";
+
+/**
  * One turn opened up: what it changed, and the offer to keep it.
  *
  * Its own component so that expanding a turn fetches one turn's diffs. A long
@@ -484,12 +552,19 @@ export function TurnDetail({
   repo,
   busy,
   onCommitted,
+  onForkWith,
 }: {
   sessionId: string;
   turn: Checkpoint;
   turns: Checkpoint[];
   repo: RepoStatus | null;
   busy: boolean;
+  /**
+   * Forks before this turn with a finding from its review added to its
+   * question. Absent while that can't happen: a turn running, a fork already
+   * on its way, or a drawer mounted without forking.
+   */
+  onForkWith?: (finding: string) => void;
   onCommitted: () => void;
 }) {
   const [changes, setChanges] = useState<TurnChange[] | null>(null);
@@ -621,7 +696,7 @@ export function TurnDetail({
           {review && (
             <section className="section">
               {/* Not streaming: a review arrives whole or not at all. */}
-              <Markdown text={review.text} streaming={false} />
+              <ReviewText text={review.text} onForkWith={onForkWith} />
               <p className="drawer-foot">
                 {plural(review.files, "file")} read by <b>{review.model}</b>,
                 without the conversation that produced them — so it cannot know

@@ -16,15 +16,20 @@ use crate::rewind_cmd::{describe, resolve_turn, wrapped};
 /// What `taurus fork` was asked to do.
 pub enum Action<'a> {
     List,
-    At { turn: &'a str, resend: bool },
+    At {
+        turn: &'a str,
+        resend: bool,
+        /// What to ask instead of the forked turn's question.
+        ask: Option<&'a str>,
+    },
     Switch,
 }
 
 /// Forks, switches or lists, and says what the next step is.
 ///
-/// Returns the new conversation and the prompt to ask again when `--resend`
-/// asked for it, so the caller can run that turn with the provider and
-/// model it was given.
+/// Returns the new conversation and the prompt to ask when `--resend` or
+/// `--ask` asked for one, so the caller can run that turn with the provider
+/// and model it was given.
 pub async fn run(
     host: &Host,
     id: Option<&str>,
@@ -82,12 +87,13 @@ pub async fn run(
             println!(
                 "\nTry the last one again:   taurus fork --at last\n\
                  Ask it again right away:  taurus fork --at last --resend\n\
+                 Ask it differently:       taurus fork --at last --ask \"…\"\n\
                  See what it would change: taurus fork --at last --dry-run"
             );
             Ok((ExitCode::SUCCESS, None))
         }
 
-        Action::At { turn, resend } => {
+        Action::At { turn, resend, ask } => {
             let turns = store.turns(&session_id)?;
             let turn = resolve_turn(turn, &turns)?;
             let forked = {
@@ -105,9 +111,13 @@ pub async fn run(
             } else {
                 "Forked. Put"
             };
+            // The turn the files went back to, which isn't always the one
+            // asked for: inside a continued turn, the fork goes back to where
+            // its request began.
             println!(
-                "{verb} {} back the way it was before turn {turn}:\n",
-                workspace.display()
+                "{verb} {} back the way it was before turn {}:\n",
+                workspace.display(),
+                forked.turn
             );
             print_outcomes(&forked.restored);
             for warning in &forked.warnings {
@@ -123,7 +133,11 @@ pub async fn run(
                  Go back to the original: taurus fork --switch --id {session_id}"
             );
             let code = exit_code(&forked.restored);
-            Ok((code, resend.then_some((new_id, forked.prompt))))
+            let asking = match ask {
+                Some(text) => Some(text.to_string()),
+                None => resend.then_some(forked.prompt),
+            };
+            Ok((code, asking.map(|prompt| (new_id, prompt))))
         }
 
         Action::Switch => {

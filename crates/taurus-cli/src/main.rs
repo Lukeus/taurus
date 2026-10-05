@@ -136,6 +136,12 @@ enum Command {
         #[arg(long, requires = "at")]
         resend: bool,
 
+        /// Ask this in the new conversation instead of the forked turn's
+        /// question: the same request worded differently, or with what a
+        /// review of the first attempt found. Implies `--resend`.
+        #[arg(long, value_name = "TEXT", requires = "at", conflicts_with = "resend")]
+        ask: Option<String>,
+
         /// What the resent turn may do without asking, as for `taurus run`.
         #[command(flatten)]
         policy: PolicyArgs,
@@ -417,10 +423,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 // A fork starts with its original's title, so this is the line
                 // that tells the two apart.
                 if let Some(from) = &meta.forked_from {
-                    println!(
-                        "{:38} fork of {} at turn {}",
-                        "", from.session, from.checkpoint
-                    );
+                    println!("{:38} fork of {} {}", "", from.session, from.place());
                 }
                 let store = host.checkpoints_for(std::path::Path::new(&meta.workspace));
                 if let Ok(Some(other)) = store.away(&meta.id) {
@@ -466,13 +469,18 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             id,
             at,
             resend,
+            ask,
             policy,
             switch,
             dry_run,
         } => {
             let runtime = build_host(&session, Policy::from(&policy), servers).await?;
             let action = match (&at, switch) {
-                (Some(turn), _) => fork_cmd::Action::At { turn, resend },
+                (Some(turn), _) => fork_cmd::Action::At {
+                    turn,
+                    resend,
+                    ask: ask.as_deref(),
+                },
                 (None, true) => fork_cmd::Action::Switch,
                 (None, false) => fork_cmd::Action::List,
             };
@@ -480,7 +488,12 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 fork_cmd::run(&runtime.host, id.as_deref(), action, dry_run).await?;
             match again {
                 Some((fork, prompt)) => {
-                    println!("\nAsking it again: {prompt}\n");
+                    let said = if ask.is_some() {
+                        "Asking"
+                    } else {
+                        "Asking it again"
+                    };
+                    println!("\n{said}: {prompt}\n");
                     session::run_once(
                         &runtime,
                         &session,
@@ -643,7 +656,7 @@ impl Servers {
             // what those tools' schemas cost the context window.
             Command::Mcp { .. } | Command::Tools { .. } | Command::Usage { .. } => Self::Start,
             // Only when the forked turn is asked again, which is a turn.
-            Command::Fork { resend: true, .. } => Self::Start,
+            Command::Fork { resend: true, .. } | Command::Fork { ask: Some(_), .. } => Self::Start,
             Command::Fork { .. } => Self::Leave,
             Command::Sessions { .. }
             | Command::Review { .. }

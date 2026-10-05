@@ -169,6 +169,18 @@ export type TranscriptProps = {
    * back to the *files* where it already is, in Changes.
    */
   onEditPrompt?: (text: string) => void;
+  /**
+   * Starts a new conversation from just before the turn `turn`, with `text`
+   * in its composer to change and ask: the edit in place, done without
+   * rewriting anything. This conversation is kept as it is, and its files are
+   * set aside until it's switched back to. See `taurus_host::fork`.
+   *
+   * Offered only on a question whose turn is known, which is every one but a
+   * conversation recorded before turns had ids. Absent while a turn runs, and
+   * in a conversation whose files are set aside, where the backend would
+   * refuse it.
+   */
+  onForkPrompt?: (turn: string, text: string) => void;
 };
 
 export function Transcript({
@@ -187,6 +199,7 @@ export function Transcript({
   find = null,
   onRetry,
   onEditPrompt,
+  onForkPrompt,
 }: TranscriptProps) {
   const bottom = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -219,6 +232,7 @@ export function Transcript({
   const openNote = useStable(onOpenNote);
   const runQuery = useStable(onRunQuery);
   const editPrompt = useStable(onEditPrompt);
+  const forkPrompt = useStable(onForkPrompt);
 
   // Follow the stream, but stop fighting the user the moment they scroll up.
   useEffect(() => {
@@ -299,6 +313,7 @@ export function Transcript({
           // The newest turn and nothing else. See the prop.
           onRetry={i === conversation.length - 1 ? onRetry : undefined}
           onEditPrompt={editPrompt}
+          onForkPrompt={forkPrompt}
         />
       ))}
       <div ref={bottom} />
@@ -505,6 +520,7 @@ const TurnView = memo(function TurnView({
   onRunQuery,
   onRetry,
   onEditPrompt,
+  onForkPrompt,
 }: {
   turn: Turn;
   /** Landed on by a search. Marked, and scrolled to when it becomes true. */
@@ -534,6 +550,7 @@ const TurnView = memo(function TurnView({
   /** Present only on the newest turn. See `Transcript`. */
   onRetry?: () => void;
   onEditPrompt?: (text: string) => void;
+  onForkPrompt?: (turn: string, text: string) => void;
 }) {
   const self = useRef<HTMLElement>(null);
 
@@ -550,7 +567,9 @@ const TurnView = memo(function TurnView({
       ref={self}
       className={`turn${turn.prompt ? "" : " unprompted"}${found ? " found" : ""}`}
     >
-      {turn.prompt && <Prompt entry={turn.prompt} onEdit={onEditPrompt} />}
+      {turn.prompt && (
+        <Prompt entry={turn.prompt} onEdit={onEditPrompt} onFork={onForkPrompt} />
+      )}
       {turn.body.map((item, at) =>
         Array.isArray(item) ? (
           <div className="turn-step" key={item[0].id}>
@@ -628,10 +647,13 @@ function Elapsed() {
 function Prompt({
   entry,
   onEdit,
+  onFork,
 }: {
   entry: UserEntry;
   onEdit?: (text: string) => void;
+  onFork?: (turn: string, text: string) => void;
 }) {
+  const turn = entry.turn;
   return (
     <div className="turn-step prompt">
       {/* Above the text, matching the order they were sent in and the order
@@ -643,14 +665,27 @@ function Prompt({
       {/* Revealed on hover and on focus, not drawn standing. Every question in
           a long conversation carrying a visible button would make the column
           of them read as a list of controls rather than as what was asked. */}
-      {onEdit && (
-        <button
-          className="prompt-edit"
-          onClick={() => onEdit(entry.text)}
-          data-tip="Put this back in the box to change and ask again"
-        >
-          Edit
-        </button>
+      {(onEdit || (onFork && turn)) && (
+        <div className="prompt-actions">
+          {onEdit && (
+            <button
+              className="prompt-edit"
+              onClick={() => onEdit(entry.text)}
+              data-tip="Put this back in the box to change and ask again"
+            >
+              Edit
+            </button>
+          )}
+          {onFork && turn && (
+            <button
+              className="prompt-edit prompt-fork"
+              onClick={() => onFork(turn, entry.text)}
+              data-tip="Ask it differently in a new conversation from just before this. This one is kept, and its files are set aside until you switch back."
+            >
+              Edit in a fork
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

@@ -312,6 +312,8 @@ impl Renderer {
             // turn's usage when it ends, which is the moment it can be read.
             UiEvent::ContextUsed { .. } => {}
             UiEvent::IterationStarted { .. } => {}
+            // The id is for a window that forks from the question it drew.
+            UiEvent::TurnStarted { .. } => {}
 
             UiEvent::TurnFinished { usage, .. } => {
                 self.break_text();

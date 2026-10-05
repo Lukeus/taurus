@@ -1540,3 +1540,42 @@ describe("a conversation that changed model", () => {
     expect(entries.every((e) => e.kind !== "notice")).toBe(true);
   });
 });
+
+describe("the turn a question started", () => {
+  it("is read from the transcript's marks on a reopen, and only onto a question", () => {
+    const entries = entriesFromMessages(
+      [
+        { role: "user", content: [{ type: "text", text: "look" }] },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: [{ type: "text", text: CONTINUE_PROMPT }] },
+        { role: "assistant", content: [{ type: "text", text: "done" }] },
+        { role: "user", content: [{ type: "text", text: "now this" }] },
+      ],
+      [],
+      [
+        { id: "t1", after: 0 },
+        { id: "t3", after: 4 },
+      ],
+    );
+    const questions = entries.filter((e) => e.kind === "user");
+    expect(questions.map((e) => (e.kind === "user" ? [e.text, e.turn] : null))).toEqual([
+      ["look", "t1"],
+      ["now this", "t3"],
+    ]);
+  });
+
+  it("is learned live, by the newest question that has none", () => {
+    const asked: Entry[] = [
+      { kind: "user", id: "u1", text: "first", turn: "t1" },
+      { kind: "assistant", id: "a1", text: "ok", thinking: "", open: false },
+      { kind: "user", id: "u2", text: "second" },
+    ];
+    const named = reduce(asked, { type: "turn_started", id: "t2", continues: false });
+    expect(named[2]).toMatchObject({ kind: "user", turn: "t2" });
+    expect(named[0]).toMatchObject({ turn: "t1" });
+
+    // A continuation asks nothing new, and a question already named keeps it.
+    expect(reduce(named, { type: "turn_started", id: "t3", continues: true })).toBe(named);
+    expect(reduce(named, { type: "turn_started", id: "t4", continues: false })).toBe(named);
+  });
+});

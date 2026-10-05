@@ -124,7 +124,7 @@ pub struct ReviewReport {
 
 /// Bumped when [`BRIEF`] or the shape of what a review is sent changes, so a
 /// review kept under the old brief isn't returned for the new one.
-const REVIEW_VERSION: u32 = 2;
+const REVIEW_VERSION: u32 = 3;
 
 /// The most command results a review is shown: the last ones, which are the
 /// ones a turn's closing claims are about.
@@ -240,9 +240,11 @@ const BRIEF: &str = "You are reviewing a change you did not write, in a codebase
                      is answered by the file it is in.\n\n\
                      Report what would actually break, hardest first: a case the change does \
                      not handle, an invariant it drops, an error path it swallows, a caller it \
-                     leaves inconsistent. Say where, by file and line. If the change looks \
-                     correct, say so in a sentence rather than finding something to fill the \
-                     space.\n\n\
+                     leaves inconsistent. Say where, by file and line. Give each finding as \
+                     its own top-level numbered item, complete on its own, because each one may \
+                     be handed on by itself as the brief for another attempt. If the change \
+                     looks correct, say so in a sentence rather than finding something to fill \
+                     the space.\n\n\
                      You cannot see why this was done. Where something looks wrong but would be \
                      reasonable under an intent you were not told, say that rather than \
                      asserting it is a defect. You also cannot run anything: do not claim a test \

@@ -124,7 +124,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 UiEvent::DelegateReport { report, .. } => {
                     println!("      · delegate: {}", report.disposition.as_str())
                 }
-                UiEvent::IterationStarted { .. } | UiEvent::ThinkingDelta { .. } => {}
+                UiEvent::IterationStarted { .. }
+                | UiEvent::TurnStarted { .. }
+                | UiEvent::ThinkingDelta { .. } => {}
             }
         }
         tool_calls

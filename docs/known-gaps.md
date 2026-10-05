@@ -1275,18 +1275,21 @@ the backlog, and they're the minority.
   truncating the conversation at that turn: dropping the later messages from
   the transcript on disk and from the model's next request. That's a
   different feature with a different failure mode, where a mis-click
-  discards an hour of work. What's here instead is a fork: **Fork here** on a
-  turn in the Changes panel starts a new conversation from before it, with its
-  question back in the composer, and keeps the original whole. See
-  [Forking a turn](safety.md#forking-a-turn). Two halves of that aren't
-  built yet. "Edit in a fork" beside this button, and forking from a review
-  finding, are the next slice.
-- **A fork starts only from a turn that changed files.** The fork point is a
-  turn in the checkpoint log, the same numbers `taurus rewind` uses, and a
-  turn that only read or answered isn't in it. Forking before a question that
-  changed nothing means forking before the next turn that did. The desktop's
-  transcript would need to know each message's turn to offer it anywhere, and
-  that's the same piece "Edit in a fork" needs.
+  discards an hour of work. What's here instead is a fork: **Edit in a fork**
+  beside **Edit**, and **Fork here** on a turn in the Changes panel, start a
+  new conversation from before the question, with it back in the composer, and
+  keep the original whole. See [Forking a turn](safety.md#forking-a-turn).
+- **`taurus fork --at` reaches only turns that changed files.** It numbers
+  turns the way `taurus rewind` does, and a turn that only read or answered
+  isn't among them. The desktop's **Edit in a fork** reaches any question.
+  The CLI would need a way to name a question that has no number anywhere
+  else, and the lists it already prints don't show one.
+- **A finding is found by its shape.** The reviewer is asked to number its
+  findings, and the drawer cuts the review at its top-level list items. A
+  model that answers in paragraphs gets one **Fork with this review** for the
+  whole of it, and one that puts two findings in one item gets one button for
+  both. Each list item in the claims section gets a button too, which is what
+  you want for a contradicted claim and harmless for a supported one.
 - **A conversation recorded before turns had ids can't be forked.** Its
   checkpoints can't be matched to its transcript, so there's no telling where
   to cut the copy. `taurus fork` says so, and `taurus rewind` still works on
@@ -1301,7 +1304,7 @@ the backlog, and they're the minority.
 - **Comparing two branches isn't built.** Each branch's files can be
   recovered (what's on disk for one, its set-aside for the other), so a diff
   between their latest states needs no new record, only a view. It's the
-  slice after "Edit in a fork".
+  next slice.
 - **Ignored directories and `.git` are shared between branches.** A switch
   puts back what the branches' turns recorded, which is everything a rewind
   covers and nothing it doesn't. A `target/` built on one branch is still

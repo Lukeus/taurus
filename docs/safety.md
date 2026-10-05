@@ -711,12 +711,39 @@ taurus fork                                # turns you can fork before
 taurus fork --at last --dry-run            # what it would put back
 taurus fork --at 3                         # a new conversation from before turn 3
 taurus fork --at 3 --resend -m qwen3.6:27b # and ask turn 3 again, on another model
+taurus fork --at 3 --ask "Do it without a new dependency"   # or ask something else
 taurus fork --switch --id <ID>             # put that conversation's files back
 ```
 
 In the desktop app it's **Fork here**, beside **Rewind to before this** on
 each turn in the **Changes** panel. The new conversation opens with that
 turn's question in the composer, ready to ask again or ask differently.
+
+The transcript has it too. Hover a question you asked and **Edit in a fork**
+sits beside **Edit**. **Edit** puts the words back in the box and changes
+nothing else. **Edit in a fork** is the edit people mean: the conversation
+starts over from just before that question, with the question in the box to
+change, and the original is kept whole. It works on any question, including
+one that only read or answered, which the **Changes** panel doesn't list. For
+one of those, the files go back to before the next turn that changed
+something, which is the state they were in when you asked it.
+
+From a review, it's **Fork with this** on a finding (see
+[Reading it back to somebody who didn't write it](#reading-it-back-to-somebody-who-did-not-write-it)).
+The fork goes back to before the reviewed turn, and its question is that
+turn's own with the finding added after it:
+
+```
+Rename the widget and update its callers.
+
+A review of an earlier attempt at this found the following. Take it into account:
+
+**src/main.rs:12** still calls the old name.
+```
+
+It's in the composer, not sent, so you can trim it first. On the command
+line, the same thing is `taurus review --turn 3` and then `taurus fork --at 3
+--ask "…"` with what you want from it.
 
 ![A conversation whose files are set aside because a fork of it has the
 workspace: the fork in the rail, the banner offering to switch back, and Fork
@@ -728,7 +755,9 @@ pointer, so the fork's turns number, list, diff and rewind exactly as the
 original's do, back past the point where the two part. The workspace goes back
 to how it was before that turn, the same files a rewind to it would restore.
 The original conversation isn't touched. In the rail, the fork reads **fork at
-turn 3**, because otherwise it would have the same title as the original.
+turn 3**, because otherwise it would have the same title as the original. A
+fork at a question that changed nothing reads **fork after turn 2**, since
+that's where it sits among the turns that did.
 
 **Nothing is lost, so nothing asks first.** A rewind asks before it writes
 because it discards what's in those files now. A fork doesn't. Before it
@@ -868,7 +897,13 @@ command, whether it failed, and the last lines of its output. These are
 claims, not context. The reviewer is told to check each one against the diff,
 the files, and those results, then list it as supported, contradicted, or
 can't tell. "The tests pass" beside a recorded test run that failed shows up
-as contradicted, and a diff alone could never show that. A turn recorded
+as contradicted, and a diff alone could never show that.
+
+Each finding comes back as its own numbered item, complete on its own, so it
+can be handed on by itself. Hover one and **Fork with this** tries the turn
+again in a fork, with that finding added to its question (see
+[Forking a turn](#forking-a-turn)). A review written as plain paragraphs
+offers **Fork with this review** once, for the whole of it. A turn recorded
 before turns were linked to their transcripts is reviewed on its diff alone,
 as every turn used to be.
 

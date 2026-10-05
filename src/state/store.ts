@@ -35,6 +35,7 @@ import type {
   Step,
   Switch,
   TranscriptView,
+  TurnMark,
   ToolOutput,
   TrustStatus,
   UiEvent,
@@ -45,6 +46,13 @@ export type Entry =
       kind: "user";
       id: string;
       text: string;
+      /**
+       * The turn this question started, by the id its transcript record
+       * carries: what a fork made from it names. Read from the transcript's
+       * turn marks on a reopen, and from `turn_started` for one asked here.
+       * Absent for a conversation recorded before turns had ids.
+       */
+      turn?: string;
       /**
        * Images sent with this message, base64, in the order they were attached.
        *
@@ -400,6 +408,11 @@ interface Store {
    * its files set aside. Rejects with the backend's sentence.
    */
   fork: (sessionId: string, turn: number) => Promise<Forked>;
+  /**
+   * `fork`, before the question whose transcript turn is `turnId`. Any
+   * question, including one whose turn changed no files.
+   */
+  forkBefore: (sessionId: string, turnId: string) => Promise<Forked>;
   /** Puts this conversation's files back in the workspace. See `away`. */
   switchHere: () => Promise<void>;
   /** Throws away a message typed ahead, without sending it. */
@@ -652,6 +665,17 @@ function unchanged(a: unknown, b: unknown): boolean {
   return a === b || JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * Opens a fork the backend just made. It's a conversation like any other,
+ * opened the way the rail opens one, and the listing is re-read for its new
+ * row and label.
+ */
+async function openFork(get: () => Store, forked: Forked): Promise<Forked> {
+  if (forked.id) await get().resume(forked.id);
+  await get().reload();
+  return forked;
+}
+
 export const useStore = create<Store>((set, get) => ({
   status: null,
   trust: null,
@@ -857,6 +881,7 @@ export const useStore = create<Store>((set, get) => ({
       const {
         messages,
         switches,
+        turns,
         interrupted,
         delegates = [],
         away,
@@ -871,8 +896,8 @@ export const useStore = create<Store>((set, get) => ({
         away: away ?? null,
         entries: linkDelegates(
           interrupted
-            ? unknownOutcomes(entriesFromMessages(messages, switches))
-            : entriesFromMessages(messages, switches),
+            ? unknownOutcomes(entriesFromMessages(messages, switches, turns))
+            : entriesFromMessages(messages, switches, turns),
           delegates,
         ),
         interrupted: interrupted ?? null,
@@ -1172,14 +1197,10 @@ export const useStore = create<Store>((set, get) => ({
     await get().send(continuePrompt(interrupted), [], null, true);
   },
 
-  fork: async (sessionId, turn) => {
-    const forked = await api.forkTurn(sessionId, turn);
-    // The fork is a conversation like any other, opened the way the rail
-    // opens one. The listing is re-read for the new row and its label.
-    if (forked.id) await get().resume(forked.id);
-    await get().reload();
-    return forked;
-  },
+  fork: async (sessionId, turn) => openFork(get, await api.forkTurn(sessionId, turn)),
+
+  forkBefore: async (sessionId, turnId) =>
+    openFork(get, await api.forkBefore(sessionId, turnId)),
 
   switchHere: async () => {
     const { session, away } = get();
@@ -1510,10 +1531,13 @@ export function unknownOutcomes(entries: Entry[]): Entry[] {
 export function entriesFromMessages(
   messages: Message[],
   switches: Switch[] = [],
+  turns: TurnMark[] = [],
 ): Entry[] {
   const entries: Entry[] = [];
 
   for (const [index, message] of messages.entries()) {
+    // The turn this message is the question of, if it's one.
+    let started = turns.find((mark) => mark.after === index)?.id;
     // Before the message it precedes. More than one can land in the same place:
     // two switches with no turn between them are two clicks of the picker.
     for (const moved of switches.filter((s) => s.after === index)) {
@@ -1565,11 +1589,14 @@ export function entriesFromMessages(
             kind: "user",
             id: nextId(),
             text: rest,
+            turn: started,
             // On the first text block only. A user message has one, but a
             // hand-written transcript could have two, and repeating the images
             // under each would double them.
             images: attached.length > 0 ? attached.splice(0) : undefined,
           });
+          // On the first text block only, like the images.
+          started = undefined;
         } else if (block.type === "tool_result") {
           const index = entries.findIndex(
             (e) => e.kind === "tool" && e.id === block.tool_use_id,
@@ -2469,6 +2496,22 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
     // the header's token counter covers the latter. File changes are not a
     // thing that happened *in* the conversation either — they are the state of
     // the workspace, drawn in the header by `mergeChanged`.
+    // The question this send just drew is the one this turn answers. Only
+    // the newest question, and only one that has no turn yet: a continuation
+    // asks nothing new.
+    case "turn_started": {
+      if (event.continues) return entries;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        if (entry.kind !== "user") continue;
+        if (entry.turn) return entries;
+        const next = entries.slice();
+        next[i] = { ...entry, turn: event.id };
+        return next;
+      }
+      return entries;
+    }
+
     case "iteration_started":
     case "turn_finished":
     case "files_changed":

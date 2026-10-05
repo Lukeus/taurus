@@ -117,6 +117,7 @@ import type { StepState } from "../bindings/StepState";
 import type { TerminalEvent } from "../bindings/TerminalEvent";
 import type { Forked } from "../bindings/Forked";
 import type { ForkedFrom } from "../bindings/ForkedFrom";
+import type { TurnMark } from "../bindings/TurnMark";
 import type { Switched } from "../bindings/Switched";
 import type { TerminalBlock } from "../bindings/TerminalBlock";
 import type { Block } from "../bindings/Block";
@@ -266,6 +267,7 @@ export type {
   TerminalEvent,
   Forked,
   ForkedFrom,
+  TurnMark,
   Switched,
   TerminalBlock,
   Block,
@@ -1035,6 +1037,13 @@ export const rewindTo = (sessionId: string, turn: number, dryRun: boolean) =>
  */
 export const forkTurn = (sessionId: string, turn: number) =>
   invoke<Forked>("fork_turn", { sessionId, turn });
+
+/**
+ * `forkTurn`, by the transcript's own id for the turn rather than its number
+ * in Changes, so it can fork before a question that changed no files.
+ */
+export const forkBefore = (sessionId: string, turnId: string) =>
+  invoke<Forked>("fork_before", { sessionId, turnId });
 
 /** Puts a conversation's files back, setting aside the branch of it that's
  *  in the workspace now. */

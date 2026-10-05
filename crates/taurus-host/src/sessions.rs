@@ -266,9 +266,56 @@ pub struct ForkedFrom {
     /// The transcript's own id for the turn, which is what the fork stops
     /// short of.
     pub turn: String,
-    /// The same turn as `taurus rewind` and the Changes panel number it, for
-    /// saying "turn 3" to a person.
+    /// The checkpointed turn the fork's files went back to before, numbered
+    /// the way `taurus rewind` and the Changes panel number them, for saying
+    /// "turn 3" to a person. One past the last when no turn from the fork
+    /// point on changed files.
     pub checkpoint: u32,
+    /// The turn it was forked at changed no files, so `checkpoint` is the
+    /// next one that did rather than the turn itself. An older build ignores
+    /// it and says "turn N" for both, which is still where the files are
+    /// from.
+    /// `Some(true)` or absent, never `Some(false)`, so a fork at a turn that
+    /// changed files writes the same header it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub read_only: Option<bool>,
+}
+
+impl ForkedFrom {
+    /// Where it was forked, for a person: "at turn 3", or for a turn that
+    /// changed nothing, where it falls between the ones that did.
+    pub fn place(&self) -> String {
+        match (self.read_only.unwrap_or(false), self.checkpoint) {
+            (false, n) => format!("at turn {n}"),
+            (true, 1) => "before any changes".to_string(),
+            (true, n) => format!("after turn {}", n - 1),
+        }
+    }
+}
+
+/// Where a request starts in a transcript, for a window that has to say which
+/// question a fork is made before.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct TurnMark {
+    /// The turn's own id. See [`Record::Turn`].
+    pub id: String,
+    /// How many messages preceded it: its question is the message at this
+    /// position.
+    pub after: usize,
+}
+
+/// A fork point, resolved against the transcript.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForkPoint {
+    /// The turn the fork stops short of. The one asked for, or the turn that
+    /// began its request when it continued an interrupted one.
+    pub turn: String,
+    /// Every turn before it, oldest first.
+    pub before: Vec<String>,
+    /// What it asked.
+    pub prompt: String,
 }
 
 /// What a listing shows, read from a transcript's own opening lines.
@@ -343,6 +390,10 @@ pub struct SessionLog {
     /// under. A new conversation's first turn starts before anything is
     /// written, and the header goes down with its first message.
     held_turn: Option<Record>,
+    /// Where each request starts, as [`Loaded::turns`] reads them back, kept
+    /// up as turns start so a conversation that's already open can say so
+    /// without reading its transcript again.
+    marks: Vec<TurnMark>,
 }
 
 impl SessionLog {
@@ -371,6 +422,7 @@ impl SessionLog {
             off: false,
             warned: false,
             held_turn: None,
+            marks: Vec::new(),
         }
     }
 
@@ -396,7 +448,13 @@ impl SessionLog {
             off: false,
             warned: false,
             held_turn: None,
+            marks: loaded.turns.clone(),
         }
+    }
+
+    /// Where each request in this conversation starts. See [`Loaded::turns`].
+    pub fn marks(&self) -> &[TurnMark] {
+        &self.marks
     }
 
     /// Starts a delegate's transcript, in its parent's own directory.
@@ -428,6 +486,7 @@ impl SessionLog {
             off: false,
             warned: false,
             held_turn: None,
+            marks: Vec::new(),
         }
     }
 
@@ -440,6 +499,7 @@ impl SessionLog {
             off: true,
             warned: false,
             held_turn: None,
+            marks: Vec::new(),
         }
     }
 
@@ -597,6 +657,13 @@ impl SessionLog {
             at: now(),
             continues,
         };
+        // Its question is the next message to be written.
+        if !continues {
+            self.marks.push(TurnMark {
+                id: id.to_string(),
+                after: self.persisted,
+            });
+        }
         if has_header(&self.path) {
             self.write(&record);
         } else {
@@ -755,6 +822,10 @@ pub struct Loaded {
     pub provider: Option<String>,
     /// Where it changed model, oldest first. Empty for one that never did.
     pub switches: Vec<Switch>,
+    /// Where each request starts, oldest first. A turn that continued an
+    /// interrupted one isn't here, and neither is any turn of a transcript
+    /// written before turns had ids.
+    pub turns: Vec<TurnMark>,
     /// The transcript this was read from.
     pub path: PathBuf,
     /// The workspace it was started in, from its own header.
@@ -788,6 +859,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     let mut messages = Vec::new();
     let mut usage = TokenUsage::default();
     let mut switches: Vec<Switch> = Vec::new();
+    let mut turns: Vec<TurnMark> = Vec::new();
     // Turns spent on the current request, the turn with no end yet, and
     // whether the last turn to end ran out of round trips.
     let mut attempts = 0u32;
@@ -816,6 +888,12 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
                 at,
             }),
             Ok(Record::Turn { id, continues, .. }) => {
+                if !continues {
+                    turns.push(TurnMark {
+                        id: id.clone(),
+                        after: messages.len(),
+                    });
+                }
                 attempts = if continues { attempts + 1 } else { 1 };
                 open_turn = Some(id);
                 out_of_rounds = false;
@@ -893,6 +971,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
             interrupted,
         },
         switches,
+        turns,
         path,
     })
 }
@@ -943,40 +1022,10 @@ pub fn fork_transcript(new_id: &str, from: &ForkedFrom) -> Result<String, String
         std::fs::read_to_string(&source).map_err(|e| format!("{}: {e}", source.display()))?;
     let lines: Vec<&str> = contents.lines().collect();
 
-    let mut header: Option<Header> = None;
-    let mut turns: Vec<(usize, String, bool)> = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        match serde_json::from_str::<Record>(line) {
-            Ok(Record::Header(found)) if header.is_none() => header = Some(found),
-            Ok(Record::Turn { id, continues, .. }) => turns.push((index, id, continues)),
-            _ => {}
-        }
-    }
+    let (header, turns) = turn_records(&lines);
     let mut header = header.ok_or_else(|| format!("{} has no header", source.display()))?;
-    let mut at = turns
-        .iter()
-        .position(|(_, id, _)| *id == from.turn)
-        .ok_or_else(|| {
-            format!(
-                "the transcript of '{}' has no turn '{}', so there's nowhere to fork it",
-                from.session, from.turn
-            )
-        })?;
-    while turns[at].2 && at > 0 {
-        at -= 1;
-    }
-    let cut = turns[at].0;
-
-    // What the turn asked: its first user message's words.
-    let prompt = lines[cut..]
-        .iter()
-        .find_map(|line| match serde_json::from_str::<Record>(line) {
-            Ok(Record::Message(m)) if m.role == Role::User && !m.text().trim().is_empty() => {
-                Some(m.text())
-            }
-            _ => None,
-        })
-        .unwrap_or_default();
+    let cut = turns[cut_at(&turns, &from.session, &from.turn)?].0;
+    let prompt = asked(&lines[cut..]);
 
     let workspace = PathBuf::from(&header.workspace);
     header.id = new_id.to_string();
@@ -1048,6 +1097,69 @@ pub fn fork_transcript(new_id: &str, from: &ForkedFrom) -> Result<String, String
     }
 
     Ok(prompt)
+}
+
+/// Where a fork before `turn` would cut `session_id`'s transcript, without
+/// cutting it: what [`fork_transcript`] would keep, for matching the
+/// checkpoint log against before anything is written.
+pub fn fork_point(session_id: &str, turn: &str) -> Result<ForkPoint, String> {
+    let source = find(session_id).ok_or_else(|| format!("no saved session '{session_id}'"))?;
+    let contents =
+        std::fs::read_to_string(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let lines: Vec<&str> = contents.lines().collect();
+    let (_, turns) = turn_records(&lines);
+    let at = cut_at(&turns, session_id, turn)?;
+    Ok(ForkPoint {
+        turn: turns[at].1.clone(),
+        before: turns[..at].iter().map(|(_, id, _)| id.clone()).collect(),
+        prompt: asked(&lines[turns[at].0..]),
+    })
+}
+
+/// A transcript's header, and each turn record's line, id, and whether it
+/// continued the one before.
+fn turn_records(lines: &[&str]) -> (Option<Header>, Vec<(usize, String, bool)>) {
+    let mut header: Option<Header> = None;
+    let mut turns = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        match serde_json::from_str::<Record>(line) {
+            Ok(Record::Header(found)) if header.is_none() => header = Some(found),
+            Ok(Record::Turn { id, continues, .. }) => turns.push((index, id, continues)),
+            _ => {}
+        }
+    }
+    (header, turns)
+}
+
+/// Which of `turns` a fork before `turn` stops short of. A turn that continued
+/// an interrupted one isn't a place a request starts, so the cut moves back to
+/// the turn that began it.
+fn cut_at(turns: &[(usize, String, bool)], session: &str, turn: &str) -> Result<usize, String> {
+    let mut at = turns
+        .iter()
+        .position(|(_, id, _)| id == turn)
+        .ok_or_else(|| {
+            format!(
+                "the transcript of '{session}' has no turn '{turn}', so there's nowhere to fork it"
+            )
+        })?;
+    while turns[at].2 && at > 0 {
+        at -= 1;
+    }
+    Ok(at)
+}
+
+/// What a turn asked: the words of the first user message from its record on.
+fn asked(lines: &[&str]) -> String {
+    lines
+        .iter()
+        .find_map(|line| match serde_json::from_str::<Record>(line) {
+            Ok(Record::Message(m)) if m.role == Role::User && !m.text().trim().is_empty() => {
+                Some(m.text())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// The workspace a saved conversation belongs to, read from its header alone.
@@ -1917,6 +2029,51 @@ mod tests {
                 cause: taurus_core::Cause::Stopped,
             })
         );
+    }
+
+    #[test]
+    fn each_request_is_marked_at_its_question_and_a_continuation_is_not() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let mut session = Session::new("test-model");
+        session.id = "marks1".into();
+        let mut log = SessionLog::create(&session, workspace, None);
+
+        log.start_turn("t1", false);
+        session.push(Message::user("look"));
+        session.push(Message::assistant("done"));
+        log.record(&session);
+        log.end_turn("t1", "finished");
+        log.start_turn("t2", false);
+        session.push(Message::user("write it"));
+        log.record(&session);
+        log.end_turn("t2", "iteration_limit");
+        log.start_turn("t3", true);
+        session.push(Message::user(taurus_core::CONTINUE_PROMPT));
+        log.record(&session);
+        log.end_turn("t3", "finished");
+
+        let loaded = load("marks1").unwrap();
+        assert_eq!(
+            loaded.turns,
+            [
+                TurnMark {
+                    id: "t1".into(),
+                    after: 0
+                },
+                TurnMark {
+                    id: "t2".into(),
+                    after: 2
+                },
+            ]
+        );
+        assert_eq!(loaded.session.messages[2].text(), "write it");
+
+        // And where a fork at the continuation would cut: back at its request.
+        let point = fork_point("marks1", "t3").unwrap();
+        assert_eq!(point.turn, "t2");
+        assert_eq!(point.before, ["t1"]);
+        assert_eq!(point.prompt, "write it");
     }
 
     #[test]
