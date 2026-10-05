@@ -22,13 +22,14 @@ would write one project's overrides into the file every other project reads.
 | `providers.json` | Backends, including the header a key is sent in. Never the key itself, which lives in the OS keychain or an env var. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Values may name env vars. The **MCP** panel reads and writes it; **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `search.json` | Web search backends and which one is active. Never the key itself, which lives in the OS keychain or an env var, as with providers. | A different backend for this project, or field overrides on an inherited one. |
-| `settings.json` | Last workspace, the two synthesis toggles, `shell_integration` (whether the terminal dock marks each command; on by default), theme and theme id, fallback model, `max_iterations`. | The provider and model this project was last worked in, and a step limit for turns here. |
+| `settings.json` | Last workspace, the two synthesis toggles, `shell_integration` (whether the terminal dock marks each command; on by default), theme and theme id, fallback model, `max_iterations`, and `plugins`, which plugins are switched on or off. | The provider and model this project was last worked in, and a step limit for turns here. |
 | `themes/` | Custom palettes, typefaces, wordmarks and corner radii. See [Themes](#themes). | Themes that travel with the project, so a repository can brand the app for everyone who opens it. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. A file that doesn't parse grants nothing, is named in the log, and is never written over, so its rules are still there once you fix it. | "Always here" decisions, read the same way. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
 | `checkpoints/` | Pre-images of changed files, keyed by workspace like sessions and for the same reason. | — |
 | `hooks.json` | Programs run at fixed points in a turn. | Extra hooks, or `{"disabled": true}` to switch an inherited one off. |
+| `plugins/` | Plugins, each a folder of skills, sub-agents, MCP servers and hooks in Claude Code's layout. See [Plugins](#plugins). | Plugins that travel with the project. |
 | `trust.json` | Which workspaces' own config may be read. Global only, because a repository that declared itself trusted would have declared nothing. A file that doesn't parse trusts nothing and is never written over. Trusting a folder then tells you which file to fix. | — |
 
 ## Trusting a workspace
@@ -39,7 +40,9 @@ The workspace layer isn't passive data:
 - `providers.json` names the endpoint your conversation is sent to.
 - `search.json` decides whether `fetch_url` may reach private hosts.
 - `permissions.json` is a standing grant.
+- `hooks.json` runs a program on every matching tool call or prompt.
 - A skill can carry a script.
+- A plugin in `.taurus/plugins/` can bring all of the above.
 
 All of that travels in a repository you may have cloned a minute ago.
 
@@ -59,9 +62,10 @@ This project has configuration Taurus is not reading.
   2 standing permission grants — tools this project would allow without asking
 ```
 
-MCP servers are listed by command line, not counted. That's the only part of
-the list you can actually judge, and the part that starts a process on your
-machine.
+MCP servers and hooks are listed by command line, not counted. That's the
+only part of the list you can actually judge, and the part that starts a
+process on your machine. A project's plugins are named, and their servers and
+hooks are listed with the rest under the names they'd run as.
 
 In the desktop app this is a banner above the composer, not a modal on open.
 The decision isn't urgent: nothing from the folder is loaded, so nothing is
@@ -510,6 +514,111 @@ model is told to explain each one, not guess at it. A key the model typed would
 live in the transcript, and every copy of it, for as long as the conversation
 is kept. The block is rendered through the same type the loader reads, so what
 comes back will parse.
+
+## Plugins
+
+A plugin bundles skills, sub-agents, MCP servers and hooks under one name. The
+layout is Claude Code's, so a plugin written for Claude Code installs here as
+it is:
+
+```text
+my-plugin/
+  .claude-plugin/plugin.json   name, version, description, component paths
+  skills/<skill>/SKILL.md
+  agents/<agent>.md
+  .mcp.json                    {"mcpServers": {...}}
+  hooks/hooks.json             Taurus's hook format; see Hooks above
+```
+
+Only `name` is required in the manifest, and the manifest itself is optional:
+a folder without one is named after itself. A name is lowercase letters,
+digits and hyphens, starting with a letter, and can't be one Claude Code
+reserves (`claude-…`, `anthropic-…`).
+
+Plugins live in `~/.taurus/plugins/` (yours) and a project's
+`.taurus/plugins/` (the project's). Install one from a folder or a git URL:
+
+```bash
+taurus plugin add ~/code/ops-plugin            # copied in
+taurus plugin add https://github.com/acme/ops-plugin.git --ref v1.2
+taurus plugin add ../ops-plugin --project      # into this project
+taurus plugin list                             # what each brings, and whether it's on
+taurus plugin disable ops                      # or enable; --project for this project's settings
+taurus plugin update ops                       # fetch it again from where it came from
+taurus plugin remove ops
+taurus plugin validate ./ops-plugin            # check one without installing it
+```
+
+In the desktop app it's **Plugins** in the rail, which does the same.
+
+![The Plugins drawer: a Claude Code plugin with its skills and MCP servers and
+two notes about servers it can't start as written, and a project plugin with a
+part Taurus doesn't run](screenshots/plugins.png)
+
+**A plugin is checked before it's installed.** One that wouldn't load isn't
+installed, and the reasons are the error. A clone is made at the ref you
+name (the default branch otherwise) and stays at that commit until you run
+`update`. Its `.git` is dropped, so a project's `.taurus/plugins/` holds plain
+files rather than a repository inside yours. Links in a plugin folder aren't
+followed when it's copied in, because one could point anywhere on the machine
+it was made on.
+
+**Every part is named under its plugin**, as Claude Code names them. Skill
+`deploy` in plugin `ops` is `ops:deploy`, and so is an agent. Run it as
+`/ops:deploy`. A plugin's MCP server `db` is keyed `plugin_ops_db`, which makes
+its tools `mcp__plugin_ops_db__query`. So two plugins never collide with each
+other or with anything of yours, and a plugin can't quietly replace a skill
+you wrote. A project plugin with the same name as one of yours replaces it.
+
+Its parts show up in **Skills**, **Agents** and **MCP** with where they came
+from. They aren't edited there: a plugin's files are the plugin's, and an edit
+would be lost on the next `update`. A plugin's MCP server can still be switched
+off in the MCP panel, which writes `{"disabled": true}` under its key in your
+own `mcp.json`.
+
+**Switching a plugin off** is a line in `settings.json`, in your layer or the
+project's, merged name by name:
+
+```json
+{ "plugins": { "ops": false } }
+```
+
+A plugin not named there is on, unless its manifest says
+`"defaultEnabled": false`.
+
+**Paths in a plugin's config.** `${CLAUDE_PLUGIN_ROOT}` (or
+`${TAURUS_PLUGIN_ROOT}`) is the plugin's folder, `${CLAUDE_PLUGIN_DATA}` is
+`~/.taurus/plugin-data/<name>/`, made the first time something names it, and
+`${CLAUDE_PROJECT_DIR}` is the workspace. They're filled in a server's
+command, args, env, URL and headers, and in a hook's command and args.
+Component paths in the manifest start with `./` and can't leave the plugin's
+folder.
+
+**What isn't run.** Some parts of Claude Code's format have nothing in Taurus
+to run them. Each is listed on the plugin by name, with why, rather than
+skipped in silence:
+
+- `commands/`: Taurus has no command files. A skill marked user-invocable is
+  its `/command`.
+- LSP servers, output styles, workflows, themes and monitors.
+- `bin/`, which Claude Code puts on `PATH`. A plugin's servers and hooks can
+  still name a program in it by path.
+- A plugin's own `settings.json`, `userConfig` (so `${user_config.…}` stays
+  unfilled), and `dependencies`.
+- Hooks in Claude Code's format, keyed `PreToolUse` and the rest. A hooks file
+  in that shape is named as one, and none of it runs.
+
+Two things the real plugins Claude Code ships turned up, both said on the
+plugin rather than left to fail:
+
+- An MCP server with an empty `url` is a placeholder Claude Code fills in from
+  its own connectors. It isn't started.
+- A server that names its own `oauth` client. Taurus registers its own client
+  when you sign in, and a server that only accepts the named one will refuse
+  it.
+
+**A project's plugins are project config.** They wait for the workspace to be
+trusted, like everything else in `.taurus/`, and the trust prompt names them.
 
 ## Themes
 

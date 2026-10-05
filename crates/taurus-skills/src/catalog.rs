@@ -28,6 +28,9 @@ pub struct SkillSource {
     pub tier: SkillTier,
     pub origin: SkillOrigin,
     pub dir: PathBuf,
+    /// The plugin this directory belongs to. Its skills are named
+    /// `plugin:skill`. See [`Skill::plugin`].
+    pub plugin: Option<String>,
 }
 
 impl SkillCatalog {
@@ -60,7 +63,11 @@ impl SkillCatalog {
                     continue;
                 }
                 match load_skill(&dir, source.tier, source.origin, &mut interpreters) {
-                    Ok(skill) => {
+                    Ok(mut skill) => {
+                        if let Some(plugin) = &source.plugin {
+                            skill.frontmatter.name = format!("{plugin}:{}", skill.name());
+                            skill.plugin = Some(plugin.clone());
+                        }
                         debug!(name = skill.name(), ?source.tier, ?source.origin, "loaded skill");
                         let name = skill.name().to_string();
                         if let Some(shadowed) = catalog.skills.insert(name.clone(), skill) {
@@ -217,6 +224,7 @@ fn load_skill(
         resources,
         warnings,
         degraded,
+        plugin: None,
     })
 }
 
@@ -312,6 +320,7 @@ mod tests {
                 tier,
                 origin: SkillOrigin::Taurus,
                 dir: dir.to_path_buf(),
+                plugin: None,
             })
             .collect()
     }
@@ -527,6 +536,7 @@ mod tests {
             tier: SkillTier::User,
             origin: SkillOrigin::Claude,
             dir: dir.path().to_path_buf(),
+            plugin: None,
         }]);
         assert!(problems.is_empty(), "{problems:?}");
 
@@ -551,11 +561,13 @@ mod tests {
                 tier: SkillTier::User,
                 origin: SkillOrigin::Claude,
                 dir: borrowed.path().to_path_buf(),
+                plugin: None,
             },
             SkillSource {
                 tier: SkillTier::User,
                 origin: SkillOrigin::Taurus,
                 dir: native.path().to_path_buf(),
+                plugin: None,
             },
         ]);
         assert_eq!(catalog.len(), 1);

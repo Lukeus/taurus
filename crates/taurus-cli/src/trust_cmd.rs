@@ -90,8 +90,17 @@ pub async fn run(host: &Host, args: TrustArgs) -> Result<ExitCode, String> {
     }
     // Named in full rather than counted, because a command line is the whole of
     // what someone can actually judge here.
-    for command in &status.pending.mcp_commands {
-        println!("    {command}");
+    if !status.pending.mcp_commands.is_empty() {
+        println!("  MCP servers would start:");
+        for command in &status.pending.mcp_commands {
+            println!("    {command}");
+        }
+    }
+    if !status.pending.hook_commands.is_empty() {
+        println!("  Hooks would run:");
+        for command in &status.pending.hook_commands {
+            println!("    {command}");
+        }
     }
 
     // What is inside those files, for the half of them nobody can read by

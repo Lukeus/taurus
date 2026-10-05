@@ -42,6 +42,7 @@ const draw = (props: Partial<Parameters<typeof Rail>[0]> = {}) =>
       onSkills={() => {}}
       onAgents={() => {}}
       onMemory={() => {}}
+      onPlugins={() => {}}
       onUsage={() => {}}
       onTraces={() => {}}
       onMcp={() => {}}
@@ -81,6 +82,7 @@ describe("the panels, grouped", () => {
       "Skills",
       "Agents",
       "Memory",
+      "Plugins",
       "MCP",
       "Terminal",
       "Context",

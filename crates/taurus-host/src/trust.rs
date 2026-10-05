@@ -224,6 +224,14 @@ pub struct PendingConfig {
     pub mcp_servers: usize,
     /// The command line of each, for a prompt that can show what would run.
     pub mcp_commands: Vec<String>,
+    /// Hooks the workspace's `hooks.json` defines. Each runs a program on
+    /// every matching tool call or prompt, which is why they're named too.
+    pub hooks: usize,
+    /// What each would run, and when.
+    pub hook_commands: Vec<String>,
+    /// Plugins in the project's `.taurus/plugins/`, by name. Their skills,
+    /// agents, servers and hooks are in the counts and lists above too.
+    pub plugins: Vec<String>,
     pub instructions: usize,
     /// Standing permission grants in `.taurus/permissions.json`.
     pub permission_rules: usize,
@@ -277,6 +285,16 @@ impl PendingConfig {
         }
         if self.mcp_servers > 0 {
             lines.push(plural(self.mcp_servers, "MCP server", "MCP servers"));
+        }
+        if self.hooks > 0 {
+            lines.push(plural(self.hooks, "hook", "hooks"));
+        }
+        if !self.plugins.is_empty() {
+            lines.push(format!(
+                "{} ({})",
+                plural(self.plugins.len(), "plugin", "plugins"),
+                self.plugins.join(", ")
+            ));
         }
         if self.instructions > 0 {
             lines.push(plural(
@@ -388,6 +406,42 @@ pub fn pending(workspace: &Path) -> PendingConfig {
             .collect();
     }
 
+    // Counted from what parses, like `mcp.json`. A hooks file that doesn't
+    // parse runs nothing, and the loader says so once it's trusted.
+    if let Ok(layer) = taurus_hooks::load(&config::workspace_dir(workspace)) {
+        pending.hooks = layer.hooks.len() + layer.invalid.len();
+        pending.hook_commands = layer
+            .hooks
+            .iter()
+            .map(|(name, entry)| format!("{name}: {}", describe_hook(entry)))
+            .collect();
+    }
+
+    // The project's plugins. Their skills and agents are already counted:
+    // the source lists above include them. Their servers and hooks are named
+    // here, under the keys they'd run as.
+    for plugin in crate::plugins::active(Some(workspace))
+        .into_iter()
+        .filter(|plugin| plugin.scope() == config::Scope::Workspace)
+    {
+        pending.plugins.push(plugin.name().to_string());
+        let hooks = plugin.hooks().clone();
+        pending.hooks += hooks.hooks.len();
+        pending.hook_commands.extend(
+            hooks
+                .hooks
+                .iter()
+                .map(|(name, entry)| format!("{name}: {}", describe_hook(entry))),
+        );
+        let servers = plugin.into_mcp().servers;
+        pending.mcp_servers += servers.len();
+        pending.mcp_commands.extend(
+            servers
+                .iter()
+                .map(|(name, server)| format!("{name}: {}", describe_server(server))),
+        );
+    }
+
     pending.permission_rules = workspace_rule_count(workspace);
 
     pending.providers = config::providers_file(config::Scope::Workspace, Some(workspace))
@@ -423,6 +477,21 @@ fn describe_server(server: &taurus_mcp::ServerConfig) -> String {
         // it changes which of the user's own servers are on — but there is no
         // command line to show for it.
         taurus_mcp::ServerConfig::Toggle(_) => "(disables an inherited server)".into(),
+    }
+}
+
+/// What a hook runs, and on which event, in one line.
+fn describe_hook(entry: &taurus_hooks::HookEntry) -> String {
+    match entry {
+        taurus_hooks::HookEntry::Hook(hook) => {
+            let line = if hook.args.is_empty() {
+                hook.command.clone()
+            } else {
+                format!("{} {}", hook.command, hook.args.join(" "))
+            };
+            format!("{line} (on {})", hook.on.label())
+        }
+        taurus_hooks::HookEntry::Toggle(_) => "(turns an inherited hook on or off)".into(),
     }
 }
 
@@ -570,6 +639,30 @@ mod tests {
         assert_eq!(for_reading(Some(workspace.path())), None);
         trust(workspace.path()).expect("trust");
         assert_eq!(for_reading(Some(workspace.path())), Some(workspace.path()));
+    }
+
+    #[test]
+    fn a_workspace_whose_only_config_is_a_hook_is_asked_about() {
+        // A hook runs a program on every matching call, so a cloned repo
+        // whose only project config is hooks.json must not run it unasked.
+        let _home = isolated_home();
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let dir = workspace.path().join(".taurus");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("hooks.json"),
+            r#"{"hooks": {"lint": {"on": "pre_tool_use", "command": "./check", "args": ["--fast"]}}}"#,
+        )
+        .unwrap();
+
+        let status = status(workspace.path());
+        assert!(status.decision_needed);
+        assert_eq!(status.pending.hooks, 1);
+        assert_eq!(
+            status.pending.hook_commands,
+            ["lint: ./check --fast (on pre_tool_use)"]
+        );
+        assert_eq!(status.pending.summary(), ["1 hook"]);
     }
 
     #[test]

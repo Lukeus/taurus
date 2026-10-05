@@ -116,6 +116,9 @@ import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
 import type { TerminalEvent } from "../bindings/TerminalEvent";
 import type { Forked } from "../bindings/Forked";
+import type { PluginSummary } from "../bindings/PluginSummary";
+import type { PluginSource } from "../bindings/PluginSource";
+import type { Unsupported } from "../bindings/Unsupported";
 import type { Comparison } from "../bindings/Comparison";
 import type { Side } from "../bindings/Side";
 import type { ForkedFrom } from "../bindings/ForkedFrom";
@@ -268,6 +271,9 @@ export type {
   Switch,
   TerminalEvent,
   Forked,
+  PluginSummary,
+  PluginSource,
+  Unsupported,
   Comparison,
   Side,
   ForkedFrom,
@@ -1048,6 +1054,28 @@ export const forkTurn = (sessionId: string, turn: number) =>
  */
 export const forkBefore = (sessionId: string, turnId: string) =>
   invoke<Forked>("fork_before", { sessionId, turnId });
+
+/** Every installed plugin, yours and this project's. See `taurus_host::plugins`. */
+export const listPlugins = () => invoke<PluginSummary[]>("list_plugins");
+
+/**
+ * Installs a plugin from a folder or a git URL, into yours (or with `project`,
+ * this project's `.taurus/plugins/`). Returns the list it changed.
+ */
+export const addPlugin = (from: string, project: boolean, gitRef?: string) =>
+  invoke<PluginSummary[]>("add_plugin", { from, project, gitRef: gitRef || null });
+
+/** Fetches a plugin again from where it was added from. */
+export const updatePlugin = (name: string, project: boolean) =>
+  invoke<PluginSummary[]>("update_plugin", { name, project });
+
+/** Deletes an installed plugin. */
+export const removePlugin = (name: string, project: boolean) =>
+  invoke<PluginSummary[]>("remove_plugin", { name, project });
+
+/** Switches a plugin on or off, in your settings or the project's. */
+export const setPluginEnabled = (name: string, project: boolean, enabled: boolean) =>
+  invoke<PluginSummary[]>("set_plugin_enabled", { name, project, enabled });
 
 /**
  * Two branches of one conversation side by side, without switching: what

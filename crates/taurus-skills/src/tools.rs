@@ -555,6 +555,7 @@ mod tests {
             tier: SkillTier::User,
             origin: SkillOrigin::Taurus,
             dir: skills_dir.path().to_path_buf(),
+            plugin: None,
         }]);
         assert!(problems.is_empty(), "{problems:?}");
 
@@ -633,6 +634,7 @@ mod tests {
             tier: SkillTier::User,
             origin: SkillOrigin::Taurus,
             dir: f.skills.path().to_path_buf(),
+            plugin: None,
         }]);
         assert!(problems.is_empty(), "{problems:?}");
         *f.catalog.write().await = catalog;

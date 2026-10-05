@@ -20,6 +20,9 @@ const EMPTY: PendingConfig = {
   agents: 0,
   mcp_servers: 0,
   mcp_commands: [],
+  hooks: 0,
+  hook_commands: [],
+  plugins: [],
   instructions: 0,
   permission_rules: 0,
   providers: false,
@@ -76,6 +79,18 @@ describe("TrustBanner", () => {
     // The count alone is unanswerable. "npx -y thing" is a thing a person can
     // look at and decide about, and it is also the thing that would run.
     expect(host.textContent).toContain("npx -y thing");
+  });
+
+  it("names the command a hook would run", () => {
+    const host = mount(
+      <TrustBanner
+        trust={status({ hooks: 1, hook_commands: ["lint: ./check (on pre_tool_use)"] })}
+        onTrust={noop}
+        onDismiss={noop}
+      />,
+    );
+    expect(host.textContent).toContain("1 hook");
+    expect(host.textContent).toContain("./check (on pre_tool_use)");
   });
 
   it("says a committed allowlist would skip the permission prompt", () => {

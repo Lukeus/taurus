@@ -337,6 +337,7 @@ mod tests {
             tier: SkillTier::User,
             origin: SkillOrigin::Taurus,
             dir: dir.path().to_path_buf(),
+            plugin: None,
         }]);
         (catalog, dir)
     }
@@ -431,6 +432,7 @@ mod tests {
             tier: SkillTier::Project,
             origin: SkillOrigin::Taurus,
             dir: root.path().to_path_buf(),
+            plugin: None,
         }]);
         assert!(problems.is_empty(), "{problems:?}");
         let skill = reloaded

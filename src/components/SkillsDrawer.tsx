@@ -255,6 +255,9 @@ export function originLabel(
       return tier === "project" ? ".github" : ".copilot";
     case "taurus":
       return null;
+    // The name already says which plugin: `ops:deploy`.
+    case "plugin":
+      return "plugin";
   }
 }
 

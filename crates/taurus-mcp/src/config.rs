@@ -383,8 +383,26 @@ pub fn remove_entry(text: &str, name: &str) -> Result<String, String> {
 /// Deliberately a raw-key edit rather than a round trip through
 /// [`ServerConfig`]: a toggle must not be the thing that silently drops a field
 /// this version does not model.
+///
+/// A server this file doesn't define is switched off with a bare toggle,
+/// `{"disabled": true}`, which a merge applies to the layer below: how a
+/// plugin's server is switched off without copying its definition. Switching
+/// it back on takes the toggle out again rather than leaving one that says
+/// `false`.
 pub fn set_entry_disabled(text: &str, name: &str, disabled: bool) -> Result<String, String> {
     edit(text, |servers| {
+        let bare_toggle = servers
+            .get(name)
+            .and_then(|entry| entry.as_object())
+            .is_some_and(|object| object.len() == 1 && object.contains_key("disabled"));
+        if bare_toggle && !disabled {
+            servers.remove(name);
+            return Ok(());
+        }
+        if !servers.contains_key(name) && disabled {
+            servers.insert(name.to_string(), serde_json::json!({ "disabled": true }));
+            return Ok(());
+        }
         let Some(entry) = servers.get_mut(name) else {
             return Err(format!("'{name}' is not in this file"));
         };
@@ -700,6 +718,20 @@ mod tests {
         let root: serde_json::Value = serde_json::from_str(&after).unwrap();
         assert_eq!(root["mcpServers"]["fs"]["disabled"], true);
         assert_eq!(root["mcpServers"]["fs"]["somethingNew"], 1);
+    }
+
+    #[test]
+    fn a_server_defined_below_is_switched_off_with_a_toggle_and_back_on_without_one() {
+        let off = set_entry_disabled(r#"{"mcpServers": {}}"#, "plugin_ops_db", true).unwrap();
+        let config = parse(&off).unwrap();
+        assert!(matches!(
+            config.servers["plugin_ops_db"],
+            ServerConfig::Toggle { .. }
+        ));
+        let on = set_entry_disabled(&off, "plugin_ops_db", false).unwrap();
+        assert!(parse(&on).unwrap().servers.is_empty());
+        // Switching on what isn't here is still a mistake worth saying.
+        assert!(set_entry_disabled(r#"{"mcpServers": {}}"#, "x", false).is_err());
     }
 
     #[test]

@@ -88,6 +88,7 @@ pub fn definitions() -> Vec<AgentDefinition> {
             borrowed: false,
             shadows: None,
             degraded: None,
+            plugin: None,
         },
         AgentDefinition {
             frontmatter: AgentFrontmatter {
@@ -119,6 +120,7 @@ pub fn definitions() -> Vec<AgentDefinition> {
             borrowed: false,
             shadows: None,
             degraded: None,
+            plugin: None,
         },
         AgentDefinition {
             frontmatter: AgentFrontmatter {
@@ -157,6 +159,7 @@ pub fn definitions() -> Vec<AgentDefinition> {
             borrowed: false,
             shadows: None,
             degraded: None,
+            plugin: None,
         },
     ]
 }

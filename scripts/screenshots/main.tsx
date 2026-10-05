@@ -45,6 +45,7 @@ import {
   MOTION_EVENTS,
   MCP_SERVERS,
   MODELS,
+  PLUGINS,
   KEY_STATUSES,
   PERMISSION,
   PERMISSION_RULES,
@@ -204,6 +205,7 @@ const ANSWERS: Record<string, unknown> = {
   // so a remembered copy can never be shown in place of what is on disk.
   list_pages: NOTES,
   list_mcp_servers: MCP_SERVERS,
+  list_plugins: PLUGINS,
   // The catalogue is shipped in the binary, so the real one is what the shot
   // should show — read off disk at build time rather than restated here, which
   // would let a picture of the panel disagree with what the panel offers.
@@ -855,6 +857,12 @@ requestAnimationFrame(() => {
       mcp: async () => {
         (await click(".rail-link", (b) => b.startsWith("MCP")))();
         await until(() => document.querySelector(".drawer .card"));
+      },
+      // The drawer with what a plugin brings, what isn't run here, and one
+      // that doesn't load. Gated on the list, like `mcp`.
+      plugins: async () => {
+        (await click(".rail-link", (b) => b.startsWith("Plugins")))();
+        await until(() => document.querySelector(".drawer .plugin-card"));
       },
     }[shot];
     // A frame for React to paint the seeded entries before anything is

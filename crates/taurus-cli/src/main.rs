@@ -13,6 +13,7 @@ mod key_cmd;
 mod markdown;
 mod notes_cmd;
 mod permission;
+mod plugin_cmd;
 mod render;
 mod review_cmd;
 mod rewind_cmd;
@@ -172,6 +173,14 @@ enum Command {
     Hooks {
         #[command(subcommand)]
         command: hooks_cmd::HooksCommand,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
+    /// Install, list and switch plugins: skills, sub-agents, MCP servers and
+    /// hooks under one name, in Claude Code's layout.
+    Plugin {
+        #[command(subcommand)]
+        command: plugin_cmd::PluginCommand,
         #[command(flatten)]
         session: SessionArgs,
     },
@@ -531,6 +540,13 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             hooks_cmd::run(&host, command).await
         }
 
+        Command::Plugin { command, session } => {
+            let host = build_host_quietly(&session, Policy::default(), servers)
+                .await?
+                .host;
+            plugin_cmd::run(&host, command).await
+        }
+
         Command::Skills { command, session } => {
             let runtime = build_host(&session, Policy::default(), servers).await?;
             skills_cmd::run(&runtime.host, command).await
@@ -673,6 +689,7 @@ impl Servers {
             | Command::Rewind { .. }
             | Command::Trust { .. }
             | Command::Hooks { .. }
+            | Command::Plugin { .. }
             | Command::Skills { .. }
             | Command::Notes { .. }
             | Command::Agents { .. }

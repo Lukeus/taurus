@@ -37,6 +37,12 @@ export function TrustBanner({
       <div className="trust-body">
         <strong>This project has configuration Taurus is not reading.</strong>
         <ul className="trust-list">
+          {items.plugins.length > 0 && (
+            <li>
+              {count(items.plugins.length, "plugin")} ({items.plugins.join(", ")}) — their
+              parts are counted below
+            </li>
+          )}
           {items.skills > 0 && <li>{count(items.skills, "skill")}</li>}
           {items.agents > 0 && <li>{count(items.agents, "sub-agent")}</li>}
           {items.instructions > 0 && (
@@ -50,6 +56,18 @@ export function TrustBanner({
                   starts a process on their machine. */}
               <ul className="trust-commands">
                 {items.mcp_commands.map((command) => (
+                  <li key={command}>
+                    <code>{command}</code>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          )}
+          {items.hooks > 0 && (
+            <li>
+              {count(items.hooks, "hook")} — run on tool calls and prompts
+              <ul className="trust-commands">
+                {items.hook_commands.map((command) => (
                   <li key={command}>
                     <code>{command}</code>
                   </li>

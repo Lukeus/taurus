@@ -208,7 +208,12 @@ impl Hook {
 /// A missing file is an empty config, not an error: neither layer is required,
 /// and most people will never write one.
 pub fn load(dir: &Path) -> Result<HookConfig, String> {
-    let path = config_file(dir);
+    load_file(&config_file(dir))
+}
+
+/// [`load`], for a hooks file wherever it is. A plugin names its own.
+pub fn load_file(path: &Path) -> Result<HookConfig, String> {
+    let path = path.to_path_buf();
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(HookConfig::default());
     };

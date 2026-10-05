@@ -19,6 +19,7 @@ pub mod mcp_view;
 pub mod memory;
 pub mod notebook;
 pub mod onscreen;
+pub mod plugins;
 pub mod problem;
 pub mod prompt;
 pub mod review;
@@ -44,6 +45,7 @@ pub use mcp_view::{McpServerDraft, McpServerRef, McpServerView, McpTransport, Mc
 pub use memory::Note;
 pub use notebook::{Page, PageKind, PageRef, PageSaved};
 pub use onscreen::{DataOnScreen, DocumentOnScreen, NoteOnScreen, OnScreen, Selection};
+pub use plugins::{PluginSource, PluginSummary, Unsupported};
 pub use problem::{Problem, ProblemSource};
 pub use search::{Match, SearchResults, SessionHit};
 pub use secrets::KeyStatus;

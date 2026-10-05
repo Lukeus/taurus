@@ -35,6 +35,7 @@ impl Host {
         // same question.
         let names: Vec<String> = config.servers.keys().cloned().collect();
         let costs = mcp_schema_tokens(&names, &self.tool_definitions().await);
+        let plugins = plugin_servers(Some(&workspace));
 
         config
             .servers
@@ -54,6 +55,7 @@ impl Host {
                 McpServerView {
                     signed_in,
                     schema_tokens,
+                    plugin: plugins.get(&name).cloned(),
                     ..McpServerView::new(name, server, &defined_in, status)
                 }
             })
@@ -101,8 +103,24 @@ impl Host {
         let mut layers = Vec::new();
         let mut defined_in: LayerOf = BTreeMap::new();
         let mut problems = Vec::new();
+        // Through the trust gate, like every other read of project config. An
+        // untrusted workspace's servers would otherwise be listed as if they
+        // were configured, and offered a sign-in, which expands variables in
+        // the URL a repository wrote and opens it in a browser. The trust
+        // banner is where what's waiting is named.
+        let workspace = crate::trust::for_reading(Some(workspace));
+        // Plugins' servers first, as a reload layers them. Each is defined in
+        // its plugin's scope, which is where a toggle switching it off goes.
+        for plugin in crate::plugins::active(workspace) {
+            let scope = plugin.scope();
+            let layer = plugin.into_mcp();
+            for name in layer.servers.keys() {
+                defined_in.insert(name.clone(), scope);
+            }
+            layers.push(layer);
+        }
         for scope in [Scope::Global, Scope::Workspace] {
-            let Some(dir) = config::scope_dir(scope, Some(workspace)) else {
+            let Some(dir) = config::scope_dir(scope, workspace) else {
                 continue;
             };
             let layer = match taurus_mcp::load(&dir) {
@@ -171,7 +189,9 @@ impl Host {
         let workspace = self.workspace.read().await.clone();
 
         let mut problems = Vec::new();
-        let mut layers = Vec::new();
+        // Plugins' servers first, the lowest layer, so your own mcp.json can
+        // switch one off by its key. See `crate::plugins`.
+        let mut layers = plugin_layers(Some(&workspace));
         for dir in config::config_dirs(Some(&workspace)) {
             match taurus_mcp::load(&dir) {
                 Ok(layer) => layers.push(layer),
@@ -270,4 +290,29 @@ impl Host {
         // what actually runs rather than the unauthenticated half of it.
         taurus_mcp::probe(name, server, Some(Arc::new(crate::secrets::Keychain))).await
     }
+}
+
+/// Each active plugin's MCP servers, as a layer apiece. Read through the
+/// trust gate, like the files beside them.
+fn plugin_layers(workspace: Option<&Path>) -> Vec<taurus_mcp::McpConfig> {
+    crate::plugins::active(crate::trust::for_reading(workspace))
+        .into_iter()
+        .map(crate::plugins::Plugin::into_mcp)
+        .collect()
+}
+
+/// Which plugin each plugin server's key belongs to.
+fn plugin_servers(workspace: Option<&Path>) -> BTreeMap<String, String> {
+    crate::plugins::active(crate::trust::for_reading(workspace))
+        .into_iter()
+        .flat_map(|plugin| {
+            let name = plugin.name().to_string();
+            plugin
+                .into_mcp()
+                .servers
+                .into_keys()
+                .map(move |key| (key, name.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }

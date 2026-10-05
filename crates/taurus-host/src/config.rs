@@ -125,6 +125,7 @@ pub(crate) fn all_agent_sources(workspace: Option<&Path>) -> Vec<AgentSource> {
         tier,
         dir,
         borrowed: true,
+        plugin: None,
     };
     let mut sources = vec![
         borrowed(
@@ -139,6 +140,7 @@ pub(crate) fn all_agent_sources(workspace: Option<&Path>) -> Vec<AgentSource> {
             tier: AgentTier::User,
             dir: user_agents_dir(),
             borrowed: false,
+            plugin: None,
         },
     ];
     if let Some(workspace) = workspace {
@@ -156,9 +158,31 @@ pub(crate) fn all_agent_sources(workspace: Option<&Path>) -> Vec<AgentSource> {
             tier: AgentTier::Project,
             dir: workspace_agents_dir(workspace),
             borrowed: false,
+            plugin: None,
         });
     }
+    // Plugins last. Their agents are named `plugin:agent`, so where they sit
+    // in the order shadows nothing; borrowed, because their files are the
+    // plugin's. See `crate::plugins`.
+    for plugin in crate::plugins::active(workspace) {
+        for dir in plugin.agent_dirs() {
+            sources.push(AgentSource {
+                tier: tier_of(plugin.scope()),
+                dir: dir.clone(),
+                borrowed: true,
+                plugin: Some(plugin.name().to_string()),
+            });
+        }
+    }
     sources
+}
+
+/// The agent tier a plugin's scope puts it in.
+fn tier_of(scope: Scope) -> AgentTier {
+    match scope {
+        Scope::Global => AgentTier::User,
+        Scope::Workspace => AgentTier::Project,
+    }
 }
 
 pub fn user_skills_dir() -> PathBuf {
@@ -208,7 +232,14 @@ pub(crate) fn all_skill_sources(workspace: Option<&Path>) -> Vec<SkillSource> {
     let home = home_root();
     let mut sources = Vec::new();
 
-    let mut push = |tier, origin, dir: PathBuf| sources.push(SkillSource { tier, origin, dir });
+    let mut push = |tier, origin, dir: PathBuf| {
+        sources.push(SkillSource {
+            tier,
+            origin,
+            dir,
+            plugin: None,
+        })
+    };
 
     push(
         SkillTier::User,
@@ -253,6 +284,23 @@ pub(crate) fn all_skill_sources(workspace: Option<&Path>) -> Vec<SkillSource> {
         );
     }
 
+    // Plugins last, named `plugin:skill`, so they shadow nothing of yours. See
+    // `crate::plugins`.
+    for plugin in crate::plugins::active(workspace) {
+        let tier = match plugin.scope() {
+            Scope::Global => SkillTier::User,
+            Scope::Workspace => SkillTier::Project,
+        };
+        for dir in plugin.skill_dirs() {
+            sources.push(SkillSource {
+                tier,
+                origin: SkillOrigin::Plugin,
+                dir: dir.clone(),
+                plugin: Some(plugin.name().to_string()),
+            });
+        }
+    }
+
     sources
 }
 
@@ -291,7 +339,13 @@ pub fn hooks_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
 /// them. See [`taurus_hooks`].
 pub fn load_hooks(workspace: Option<&Path>) -> (taurus_hooks::HookRunner, Vec<String>) {
     let mut problems = Vec::new();
-    let mut layers = Vec::new();
+    // Plugins' hooks first, the lowest layer, so your own hooks.json can
+    // switch one off by its `plugin:hook` name.
+    let mut layers: Vec<taurus_hooks::HookConfig> =
+        crate::plugins::active(crate::trust::for_reading(workspace))
+            .iter()
+            .map(|plugin| plugin.hooks().clone())
+            .collect();
     for dir in config_dirs(workspace) {
         match taurus_hooks::load(&dir) {
             Ok(layer) => layers.push(layer),
@@ -1162,6 +1216,16 @@ pub struct Settings {
     /// to cannot be governed by different rules.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
+    /// Plugins switched on or off, by name. A plugin not named here is on
+    /// unless its manifest says `defaultEnabled: false`. See
+    /// [`crate::plugins`].
+    ///
+    /// Merged name by name across the two layers, unlike the lists above: a
+    /// project that switches one plugin off isn't stating every plugin it
+    /// wants, and replacing the map would switch the user's others back to
+    /// their defaults for that project.
+    #[serde(default)]
+    pub plugins: BTreeMap<String, bool>,
 }
 
 fn default_true() -> bool {
@@ -1191,6 +1255,7 @@ impl Default for Settings {
             otlp_endpoint: String::new(),
             otlp_capture_content: false,
             max_iterations: default_max_iterations(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -1250,6 +1315,9 @@ pub struct StoredSettings {
     /// long turns can raise it without loosening the ceiling everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_iterations: Option<u32>,
+    /// See [`Settings::plugins`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<BTreeMap<String, bool>>,
 }
 
 impl StoredSettings {
@@ -1277,6 +1345,12 @@ impl StoredSettings {
         self.otlp_endpoint = other.otlp_endpoint.or(self.otlp_endpoint.take());
         self.otlp_capture_content = other.otlp_capture_content.or(self.otlp_capture_content);
         self.max_iterations = other.max_iterations.or(self.max_iterations);
+        // Name by name. See `Settings::plugins`.
+        if let Some(theirs) = other.plugins {
+            self.plugins
+                .get_or_insert_with(BTreeMap::new)
+                .extend(theirs);
+        }
     }
 
     fn resolve(self) -> Settings {
@@ -1313,6 +1387,7 @@ impl StoredSettings {
                 .max_iterations
                 .unwrap_or(defaults.max_iterations)
                 .clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT),
+            plugins: self.plugins.unwrap_or(defaults.plugins),
         }
     }
 }
@@ -1609,6 +1684,7 @@ mod tests {
             otlp_endpoint: Some("http://localhost:4318".into()),
             otlp_capture_content: Some(true),
             max_iterations: Some(42),
+            plugins: Some(BTreeMap::from([("lint-pack".into(), false)])),
         }
     }
 

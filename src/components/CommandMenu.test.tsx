@@ -21,6 +21,10 @@ describe("reading the command being typed", () => {
     expect(commandQuery("/")).toBe("");
   });
 
+  it("keeps a plugin's skill whole, colon and all", () => {
+    expect(commandQuery("/ops:dep")).toBe("ops:dep");
+  });
+
   it("stops once the name is settled", () => {
     // A space means the user has moved on to arguments, and a menu hovering
     // over a sentence being written is in the way.

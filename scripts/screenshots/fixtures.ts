@@ -71,6 +71,72 @@ export const STATUS = {
 };
 
 /**
+ * The Plugins drawer: a real Claude Code plugin as Taurus reads it, one of
+ * the project's with a part it can't run, and one that doesn't load — because
+ * the card's job is to say which parts run here and which don't.
+ */
+export const PLUGINS = [
+  {
+    name: "engineering",
+    scope: "global",
+    root: "/Users/you/.taurus/plugins/engineering",
+    version: "1.2.0",
+    description:
+      "Streamline engineering workflows — standups, code review, architecture decisions, incident response, and technical documentation.",
+    enabled: true,
+    shadowed: false,
+    skills: ["architecture", "code-review", "debug", "standup", "tech-debt", "testing-strategy"],
+    agents: [],
+    mcp_servers: ["asana", "atlassian", "datadog", "github", "linear", "notion", "slack"],
+    hooks: [],
+    unsupported: [],
+    problems: [],
+    warnings: [
+      'MCP server "slack" names its own OAuth client, which Taurus doesn\'t use; if signing in fails, the server only accepts that client',
+      'MCP server "gmail" has no address in the plugin (Claude Code fills it in from its own connectors), so it isn\'t started',
+    ],
+    source: { from: "https://github.com/acme/engineering-plugin.git", commit: "8f3c21d94b7e0a5c" },
+  },
+  {
+    name: "release",
+    scope: "workspace",
+    root: "/Users/you/code/taurus/.taurus/plugins/release",
+    version: "0.3.0",
+    description: "Cut, tag and announce a release the way this repository does it.",
+    enabled: true,
+    shadowed: false,
+    skills: ["cut-release", "changelog"],
+    agents: ["release-checker"],
+    mcp_servers: [],
+    hooks: ["no-force-push"],
+    unsupported: [
+      {
+        part: "commands/",
+        reason: "Taurus has no command files; a skill marked user-invocable is its /command",
+      },
+    ],
+    problems: [],
+    warnings: [],
+  },
+  {
+    name: "Design Tools",
+    scope: "global",
+    root: "/Users/you/.taurus/plugins/design-tools",
+    enabled: true,
+    shadowed: false,
+    skills: [],
+    agents: [],
+    mcp_servers: [],
+    hooks: [],
+    unsupported: [],
+    problems: [
+      'the plugin name "Design Tools" isn\'t usable: it names every part as "Design Tools:part", so it has to be lowercase letters, digits and hyphens, starting with a letter',
+    ],
+    warnings: [],
+  },
+];
+
+/**
  * The panel's own listing: one of each state worth photographing.
  *
  * Deliberately not four healthy servers. The panel exists for the ones that are

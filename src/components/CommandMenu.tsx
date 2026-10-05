@@ -46,7 +46,8 @@ export function matches(
  * gets out of the way rather than hovering over someone writing a sentence.
  *
  * The character set is the one a name may actually be made of — letters in
- * either case, digits, `-` and `_`. It used to be lowercase only, which meant a
+ * either case, digits, `-` and `_`, and the `:` of a plugin's `plugin:skill`.
+ * It used to be lowercase only, which meant a
  * capital or an underscore did not narrow the menu, it *closed* it: the query
  * became null, and a list that had been showing every command a keystroke ago
  * vanished with no way to tell that from having matched nothing.
@@ -55,7 +56,7 @@ export function commandQuery(text: string): string | null {
   if (!text.startsWith("/")) return null;
   const name = text.slice(1);
   if (/\s/.test(name)) return null;
-  return /^[\w-]*$/.test(name) ? name : null;
+  return /^[\w:-]*$/.test(name) ? name : null;
 }
 
 export function CommandMenu({

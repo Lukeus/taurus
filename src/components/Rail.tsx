@@ -14,6 +14,7 @@ import {
   SlidersIcon,
   WaterfallIcon,
   BookmarkIcon,
+  PackageIcon,
   SparkIcon,
   SunIcon,
   SwapIcon,
@@ -95,6 +96,7 @@ export const Rail = memo(function Rail({
   onSkills,
   onAgents,
   onMemory,
+  onPlugins,
   onUsage,
   onTraces,
   onMcp,
@@ -166,6 +168,7 @@ export const Rail = memo(function Rail({
   onSkills: () => void;
   onAgents: () => void;
   onMemory: () => void;
+  onPlugins: () => void;
   /** Opens the context account. Reached from here as well as from the meter
    *  above the composer, because the meter hides itself while the window is
    *  less than half full — and "what does a request cost before I start" is a
@@ -453,11 +456,12 @@ export const Rail = memo(function Rail({
       */}
       <div className="rail-foot flex-initial overflow-y-auto border-t border-rule p-2 flex flex-col gap-px">
         {/*
-            The seven panels, in three folds rather than one.
+            The eight panels, in three folds rather than one.
 
             They were behind a single fold called "Tools", and the label had
-            stopped predicting what was inside it: skills, agents and memory
-            are what the model can do here and what it already knows; MCP and
+            stopped predicting what was inside it: skills, agents, memory and
+            the plugins that bring them are what the model can do here and
+            what it already knows; MCP and
             the terminal are the things outside this window that it talks to;
             context and traces are the same question asked about a turn that
             has already happened — one in tokens, one in seconds. Three names
@@ -504,6 +508,16 @@ export const Rail = memo(function Rail({
             {noteCount !== null && noteCount > 0 && (
               <span className="count font-mono text-10 text-faint">{noteCount}</span>
             )}
+          </button>
+          <button
+            className={LINK}
+            onClick={onPlugins}
+            data-tip="Skills, agents, MCP servers and hooks installed under one name"
+          >
+            <span className={`${GLYPH} text-faint`}>
+              <PackageIcon />
+            </span>
+            <b className="flex-1 font-normal">Plugins</b>
           </button>
         </Section>
 
