@@ -409,18 +409,32 @@ the backlog, and they're the minority.
   bigger claim than a line of prose supports.
 - **Relaying a long turn is off by default, because it isn't proven yet.**
   `context_strategy: relay` hands a turn that outgrows its window to a fresh
-  context with a brief, instead of summarizing. The measurement that would
-  justify turning it on, one long task run under both strategies on a 9B
-  model (`cargo run -p taurus-host --example relay`), isn't conclusive yet.
-  At a 12k window, `ornith-1.5:9b` ends on `MaxTokens` in its second round
-  under either strategy, before the window has filled once, so the comparison
-  needs about 20k. The 50%-of-window threshold for an early handover is a
-  starting value, not a measured one. Two more limits:
+  context with a brief, instead of summarizing. It was measured on one long
+  task (`cargo run -p taurus-host --example relay`: eight Python functions,
+  25 tests) on `ornith-1.5:9b` at a 20k window, two runs per strategy,
+  alternating:
+
+  | strategy | tests passing | rounds | summaries | handovers | input tokens | time   |
+  |----------|---------------|--------|-----------|-----------|--------------|--------|
+  | compact  | 18, 20        | 53, 60 | 9, 2      | 0, 0      | 499,882 mean | 43 min |
+  | relay    | 21, 21        | 60, 58 | 0, 0      | 3, 6      | 594,425 mean | 48 min |
+
+  Relay passed more tests on both runs, and it spent about a fifth more input
+  tokens and a tenth more time doing it. No run under either strategy
+  finished the task. Two runs each is too few to call the difference, so
+  it stays a switch. One of the nine handovers went out without notes,
+  which is the fallback doing its job. Three more limits:
+  - At a 12k window, this model ends on `MaxTokens` in its second round under
+    either strategy, before the window fills once, so the comparison needs
+    about 20k.
+  - The 50%-of-window threshold for an early handover is a starting value.
+    The live check doesn't separate early handovers from full-window ones,
+    so this measurement can't tune it.
   - The notes request, like the compaction summary, sits outside the turn's
-    token accounting, so neither strategy's billed tokens include it.
-  - A handover drops earlier turns of the conversation too. The model's notes
-    carry what matters from them, and a continued turn's brief can't repeat
-    the original request because the turn's message is the harness's own
+    token accounting, so neither row's input tokens include it. A handover
+    drops earlier turns of the conversation too. The model's notes carry
+    what matters from them, and a continued turn's brief can't repeat the
+    original request, because that turn's message is the harness's own
     "carry on" prompt.
 - **Nothing makes a model plan.** `update_plan` is offered and the prompt says
   when to use it, and that's as far as the harness's leverage goes. On a
