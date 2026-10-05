@@ -36,7 +36,7 @@ pub use attach::Attachment;
 pub use command::{CommandError, CommandKind, CommandSummary, Invocation};
 pub use config::{ProviderConfig, ProviderKind, Scope, Settings, Theme};
 pub use document::{Document, Saved};
-pub use fork::{Forked, Switched};
+pub use fork::{Comparison, Forked, Side, Switched};
 pub use git::{Commit, Repo, RepoStatus};
 pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};
 pub use instructions::{Instructions, InstructionsOrigin, InstructionsSource, InstructionsTier};

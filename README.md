@@ -230,7 +230,8 @@ you put things back afterwards.
 - [**Forking a turn**](docs/safety.md#forking-a-turn): try a turn again in a
   new conversation, a different way or on a different model, and switch back
   to the first attempt with its files whenever you like. Edit any question
-  in a fork, or fork from what a review found.
+  in a fork, fork from what a review found, and compare two branches without
+  switching.
 - [**Keeping a turn**](docs/safety.md#keeping-a-turn): read a turn back as a
   diff and commit it on its own.
 - [**Reviewing a turn**](docs/safety.md#reading-it-back-to-somebody-who-did-not-write-it):

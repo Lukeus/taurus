@@ -55,6 +55,7 @@ import type {
   Theme,
 } from "./lib/api";
 import { basename, plural } from "./lib/format";
+import { branchesOf } from "./lib/branches";
 import { withFinding } from "./lib/findings";
 import { extend, sameJobs } from "./lib/jobs";
 import { useStable } from "./lib/stable";
@@ -1433,6 +1434,10 @@ export default function App() {
                     // forked before, ready to be asked again or differently.
                     // From a review finding, the question carries what the
                     // review found, for the second attempt to take in.
+                    // Read from the rail's listing, which already knows every
+                    // conversation's parent.
+                    branches={branchesOf(store.sessions, store.session.id)}
+                    onOpenBranch={(id) => void store.resume(id)}
                     onFork={async (turn, finding) => {
                       const forked = await store.fork(store.session!.id, turn);
                       setDraft({

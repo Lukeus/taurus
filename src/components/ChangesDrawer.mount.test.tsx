@@ -784,3 +784,93 @@ describe("forking from a turn", () => {
     expect(pane.text()).not.toContain("Fork here");
   });
 });
+
+describe("comparing branches", () => {
+  const BRANCH = {
+    id: "s2",
+    title: "rename the widget",
+    updated: Math.floor(Date.now() / 1000),
+    forked_from: { session: "s1", turn: "t1", checkpoint: 1 },
+  };
+  const SIDE = {
+    id: "s1",
+    on_disk: true,
+    asked: ["rename the widget"],
+    turns: [TURN],
+    usage: { input_tokens: 1200, output_tokens: 80 },
+    reviews: [],
+  };
+  const COMPARED = {
+    shared: 0,
+    a: SIDE,
+    b: {
+      ...SIDE,
+      id: "s2",
+      on_disk: false,
+      asked: ["rename it, keeping the old name as an alias"],
+      reviews: [{ turn: 1, model: "qwen3.6:27b", at: 0 }],
+    },
+    files: [DIFF],
+  };
+
+  async function openWithBranches(onOpenBranch = vi.fn()) {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <ChangesDrawer
+          sessionId="s1"
+          busy={false}
+          onClose={() => {}}
+          branches={[BRANCH as never]}
+          onOpenBranch={onOpenBranch}
+        />,
+      );
+    });
+    const click = async (text: string) => {
+      const button = [...host.querySelectorAll("button")].find((b) =>
+        (b.textContent ?? "").includes(text),
+      );
+      if (!button) throw new Error(`no button reading "${text}"`);
+      await act(async () => button.click());
+    };
+    return { host, click, text: () => host.textContent ?? "" };
+  }
+
+  it("lists the other branches, and compares one without switching to it", async () => {
+    backend({ list_checkpoints: [TURN], compare_branches: COMPARED });
+    const onOpenBranch = vi.fn();
+    const pane = await openWithBranches(onOpenBranch);
+    expect(pane.text()).toContain("fork at turn 1");
+    expect(invoke).not.toHaveBeenCalledWith("compare_branches", expect.anything());
+
+    await pane.click("Compare");
+    expect(invoke).toHaveBeenCalledWith("compare_branches", { sessionId: "s1", other: "s2" });
+    expect(pane.text()).toContain("keeping the old name as an alias");
+    expect(pane.text()).toContain("set aside");
+    expect(pane.text()).toContain("1 reviewed (turn 1 by qwen3.6:27b)");
+    expect(pane.text()).toContain("1,200 in");
+    expect(pane.text()).toContain("let new = 2;");
+    expect(invoke).not.toHaveBeenCalledWith("switch_to", expect.anything());
+
+    await pane.click("Open that branch");
+    expect(onOpenBranch).toHaveBeenCalledWith("s2");
+  });
+
+  it("says why a comparison couldn't be made", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      compare_branches: new Error("'s1' and 's2' aren't branches of the same conversation"),
+    });
+    const pane = await openWithBranches();
+    await pane.click("Compare");
+    expect(pane.text()).toContain("aren't branches of the same conversation");
+  });
+
+  it("offers nothing to compare with in a conversation that was never forked", async () => {
+    backend({ list_checkpoints: [TURN] });
+    const pane = await open();
+    expect(pane.text()).not.toContain("Other branches");
+  });
+});

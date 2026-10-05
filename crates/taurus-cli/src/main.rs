@@ -151,6 +151,12 @@ enum Command {
         #[arg(long)]
         switch: bool,
 
+        /// Compare this conversation with another branch of it, without
+        /// switching: what each asked, spent and changed since they parted,
+        /// and how their files differ now.
+        #[arg(long, value_name = "ID", conflicts_with_all = ["at", "switch"])]
+        compare: Option<String>,
+
         /// Show what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
@@ -472,6 +478,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             ask,
             policy,
             switch,
+            compare,
             dry_run,
         } => {
             let runtime = build_host(&session, Policy::from(&policy), servers).await?;
@@ -482,6 +489,9 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                     ask: ask.as_deref(),
                 },
                 (None, true) => fork_cmd::Action::Switch,
+                (None, false) if compare.is_some() => fork_cmd::Action::Compare {
+                    other: compare.as_deref().expect("checked just above"),
+                },
                 (None, false) => fork_cmd::Action::List,
             };
             let (code, again) =

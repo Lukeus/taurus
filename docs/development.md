@@ -519,6 +519,9 @@ taurus fork -w $W --switch --id <the original>   # alpha, beta
 # the original (alpha, beta) is one switch away.
 taurus fork -w $W --at last --ask "Rewrite plan.txt as two lines: alpha, then gamma" \
   -m ornith-1.5:9b --allow write_file --allow edit_file
+# The two side by side, without switching: gamma against beta, and plan.txt
+# still gamma afterwards.
+taurus fork -w $W --id <the fork> --compare <the original>
 
 # The terminal dock's shell integration: your own shell, started with your
 # real startup files and Taurus's hooks, two commands run in it, and a model

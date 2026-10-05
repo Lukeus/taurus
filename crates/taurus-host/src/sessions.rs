@@ -1162,6 +1162,58 @@ fn asked(lines: &[&str]) -> String {
         .unwrap_or_default()
 }
 
+/// A conversation's turns in order, with what each asked and what the
+/// conversation had spent before it. What comparing two branches reads: their
+/// turn ids say where they parted, because a fork copies its source's turn
+/// records line for line, and the running usage at that point is what both
+/// had spent before either went its own way.
+#[derive(Clone, Debug, Default)]
+pub struct Outline {
+    pub turns: Vec<OutlineTurn>,
+    /// The running total at the end.
+    pub usage: TokenUsage,
+}
+
+/// One turn of an [`Outline`].
+#[derive(Clone, Debug)]
+pub struct OutlineTurn {
+    pub id: String,
+    /// It continued an interrupted turn rather than asking something new.
+    pub continues: bool,
+    /// Its question: the first user message's words. Empty for a
+    /// continuation, which asks nothing of its own.
+    pub asked: String,
+    /// The running total as the turn began.
+    pub usage_before: TokenUsage,
+}
+
+/// Reads `session_id`'s [`Outline`], without the messages.
+pub fn outline(session_id: &str) -> Result<Outline, String> {
+    let path = find(session_id).ok_or_else(|| format!("no saved session '{session_id}'"))?;
+    let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut outline = Outline::default();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        match serde_json::from_str::<Record>(&line) {
+            Ok(Record::Usage(usage)) => outline.usage = usage,
+            Ok(Record::Turn { id, continues, .. }) => outline.turns.push(OutlineTurn {
+                id,
+                continues,
+                asked: String::new(),
+                usage_before: outline.usage,
+            }),
+            Ok(Record::Message(m)) if m.role == Role::User => {
+                if let Some(turn) = outline.turns.last_mut() {
+                    if turn.asked.is_empty() && !turn.continues {
+                        turn.asked = m.text().trim().to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(outline)
+}
+
 /// The workspace a saved conversation belongs to, read from its header alone.
 ///
 /// A cheap answer to the one question [`load`] is otherwise the only way to

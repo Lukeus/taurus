@@ -7161,6 +7161,46 @@ button.link:where(:not(.excalidraw *)):hover {
   margin-top: 8px;
 }
 
+/* Other branches of the conversation, and one of them set beside this one. */
+.branch-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.branch-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  min-width: 0;
+}
+.branch-row .card-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.branch-row .card-files {
+  flex: none;
+}
+.comparison {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.branch-side {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.branch-asked {
+  margin: 4px 0;
+  padding-left: 16px;
+  font-size: 13px;
+  color: var(--text);
+}
+
 /* ------------------------------------------------------- the MCP catalogue */
 
 .catalog-search {

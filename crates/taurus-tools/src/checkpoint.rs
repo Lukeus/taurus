@@ -411,6 +411,7 @@ impl CheckpointStore {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
         let turns = read_log::<State>(&path)?.turns;
+        let tip = self.tip(session_id, workspace)?;
 
         // A `Vec` rather than a map, because insertion order *is* the output
         // order and the lists this walks are one turn's worth of paths — a
@@ -426,7 +427,7 @@ impl CheckpointStore {
 
         Ok(first
             .into_iter()
-            .map(|(file, before)| describe(file, before, &state_now(workspace, file)))
+            .map(|(file, before)| describe(file, before, &tip(file)))
             .collect())
     }
 
@@ -457,6 +458,7 @@ impl CheckpointStore {
         };
         let turns = read_log::<State>(&path)?.turns;
         let index = check_turn(session_id, turn, turns.len())?;
+        let tip = self.tip(session_id, workspace)?;
 
         // Split rather than indexed twice, so the "what came after" search
         // cannot accidentally include the turn being described.
@@ -475,7 +477,7 @@ impl CheckpointStore {
                     .flat_map(|turn| turn.changes.iter())
                     .find(|(seen, _)| seen == file)
                     .map(|(_, state)| state.clone())
-                    .unwrap_or_else(|| state_now(workspace, file));
+                    .unwrap_or_else(|| tip(file));
                 describe(file, before, &after)
             })
             .collect())
@@ -609,6 +611,36 @@ impl CheckpointStore {
             .into_iter()
             .map(|turn| turn.id)
             .collect())
+    }
+
+    /// What each file this conversation touched holds at its tip: what's on
+    /// disk, or for a conversation whose files are set aside, the copy its
+    /// set-aside kept. Disk is another branch's files then, and a diff against
+    /// it would show that branch's work as this one's.
+    ///
+    /// A set-aside holds every path its branch touched, because leaving a
+    /// branch keeps all of them, so disk is only reached for a path the branch
+    /// never wrote.
+    pub fn tip(
+        &self,
+        session_id: &str,
+        workspace: &Path,
+    ) -> Result<impl Fn(&str) -> State, String> {
+        let aside = self.aside(session_id)?.unwrap_or_default();
+        let workspace = workspace.to_path_buf();
+        Ok(move |file: &str| {
+            aside
+                .iter()
+                .find(|held| held.path == file)
+                .map(|held| held.state.clone())
+                .unwrap_or_else(|| state_now(&workspace, file))
+        })
+    }
+
+    /// Two states of one file, as a diff, or why there isn't one. The same
+    /// pairing a turn's diff uses.
+    pub fn compare(file: &str, before: &State, after: &State) -> TurnChange {
+        describe(file, before, after)
     }
 
     /// Whom this conversation's files are set aside for, if they are. `None`

@@ -1301,10 +1301,13 @@ the backlog, and they're the minority.
   delegates are also waiting on. Until then, running several models from one
   fork point side by side isn't possible: each is its own fork, tried one at
   a time.
-- **Comparing two branches isn't built.** Each branch's files can be
-  recovered (what's on disk for one, its set-aside for the other), so a diff
-  between their latest states needs no new record, only a view. It's the
-  next slice.
+- **A comparison counts tokens, not money.** What a branch spent is the
+  difference between two running totals in its transcript, so it's tokens in
+  and out. Pricing differs by provider and isn't recorded with them, and a
+  branch that changed model partway has no single price to apply.
+- **A comparison's reviews are the ones already made.** It lists which of a
+  branch's turns have a kept review, and doesn't run one. A turn changed by
+  hand after its review was made still shows that review.
 - **Ignored directories and `.git` are shared between branches.** A switch
   puts back what the branches' turns recorded, which is everything a rewind
   covers and nothing it doesn't. A `target/` built on one branch is still
