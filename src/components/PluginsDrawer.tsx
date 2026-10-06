@@ -240,7 +240,9 @@ function AddPlugin({
   const [from, setFrom] = useState("");
   const [gitRef, setGitRef] = useState("");
   const [project, setProject] = useState(false);
-  const git = /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)|\.git$/.test(from.trim());
+  // A `…/tree/<ref>/<path>` page names its own ref, so it gets no ref box.
+  const tree = /^https?:\/\/.+\/tree\/[^/]+\/./.test(from.trim());
+  const git = !tree && /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)|\.git$/.test(from.trim());
 
   const pick = async () => {
     const chosen = await open({ directory: true, title: "Choose a plugin folder" });
@@ -257,7 +259,7 @@ function AddPlugin({
           id="plugin-from"
           value={from}
           onChange={(e) => setFrom(e.target.value)}
-          placeholder="A folder, or a git URL"
+          placeholder="A folder, a git URL, or a repository folder's page"
         />
         <button className="quiet" onClick={pick} disabled={disabled}>
           Choose folder…

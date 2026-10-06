@@ -60,6 +60,10 @@ pub const PLUGINS_DIR: &str = "plugins";
 /// The manifest, relative to a plugin's root. Claude Code's path.
 pub const MANIFEST: &str = ".claude-plugin/plugin.json";
 
+/// A marketplace's catalog of plugins, relative to its root. Claude Code's
+/// path. Taurus doesn't read marketplaces, but says when it's handed one.
+const MARKETPLACE: &str = ".claude-plugin/marketplace.json";
+
 /// What `taurus plugin add` writes beside a plugin it installed, saying
 /// where it came from.
 pub const SOURCE_FILE: &str = ".taurus-plugin-source.json";
@@ -650,6 +654,9 @@ pub fn add(
     let plugins = dir(scope, workspace).ok_or("there's no project open to add it to")?;
     std::fs::create_dir_all(&plugins).map_err(|e| format!("{}: {e}", plugins.display()))?;
     let staged = Staged::fetch(from, git_ref, &plugins)?;
+    if let Some(catalog) = staged.marketplace() {
+        return Err(catalog);
+    }
     let plugin = load(staged.path(), scope, workspace);
     if !plugin.summary.problems.is_empty() {
         return Err(format!(
@@ -743,27 +750,110 @@ fn is_git(from: &str) -> bool {
         || from.ends_with(".git")
 }
 
+/// A folder in a repository on GitHub or GitLab, as its web page addresses
+/// it: `https://github.com/o/r/tree/<ref>/<path>`. The ref is one segment;
+/// a branch with a slash in it is added by the repository URL and `--ref`.
+struct TreeUrl {
+    repo: String,
+    git_ref: String,
+    path: String,
+}
+
+impl TreeUrl {
+    fn parse(from: &str) -> Option<Self> {
+        if !from.starts_with("https://") && !from.starts_with("http://") {
+            return None;
+        }
+        let (repo, rest) = from
+            .split_once("/-/tree/")
+            .or_else(|| from.split_once("/tree/"))?;
+        let (git_ref, path) = rest.trim_end_matches('/').split_once('/')?;
+        if git_ref.is_empty() || path.is_empty() {
+            return None;
+        }
+        Some(Self {
+            repo: repo.to_string(),
+            git_ref: git_ref.to_string(),
+            path: path.to_string(),
+        })
+    }
+}
+
+/// The name a fetched folder is staged under: what it's called where it came
+/// from. A plugin with no manifest is named after its folder, so it has to
+/// keep that folder's name while it's checked.
+fn source_name(from: &str) -> String {
+    let last = from
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\', ':'])
+        .next()
+        .unwrap_or_default();
+    last.strip_suffix(".git").unwrap_or(last).to_string()
+}
+
+/// `~` and `~/…` as a shell reads them, since the desktop's box is not a shell.
+fn expand_home(from: &str) -> PathBuf {
+    let home = || directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
+    match from.strip_prefix('~') {
+        Some("") => home().unwrap_or_else(|| from.into()),
+        Some(rest) if rest.starts_with(['/', '\\']) => home()
+            .map(|h| h.join(&rest[1..]))
+            .unwrap_or_else(|| from.into()),
+        _ => PathBuf::from(from),
+    }
+}
+
 /// A plugin fetched into a hidden folder beside the others, not yet in
-/// place. Removed when dropped unless it was installed.
+/// place. The plugin is `path`, somewhere inside `root`; `root` is removed
+/// when dropped, and so is the plugin unless it was installed.
 struct Staged {
+    root: PathBuf,
     path: PathBuf,
     source: PluginSource,
+    /// The branch a clone landed on, to name a marketplace's plugins by URL.
+    branch: Option<String>,
     kept: bool,
 }
 
 impl Staged {
     fn fetch(from: &str, git_ref: Option<&str>, plugins: &Path) -> Result<Self, String> {
-        let path = plugins.join(format!(".staging-{}", uuid::Uuid::new_v4()));
+        let root = plugins.join(format!(".staging-{}", uuid::Uuid::new_v4()));
         let mut staged = Self {
-            path,
+            path: root.clone(),
+            root,
             source: PluginSource {
                 from: from.to_string(),
                 commit: None,
             },
+            branch: None,
             kept: false,
         };
-        if is_git(from) {
-            staged.source.commit = Some(clone(from, git_ref, &staged.path)?);
+        if let Some(tree) = TreeUrl::parse(from) {
+            if git_ref.is_some() {
+                return Err(format!(
+                    "{from} already names its ref ({}), so leave the ref empty",
+                    tree.git_ref
+                ));
+            }
+            let clone_dir = staged.root.join(".clone");
+            let (commit, branch) = clone(&tree.repo, Some(&tree.git_ref), &clone_dir)?;
+            staged.source.commit = Some(commit);
+            staged.branch = branch;
+            let sub = inside(&clone_dir, &format!("./{}", tree.path))
+                .ok()
+                .filter(|p| p.is_dir())
+                .ok_or_else(|| {
+                    format!(
+                        "{} has no folder {} at {}",
+                        tree.repo, tree.path, tree.git_ref
+                    )
+                })?;
+            staged.path = sub;
+        } else if is_git(from) {
+            staged.path = staged.root.join(source_name(from));
+            let (commit, branch) = clone(from, git_ref, &staged.path)?;
+            staged.source.commit = Some(commit);
+            staged.branch = branch;
             let _ = std::fs::remove_dir_all(staged.path.join(".git"));
         } else {
             if git_ref.is_some() {
@@ -771,12 +861,13 @@ impl Staged {
                     "{from} is a folder, so there's no git ref to check out"
                 ));
             }
-            let folder = Path::new(from)
+            let folder = expand_home(from)
                 .canonicalize()
-                .map_err(|e| format!("{from}: {e}"))?;
+                .map_err(|e| format!("{from} isn't a folder here, or a git URL ({e})"))?;
             if !folder.is_dir() {
                 return Err(format!("{from} isn't a folder or a git URL"));
             }
+            staged.path = staged.root.join(source_name(&folder.display().to_string()));
             copy_dir(&folder, &staged.path)?;
             staged.source.from = folder.display().to_string();
         }
@@ -787,11 +878,74 @@ impl Staged {
         &self.path
     }
 
+    /// If what was fetched is a marketplace (a catalog of plugins) rather
+    /// than a plugin, says so, and names the plugins in it that can be added
+    /// and how. `None` for anything with a plugin manifest.
+    fn marketplace(&self) -> Option<String> {
+        if self.path.join(MANIFEST).is_file() {
+            return None;
+        }
+        let text = std::fs::read_to_string(self.path.join(MARKETPLACE)).ok()?;
+        let catalog: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let entries = catalog.get("plugins")?.as_array()?;
+        // Only plugins kept in the catalog's own repository can be named by a
+        // path in it; the rest live in other repositories.
+        let local: Vec<(&str, &str)> = entries
+            .iter()
+            .filter_map(|p| {
+                let name = p.get("name")?.as_str()?;
+                let path = p.get("source")?.as_str()?;
+                Some((name, path.trim_start_matches("./").trim_end_matches('/')))
+            })
+            .collect();
+        let from = &self.source.from;
+        let mut text = format!(
+            "{from} is a marketplace, a catalog of {} plugins, not one plugin. Taurus \
+             doesn't read marketplaces yet, so add the plugin you want by itself",
+            entries.len()
+        );
+        let base = from.trim_end_matches('/');
+        let address = |path: &str| -> Option<String> {
+            if TreeUrl::parse(from).is_some() {
+                Some(format!("{base}/{path}"))
+            } else if is_git(from) {
+                let web = base.strip_suffix(".git").unwrap_or(base);
+                let branch = self.branch.as_deref()?;
+                (web.starts_with("https://") || web.starts_with("http://"))
+                    .then(|| format!("{web}/tree/{branch}/{path}"))
+            } else {
+                Some(Path::new(base).join(path).display().to_string())
+            }
+        };
+        match local.first().and_then(|(_, path)| address(path)) {
+            Some(_) => {
+                text.push_str(", by its folder:");
+                const SHOWN: usize = 8;
+                for (name, path) in local.iter().take(SHOWN) {
+                    if let Some(at) = address(path) {
+                        text.push_str(&format!("\n  {name}: {at}"));
+                    }
+                }
+                if local.len() > SHOWN {
+                    text.push_str(&format!(
+                        "\n  …and {} more listed in {MARKETPLACE}",
+                        local.len() - SHOWN
+                    ));
+                }
+            }
+            None => text.push_str(&format!(
+                ": its folder or repository is named in its {MARKETPLACE}."
+            )),
+        }
+        Some(text)
+    }
+
     /// Records where it came from, and moves it into place.
     fn install(mut self, target: &Path) -> Result<(), String> {
         let record = serde_json::to_string_pretty(&self.source).map_err(|e| e.to_string())?;
         std::fs::write(self.path.join(SOURCE_FILE), record)
             .map_err(|e| format!("{}: {e}", self.path.display()))?;
+        let _ = std::fs::remove_dir_all(self.path.join(".git"));
         std::fs::rename(&self.path, target).map_err(|e| format!("{}: {e}", target.display()))?;
         self.kept = true;
         Ok(())
@@ -800,18 +954,22 @@ impl Staged {
 
 impl Drop for Staged {
     fn drop(&mut self) {
-        if !self.kept {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
+        // The plugin has been moved out of `root` if it was installed, so
+        // this removes only what's left: the rest of a clone, or everything.
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
 /// Clones `url` into `into` at `git_ref` (the default branch if `None`), and
-/// returns the commit it's at.
+/// returns the commit it's at and the branch, if it's on one.
 ///
 /// Never prompts: a repository that needs a password says so as an error
 /// rather than waiting on a terminal nobody is looking at.
-fn clone(url: &str, git_ref: Option<&str>, into: &Path) -> Result<String, String> {
+fn clone(
+    url: &str,
+    git_ref: Option<&str>,
+    into: &Path,
+) -> Result<(String, Option<String>), String> {
     let mut command = std::process::Command::new("git");
     command
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -829,13 +987,20 @@ fn clone(url: &str, git_ref: Option<&str>, into: &Path) -> Result<String, String
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    let head = std::process::Command::new("git")
-        .arg("-C")
-        .arg(into)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&head.stdout).trim().to_string())
+    let rev_parse = |args: &[&str]| -> Result<String, String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(into)
+            .arg("rev-parse")
+            .args(args)
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let commit = rev_parse(&["HEAD"])?;
+    let branch = rev_parse(&["--abbrev-ref", "HEAD"])?;
+    let branch = (!branch.is_empty() && branch != "HEAD").then_some(branch);
+    Ok((commit, branch))
 }
 
 /// Copies a folder's files, leaving out `.git` and links. A link in a plugin
@@ -1540,6 +1705,129 @@ mod tests {
         let updated = update("ops", Scope::Global, None).unwrap();
         assert_ne!(updated.source.unwrap().commit.unwrap(), first);
         assert!(skill().contains("Deploys v2"));
+    }
+
+    #[test]
+    fn adding_a_plugin_with_no_manifest_names_it_after_its_folder() {
+        let _home = isolated_home();
+        let parent = tempfile::tempdir().unwrap();
+        let source = parent.path().join("notes");
+        write(
+            &source,
+            &[(
+                "skills/jot/SKILL.md",
+                "---\nname: jot\ndescription: Jots\n---\n\nJot.\n",
+            )],
+        );
+        let added = add(source.to_str().unwrap(), None, Scope::Global, None).unwrap();
+        assert_eq!(added.name, "notes");
+        assert!(dir(Scope::Global, None)
+            .unwrap()
+            .join("notes/skills/jot/SKILL.md")
+            .is_file());
+
+        // And from git, named after the repository.
+        let repo = parent.path().join("jots.git");
+        write(
+            &repo,
+            &[(
+                "skills/jot/SKILL.md",
+                "---\nname: jot\ndescription: Jots\n---\n\nJot.\n",
+            )],
+        );
+        for args in [
+            &["init", "--quiet"][..],
+            &["add", "."],
+            &["commit", "--quiet", "-m", "one"],
+        ] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
+        let added = add(repo.to_str().unwrap(), None, Scope::Global, None).unwrap();
+        assert_eq!(added.name, "jots");
+        let left: Vec<_> = std::fs::read_dir(dir(Scope::Global, None).unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left.len(), 2, "no staging folder is left: {left:?}");
+    }
+
+    #[test]
+    fn a_marketplace_is_refused_with_the_plugins_it_names() {
+        let _home = isolated_home();
+        let source = tempfile::tempdir().unwrap();
+        write(
+            source.path(),
+            &[
+                (
+                    MARKETPLACE,
+                    r#"{"name": "shop", "plugins": [
+                        {"name": "notes", "source": "./plugins/notes"},
+                        {"name": "far", "source": {"source": "url", "url": "https://x/far.git"}}]}"#,
+                ),
+                (
+                    "plugins/notes/skills/jot/SKILL.md",
+                    "---\nname: jot\ndescription: J\n---\n",
+                ),
+            ],
+        );
+        let refused = add(source.path().to_str().unwrap(), None, Scope::Global, None).unwrap_err();
+        assert!(
+            refused.contains("is a marketplace, a catalog of 2 plugins"),
+            "{refused}"
+        );
+        let notes = source.path().canonicalize().unwrap().join("plugins/notes");
+        assert!(
+            refused.contains(&format!("notes: {}", notes.display())),
+            "{refused}"
+        );
+        assert!(!refused.contains("far:"), "{refused}");
+        assert!(installed(None).is_empty());
+        assert_eq!(
+            std::fs::read_dir(dir(Scope::Global, None).unwrap())
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_web_page_for_a_folder_in_a_repository_is_read_as_one() {
+        let tree = TreeUrl::parse("https://github.com/o/r/tree/main/plugins/notes/").unwrap();
+        assert_eq!(
+            (
+                tree.repo.as_str(),
+                tree.git_ref.as_str(),
+                tree.path.as_str()
+            ),
+            ("https://github.com/o/r", "main", "plugins/notes")
+        );
+        let lab = TreeUrl::parse("https://gitlab.com/g/r/-/tree/v2/notes").unwrap();
+        assert_eq!(
+            (lab.repo.as_str(), lab.git_ref.as_str()),
+            ("https://gitlab.com/g/r", "v2")
+        );
+        assert!(TreeUrl::parse("https://github.com/o/r").is_none());
+        assert!(TreeUrl::parse("https://github.com/o/r/tree/main").is_none());
+        assert_eq!(source_name("https://github.com/o/notes.git"), "notes");
+        assert_eq!(source_name("git@github.com:o/notes.git"), "notes");
+        assert_eq!(source_name("/a/b/notes/"), "notes");
+        let home = directories::BaseDirs::new()
+            .unwrap()
+            .home_dir()
+            .to_path_buf();
+        assert_eq!(expand_home("~/x"), home.join("x"));
+        assert_eq!(expand_home("a/~/x"), PathBuf::from("a/~/x"));
     }
 
     #[test]
