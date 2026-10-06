@@ -105,6 +105,9 @@ windows = { version = "0.62", features = ["Win32_System_Threading"] }
 dunce = "1"
 ignore = "0.4"
 globset = "0.4"
+# Hook matchers from Claude Code, Codex and Copilot files, which are regexes.
+# Already in the tree under `ignore` and `globset`.
+regex = "1"
 # Whether two paths are one file. A rename that changes only a name's case finds
 # its destination already there on macOS and Windows, because it is the source.
 # Reads the file's identity on every platform — device and inode, or volume and

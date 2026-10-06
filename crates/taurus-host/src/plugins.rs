@@ -10,8 +10,13 @@
 //!   skills/<skill>/SKILL.md
 //!   agents/<agent>.md
 //!   .mcp.json                    {"mcpServers": {...}}
-//!   hooks/hooks.json             Taurus's hook format
+//!   hooks/hooks.json             Taurus's hook format, or Claude Code's
 //! ```
+//!
+//! Codex and GitHub Copilot plugins are the same layout with the manifest
+//! somewhere else (see [`MANIFESTS`]), so they load the same way. A hooks
+//! file in Claude Code's format (which Codex uses too) or Copilot's is
+//! translated by [`taurus_hooks::dialect`].
 //!
 //! Nothing here loads a component. It finds plugins and says where their
 //! parts are, and each part goes through the loader it would have gone
@@ -34,9 +39,9 @@
 //! Some parts of Claude's format have nothing to run them here: `commands/`,
 //! LSP servers, output styles, workflows, themes, monitors, `bin/`, a
 //! plugin's own `settings.json`, `userConfig` and dependencies. They're
-//! listed by name as unsupported, with why, rather than skipped in silence. A
-//! plugin's hooks must be in Taurus's own format; a hooks file in Claude's is
-//! named as one, and none of it runs.
+//! listed by name as unsupported, with why, rather than skipped in silence,
+//! and so is any hook event or hook type a translated hooks file has that
+//! Taurus can't run.
 //!
 //! # Trust and switching off
 //!
@@ -60,9 +65,41 @@ pub const PLUGINS_DIR: &str = "plugins";
 /// The manifest, relative to a plugin's root. Claude Code's path.
 pub const MANIFEST: &str = ".claude-plugin/plugin.json";
 
-/// A marketplace's catalog of plugins, relative to its root. Claude Code's
-/// path. Taurus doesn't read marketplaces, but says when it's handed one.
-const MARKETPLACE: &str = ".claude-plugin/marketplace.json";
+/// Where a plugin's manifest may be, first found wins: Claude Code's, then
+/// Codex's, then the places GitHub Copilot looks. One plugin has one
+/// manifest, so the order only matters for a folder that carries several,
+/// and those are copies of one another.
+pub const MANIFESTS: &[&str] = &[
+    MANIFEST,
+    ".codex-plugin/plugin.json",
+    "plugin.json",
+    ".plugin/plugin.json",
+    ".github/plugin/plugin.json",
+];
+
+/// A marketplace's catalog of plugins, relative to its root: Claude Code's
+/// path, and Copilot's. Taurus doesn't read marketplaces, but says when it's
+/// handed one.
+const MARKETPLACES: &[&str] = &[
+    ".claude-plugin/marketplace.json",
+    ".github/plugin/marketplace.json",
+];
+
+/// Where a hooks file is found without the manifest naming one: Claude
+/// Code's and Codex's place, then Copilot's two.
+const HOOK_FILES: &[&str] = &[
+    "hooks/hooks.json",
+    "hooks.json",
+    "com.github.copilot/hooks/hooks.json",
+];
+
+/// The manifest a plugin folder has, if any.
+fn manifest_path(root: &Path) -> Option<PathBuf> {
+    MANIFESTS
+        .iter()
+        .map(|m| root.join(m))
+        .find(|path| path.is_file())
+}
 
 /// What `taurus plugin add` writes beside a plugin it installed, saying
 /// where it came from.
@@ -316,6 +353,10 @@ const DESCRIPTIVE: &[&str] = &[
     "keywords",
     "displayName",
     "$schema",
+    // Codex's: how its app shows the plugin.
+    "interface",
+    // Copilot's: names other formats the plugin also ships.
+    "extensions",
 ];
 
 /// Manifest keys Claude Code documents that name a part Taurus can't run.
@@ -340,6 +381,11 @@ const UNSUPPORTED_KEYS: &[(&str, &str)] = &[
         "Taurus doesn't install other plugins for this one; add them yourself",
     ),
     ("settings", "a plugin can't change Taurus's settings"),
+    ("apps", "Taurus has no Codex apps"),
+    (
+        "rules",
+        "Taurus has no rule files from plugins; put them in a skill",
+    ),
 ];
 
 /// Folders and files at a plugin's root that name a part Taurus can't run.
@@ -359,23 +405,18 @@ const UNSUPPORTED_PATHS: &[(&str, &str)] = &[
     ),
     ("settings.json", "a plugin can't change Taurus's settings"),
     (
+        "com.github.copilot/commands",
+        "Taurus has no command files; a skill marked user-invocable is its /command",
+    ),
+    (
+        "com.github.copilot/rules",
+        "Taurus has no rule files from plugins; put them in a skill",
+    ),
+    ("com.github.copilot/lsp.json", "Taurus doesn't run language servers"),
+    (
         "SKILL.md",
         "a skill at the plugin's root isn't read; put it in skills/<name>/SKILL.md",
     ),
-];
-
-/// The events Claude Code's hooks file is keyed by, which is how a hooks file
-/// in its format is told apart from one in Taurus's.
-const CLAUDE_HOOK_EVENTS: &[&str] = &[
-    "PreToolUse",
-    "PostToolUse",
-    "UserPromptSubmit",
-    "Stop",
-    "SubagentStop",
-    "SessionStart",
-    "SessionEnd",
-    "Notification",
-    "PreCompact",
 ];
 
 /// Reads one plugin folder. Never fails: what's wrong goes in the summary,
@@ -389,7 +430,7 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
     let mut warnings = Vec::new();
     let mut unsupported = Vec::new();
 
-    let manifest_path = root.join(MANIFEST);
+    let manifest_path = manifest_path(root).unwrap_or_else(|| root.join(MANIFEST));
     let manifest = match std::fs::read_to_string(&manifest_path) {
         Ok(text) => match serde_json::from_str::<Manifest>(&text) {
             Ok(manifest) => {
@@ -452,7 +493,7 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
     // Skills: the default folder, plus any the manifest adds.
     let mut skill_dirs = Vec::new();
     if root.join("skills").is_dir() {
-        skill_dirs.push(root.join("skills"));
+        skill_dirs.push(canonical(root.join("skills")));
     }
     for path in paths(root, manifest.skills.as_ref(), "skills", &mut problems) {
         if !skill_dirs.contains(&path) {
@@ -461,7 +502,7 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
     }
 
     // Agents: the manifest's list replaces the default, as in Claude Code.
-    let agent_dirs = match &manifest.agents {
+    let agent_dirs: Vec<PathBuf> = match &manifest.agents {
         Some(value) => paths(root, Some(value), "agents", &mut problems)
             .into_iter()
             .map(|path| {
@@ -473,8 +514,12 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
                 }
             })
             .collect(),
-        None if root.join("agents").is_dir() => vec![root.join("agents")],
-        None => Vec::new(),
+        // Claude Code's and Codex's folder, and Copilot's.
+        None => ["agents", "com.github.copilot/agents"]
+            .iter()
+            .map(|dir| root.join(dir))
+            .filter(|dir| dir.is_dir())
+            .collect(),
     };
 
     let vars = Vars::new(root, &name, workspace);
@@ -484,7 +529,7 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
     let mut server_names = Vec::new();
     let mut mcp_files = Vec::new();
     if root.join(".mcp.json").is_file() {
-        mcp_files.push(root.join(".mcp.json"));
+        mcp_files.push(canonical(root.join(".mcp.json")));
     }
     match &manifest.mcp_servers {
         Some(serde_json::Value::Object(inline)) => {
@@ -500,7 +545,14 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
                 &mut warnings,
             );
         }
-        other => mcp_files.extend(paths(root, other.as_ref(), "mcpServers", &mut problems)),
+        // Codex's manifests name `./.mcp.json`, which is read already.
+        other => {
+            for path in paths(root, other.as_ref(), "mcpServers", &mut problems) {
+                if !mcp_files.contains(&path) {
+                    mcp_files.push(path);
+                }
+            }
+        }
     }
     for file in &mcp_files {
         let parsed = std::fs::read_to_string(file)
@@ -521,46 +573,66 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
         );
     }
 
-    // Hooks: `hooks/hooks.json`, plus any the manifest names, in Taurus's
-    // format. Inline hooks in the manifest are Claude's shape, so they're
-    // named as such.
+    // Hooks: the default files, plus any the manifest names or holds inline,
+    // each in Taurus's format or translated from another agent's.
     let mut hooks = taurus_hooks::HookConfig::default();
-    let mut hook_files = Vec::new();
-    if root.join("hooks/hooks.json").is_file() {
-        hook_files.push(root.join("hooks/hooks.json"));
-    }
+    let mut hook_files: Vec<PathBuf> = HOOK_FILES
+        .iter()
+        .map(|file| root.join(file))
+        .filter(|path| path.is_file())
+        .map(canonical)
+        .collect();
+    let mut add_hooks = |layer: BTreeMap<String, taurus_hooks::HookEntry>| {
+        for (hook, entry) in layer {
+            hooks
+                .hooks
+                .insert(format!("{name}:{hook}"), vars.hook(entry));
+        }
+    };
     match &manifest.hooks {
-        Some(serde_json::Value::Object(_)) => unsupported.push(Unsupported {
-            part: "hooks (in the manifest)".into(),
-            reason: "hooks written inline are in Claude Code's format, which Taurus doesn't run \
-                     yet; give Taurus-format hooks in hooks/hooks.json"
-                .into(),
-        }),
-        other => hook_files.extend(paths(root, other.as_ref(), "hooks", &mut problems)),
+        Some(inline @ serde_json::Value::Object(_)) => {
+            let translated = taurus_hooks::dialect::translate(inline);
+            note_translated(
+                "hooks (in the manifest)",
+                &translated,
+                &mut unsupported,
+                &mut problems,
+            );
+            add_hooks(translated.hooks);
+        }
+        other => {
+            for path in paths(root, other.as_ref(), "hooks", &mut problems) {
+                if !hook_files.contains(&path) {
+                    hook_files.push(path);
+                }
+            }
+        }
     }
     let mut taurus_hook_files = Vec::new();
     for file in hook_files {
-        if is_claude_hooks(&file) {
-            unsupported.push(Unsupported {
-                part: relative(root, &file),
-                reason: "it's in Claude Code's hook format, which Taurus doesn't run yet; \
-                         none of its hooks run"
-                    .into(),
-            });
-            continue;
-        }
-        match taurus_hooks::load_file(&file) {
-            Ok(layer) => {
-                for (hook, problem) in &layer.invalid {
-                    problems.push(format!("{}: hook \"{hook}\": {problem}", file.display()));
-                }
-                for (hook, entry) in layer.hooks {
-                    hooks
-                        .hooks
-                        .insert(format!("{name}:{hook}"), vars.hook(entry));
-                }
+        let parsed = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+        match parsed {
+            Some(value) if taurus_hooks::dialect::is_foreign(&value) => {
+                let translated = taurus_hooks::dialect::translate(&value);
+                note_translated(
+                    &relative(root, &file),
+                    &translated,
+                    &mut unsupported,
+                    &mut problems,
+                );
+                add_hooks(translated.hooks);
             }
-            Err(e) => problems.push(e),
+            _ => match taurus_hooks::load_file(&file) {
+                Ok(layer) => {
+                    for (hook, problem) in &layer.invalid {
+                        problems.push(format!("{}: hook \"{hook}\": {problem}", file.display()));
+                    }
+                    add_hooks(layer.hooks);
+                }
+                Err(e) => problems.push(e),
+            },
         }
         taurus_hook_files.push(file);
     }
@@ -577,7 +649,11 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
             path.is_file() && path.extension().is_some_and(|e| e == "md")
         })
         .into_iter()
-        .map(|file| file.trim_end_matches(".md").to_string())
+        // `reviewer.agent.md` is Copilot's spelling of `reviewer.md`.
+        .map(|file| {
+            let stem = file.trim_end_matches(".md");
+            stem.strip_suffix(".agent").unwrap_or(stem).to_string()
+        })
         .collect(),
         mcp_servers: server_names,
         hooks: hooks
@@ -882,10 +958,14 @@ impl Staged {
     /// than a plugin, says so, and names the plugins in it that can be added
     /// and how. `None` for anything with a plugin manifest.
     fn marketplace(&self) -> Option<String> {
-        if self.path.join(MANIFEST).is_file() {
+        if manifest_path(&self.path).is_some() {
             return None;
         }
-        let text = std::fs::read_to_string(self.path.join(MARKETPLACE)).ok()?;
+        let (catalog_path, text) = MARKETPLACES.iter().find_map(|m| {
+            std::fs::read_to_string(self.path.join(m))
+                .ok()
+                .map(|text| (*m, text))
+        })?;
         let catalog: serde_json::Value = serde_json::from_str(&text).ok()?;
         let entries = catalog.get("plugins")?.as_array()?;
         // Only plugins kept in the catalog's own repository can be named by a
@@ -928,13 +1008,13 @@ impl Staged {
                 }
                 if local.len() > SHOWN {
                     text.push_str(&format!(
-                        "\n  …and {} more listed in {MARKETPLACE}",
+                        "\n  …and {} more listed in {catalog_path}",
                         local.len() - SHOWN
                     ));
                 }
             }
             None => text.push_str(&format!(
-                ": its folder or repository is named in its {MARKETPLACE}."
+                ": its folder or repository is named in its {catalog_path}."
             )),
         }
         Some(text)
@@ -1102,6 +1182,12 @@ fn inside(root: &Path, text: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+/// `path` as [`paths`] gives one, so a default and the same file named by
+/// the manifest are seen to be one file and read once.
+fn canonical(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
 /// The names of the entries in `dirs` that pass `keep`, sorted.
 fn entries(dirs: &[PathBuf], keep: impl Fn(&Path) -> bool) -> Vec<String> {
     let mut names: Vec<String> = dirs
@@ -1117,7 +1203,9 @@ fn entries(dirs: &[PathBuf], keep: impl Fn(&Path) -> bool) -> Vec<String> {
 }
 
 fn relative(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
+    let base = canonical(root.to_path_buf());
+    path.strip_prefix(&base)
+        .or_else(|_| path.strip_prefix(root))
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| path.display().to_string())
 }
@@ -1191,45 +1279,61 @@ fn note_oauth(text: &str, warnings: &mut Vec<String>) {
     }
 }
 
-/// Whether a hooks file is in Claude Code's format: keyed by its event names,
-/// each holding a list.
-fn is_claude_hooks(file: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(file) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return false;
-    };
-    value
-        .get("hooks")
-        .and_then(|hooks| hooks.as_object())
-        .is_some_and(|hooks| {
-            hooks
-                .iter()
-                .any(|(key, value)| CLAUDE_HOOK_EVENTS.contains(&key.as_str()) && value.is_array())
-        })
+/// Records what a translated hooks file couldn't bring, under the file's
+/// name.
+fn note_translated(
+    file: &str,
+    translated: &taurus_hooks::dialect::Translated,
+    unsupported: &mut Vec<Unsupported>,
+    problems: &mut Vec<String>,
+) {
+    for (what, why) in &translated.unsupported {
+        unsupported.push(Unsupported {
+            part: format!("{file}: {what}"),
+            reason: why.clone(),
+        });
+    }
+    for problem in &translated.problems {
+        problems.push(format!("{file}: {problem}"));
+    }
 }
 
 /// The paths a plugin's config may name by variable, as Claude Code names
-/// them, with Taurus's spellings beside them.
+/// them, with Codex's, Copilot's and Taurus's spellings beside them.
 struct Vars {
     pairs: Vec<(&'static str, String)>,
+    root: PathBuf,
     data: PathBuf,
 }
 
 impl Vars {
     fn new(root: &Path, name: &str, workspace: Option<&Path>) -> Self {
         let data = config::home_dir().join("plugin-data").join(name);
-        let mut pairs = vec![
-            ("${CLAUDE_PLUGIN_ROOT}", root.display().to_string()),
-            ("${TAURUS_PLUGIN_ROOT}", root.display().to_string()),
-            ("${CLAUDE_PLUGIN_DATA}", data.display().to_string()),
-            ("${TAURUS_PLUGIN_DATA}", data.display().to_string()),
-        ];
+        let mut pairs = Vec::new();
+        for var in [
+            "${CLAUDE_PLUGIN_ROOT}",
+            "${TAURUS_PLUGIN_ROOT}",
+            "${PLUGIN_ROOT}",
+            "${COPILOT_PLUGIN_ROOT}",
+        ] {
+            pairs.push((var, root.display().to_string()));
+        }
+        for var in [
+            "${CLAUDE_PLUGIN_DATA}",
+            "${TAURUS_PLUGIN_DATA}",
+            "${PLUGIN_DATA}",
+            "${COPILOT_PLUGIN_DATA}",
+        ] {
+            pairs.push((var, data.display().to_string()));
+        }
         if let Some(workspace) = workspace {
             pairs.push(("${CLAUDE_PROJECT_DIR}", workspace.display().to_string()));
         }
-        Self { pairs, data }
+        Self {
+            pairs,
+            root: root.to_path_buf(),
+            data,
+        }
     }
 
     /// `text` with the variables filled in. The data folder is made the first
@@ -1280,8 +1384,55 @@ impl Vars {
     fn hook(&self, entry: taurus_hooks::HookEntry) -> taurus_hooks::HookEntry {
         match entry {
             taurus_hooks::HookEntry::Hook(mut hook) => {
-                hook.command = self.fill(&hook.command);
-                hook.args = hook.args.iter().map(|a| self.fill(a)).collect();
+                // A translated hook's script runs under a shell, which expands
+                // these from its environment, quoting and all: filled in as
+                // text, a folder with a `$` or a quote in its name would be
+                // read as shell. `cmd` doesn't expand `${…}`, so on Windows
+                // it's filled, as everything else is.
+                let shell = cfg!(not(windows))
+                    && hook.foreign.is_some()
+                    && hook.args.first().is_some_and(|a| a == "-c");
+                if let Some(foreign) = hook.foreign.as_mut() {
+                    for (var, value) in &self.pairs {
+                        let key = var.trim_start_matches("${").trim_end_matches('}');
+                        foreign
+                            .env
+                            .entry(key.to_string())
+                            .or_insert_with(|| value.clone());
+                    }
+                    foreign.env = std::mem::take(&mut foreign.env)
+                        .into_iter()
+                        .map(|(k, v)| (k, self.fill(&v)))
+                        .collect();
+                    foreign.cwd = foreign.cwd.as_deref().map(|cwd| self.fill(cwd));
+                }
+                // A command that starts `./scripts/check.sh` means the
+                // plugin's own script, as Codex runs it: hooks run in the
+                // workspace, where that path names nothing, and a guard that
+                // can't start refuses every call.
+                if hook.foreign.is_some() {
+                    if let Some(script) = hook.args.get_mut(1) {
+                        if script.starts_with("./") || script.starts_with("../") {
+                            let root = if shell {
+                                "\"$PLUGIN_ROOT\"".to_string()
+                            } else {
+                                format!("\"{}\"", self.root.display())
+                            };
+                            *script = format!("{root}/{script}");
+                        }
+                    }
+                    if hook.command.starts_with("./") || hook.command.starts_with("../") {
+                        hook.command = self.root.join(&hook.command).display().to_string();
+                    }
+                }
+                if shell {
+                    if hook.args.iter().any(|a| a.contains("PLUGIN_DATA")) {
+                        let _ = std::fs::create_dir_all(&self.data);
+                    }
+                } else {
+                    hook.command = self.fill(&hook.command);
+                    hook.args = hook.args.iter().map(|a| self.fill(a)).collect();
+                }
                 taurus_hooks::HookEntry::Hook(hook)
             }
             toggle => toggle,
@@ -1499,29 +1650,178 @@ mod tests {
     }
 
     #[test]
-    fn hooks_in_claude_codes_format_are_named_and_none_run() {
+    fn hooks_in_claude_codes_format_are_translated_and_what_cant_run_is_named() {
         let _home = isolated_home();
         let root = dir(Scope::Global, None).unwrap().join("guard");
         write(
             &root,
             &[(
                 "hooks/hooks.json",
-                r#"{"hooks": {"PreToolUse": [{"matcher": "Bash",
-                    "hooks": [{"type": "command", "command": "check"}]}]}}"#,
+                r#"{"hooks": {
+                    "PreToolUse": [{"matcher": "Bash",
+                        "hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/check.sh\""}]}],
+                    "SessionStart": [{"hooks": [{"type": "command", "command": "hello"}]}]
+                }}"#,
             )],
         );
         let found = installed(None);
         let plugin = &found[0];
-        assert!(plugin.hooks().hooks.is_empty());
         assert!(
             plugin.summary.problems.is_empty(),
             "{:?}",
             plugin.summary.problems
         );
-        assert_eq!(plugin.summary.unsupported[0].part, "hooks/hooks.json");
-        assert!(plugin.summary.unsupported[0]
-            .reason
-            .contains("Claude Code's hook format"));
+        assert_eq!(plugin.summary.hooks, ["PreToolUse#1"]);
+        let taurus_hooks::HookEntry::Hook(hook) = &plugin.hooks().hooks["guard:PreToolUse#1"]
+        else {
+            panic!("not a hook");
+        };
+        let foreign = hook.foreign.as_ref().unwrap();
+        assert_eq!(
+            foreign.env["CLAUDE_PLUGIN_ROOT"],
+            plugin.root().display().to_string()
+        );
+        assert_eq!(
+            foreign.env["PLUGIN_ROOT"],
+            foreign.env["CLAUDE_PLUGIN_ROOT"]
+        );
+        assert_eq!(plugin.summary.unsupported.len(), 1);
+        assert_eq!(
+            plugin.summary.unsupported[0].part,
+            "hooks/hooks.json: SessionStart"
+        );
+    }
+
+    #[test]
+    fn a_codex_plugin_and_a_copilot_plugin_load_from_their_own_manifests() {
+        let _home = isolated_home();
+        let plugins = dir(Scope::Global, None).unwrap();
+        write(
+            &plugins.join("codex-one"),
+            &[
+                (
+                    ".codex-plugin/plugin.json",
+                    r#"{"name": "codex-one", "version": "1.0.0", "skills": "./skills/",
+                        "interface": {"displayName": "Codex One"}, "apps": "./.app.json"}"#,
+                ),
+                (
+                    "skills/lint/SKILL.md",
+                    "---\nname: lint\ndescription: Lints\n---\nLint.\n",
+                ),
+            ],
+        );
+        write(
+            &plugins.join("copilot-one"),
+            &[
+                (
+                    "plugin.json",
+                    r#"{"name": "copilot-one", "description": "From Copilot"}"#,
+                ),
+                (
+                    "hooks.json",
+                    r#"{"version": 1, "hooks": {"preToolUse": [
+                        {"type": "command", "bash": "./deny.sh", "powershell": "./deny.ps1"}]}}"#,
+                ),
+                (
+                    "com.github.copilot/agents/reviewer.agent.md",
+                    "---\nname: reviewer\ndescription: Reviews\n---\nReview.\n",
+                ),
+            ],
+        );
+        let found = installed(None);
+        let codex = found.iter().find(|p| p.name() == "codex-one").unwrap();
+        assert!(
+            codex.summary.problems.is_empty(),
+            "{:?}",
+            codex.summary.problems
+        );
+        assert!(
+            codex.summary.warnings.is_empty(),
+            "{:?}",
+            codex.summary.warnings
+        );
+        assert_eq!(codex.summary.version.as_deref(), Some("1.0.0"));
+        assert_eq!(codex.summary.skills, ["lint"]);
+        assert!(codex.summary.unsupported.iter().any(|u| u.part == "apps"));
+
+        let copilot = found.iter().find(|p| p.name() == "copilot-one").unwrap();
+        assert!(
+            copilot.summary.problems.is_empty(),
+            "{:?}",
+            copilot.summary.problems
+        );
+        assert_eq!(copilot.summary.description.as_deref(), Some("From Copilot"));
+        assert_eq!(copilot.summary.agents, ["reviewer"]);
+        assert_eq!(copilot.summary.hooks, ["preToolUse#1"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_hook_naming_its_script_relatively_runs_the_plugins_script() {
+        let _home = isolated_home();
+        let root = dir(Scope::Global, None).unwrap().join("replay");
+        write(
+            &root,
+            &[(
+                "hooks.json",
+                r#"{"hooks": {"Stop": [{"hooks": [
+                    {"type": "command", "command": "./scripts/upload.sh --now"}]}]}}"#,
+            )],
+        );
+        let found = installed(None);
+        let taurus_hooks::HookEntry::Hook(hook) = &found[0].hooks().hooks["replay:Stop#1"] else {
+            panic!("not a hook");
+        };
+        assert_eq!(hook.args[1], "\"$PLUGIN_ROOT\"/./scripts/upload.sh --now");
+    }
+
+    #[test]
+    fn a_file_the_manifest_names_that_is_read_by_default_is_read_once() {
+        let _home = isolated_home();
+        let root = dir(Scope::Global, None).unwrap().join("twice");
+        write(
+            &root,
+            &[
+                (
+                    ".codex-plugin/plugin.json",
+                    r#"{"name": "twice", "mcpServers": "./.mcp.json", "hooks": "./hooks/hooks.json"}"#,
+                ),
+                (".mcp.json", r#"{"mcpServers": {"db": {"command": "db"}}}"#),
+                (
+                    "hooks/hooks.json",
+                    r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x"}]}]}}"#,
+                ),
+            ],
+        );
+        let found = installed(None);
+        assert!(
+            found[0].summary.problems.is_empty(),
+            "{:?}",
+            found[0].summary.problems
+        );
+        assert_eq!(found[0].summary.mcp_servers, ["db"]);
+        assert_eq!(found[0].hook_files().len(), 1);
+    }
+
+    #[test]
+    fn hooks_held_inline_in_a_manifest_are_translated() {
+        let _home = isolated_home();
+        let root = dir(Scope::Global, None).unwrap().join("inline");
+        write(
+            &root,
+            &[(
+                MANIFEST,
+                r#"{"name": "inline", "hooks": {"PostToolUse": [{"matcher": "Edit|Write",
+                    "hooks": [{"type": "command", "command": "fmt"}]}]}}"#,
+            )],
+        );
+        let found = installed(None);
+        assert!(
+            found[0].summary.problems.is_empty(),
+            "{:?}",
+            found[0].summary.problems
+        );
+        assert_eq!(found[0].summary.hooks, ["PostToolUse#1"]);
     }
 
     #[test]
@@ -1770,7 +2070,7 @@ mod tests {
             source.path(),
             &[
                 (
-                    MARKETPLACE,
+                    MARKETPLACES[0],
                     r#"{"name": "shop", "plugins": [
                         {"name": "notes", "source": "./plugins/notes"},
                         {"name": "far", "source": {"source": "url", "url": "https://x/far.git"}}]}"#,

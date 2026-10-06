@@ -1404,6 +1404,7 @@ mod tests {
                 args: vec![],
                 matches: None,
                 timeout_seconds: 5,
+                foreign: None,
                 disabled: false,
             },
         )

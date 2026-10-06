@@ -135,6 +135,12 @@ pub struct Hook {
     pub timeout_seconds: u64,
     #[serde(default, skip_serializing_if = "is_false")]
     pub disabled: bool,
+    /// Set for a hook translated from another agent's format, which the
+    /// runner then speaks that agent's protocol to. Never read from or
+    /// written to `hooks.json`. See [`crate::dialect`].
+    #[serde(skip)]
+    #[ts(skip)]
+    pub foreign: Option<Box<crate::dialect::Foreign>>,
 }
 
 /// Which calls a hook applies to.
@@ -378,6 +384,7 @@ mod tests {
                     matches: None,
                     timeout_seconds: 30,
                     disabled: false,
+                    foreign: None,
                 })),
             )]
             .into(),

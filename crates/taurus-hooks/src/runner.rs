@@ -178,7 +178,16 @@ impl Outcome {
 /// every tool call.
 #[derive(Debug, Default)]
 pub struct HookRunner {
-    hooks: Vec<(String, Hook, Option<globset::GlobSet>)>,
+    hooks: Vec<(String, Hook, Filter)>,
+}
+
+/// A hook's filter, compiled once.
+#[derive(Debug, Default)]
+struct Filter {
+    paths: Option<globset::GlobSet>,
+    /// A foreign hook's tool matcher and `if`. See [`crate::dialect`].
+    matcher: Option<regex::Regex>,
+    condition: Option<crate::dialect::Condition>,
 }
 
 impl HookRunner {
@@ -192,8 +201,29 @@ impl HookRunner {
         let hooks = hooks
             .into_iter()
             .map(|(name, hook)| {
-                let set = hook.matches.as_ref().and_then(|m| compile(&m.paths));
-                (name, hook, set)
+                let paths = hook.matches.as_ref().and_then(|m| compile(&m.paths));
+                // Checked at translation, so a matcher that won't compile here
+                // is a bug. Dropped, so the hook applies more widely rather
+                // than not at all, as with a glob.
+                let matcher = hook
+                    .foreign
+                    .as_ref()
+                    .and_then(|f| f.matcher.as_deref())
+                    .and_then(|m| crate::dialect::compile_matcher(m).ok());
+                let condition = hook
+                    .foreign
+                    .as_ref()
+                    .and_then(|f| f.when.as_deref())
+                    .and_then(|w| crate::dialect::Condition::parse(w).ok());
+                (
+                    name,
+                    hook,
+                    Filter {
+                        paths,
+                        matcher,
+                        condition,
+                    },
+                )
             })
             .collect();
         Self { hooks }
@@ -220,8 +250,8 @@ impl HookRunner {
     pub async fn run(&self, payload: &HookPayload, cancel: &CancellationToken) -> Outcome {
         let mut outcome = Outcome::default();
 
-        for (name, hook, paths) in &self.hooks {
-            if hook.on != payload.event || !applies(hook, paths.as_ref(), payload) {
+        for (name, hook, filter) in &self.hooks {
+            if hook.on != payload.event || !applies(hook, filter, payload) {
                 continue;
             }
             if cancel.is_cancelled() {
@@ -289,7 +319,10 @@ impl HookRunner {
                 } else {
                     format!("{} {}", hook.command, hook.args.join(" "))
                 },
-                matches: hook.matches.as_ref().and_then(describe_match),
+                matches: match &hook.foreign {
+                    Some(foreign) => describe_foreign(foreign),
+                    None => hook.matches.as_ref().and_then(describe_match),
+                },
                 // What it will actually get, which is what a list of what will
                 // run is for. See `MAX_TIMEOUT_SECONDS`.
                 timeout_seconds: hook.timeout().as_secs(),
@@ -313,6 +346,22 @@ fn describe_match(matches: &crate::config::Match) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("; "))
 }
 
+/// A foreign hook's narrowing, in words, saying whose format it's in.
+fn describe_foreign(foreign: &crate::dialect::Foreign) -> Option<String> {
+    let whose = match foreign.dialect {
+        crate::dialect::Dialect::Claude => "Claude Code format",
+        crate::dialect::Dialect::Copilot => "Copilot format",
+    };
+    let mut parts = vec![format!("{} ({whose})", foreign.event)];
+    if let Some(matcher) = &foreign.matcher {
+        parts.push(format!("tools matching {matcher}"));
+    }
+    if let Some(when) = &foreign.when {
+        parts.push(format!("if {when}"));
+    }
+    Some(parts.join("; "))
+}
+
 /// One hook's verdict.
 enum Verdict {
     Passed(String),
@@ -326,7 +375,16 @@ enum Verdict {
 /// An absent `matches` covers everything on its event, which is what makes a
 /// `stop` hook — the one where there is nothing to match on — write as three
 /// lines rather than as three lines and an empty object.
-fn applies(hook: &Hook, paths: Option<&globset::GlobSet>, payload: &HookPayload) -> bool {
+fn applies(hook: &Hook, filter: &Filter, payload: &HookPayload) -> bool {
+    if let Some(foreign) = &hook.foreign {
+        return crate::dialect::applies(
+            foreign,
+            filter.matcher.as_ref(),
+            filter.condition.as_ref(),
+            payload,
+        );
+    }
+    let paths = filter.paths.as_ref();
     let Some(matches) = &hook.matches else {
         return true;
     };
@@ -391,7 +449,12 @@ async fn execute(
     payload: &HookPayload,
     cancel: &CancellationToken,
 ) -> Verdict {
-    let body = serde_json::to_vec(payload).unwrap_or_else(|_| b"{}".to_vec());
+    let foreign = hook.foreign.as_deref();
+    let body = match foreign {
+        Some(foreign) => serde_json::to_vec(&crate::dialect::payload(foreign, payload)),
+        None => serde_json::to_vec(payload),
+    }
+    .unwrap_or_else(|_| b"{}".to_vec());
 
     let mut command = tokio::process::Command::new(&hook.command);
     taurus_process::path::apply(&mut command)
@@ -412,6 +475,15 @@ async fn execute(
         .kill_on_drop(true);
     if let Some(tool) = &payload.tool {
         command.env("TAURUS_TOOL", tool);
+    }
+    if let Some(foreign) = foreign {
+        // What a hook written for Claude Code, Codex or Copilot reads its
+        // project from, then the entry's own `env` and `cwd`.
+        command.env("CLAUDE_PROJECT_DIR", &payload.workspace);
+        command.envs(&foreign.env);
+        if let Some(cwd) = &foreign.cwd {
+            command.current_dir(payload.workspace.join(cwd));
+        }
     }
     // A tree rather than a single child, so the timeout below can reach what
     // the hook started and not only the hook. A hook is usually a script, so
@@ -516,7 +588,16 @@ async fn execute(
     debug!(hook = name, ?code, "hook finished");
 
     match code {
-        Some(0) => Verdict::Passed(stdout),
+        Some(0) => match foreign {
+            // Another agent's hook may refuse in JSON and exit 0. Read as a
+            // pass, that refusal would let through the very call it was
+            // written to stop.
+            Some(_) => match crate::dialect::answer(payload.event, &stdout) {
+                crate::dialect::Answer::Passed(note) => Verdict::Passed(note),
+                crate::dialect::Answer::Denied(reason) => Verdict::Denied(reason),
+            },
+            None => Verdict::Passed(stdout),
+        },
         Some(DENY) => {
             // stderr first: a script that refuses usually explains itself on
             // stderr, and one that has said nothing at all still has to give
@@ -677,6 +758,7 @@ mod tests {
             matches: None,
             timeout_seconds: 5,
             disabled: false,
+            foreign: None,
         }
     }
 
@@ -1473,5 +1555,100 @@ mod tests {
         let runner = HookRunner::default();
         assert!(runner.is_empty());
         assert!(!runner.has(HookEvent::PreToolUse));
+    }
+
+    /// A hook from Claude Code's format, as a plugin hands it over.
+    #[cfg(unix)]
+    fn translated(file: serde_json::Value, name: &str) -> Hook {
+        let t = crate::dialect::translate(&file);
+        match t.hooks.get(name) {
+            Some(crate::config::HookEntry::Hook(hook)) => (**hook).clone(),
+            _ => panic!("{name} wasn't translated: {t:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_claude_hook_reads_claudes_payload_and_its_json_deny_is_obeyed() {
+        let dir = tempfile::tempdir().unwrap();
+        // The shape the real ones have: read `tool_name` and
+        // `tool_input.command` from stdin, refuse in JSON, exit 0.
+        let guard = script(
+            dir.path(),
+            "guard.sh",
+            r#"input=$(cat)
+if printf '%s' "$input" | grep -q '"tool_name":"Bash"' &&
+   printf '%s' "$input" | grep -q '"command":"git push"'; then
+  printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"no pushing from here"}}'
+fi
+exit 0"#,
+        );
+        let hook = translated(
+            serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "Bash",
+                "hooks": [{"type": "command", "command": format!("\"{guard}\"")}]}]}}),
+            "PreToolUse#1",
+        );
+        let runner = HookRunner::new(vec![("guard".into(), hook)]);
+
+        let push = HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
+            "run_command",
+            serde_json::json!({"command": "git push"}),
+            vec![],
+        );
+        let outcome = runner.run(&push, &CancellationToken::new()).await;
+        assert_eq!(
+            outcome.denied.as_deref(),
+            Some("Refused by hook 'guard': no pushing from here")
+        );
+
+        // Not its tool: the matcher keeps it from running at all.
+        let write = HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
+            "write_file",
+            serde_json::json!({"path": "a", "content": "git push"}),
+            vec![],
+        );
+        assert!(!runner
+            .run(&write, &CancellationToken::new())
+            .await
+            .is_denied());
+
+        // Its tool, a harmless command: passes, and the empty stdout is no note.
+        let status = HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
+            "run_command",
+            serde_json::json!({"command": "git status"}),
+            vec![],
+        );
+        let outcome = runner.run(&status, &CancellationToken::new()).await;
+        assert!(
+            !outcome.is_denied() && outcome.notes.is_empty(),
+            "{outcome:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_translated_hook_finds_its_plugin_and_project_in_its_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut hook = translated(
+            serde_json::json!({"hooks": {"Stop": [{"hooks": [{"type": "command",
+                "command": "printf '%s|%s' \"$CLAUDE_PLUGIN_ROOT\" \"$CLAUDE_PROJECT_DIR\""}]}]}}),
+            "Stop#1",
+        );
+        hook.foreign
+            .as_mut()
+            .unwrap()
+            .env
+            .insert("CLAUDE_PLUGIN_ROOT".into(), "/plugins/a b".into());
+        let runner = HookRunner::new(vec![("env".into(), hook)]);
+        let outcome = runner
+            .run(
+                &HookPayload::new(HookEvent::Stop, dir.path()),
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(
+            outcome.notes,
+            [format!("hook 'env': /plugins/a b|{}", dir.path().display())]
+        );
     }
 }
