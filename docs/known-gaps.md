@@ -127,12 +127,23 @@ the backlog, and they're the minority.
   or GitLab `…/tree/<ref>/<path>` address, whose ref has to be one segment;
   Claude Code's npm and archive sources aren't fetched. See
   [Plugins](configuration.md#plugins).
-- **A plugin's hooks run only in Taurus's format.** Claude Code's `hooks.json`
-  is keyed by its own events, with matchers and exit codes that mean slightly
-  different things, so translating it would make some hooks behave
-  differently from what their author tested. A hooks file in that shape is
-  named on the plugin, and none of it runs. Translating it is the next step
-  for plugins.
+- **Hooks from other agents run with Taurus's rules, not theirs.** A Claude
+  Code, Codex or Copilot hook that breaks on a tool call refuses the call,
+  where its own agent would carry on. `allow` permits nothing, `ask` refuses,
+  and a `Stop` hook can't keep a turn going. Background hooks and events
+  Taurus doesn't have (`SessionStart`, `PreCompact`, `SubagentStop` and the
+  rest) are listed on the plugin and don't run. A post-tool hook isn't told
+  the tool's result, only that it succeeded or failed. See
+  [Hooks from Claude Code, Codex and Copilot](configuration.md#hooks-from-claude-code-codex-and-copilot).
+- **Only a plugin's hooks are translated.** A project's
+  `.claude/settings.json`, `.codex/hooks.json` or `.github/hooks/` isn't read.
+  Each would be another tool's config starting to run programs in Taurus, so
+  it would need its own switch and its own line in the trust prompt.
+- **Copilot's own hook format has run only against fixtures.** No Copilot
+  plugin with hooks was at hand to run, so its `toolArgs` names (`path`,
+  `old_str`, `new_str`, `file_text`) follow Copilot's documentation. Claude
+  Code's format, which Copilot also reads, has run against real Claude Code
+  and Codex plugins.
 - **Parts of a Claude Code plugin have nothing here to run them.** Command
   files, LSP servers, output styles, workflows, themes, monitors, `bin/` on
   `PATH`, a plugin's own settings, `userConfig` and dependencies. Each is

@@ -527,8 +527,21 @@ my-plugin/
   skills/<skill>/SKILL.md
   agents/<agent>.md
   .mcp.json                    {"mcpServers": {...}}
-  hooks/hooks.json             Taurus's hook format; see Hooks above
+  hooks/hooks.json             Taurus's hook format, or Claude Code's
 ```
+
+Codex and GitHub Copilot plugins use the same layout with the manifest
+somewhere else, so they install as they are too. Taurus looks for the
+manifest in this order and reads the first it finds:
+
+- `.claude-plugin/plugin.json` (Claude Code)
+- `.codex-plugin/plugin.json` (Codex)
+- `plugin.json`, `.plugin/plugin.json`, `.github/plugin/plugin.json`
+  (Copilot)
+
+Copilot's other places are read too: `hooks.json` at the plugin's root,
+`com.github.copilot/hooks/hooks.json`, agents in `com.github.copilot/agents/`,
+and agent files named `<agent>.agent.md`.
 
 Only `name` is required in the manifest, and the manifest itself is optional:
 a folder without one is named after itself. A name is lowercase letters,
@@ -592,11 +605,15 @@ project's, merged name by name:
 A plugin not named there is on, unless its manifest says
 `"defaultEnabled": false`.
 
-**Paths in a plugin's config.** `${CLAUDE_PLUGIN_ROOT}` (or
-`${TAURUS_PLUGIN_ROOT}`) is the plugin's folder, `${CLAUDE_PLUGIN_DATA}` is
-`~/.taurus/plugin-data/<name>/`, made the first time something names it, and
-`${CLAUDE_PROJECT_DIR}` is the workspace. They're filled in a server's
-command, args, env, URL and headers, and in a hook's command and args.
+**Paths in a plugin's config.** `${CLAUDE_PLUGIN_ROOT}` is the plugin's
+folder, and so are `${PLUGIN_ROOT}` (Codex), `${COPILOT_PLUGIN_ROOT}` and
+`${TAURUS_PLUGIN_ROOT}`. `${CLAUDE_PLUGIN_DATA}` and its three matching
+spellings are `~/.taurus/plugin-data/<name>/`, made the first time something
+names it. `${CLAUDE_PROJECT_DIR}` is the workspace. They're filled in a
+server's command, args, env, URL and headers, and in a hook's command and
+args. A hook in another agent's format also gets them as environment
+variables. Its shell expands them there, so a folder name with a space or a
+`$` in it stays one path.
 Component paths in the manifest start with `./` and can't leave the plugin's
 folder.
 
@@ -611,8 +628,9 @@ skipped in silence:
   still name a program in it by path.
 - A plugin's own `settings.json`, `userConfig` (so `${user_config.…}` stays
   unfilled), and `dependencies`.
-- Hooks in Claude Code's format, keyed `PreToolUse` and the rest. A hooks file
-  in that shape is named as one, and none of it runs.
+- Codex apps (`apps`, `.app.json`), and Copilot's rules, commands and LSP
+  servers.
+- Any hook event or hook type with nothing here to run it. See below.
 
 Two things the real plugins Claude Code ships turned up, both said on the
 plugin rather than left to fail:
@@ -625,6 +643,79 @@ plugin rather than left to fail:
 
 **A project's plugins are project config.** They wait for the workspace to be
 trusted, like everything else in `.taurus/`, and the trust prompt names them.
+
+### Hooks from Claude Code, Codex and Copilot
+
+A plugin's hooks file can be in Taurus's format (see [Hooks](#hooks)) or in
+another agent's, and Taurus tells them apart by shape. Taurus's maps a hook's
+name to an object. The others map an event to a list:
+
+```json
+{"hooks": {"PreToolUse": [{"matcher": "Bash",
+  "hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/guard.sh\""}]}]}}
+```
+
+That's Claude Code's format. Codex uses it as it is, and Copilot reads it
+too. Copilot also has its own, with camelCase events (`preToolUse`) and
+`bash`/`powershell` commands in place of `command`. Hooks inline in a
+manifest are read the same way. Each entry that can run becomes a hook named
+`<plugin>:<Event>#<n>`, and `taurus hooks list` shows which format it came
+from.
+
+The events map onto Taurus's four:
+
+| Claude Code, Codex | Copilot | Taurus |
+| --- | --- | --- |
+| `PreToolUse` | `preToolUse` | `pre_tool_use` |
+| `PostToolUse` | `postToolUse` | `post_tool_use`, after a success |
+| `PostToolUseFailure` | `postToolUseFailure` | `post_tool_use`, after a failure |
+| `UserPromptSubmit` | `userPromptSubmitted` | `user_prompt_submit` |
+| `Stop` | `agentStop` | `stop` |
+
+Taurus speaks each hook's own protocol, so the hook doesn't have to know
+it's running here:
+
+- **Tool names.** A matcher sees the tool under the hook's own names:
+  `run_command` is `Bash` (Copilot: `bash`), `edit_file` is `Edit`,
+  `MultiEdit` or Codex's `apply_patch` (Copilot: `edit`), and `write_file` is
+  `Write` (Copilot: `create`). `read_file`, `glob`, `grep`, `fetch_url` and
+  `web_search` map the same way. An MCP tool keeps its `mcp__server__tool`
+  name. A matcher is a name, `A|B`, or a regex over the whole name.
+- **`if` conditions** like `Bash(git push:*)` or `Edit(src/**)` narrow a
+  hook further, as in Claude Code. A command rule matches any one command in
+  a line, so `cd repo && git push` is a push.
+- **What it's told.** stdin carries `tool_name`, `tool_input`,
+  `hook_event_name`, `session_id` and `cwd` (Copilot: `toolName`,
+  `toolArgs`, `sessionId`). Arguments are renamed to that tool's own names,
+  and paths are absolute, so `.tool_input.file_path` is there for a hook that
+  reads it.
+- **What it says back.** A JSON answer on stdout is read for a decision:
+  `permissionDecision: "deny"` (top-level or under `hookSpecificOutput`),
+  `decision: "block"`, or `continue: false` refuses, with its reason.
+  `additionalContext` and `systemMessage` reach the model as a note. Exit 2
+  refuses, as it does everywhere.
+- **Where it runs.** The command runs under `sh -c` (`bash -c` for Copilot's
+  `bash`; `cmd /C` or PowerShell on Windows) in the workspace. A command
+  starting `./` names the plugin's own file, as Codex runs it.
+
+Three rules hold whatever the format says:
+
+- **`allow` permits nothing**, and **`ask` refuses**, because a hook here
+  can't ask anyone. See [Hooks](#hooks).
+- **A hook that breaks on `pre_tool_use` or `user_prompt_submit` refuses**,
+  as every Taurus hook does. Claude Code and Codex carry on past one.
+- **A `Stop` hook that blocks is reported, not obeyed.** In Claude Code that
+  means "keep going", which Taurus doesn't do, so its reason reaches the
+  model as a note instead.
+
+What has nothing here to run it is listed on the plugin, with why, and none of
+it runs:
+
+- Events other than the five above, like `SessionStart`, `PreCompact` and
+  `SubagentStop`.
+- `prompt`, `agent`, `http` and `mcp_tool` hooks. Taurus hooks are programs.
+- `async` and `asyncRewake` hooks, which run in the background and report
+  later. A Taurus hook runs inline with the call it's about.
 
 ## Themes
 

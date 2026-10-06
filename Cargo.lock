@@ -6442,6 +6442,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "globset",
+ "regex",
  "serde",
  "serde_json",
  "taurus-process",

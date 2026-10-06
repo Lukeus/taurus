@@ -13,6 +13,7 @@
 //! [`runner`] for what a hook is told and what its exit code means.
 
 pub mod config;
+pub mod dialect;
 pub mod runner;
 
 pub use config::{
