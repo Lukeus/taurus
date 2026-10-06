@@ -179,6 +179,11 @@ impl Host {
     ///
     /// Nothing else follows it: a shell already running keeps the hooks it
     /// started with, and the next one opened reads this.
+    pub async fn set_context_strategy(&self, strategy: taurus_core::ContextStrategy) {
+        self.edit_global_setting(|s| s.context_strategy = Some(strategy))
+            .await;
+    }
+
     pub async fn set_shell_integration(&self, enabled: bool) {
         self.edit_global_setting(|s| s.shell_integration = Some(enabled))
             .await;

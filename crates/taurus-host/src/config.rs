@@ -1216,6 +1216,20 @@ pub struct Settings {
     /// to cannot be governed by different rules.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
+    /// How a turn makes room once trimming old tool output isn't enough.
+    ///
+    /// `compact` summarizes the older history and keeps the recent messages.
+    /// `relay` replaces the whole history with a brief the harness writes
+    /// itself (the request, the files changed, the commands run, the last
+    /// call) plus the model's own notes, and carries on from it. A relay can
+    /// also start before the window is full, when the model starts repeating
+    /// itself. Built for small local models; see
+    /// [`taurus_core::relay`].
+    ///
+    /// `compact` by default, and per-layer like the iteration ceiling, so one
+    /// project can try it without changing every other.
+    #[serde(default)]
+    pub context_strategy: taurus_core::ContextStrategy,
     /// Plugins switched on or off, by name. A plugin not named here is on
     /// unless its manifest says `defaultEnabled: false`. See
     /// [`crate::plugins`].
@@ -1255,6 +1269,7 @@ impl Default for Settings {
             otlp_endpoint: String::new(),
             otlp_capture_content: false,
             max_iterations: default_max_iterations(),
+            context_strategy: taurus_core::ContextStrategy::Compact,
             plugins: BTreeMap::new(),
         }
     }
@@ -1315,6 +1330,9 @@ pub struct StoredSettings {
     /// long turns can raise it without loosening the ceiling everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_iterations: Option<u32>,
+    /// See [`Settings::context_strategy`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_strategy: Option<taurus_core::ContextStrategy>,
     /// See [`Settings::plugins`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<BTreeMap<String, bool>>,
@@ -1345,6 +1363,7 @@ impl StoredSettings {
         self.otlp_endpoint = other.otlp_endpoint.or(self.otlp_endpoint.take());
         self.otlp_capture_content = other.otlp_capture_content.or(self.otlp_capture_content);
         self.max_iterations = other.max_iterations.or(self.max_iterations);
+        self.context_strategy = other.context_strategy.or(self.context_strategy);
         // Name by name. See `Settings::plugins`.
         if let Some(theirs) = other.plugins {
             self.plugins
@@ -1387,6 +1406,7 @@ impl StoredSettings {
                 .max_iterations
                 .unwrap_or(defaults.max_iterations)
                 .clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT),
+            context_strategy: self.context_strategy.unwrap_or(defaults.context_strategy),
             plugins: self.plugins.unwrap_or(defaults.plugins),
         }
     }
@@ -1684,6 +1704,7 @@ mod tests {
             otlp_endpoint: Some("http://localhost:4318".into()),
             otlp_capture_content: Some(true),
             max_iterations: Some(42),
+            context_strategy: Some(taurus_core::ContextStrategy::Relay),
             plugins: Some(BTreeMap::from([("lint-pack".into(), false)])),
         }
     }

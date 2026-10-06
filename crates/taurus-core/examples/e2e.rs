@@ -96,6 +96,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 UiEvent::Compacted { messages_removed } => {
                     println!("  [compacted {messages_removed} messages]");
                 }
+                UiEvent::Relayed {
+                    leg,
+                    messages_removed,
+                    notes,
+                } => {
+                    println!(
+                        "  [handed over to leg {leg}, {messages_removed} messages, notes={notes}]"
+                    );
+                }
                 UiEvent::Retrying {
                     attempt,
                     of,

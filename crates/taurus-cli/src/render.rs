@@ -296,6 +296,20 @@ impl Renderer {
                 ));
             }
 
+            UiEvent::Relayed {
+                leg,
+                messages_removed,
+                notes,
+            } => {
+                self.break_text();
+                self.break_thinking();
+                let notes = if *notes { "" } else { ", without notes" };
+                self.dim(&format!(
+                    "  [handed over to a fresh context: leg {leg}, {messages_removed} messages \
+                     replaced by a brief{notes}]"
+                ));
+            }
+
             UiEvent::Error { message } => {
                 self.break_text();
                 self.break_thinking();
@@ -463,6 +477,11 @@ mod tests {
             },
             UiEvent::Compacted {
                 messages_removed: 3,
+            },
+            UiEvent::Relayed {
+                leg: 2,
+                messages_removed: 30,
+                notes: false,
             },
             UiEvent::Error {
                 message: "boom".into(),

@@ -15,6 +15,7 @@ import type { AllowedRule } from "../bindings/AllowedRule";
 import type { Answer } from "../bindings/Answer";
 import type { AppStatus } from "../bindings/AppStatus";
 import type { Attached } from "../bindings/Attached";
+import type { ContextStrategy } from "../bindings/ContextStrategy";
 import type { Attachment } from "../bindings/Attachment";
 import type { Background } from "../bindings/Background";
 import type { BackgroundJob } from "../bindings/BackgroundJob";
@@ -893,6 +894,8 @@ export const setAgentSynthesis = (enabled: boolean) =>
   invoke<void>("set_agent_synthesis", { enabled });
 export const setShellIntegration = (enabled: boolean) =>
   invoke<void>("set_shell_integration", { enabled });
+export const setContextStrategy = (strategy: ContextStrategy) =>
+  invoke<void>("set_context_strategy", { strategy });
 
 export const setTheme = (theme: Theme) => invoke<void>("set_theme", { theme });
 

@@ -305,6 +305,7 @@ pub fn run() {
             commands::respond_agent_proposal,
             commands::set_agent_synthesis,
             commands::set_shell_integration,
+            commands::set_context_strategy,
             commands::terminal_block,
             commands::list_tools,
             commands::save_agent,

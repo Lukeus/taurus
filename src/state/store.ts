@@ -2445,6 +2445,23 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
         },
       ];
 
+    case "relayed":
+      return [
+        ...entries,
+        {
+          kind: "notice",
+          id: nextId(),
+          tone: "info",
+          text: event.notes
+            ? `Handed the task to a fresh context with a brief, replacing ${event.messages_removed} messages.`
+            : `Handed the task to a fresh context with a brief, replacing ${event.messages_removed} messages. The model's notes couldn't be written, so the brief has only what Taurus recorded.`,
+          rule: {
+            label: `Leg ${event.leg}`,
+            note: `${event.messages_removed} messages`,
+          },
+        },
+      ];
+
     // Informational, not an error: nothing has gone wrong yet. If the retries
     // run out, the failure arrives on its own as `error`.
     case "retrying":

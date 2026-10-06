@@ -43,6 +43,7 @@ impl Host {
             let settings = self.settings.read().await;
             AgentConfig {
                 max_iterations: settings.max_iterations,
+                context_strategy: settings.context_strategy,
                 capture: if settings.otlp_capture_content {
                     taurus_core::Capture::Content
                 } else {

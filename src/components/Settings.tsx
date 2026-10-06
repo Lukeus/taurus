@@ -321,6 +321,27 @@ export function Settings({ onClose }: { onClose: () => void }) {
             </span>
           </label>
 
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={status?.settings.context_strategy === "relay"}
+              onChange={(e) => {
+                const strategy = e.target.checked ? "relay" : "compact";
+                run(async () => {
+                  await api.setContextStrategy(strategy);
+                  await refresh();
+                });
+              }}
+            />
+            <span>
+              Hand long turns to a fresh context
+              <span className="hint">
+                When the window fills, Taurus starts over from a short brief
+                instead of summarizing. Meant for small local models.
+              </span>
+            </span>
+          </label>
+
           <IterationLimit
             limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
           />

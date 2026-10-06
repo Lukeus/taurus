@@ -826,6 +826,55 @@ it's finished, and stops. Backends that can't enforce a schema answer in prose
 and that prose is used as it stands, so this improves the summary where it's
 supported and never gates it.
 
+**Or the turn can start over from a brief.** Set `context_strategy` to
+`relay` (or tick **Hand long turns to a fresh context** under **Settings →
+Behavior**) and the second tier works differently. Old tool output still
+shrinks first. When that isn't enough, the whole history is replaced, not
+just its older half, with a brief the next leg of the turn starts from.
+
+Summarizing keeps the recent messages verbatim, and those are the bulkiest
+and least durable part of a working turn: tool output the model has already
+acted on. It also shrinks the history to only half the budget, so a long turn
+spends the rest of its life near the ceiling, which is where a small model is
+worst. A relay leg starts nearly empty instead.
+
+Most of the brief isn't written by the model, because the harness already
+knows it exactly:
+
+- the request, as you typed it;
+- the files the turn has changed so far, from the checkpoint log;
+- every command it ran and how each one ended (`exit 0`, `exit 1`, started in
+  the background, refused);
+- the last call it made and what came back, plus anything the harness said
+  after it, such as a nudge to run the tests.
+
+The model writes one part: its notes, asked for as three fields (the goal,
+what it learned that isn't in any file yet, and the very next step) and
+sampled against a schema on Ollama, like the summary. If that request fails,
+the leg goes ahead anyway. The brief says no notes were written, and
+everything else in it is still exact. The plan is restated at the end of every
+request as always, so it isn't repeated in the brief.
+
+A leg can also end before the window is full. It hands over early when
+three things are all true:
+
+- at least four rounds have run since the last handover;
+- the window is at least half full;
+- the model has repeated a read-only call with exactly the same input this
+  leg, or failed the same way twice.
+
+A repeated read is the model asking for something it already has somewhere
+in its context, the same waste the Context panel counts as **Repeated
+calls**. Below half a window, the context isn't the problem. A model that
+repeats itself there would do the same in a fresh one.
+
+It's the same session, transcript and rewind either way: a handover swaps the
+history exactly the way a summary does. The transcript shows a **Leg 2**
+divider where it happened. It's off by default, and it's measured, not
+assumed. See [Known gaps](known-gaps.md) for what the measurement found, and
+run `cargo run -p taurus-host --example relay` from
+[Development](development.md#live-checks) against your own model.
+
 **Nothing is advertised that the prompt can't explain.** Every tool schema
 goes out on every iteration of every turn, not once per session, so it's the
 one part of the prompt that's pure overhead. Three things keep it down.

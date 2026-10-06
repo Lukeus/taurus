@@ -153,6 +153,17 @@ pub enum UiEvent {
     Compacted {
         messages_removed: usize,
     },
+    /// The whole history was replaced with a brief, and the turn carries on
+    /// from it in a fresh context. Only under the `relay` context strategy;
+    /// see [`crate::relay`].
+    Relayed {
+        /// The leg this starts, counting the turn's first as 1.
+        leg: u32,
+        messages_removed: usize,
+        /// Whether the model's own notes made it into the brief. When they
+        /// didn't, the brief went out with only the parts the harness writes.
+        notes: bool,
+    },
     /// How full the model's context is, as the next request would fill it.
     ///
     /// Sent before every request rather than after, because the number that

@@ -101,6 +101,10 @@ datacenter.** Every decision here is shaped around an 8k context window:
   75 seconds against 194.
 - Tool schemas are slimmed on the way out, and old tool results shrink before
   anything gets summarized.
+- A long turn can start over from a brief instead of being summarized
+  (`context_strategy: relay`, off by default). The harness writes most of the
+  brief itself: the request, the files changed, the commands run and how they
+  ended. Only what the model learned comes from the model.
 - A model with no tool-calling API still calls tools, through prompted parsing.
   The core can't tell that path from the native one.
 
