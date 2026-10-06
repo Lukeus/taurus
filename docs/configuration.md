@@ -541,6 +541,7 @@ Plugins live in `~/.taurus/plugins/` (yours) and a project's
 ```bash
 taurus plugin add ~/code/ops-plugin            # copied in
 taurus plugin add https://github.com/acme/ops-plugin.git --ref v1.2
+taurus plugin add https://github.com/acme/plugins/tree/main/plugins/ops   # one folder of a repository
 taurus plugin add ../ops-plugin --project      # into this project
 taurus plugin list                             # what each brings, and whether it's on
 taurus plugin disable ops                      # or enable; --project for this project's settings
@@ -548,6 +549,11 @@ taurus plugin update ops                       # fetch it again from where it ca
 taurus plugin remove ops
 taurus plugin validate ./ops-plugin            # check one without installing it
 ```
+
+A plugin with no `.claude-plugin/plugin.json` is named after the folder or
+repository it came from. Hand `add` a marketplace (a repository with
+`.claude-plugin/marketplace.json`, like Claude Code's own) and it installs
+nothing, but lists the plugins in it with the address to add each one by.
 
 In the desktop app it's **Plugins** in the rail, which does the same.
 

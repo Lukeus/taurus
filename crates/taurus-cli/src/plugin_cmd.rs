@@ -16,7 +16,8 @@ pub enum PluginCommand {
     List,
     /// Install a plugin from a folder or a git URL. It's on once it's in.
     Add {
-        /// A folder, or a git URL (https://, ssh://, git@…, or ending in .git).
+        /// A folder, or a git URL (https://, ssh://, git@…, or ending in .git),
+        /// or a GitHub or GitLab page for a folder in one (…/tree/<ref>/<path>).
         from: String,
         /// The branch or tag to clone. The default branch otherwise.
         #[arg(long = "ref", value_name = "REF")]

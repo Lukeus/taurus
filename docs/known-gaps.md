@@ -122,10 +122,10 @@ the backlog, and they're the minority.
   counts. A review of a turn is treated the same way. Covering it properly
   needs an event pair of its own, and nothing needs one yet.
 - **Plugins come from a folder or a git URL, not a marketplace.** There's no
-  catalog to browse, and Claude Code's `marketplace.json` isn't read. A plugin
-  must sit at the root of the repository it's cloned from: Claude Code's
-  `git-subdir`, npm and archive sources aren't fetched. Clone the repository
-  and `taurus plugin add` the subfolder instead. See
+  catalog to browse, and Claude Code's `marketplace.json` is only read to say
+  what's in it. A plugin in a subfolder of a repository is added by its GitHub
+  or GitLab `…/tree/<ref>/<path>` address, whose ref has to be one segment;
+  Claude Code's npm and archive sources aren't fetched. See
   [Plugins](configuration.md#plugins).
 - **A plugin's hooks run only in Taurus's format.** Claude Code's `hooks.json`
   is keyed by its own events, with matchers and exit codes that mean slightly
