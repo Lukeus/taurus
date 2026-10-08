@@ -422,30 +422,40 @@ mod tests {
                 .stderr(Stdio::piped());
             command
         };
-        let count = |out: &[u8]| -> u32 {
+        // Says which run and what PowerShell complained about, since an empty
+        // answer is otherwise all a CI log shows.
+        let count = |which: &str, out: &[u8], err: &[u8]| -> u32 {
             let text = String::from_utf8_lossy(out);
-            text.trim()
-                .parse()
-                .unwrap_or_else(|_| panic!("not a count: {text:?}"))
+            text.trim().parse().unwrap_or_else(|_| {
+                panic!(
+                    "{which}: not a count: {text:?}; stderr: {:?}",
+                    String::from_utf8_lossy(err)
+                )
+            })
         };
 
         let control = powershell().output().await.unwrap();
-        let shared = count(&control.stdout);
+        let shared = count("plain spawn", &control.stdout, &control.stderr);
         if shared < 2 {
             eprintln!("this test has no console of its own to share; nothing to compare");
             return;
         }
 
         let mut tree = Tree::spawn(powershell()).expect("it must start");
-        let mut out = Vec::new();
-        tree.take_stdout()
-            .expect("stdout was piped")
-            .read_to_end(&mut out)
-            .await
-            .unwrap();
+        // Both at once, so a long error can't fill its pipe while stdout is
+        // being waited on.
+        let (mut stdout, mut stderr) = (
+            tree.take_stdout().expect("stdout was piped"),
+            tree.take_stderr().expect("stderr was piped"),
+        );
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let (read_out, read_err) =
+            tokio::join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err));
+        read_out.unwrap();
+        read_err.unwrap();
         assert!(tree.wait().await.unwrap().success());
         assert_eq!(
-            count(&out),
+            count("tree", &out, &err),
             1,
             "the child shared this test's console, so in the app it would open a window"
         );

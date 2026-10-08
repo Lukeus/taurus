@@ -74,11 +74,21 @@ mod tests {
         path.insert(0, dir.path().to_path_buf());
         set(std::env::join_paths(path).unwrap());
 
-        let mut command = tokio::process::Command::new(name);
-        let out = apply(&mut command)
-            .output()
-            .await
-            .expect("found on the new PATH");
+        // Linux won't run a file that any process has open for writing, and a
+        // sibling test that forks while this one's write is still open holds
+        // it until that child execs. That's milliseconds, so it's waited out
+        // here rather than left to flake as "Text file busy".
+        let mut busy = 0;
+        let out = loop {
+            let mut command = tokio::process::Command::new(name);
+            match apply(&mut command).output().await {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && busy < 50 => {
+                    busy += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                other => break other.expect("found on the new PATH"),
+            }
+        };
         assert!(String::from_utf8_lossy(&out.stdout).contains("found"));
     }
 }
