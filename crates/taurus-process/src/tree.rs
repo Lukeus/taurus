@@ -398,12 +398,15 @@ mod tests {
          * the two cases look the same and the check would pass for nothing.
          */
         let dir = tempfile::tempdir().unwrap();
+        // `UInt32`, not `uint`, in the PowerShell half: `uint` is a type
+        // accelerator only from PowerShell 6, and this runs `powershell`,
+        // which is 5.1. The C# half inside `Add-Type` has `uint` either way.
         let script = dir.path().join("count.ps1");
         std::fs::write(
             &script,
             "Add-Type -Namespace W -Name K -MemberDefinition \
              '[DllImport(\"kernel32.dll\")] public static extern uint GetConsoleProcessList(uint[] l, uint n);'\n\
-             [W.K]::GetConsoleProcessList((New-Object 'uint[]' 64), 64)\n",
+             [W.K]::GetConsoleProcessList((New-Object 'UInt32[]' 64), 64)\n",
         )
         .unwrap();
         let powershell = || {
