@@ -41,6 +41,24 @@ pub struct ChatRequest {
     /// ignore this and answer as they would have, so whatever reads the answer
     /// parses defensively and has something to fall back to.
     pub response_schema: Option<serde_json::Value>,
+    /// How many blocks at the end of the last message exist for this request
+    /// only.
+    ///
+    /// The live plan, or an instruction appended to a copy of the history, is
+    /// rebuilt for every request and is never in the next one. A backend that
+    /// caches a prompt at a marked point has to mark the point *before* these:
+    /// a cache entry that ends in text the next request does not carry is an
+    /// entry nothing will ever read, written at a premium on every iteration.
+    /// Backends that match prefixes on their own can ignore it, since a
+    /// difference at the tail costs them only the tail.
+    #[serde(default)]
+    pub volatile_tail: usize,
+    /// Names the conversation this request belongs to, for a backend that
+    /// routes requests to a prompt cache by one. Every request of one
+    /// conversation shares a prefix, so sending them to the same place is
+    /// what turns that prefix into cache hits. `None` outside a conversation.
+    #[serde(default)]
+    pub cache_key: Option<String>,
 }
 
 impl ChatRequest {

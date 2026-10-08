@@ -510,6 +510,10 @@ impl Launch {
             .run_turn(&mut session, Message::user(&prompt), tx)
             .await;
         let tools_used = collector.await.unwrap_or_default();
+        // The child's whole conversation, its own compaction included, onto
+        // the parent's bill. Its transcript is kept apart from the parent's
+        // listing, so this is the only place it is counted.
+        ctx.add_spent(&session.usage);
 
         let reported = self.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
         let report = report_for(reported, &outcome, &session, touched.paths());
@@ -778,6 +782,33 @@ mod tests {
         let asked = provider.last_request().await.unwrap();
         let nudge = asked.messages.last().unwrap().text();
         assert!(nudge.contains("without calling `finish`"), "{nudge}");
+    }
+
+    #[tokio::test]
+    async fn what_a_delegate_spent_is_handed_to_the_parent() {
+        // Two requests: the prose answer and the nudged report. Both are the
+        // parent's bill, and its transcript is the only place a total is read.
+        let (tool, _provider, ctx, _dir) = fixture_with(
+            vec![
+                ScriptedTurn::text("It's in src/lib.rs."),
+                finish(
+                    "f1",
+                    serde_json::json!({ "disposition": "done", "summary": "It's in src/lib.rs." }),
+                ),
+            ],
+            None,
+        );
+        let spent = Arc::new(std::sync::Mutex::new(taurus_provider::TokenUsage::default()));
+        let ctx = ctx.with_spent(spent.clone());
+        tool.execute(
+            serde_json::json!({ "agent_type": "explorer", "prompt": "Find the parser." }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let spent = *spent.lock().unwrap();
+        assert_eq!(spent.output_tokens, 2, "{spent:?}");
+        assert!(spent.input_tokens > 0, "{spent:?}");
     }
 
     #[tokio::test]

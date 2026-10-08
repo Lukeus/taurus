@@ -1230,6 +1230,19 @@ pub struct Settings {
     /// project can try it without changing every other.
     #[serde(default)]
     pub context_strategy: taurus_core::ContextStrategy,
+    /// The most of a model's context window a turn fills before it makes
+    /// room, in tokens. Zero uses the model's whole window.
+    ///
+    /// Every request re-sends the conversation, so what a step costs on a
+    /// hosted model grows with how full the window is allowed to get. A
+    /// million-token model left to fill compacts at about 950k and bills that
+    /// on every step; held at the default it compacts at about 170k. Models
+    /// with smaller windows than this are unaffected. It also sizes how much
+    /// one tool answer may take.
+    ///
+    /// Per-layer, so one project that needs the whole window can have it.
+    #[serde(default = "default_context_limit")]
+    pub context_limit: u32,
     /// Plugins switched on or off, by name. A plugin not named here is on
     /// unless its manifest says `defaultEnabled: false`. See
     /// [`crate::plugins`].
@@ -1248,6 +1261,28 @@ fn default_true() -> bool {
 
 fn default_max_iterations() -> u32 {
     25
+}
+
+fn default_context_limit() -> u32 {
+    DEFAULT_CONTEXT_LIMIT
+}
+
+/// See [`Settings::context_limit`]. The window most current hosted models
+/// were built around, so it holds a conversation those models were tuned for.
+pub const DEFAULT_CONTEXT_LIMIT: u32 = 200_000;
+
+/// The smallest working context that can be set, other than zero. Below this
+/// a system prompt and its tool schemas leave no room for a conversation.
+pub const MIN_CONTEXT_LIMIT: u32 = 16_000;
+
+/// Brings a working context into range: zero stays zero, anything else is at
+/// least [`MIN_CONTEXT_LIMIT`].
+pub fn clamp_context_limit(limit: u32) -> u32 {
+    if limit == 0 {
+        0
+    } else {
+        limit.max(MIN_CONTEXT_LIMIT)
+    }
 }
 
 impl Default for Settings {
@@ -1270,6 +1305,7 @@ impl Default for Settings {
             otlp_capture_content: false,
             max_iterations: default_max_iterations(),
             context_strategy: taurus_core::ContextStrategy::Compact,
+            context_limit: default_context_limit(),
             plugins: BTreeMap::new(),
         }
     }
@@ -1333,6 +1369,9 @@ pub struct StoredSettings {
     /// See [`Settings::context_strategy`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_strategy: Option<taurus_core::ContextStrategy>,
+    /// See [`Settings::context_limit`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit: Option<u32>,
     /// See [`Settings::plugins`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<BTreeMap<String, bool>>,
@@ -1364,6 +1403,7 @@ impl StoredSettings {
         self.otlp_capture_content = other.otlp_capture_content.or(self.otlp_capture_content);
         self.max_iterations = other.max_iterations.or(self.max_iterations);
         self.context_strategy = other.context_strategy.or(self.context_strategy);
+        self.context_limit = other.context_limit.or(self.context_limit);
         // Name by name. See `Settings::plugins`.
         if let Some(theirs) = other.plugins {
             self.plugins
@@ -1407,6 +1447,10 @@ impl StoredSettings {
                 .unwrap_or(defaults.max_iterations)
                 .clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT),
             context_strategy: self.context_strategy.unwrap_or(defaults.context_strategy),
+            // Clamped for the same reason the iteration ceiling is.
+            context_limit: clamp_context_limit(
+                self.context_limit.unwrap_or(defaults.context_limit),
+            ),
             plugins: self.plugins.unwrap_or(defaults.plugins),
         }
     }
@@ -1705,8 +1749,28 @@ mod tests {
             otlp_capture_content: Some(true),
             max_iterations: Some(42),
             context_strategy: Some(taurus_core::ContextStrategy::Relay),
+            context_limit: Some(120_000),
             plugins: Some(BTreeMap::from([("lint-pack".into(), false)])),
         }
+    }
+
+    #[test]
+    fn a_working_context_is_brought_into_range_and_zero_means_the_whole_window() {
+        let resolve = |limit| {
+            StoredSettings {
+                context_limit: Some(limit),
+                ..Default::default()
+            }
+            .resolve()
+            .context_limit
+        };
+        assert_eq!(
+            StoredSettings::default().resolve().context_limit,
+            DEFAULT_CONTEXT_LIMIT
+        );
+        assert_eq!(resolve(0), 0);
+        assert_eq!(resolve(1_000), MIN_CONTEXT_LIMIT);
+        assert_eq!(resolve(1_000_000), 1_000_000);
     }
 
     #[test]

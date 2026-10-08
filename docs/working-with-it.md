@@ -714,8 +714,9 @@ really costs.** Only the messages can be shrunk. But counting only them would
 let the system prompt, every tool schema, and the appended plan ride along
 unmeasured, with the threshold quietly paying for them. Those costs scale with
 a workspace's configuration, the headroom is a fraction of the window, and on
-a small window the two cross. The nine built-in tools are about 1,650 tokens
-before any message.
+a small window the two cross. The nine built-in tools are about 1,700 tokens
+before any message, and the app adds its own (plans, notes, data, sub-agents)
+on top. The Context panel lists every one with its cost.
 
 So the fixed part is estimated from the text it's made of, and what a request
 really cost is spent correcting the *messages* instead. A response reports the
@@ -761,7 +762,26 @@ doesn't, held between a twentieth and a quarter of the window. A local model
 can't give up 32,000 tokens it doesn't have, and on a large window a twentieth
 is the margin between four-characters-a-token and a real tokenizer. A
 200,000-token model gets 168,000 tokens of history where a flat threshold
-would give 160,000. A million-token model gets 950,000 instead of 800,000.
+would give 160,000. A million-token model allowed its whole window gets
+950,000 instead of 800,000.
+
+**The window a turn works in is yours to set, and it's 200,000 by default.**
+A model's window is a ceiling, not a target. Every request sends the whole
+conversation again, so on a hosted model billed per token, a conversation
+carried to 900,000 tokens costs 900,000 on every step, cache or not. One
+compacted at 170,000 costs a fifth of that. **Working context** under
+**Settings → Behavior** (`context_limit` in `settings.json`) is how much of
+the window a conversation may fill before it's compacted:
+
+- It's 200,000 tokens by default, so a model with a smaller window than that
+  isn't affected.
+- `0` uses the model's whole window.
+- Anything else below 16,000 is raised to 16,000, since a system prompt and
+  its tool schemas leave nothing for a conversation below that.
+
+It layers like the rest of `settings.json`, so one project that needs the
+whole window can have it. The meter above the composer measures against it,
+and so do the tool output caps below.
 
 **And it either makes room or says why it can't.** The verbatim tail is
 bounded by tokens as well as message count. Eight recent messages can be
@@ -786,15 +806,18 @@ at the first byte instead, a file past the cap would have a tail nothing could
 reach, and a line number from `grep` would be one the model couldn't look at.
 
 **Every one of those caps is a share of the window, not a number.** The sizes
-above are for a 200,000-token model, the anchor, and one size can't be right
-twice. 64 KB of command output is about sixteen thousand tokens. That's twice
+above are for a 200,000-token window, the anchor, and one size can't be right
+twice. The window here is the working context, so by default nothing reads
+more than those sizes. 64 KB of command output is about sixteen thousand tokens. That's twice
 what an 8k local model holds, so the answer overflows its own request. On a
 million-token window it's under two percent, and the model pages back through
 output it could have had at once.
 
 So each cap is anchored at 200,000 and scales with the turn's model. An 8k
 model reads 200 lines of a file and 4 KB of a build log; a million-token model
-reads 10,000 lines and 320 KB. Where the window isn't knowable (an
+with the working context at `0` reads 10,000 lines and 320 KB. `load_skill`
+and `read_note` are held to a command's cap too, with the whole text written
+to a file the cut points at. Where the window isn't knowable (an
 OpenAI-compatible endpoint that never declared one, or a tool run outside a
 session), every cap is exactly its anchor value, so nothing that can't ask a
 model its size gets a different answer.
@@ -825,6 +848,41 @@ what's left to do doesn't read as wrong; the turn resumes from it, decides
 it's finished, and stops. Backends that can't enforce a schema answer in prose
 and that prose is used as it stands, so this improves the summary where it's
 supported and never gates it.
+
+On a model that calls tools natively, the summary is asked for as the next
+message of the conversation itself: the same system prompt, the same tools,
+the older history as the turn sent it, and the instructions last. A hosted
+backend has that prefix in its prompt cache already, so the history is read
+back at about a tenth of the price, not sent fresh. A model handed tools can
+answer with a call instead, and a backend can refuse the request's shape. Then
+it's asked once more on its own, without tools. A model that's prompted for
+tools is always asked that way, since the schema can't be enforced while
+tools ride along. What the summary cost is counted in the conversation's
+totals, whether it worked or not.
+
+**Hosted backends read the conversation back from their cache.** Everything
+before the newest round is identical from one request to the next, and a
+cached read costs about a tenth of a fresh one, so each adapter makes sure
+the backend can see that:
+
+- **Anthropic** caches at marked points, and three of its four marks are used.
+  One goes after the system prompt, which covers the tools ahead of it. One
+  goes at the end of the history, which writes the entry the next request
+  reads. And one goes where the previous request put that one, which is the
+  entry this request reads. The plan is appended after the second mark, never
+  on it. It's rebuilt for every request and isn't in the next one, so an entry
+  that ended in it would be written on every step and never read.
+- **OpenAI** caches any prefix it has seen, routed by a hash of the first part
+  of the prompt. Every conversation in a workspace starts with the same
+  system prompt and tools, so requests to `api.openai.com` carry the
+  conversation's id as `prompt_cache_key`, which keeps one conversation on
+  one cache. Compatible servers aren't sent it, since one might refuse a field
+  it doesn't know.
+- **Gemini** caches prefixes on its own, and nothing is sent for it.
+
+The Context panel shows how much input came from cache, and on Anthropic how
+much was written to it. A write share that stays high from step to step is a
+cache that isn't being read back.
 
 **Or the turn can start over from a brief.** Set `context_strategy` to
 `relay` (or tick **Hand long turns to a fresh context** under **Settings →
@@ -912,8 +970,11 @@ eight are exactly the ones a sub-agent never gets:
 says how much; pressing it says on what. The Context panel is also in the
 rail, since the meter hides below half a window. It covers one conversation
 or every conversation in the workspace: turns and messages, what the provider
-billed and how much came from cache, what the transcript holds now, and a row
-per tool with its calls, tokens, and share.
+billed and how much came from cache (and, on Anthropic, how much was written
+to it), what the transcript holds now, and a row per tool with its calls,
+tokens, and share. What a compaction summary or a sub-agent's whole
+conversation cost is in the billed figure of the conversation that asked for
+it.
 
 Two numbers on it are worth acting on:
 

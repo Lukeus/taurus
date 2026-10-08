@@ -68,6 +68,13 @@ fn print_report(report: &UsageReport) {
             thousands(cached)
         );
     }
+    if let Some(written) = report.cache_write_in.filter(|w| *w > 0) {
+        let share = (written as f64 / report.reported_in.max(1) as f64) * 100.0;
+        println!(
+            "  written to cache {} ({share:.0}% of input)",
+            thousands(written)
+        );
+    }
     println!("Transcript holds   ~{} tokens\n", thousands(report.history));
 
     if report.tools.is_empty() {

@@ -97,6 +97,41 @@ the backlog, and they're the minority.
   trip before each request, which is the cost the estimate exists to avoid.
   The threshold covers what's left, and the meter above the composer shows you
   when it's wrong.
+- **Side jobs run on the conversation's own model.** Compaction summaries,
+  relay notes, reviews, agent drafts, and the built-in `explorer`, `worker`,
+  and `coder` sub-agents all use whatever model the conversation is on, so on
+  a frontier hosted model they're billed at its price. There's no cheaper
+  "utility model" setting. The lever today is a custom agent with its own
+  `model:` that shadows a built-in one. Closing this takes a small-model
+  setting per provider and a decision about which jobs may use it.
+- **Nothing caps what a conversation spends.** There's no price table, no
+  cost estimate, and no limit per conversation or per day. The ceilings are
+  the iteration ceiling, the two-at-a-time limit on sub-agents, and the
+  working context. The Context panel shows tokens billed, read from cache, and
+  written to it, not money. A cost figure needs a price per model kept
+  current, and that's the part that isn't built.
+- **Some spending never reaches the Context panel.** Compaction, relay notes,
+  and sub-agents are counted in the conversation that caused them. Reviews,
+  agent drafts, embeddings, and reranking aren't in any transcript, so they
+  aren't in any total. A delegate still running when its turn is stopped
+  counts only what it spent before the turn stops waiting for it.
+- **Every enabled tool goes out with every request.** Nothing filters tools by
+  relevance or loads them on demand, and an MCP server's tools are sent whole.
+  The Context panel names the heaviest schemas, and `disabled_tools` is how you
+  drop one. The tool list also changes when the terminal dock opens or closes
+  (`read_terminal` comes and goes with it) and when an MCP server connects or
+  drops. Tools come first in a request, so the next request after any of those
+  misses a hosted backend's prompt cache entirely.
+- **A cache entry on Anthropic lasts five minutes.** Taurus asks for the
+  default lifetime. A pause longer than that between messages means the next
+  one writes the conversation into the cache again, at a quarter over the
+  normal input price. An hour-long lifetime costs twice the normal price to
+  write, and isn't offered.
+- **The check-your-work nudge has no switch in Settings.** When a turn changed
+  files and ran nothing afterwards, the model is asked once to check, which
+  is one more request with the whole conversation in it. `verify_changes` in
+  `AgentConfig` turns it off for code that embeds the agent, but the app
+  doesn't expose it.
 - **A hook can refuse a tool call but can't approve one.** There's no `allow`
   verdict, so a hook can't skip a permission prompt the way hooks in some
   other harnesses can. That rules out "approve every `git status` for me", and

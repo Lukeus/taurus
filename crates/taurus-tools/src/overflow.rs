@@ -54,6 +54,33 @@ pub fn join_ends(head: &str, gap: &str, tail: &str) -> String {
     format!("{head}\n\n[… {gap} …]\n\n{tail}")
 }
 
+/// What one text answer may take of the model's context, for a tool with no
+/// cap of its own. The shell's numbers, against the same window.
+pub const TEXT_SHARE: f32 = 0.08;
+pub const MIN_TEXT_BYTES: usize = 4 * 1024;
+pub const MAX_TEXT_BYTES: usize = 512 * 1024;
+
+/// Bounds a whole answer already in hand: unchanged if it fits, otherwise its
+/// ends, with the whole of it spilled to a file the gap points at.
+///
+/// For the tools that return a document someone else wrote — a skill, a note —
+/// and so had no bound at all. Small as those usually are, one that is not is
+/// re-sent on every later step of the conversation.
+pub fn bound(text: String, label: &str, ctx: &ToolContext) -> String {
+    let cap = ctx.budget.bytes(TEXT_SHARE, MIN_TEXT_BYTES, MAX_TEXT_BYTES);
+    if text.len() <= cap {
+        return text;
+    }
+    let spilled = spill(&text, label, ctx);
+    cut(&text, cap, |omitted| match spilled {
+        Some(path) => format!(
+            "{omitted} bytes omitted; the whole of it was written to {} — read_file it",
+            path.display()
+        ),
+        None => format!("{omitted} bytes omitted"),
+    })
+}
+
 /// Writes text out whole and says where it went.
 ///
 /// `None` when there is nowhere to put it, or the write failed, and both are
@@ -223,6 +250,19 @@ pub fn ceil_boundary(s: &str, mut i: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_document_is_bounded_like_a_command_and_left_alone_when_it_fits() {
+        let (ctx, _dir) = crate::test_support::test_ctx();
+        let ctx = ctx.with_budget(crate::OutputBudget::for_window(8_192));
+        assert_eq!(bound("short".into(), "note", &ctx), "short");
+
+        let long = format!("START{}END", "x".repeat(20 * 1024));
+        let out = bound(long, "note", &ctx);
+        assert!(out.len() < 5 * 1024, "{}", out.len());
+        assert!(out.starts_with("START") && out.ends_with("END"));
+        assert!(out.contains("bytes omitted"), "{out}");
+    }
 
     #[test]
     fn something_that_fits_is_returned_untouched() {

@@ -96,6 +96,14 @@ pub struct UsageReport {
     /// has no cache to have missed, and a line reading `0 cached` beside its
     /// numbers would invite exactly the wrong conclusion.
     pub cached_in: Option<u32>,
+    /// Of `reported_in`, what was written *into* the cache, on a backend that
+    /// bills writes separately — Anthropic, at about a quarter over a fresh
+    /// read. `None` elsewhere, for the reason `cached_in` is.
+    ///
+    /// The number that shows a cache going wrong. Reads alone can't: a
+    /// conversation that re-writes its whole history every step and reads
+    /// back only the system prompt still shows a healthy share from cache.
+    pub cache_write_in: Option<u32>,
     /// What the transcript holds now, estimated.
     pub history: u32,
     /// Heaviest first, then by name so the order is stable between runs.
@@ -221,6 +229,7 @@ struct Tally {
     reported_in: u32,
     reported_out: u32,
     cached_in: Option<u32>,
+    cache_write_in: Option<u32>,
     history: u32,
     by_tool: HashMap<String, ToolUsage>,
     repeats: u32,
@@ -234,6 +243,9 @@ impl Tally {
         self.reported_out += session.usage.output_tokens;
         if let Some(cached) = session.usage.cache_read_input_tokens {
             *self.cached_in.get_or_insert(0) += cached;
+        }
+        if let Some(written) = session.usage.cache_creation_input_tokens {
+            *self.cache_write_in.get_or_insert(0) += written;
         }
         self.messages += session.messages.len() as u32;
 
@@ -321,6 +333,7 @@ impl Tally {
             reported_in: self.reported_in,
             reported_out: self.reported_out,
             cached_in: self.cached_in,
+            cache_write_in: self.cache_write_in,
             history: self.history,
             tools,
             repeats: self.repeats,

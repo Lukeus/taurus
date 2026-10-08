@@ -313,6 +313,7 @@ pub fn run() {
             commands::stop_agent_draft,
             commands::set_skill_synthesis,
             commands::set_max_iterations,
+            commands::set_context_limit,
             commands::set_agent_iterations,
             commands::set_theme,
             commands::set_theme_id,
