@@ -135,6 +135,15 @@ impl Host {
             .await;
     }
 
+    /// How much of a model's window a turn fills before it makes room. See
+    /// [`crate::config::Settings::context_limit`]. Clamped on the way in, like
+    /// the iteration ceiling, so what is written is what will be used.
+    pub async fn set_context_limit(&self, limit: u32) {
+        let limit = crate::config::clamp_context_limit(limit);
+        self.edit_global_setting(|s| s.context_limit = Some(limit))
+            .await;
+    }
+
     /// Writes one global setting and reloads the resolved ones.
     ///
     /// What every setter the UI calls does, and the reason it is one function:

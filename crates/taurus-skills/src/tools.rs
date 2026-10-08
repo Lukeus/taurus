@@ -63,7 +63,7 @@ impl Tool for LoadSkill {
         )
     }
 
-    async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: LoadSkillInput = parse_input(input)?;
         let catalog = self.catalog.read().await;
 
@@ -82,7 +82,9 @@ impl Tool for LoadSkill {
 
         // No arguments: a tool call carries its request in the conversation
         // already, unlike a slash command where the user's line is the input.
-        Ok(skill.render("").into())
+        // Bounded like any other answer: a skill is a file somebody wrote, and
+        // whatever it comes to is re-sent on every later step.
+        Ok(taurus_tools::overflow::bound(skill.render(""), "load_skill", ctx).into())
     }
 }
 

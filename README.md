@@ -99,6 +99,11 @@ datacenter.** Every decision here is shaped around an 8k context window:
   prompt. Ticking a checkbox invalidates one line of prompt cache instead of
   the tools and the whole conversation. On the same three-step task, that took
   75 seconds against 194.
+- On a hosted model the same discipline is a smaller bill. The conversation
+  is read back from the provider's prompt cache, not re-sent at full price,
+  and a 200,000-token working context keeps a million-token model from
+  re-sending 900,000 tokens on every step. Compaction summaries and
+  sub-agents are counted in the conversation that asked for them.
 - Tool schemas are slimmed on the way out, and old tool results shrink before
   anything gets summarized.
 - A long turn can start over from a brief instead of being summarized

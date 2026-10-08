@@ -23,6 +23,9 @@ pub struct ChatBody {
     /// function tools only with this set to `none`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// See [`crate::OpenAiProvider::with_prompt_cache_key`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
 }
 
 impl ChatBody {
@@ -37,6 +40,7 @@ impl ChatBody {
             stop: request.stop_sequences.clone(),
             stream_options: serde_json::json!({ "include_usage": true }),
             reasoning_effort: None,
+            prompt_cache_key: None,
         }
     }
 }

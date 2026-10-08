@@ -26,6 +26,7 @@ const report = (patch: Partial<UsageReport> = {}): UsageReport => ({
   reported_in: 180_000,
   reported_out: 6_000,
   cached_in: null,
+  cache_write_in: null,
   history: 41_000,
   tools: [
     { name: "read_file", calls: 9, tokens: 30_000, failures: 0, share: 75 },
@@ -123,6 +124,14 @@ describe("the context account", () => {
 
     invoke.mockResolvedValue(report({ cached_in: 90_000 }));
     expect((await mount()).text()).toContain("50% of input came from cache");
+    expect((await mount()).text()).not.toContain("written to it");
+  });
+
+  it("names what was written to the cache, which is where a broken cache shows", async () => {
+    invoke.mockResolvedValue(report({ cached_in: 18_000, cache_write_in: 144_000 }));
+    expect((await mount()).text()).toContain(
+      "10% of input came from cache, 80% was written to it",
+    );
   });
 
   it("calls out repeated calls, which are the part that is pure waste", async () => {

@@ -867,6 +867,10 @@ export const setSkillSynthesis = (enabled: boolean) =>
 export const setMaxIterations = (limit: number) =>
   invoke<void>("set_max_iterations", { limit });
 
+/** Tokens of a model's window a turn fills before compacting; 0 is all of it. Clamped by the host. */
+export const setContextLimit = (limit: number) =>
+  invoke<void>("set_context_limit", { limit });
+
 /**
  * Retunes one agent's iteration limit in place, preserving everything else in
  * its file. Resolves to the file that now holds it — for a built-in that is a

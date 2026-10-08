@@ -48,3 +48,23 @@ export function clampIterations(text: string, fallback: number): number {
   if (Number.isNaN(parsed)) return fallback;
   return Math.min(Math.max(parsed, 1), MAX_ITERATIONS_LIMIT);
 }
+
+/** Matches `DEFAULT_CONTEXT_LIMIT` in `taurus-host`'s config. */
+export const DEFAULT_CONTEXT_LIMIT = 200_000;
+
+/** Matches `MIN_CONTEXT_LIMIT`: the least working context other than zero. */
+export const MIN_CONTEXT_LIMIT = 16_000;
+
+/**
+ * Reads a working context as typed — `200000`, `200,000`, or `200k` — and
+ * brings it into range the way the host will. Zero means the model's whole
+ * window and stays zero; `fallback` is kept for anything unreadable.
+ */
+export function clampContextLimit(text: string, fallback: number): number {
+  const cleaned = text.trim().toLowerCase().replace(/[,_\s]/g, "");
+  const thousands = cleaned.endsWith("k");
+  const parsed = Number.parseFloat(thousands ? cleaned.slice(0, -1) : cleaned);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  const tokens = Math.round(thousands ? parsed * 1000 : parsed);
+  return tokens === 0 ? 0 : Math.max(tokens, MIN_CONTEXT_LIMIT);
+}

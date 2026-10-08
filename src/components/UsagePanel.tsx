@@ -7,6 +7,11 @@ import { onTabKeys } from "../lib/tabs";
 import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
 
+/** A whole percent of `whole`, written the way every share here is. */
+function percentOf(part: number, whole: number): string {
+  return `${Math.round((part / Math.max(whole, 1)) * 100)}%`;
+}
+
 /**
  * Where the context window actually went.
  *
@@ -140,9 +145,11 @@ export function UsagePanel({
                        "0 cached" beside its numbers invites exactly the
                        wrong conclusion. */
                     report.cached_in
-                      ? `${Math.round(
-                          (report.cached_in / Math.max(report.reported_in, 1)) * 100,
-                        )}% of input came from cache`
+                      ? `${percentOf(report.cached_in, report.reported_in)} of input came from cache${
+                          report.cache_write_in
+                            ? `, ${percentOf(report.cache_write_in, report.reported_in)} was written to it`
+                            : ""
+                        }`
                       : "counted by the provider, not estimated"
                   }
                 />

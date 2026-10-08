@@ -78,6 +78,8 @@ async fn main() {
         max_tokens: None,
         stop_sequences: Vec::new(),
         response_schema: None,
+        volatile_tail: 0,
+        cache_key: None,
     };
 
     let streaming = tokio::spawn(async move {

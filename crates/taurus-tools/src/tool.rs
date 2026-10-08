@@ -282,6 +282,14 @@ pub struct ToolContext {
     /// everywhere nothing waits for a report — a delegate, an example, a
     /// tool run directly — where background work is refused.
     pub pending: Option<Arc<crate::pending::Pending>>,
+    /// Where tokens spent on this turn's behalf by something other than its
+    /// own requests are added up: a delegate's whole conversation.
+    ///
+    /// Set by the agent loop, which folds it into the session's usage after
+    /// every round; `None` wherever nothing reads it. Without it a delegation
+    /// was free on every screen that reports cost, and a turn that handed its
+    /// work to three children read as the cheapest one of the day.
+    pub spent: Option<Arc<std::sync::Mutex<taurus_provider::TokenUsage>>>,
 }
 
 impl ToolContext {
@@ -308,6 +316,7 @@ impl ToolContext {
             budget: OutputBudget::unknown(),
             touched: None,
             pending: None,
+            spent: None,
         }
     }
 
@@ -331,6 +340,22 @@ impl ToolContext {
     pub fn with_pending(mut self, pending: Arc<crate::pending::Pending>) -> Self {
         self.pending = Some(pending);
         self
+    }
+
+    /// Gives this context's calls somewhere to report tokens they spent. See
+    /// [`Self::spent`].
+    #[must_use]
+    pub fn with_spent(mut self, spent: Arc<std::sync::Mutex<taurus_provider::TokenUsage>>) -> Self {
+        self.spent = Some(spent);
+        self
+    }
+
+    /// Reports tokens spent on this turn's behalf. A no-op where nothing
+    /// collects them.
+    pub fn add_spent(&self, usage: &taurus_provider::TokenUsage) {
+        if let Some(spent) = &self.spent {
+            spent.lock().unwrap_or_else(|e| e.into_inner()).add(usage);
+        }
     }
 
     /// Attaches the configured hooks.

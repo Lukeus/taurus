@@ -1008,11 +1008,9 @@ async fn a_summarizer_that_fails_is_not_asked_again_this_turn() {
         .lock()
         .await
         .iter()
-        .filter(|r| {
-            r.system
-                .as_deref()
-                .is_some_and(|s| s.starts_with("Summarize the conversation"))
-        })
+        // The summarizer's requests are the ones whose whole answer has a
+        // shape; a turn's own never do.
+        .filter(|r| r.response_schema.is_some())
         .count();
     assert_eq!(
         summarizer_requests, 1,
@@ -3168,4 +3166,148 @@ async fn the_default_strategy_still_summarizes() {
         .iter()
         .any(|e| matches!(e, UiEvent::Compacted { .. })));
     assert!(!events.iter().any(|e| matches!(e, UiEvent::Relayed { .. })));
+}
+
+#[tokio::test]
+async fn the_plan_rides_after_the_point_a_cache_is_written_at() {
+    // The plan is rebuilt on every request and never written into the
+    // history, so a backend that caches at a marked point has to be told it
+    // is there — or it marks the plan, and every step writes an entry no
+    // later request carries.
+    let h = plan_harness(vec![
+        set_plan("t1", "Verifying the project setup"),
+        ScriptedTurn::text("Done."),
+        ScriptedTurn::text("Stopping here."),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "do the thing").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let seen = h.provider.seen.lock().await;
+    assert_eq!(seen[0].volatile_tail, 0, "no plan yet, nothing volatile");
+    let planned = &seen[1];
+    assert_eq!(planned.volatile_tail, 1);
+    let tail = planned.messages.last().unwrap().content.last().unwrap();
+    assert!(
+        matches!(tail, ContentBlock::Text { text } if text.contains("Verify the project setup")),
+        "{tail:?}"
+    );
+    assert!(
+        !session
+            .messages
+            .iter()
+            .any(|m| m.text().contains("Verify the project setup")),
+        "the plan stays out of the history"
+    );
+    assert!(seen
+        .iter()
+        .all(|r| r.cache_key.as_deref() == Some(session.id.as_str())));
+}
+
+/// The compaction fixture: a window too small for twenty long messages, and a
+/// conversation that already has them.
+fn crowded(turns: Vec<ScriptedTurn>, config: AgentConfig, window: u32) -> (Harness, Session) {
+    let h = harness_with(turns, Box::new(AllowAll), config, window);
+    let mut session = Session::new("fake");
+    for i in 0..20 {
+        session.push(Message::user(format!(
+            "old message {i} {}",
+            "x".repeat(1_200)
+        )));
+    }
+    (h, session)
+}
+
+#[tokio::test]
+async fn a_summary_is_asked_over_the_prefix_the_turn_already_sent() {
+    // Same system prompt, same tools, the history as the turn sent it, and
+    // the instruction at the end — so a backend that cached the conversation
+    // reads it back rather than billing it fresh. And what it cost is counted.
+    let (h, mut session) = crowded(
+        vec![
+            ScriptedTurn::text("SUMMARY OF EARLIER WORK"),
+            ScriptedTurn::text("Carrying on."),
+        ],
+        AgentConfig {
+            system_prompt: "You are Taurus.".into(),
+            keep_recent_messages: 2,
+            ..Default::default()
+        },
+        8_000,
+    );
+    let (outcome, _) = run(&h, &mut session, "continue").await;
+    let outcome = outcome.unwrap();
+
+    let seen = h.provider.seen.lock().await;
+    let asked = &seen[0];
+    assert_eq!(asked.system.as_deref(), Some("You are Taurus."));
+    assert_eq!(asked.tools, seen[1].tools);
+    assert!(asked.response_schema.is_some());
+    assert_eq!(asked.volatile_tail, 1);
+    assert!(asked
+        .messages
+        .last()
+        .unwrap()
+        .text()
+        .contains("Summarize the conversation"));
+    assert!(session.messages[0]
+        .text()
+        .contains("SUMMARY OF EARLIER WORK"));
+
+    // One output token per request from the fake: the summary and the answer.
+    assert_eq!(outcome.usage.output_tokens, 2);
+    assert_eq!(session.usage.output_tokens, 2);
+}
+
+#[tokio::test]
+async fn a_summary_answered_with_a_call_is_asked_again_without_tools() {
+    let (h, mut session) = crowded(
+        vec![
+            ScriptedTurn::tool_call("c1", "read_file", serde_json::json!({ "path": "a" })),
+            ScriptedTurn::text("SUMMARY OF EARLIER WORK"),
+            ScriptedTurn::text("Carrying on."),
+        ],
+        AgentConfig {
+            keep_recent_messages: 2,
+            ..Default::default()
+        },
+        8_000,
+    );
+    let (outcome, _) = run(&h, &mut session, "continue").await;
+    let outcome = outcome.unwrap();
+
+    let seen = h.provider.seen.lock().await;
+    assert!(!seen[0].tools.is_empty());
+    assert!(seen[1].tools.is_empty(), "the second ask is standalone");
+    assert!(seen[1].system.as_deref().unwrap().contains("Summarize"));
+    assert!(session.messages[0]
+        .text()
+        .contains("SUMMARY OF EARLIER WORK"));
+    assert_eq!(outcome.usage.output_tokens, 3, "both attempts are billed");
+}
+
+#[tokio::test]
+async fn a_working_context_compacts_a_large_window_early() {
+    // A 128k model held to 8k behaves as an 8k one: the conversation is
+    // compacted, and the window reported is the one being worked in.
+    let (h, mut session) = crowded(
+        vec![
+            ScriptedTurn::text("SUMMARY OF EARLIER WORK"),
+            ScriptedTurn::text("Carrying on."),
+        ],
+        AgentConfig {
+            keep_recent_messages: 2,
+            context_limit: Some(8_000),
+            ..Default::default()
+        },
+        128_000,
+    );
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, UiEvent::Compacted { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, UiEvent::ContextUsed { window: 8_000, .. })));
 }

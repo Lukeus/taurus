@@ -417,6 +417,13 @@ pub async fn set_max_iterations(state: State<'_, Arc<AppState>>, limit: u32) -> 
 }
 
 #[tauri::command]
+pub async fn set_context_limit(state: State<'_, Arc<AppState>>, limit: u32) -> CmdResult<()> {
+    state.host.set_context_limit(limit).await;
+    emit_status(&state).await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn set_skill_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
     state.host.set_skill_synthesis(enabled).await;
     emit_status(&state).await;

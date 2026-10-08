@@ -146,6 +146,15 @@ pub struct AgentConfig {
     /// summarize the older history, or hand the task to a fresh context with a
     /// brief. See [`crate::relay`].
     pub context_strategy: crate::relay::ContextStrategy,
+    /// The most of a model's window a turn fills before it makes room, in
+    /// tokens. `None` uses the whole window.
+    ///
+    /// A model's window is a ceiling, not a target. Every request re-sends the
+    /// whole history, so on a hosted model billed per token a conversation
+    /// carried to 900k costs 900k a step, cache or not, where one compacted at
+    /// 200k costs a fifth of that. It also sizes what one tool answer may take
+    /// (see [`OutputBudget`]), for the same reason.
+    pub context_limit: Option<u32>,
 }
 
 /// Asked once per turn, when the model stops having changed files it never
@@ -220,6 +229,7 @@ impl Default for AgentConfig {
             turn_hooks: true,
             capture: crate::telemetry::Capture::MetadataOnly,
             context_strategy: crate::relay::ContextStrategy::Compact,
+            context_limit: None,
         }
     }
 }
@@ -272,6 +282,25 @@ impl AgentError {
 /// silently removed is a question about nothing; one that says an image was
 /// omitted is a question the model can answer honestly. It also keeps every
 /// message's content non-empty, which some providers require.
+/// Adds `text` as the last block of a request, and answers how many blocks that
+/// was, for [`ChatRequest::volatile_tail`].
+///
+/// Onto the last message rather than after it. Every request is built with a
+/// user message last — the person's turn, a round of tool results, or a nudge
+/// — and a second one beside it is a shape some of these APIs reject outright.
+fn append_to_tail(messages: &mut Vec<Message>, text: String) -> usize {
+    match messages.last_mut() {
+        Some(last) if last.role == Role::User => last.content.push(ContentBlock::text(text)),
+        _ => messages.push(Message::user(text)),
+    }
+    1
+}
+
+/// Empties a turn's spend collector. See [`ToolContext::spent`].
+fn take_spent(spent: &std::sync::Mutex<TokenUsage>) -> TokenUsage {
+    std::mem::take(&mut *spent.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 fn without_images(messages: &[Message]) -> Vec<Message> {
     // The common case by far: nothing to do, and no history copied twice.
     if !messages.iter().any(|m| {
@@ -529,6 +558,7 @@ impl Agent {
         // rather than a flat list somebody reassembles by timestamp.
         let span = crate::telemetry::turn_span(self.provider.id(), &session.model, &session.id);
         let pending = Arc::new(Pending::new(&self.tools.cancel));
+        let spent = Arc::new(std::sync::Mutex::new(TokenUsage::default()));
         let turn_id = uuid::Uuid::new_v4().to_string();
         if let Some(recorder) = &self.recorder {
             recorder.turn_started(&turn_id, continues).await;
@@ -555,7 +585,7 @@ impl Agent {
         // turn's message is the harness's own prompt, not the user's ask.
         let request = (!continues).then(|| user_message.text());
         let outcome = self
-            .turn(session, user_message, request, ui.clone(), &pending)
+            .turn(session, user_message, request, ui.clone(), &pending, &spent)
             .instrument(span.clone())
             .await;
         if matches!(outcome, Err(AgentError::IterationLimit(_))) {
@@ -589,6 +619,8 @@ impl Agent {
                 warn!("background work did not stop in time; the turn ends without it");
             }
         }
+        // Whatever a delegate stopped above managed to spend before it went.
+        session.add_usage(take_spent(&spent));
         match &outcome {
             Ok(finished) => {
                 crate::telemetry::record_usage(&span, &finished.usage);
@@ -687,6 +719,7 @@ impl Agent {
         request: Option<String>,
         ui: mpsc::Sender<UiEvent>,
         pending: &Arc<Pending>,
+        spent: &Arc<std::sync::Mutex<TokenUsage>>,
     ) -> Result<TurnOutcome, AgentError> {
         // A new turn, typed or continued, is the end of the interrupted one.
         session.interrupted = None;
@@ -785,7 +818,7 @@ impl Agent {
             }
 
             summarizing = self
-                .compact_if_needed(session, &ui, summarizing, &mut relay)
+                .compact_if_needed(session, &ui, summarizing, &mut relay, &mut total)
                 .await;
             let _ = ui.send(UiEvent::IterationStarted { iteration }).await;
 
@@ -849,6 +882,9 @@ impl Agent {
                         () = self.tools.cancel.cancelled() => {}
                     }
                     let arrived = pending.take();
+                    let delegated = take_spent(spent);
+                    total.add(&delegated);
+                    session.add_usage(delegated);
                     if !arrived.is_empty() {
                         let text = arrived
                             .iter()
@@ -911,8 +947,11 @@ impl Agent {
             }
 
             let mut results = self
-                .run_tool_calls(&assistant, &session.model, &ui, pending)
+                .run_tool_calls(&assistant, &session.model, &ui, pending, spent)
                 .await;
+            let delegated = take_spent(spent);
+            total.add(&delegated);
+            session.add_usage(delegated);
             // Reports from background work ride along with this round's
             // results rather than as a message of their own, which would put
             // two user messages in a row. Every provider's converter already
@@ -1282,7 +1321,7 @@ impl Agent {
         } else {
             without_images(&session.messages)
         };
-        self.append_plan(&mut messages);
+        let volatile_tail = self.append_plan(&mut messages);
 
         ChatRequest {
             model: session.model.clone(),
@@ -1296,6 +1335,8 @@ impl Agent {
             // any tool, or both, and a schema over the whole response could
             // not describe that. The tool schemas are what shape it.
             response_schema: None,
+            volatile_tail,
+            cache_key: Some(session.id.clone()),
         }
     }
 
@@ -1320,19 +1361,20 @@ impl Agent {
     /// the tools rendered before it, and a moved plan misses both.
     ///
     /// At the tail it invalidates only itself, and it is nearer the model's
-    /// attention than it was before rather than further away.
-    fn append_plan(&self, messages: &mut Vec<Message>) {
+    /// attention than it was before rather than further away — provided the
+    /// backend is told where the tail starts. A backend that caches at a
+    /// marked point would otherwise mark the plan itself, which no later
+    /// request carries. So this answers how many blocks it added, for
+    /// [`ChatRequest::volatile_tail`].
+    fn append_plan(&self, messages: &mut Vec<Message>) -> usize {
         let Some(plan) = self.plan.as_ref().and_then(|board| board.reminder()) else {
-            return;
+            return 0;
         };
         // Onto the last message rather than after it. Every request is built
         // with a user message last — the person's turn, a round of tool
         // results, or a nudge — and a second one beside it is a shape some of
         // these APIs reject outright.
-        match messages.last_mut() {
-            Some(last) if last.role == Role::User => last.content.push(ContentBlock::text(plan)),
-            _ => messages.push(Message::user(plan)),
-        }
+        append_to_tail(messages, plan)
     }
 
     /// Executes every tool call in an assistant message and returns the results
@@ -1347,6 +1389,7 @@ impl Agent {
         model: &str,
         ui: &mpsc::Sender<UiEvent>,
         background: &Arc<Pending>,
+        spent: &Arc<std::sync::Mutex<TokenUsage>>,
     ) -> Vec<ContentBlock> {
         // Once per round rather than per call, and cached by every adapter, so
         // after the first turn this is a map lookup. A window that cannot be
@@ -1357,7 +1400,7 @@ impl Agent {
             .provider
             .capabilities(model)
             .await
-            .map(|caps| OutputBudget::for_window(caps.context_length))
+            .map(|caps| OutputBudget::for_window(self.working_window(caps.context_length)))
             .unwrap_or_else(|_| OutputBudget::unknown());
         let calls: Vec<(String, String, serde_json::Value)> = assistant
             .tool_uses()
@@ -1390,7 +1433,7 @@ impl Agent {
         let mut pending: FuturesUnordered<_> = concurrent
             .into_iter()
             .map(|(id, name, input)| {
-                let ctx = self.context_for(&id, budget, ui, background);
+                let ctx = self.context_for(&id, budget, ui, background, spent);
                 async move {
                     let outcome = self.execute_one(&name, input, &ctx).await;
                     (id, outcome)
@@ -1402,7 +1445,7 @@ impl Agent {
         }
 
         for (id, name, input) in sequential {
-            let ctx = self.context_for(&id, budget, ui, background);
+            let ctx = self.context_for(&id, budget, ui, background, spent);
             let outcome = self.execute_one(&name, input, &ctx).await;
             results.push((id.clone(), self.report(&id, outcome, ui).await));
         }
@@ -1528,10 +1571,12 @@ impl Agent {
         budget: OutputBudget,
         ui: &mpsc::Sender<UiEvent>,
         pending: &Arc<Pending>,
+        spent: &Arc<std::sync::Mutex<TokenUsage>>,
     ) -> ToolContext {
         self.tools
             .clone()
             .with_pending(pending.clone())
+            .with_spent(spent.clone())
             .with_progress(Arc::new(CallProgress {
                 id: id.to_string(),
                 ui: ui.clone(),
@@ -1622,6 +1667,15 @@ impl Agent {
     /// 1,600 tokens for a reply that is capped at 32,000, and eighty percent of
     /// a million leaves 200,000 tokens of history unusable to protect an answer
     /// that will not come close to needing them.
+    /// The part of the model's window this turn works in. See
+    /// [`AgentConfig::context_limit`].
+    fn working_window(&self, model_window: u32) -> u32 {
+        match self.config.context_limit {
+            Some(limit) if limit > 0 && model_window > 0 => model_window.min(limit),
+            _ => model_window,
+        }
+    }
+
     fn reply_reserve(&self, window: u32) -> u32 {
         let wanted = self.config.max_tokens.unwrap_or(DEFAULT_REPLY_RESERVE);
         let floor = (window as f32 * MIN_RESERVE_SHARE) as u32;
@@ -1648,14 +1702,14 @@ impl Agent {
         ui: &mpsc::Sender<UiEvent>,
         summarizing: Summarizing,
         relay: &mut crate::relay::Relay,
+        spent: &mut TokenUsage,
     ) -> Summarizing {
         let relaying = self.config.context_strategy == crate::relay::ContextStrategy::Relay;
         let Ok(caps) = self.provider.capabilities(&session.model).await else {
             return summarizing;
         };
-        let budget = caps
-            .context_length
-            .saturating_sub(self.reply_reserve(caps.context_length));
+        let window = self.working_window(caps.context_length);
+        let budget = window.saturating_sub(self.reply_reserve(window));
         // The messages are the part of the prompt that can be shrunk, and they
         // used to be the whole of what was measured — so the system prompt, the
         // tool schemas, and the plan rode along uncounted, and the threshold
@@ -1666,12 +1720,7 @@ impl Agent {
         let used = session
             .calibrated(session.estimated_tokens())
             .saturating_add(overhead);
-        let _ = ui
-            .send(UiEvent::ContextUsed {
-                used,
-                window: caps.context_length,
-            })
-            .await;
+        let _ = ui.send(UiEvent::ContextUsed { used, window }).await;
         if used < budget {
             // A leg can end before the window is full, when the model is
             // already showing what a full one does to it. See
@@ -1683,7 +1732,7 @@ impl Agent {
                     symptoms = relay.symptoms,
                     "handing over early"
                 );
-                self.hand_over(session, ui, relay).await;
+                self.hand_over(session, ui, relay, spent).await;
             }
             return summarizing;
         }
@@ -1703,14 +1752,25 @@ impl Agent {
             );
             let _ = ui
                 .send(UiEvent::Error {
-                    message: format!(
-                        "The system prompt and tool definitions come to about {overhead} tokens, \
-                         which is already more than this model's usable context ({budget} of a \
-                         {} window). Summarizing cannot help — nothing here is a message. Use a \
-                         model with a larger window, give this provider's model its real \
-                         `context_length` if it has one, or turn off some tools.",
-                        caps.context_length
-                    ),
+                    message: if window < caps.context_length {
+                        format!(
+                            "The system prompt and tool definitions come to about {overhead} \
+                             tokens, which is already more than the {budget} usable of the \
+                             {window}-token working context set in Settings → Behavior (this \
+                             model holds {}). Summarizing cannot help — nothing here is a \
+                             message. Raise the working context, or turn off some tools.",
+                            caps.context_length
+                        )
+                    } else {
+                        format!(
+                            "The system prompt and tool definitions come to about {overhead} \
+                             tokens, which is already more than this model's usable context \
+                             ({budget} of a {window} window). Summarizing cannot help — nothing \
+                             here is a message. Use a model with a larger window, give this \
+                             provider's model its real `context_length` if it has one, or turn \
+                             off some tools."
+                        )
+                    },
                 })
                 .await;
             return Summarizing::Failed;
@@ -1754,7 +1814,7 @@ impl Agent {
         // the harness writes don't need a model, and the tail the size check
         // below protects is dropped rather than kept.
         if relaying {
-            self.hand_over(session, ui, relay).await;
+            self.hand_over(session, ui, relay, spent).await;
             return summarizing;
         }
 
@@ -1803,7 +1863,16 @@ impl Agent {
 
         info!(drop_count, "compacting session history");
         let older: Vec<Message> = session.messages[..drop_count].to_vec();
-        let summary = match self.summarize(&session.model, older).await {
+        let mut asked = TokenUsage::default();
+        let summary = self
+            .summarize(&session.model, &session.id, older, &mut asked)
+            .await;
+        // Billed whether or not it worked, so counted either way. It used to be
+        // counted never: the summary is not in the transcript, and neither was
+        // what it cost.
+        session.add_usage(asked);
+        spent.add(&asked);
+        let summary = match summary {
             Ok(summary) => summary,
             Err(reason) => {
                 warn!(%reason, "compaction failed; continuing with full history");
@@ -1894,6 +1963,7 @@ impl Agent {
         session: &mut Session,
         ui: &mpsc::Sender<UiEvent>,
         relay: &mut crate::relay::Relay,
+        spent: &mut TokenUsage,
     ) {
         let messages = session.messages.clone();
         // The leg this starts. The turn's first leg is leg 1.
@@ -1903,18 +1973,25 @@ impl Agent {
             messages = messages.len(),
             "handing the turn to a fresh context"
         );
+        let mut asked = TokenUsage::default();
         let notes = self
             .ask_for_json(
                 &session.model,
+                &session.id,
                 messages.clone(),
-                crate::relay::NOTES_SYSTEM,
-                "Write those notes now, as described in the system prompt.",
-                crate::relay::notes_schema(),
+                Ask {
+                    system: crate::relay::NOTES_SYSTEM,
+                    instruction: "Write those notes now, as described above.",
+                    schema: crate::relay::notes_schema(),
+                },
+                &mut asked,
             )
             .await
             .and_then(|text| {
                 crate::relay::parse_notes(&text).ok_or_else(|| "the model returned nothing".into())
             });
+        session.add_usage(asked);
+        spent.add(&asked);
         if let Err(reason) = &notes {
             warn!(%reason, "handover notes could not be written; handing over without them");
         }
@@ -1950,19 +2027,30 @@ impl Agent {
     /// The reason comes back rather than being dropped because it is the only
     /// account of a request the user never sees listed: the summarizer's turn
     /// is not in the transcript, so a failure here has no other way to be read.
-    async fn summarize(&self, model: &str, messages: Vec<Message>) -> Result<String, String> {
+    async fn summarize(
+        &self,
+        model: &str,
+        conversation: &str,
+        messages: Vec<Message>,
+        spent: &mut TokenUsage,
+    ) -> Result<String, String> {
         let text = self
             .ask_for_json(
                 model,
+                conversation,
                 messages,
-                "Summarize the conversation so far for your own future reference, as JSON \
-                 matching the schema. `goal` is what the user is trying to achieve, in one \
-                 sentence. `decisions` is what was settled and must not be reopened. `files` \
-                 names every file read or changed. `outstanding` is what is left to do — leave \
-                 it empty only if the work is genuinely finished. Drop pleasantries and \
-                 superseded detail. Keep each entry to a line.",
-                "Write that summary now, as described in the system prompt.",
-                summary_schema(),
+                Ask {
+                    system:
+                        "Summarize the conversation so far for your own future reference, as JSON \
+                     matching the schema. `goal` is what the user is trying to achieve, in one \
+                     sentence. `decisions` is what was settled and must not be reopened. `files` \
+                     names every file read or changed. `outstanding` is what is left to do — leave \
+                     it empty only if the work is genuinely finished. Drop pleasantries and \
+                     superseded detail. Keep each entry to a line.",
+                    instruction: "Write that summary now, as described above.",
+                    schema: summary_schema(),
+                },
+                spent,
             )
             .await?;
         if text.trim().is_empty() {
@@ -1972,20 +2060,91 @@ impl Agent {
     }
 
     /// One request outside the turn, over `messages`, with the answer shaped
-    /// by `schema` where the backend can enforce one. Carries no tools, so it
-    /// costs the history and nothing else.
+    /// by `schema` where the backend can enforce one. What it cost, every
+    /// attempt included, is added to `spent`.
+    ///
+    /// Asked first as a continuation of the turn: its own system prompt and
+    /// tools, the history as the turn sent it, and the instructions in a user
+    /// message at the end. That prefix is one the backend has already cached,
+    /// so the history — nearly all of this request — is read back at about a
+    /// tenth of the price rather than sent fresh. With a system prompt of its
+    /// own and no tools, as this used to be asked, nothing matched and the
+    /// whole history went at full price.
+    ///
+    /// Only for a model that calls tools natively. On the prompted path a
+    /// schema cannot be enforced while tools ride along, and constrained
+    /// decoding is what makes this answer parse on a small model at all.
+    ///
+    /// A model handed tools can answer with a call instead of the JSON, and a
+    /// backend can refuse the shape of the request outright. Either way it is
+    /// asked once more the old way, standalone and with no tools. Any other
+    /// failure — a bad key, a gateway that is down — would fail the same way
+    /// twice, and is passed on at once.
     async fn ask_for_json(
         &self,
         model: &str,
+        conversation: &str,
         messages: Vec<Message>,
-        system: &str,
-        instruction: &str,
-        schema: serde_json::Value,
+        ask: Ask<'_>,
+        spent: &mut TokenUsage,
     ) -> Result<String, String> {
+        let Ask {
+            system,
+            instruction,
+            schema,
+        } = ask;
+        let caps = self.provider.capabilities(model).await.ok();
+        if caps.is_some_and(|caps| caps.native_tools) {
+            let mut history = if caps.is_some_and(|caps| caps.vision) {
+                messages.clone()
+            } else {
+                without_images(&messages)
+            };
+            let volatile_tail = append_to_tail(
+                &mut history,
+                format!(
+                    "{system}\n\n{instruction} Answer with the JSON object alone, and do not \
+                     call any tools."
+                ),
+            );
+            let request = ChatRequest {
+                model: model.to_string(),
+                system: Some(self.config.system_prompt.clone()).filter(|s| !s.trim().is_empty()),
+                messages: history,
+                tools: self.request_tools(),
+                temperature: self.config.temperature,
+                response_schema: Some(schema.clone()),
+                volatile_tail,
+                cache_key: Some(conversation.to_string()),
+                ..Default::default()
+            };
+            match self.ask(request, spent).await {
+                Ok(text) if !text.trim().is_empty() => return Ok(text),
+                Ok(_) => {
+                    warn!("answered with a tool call instead of the JSON; asking without tools")
+                }
+                Err(Unanswered {
+                    reason,
+                    refused_shape: true,
+                }) => {
+                    warn!(%reason, "the request over the cached prefix was refused; asking without tools")
+                }
+                Err(Unanswered { reason, .. }) => return Err(reason),
+            }
+        }
+
         let mut request = ChatRequest::new(model, messages).with_response_schema(schema);
         request.system = Some(system.into());
         request.messages.push(Message::user(instruction));
+        self.ask(request, spent).await.map_err(|u| u.reason)
+    }
 
+    /// Runs one request to its end and answers its text.
+    async fn ask(
+        &self,
+        request: ChatRequest,
+        spent: &mut TokenUsage,
+    ) -> Result<String, Unanswered> {
         let (tx, mut rx) = mpsc::channel(64);
         let provider = self.provider.clone();
         let cancel = self.tools.cancel.clone();
@@ -1995,13 +2154,38 @@ impl Agent {
         while let Some(event) = rx.recv().await {
             acc.push(event);
         }
-        match handle.await {
-            Err(e) => return Err(format!("the request could not be run: {e}")),
-            Ok(Err(e)) => return Err(e.to_string()),
-            Ok(Ok(_)) => {}
+        let outcome = handle.await;
+        let (message, usage, _) = acc.finish();
+        spent.add(&usage);
+        match outcome {
+            Err(e) => Err(Unanswered {
+                reason: format!("the request could not be run: {e}"),
+                refused_shape: false,
+            }),
+            Ok(Err(e)) => Err(Unanswered {
+                refused_shape: matches!(e, taurus_provider::ProviderError::Api { status: 400, .. }),
+                reason: e.to_string(),
+            }),
+            Ok(Ok(_)) => Ok(message.text()),
         }
-        Ok(acc.finish().0.text())
     }
+}
+
+/// What a request outside the turn asks for: the instructions, which go in a
+/// system prompt of their own when it is asked standalone, the line that asks
+/// for the answer, and the shape the answer has to have.
+struct Ask<'a> {
+    system: &'a str,
+    instruction: &'a str,
+    schema: serde_json::Value,
+}
+
+/// Why a request outside the turn came back without an answer.
+struct Unanswered {
+    reason: String,
+    /// The backend refused the request as sent, which a request of another
+    /// shape may get past. Nothing else is worth asking twice.
+    refused_shape: bool,
 }
 
 /// The shape a compaction summary has to have.

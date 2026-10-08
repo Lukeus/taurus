@@ -131,6 +131,9 @@ pub struct OpenAiProvider {
     /// request per model per launch costs less, and it's retried without them
     /// at once, so nobody sees it.
     unreasoned: Mutex<HashSet<String>>,
+    /// Whether requests carry `prompt_cache_key`. See
+    /// [`Self::with_prompt_cache_key`].
+    prompt_cache_key: bool,
 }
 
 impl OpenAiProvider {
@@ -140,9 +143,11 @@ impl OpenAiProvider {
         api_key: Option<String>,
         capabilities: OpenAiCapabilities,
     ) -> Self {
+        let base_url = base_url.into().trim_end_matches('/').to_string();
         Self {
             id: id.into(),
-            base_url: base_url.into().trim_end_matches('/').to_string(),
+            prompt_cache_key: is_openai_itself(&base_url),
+            base_url,
             api_prefix: DEFAULT_API_PREFIX.to_string(),
             api_key,
             api_key_header: None,
@@ -177,6 +182,26 @@ impl OpenAiProvider {
             .map(|e| e.as_ref().trim().to_ascii_lowercase())
             .filter(|e| !e.is_empty());
         self
+    }
+
+    /// Sends each request's conversation id as `prompt_cache_key`.
+    ///
+    /// OpenAI routes a request to a cache by a hash of its first tokens, and
+    /// a busy prefix — every conversation in a workspace starts with the same
+    /// system prompt and tools — overflows onto machines that have never seen
+    /// the rest of it. The key keeps one conversation on one place. On by
+    /// default only for OpenAI's own API: a compatible server may refuse a
+    /// field it doesn't know, and one that caches does it by prefix anyway.
+    pub fn with_prompt_cache_key(mut self, on: bool) -> Self {
+        self.prompt_cache_key = on;
+        self
+    }
+
+    /// The key to send, when this provider sends one.
+    fn cache_key(&self, request: &ChatRequest) -> Option<String> {
+        self.prompt_cache_key
+            .then(|| request.cache_key.clone())
+            .flatten()
     }
 
     /// Talks through `client` instead of the shared one. For a test of a
@@ -525,6 +550,7 @@ impl OpenAiProvider {
 
         let mut body = ChatBody::from_request(&request);
         body.reasoning_effort = self.reasoning_effort.clone();
+        body.prompt_cache_key = self.cache_key(&request);
         let response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Ok(StopReason::Canceled),
@@ -697,9 +723,15 @@ impl OpenAiProvider {
         }
 
         let reasoning = self.reasoning_for(&request.model);
-        let sent = self
-            .post_responses(&responses::body(&request, &reasoning), &cancel)
-            .await;
+        let key = self.cache_key(&request);
+        let body = |reasoning: &Reasoning| {
+            let mut body = responses::body(&request, reasoning);
+            if let Some(key) = &key {
+                body["prompt_cache_key"] = serde_json::json!(key);
+            }
+            body
+        };
+        let sent = self.post_responses(&body(&reasoning), &cancel).await;
         let response = match sent {
             // A model that doesn't reason refuses to be asked how. Only when
             // the config didn't name an effort: then the parameters were this
@@ -709,7 +741,7 @@ impl OpenAiProvider {
                 if let Ok(mut set) = self.unreasoned.lock() {
                     set.insert(request.model.clone());
                 }
-                self.post_responses(&responses::body(&request, &Reasoning::Omit), &cancel)
+                self.post_responses(&body(&Reasoning::Omit), &cancel)
                     .await?
             }
             other => other?,
@@ -850,6 +882,18 @@ fn normalize_prefix(prefix: &str) -> String {
     } else {
         format!("/{trimmed}")
     }
+}
+
+/// Whether a base URL is OpenAI's own API rather than something speaking its
+/// shape.
+fn is_openai_itself(base_url: &str) -> bool {
+    let host = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("");
+    host.eq_ignore_ascii_case("api.openai.com")
 }
 
 async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> {
@@ -1677,6 +1721,58 @@ mod tests {
         let sent = bodies(&server).await;
         assert_eq!(sent[0]["reasoning_effort"], "none");
         assert!(sent[1].get("reasoning_effort").is_none(), "{}", sent[1]);
+    }
+
+    #[test]
+    fn only_openai_itself_is_sent_a_cache_key_by_default() {
+        assert!(is_openai_itself("https://api.openai.com"));
+        assert!(is_openai_itself("https://API.openai.com:443"));
+        assert!(!is_openai_itself("https://gateway.example.com/openai"));
+        assert!(!is_openai_itself("http://localhost:8080"));
+        assert!(!is_openai_itself("https://api.openai.com.evil.example"));
+    }
+
+    #[tokio::test]
+    async fn both_routes_send_the_conversation_as_the_cache_key_when_on() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                sse(&[completed(
+                    serde_json::json!({"input_tokens": 1, "output_tokens": 1}),
+                )]),
+                "text/event-stream",
+            ))
+            .mount(&server)
+            .await;
+        let ask = || {
+            let mut request = ChatRequest::new("m", vec![taurus_provider::Message::user("hi")]);
+            request.cache_key = Some("conversation-1".into());
+            request
+        };
+        let chat = OpenAiProvider::new("openai", server.uri(), None, OpenAiCapabilities::default())
+            .with_prompt_cache_key(true);
+        let responses = responses_provider(server.uri()).with_prompt_cache_key(true);
+        let compatible =
+            OpenAiProvider::new("local", server.uri(), None, OpenAiCapabilities::default());
+        run(&chat, ask()).await.0.unwrap();
+        run(&responses, ask()).await.0.unwrap();
+        run(&compatible, ask()).await.0.unwrap();
+
+        let sent = bodies(&server).await;
+        assert_eq!(sent[0]["prompt_cache_key"], "conversation-1");
+        assert_eq!(sent[1]["prompt_cache_key"], "conversation-1");
+        assert!(sent[2].get("prompt_cache_key").is_none(), "{}", sent[2]);
     }
 
     #[tokio::test]

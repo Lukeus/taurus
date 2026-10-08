@@ -6,22 +6,32 @@
 //! loss. This file is mostly renaming fields.
 
 use serde_json::{json, Value};
-use taurus_provider::{is_openai_reasoning, ChatRequest, ContentBlock, Message, Role, ToolDef};
+use taurus_provider::{is_openai_reasoning, ChatRequest, ContentBlock, Role, ToolDef};
 
 /// Marks a prefix worth caching on the way out.
 ///
 /// Anthropic prices a cache read at about a tenth of a fresh read, and the part
-/// of every request that repeats is exactly the part `taurus usage` reports as
-/// fixed overhead — the system prompt and the tool schemas, re-sent on every
-/// iteration of every turn. Two breakpoints out of the four allowed cover it:
-/// one after the system prompt, which also covers the tools rendered before it,
-/// and one on the last message, which extends the cached prefix by a turn each
-/// time the conversation grows.
+/// of every request that repeats is the fixed overhead — the system prompt and
+/// the tool schemas — plus the whole conversation before the newest round.
+/// Three breakpoints out of the four allowed cover it:
+///
+/// - one after the system prompt, which also covers the tools rendered before
+///   it;
+/// - one at the end of the stable history, which writes the entry the *next*
+///   request reads;
+/// - one where the previous request put that second one, which is the entry
+///   *this* request reads.
+///
+/// The third is what makes a read certain rather than likely. Anthropic only
+/// looks back about twenty blocks from a breakpoint for an earlier entry, and
+/// a round of nine parallel tool calls is more blocks than that — so without
+/// it, a wide round re-wrote the whole conversation at a premium.
 fn ephemeral() -> Value {
     json!({ "type": "ephemeral" })
 }
 
-/// The `tools` array, with the last one marked as a cache breakpoint.
+/// The `tools` array. Unmarked: the system prompt's breakpoint covers it, since
+/// tools render first.
 pub fn tools_to_wire(tools: &[ToolDef]) -> Vec<Value> {
     tools
         .iter()
@@ -71,7 +81,7 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<Value> {
             continue;
         }
 
-        let mut blocks = block_list(message);
+        let mut blocks = block_list(&message.content);
         if !carried_system.is_empty() && message.role == Role::User {
             blocks.insert(0, json!({ "type": "text", "text": carried_system.trim() }));
             carried_system.clear();
@@ -98,13 +108,30 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<Value> {
         }));
     }
 
-    mark_last_for_caching(&mut out);
+    mark_for_caching(&mut out, volatile_blocks(request));
     out
 }
 
-fn block_list(message: &Message) -> Vec<Value> {
+/// How many wire blocks at the very end belong to this request alone. See
+/// [`ChatRequest::volatile_tail`].
+///
+/// Counted after conversion rather than taken as given, because conversion
+/// drops blocks — an empty text, an unsigned thinking block — and a count of
+/// the normalized blocks would then skip past the end of the plan and into the
+/// history it was meant to protect.
+fn volatile_blocks(request: &ChatRequest) -> usize {
+    match request.messages.last() {
+        Some(last) if last.role != Role::System => {
+            let tail = request.volatile_tail.min(last.content.len());
+            block_list(&last.content[last.content.len() - tail..]).len()
+        }
+        _ => 0,
+    }
+}
+
+fn block_list(content: &[ContentBlock]) -> Vec<Value> {
     let mut blocks = Vec::new();
-    for block in &message.content {
+    for block in content {
         match block {
             ContentBlock::Text { text } if text.is_empty() => {}
             ContentBlock::Text { text } => blocks.push(json!({"type": "text", "text": text})),
@@ -171,19 +198,68 @@ fn block_list(message: &Message) -> Vec<Value> {
     blocks
 }
 
-/// Puts the second cache breakpoint on the newest turn.
+/// Puts the two message breakpoints: at the end of the stable history, and on
+/// the user message before it, where the previous request put its own.
 ///
-/// Each request then reuses the whole conversation before it, and the previous
-/// breakpoints stay valid read points, so an agent loop's cache hit rate grows
-/// with the conversation instead of resetting on every iteration.
-fn mark_last_for_caching(messages: &mut [Value]) {
-    let Some(last) = messages.last_mut() else {
+/// Every request in an agent loop is the one before it plus an assistant
+/// message and a user message, so the previous request's newest user message
+/// is this request's second-newest — and since the volatile tail is never
+/// written into the history, its last block is exactly where that request's
+/// breakpoint sat. The same holds across turns: the first request of a turn
+/// reads what the last request of the turn before it wrote.
+fn mark_for_caching(messages: &mut [Value], volatile: usize) {
+    let Some((index, block)) = stable_end(messages, volatile) else {
         return;
     };
-    if let Some(block) = last
-        .get_mut("content")
-        .and_then(Value::as_array_mut)
-        .and_then(|blocks| blocks.last_mut())
+    mark(messages, index, block);
+
+    let previous = messages[..index]
+        .iter()
+        .rposition(|m| m["role"] == "user")
+        .filter(|&user| {
+            messages[user + 1..=index]
+                .iter()
+                .any(|m| m["role"] == "assistant")
+        });
+    if let Some(user) = previous {
+        if let Some(block) = last_markable(&messages[user]) {
+            mark(messages, user, block);
+        }
+    }
+}
+
+/// The last block before the volatile tail that can carry a breakpoint, as a
+/// message index and a block index.
+fn stable_end(messages: &[Value], volatile: usize) -> Option<(usize, usize)> {
+    let mut skip = volatile;
+    for (index, message) in messages.iter().enumerate().rev() {
+        let blocks = message["content"].as_array()?;
+        let usable = blocks.len().saturating_sub(skip);
+        skip = skip.saturating_sub(blocks.len());
+        if let Some(block) = (0..usable).rev().find(|&b| markable(&blocks[b])) {
+            return Some((index, block));
+        }
+    }
+    None
+}
+
+fn last_markable(message: &Value) -> Option<usize> {
+    let blocks = message["content"].as_array()?;
+    (0..blocks.len()).rev().find(|&b| markable(&blocks[b]))
+}
+
+/// Thinking blocks cannot carry `cache_control`; the API rejects the request.
+fn markable(block: &Value) -> bool {
+    !matches!(
+        block["type"].as_str(),
+        Some("thinking" | "redacted_thinking")
+    )
+}
+
+fn mark(messages: &mut [Value], index: usize, block: usize) {
+    if let Some(block) = messages[index]["content"]
+        .as_array_mut()
+        .and_then(|blocks| blocks.get_mut(block))
         .and_then(Value::as_object_mut)
     {
         block.insert("cache_control".into(), ephemeral());
@@ -193,6 +269,7 @@ fn mark_last_for_caching(messages: &mut [Value]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taurus_provider::Message;
 
     fn user_and_assistant() -> ChatRequest {
         ChatRequest::new(
@@ -331,20 +408,78 @@ mod tests {
         );
     }
 
+    fn marked(wire: &[Value]) -> Vec<(usize, usize)> {
+        let mut found = Vec::new();
+        for (m, message) in wire.iter().enumerate() {
+            for (b, block) in message["content"].as_array().unwrap().iter().enumerate() {
+                if block.get("cache_control").is_some() {
+                    found.push((m, b));
+                }
+            }
+        }
+        found
+    }
+
     #[test]
-    fn only_the_newest_turn_carries_a_message_breakpoint() {
-        // Four is the ceiling on breakpoints per request; spending one per turn
-        // would exhaust it on a five-message conversation.
+    fn the_newest_turn_and_the_one_before_it_carry_the_message_breakpoints() {
+        // Four is the ceiling on breakpoints per request, and the system
+        // prompt takes one. The newest round writes the entry the next request
+        // reads; the round before it is the entry this request reads.
         let wire = messages_to_wire(&user_and_assistant());
-        let marked = wire
-            .iter()
-            .filter(|m| {
-                m["content"]
-                    .as_array()
-                    .is_some_and(|b| b.iter().any(|x| x.get("cache_control").is_some()))
-            })
-            .count();
-        assert_eq!(marked, 1);
+        assert_eq!(marked(&wire), vec![(0, 0), (2, 0)]);
+
+        let mut longer = user_and_assistant();
+        longer.messages.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::tool_use("toolu_2", "grep", json!({}))],
+        ));
+        longer.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::tool_result("toolu_2", "hits")],
+        ));
+        assert_eq!(marked(&messages_to_wire(&longer)), vec![(2, 0), (4, 0)]);
+    }
+
+    #[test]
+    fn the_breakpoint_sits_before_the_plan_not_on_it() {
+        // The plan is appended to each request and never written into the
+        // history. An entry that ends in it is one no later request carries,
+        // so marking it paid a cache write on the whole conversation every
+        // iteration and read none of it back.
+        let mut request = user_and_assistant();
+        request.messages[2]
+            .content
+            .push(ContentBlock::text("Your plan: 1. [active] read a.txt"));
+        request.volatile_tail = 1;
+        let wire = messages_to_wire(&request);
+        assert_eq!(
+            wire[2]["content"][1]["text"],
+            "Your plan: 1. [active] read a.txt"
+        );
+        assert_eq!(marked(&wire), vec![(0, 0), (2, 0)]);
+    }
+
+    #[test]
+    fn a_volatile_message_of_its_own_moves_the_breakpoint_into_the_one_before() {
+        let mut request = user_and_assistant();
+        request.messages.push(Message::new(
+            Role::Assistant,
+            vec![
+                ContentBlock::Thinking {
+                    text: "hm".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::text("done"),
+            ],
+        ));
+        request
+            .messages
+            .push(Message::user("Write the summary now."));
+        request.volatile_tail = 1;
+        let wire = messages_to_wire(&request);
+        // On the answer's text, never its thinking, and the user message
+        // before it is the previous request's breakpoint.
+        assert_eq!(marked(&wire), vec![(2, 0), (3, 1)]);
     }
 
     #[test]

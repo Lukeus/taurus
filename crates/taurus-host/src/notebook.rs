@@ -643,7 +643,7 @@ impl taurus_tools::Tool for ReadNote {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _ctx: &taurus_tools::ToolContext,
+        ctx: &taurus_tools::ToolContext,
     ) -> taurus_tools::ToolResult {
         let input: ReadNoteInput = taurus_tools::tool::parse_input(input)?;
         // The error this gives already names the note and says what to do, so it
@@ -667,7 +667,7 @@ impl taurus_tools::Tool for ReadNote {
             out.push_str("\n\n---\n");
             out.push_str(&about);
         }
-        Ok(out.into())
+        Ok(taurus_tools::overflow::bound(out, READ_NOTE_TOOL, ctx).into())
     }
 }
 

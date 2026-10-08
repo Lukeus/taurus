@@ -6,7 +6,13 @@ import type {
   ProviderConfig,
   Theme,
 } from "../lib/api";
-import { clampIterations, DEFAULT_MAX_ITERATIONS, MAX_ITERATIONS_LIMIT } from "../lib/limits";
+import {
+  clampContextLimit,
+  clampIterations,
+  DEFAULT_CONTEXT_LIMIT,
+  DEFAULT_MAX_ITERATIONS,
+  MAX_ITERATIONS_LIMIT,
+} from "../lib/limits";
 import { applyTheme, resolveWith } from "../lib/theme";
 import { useStore } from "../state/store";
 import { CopyButton } from "./CopyButton";
@@ -345,6 +351,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
           <IterationLimit
             limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
           />
+          <ContextLimit
+            limit={status?.settings.context_limit ?? DEFAULT_CONTEXT_LIMIT}
+          />
           {error && <Problem>{error}</Problem>}
         </>
       )}
@@ -399,6 +408,46 @@ export function IterationLimit({ limit }: { limit: number }) {
       <input
         inputMode="numeric"
         aria-label="Steps per message"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+      />
+    </Field>
+  );
+}
+
+/**
+ * How much of a model's window a turn fills before it compacts.
+ *
+ * Shown in thousands and read back in whatever form was typed, because the
+ * numbers are six digits and the one people know is "200k".
+ */
+export function ContextLimit({ limit }: { limit: number }) {
+  const refresh = useStore((s) => s.refresh);
+  const shown = (n: number) => (n === 0 ? "0" : `${Math.round(n / 1000)}k`);
+  const [draft, setDraft] = useState(shown(limit));
+
+  useEffect(() => setDraft(shown(limit)), [limit]);
+
+  const commit = async () => {
+    const next = clampContextLimit(draft, limit);
+    setDraft(shown(next));
+    if (next === limit) return;
+    await api.setContextLimit(next);
+    await refresh();
+  };
+
+  return (
+    <Field
+      label="Working context"
+      hint={`Tokens of the model's window a conversation may fill before Taurus compacts it. Every step re-sends the conversation, so on a hosted model a larger number costs more per step. 0 uses the model's whole window; ${shown(DEFAULT_CONTEXT_LIMIT)} by default.`}
+    >
+      <input
+        inputMode="numeric"
+        aria-label="Working context"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
