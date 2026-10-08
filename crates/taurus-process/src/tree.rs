@@ -126,23 +126,14 @@ impl Tree {
     /// are this function's: whatever the command carried is replaced, and
     /// `CREATE_NO_WINDOW` is always among them.
     pub fn spawn(mut command: Command) -> io::Result<Self> {
-        use process_wrap::tokio::{CommandWrap, CreationFlags, JobObject};
-        use windows::Win32::System::Threading::PROCESS_CREATION_FLAGS;
+        use process_wrap::tokio::{CommandWrap, JobObject};
 
         command.kill_on_drop(true);
         let child = CommandWrap::from(command)
-            // Through this wrapper rather than `no_console`, and before
-            // `JobObject`. `JobObject` sets the creation flags itself — it has
-            // to, to start the child suspended — and in doing so replaces
-            // whatever the command carried, so a `no_console` applied to the
-            // command is lost and every hook opens a console window. Flags
-            // given this way it folds into its own, but only if this wrapper
-            // runs first: the other order overwrites its `CREATE_SUSPENDED`,
-            // and the child runs before it is in the job.
-            .wrap(CreationFlags(PROCESS_CREATION_FLAGS(
-                crate::CREATE_NO_WINDOW,
-            )))
             .wrap(JobObject)
+            // After `JobObject`, and never `process_wrap`'s own
+            // `CreationFlags`. See [`NoWindow`] for why.
+            .wrap(NoWindow)
             .spawn()?;
         Ok(Self { child })
     }
@@ -178,6 +169,42 @@ impl Tree {
         self.child
             .start_kill()
             .map_err(|e| format!("could not end the Job Object the process tree is in: {e}"))
+    }
+}
+
+/// The creation flags a [`Tree`] is started with on Windows: suspended, so
+/// `JobObject` can put it in the job before it runs, and with no console window.
+///
+/// `JobObject` sets the flags itself, and `creation_flags` replaces rather than
+/// adds, so whatever the command carried — a `no_console` included — is lost.
+/// `process_wrap` offers `CreationFlags` for this, which `JobObject` is meant to
+/// fold into its own, but in 9.1 it never sees it: `spawn` moves the wrappers
+/// out of the `CommandWrap` before running them, and `JobObject` looks for
+/// `CreationFlags` on the emptied one. So `CREATE_NO_WINDOW` was dropped on every
+/// spawn, and every background command and hook opened a blank console window
+/// for as long as it ran — in a release build only, where the app has no
+/// console for the child to inherit.
+///
+/// This wrapper runs after `JobObject` and sets both flags outright, which does
+/// not depend on that lookup working. It is a type of its own rather than a
+/// `CreationFlags` carrying `CREATE_SUSPENDED`: a `process_wrap` whose lookup
+/// does work would read that as "the caller resumes the child", and nothing
+/// here would.
+#[cfg(windows)]
+#[derive(Debug)]
+struct NoWindow;
+
+#[cfg(windows)]
+impl process_wrap::tokio::CommandWrapper for NoWindow {
+    fn pre_spawn(
+        &mut self,
+        command: &mut Command,
+        _core: &process_wrap::tokio::CommandWrap,
+    ) -> io::Result<()> {
+        use windows::Win32::System::Threading::CREATE_SUSPENDED;
+
+        command.creation_flags(CREATE_SUSPENDED.0 | crate::CREATE_NO_WINDOW);
+        Ok(())
     }
 }
 
@@ -355,6 +382,73 @@ mod tests {
             .unwrap();
         assert!(tree.wait().await.unwrap().success());
         assert!(out.contains("hello"), "{out:?}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_tree_opens_no_console_window() {
+        /*
+         * A window can't be seen from here, but where the console came from
+         * can. A child started with `CREATE_NO_WINDOW` gets a hidden console of
+         * its own, so it is alone on it; one started without the flag shares
+         * this test's console — or, in the app, which has none, gets a new
+         * visible one. The child counts the processes on its console.
+         *
+         * The plain spawn is the control: if this test has no console either,
+         * the two cases look the same and the check would pass for nothing.
+         */
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("count.ps1");
+        std::fs::write(
+            &script,
+            "Add-Type -Namespace W -Name K -MemberDefinition \
+             '[DllImport(\"kernel32.dll\")] public static extern uint GetConsoleProcessList(uint[] l, uint n);'\n\
+             [W.K]::GetConsoleProcessList((New-Object 'uint[]' 64), 64)\n",
+        )
+        .unwrap();
+        let powershell = || {
+            let mut command = Command::new("powershell");
+            command
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(&script)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            command
+        };
+        let count = |out: &[u8]| -> u32 {
+            let text = String::from_utf8_lossy(out);
+            text.trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("not a count: {text:?}"))
+        };
+
+        let control = powershell().output().await.unwrap();
+        let shared = count(&control.stdout);
+        if shared < 2 {
+            eprintln!("this test has no console of its own to share; nothing to compare");
+            return;
+        }
+
+        let mut tree = Tree::spawn(powershell()).expect("it must start");
+        let mut out = Vec::new();
+        tree.take_stdout()
+            .expect("stdout was piped")
+            .read_to_end(&mut out)
+            .await
+            .unwrap();
+        assert!(tree.wait().await.unwrap().success());
+        assert_eq!(
+            count(&out),
+            1,
+            "the child shared this test's console, so in the app it would open a window"
+        );
     }
 
     #[tokio::test]
