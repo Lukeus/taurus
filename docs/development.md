@@ -867,6 +867,33 @@ Release mode matters. whisper.cpp itself is always built optimized, but the
 resampler in front of it isn't, and a debug build of it skews the timings.
 Set `TAURUS_HOME` to keep the download out of your real `~/.taurus`.
 
+## The speech engine
+
+Dictation runs on whisper.cpp, which `whisper-rs-sys` builds from source on
+every clean build. That takes two tools besides Rust:
+
+- **CMake**, which compiles whisper.cpp itself. Metal is switched on for
+  macOS; every other platform builds the CPU backend.
+- **libclang**, which `bindgen` uses to read whisper.cpp's headers and write
+  the Rust declarations for them. On Windows that's `winget install
+  LLVM.LLVM`; `bindgen` finds it in `C:\Program Files\LLVM` on its own.
+  Elsewhere, set `LIBCLANG_PATH` if it's somewhere unusual.
+
+Without libclang the build doesn't stop where you'd expect. `whisper-rs-sys`
+falls back to a copy of the bindings it ships, which were generated on Linux
+against glibc, and on Windows those fail their own layout checks:
+
+```
+error[E0080]: attempt to compute `12_usize - 16_usize`, which would overflow
+  --> …\whisper-rs-sys-…\out/bindings.rs:465:27
+465 |     ["Size of _G_fpos_t"][::std::mem::size_of::<_G_fpos_t>() - 16usize];
+```
+
+That error means install LLVM, not fix the code. The shipped bindings are
+also why `WHISPER_DONT_GENERATE_BINDINGS` isn't set to skip libclang: it
+compiles on macOS and Linux and breaks the Windows build, which is how
+`pnpm bindings` failed there once.
+
 ## The Windows ConPTY runtime
 
 A Windows build sideloads Microsoft's redistributable ConPTY next to the

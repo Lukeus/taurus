@@ -44,14 +44,16 @@ jobs:
       - uses: actions/checkout@v4
 
       # libasound2-dev is the ALSA headers cpal builds against, for the
-      # microphone in taurus-voice. Not a WebView package, but it has to
-      # be there before anything that links the app compiles.
+      # microphone in taurus-voice, and libclang-dev is what bindgen reads
+      # whisper.cpp's headers with. Neither is a WebView package, but both
+      # have to be there before anything that links the app compiles. The
+      # Windows runner ships LLVM, and macOS has libclang with Xcode.
       - name: Install Linux WebView dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
             libappindicator3-dev librsvg2-dev patchelf \
-            libasound2-dev
+            libasound2-dev libclang-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -130,15 +132,17 @@ jobs:
       - uses: actions/checkout@v4
 
       # libasound2-dev is the ALSA headers cpal builds against, for the
-      # microphone in taurus-voice. Not a WebView package, but it has to
-      # be there before anything that links the app compiles.
+      # microphone in taurus-voice, and libclang-dev is what bindgen reads
+      # whisper.cpp's headers with. Neither is a WebView package, but both
+      # have to be there before anything that links the app compiles. The
+      # Windows runner ships LLVM, and macOS has libclang with Xcode.
       - name: Install Linux WebView dependencies
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
             libappindicator3-dev librsvg2-dev patchelf \
-            libasound2-dev
+            libasound2-dev libclang-dev
 
       - uses: dtolnay/rust-toolchain@stable
       # Saved even when the job fails. The default is to save only on success,

@@ -50,8 +50,17 @@ that costs.</sub>
 You need Rust 1.87 or newer. The desktop app also needs Node and pnpm (CI uses
 Node 22 and pnpm 9) and the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
-platform, plus CMake, which builds the whisper.cpp speech engine. On Linux,
-add the ALSA headers too (`libasound2-dev` on Debian and Ubuntu).
+platform. Building the workspace also compiles the whisper.cpp speech engine,
+which needs CMake and libclang:
+
+- **macOS:** libclang comes with Xcode's command line tools; `brew install
+  cmake` adds CMake.
+- **Windows:** `winget install Kitware.CMake LLVM.LLVM`.
+- **Linux:** `cmake`, `libclang-dev`, and the ALSA headers (`libasound2-dev`
+  on Debian and Ubuntu).
+
+See [the speech engine](docs/development.md#the-speech-engine) if the build
+stops in `whisper-rs-sys`.
 
 The quickest way to try it is against a local model. Start Ollama, with at
 least one model pulled:
