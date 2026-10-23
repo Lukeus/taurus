@@ -22,6 +22,8 @@ members = [
     "crates/taurus-cli",
     "src-tauri",
 ]
+# Patched, not ours to lint or test: see vendor/whisper-rs-sys/TAURUS.md.
+exclude = ["vendor/whisper-rs-sys"]
 
 [workspace.package]
 version = "0.3.0"
@@ -138,3 +140,10 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+
+# whisper.cpp's FFI crate, carried here with one change to its build script:
+# Windows builds use bindings generated on Windows and checked in, instead of
+# running bindgen against whatever libclang the machine has. What changed and
+# how to update it are in vendor/whisper-rs-sys/TAURUS.md.
+[patch.crates-io]
+whisper-rs-sys = { path = "vendor/whisper-rs-sys" }
