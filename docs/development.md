@@ -889,7 +889,11 @@ error[E0080]: attempt to compute `12_usize - 16_usize`, which would overflow
 465 |     ["Size of _G_fpos_t"][::std::mem::size_of::<_G_fpos_t>() - 16usize];
 ```
 
-That error means install LLVM, not fix the code. The shipped bindings are
+That error means install LLVM, not fix the code. Then run `cargo clean -p
+whisper-rs-sys` before building again. Its build script doesn't watch
+`LIBCLANG_PATH` or anything else that says libclang has arrived, so without
+the clean, Cargo reuses the fallback it wrote last time and fails the same
+way. The shipped bindings are
 also why `WHISPER_DONT_GENERATE_BINDINGS` isn't set to skip libclang: it
 compiles on macOS and Linux and breaks the Windows build, which is how
 `pnpm bindings` failed there once.
