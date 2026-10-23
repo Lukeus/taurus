@@ -88,6 +88,32 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
+  # Windows builds don't run bindgen: they use bindings for whisper.cpp that
+  # were generated on Windows and checked in (see
+  # vendor/whisper-rs-sys/TAURUS.md). This regenerates them on a runner that
+  # has LLVM and fails if the checked-in copy has drifted from the headers.
+  # The fresh copy is uploaded either way, so fixing it is a download.
+  whisper-bindings:
+    name: Whisper bindings (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Regenerate and compare
+        shell: bash
+        env:
+          TAURUS_WHISPER_BINDINGS: ${{ runner.temp }}/whisper-bindings
+        run: cargo build -p whisper-rs-sys
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: whisper-bindings-windows
+          path: ${{ runner.temp }}/whisper-bindings
+
   # The cross-platform surface is real: PTY behavior, interpreter resolution,
   # and path handling all differ. Building on each OS is what catches that.
   build:

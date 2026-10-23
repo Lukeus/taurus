@@ -870,33 +870,32 @@ Set `TAURUS_HOME` to keep the download out of your real `~/.taurus`.
 ## The speech engine
 
 Dictation runs on whisper.cpp, which `whisper-rs-sys` builds from source on
-every clean build. That takes two tools besides Rust:
+every clean build. The workspace carries its own copy of that crate in
+`vendor/whisper-rs-sys`, with one change to its build script (see `TAURUS.md`
+there). What a build needs besides Rust:
 
 - **CMake**, which compiles whisper.cpp itself. Metal is switched on for
   macOS; every other platform builds the CPU backend.
-- **libclang**, which `bindgen` uses to read whisper.cpp's headers and write
-  the Rust declarations for them. On Windows that's `winget install
-  LLVM.LLVM`; `bindgen` finds it in `C:\Program Files\LLVM` on its own.
-  Elsewhere, set `LIBCLANG_PATH` if it's somewhere unusual.
+- **libclang, on macOS and Linux only.** `bindgen` uses it to read
+  whisper.cpp's headers and write the Rust declarations for them. It comes
+  with Xcode's command line tools; on Debian and Ubuntu it's
+  `libclang-dev`. Set `LIBCLANG_PATH` if it's somewhere unusual.
 
-Without libclang the build doesn't stop where you'd expect. `whisper-rs-sys`
-falls back to a copy of the bindings it ships, which were generated on Linux
-against glibc, and on Windows those fail their own layout checks:
+Windows doesn't run bindgen. It uses bindings generated on Windows and checked
+in as `vendor/whisper-rs-sys/src/bindings-x86_64-pc-windows-msvc.rs`, so a
+Windows build needs CMake and Visual Studio's C++ tools and no LLVM. Getting
+bindgen to work there was the fragile part. Even with LLVM installed and
+`LIBCLANG_PATH` set, a contributor's machine failed with `'stdbool.h' file not
+found`. The bindings `whisper-rs-sys` falls back to upstream were generated
+on Linux, and they fail on Windows with
+`attempt to compute 12_usize - 16_usize, which would overflow`.
 
-```
-error[E0080]: attempt to compute `12_usize - 16_usize`, which would overflow
-  --> …\whisper-rs-sys-…\out/bindings.rs:465:27
-465 |     ["Size of _G_fpos_t"][::std::mem::size_of::<_G_fpos_t>() - 16usize];
-```
+CI's **Whisper bindings (Windows)** job regenerates that file on a runner that
+has LLVM, and fails if the checked-in copy has drifted. It uploads the fresh
+copy as an artifact either way, so a failure is fixed by downloading it.
 
-That error means install LLVM, not fix the code. Then run `cargo clean -p
-whisper-rs-sys` before building again. Its build script doesn't watch
-`LIBCLANG_PATH` or anything else that says libclang has arrived, so without
-the clean, Cargo reuses the fallback it wrote last time and fails the same
-way. The shipped bindings are
-also why `WHISPER_DONT_GENERATE_BINDINGS` isn't set to skip libclang: it
-compiles on macOS and Linux and breaks the Windows build, which is how
-`pnpm bindings` failed there once.
+When bindgen fails on macOS or Linux, the build stops and says what to
+install. It doesn't fall back to anything.
 
 ## The Windows ConPTY runtime
 

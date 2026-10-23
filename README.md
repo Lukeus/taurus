@@ -51,11 +51,12 @@ You need Rust 1.87 or newer. The desktop app also needs Node and pnpm (CI uses
 Node 22 and pnpm 9) and the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
 platform. Building the workspace also compiles the whisper.cpp speech engine,
-which needs CMake and libclang:
+which needs CMake:
 
-- **macOS:** libclang comes with Xcode's command line tools; `brew install
-  cmake` adds CMake.
-- **Windows:** `winget install Kitware.CMake LLVM.LLVM`.
+- **macOS:** `brew install cmake`. libclang comes with Xcode's command line
+  tools.
+- **Windows:** `winget install Kitware.CMake`. Nothing else: Windows builds use
+  checked-in bindings, not libclang.
 - **Linux:** `cmake`, `libclang-dev`, and the ALSA headers (`libasound2-dev`
   on Debian and Ubuntu).
 
