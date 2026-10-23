@@ -152,6 +152,11 @@ import type { RunningTurn } from "../bindings/RunningTurn";
 import type { TurnChange } from "../bindings/TurnChange";
 import type { TurnState } from "../bindings/TurnState";
 import type { UiEvent } from "../bindings/UiEvent";
+import type { VoiceDownload } from "../bindings/VoiceDownload";
+import type { VoiceModel } from "../bindings/VoiceModel";
+import type { VoiceStatus } from "../bindings/VoiceStatus";
+
+export type { VoiceDownload, VoiceModel, VoiceStatus };
 
 export type {
   ModelLatency,
@@ -1339,6 +1344,55 @@ export const closeTerminal = (id: string) => invoke<void>("terminal_close", { id
  */
 export const terminalBlock = (id: string, block: number) =>
   invoke<TerminalBlock>("terminal_block", { id, block });
+
+/* ------------------------------------------------------------------ voice */
+
+/**
+ * The speech models, which are downloaded, which one settings name, and the
+ * microphone a recording would use. Asked when the mic is pressed and when
+ * Settings › Voice opens, so a model downloaded in one shows in the other.
+ */
+export const voiceStatus = () => invoke<VoiceStatus>("voice_status");
+
+/** Rejects with the list of known names when `model` isn't one of them. */
+export const setVoiceModel = (model: string) => invoke<void>("set_voice_model", { model });
+
+/**
+ * Downloads a speech model, resolving once its checksum matches and it's in
+ * place. `onProgress` fires up to a couple of hundred times. A second call
+ * replaces the first.
+ */
+export const downloadVoiceModel = (
+  model: string,
+  onProgress: (p: VoiceDownload) => void,
+) => {
+  const channel = new Channel<VoiceDownload>();
+  channel.onmessage = onProgress;
+  return invoke<void>("voice_download", { model, onProgress: channel });
+};
+
+/** Stops a download. The partial file is removed. */
+export const stopVoiceDownload = () => invoke<void>("stop_voice_download");
+
+export const deleteVoiceModel = (model: string) =>
+  invoke<void>("delete_voice_model", { model });
+
+/**
+ * Opens the microphone. `onLevel` gets 0–1 about twenty times a second until
+ * `stopListening` or `cancelListening`. Rejects before opening anything when
+ * the model isn't downloaded.
+ */
+export const startListening = (onLevel: (level: number) => void) => {
+  const channel = new Channel<number>();
+  channel.onmessage = onLevel;
+  return invoke<void>("voice_start", { onLevel: channel });
+};
+
+/** Closes the microphone and resolves with what was said. */
+export const stopListening = () => invoke<string>("voice_stop");
+
+/** Closes the microphone and drops the audio, or stops a transcription. */
+export const cancelListening = () => invoke<void>("voice_cancel");
 
 export const onPermissionRequest = (
   handler: (request: PermissionRequest) => void,

@@ -387,6 +387,92 @@ an MCP server nobody here wrote can both produce something no provider will
 take. A failing image is replaced by a line naming the tool and the reason,
 which is what the model needs to decide whether to call it differently.
 
+## Talking instead of typing
+
+Press the mic beside **Send**, or ⌘⇧D (Ctrl+Shift+D on Windows and Linux),
+and talk. What you said lands in the box for you to read and fix. Nothing is
+sent on its own, because speech-to-text gets file names and identifiers wrong
+often enough that you'll want to look first.
+
+```
+┌───────────────────────────────────────────────────────┐
+│  fix the login test and run it again                  │
+│  ▤ taurus-ai-shell  ● 0:04 listening · esc discards  ◉ Send │
+└───────────────────────────────────────────────────────┘
+```
+
+One button, two ways to use it:
+
+- **Click, talk, click.** For a long thought. ⌘⇧D works the same way.
+- **Hold, talk, let go.** For a sentence. A press longer than about 0.4 s is
+  push-to-talk, so neither needs a setting.
+
+Escape throws the recording away. The words go in where the caret was, with a
+space on whichever side needs one. Select a phrase first and what you say
+replaces it, which is how you correct a word the model misheard.
+
+### It runs on this computer
+
+Transcription is [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+built into Taurus. The audio stays in memory between the press and the
+transcript, then it's dropped. It's never written to disk and never sent
+anywhere, and there's no wake word: the microphone is open only while the mic
+is on.
+
+The model isn't in the installer, because most people would pay for a 60 MB
+download they never use. The first press asks first:
+
+```
+◉ Dictation runs on this computer. It needs a one-time 60 MB download of
+  the base.en speech model. What you say is never saved or sent anywhere.
+                                                    Download   Not now
+```
+
+![The first press of the mic: the offer to download the speech model, above
+the box it will type into](screenshots/dictation.png)
+
+That download is the only network request voice makes. It comes from the
+whisper.cpp model repository on Hugging Face, pinned to one revision, and is
+checked against its SHA-256 before it's used. A file that doesn't match is
+deleted, not loaded. If the download fails, the message names the URL and the
+path, so you can fetch the file yourself and drop it in place.
+
+**Settings › Voice** picks the model and deletes the ones you're done with:
+
+| Model | Size | For |
+| --- | --- | --- |
+| `tiny.en` | 32 MB | Small machines. Misses more words. |
+| `base.en` | 60 MB | The default. Fast and accurate for English. |
+| `small.en` | 190 MB | More accurate English. Slower without a GPU. |
+| `base` | 60 MB | Other languages. Detects which one you're speaking. |
+
+The `.en` models only understand English. On an M-series Mac, whisper.cpp
+runs on the GPU through Metal: a 6.4-second sentence took 70–85 ms to
+transcribe with `base.en`, plus about 60 ms to load the model the first time.
+Windows and Linux run it on the CPU.
+
+### Your project's words
+
+Whisper spells a word it doesn't know the way it sounds. In testing, "taurus
+core" came back as "TorisCore". So each dictation primes the model with the
+workspace's folder name and the names at its top level (crates, packages,
+docs, scripts), and it reaches for those spellings instead.
+
+### When it doesn't hear you
+
+- **Less than a quarter of a second of speech** isn't transcribed at all. You
+  get "Taurus didn't hear any speech" instead. Handed silence, whisper tends
+  to answer with a confident "Thank you."
+- **A microphone that sends only exact zeros** is macOS refusing permission,
+  not a quiet room. The message says where to turn it on: System Settings ›
+  Privacy & Security › Microphone.
+- **A microphone that doesn't open within 10 seconds** gets a message, not a
+  frozen composer. Usually that's a permission dialog waiting for an answer.
+  Otherwise the system's audio service is stuck, which stalls every app's
+  sound, not just this one.
+- **Five minutes** is the longest recording. The composer finishes it for
+  you at 5:00, so nothing is cut off silently.
+
 ## Finding code by what it does
 
 `grep` answers *where does this string appear*. On an unfamiliar repository

@@ -190,6 +190,9 @@ pub fn run() {
             }
             if let Some(state) = webview.app_handle().try_state::<Arc<state::AppState>>() {
                 state.terminals.close_all();
+                // A microphone opened by the old page would stay open with
+                // nobody to press stop, and nothing on screen saying so.
+                state.voice.cancel();
                 // The same for the turns the old page started and the dialogs
                 // it was showing for them: nothing is left to answer either,
                 // and a turn parked on one holds its conversation until the app
@@ -202,6 +205,7 @@ pub fn run() {
             if matches!(event, WindowEvent::Destroyed) {
                 if let Some(state) = window.app_handle().try_state::<Arc<state::AppState>>() {
                     state.terminals.close_all();
+                    state.voice.cancel();
                     // The same argument, for the commands the agent left
                     // running: a background `cargo watch` is no more in this
                     // process's tree than a shell under a pty is, and the
@@ -326,6 +330,14 @@ pub fn run() {
             commands::set_rerank,
             commands::build_index,
             commands::stop_index_build,
+            commands::voice_status,
+            commands::set_voice_model,
+            commands::voice_download,
+            commands::stop_voice_download,
+            commands::delete_voice_model,
+            commands::voice_start,
+            commands::voice_stop,
+            commands::voice_cancel,
             commands::save_providers,
             commands::list_global_providers,
             commands::list_key_statuses,

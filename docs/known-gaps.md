@@ -1565,3 +1565,26 @@ the backlog, and they're the minority.
   would be the same small change as above, wherever it's wanted. Neither has
   been made, because neither has the safety argument the hook timeout has: a
   hook is a guard whose whole promise is that it stopped something.
+- **Taurus doesn't talk back.** Voice goes one way: you can dictate a message
+  (see [Talking instead of typing](working-with-it.md#talking-instead-of-typing)),
+  but replies are text only. Reading them aloud needs a filter that decides
+  what's worth saying, since nobody wants a diff or a code block read out, and
+  a voice: the system's own first, then an OpenAI-shaped `/v1/audio/speech`
+  endpoint for better ones. Neither is built.
+- **Dictation speed on Windows and Linux hasn't been measured.** whisper.cpp
+  runs on the GPU through Metal on macOS and on the CPU everywhere else. The
+  CUDA and Vulkan backends aren't built in, because each needs an SDK on the
+  build machine and a driver on yours. `base.en` should be quick enough on
+  any recent CPU, but that's a guess until somebody times it, and `small.en`
+  will be noticeably slower.
+- **Speech is only transcribed on this computer.** There's no setting for a
+  transcription service, such as OpenAI's `/v1/audio/transcriptions` or a
+  local server with the same shape. That's an easy addition, and a machine
+  too slow for the built-in model is the case for it.
+- **Dictation uses the system's default microphone, and only inside the
+  window.** To use a different microphone, change the default in your system's
+  sound settings. ⌘⇧D starts and stops a recording, but holding a key isn't
+  push-to-talk: macOS doesn't tell the window when a key held with ⌘ comes
+  back up. Holding the mic button works instead. A shortcut that reaches the
+  window from other apps needs Tauri's global-shortcut plugin, and the CLI has
+  no dictation at all.

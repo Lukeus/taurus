@@ -238,3 +238,39 @@ describe("being asked for from elsewhere in the window", () => {
     expect(document.activeElement).not.toBe(box());
   });
 });
+
+describe("the mic", () => {
+  it("puts what it heard at the end of a box that was never touched", async () => {
+    // A textarea nobody has focused reports its caret at zero, which would put
+    // the words in front of a parked draft.
+    const { useVoice } = await import("./state/voice");
+    const { box } = mount({ parked: { text: "check why", images: [] } });
+    act(() => useVoice.setState({ heard: { text: "the build fails" } }));
+    expect(box().value).toBe("check why the build fails");
+    expect(useVoice.getState().heard).toBeNull();
+  });
+
+  it("puts it where the caret was, after focus moved to the mic", async () => {
+    const { useVoice } = await import("./state/voice");
+    const { box, type } = mount();
+    type("fix test");
+    act(() => {
+      box().focus();
+      box().setSelectionRange(4, 4);
+      box().dispatchEvent(new Event("select", { bubbles: true }));
+      box().blur();
+    });
+    act(() => useVoice.setState({ heard: { text: "the login" } }));
+    expect(box().value).toBe("fix the login test");
+  });
+
+  it("says it's listening, and how to finish, on the hint line", async () => {
+    const { useVoice } = await import("./state/voice");
+    const { hint, host } = mount();
+    act(() => useVoice.setState({ phase: { kind: "listening", since: Date.now() } }));
+    expect(hint()).toContain("0:00 listening");
+    expect(hint()).toContain("esc discards");
+    expect(host.querySelector(".composer-mic")?.getAttribute("aria-pressed")).toBe("true");
+    act(() => useVoice.setState({ phase: { kind: "idle" } }));
+  });
+});

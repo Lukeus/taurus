@@ -38,6 +38,7 @@ taurus-provider.workspace = true
 taurus-agents.workspace = true
 taurus-skills.workspace = true
 taurus-tools.workspace = true
+taurus-voice.workspace = true
 
 async-trait.workspace = true
 base64.workspace = true
@@ -58,3 +59,6 @@ uuid.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"

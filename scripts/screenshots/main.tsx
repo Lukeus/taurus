@@ -18,6 +18,7 @@ import "./csp";
 import { createRoot } from "react-dom/client";
 
 import { APPLE } from "../../src/lib/keys";
+import { useVoice } from "../../src/state/voice";
 
 import {
   BACKGROUND_JOBS,
@@ -326,6 +327,29 @@ window.__TAURI_INTERNALS__ = {
         page: { scope: sent.scope, kind: sent.kind, name: sent.name, text: sent.text, fingerprint: "9-9" },
       };
     }
+    // The mic's models. Nothing downloaded for `dictation`, so pressing the mic
+    // asks first; base.en on disk for `voice`, the tab a model is managed from.
+    if (cmd === "voice_status") {
+      const on = shot === "voice";
+      const model = (id: string, bytes: number, summary: string, installed = false) => ({
+        id,
+        bytes,
+        summary,
+        english_only: id.endsWith(".en"),
+        installed,
+      });
+      return {
+        model: "base.en",
+        models: [
+          model("tiny.en", 32_166_155, "Smallest and fastest. Misses more words."),
+          model("base.en", 59_721_011, "The default. Fast and accurate for English.", on),
+          model("small.en", 190_098_681, "More accurate English. Slower without a GPU."),
+          model("base", 59_707_625, "Other languages. Detects which one you're speaking."),
+        ],
+        microphone: "MacBook Pro Microphone",
+        folder: "~/.taurus/models/whisper",
+      };
+    }
     if (cmd in ANSWERS) return ANSWERS[cmd];
     // Anything else is a command a screenshot does not need. Answering null
     // rather than throwing keeps one unmodelled call from blanking the window.
@@ -510,6 +534,26 @@ requestAnimationFrame(() => {
       appearance: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();
         (await click(".pill-row .pill", (b) => b === "Appearance"))();
+      },
+      // The mic pressed on a machine that has never used it: the offer to
+      // download a model, above the box. Pressed rather than seeded, so the
+      // strip in the picture is the one the press decided on from the status
+      // it fetched.
+      dictation: async () => {
+        (await click(".composer-mic", () => true))();
+        await until(() => document.querySelector(".voice-offer"));
+      },
+      // Settings › Voice, with one model on disk and another arriving. The
+      // download is seeded rather than started: a stub that answered at once
+      // would finish it before the picture, and one that never answered would
+      // leave a promise hanging in the page.
+      voice: async () => {
+        (await click(".rail-link b", (b) => b === "Settings"))();
+        (await click(".pill-row .pill", (b) => b === "Voice"))();
+        await until(() => document.querySelector(".voice-model"));
+        useVoice.setState({
+          download: { model: "small.en", done: 79_841_446, total: 190_098_681, fromMic: false },
+        });
       },
       // The providers tab, with a card unfolded — which is where nearly all of
       // this drawer's form is. Folded it is a header row, and a picture of two
