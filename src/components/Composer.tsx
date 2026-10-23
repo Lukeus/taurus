@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { Attachments } from "./Attachments";
 import { CommandMenu, commandQuery, matches } from "./CommandMenu";
 import { ContextMeter } from "./ContextMeter";
-import { MicButton, useMicHint, VoiceStrip } from "./Mic";
+import { MicButton, SpeakerButton, useMicHint, VoiceStrip } from "./Mic";
 import type { Attachment, CommandSummary, InterruptedTurn, OnScreen } from "../lib/api";
 import { basename } from "../lib/format";
 import { isImage, toAttachments } from "../lib/images";
 import type { Outgoing } from "../state/store";
 import * as api from "../lib/api";
 import { useVoice } from "../state/voice";
+import { useSpeech } from "../state/speech";
 
 /**
  * What the box says once a draft is put in it.
@@ -229,6 +230,8 @@ export function Composer({
   const pressMic = useVoice((s) => s.press);
   const cancelMic = useVoice((s) => s.cancel);
   const micHint = useMicHint();
+  const speaking = useSpeech((s) => s.speaking);
+  const stopSpeaking = useSpeech((s) => s.stop);
 
   // What the mic heard goes in where the caret was. Taken and cleared, so a
   // composer mounted later for another conversation doesn't insert it again.
@@ -267,6 +270,19 @@ export function Composer({
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
   }, [micPhase, cancelMic]);
+
+  // Escape stops a reply being read. On the way back out rather than on the
+  // way in, unlike the mic's: a dialog or a completion list that wanted the
+  // key has had it and said so, and only an Escape nothing used stops speech.
+  useEffect(() => {
+    if (!speaking) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      stopSpeaking();
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [speaking, stopSpeaking]);
 
   const attach = async (files: File[]) => {
     const wanted = files.filter(isImage);
@@ -610,6 +626,8 @@ export function Composer({
           <span className="composer-hint">
             {micHint ? (
               micHint
+            ) : speaking ? (
+              "reading aloud · esc stops"
             ) : busy && text.trim() ? (
               "↵ sends when this turn ends · ⇧↵ newline"
             ) : (
@@ -619,6 +637,7 @@ export function Composer({
               </>
             )}
           </span>
+          <SpeakerButton />
           <MicButton disabled={!ready} />
           {busy ? (
             // Disabled while it takes, because a second press does nothing the

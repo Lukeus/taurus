@@ -195,6 +195,11 @@ const SHOTS = [
   // Settings › Voice: the four models, one on disk, one downloading, and the
   // microphone a recording would use.
   { name: "voice", shot: "voice", theme: "dark" },
+  // The same tab's other half: replies read aloud in an ElevenLabs voice, the
+  // account's voices listed, and the key in the keychain.
+  { name: "speech", shot: "speech", theme: "dark" },
+  // A reply being read: Stop beside the mic, and on the turn being read.
+  { name: "reading", shot: "reading", theme: "dark" },
 ];
 
 const CHROME = [

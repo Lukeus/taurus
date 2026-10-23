@@ -155,8 +155,14 @@ import type { UiEvent } from "../bindings/UiEvent";
 import type { VoiceDownload } from "../bindings/VoiceDownload";
 import type { VoiceModel } from "../bindings/VoiceModel";
 import type { VoiceStatus } from "../bindings/VoiceStatus";
+import type { SpeechEngine } from "../bindings/SpeechEngine";
+import type { SpeechSettings } from "../bindings/SpeechSettings";
+import type { SpeechState } from "../bindings/SpeechState";
+import type { SpeechStatus } from "../bindings/SpeechStatus";
+import type { VoiceInfo } from "../bindings/VoiceInfo";
 
 export type { VoiceDownload, VoiceModel, VoiceStatus };
+export type { SpeechEngine, SpeechSettings, SpeechState, SpeechStatus, VoiceInfo };
 
 export type {
   ModelLatency,
@@ -1393,6 +1399,46 @@ export const stopListening = () => invoke<string>("voice_stop");
 
 /** Closes the microphone and drops the audio, or stops a transcription. */
 export const cancelListening = () => invoke<void>("voice_cancel");
+
+/* ----------------------------------------------------------------- speech */
+
+/**
+ * Whether the speaker is talking, and why it gave up when it did. Sent on
+ * every change, from the speaker's own thread.
+ */
+export const EVENT_SPEECH = "taurus://speech";
+
+export const onSpeech = (handler: (state: SpeechState) => void): Promise<UnlistenFn> =>
+  listen<SpeechState>(EVENT_SPEECH, (e) => handler(e.payload));
+
+export const speechStatus = () => invoke<SpeechStatus>("speech_status");
+
+export const saveSpeechSettings = (settings: SpeechSettings) =>
+  invoke<void>("save_speech_settings", { settings });
+
+export const setSpeechKey = (engine: SpeechEngine, key: string) =>
+  invoke<void>("set_speech_key", { engine, key });
+
+export const clearSpeechKey = (engine: SpeechEngine) =>
+  invoke<void>("clear_speech_key", { engine });
+
+/** The voices an engine offers. ElevenLabs's come from the account. */
+export const speechVoices = (engine: SpeechEngine) =>
+  invoke<VoiceInfo[]>("speech_voices", { engine });
+
+/** Stops whatever is being read and reads `text` from the start. */
+export const speechSay = (text: string) => invoke<void>("speech_say", { text });
+
+/**
+ * The next piece of a reply as it streams. Send one at a time: two in flight
+ * can arrive in either order. See `useSpeech`, which queues them.
+ */
+export const speechFeed = (text: string) => invoke<void>("speech_feed", { text });
+
+/** Says what the reply has held back: it finished, or paused for a tool. */
+export const speechFlush = () => invoke<void>("speech_flush");
+
+export const speechStop = () => invoke<void>("speech_stop");
 
 export const onPermissionRequest = (
   handler: (request: PermissionRequest) => void,

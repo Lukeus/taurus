@@ -546,6 +546,12 @@ pub fn search_key_status(backend_id: &str, api_key_env: Option<&str>) -> crate::
     crate::secrets::status(&search_key_id(backend_id), api_key_env)
 }
 
+/// Credential-store id for a speech engine's key. Namespaced for the same
+/// reason [`search_key_id`] is.
+pub fn speech_key_id(engine: SpeechEngine) -> String {
+    format!("speech:{}", engine.id())
+}
+
 /// How to reach one model backend.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -1252,6 +1258,10 @@ pub struct Settings {
     /// the list it does.
     #[serde(default = "default_voice_model")]
     pub voice_model: String,
+    /// Reading replies aloud: whether to, and in whose voice. See
+    /// [`SpeechSettings`].
+    #[serde(default)]
+    pub speech: SpeechSettings,
     /// Plugins switched on or off, by name. A plugin not named here is on
     /// unless its manifest says `defaultEnabled: false`. See
     /// [`crate::plugins`].
@@ -1283,6 +1293,161 @@ fn default_voice_model() -> String {
 /// See [`Settings::voice_model`]. Kept in step with `taurus_voice::DEFAULT_MODEL`
 /// by a test in the app, which is the crate that depends on both.
 pub const DEFAULT_VOICE_MODEL: &str = "base.en";
+
+/// Reading replies aloud. Off until somebody turns it on, and then in the
+/// system's own voice until they pick another.
+///
+/// Every engine keeps its own settings, so switching from ElevenLabs to the
+/// system voice and back doesn't lose the voice that was chosen there. Keys
+/// aren't here: they're in the credential store, under [`speech_key_id`], or
+/// in the environment variable each engine names.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SpeechSettings {
+    /// Read each reply aloud as it arrives. Off, a reply is only read when its
+    /// Read aloud button is pressed.
+    #[serde(default)]
+    pub read_aloud: bool,
+    #[serde(default)]
+    pub engine: SpeechEngine,
+    #[serde(default)]
+    pub system: SystemSpeech,
+    #[serde(default)]
+    pub elevenlabs: ElevenLabsSpeech,
+    #[serde(default)]
+    pub openai: OpenAiSpeech,
+}
+
+impl Default for SpeechSettings {
+    fn default() -> Self {
+        Self {
+            read_aloud: false,
+            engine: SpeechEngine::System,
+            system: SystemSpeech::default(),
+            elevenlabs: ElevenLabsSpeech::default(),
+            openai: OpenAiSpeech::default(),
+        }
+    }
+}
+
+/// Whose voice reads replies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SpeechEngine {
+    /// The operating system's: `say` on macOS, the WinRT synthesizer on
+    /// Windows, `espeak-ng` on Linux. Nothing leaves the machine.
+    #[default]
+    System,
+    #[serde(rename = "elevenlabs")]
+    #[ts(rename = "elevenlabs")]
+    ElevenLabs,
+    /// Anything that answers OpenAI's `/v1/audio/speech`: OpenAI itself, or a
+    /// server of the same shape, local or not.
+    #[serde(rename = "openai")]
+    #[ts(rename = "openai")]
+    OpenAi,
+}
+
+impl SpeechEngine {
+    /// The name the key settings and messages use.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::ElevenLabs => "elevenlabs",
+            Self::OpenAi => "openai",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SystemSpeech {
+    /// The voice's id as the system lists it, or `None` for the system's
+    /// default voice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub voice: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ElevenLabsSpeech {
+    /// A voice id from the account's voice list. There's no default: which
+    /// voices an account has is the account's business, so Settings lists
+    /// them once there's a key and picks the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub voice_id: Option<String>,
+    #[serde(default = "default_elevenlabs_model")]
+    pub model: String,
+    #[serde(
+        default = "default_elevenlabs_key_env",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub api_key_env: Option<String>,
+}
+
+impl Default for ElevenLabsSpeech {
+    fn default() -> Self {
+        Self {
+            voice_id: None,
+            model: default_elevenlabs_model(),
+            api_key_env: default_elevenlabs_key_env(),
+        }
+    }
+}
+
+fn default_elevenlabs_model() -> String {
+    "eleven_flash_v2_5".to_string()
+}
+
+fn default_elevenlabs_key_env() -> Option<String> {
+    Some("ELEVENLABS_API_KEY".to_string())
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OpenAiSpeech {
+    /// Up to and including the version: `https://api.openai.com/v1`, or
+    /// `http://localhost:8880/v1` for a local server.
+    #[serde(default = "default_openai_speech_url")]
+    pub base_url: String,
+    #[serde(default = "default_openai_speech_model")]
+    pub model: String,
+    #[serde(default = "default_openai_speech_voice")]
+    pub voice: String,
+    /// No default, unlike ElevenLabs. `OPENAI_API_KEY` is usually exported
+    /// for the model provider, and reading it here would send it to whatever
+    /// address this is pointed at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub api_key_env: Option<String>,
+}
+
+impl Default for OpenAiSpeech {
+    fn default() -> Self {
+        Self {
+            base_url: default_openai_speech_url(),
+            model: default_openai_speech_model(),
+            voice: default_openai_speech_voice(),
+            api_key_env: None,
+        }
+    }
+}
+
+fn default_openai_speech_url() -> String {
+    "https://api.openai.com/v1".to_string()
+}
+
+fn default_openai_speech_model() -> String {
+    "gpt-4o-mini-tts".to_string()
+}
+
+fn default_openai_speech_voice() -> String {
+    "alloy".to_string()
+}
 
 /// See [`Settings::context_limit`]. The window most current hosted models
 /// were built around, so it holds a conversation those models were tuned for.
@@ -1324,6 +1489,7 @@ impl Default for Settings {
             context_strategy: taurus_core::ContextStrategy::Compact,
             context_limit: default_context_limit(),
             voice_model: default_voice_model(),
+            speech: SpeechSettings::default(),
             plugins: BTreeMap::new(),
         }
     }
@@ -1393,6 +1559,9 @@ pub struct StoredSettings {
     /// See [`Settings::voice_model`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice_model: Option<String>,
+    /// See [`Settings::speech`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech: Option<SpeechSettings>,
     /// See [`Settings::plugins`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<BTreeMap<String, bool>>,
@@ -1426,6 +1595,10 @@ impl StoredSettings {
         self.context_strategy = other.context_strategy.or(self.context_strategy);
         self.context_limit = other.context_limit.or(self.context_limit);
         self.voice_model = other.voice_model.or(self.voice_model.take());
+        // Whole, like the rest: a voice is chosen as a set of fields that
+        // belong together, and half of one project's ElevenLabs settings over
+        // the user's would be a voice nobody picked.
+        self.speech = other.speech.or(self.speech.take());
         // Name by name. See `Settings::plugins`.
         if let Some(theirs) = other.plugins {
             self.plugins
@@ -1479,6 +1652,7 @@ impl StoredSettings {
                 .voice_model
                 .filter(|m| !m.trim().is_empty())
                 .unwrap_or(defaults.voice_model),
+            speech: self.speech.unwrap_or(defaults.speech),
             plugins: self.plugins.unwrap_or(defaults.plugins),
         }
     }
@@ -1779,6 +1953,15 @@ mod tests {
             context_strategy: Some(taurus_core::ContextStrategy::Relay),
             context_limit: Some(120_000),
             voice_model: Some("small.en".into()),
+            speech: Some(SpeechSettings {
+                read_aloud: true,
+                engine: SpeechEngine::ElevenLabs,
+                elevenlabs: ElevenLabsSpeech {
+                    voice_id: Some("abc".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             plugins: Some(BTreeMap::from([("lint-pack".into(), false)])),
         }
     }
@@ -1994,6 +2177,49 @@ mod tests {
         // destroy the other's key.
         assert_ne!(search_key_id("brave"), "brave");
         assert_eq!(search_key_id("brave"), "search:brave");
+    }
+
+    #[test]
+    fn speech_keys_have_their_own_namespace() {
+        assert_eq!(speech_key_id(SpeechEngine::ElevenLabs), "speech:elevenlabs");
+        assert_eq!(speech_key_id(SpeechEngine::OpenAi), "speech:openai");
+    }
+
+    #[test]
+    fn a_hand_written_speech_setting_fills_in_the_rest() {
+        let stored: StoredSettings = serde_json::from_str(
+            r#"{"speech": {"read_aloud": true, "engine": "openai", "openai": {"voice": "nova"}}}"#,
+        )
+        .unwrap();
+        let speech = stored.resolve().speech;
+        assert!(speech.read_aloud);
+        assert_eq!(speech.engine, SpeechEngine::OpenAi);
+        assert_eq!(speech.openai.voice, "nova");
+        assert_eq!(speech.openai.base_url, "https://api.openai.com/v1");
+        assert_eq!(speech.openai.api_key_env, None);
+        assert_eq!(
+            speech.elevenlabs.api_key_env.as_deref(),
+            Some("ELEVENLABS_API_KEY")
+        );
+    }
+
+    #[test]
+    fn speech_is_off_and_local_until_turned_on() {
+        let speech = StoredSettings::default().resolve().speech;
+        assert!(!speech.read_aloud);
+        assert_eq!(speech.engine, SpeechEngine::System);
+        let json = serde_json::to_value(&speech).unwrap();
+        assert_eq!(json["engine"], "system");
+        // The names `id()` gives, which the key ids and the docs use too.
+        for engine in [
+            SpeechEngine::System,
+            SpeechEngine::ElevenLabs,
+            SpeechEngine::OpenAi,
+        ] {
+            assert_eq!(serde_json::to_value(engine).unwrap(), engine.id());
+        }
+        let back: SpeechSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(back, speech);
     }
 
     #[test]

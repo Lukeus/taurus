@@ -65,6 +65,7 @@ import type { Entry } from "./state/store";
 import { pinnedPlan, useStore } from "./state/store";
 import { Composer, type Parked } from "./components/Composer";
 import { DICTATE_SHORTCUT } from "./components/Mic";
+import { useSpeech } from "./state/speech";
 
 /*
  * The panels that open over the app, loaded when one is first needed rather
@@ -795,6 +796,10 @@ export default function App() {
    */
   const library = `${store.status?.skill_count ?? 0}:${store.status?.agent_count ?? 0}`;
 
+  // What the two reading-aloud commands say and whether Stop can run.
+  const readAloud = store.status?.settings.speech?.read_aloud ?? false;
+  const speaking = useSpeech((s) => s.speaking);
+
   /**
    * Everything the palette can do.
    *
@@ -842,6 +847,29 @@ export default function App() {
         keywords: "voice speak microphone mic talk speech transcribe",
         shortcut: DICTATE_SHORTCUT,
         run: () => setDictate((n) => n + 1),
+      },
+      {
+        id: "read-aloud",
+        label: readAloud ? "Stop reading replies aloud" : "Read replies aloud",
+        group: "Do",
+        keywords: "voice speak speech say tts listen hear audio",
+        unavailable: store.status ? undefined : "Still loading",
+        run: () => {
+          const speech = useStore.getState().status?.settings.speech;
+          if (!speech) return;
+          void api
+            .saveSpeechSettings({ ...speech, read_aloud: !speech.read_aloud })
+            .catch((e) => useSpeech.setState({ failed: String(e) }));
+        },
+      },
+      {
+        id: "stop-reading",
+        label: "Stop reading",
+        group: "Do",
+        keywords: "voice speech quiet silence mute hush",
+        shortcut: "esc",
+        unavailable: speaking ? undefined : "Nothing is being read",
+        run: () => useSpeech.getState().stop(),
       },
       {
         id: "workspace",
@@ -942,7 +970,7 @@ export default function App() {
     // start a conversation against the model list as it stood before the
     // models arrived, or paint with the custom theme that was in force then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [store.busy, store.session, theme],
+    [store.busy, store.session, theme, readAloud, speaking],
   );
 
   /**
