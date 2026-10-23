@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
+import * as api from "../lib/api";
 import { APPLE } from "../lib/keys";
+import { useSpeech } from "../state/speech";
+import { useStore } from "../state/store";
 import { clock, MAX_SECONDS, megabytes, useVoice } from "../state/voice";
 
 /** How the dictation shortcut is written: the same chord on every platform. */
@@ -97,6 +100,70 @@ export function MicButton({ disabled }: { disabled: boolean }) {
 }
 
 /**
+ * Read-aloud, beside the mic: a switch while it's quiet, and Stop while it's
+ * talking.
+ *
+ * One control for both, because they're never wanted at once. While a reply
+ * is being read the thing anybody reaches for is a way to make it stop;
+ * otherwise it's whether the next one should be read at all.
+ */
+export function SpeakerButton() {
+  const speech = useStore((s) => s.status?.settings.speech ?? null);
+  const speaking = useSpeech((s) => s.speaking);
+  const stop = useSpeech((s) => s.stop);
+  if (!speech) return null;
+  const on = speech.read_aloud;
+
+  const tip = speaking
+    ? "Stop reading (esc)"
+    : on
+      ? "Replies are read aloud. Click to stop reading them."
+      : "Read replies aloud as they arrive";
+
+  return (
+    <button
+      type="button"
+      className="composer-speaker grid size-8 shrink-0 place-items-center rounded-full border border-line bg-transparent p-0 text-dim hover:text-ink data-on:text-accent data-speaking:border-accent data-speaking:text-accent"
+      data-on={on || undefined}
+      data-speaking={speaking || undefined}
+      aria-label={speaking ? "Stop reading" : "Read replies aloud"}
+      aria-pressed={speaking ? undefined : on}
+      data-tip={tip}
+      onClick={() => {
+        if (speaking) return stop();
+        void api.saveSpeechSettings({ ...speech, read_aloud: !on }).catch((e) =>
+          useSpeech.setState({ failed: String(e) }),
+        );
+      }}
+    >
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 16 16"
+        className="size-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {speaking ? (
+          <rect x="4.5" y="4.5" width="7" height="7" rx="1.25" />
+        ) : (
+          <>
+            <path d="M2.75 6.25h2.5L8.5 3.5v9L5.25 9.75h-2.5z" />
+            {on ? (
+              <path d="M10.75 6a2.75 2.75 0 0 1 0 4M12.5 4.25a5.25 5.25 0 0 1 0 7.5" />
+            ) : (
+              <path d="M11 6.25l3 3.5M14 6.25l-3 3.5" />
+            )}
+          </>
+        )}
+      </svg>
+    </button>
+  );
+}
+
+/**
  * What the mic has to say, above the box: the offer to download a model,
  * the download's progress, and what went wrong.
  *
@@ -112,6 +179,8 @@ export function VoiceStrip() {
   const stopDownload = useVoice((s) => s.stopDownload);
   const decline = useVoice((s) => s.decline);
   const dismiss = useVoice((s) => s.dismiss);
+  const speechFailed = useSpeech((s) => s.failed);
+  const dismissSpeech = useSpeech((s) => s.dismiss);
 
   if (phase.kind === "offer") {
     const { model } = phase;
@@ -170,6 +239,26 @@ export function VoiceStrip() {
         <span className="composer-queued-text whitespace-normal">{notice.text}</span>
         <div className="spacer" />
         <button className="quiet" onClick={dismiss} aria-label="Dismiss">
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  // Why reading aloud stopped. Here because a reply that was being read and
+  // went quiet leaves somebody looking at the box, not at Settings.
+  if (speechFailed) {
+    return (
+      <div
+        className="composer-queued held speech-notice border-l-danger"
+        role="alert"
+      >
+        <span className="dataset-mark">!</span>
+        <span className="composer-queued-text whitespace-normal">
+          Couldn't read the reply aloud. {speechFailed}
+        </span>
+        <div className="spacer" />
+        <button className="quiet" onClick={dismissSpeech} aria-label="Dismiss">
           ✕
         </button>
       </div>

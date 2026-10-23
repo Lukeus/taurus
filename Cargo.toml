@@ -19,6 +19,7 @@ members = [
     "crates/taurus-host",
     "crates/taurus-telemetry",
     "crates/taurus-voice",
+    "crates/taurus-speech",
     "crates/taurus-cli",
     "src-tauri",
 ]
@@ -49,6 +50,7 @@ taurus-process = { path = "crates/taurus-process" }
 taurus-host = { path = "crates/taurus-host" }
 taurus-telemetry = { path = "crates/taurus-telemetry" }
 taurus-voice = { path = "crates/taurus-voice" }
+taurus-speech = { path = "crates/taurus-speech" }
 taurus-core = { path = "crates/taurus-core" }
 
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "process", "fs", "time", "io-util"] }

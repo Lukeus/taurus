@@ -19,6 +19,7 @@ import { duration, plural } from "../lib/format";
 import { useStable } from "../lib/stable";
 import type { Answer, LineRange } from "../lib/api";
 import { useStore, type Entry } from "../state/store";
+import { turnText, useSpeech } from "../state/speech";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
@@ -605,9 +606,40 @@ const TurnView = memo(function TurnView({
           <Elapsed />
         </div>
       )}
+      {!working && <ReadAloud turn={turn} />}
     </section>
   );
 });
+
+/**
+ * Reads a turn's replies aloud, or stops reading them.
+ *
+ * Revealed on hover like the prompt's own actions, and kept in view while it's
+ * this turn being read, so Stop is where the press was.
+ */
+function ReadAloud({ turn }: { turn: Turn }) {
+  const text = turnText(
+    turn.body.flatMap((item) =>
+      !Array.isArray(item) && item.kind === "assistant" ? [item.text] : [],
+    ),
+  );
+  const key = turn.prompt?.id ?? (Array.isArray(turn.body[0]) ? turn.body[0][0]?.id : turn.body[0]?.id);
+  const reading = useSpeech((s) => s.speaking && s.reading === key);
+  const say = useSpeech((s) => s.say);
+  const stop = useSpeech((s) => s.stop);
+  if (!text || !key) return null;
+  return (
+    <div className="turn-actions" data-reading={reading || undefined}>
+      <button
+        className="turn-read"
+        onClick={() => (reading ? stop() : say(text, key))}
+        data-tip={reading ? undefined : "Read this reply aloud. Code and tables are skipped."}
+      >
+        {reading ? "Stop reading" : "Read aloud"}
+      </button>
+    </div>
+  );
+}
 
 /**
  * How long the turn has been running.

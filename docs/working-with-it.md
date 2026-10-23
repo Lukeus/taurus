@@ -473,6 +473,97 @@ docs, scripts), and it reaches for those spellings instead.
 - **Five minutes** is the longest recording. The composer finishes it for
   you at 5:00, so nothing is cut off silently.
 
+## Hearing replies read aloud
+
+Taurus can read its replies to you. The speaker beside the mic turns it on.
+After that, the reply to each message you send is read as it streams in, a
+sentence at a time, so you hear the first words while the model is still writing the rest.
+Every turn also has a **Read aloud** button under its last reply, which shows
+on hover and reads that turn on demand.
+
+![A reply being read aloud: Stop beside the mic, and Stop reading under the
+turn it's reading](screenshots/reading.png)
+
+To stop it, do any of these:
+
+- Press the speaker again. It turns into a stop button while it talks.
+- Press Escape.
+- Send another message.
+- Press the mic. Otherwise the microphone would hear the reply and type it
+  back into the box.
+- Open another conversation.
+
+⌘K has both actions too, **Read replies aloud** and **Stop reading**.
+
+### What gets read
+
+Only the prose. A reply is written to be read, and read out as it is, it
+would be a voice spelling out asterisks and forty lines of Rust. So:
+
+- **Code blocks, diffs and tables are skipped whole.**
+- **Tool calls and their output are never read.** They don't reach the
+  speaker at all.
+- **Inline code is read when it's short**, so "run `cargo test`" is said as
+  "run cargo test". Inline code over 40 characters is dropped.
+- **Links read as their text, and a bare URL as its host:** "see
+  github.com for details".
+- **Markup goes**: emphasis, heading and list markers, quote bars, HTML tags,
+  footnote marks and emoji. System voices read emoji by name, as in "check
+  mark button".
+- **Headings and list items are read on their own**, so the voice pauses where
+  your eye would.
+
+### Whose voice
+
+**Settings › Voice › Reading aloud** picks the voice. **Try it** plays a
+sample in the one that's chosen.
+
+![Settings › Voice with ElevenLabs chosen, a voice picked from the account,
+and the key in the keychain](screenshots/speech.png)
+
+| Voice | What it is | What leaves your computer |
+| --- | --- | --- |
+| Built in | macOS's voices through `say`, the Windows speech synthesizer, or `espeak-ng` on Linux. The default. | Nothing |
+| ElevenLabs | Any voice on your ElevenLabs account, including ones you've added there. Settings lists them once a key is stored, and picks the first. | Each sentence of a reply |
+| OpenAI or a compatible server | OpenAI's `/v1/audio/speech`, or any server with the same shape, such as Kokoro-FastAPI running locally. Set its address, model and voice. | Each sentence, to the address you set |
+
+Only the sentence being spoken is sent, never the rest of the conversation.
+Keys go in the OS keychain, as provider keys do. ElevenLabs also reads
+`ELEVENLABS_API_KEY` if it's set. The OpenAI-shaped service reads no
+environment variable unless you name one. `OPENAI_API_KEY` is usually
+exported for a model provider, and reading it here would send it to whatever
+address this one points at.
+
+Both services are asked for raw PCM and stream it, so a sentence starts
+playing when its first bytes arrive. To keep a Stop from paying for the rest
+of a long reply, Taurus synthesizes at most about six seconds ahead of what's
+playing. A service charges by the character.
+
+On macOS, Enhanced and Premium voices sound much better than the defaults.
+Download them in System Settings › Accessibility › Spoken Content and they
+appear in the list. Each sentence costs about half a second to start `say`.
+Synthesizing the next sentence while the current one plays hides that, except
+before the first: on an M-series Mac, the first word of a seven-sentence reply
+was heard 0.86 s after it was handed over.
+
+### When it can't
+
+When reading stops for a reason, the reason shows above the box, with what to
+do about it:
+
+- No key stored, or one the service refused.
+- No ElevenLabs voice chosen yet.
+- An address that isn't one, or one that doesn't answer at `/audio/speech`.
+  Most servers want it to end in `/v1`.
+- A macOS voice that's been removed.
+- On Linux, no `espeak-ng`. Install it with your package manager, or choose a
+  service instead.
+- Speakers that don't open within 10 seconds, which is the same stuck audio
+  service the mic can run into.
+
+Whatever fails, the rest of that turn isn't sent anywhere, so one mistake
+gives you one message, not a message per sentence.
+
 ## Finding code by what it does
 
 `grep` answers *where does this string appear*. On an unfamiliar repository

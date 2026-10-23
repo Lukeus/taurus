@@ -278,6 +278,10 @@ you put things back afterwards.
   press the mic and talk. Speech becomes text on your own computer, in the box
   for you to check before it's sent. The audio is never saved or sent
   anywhere.
+- [**Hearing replies read aloud**](docs/working-with-it.md#hearing-replies-read-aloud):
+  the speaker beside the mic reads each reply as it streams, prose only, never
+  code or tool output. Your computer's own voice, ElevenLabs, or anything
+  shaped like OpenAI's speech endpoint.
 - [**Finding code by what it does**](docs/working-with-it.md#finding-code-by-what-it-does):
   local semantic search, no external service.
 - [**When a turn stops**](docs/working-with-it.md#when-a-turn-stops) and
@@ -474,6 +478,8 @@ crates/
   taurus-web/               Web search and page fetching
   taurus-index/             Local semantic search: chunking, embedding, ranking
   taurus-data/              Reading, profiling, and transforming tabular files, behind one engine trait
+  taurus-voice/             Dictation: microphone capture, whisper.cpp transcription
+  taurus-speech/            Reading aloud: the speakable-text filter, voices, playback
   taurus-core/              Session state, the agent loop, sub-agents
   taurus-host/              Config, system prompt, registry assembly
   taurus-cli/               The `taurus` binary

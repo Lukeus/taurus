@@ -22,6 +22,7 @@ import { create } from "zustand";
 
 import * as api from "../lib/api";
 import type { VoiceModel, VoiceStatus } from "../lib/api";
+import { useSpeech } from "./speech";
 
 export type Phase =
   | { kind: "idle" }
@@ -117,6 +118,9 @@ export const useVoice = create<Voice>((set, get) => ({
       return;
     }
 
+    // A reply being read aloud would be picked up by the microphone and typed
+    // back into the box.
+    if (useSpeech.getState().speaking) useSpeech.getState().stop();
     set({ phase: { kind: "opening" }, level: 0 });
     try {
       await api.startListening((level) => {

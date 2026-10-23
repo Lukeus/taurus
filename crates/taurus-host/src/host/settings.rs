@@ -480,6 +480,47 @@ impl Host {
             .await;
     }
 
+    /// How replies are read aloud.
+    ///
+    /// Global, like the speech model: which voice somebody wants to hear is
+    /// theirs, not the project's. A workspace file can still set it by hand.
+    pub async fn set_speech(&self, speech: config::SpeechSettings) {
+        self.edit_global_setting(|s| s.speech = Some(speech)).await;
+    }
+
+    /// Where each speech service's key is coming from.
+    pub async fn speech_key_statuses(&self) -> Vec<(config::SpeechEngine, secrets::KeyStatus)> {
+        let speech = self.settings().await.speech;
+        [
+            (
+                config::SpeechEngine::ElevenLabs,
+                speech.elevenlabs.api_key_env,
+            ),
+            (config::SpeechEngine::OpenAi, speech.openai.api_key_env),
+        ]
+        .into_iter()
+        .map(|(engine, variable)| {
+            let status = secrets::status(&config::speech_key_id(engine), variable.as_deref());
+            (engine, status)
+        })
+        .collect()
+    }
+
+    /// The key a speech service will be sent, honoring the environment over
+    /// the store. Reads the credential store, which can block on a dialog:
+    /// call it off the async runtime.
+    pub fn speech_key(engine: config::SpeechEngine, variable: Option<&str>) -> Option<String> {
+        secrets::resolve(&config::speech_key_id(engine), variable)
+    }
+
+    pub fn set_speech_key(engine: config::SpeechEngine, key: &str) -> Result<(), String> {
+        secrets::store(&config::speech_key_id(engine), key)
+    }
+
+    pub fn clear_speech_key(engine: config::SpeechEngine) -> Result<(), String> {
+        secrets::clear(&config::speech_key_id(engine))
+    }
+
     /// Brings this workspace's semantic index up to date, outside any turn.
     ///
     /// The first index of a repository takes the better part of a minute, and

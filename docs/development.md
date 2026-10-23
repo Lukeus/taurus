@@ -867,6 +867,28 @@ Release mode matters. whisper.cpp itself is always built optimized, but the
 resampler in front of it isn't, and a debug build of it skews the timings.
 Set `TAURUS_HOME` to keep the download out of your real `~/.taurus`.
 
+Reading aloud has one too. It prints each sentence the filter hands out, then
+plays them and reports when the first sound came and how long the whole took.
+
+```bash
+# The filter alone, on a reply saved as Markdown. No sound.
+cargo run -p taurus-speech --example speak -- --file reply.md --dry
+
+# The system voice, and the voices it has.
+cargo run -p taurus-speech --example speak -- "Hello. This is Taurus."
+cargo run -p taurus-speech --example speak -- --list
+
+# Stops partway, and fails if the speaker still says it's talking 300 ms later.
+cargo run -p taurus-speech --example speak -- --stop-after 1.5 --file reply.md
+
+# The services. Keys come from the environment here, not the keychain.
+ELEVENLABS_API_KEY=… cargo run -p taurus-speech --example speak -- --engine elevenlabs --list
+ELEVENLABS_API_KEY=… cargo run -p taurus-speech --example speak -- --engine elevenlabs --voice <id> "Hi."
+OPENAI_API_KEY=… cargo run -p taurus-speech --example speak -- --engine openai --voice coral "Hi."
+cargo run -p taurus-speech --example speak -- --engine openai \
+  --base-url http://localhost:8880/v1 --model kokoro --voice af_bella "Hi."
+```
+
 ## The speech engine
 
 Dictation runs on whisper.cpp, which `whisper-rs-sys` builds from source on

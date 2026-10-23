@@ -217,6 +217,12 @@ pub struct AppState {
     /// Stops the transcription under way. Replaced at the start of each one,
     /// like `index_build`, so a cancel that arrives late can't stop the next.
     pub voice_abort: std::sync::Mutex<Arc<AtomicBool>>,
+    /// Reads replies aloud. One for the window, because there's one pair of
+    /// speakers and two replies at once would be noise.
+    pub speaker: taurus_speech::Speaker,
+    /// The voice the speaker resolved last, key included. See
+    /// `commands::speech::engine` for why it's kept.
+    pub speech_engine: std::sync::Mutex<Option<Arc<taurus_speech::Engine>>>,
     /// The model calls the window starts outside a turn — a turn review, an
     /// agent draft — so the pane that started one can stop it.
     pub stoppable: Stoppable,
@@ -329,6 +335,11 @@ impl AppState {
             )),
         );
 
+        let speaker = {
+            let app = app.clone();
+            taurus_speech::Speaker::new(move |event| crate::commands::speech_event(&app, event))
+        };
+
         Self {
             app,
             host,
@@ -346,6 +357,8 @@ impl AppState {
                     .join("whisper"),
             )),
             voice_abort: std::sync::Mutex::new(Arc::new(AtomicBool::new(false))),
+            speaker,
+            speech_engine: std::sync::Mutex::new(None),
             stoppable: Stoppable::default(),
             loaded: watch::channel(false).0,
         }

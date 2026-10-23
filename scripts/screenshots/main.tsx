@@ -19,6 +19,7 @@ import { createRoot } from "react-dom/client";
 
 import { APPLE } from "../../src/lib/keys";
 import { useVoice } from "../../src/state/voice";
+import { useSpeech } from "../../src/state/speech";
 
 import {
   BACKGROUND_JOBS,
@@ -47,6 +48,7 @@ import {
   MCP_SERVERS,
   MODELS,
   PLUGINS,
+  ELEVENLABS_VOICES,
   KEY_STATUSES,
   PERMISSION,
   PERMISSION_RULES,
@@ -55,6 +57,7 @@ import {
   RECIPE_RUN,
   SEARCH_HITS,
   SESSIONS,
+  SPEECH_STATUS,
   STATUS,
   USAGE,
   TRACES,
@@ -350,6 +353,10 @@ window.__TAURI_INTERNALS__ = {
         folder: "~/.taurus/models/whisper",
       };
     }
+    if (cmd === "speech_status") return SPEECH_STATUS;
+    if (cmd === "speech_voices") {
+      return (args as { engine: string }).engine === "elevenlabs" ? ELEVENLABS_VOICES : [];
+    }
     if (cmd in ANSWERS) return ANSWERS[cmd];
     // Anything else is a command a screenshot does not need. Answering null
     // rather than throwing keeps one unmodelled call from blanking the window.
@@ -554,6 +561,28 @@ requestAnimationFrame(() => {
         useVoice.setState({
           download: { model: "small.en", done: 79_841_446, total: 190_098_681, fromMic: false },
         });
+      },
+      // The same tab further down: replies read aloud in an ElevenLabs voice,
+      // with the account's voices listed. Gated on the list, which arrives
+      // after the key status says there's a key to ask with.
+      speech: async () => {
+        (await click(".rail-link b", (b) => b === "Settings"))();
+        (await click(".pill-row .pill", (b) => b === "Voice"))();
+        const section = await until(() =>
+          document.querySelector(".speech-settings option[value='JBFqnCBsd6RMkjVDRZzb']")
+            ? document.querySelector(".speech-settings")
+            : null,
+        );
+        section.scrollIntoView({ block: "start" });
+      },
+      // A reply being read aloud: Stop beside the mic, the hint saying how
+      // else to stop it, and the turn's own button showing which one it is.
+      // Seeded, because nothing in this harness plays sound to report on.
+      reading: async () => {
+        useSpeech.setState({ speaking: true, reading: "u1" });
+        const button = await until(() => document.querySelector(".turn-actions[data-reading]"));
+        // It sits under the turn's last reply, below the fold of this one.
+        button.scrollIntoView({ block: "center" });
       },
       // The providers tab, with a card unfolded — which is where nearly all of
       // this drawer's form is. Folded it is a header row, and a picture of two

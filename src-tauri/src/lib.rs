@@ -193,6 +193,9 @@ pub fn run() {
                 // A microphone opened by the old page would stay open with
                 // nobody to press stop, and nothing on screen saying so.
                 state.voice.cancel();
+                // A reply from the old page would go on being read with no
+                // button left to stop it.
+                state.speaker.stop();
                 // The same for the turns the old page started and the dialogs
                 // it was showing for them: nothing is left to answer either,
                 // and a turn parked on one holds its conversation until the app
@@ -206,6 +209,7 @@ pub fn run() {
                 if let Some(state) = window.app_handle().try_state::<Arc<state::AppState>>() {
                     state.terminals.close_all();
                     state.voice.cancel();
+                    state.speaker.stop();
                     // The same argument, for the commands the agent left
                     // running: a background `cargo watch` is no more in this
                     // process's tree than a shell under a pty is, and the
@@ -338,6 +342,15 @@ pub fn run() {
             commands::voice_start,
             commands::voice_stop,
             commands::voice_cancel,
+            commands::speech_status,
+            commands::save_speech_settings,
+            commands::set_speech_key,
+            commands::clear_speech_key,
+            commands::speech_voices,
+            commands::speech_say,
+            commands::speech_feed,
+            commands::speech_flush,
+            commands::speech_stop,
             commands::save_providers,
             commands::list_global_providers,
             commands::list_key_statuses,

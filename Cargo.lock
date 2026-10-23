@@ -6635,6 +6635,7 @@ dependencies = [
  "taurus-mcp",
  "taurus-provider",
  "taurus-skills",
+ "taurus-speech",
  "taurus-telemetry",
  "taurus-tools",
  "taurus-voice",
@@ -6931,6 +6932,24 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "taurus-speech"
+version = "0.3.0"
+dependencies = [
+ "cpal",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ts-rs",
+ "windows 0.62.2",
 ]
 
 [[package]]

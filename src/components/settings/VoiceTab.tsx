@@ -5,9 +5,11 @@ import { useArmed } from "../../lib/armed";
 import { megabytes, useVoice } from "../../state/voice";
 import { DICTATE_SHORTCUT } from "../Mic";
 import { Problem } from "../Problem";
+import { SpeechSection } from "./SpeechSection";
 
 /**
- * The Voice tab: which speech model the mic uses, and the files on disk.
+ * The Voice tab: which speech model the mic uses, the files on disk, and
+ * reading replies aloud.
  *
  * Downloads go through the same store the composer's prompt does, so one
  * started here shows its progress there too, and the mic knows the moment the
@@ -22,9 +24,11 @@ export function VoiceTab() {
   const stopDownload = useVoice((s) => s.stopDownload);
   const { armed, arm, disarm } = useArmed<string>();
   const [error, setError] = useState<string | null>(null);
+  const [keychain, setKeychain] = useState(false);
 
   useEffect(() => {
     void refresh();
+    api.keychainAvailable().then(setKeychain).catch(() => setKeychain(false));
   }, [refresh]);
 
   const run = (action: () => Promise<unknown>) => {
@@ -133,6 +137,8 @@ export function VoiceTab() {
 
       {notice?.tone === "error" && <Problem>{notice.text}</Problem>}
       {error && <Problem>{error}</Problem>}
+
+      <SpeechSection keychain={keychain} />
     </>
   );
 }

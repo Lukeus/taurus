@@ -10,6 +10,7 @@ import { create } from "zustand";
 
 import * as api from "../lib/api";
 import { reportFromText, takeBackgroundReports } from "../lib/delegate";
+import * as speech from "./speech";
 import type {
   Answer,
   AppStatus,
@@ -589,11 +590,19 @@ function turnStream(
   sessionId: string,
   get: () => Store,
   set: (partial: Partial<Store> | ((s: Store) => Partial<Store>)) => void,
+  /**
+   * Whether this view may read the turn aloud. Only the window that sent it:
+   * a turn attached to partway through would start reading mid-sentence.
+   */
+  speak = false,
 ) {
   const token = {};
   watching = token;
   return batchEvents((events) => {
     if (watching !== token || get().session?.id !== sessionId) return;
+    // Checked per batch rather than once, so switching it off mid-reply
+    // stops feeding the rest. What's already queued is the Stop button's.
+    if (speak && get().status?.settings.speech?.read_aloud) speech.hear(events);
     set((s) => ({
       entries: foldEvents(events, s.entries),
       changed: events.reduce(mergeChanged, s.changed),
@@ -743,6 +752,7 @@ export const useStore = create<Store>((set, get) => ({
     // that left a note behind — so the rail's counts stop being as old as
     // whatever the user last happened to click.
     api.onStatus((status) => set((s) => ({ status: settle(s.status, status) })));
+    void speech.listenForSpeech();
 
     // One conversation at a time, merged into the list already held. This is
     // what puts a new conversation in the rail the moment its first question
@@ -827,6 +837,7 @@ export const useStore = create<Store>((set, get) => ({
   startSession: async (providerId, model) => {
     const previous = get().session;
     const session = await api.createSession(providerId, model);
+    speech.leave();
     // Released only once the replacement is in hand, so a provider that has
     // gone away leaves the conversation on screen rather than closing it in
     // exchange for nothing.
@@ -873,6 +884,7 @@ export const useStore = create<Store>((set, get) => ({
 
   resume: async (sessionId) => {
     const previous = get().session;
+    if (previous?.id !== sessionId) speech.leave();
     // Raised around the whole thing rather than only the round trip: the
     // transcript on screen is still the previous conversation's until the
     // `set` below replaces it, and that is the whole of what this marks.
@@ -1104,7 +1116,10 @@ export const useStore = create<Store>((set, get) => ({
       ],
     }));
 
-    const stream = turnStream(session.id, get, set);
+    // Whatever was being read, the last reply or one picked out, is over: a
+    // voice going on about the old answer while the new one arrives is noise.
+    speech.startTurn();
+    const stream = turnStream(session.id, get, set, true);
 
     let died = false;
     try {
@@ -1134,6 +1149,7 @@ export const useStore = create<Store>((set, get) => ({
       }
     } finally {
       stream.flush();
+      speech.endTurn();
       // Everything past here is about the conversation on screen — the
       // composer, the open bubble, a message typed ahead. A turn can now be
       // left running while the window moves to another conversation, and this
@@ -1339,6 +1355,8 @@ export const useStore = create<Store>((set, get) => ({
           "Taurus is in the middle of a turn. Stop it before switching workspace.",
       });
     }
+
+    speech.leave();
 
     // Everything on screen belongs to the folder being left, and none of it
     // survives the move: the transcript is written under the old workspace's

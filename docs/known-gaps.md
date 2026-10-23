@@ -1565,12 +1565,27 @@ the backlog, and they're the minority.
   would be the same small change as above, wherever it's wanted. Neither has
   been made, because neither has the safety argument the hook timeout has: a
   hook is a guard whose whole promise is that it stopped something.
-- **Taurus doesn't talk back.** Voice goes one way: you can dictate a message
-  (see [Talking instead of typing](working-with-it.md#talking-instead-of-typing)),
-  but replies are text only. Reading them aloud needs a filter that decides
-  what's worth saying, since nobody wants a diff or a code block read out, and
-  a voice: the system's own first, then an OpenAI-shaped `/v1/audio/speech`
-  endpoint for better ones. Neither is built.
+- **The built-in voice is the operating system's.** It sounds different on
+  each platform, and on Linux it's `espeak-ng`, which is robotic. One neural
+  voice downloaded on first use, the way the speech model is, would sound the
+  same everywhere. The open ones (Piper, Kokoro) turn text into sounds with
+  `espeak-ng`, which is GPL, and Taurus is MIT, so that needs a phonemizer of
+  its own first. ElevenLabs or a local OpenAI-shaped server is the way to a
+  better voice today.
+- **Reading aloud has no speed, volume or output device setting.** It plays
+  through the system's default output at each voice's own pace. Each engine
+  takes a speed differently (`say` in words per minute, ElevenLabs as a
+  narrow multiplier, OpenAI as a wide one), so one slider needs a mapping for
+  each.
+- **The Windows voice is checked by CI's build, not by ear.** The WinRT calls
+  compile there, but nobody has listened to a reply on Windows yet. The same
+  is true of `espeak-ng` on Linux.
+- **The CLI doesn't read aloud, and `taurus key` doesn't store speech keys.**
+  Both are in the desktop app only. `ELEVENLABS_API_KEY`, or the variable
+  you name for the OpenAI-shaped service, works without the keychain.
+- **A reply is only read in the window that sent it.** Come back to a turn
+  that's still running, and it isn't read: joining partway would start
+  mid-sentence. Its **Read aloud** button reads it once it's done.
 - **Dictation speed on Windows and Linux hasn't been measured.** whisper.cpp
   runs on the GPU through Metal on macOS and on the CPU everywhere else. The
   CUDA and Vulkan backends aren't built in, because each needs an SDK on the

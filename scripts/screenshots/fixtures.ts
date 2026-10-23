@@ -49,6 +49,15 @@ export const STATUS = {
     agent_synthesis_enabled: true,
     disabled_tools: [],
     theme: "dark",
+    // Off, as it ships. The speaker beside the mic draws its off state in
+    // every shot of the composer.
+    speech: {
+      read_aloud: false,
+      engine: "system",
+      system: {},
+      elevenlabs: { model: "eleven_flash_v2_5", api_key_env: "ELEVENLABS_API_KEY" },
+      openai: { base_url: "https://api.openai.com/v1", model: "gpt-4o-mini-tts", voice: "alloy" },
+    },
   },
   skill_count: 12,
   agent_count: 4,
@@ -1449,3 +1458,34 @@ export const SKETCH = {
     2,
   ),
 };
+
+/**
+ * Settings › Voice's reading-aloud half, set up the way it is once an
+ * ElevenLabs key is stored: on, and a voice picked from the account.
+ */
+export const SPEECH_STATUS = {
+  settings: {
+    read_aloud: true,
+    engine: "elevenlabs",
+    system: {},
+    elevenlabs: {
+      voice_id: "EXAVITQu4vr4xnSDxMaL",
+      model: "eleven_flash_v2_5",
+      api_key_env: "ELEVENLABS_API_KEY",
+    },
+    openai: { base_url: "https://api.openai.com/v1", model: "gpt-4o-mini-tts", voice: "alloy" },
+  },
+  key_statuses: [
+    ["elevenlabs", { kind: "keychain" }],
+    ["openai", { kind: "missing" }],
+  ],
+  speaking: false,
+};
+
+/** An ElevenLabs account's voices: premade ones, and one somebody added. */
+export const ELEVENLABS_VOICES = [
+  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah", detail: "american, female" },
+  { id: "JBFqnCBsd6RMkjVDRZzb", name: "George", detail: "british, male" },
+  { id: "pFZP5JQG7iQjIQuC4Bku", name: "Lily", detail: "british, female" },
+  { id: "q0p9Wb3mUu5e1Gs1Nf2c", name: "Studio narrator", detail: "cloned" },
+];

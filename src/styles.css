@@ -7082,7 +7082,8 @@ button.link:where(:not(.excalidraw *)):hover {
   opacity: 0;
   transition: opacity var(--hover) var(--ease);
 }
-.prompt-edit {
+.prompt-edit,
+.turn-read {
   padding: 2px 8px;
   font-size: 11.5px;
   border-radius: var(--r-sm);
@@ -7094,8 +7095,23 @@ button.link:where(:not(.excalidraw *)):hover {
 .prompt-actions:focus-within {
   opacity: 1;
 }
-.prompt-edit:hover {
+.prompt-edit:hover,
+.turn-read:hover {
   color: var(--text);
+}
+
+/* A turn's Read aloud, under its last reply. Revealed the way the prompt's
+   actions are, and held in view while it's this turn being read. */
+.turn-actions {
+  display: flex;
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity var(--hover) var(--ease);
+}
+.turn:hover .turn-actions,
+.turn-actions:focus-within,
+.turn-actions[data-reading] {
+  opacity: 1;
 }
 
 /*

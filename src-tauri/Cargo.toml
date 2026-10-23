@@ -39,6 +39,7 @@ taurus-agents.workspace = true
 taurus-skills.workspace = true
 taurus-tools.workspace = true
 taurus-voice.workspace = true
+taurus-speech.workspace = true
 
 async-trait.workspace = true
 base64.workspace = true
