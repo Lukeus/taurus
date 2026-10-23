@@ -189,6 +189,12 @@ const SHOTS = [
   // beside it. The only check that a mark lands in the margin beside its own
   // line rather than over the prompt — the line is the emulator's to know.
   { name: "terminal-blocks", shot: "terminal", theme: "dark" },
+  // The mic's first press: the offer to download a speech model, above the
+  // box it's offering to type into. The one consent screen voice has.
+  { name: "dictation", shot: "dictation", theme: "dark" },
+  // Settings › Voice: the four models, one on disk, one downloading, and the
+  // microphone a recording would use.
+  { name: "voice", shot: "voice", theme: "dark" },
 ];
 
 const CHROME = [

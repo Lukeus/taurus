@@ -211,6 +211,12 @@ pub struct AppState {
     /// start of each build, the same way a session's token is — reusing a
     /// cancelled one would stop the next build before it began.
     pub index_build: Mutex<CancellationToken>,
+    /// The composer's mic: the speech models on disk, the one recording that
+    /// can be open, and the model loaded last.
+    pub voice: Arc<taurus_voice::Voice>,
+    /// Stops the transcription under way. Replaced at the start of each one,
+    /// like `index_build`, so a cancel that arrives late can't stop the next.
+    pub voice_abort: std::sync::Mutex<Arc<AtomicBool>>,
     /// The model calls the window starts outside a turn — a turn review, an
     /// agent draft — so the pane that started one can stop it.
     pub stoppable: Stoppable,
@@ -334,6 +340,12 @@ impl AppState {
             terminals: Arc::new(Terminals::default()),
             traces,
             index_build: Mutex::new(CancellationToken::new()),
+            voice: Arc::new(taurus_voice::Voice::new(
+                taurus_host::config::home_dir()
+                    .join("models")
+                    .join("whisper"),
+            )),
+            voice_abort: std::sync::Mutex::new(Arc::new(AtomicBool::new(false))),
             stoppable: Stoppable::default(),
             loaded: watch::channel(false).0,
         }

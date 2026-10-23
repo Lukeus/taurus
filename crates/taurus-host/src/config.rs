@@ -1243,6 +1243,15 @@ pub struct Settings {
     /// Per-layer, so one project that needs the whole window can have it.
     #[serde(default = "default_context_limit")]
     pub context_limit: u32,
+    /// The speech model the composer's mic transcribes with, by the name
+    /// Settings › Voice lists: `tiny.en`, `base.en`, `small.en`, or `base`.
+    ///
+    /// Naming a model doesn't download it. The file is fetched the first time
+    /// the mic is pressed, after asking, and kept under `~/.taurus/models/`.
+    /// A name the app doesn't know is reported when the mic is pressed, with
+    /// the list it does.
+    #[serde(default = "default_voice_model")]
+    pub voice_model: String,
     /// Plugins switched on or off, by name. A plugin not named here is on
     /// unless its manifest says `defaultEnabled: false`. See
     /// [`crate::plugins`].
@@ -1266,6 +1275,14 @@ fn default_max_iterations() -> u32 {
 fn default_context_limit() -> u32 {
     DEFAULT_CONTEXT_LIMIT
 }
+
+fn default_voice_model() -> String {
+    DEFAULT_VOICE_MODEL.to_string()
+}
+
+/// See [`Settings::voice_model`]. Kept in step with `taurus_voice::DEFAULT_MODEL`
+/// by a test in the app, which is the crate that depends on both.
+pub const DEFAULT_VOICE_MODEL: &str = "base.en";
 
 /// See [`Settings::context_limit`]. The window most current hosted models
 /// were built around, so it holds a conversation those models were tuned for.
@@ -1306,6 +1323,7 @@ impl Default for Settings {
             max_iterations: default_max_iterations(),
             context_strategy: taurus_core::ContextStrategy::Compact,
             context_limit: default_context_limit(),
+            voice_model: default_voice_model(),
             plugins: BTreeMap::new(),
         }
     }
@@ -1372,6 +1390,9 @@ pub struct StoredSettings {
     /// See [`Settings::context_limit`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_limit: Option<u32>,
+    /// See [`Settings::voice_model`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_model: Option<String>,
     /// See [`Settings::plugins`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<BTreeMap<String, bool>>,
@@ -1404,6 +1425,7 @@ impl StoredSettings {
         self.max_iterations = other.max_iterations.or(self.max_iterations);
         self.context_strategy = other.context_strategy.or(self.context_strategy);
         self.context_limit = other.context_limit.or(self.context_limit);
+        self.voice_model = other.voice_model.or(self.voice_model.take());
         // Name by name. See `Settings::plugins`.
         if let Some(theirs) = other.plugins {
             self.plugins
@@ -1451,6 +1473,12 @@ impl StoredSettings {
             context_limit: clamp_context_limit(
                 self.context_limit.unwrap_or(defaults.context_limit),
             ),
+            // Empty is the default rather than "off": the mic is always
+            // there, and a model it can't name would only fail when pressed.
+            voice_model: self
+                .voice_model
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or(defaults.voice_model),
             plugins: self.plugins.unwrap_or(defaults.plugins),
         }
     }
@@ -1750,6 +1778,7 @@ mod tests {
             max_iterations: Some(42),
             context_strategy: Some(taurus_core::ContextStrategy::Relay),
             context_limit: Some(120_000),
+            voice_model: Some("small.en".into()),
             plugins: Some(BTreeMap::from([("lint-pack".into(), false)])),
         }
     }
@@ -2240,6 +2269,19 @@ mod tests {
 
             assert_eq!(load_settings(Some(ws.path())).max_iterations, 40);
             assert_eq!(load_settings(None).max_iterations, 10);
+        });
+    }
+
+    #[test]
+    fn the_voice_model_defaults_and_an_empty_one_means_the_default() {
+        // The mic is always in the composer, so there is no "off" to write:
+        // an empty name is a cleared field, and it gets the default back.
+        with_home(|home| {
+            assert_eq!(load_settings(None).voice_model, DEFAULT_VOICE_MODEL);
+            write(home.join("settings.json"), r#"{"voice_model": "small.en"}"#);
+            assert_eq!(load_settings(None).voice_model, "small.en");
+            write(home.join("settings.json"), r#"{"voice_model": "  "}"#);
+            assert_eq!(load_settings(None).voice_model, DEFAULT_VOICE_MODEL);
         });
     }
 

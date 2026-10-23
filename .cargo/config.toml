@@ -1,0 +1,8 @@
+[env]
+# whisper-rs-sys (speech input, in taurus-voice) otherwise runs bindgen over
+# whisper.cpp's headers on every clean build, which needs libclang installed:
+# not there by default on Windows, and not something a contributor expects to
+# need for a chat app. The crate ships the bindings it would generate for its
+# own bundled whisper.cpp, and the structs Taurus passes across were checked
+# field for field against a generated set before this was turned on.
+WHISPER_DONT_GENERATE_BINDINGS = "1"

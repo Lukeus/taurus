@@ -1,0 +1,30 @@
+[package]
+name = "taurus-voice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Speech input for Taurus: microphone capture and on-device transcription with whisper.cpp"
+
+[dependencies]
+cpal = "0.18"
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+whisper-rs = { version = "0.15", features = ["tracing_backend"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.15", features = ["tracing_backend", "metal"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

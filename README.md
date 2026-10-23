@@ -50,7 +50,8 @@ that costs.</sub>
 You need Rust 1.87 or newer. The desktop app also needs Node and pnpm (CI uses
 Node 22 and pnpm 9) and the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
-platform.
+platform, plus CMake, which builds the whisper.cpp speech engine. On Linux,
+add the ALSA headers too (`libasound2-dev` on Debian and Ubuntu).
 
 The quickest way to try it is against a local model. Start Ollama, with at
 least one model pulled:
@@ -263,6 +264,10 @@ you put things back afterwards.
   plan it pins and keeps current, not one it announces once and forgets.
 - [**Showing it a picture**](docs/working-with-it.md#showing-it-a-picture):
   paste a screenshot in.
+- [**Talking instead of typing**](docs/working-with-it.md#talking-instead-of-typing):
+  press the mic and talk. Speech becomes text on your own computer, in the box
+  for you to check before it's sent. The audio is never saved or sent
+  anywhere.
 - [**Finding code by what it does**](docs/working-with-it.md#finding-code-by-what-it-does):
   local semantic search, no external service.
 - [**When a turn stops**](docs/working-with-it.md#when-a-turn-stops) and

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the bundle's own Info.plist by `tauri build`.
+
+  The microphone line is required, not decoration: without it macOS ends the
+  process the moment the mic is opened, rather than asking. It's the sentence
+  the permission dialog shows, so it says what happens to the audio.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Taurus listens only while the mic in the composer is on, and turns what you say into text on this Mac. The audio isn't saved or sent anywhere.</string>
+</dict>
+</plist>

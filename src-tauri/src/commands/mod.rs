@@ -341,6 +341,7 @@ mod providers;
 mod session;
 mod settings;
 mod terminal;
+mod voice;
 mod web_search;
 mod workspace;
 
@@ -354,6 +355,7 @@ pub use providers::*;
 pub use session::*;
 pub use settings::*;
 pub use terminal::*;
+pub use voice::*;
 pub use web_search::*;
 pub use workspace::*;
 

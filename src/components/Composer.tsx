@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { Attachments } from "./Attachments";
 import { CommandMenu, commandQuery, matches } from "./CommandMenu";
 import { ContextMeter } from "./ContextMeter";
+import { MicButton, useMicHint, VoiceStrip } from "./Mic";
 import type { Attachment, CommandSummary, InterruptedTurn, OnScreen } from "../lib/api";
 import { basename } from "../lib/format";
 import { isImage, toAttachments } from "../lib/images";
 import type { Outgoing } from "../state/store";
 import * as api from "../lib/api";
+import { useVoice } from "../state/voice";
 
 /**
  * What the box says once a draft is put in it.
@@ -32,6 +34,28 @@ export function withDraft(typed: string, draft: string): string {
  */
 export type Parked = { text: string; images: Attachment[] };
 
+/**
+ * Puts dictated words into what's typed, where the caret was.
+ *
+ * Spaced on whichever side needs it, so "fix the" + "login test" reads as one
+ * sentence rather than "fix thelogin test". `start` and `end` are a selection,
+ * which the words replace — selecting a phrase and saying its replacement is
+ * how dictation corrects itself.
+ */
+export function spliceSpoken(
+  typed: string,
+  start: number,
+  end: number,
+  spoken: string,
+): { text: string; caret: number } {
+  const before = typed.slice(0, start);
+  const after = typed.slice(end);
+  const lead = before && !/\s$/.test(before) ? " " : "";
+  const trail = after && !/^\s/.test(after) ? " " : "";
+  const head = before + lead + spoken;
+  return { text: head + trail + after, caret: head.length };
+}
+
 /*
  * Exported for its own tests. Everything interesting about it is stateful —
  * what it holds on to across a conversation change, what Enter does while a
@@ -49,6 +73,7 @@ export function Composer({
   onScreen,
   draft,
   focus,
+  dictate = 0,
   sessionKey,
   parked,
   queued,
@@ -122,6 +147,11 @@ export function Composer({
    */
   focus: number;
   /**
+   * A request from the window's dictation shortcut to press the mic. A
+   * counter for the same reason `focus` is one.
+   */
+  dictate?: number;
+  /**
    * Which conversation is being typed at, captured at mount.
    *
    * The composer is keyed on this, so it is constant for the life of one
@@ -180,6 +210,63 @@ export function Composer({
   // the file is still over the composer.
   const [dragDepth, setDragDepth] = useState(0);
   const box = useRef<HTMLTextAreaElement>(null);
+  /**
+   * Where the caret was the last time the box had it.
+   *
+   * Clicking the mic takes focus away, and a textarea that has never been
+   * focused reports its caret at the start — so without this, words said
+   * into an untouched box would land in front of what was already typed.
+   * `null` until the box is first used, which means "at the end".
+   */
+  const caret = useRef<{ start: number; end: number } | null>(null);
+  const keepCaret = () => {
+    const el = box.current;
+    if (el) caret.current = { start: el.selectionStart, end: el.selectionEnd };
+  };
+
+  const heard = useVoice((s) => s.heard);
+  const micPhase = useVoice((s) => s.phase.kind);
+  const pressMic = useVoice((s) => s.press);
+  const cancelMic = useVoice((s) => s.cancel);
+  const micHint = useMicHint();
+
+  // What the mic heard goes in where the caret was. Taken and cleared, so a
+  // composer mounted later for another conversation doesn't insert it again.
+  useEffect(() => {
+    if (!heard) return;
+    useVoice.setState({ heard: null });
+    const el = box.current;
+    const typed = el?.value ?? "";
+    const at = caret.current ?? { start: typed.length, end: typed.length };
+    const next = spliceSpoken(typed, at.start, at.end, heard.text);
+    setText(next.text);
+    caret.current = { start: next.caret, end: next.caret };
+    if (!el) return;
+    el.focus();
+    requestAnimationFrame(() => el.setSelectionRange(next.caret, next.caret));
+  }, [heard]);
+
+  // Asked for by the window's shortcut. Skips the first render, like `focus`.
+  const askedMic = useRef(dictate);
+  useEffect(() => {
+    if (dictate === askedMic.current) return;
+    askedMic.current = dictate;
+    if (ready) void pressMic();
+  }, [dictate, ready, pressMic]);
+
+  // Escape anywhere throws a recording away. On the window, because focus is
+  // on the mic button or nowhere while it runs, not in the box.
+  useEffect(() => {
+    if (micPhase === "idle" || micPhase === "offer") return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancelMic();
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [micPhase, cancelMic]);
 
   const attach = async (files: File[]) => {
     const wanted = files.filter(isImage);
@@ -391,6 +478,7 @@ export function Composer({
           </button>
         </div>
       )}
+      <VoiceStrip />
       <div
         className={`composer-box${dragDepth > 0 ? " dropping" : ""}`}
         // The whole box is the target, not the textarea: someone dragging a
@@ -434,6 +522,8 @@ export function Composer({
             setText(e.target.value);
             setActive(0);
           }}
+          onSelect={keepCaret}
+          onBlur={keepCaret}
           onPaste={(e) => {
             const files = [...e.clipboardData.files];
             if (files.length === 0) return;
@@ -518,7 +608,9 @@ export function Composer({
               the box for it to do it to, so the line does not spend a turn
               announcing a rule about text that has not been typed. */}
           <span className="composer-hint">
-            {busy && text.trim() ? (
+            {micHint ? (
+              micHint
+            ) : busy && text.trim() ? (
               "↵ sends when this turn ends · ⇧↵ newline"
             ) : (
               <>
@@ -527,6 +619,7 @@ export function Composer({
               </>
             )}
           </span>
+          <MicButton disabled={!ready} />
           {busy ? (
             // Disabled while it takes, because a second press does nothing the
             // first did not — and a button that still says "Stop" after being

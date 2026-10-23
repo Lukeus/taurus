@@ -23,9 +23,10 @@ import * as api from "../lib/api";
 import { SearchTab, useIndexBuild, CodeSearch } from "./settings/SearchTab";
 import { Field, same } from "./settings/Field";
 import { PermissionsTab } from "./settings/PermissionsTab";
+import { VoiceTab } from "./settings/VoiceTab";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
 
-type Tab = "models" | "search" | "permissions" | "behavior" | "appearance";
+type Tab = "models" | "search" | "permissions" | "behavior" | "voice" | "appearance";
 
 /**
  * The settings drawer.
@@ -358,6 +359,8 @@ export function Settings({ onClose }: { onClose: () => void }) {
         </>
       )}
 
+      {tab === "voice" && <VoiceTab />}
+
       {tab === "appearance" && (
         <ThemePicker theme={status?.settings.theme ?? "system"} />
       )}
@@ -686,6 +689,7 @@ const TABS: [Tab, string][] = [
   ["search", "Search"],
   ["permissions", "Permissions"],
   ["behavior", "Behavior"],
+  ["voice", "Voice"],
   // Its own tab rather than the last section of Behavior, which is where it
   // started. Behavior is what the agent is allowed to do on its own — propose
   // skills, propose sub-agents, take this many steps — and how the window is

@@ -844,6 +844,29 @@ taurus key status               # where each provider's API key comes from
 `skills check`, `agents check`, and `mcp` are meant for CI on a repository that
 ships its own `.taurus` directory.
 
+Dictation has a live check of its own, which needs no model server. It
+downloads the speech model first if it's missing, into the same folder the app
+uses, then transcribes twice: once with the model load, once without.
+
+```bash
+# Five seconds from the default microphone.
+cargo run --release -p taurus-voice --example dictate
+
+# A file instead, which takes the microphone and its permission out of the
+# question. Any rate and channel count of 16-bit PCM; on macOS `say` makes one.
+say -o s.aiff "Run the tests in taurus core" && afconvert -f WAVE -d LEI16@48000 s.aiff s.wav
+cargo run --release -p taurus-voice --example dictate -- --wav s.wav
+
+# Raises the abort flag first, so this has to end "Canceled." and not in text
+# or a whisper error code. See the boxed closure in `transcribe.rs` for why
+# that's worth checking.
+cargo run --release -p taurus-voice --example dictate -- --wav s.wav --abort
+```
+
+Release mode matters. whisper.cpp itself is always built optimized, but the
+resampler in front of it isn't, and a debug build of it skews the timings.
+Set `TAURUS_HOME` to keep the download out of your real `~/.taurus`.
+
 ## The Windows ConPTY runtime
 
 A Windows build sideloads Microsoft's redistributable ConPTY next to the

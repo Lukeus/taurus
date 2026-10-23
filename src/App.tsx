@@ -64,6 +64,7 @@ import { applyTheme, currentToken, watchSystemTheme } from "./lib/theme";
 import type { Entry } from "./state/store";
 import { pinnedPlan, useStore } from "./state/store";
 import { Composer, type Parked } from "./components/Composer";
+import { DICTATE_SHORTCUT } from "./components/Mic";
 
 /*
  * The panels that open over the app, loaded when one is first needed rather
@@ -385,6 +386,8 @@ export default function App() {
   const [parked, setParked] = useState<Record<string, Parked>>({});
   /** Bumped to put the cursor in the composer. See the prop. */
   const [focusComposer, setFocusComposer] = useState(0);
+  /** Presses of the dictation shortcut, for the composer. See `Composer`'s `dictate`. */
+  const [dictate, setDictate] = useState(0);
   const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
@@ -461,7 +464,9 @@ export default function App() {
    * the composer — which earns its place differently. It is not a verb at all
    * but a way back: this window has four things that take the keyboard once
    * they have focus, and the box the whole layout is arranged around was the
-   * only one of the five that could not be reached without the mouse.
+   * only one of the five that could not be reached without the mouse. ⌘⇧D
+   * presses the composer's mic, for the same reason: talking to the window
+   * shouldn't start with finding a button.
    *
    * On the window, like the terminal toggle above, and for the same reason:
    * the point of a shortcut is that it works wherever you happen to be. The
@@ -485,6 +490,12 @@ export default function App() {
       } else if (isChord(e, "l")) {
         e.preventDefault();
         setFocusComposer((n) => n + 1);
+      } else if (isChord(e, "d") && e.shiftKey) {
+        // With Shift, unlike the rest. Plain Ctrl+D is end-of-input to the
+        // shell in the terminal dock on Windows and Linux, and a shortcut
+        // that took it would close somebody's shell.
+        e.preventDefault();
+        setDictate((n) => n + 1);
       }
     };
     window.addEventListener("keydown", key);
@@ -823,6 +834,14 @@ export default function App() {
         keywords: "composer box type focus prompt reply ask",
         shortcut: chord("L"),
         run: () => setFocusComposer((n) => n + 1),
+      },
+      {
+        id: "dictate",
+        label: "Dictate a message",
+        group: "Do",
+        keywords: "voice speak microphone mic talk speech transcribe",
+        shortcut: DICTATE_SHORTCUT,
+        run: () => setDictate((n) => n + 1),
       },
       {
         id: "workspace",
@@ -1541,6 +1560,7 @@ export default function App() {
           onSendQueued={sendQueued}
           onUnqueue={store.unqueue}
           focus={focusComposer}
+          dictate={dictate}
           busy={store.busy}
           unattended={store.unattended}
           onUnattended={setUnattended}

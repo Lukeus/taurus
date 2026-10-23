@@ -468,6 +468,18 @@ impl Host {
         .await;
     }
 
+    /// Which speech model the mic transcribes with.
+    ///
+    /// Global, because the model is a file on this machine: a project can't
+    /// carry it, and a project setting naming one that isn't downloaded would
+    /// turn the mic into a download prompt in that one folder. The caller
+    /// checks the name against the catalog; this crate doesn't know it.
+    pub async fn set_voice_model(&self, model: &str) {
+        let model = model.trim().to_string();
+        self.edit_global_setting(|s| s.voice_model = Some(model))
+            .await;
+    }
+
     /// Brings this workspace's semantic index up to date, outside any turn.
     ///
     /// The first index of a repository takes the better part of a minute, and
