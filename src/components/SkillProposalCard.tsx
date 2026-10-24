@@ -6,8 +6,8 @@ import type { SkillProposal } from "../lib/api";
  * The approval gate for a generated skill.
  *
  * Everything the model wrote is visible before it becomes something the agent
- * will follow later — the trigger line, the procedure, and any script source in
- * full. An approved skill is future instructions, so nothing is elided: the
+ * will follow later — the trigger line, the procedure, and every script,
+ * reference and asset in full. An approved skill is future instructions, so nothing is elided: the
  * procedure opens with the card, and only the scripts wait to be asked for.
  */
 export function SkillProposalCard({
@@ -20,6 +20,20 @@ export function SkillProposalCard({
   const [target, setTarget] = useState<"project" | "user">("project");
   const [showBody, setShowBody] = useState(true);
   const [openScript, setOpenScript] = useState<string | null>(null);
+  // Scripts and the references and assets beside them, opened one at a time
+  // the same way: every file a skill carries is read before it's saved.
+  const bundled = [
+    ...proposal.scripts.map((script) => ({
+      path: script.path,
+      label: `${script.path} · ${script.interpreter}`,
+      content: script.content,
+    })),
+    ...proposal.files.map((file) => ({
+      path: file.path,
+      label: file.path,
+      content: file.content,
+    })),
+  ];
 
   return (
     <div className="proposal">
@@ -51,26 +65,25 @@ export function SkillProposalCard({
         <button className="pill" onClick={() => setShowBody(!showBody)}>
           {showBody ? "▾" : "▸"} procedure
         </button>
-        {proposal.scripts.map((script) => (
+        {bundled.map((file) => (
           <button
-            key={script.path}
+            key={file.path}
             className="pill"
             onClick={() =>
-              setOpenScript(openScript === script.path ? null : script.path)
+              setOpenScript(openScript === file.path ? null : file.path)
             }
           >
-            {openScript === script.path ? "▾" : "▸"} {script.path} ·{" "}
-            {script.interpreter}
+            {openScript === file.path ? "▾" : "▸"} {file.label}
           </button>
         ))}
       </div>
 
       {showBody && <pre className="proposal-body">{proposal.body}</pre>}
-      {proposal.scripts
-        .filter((script) => script.path === openScript)
-        .map((script) => (
-          <pre key={script.path} className="proposal-body">
-            {script.content}
+      {bundled
+        .filter((file) => file.path === openScript)
+        .map((file) => (
+          <pre key={file.path} className="proposal-body">
+            {file.content}
           </pre>
         ))}
 

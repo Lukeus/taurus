@@ -500,11 +500,33 @@ pub fn parse_skill_md(text: &str, path: &Path) -> Result<Parsed, SkillError> {
         },
     };
 
+    let mut frontmatter = frontmatter;
+    if frontmatter.when_to_use.is_none() {
+        frontmatter.when_to_use = metadata_when_to_use(yaml);
+    }
+
     Ok(Parsed {
         frontmatter,
         body: body.trim_start().to_string(),
         warnings,
     })
+}
+
+/// A trigger line kept under `metadata`, where a skill Taurus writes keeps it.
+///
+/// The Agent Skills specification allows six top-level keys, and its
+/// validator refuses anything else, so a skill meant to travel can't carry
+/// `when_to_use` beside them. `metadata` is the specification's place for what
+/// one client reads. Both spellings, as at the top level.
+fn metadata_when_to_use(yaml: &str) -> Option<String> {
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).ok()?;
+    let metadata = value.get("metadata")?;
+    ["when_to_use", "when-to-use"]
+        .iter()
+        .find_map(|key| metadata.get(*key)?.as_str())
+        .map(str::trim)
+        .filter(|when| !when.is_empty())
+        .map(str::to_string)
 }
 
 /// Quotes top-level scalar values that contain a colon.
