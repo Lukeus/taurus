@@ -6,6 +6,7 @@
 //! procedure only for the skill it actually picked.
 
 pub mod catalog;
+pub mod command_file;
 pub mod interpreter;
 pub mod proposal;
 pub mod skill;

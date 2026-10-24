@@ -593,6 +593,31 @@ its tools `mcp__plugin_ops_db__query`. So two plugins never collide with each
 other or with anything of yours, and a plugin can't quietly replace a skill
 you wrote. A project plugin with the same name as one of yours replaces it.
 
+**A plugin's commands run as `/plugin:name`.** Each Markdown file in its
+`commands/` folder is a command named after the file, so `commands/fix-issue.md`
+in `ops` is `/ops:fix-issue`. A file in a subfolder keeps its own name. A
+manifest's `"commands"` adds folders or single files to that. Claude Code
+folded its commands into skills, and Taurus reads them the same way: a command
+is a one-file skill, so it shows up in **Skills** and the model can pick it
+too, unless its frontmatter says `disable-model-invocation: true`. When a
+skill and a command share a name, the skill runs.
+
+A command's frontmatter is optional. Without a `description`, the first line
+of the file stands in. `argument-hint` shows beside the name as you type it.
+What you type after the name fills the file:
+
+- `$ARGUMENTS` is the whole line, and `$1` to `$9` are its words. A quoted
+  phrase counts as one word, and a position past the last word is empty.
+- With neither in the file, what you typed is added at the end under
+  "User input", so it isn't lost.
+- `` !`git status` `` asks for that command's output. Claude Code runs it
+  before sending the prompt. Taurus asks the model to run it with
+  `run_command`, so it goes through the same permission check as any other
+  command. Typing a command never runs a program on its own.
+- `model` isn't used, because a command runs on the conversation's model. The
+  command says so on its row in **Skills**.
+- `allowed-tools` is shown and grants nothing, as it is for a skill.
+
 Its parts show up in **Skills**, **Agents** and **MCP** with where they came
 from. They aren't edited there: a plugin's files are the plugin's, and an edit
 would be lost on the next `update`. A plugin's MCP server can still be switched
@@ -625,15 +650,12 @@ folder.
 to run them. Each is listed on the plugin by name, with why, rather than
 skipped in silence:
 
-- `commands/`: Taurus has no command files. A skill marked user-invocable is
-  its `/command`.
 - LSP servers, output styles, workflows, themes and monitors.
 - `bin/`, which Claude Code puts on `PATH`. A plugin's servers and hooks can
   still name a program in it by path.
 - A plugin's own `settings.json`, `userConfig` (so `${user_config.…}` stays
   unfilled), and `dependencies`.
-- Codex apps (`apps`, `.app.json`), and Copilot's rules, commands and LSP
-  servers.
+- Codex apps (`apps`, `.app.json`), and Copilot's rules and LSP servers.
 - Any hook event or hook type with nothing here to run it. See below.
 
 Two things the real plugins Claude Code ships turned up, both said on the

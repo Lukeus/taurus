@@ -8,7 +8,7 @@ import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
 
 /**
- * Plugins: skills, sub-agents, MCP servers and hooks under one name.
+ * Plugins: skills, commands, sub-agents, MCP servers and hooks under one name.
  *
  * The layout is Claude Code's, so a plugin written for it installs here as it
  * is. What it brings goes through the same loaders as everything else, named
@@ -66,10 +66,11 @@ export function PluginsDrawer({
   return (
     <Drawer title="Plugins" onClose={onClose}>
       <p className="drawer-intro">
-        A plugin bundles skills, sub-agents, MCP servers and hooks under one
-        name, laid out the way Claude Code lays them out. Its parts are named
-        under it, so <code>ops:deploy</code> is plugin <code>ops</code>'s
-        deploy skill and can't replace one of yours.
+        A plugin bundles skills, commands, sub-agents, MCP servers and hooks
+        under one name, laid out the way Claude Code lays them out. Its parts
+        are named under it, so <code>ops:deploy</code> is plugin{" "}
+        <code>ops</code>'s deploy skill or command and can't replace one of
+        yours.
       </p>
 
       <AddPlugin
@@ -207,6 +208,7 @@ function State({ plugin, trusted }: { plugin: PluginSummary; trusted: boolean })
 function Parts({ plugin }: { plugin: PluginSummary }) {
   const parts = [
     ["skills", plugin.skills],
+    ["commands", plugin.commands],
     ["agents", plugin.agents],
     ["MCP servers", plugin.mcp_servers],
     ["hooks", plugin.hooks],

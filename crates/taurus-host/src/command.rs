@@ -24,7 +24,20 @@ use taurus_skills::SkillCatalog;
 #[ts(export)]
 pub enum CommandKind {
     Skill,
+    /// A plugin's command file: a skill underneath, run the same way, and
+    /// labeled for what its author wrote. See [`taurus_skills::command_file`].
+    Command,
     Agent,
+}
+
+impl CommandKind {
+    fn of(skill: &taurus_skills::Skill) -> Self {
+        if skill.command_file.is_some() {
+            Self::Command
+        } else {
+            Self::Skill
+        }
+    }
 }
 
 /// One row of the composer's completion menu.
@@ -37,6 +50,9 @@ pub struct CommandSummary {
     /// Both fields are written to answer the same question, which is why one
     /// field can carry either.
     pub when_to_use: String,
+    /// What to type after the name, as its author put it: `<pr-number>`.
+    #[ts(optional)]
+    pub argument_hint: Option<String>,
 }
 
 /// A resolved `/name args`.
@@ -51,7 +67,7 @@ pub struct Invocation {
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum CommandError {
-    #[error("There is no skill or agent named '{name}'.{}", suggest(.suggestions))]
+    #[error("There is no skill, command or agent named '{name}'.{}", suggest(.suggestions))]
     Unknown {
         name: String,
         suggestions: Vec<String>,
@@ -101,7 +117,7 @@ impl Rosters<'_> {
         if let Some(skill) = skill.filter(|s| s.frontmatter.user_invocable) {
             return Ok(Invocation {
                 name: skill.name().to_string(),
-                kind: CommandKind::Skill,
+                kind: CommandKind::of(skill),
                 prompt: skill.render(args),
             });
         }
@@ -156,8 +172,9 @@ impl Rosters<'_> {
             .commands()
             .map(|skill| CommandSummary {
                 name: skill.name().to_string(),
-                kind: CommandKind::Skill,
+                kind: CommandKind::of(skill),
                 when_to_use: skill.trigger(),
+                argument_hint: skill.frontmatter.argument_hint.clone(),
             })
             .collect();
 
@@ -171,6 +188,7 @@ impl Rosters<'_> {
                     name: agent.name().to_string(),
                     kind: CommandKind::Agent,
                     when_to_use: agent.frontmatter.description.clone(),
+                    argument_hint: None,
                 })
                 .collect();
             out.extend(agents);
@@ -536,7 +554,7 @@ mod tests {
         let rosters = fixture.rosters();
         let message = rosters.expand("/specify").unwrap().unwrap_err().to_string();
         assert!(
-            message.contains("no skill or agent named 'specify'"),
+            message.contains("no skill, command or agent named 'specify'"),
             "{message}"
         );
         assert!(message.contains("/speckit-specify"), "{message}");

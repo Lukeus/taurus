@@ -2144,6 +2144,32 @@ async fn a_plugin_waiting_on_a_file_it_names_loads_when_the_file_appears() {
 }
 
 #[tokio::test]
+async fn a_plugin_waiting_on_a_command_file_it_names_loads_when_the_file_appears() {
+    // The same wait, through the part a plugin's commands/ added: a missing
+    // command file is as much a problem as a missing hooks file.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let root = crate::plugins::dir(Scope::Global, None)
+        .unwrap()
+        .join("guard");
+    plugin_with_a_hook(&root, "guard", r#", "commands": "./extra/triage.md""#);
+    // The folder already there, so only the named file appearing can be
+    // what's noticed: a new folder moves the plugin's own stamp.
+    std::fs::create_dir_all(root.join("extra")).unwrap();
+    host.reload().await;
+    assert!(
+        hook_names(&host).await.is_empty(),
+        "it loaded without the file"
+    );
+
+    std::fs::write(root.join("extra/triage.md"), "Triage the open issues.").unwrap();
+    a_turn(&host).await;
+
+    assert_eq!(hook_names(&host).await, ["guard:lint"]);
+}
+
+#[tokio::test]
 async fn trusting_a_workspace_between_turns_brings_its_plugins_hooks() {
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();
@@ -2184,6 +2210,133 @@ async fn a_plugins_hook_edited_between_turns_takes_effect_on_the_next_one() {
     let mut names = hook_names(&host).await;
     names.sort();
     assert_eq!(names, ["guard:format", "guard:lint"]);
+}
+
+/// A plugin `ops` in your plugins folder, with `files` written under it.
+fn ops_plugin(files: &[(&str, &str)]) -> PathBuf {
+    let root = crate::plugins::dir(Scope::Global, None)
+        .unwrap()
+        .join("ops");
+    let mut all = vec![(".claude-plugin/plugin.json", r#"{"name": "ops"}"#)];
+    all.extend_from_slice(files);
+    for (path, text) in all {
+        let full = root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
+    root
+}
+
+#[tokio::test]
+async fn a_plugins_command_runs_as_plugin_colon_name_with_its_arguments() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    ops_plugin(&[(
+        "commands/fix-issue.md",
+        "---\ndescription: Fix an issue\nargument-hint: [number] [priority]\n---\n\n\
+         Fix issue #$1 at $2 priority, following our standards.\n",
+    )]);
+    host.reload().await;
+
+    let listed = host.commands().await;
+    let row = listed
+        .iter()
+        .find(|c| c.name == "ops:fix-issue")
+        .expect("the command is in the menu");
+    assert_eq!(row.kind, command::CommandKind::Command);
+    assert_eq!(row.when_to_use, "Fix an issue");
+    assert_eq!(row.argument_hint.as_deref(), Some("[number] [priority]"));
+
+    let ran = host
+        .expand_command("/ops:fix-issue 123 high")
+        .await
+        .expect("a command")
+        .expect("that runs");
+    assert_eq!(ran.kind, command::CommandKind::Command);
+    assert!(
+        ran.prompt.contains("Fix issue #123 at high priority"),
+        "{}",
+        ran.prompt
+    );
+}
+
+#[tokio::test]
+async fn a_plugins_skill_keeps_a_name_it_shares_with_its_command() {
+    // Claude Code's rule, and the slash namespace's: a skill wins its name.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    ops_plugin(&[
+        ("commands/deploy.md", "Deploy, the command way."),
+        (
+            "skills/deploy/SKILL.md",
+            "---\nname: deploy\ndescription: Deploys a service\n---\n\nDeploy, the skill way.\n",
+        ),
+    ]);
+    host.reload().await;
+
+    let ran = host.expand_command("/ops:deploy").await.unwrap().unwrap();
+    assert_eq!(ran.kind, command::CommandKind::Skill);
+    assert!(ran.prompt.contains("the skill way"), "{}", ran.prompt);
+}
+
+#[tokio::test]
+async fn a_plugins_command_written_between_turns_runs_on_the_next_one() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let root = ops_plugin(&[("commands/status.md", "Say the status.")]);
+    host.reload().await;
+
+    std::fs::create_dir_all(root.join("commands/release")).unwrap();
+    std::fs::write(
+        root.join("commands/release/notes.md"),
+        "Write the release notes for $ARGUMENTS.",
+    )
+    .unwrap();
+
+    // `expand_command` refreshes first, as a turn does.
+    let ran = host
+        .expand_command("/ops:notes v2.0")
+        .await
+        .expect("a command")
+        .expect("found without a restart");
+    assert!(
+        ran.prompt.contains("release notes for v2.0"),
+        "{}",
+        ran.prompt
+    );
+}
+
+#[tokio::test]
+async fn a_command_file_a_manifest_names_is_run_like_one_in_its_folder() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let root = crate::plugins::dir(Scope::Global, None)
+        .unwrap()
+        .join("ops");
+    for (path, text) in [
+        (
+            ".claude-plugin/plugin.json",
+            r#"{"name": "ops", "commands": ["./extra/triage.md"]}"#,
+        ),
+        ("extra/triage.md", "Triage the open issues."),
+        (
+            "extra/unrelated.md",
+            "Not a command: the manifest named one file.",
+        ),
+    ] {
+        let full = root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
+    host.reload().await;
+
+    let names: Vec<String> = host.commands().await.into_iter().map(|c| c.name).collect();
+    assert!(names.contains(&"ops:triage".to_string()), "{names:?}");
+    assert!(!names.contains(&"ops:unrelated".to_string()), "{names:?}");
 }
 
 #[tokio::test]

@@ -291,6 +291,17 @@ pub(crate) fn all_skill_sources(workspace: Option<&Path>) -> Vec<SkillSource> {
             Scope::Global => SkillTier::User,
             Scope::Workspace => SkillTier::Project,
         };
+        // Commands before skills, so a skill keeps a name it shares with a
+        // command, as it does in Claude Code: a later source shadows an
+        // earlier one.
+        for dir in plugin.command_dirs() {
+            sources.push(SkillSource {
+                tier,
+                origin: SkillOrigin::PluginCommand,
+                dir: dir.clone(),
+                plugin: Some(plugin.name().to_string()),
+            });
+        }
         for dir in plugin.skill_dirs() {
             sources.push(SkillSource {
                 tier,
