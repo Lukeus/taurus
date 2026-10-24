@@ -9,8 +9,9 @@ and how do you put it back? Everything here answers one of them.
 ## Permissions
 
 Read-only tools inside the workspace run unattended. Writes, command execution,
-and network access prompt with the exact call. Shell approvals are keyed by the
-leading command word, so approving `git` doesn't also approve `rm`. A call that
+and network access prompt with the exact call. Shell approvals are keyed by
+program name, one for each program the line runs, so approving `git` doesn't
+also approve `rm`. A call that
 names a URL is keyed the same way, by that URL's host. Approving `fetch_url`
 for `docs.rs` is a decision about one site, not a standing grant to reach
 anywhere.
@@ -102,26 +103,37 @@ The restriction covers what Taurus will *create*. A `run_command:*` rule you
 write into the global file by hand is still honored. Editing that file is an
 explicit act, and silently ignoring it would be its own surprise.
 
-**A command that does more than run one program is never covered by a
-standing grant.** A grant for `git` is keyed by the command's first word, and
-the first word says nothing about the rest of the line: `git status; rm -rf ~`
-starts with `git`. So Taurus asks every time, and never offers "always", for a
-command that:
+**A command is covered by the programs it runs.** A grant is keyed by a
+program's name, and a line rarely runs only one: `cd crates/x && cargo test
+2>&1 | tail -20` runs three. Taurus takes the line apart where the shell would,
+at `;`, `&&`, `||`, `|` and new lines, and never inside quotes. The call is
+covered when every program it runs has a grant, and the prompt for one that
+isn't offers "always" for just the programs that are missing. Approving that
+line once grants `cd`, `cargo` and `tail`, and `git status; rm -rf ~` still
+asks about `rm`. `git commit -m "fix; tidy"` is one `git` command. A proxy
+that runs its argument line unchanged is keyed by what comes after it, so
+`rtk cargo test` is a `cargo` command.
 
-- chains another onto it (`;`, `&&`, `||`, `&`, a new line)
-- pipes into another program
-- runs a command inside it (`$(…)`, backticks, `<(…)`)
-- writes its output into a file (`>`)
+Some lines do something no program name can stand for. Those are asked about
+every time, never offered "always", and never covered by a grant you've
+already saved. A command that:
+
+- runs a command inside itself (`$(…)`, backticks, `<(…)`)
+- writes its output into a file (`>`, `>>`, `&>`)
+- feeds a program a script written into the line (`<<EOF`, `<<<`)
 - starts with a word that only hands the rest of the line to another program:
   `sh -c`, `env`, `xargs`, `sudo`, `nohup`, and the like
+- runs code written into the line: `python3 -c`, `node -e`, `find -exec`
+- names its program through a variable
 
-A grant you've already saved doesn't cover one either. Two things don't count:
-merging one of the program's own streams into another (`2>&1`), and throwing
-output away (`2>/dev/null`).
+Two things don't count: merging one of the program's own streams into another
+(`2>&1`), and throwing output away (`2>/dev/null`).
 
-The check doesn't parse shell, so a `;` inside quotes counts too, and
-`git commit -m "fix; tidy"` is asked about each time. A check that parses shell
-wrongly is worse than one that asks.
+The check knows quoting and the operators above, and nothing else. It doesn't
+know which programs run other programs: `make`, `npm run`, `cargo run` and a
+`git` alias all run what the project tells them to, and a grant for one of
+them is a grant for that. Once you've asked an agent to work in a repository,
+the repository's own code is what you asked it to run.
 
 Every path argument is canonicalized and checked against the workspace root.
 That closes both `../` traversal and symlink escapes. A symlink that doesn't
@@ -143,9 +155,11 @@ $ taurus run "summarize the readme into SUMMARY.md" < /dev/null
 $ taurus run --allow write_file "summarize the readme into SUMMARY.md"
 ```
 
-`--allow-command git` grants a shell program by its leading word. That's the
-same unit the interactive "allow always" uses, with the same limit: a command
-that does more than run that program isn't covered, and the refusal says why.
+`--allow-command git` grants a shell program by name. That's the same unit the
+interactive "allow always" uses, with the same rules: a chained command needs
+a flag for each program it runs, and a command that does something no program
+name stands for isn't covered. The refusal names the flags that would have
+been enough, or says why none would.
 `--dangerously-allow-all` exists for throwaway or already-sandboxed
 environments.
 

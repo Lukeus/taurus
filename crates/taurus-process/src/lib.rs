@@ -17,9 +17,11 @@
 //! on Windows, and a second copy of code nobody can build locally is a second
 //! place for it to be wrong.
 
+pub mod command_line;
 mod console;
 pub mod path;
 mod tree;
 
+pub use command_line::Programs;
 pub use console::{no_console, CREATE_NO_WINDOW};
 pub use tree::Tree;
