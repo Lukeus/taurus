@@ -20,6 +20,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::diff::FileDiff;
+use taurus_process::Programs;
+
 use crate::tool::{Effect, Tool, ToolError};
 
 /// Where workspace decisions live, relative to the workspace root.
@@ -301,31 +303,37 @@ impl PermissionEngine {
             return Ok(());
         }
 
-        let rule = rule_for(tool, input);
-        // A command that does more than run its leading program is never
-        // covered by a standing grant, and is never offered one: the rule is
-        // keyed by the first word, and the first word of `git status; rm -rf ~`
-        // is `git`. See `compound_reason`.
-        let compound = (tool.effect() == Effect::Execute)
-            .then(|| input.get("command").and_then(|c| c.as_str()))
-            .flatten()
-            .and_then(compound_reason);
-        if compound.is_none() && self.allowlists.lock().await.permits(&rule) {
+        let keys = keys_for(tool, input);
+        // A chained command is covered when every program it runs is, and the
+        // prompt offers only the ones that are not. A command that does
+        // something no program name can stand for — substitutes a command
+        // into itself, writes into a file, hands itself to a shell — is never
+        // covered by a standing grant, and is never offered one. See
+        // [`Programs`].
+        let missing: Vec<String> = {
+            let lists = self.allowlists.lock().await;
+            keys.rules
+                .iter()
+                .filter(|rule| !lists.permits(rule))
+                .cloned()
+                .collect()
+        };
+        if keys.beyond.is_none() && missing.is_empty() {
             return Ok(());
         }
 
-        let offer_global = compound.is_none() && global_offerable(tool.effect());
-        let offer_workspace = compound.is_none() && self.workspace_rules;
+        let offer_global = keys.beyond.is_none() && global_offerable(tool.effect());
+        let offer_workspace = keys.beyond.is_none() && self.workspace_rules;
         let request = PermissionRequest {
             id: Uuid::new_v4().to_string(),
             tool: tool.name().to_string(),
             effect: tool.effect(),
             preview: tool.preview(input),
             diff: tool.diff(input, &self.workspace).await,
-            always_scope: describe_rule(&rule, tool.effect(), Scope::Workspace),
+            always_scope: describe_rules(&missing, tool.effect(), Scope::Workspace),
             offer_always: offer_workspace,
             always_global_scope: offer_global
-                .then(|| describe_rule(&rule, tool.effect(), Scope::Global)),
+                .then(|| describe_rules(&missing, tool.effect(), Scope::Global)),
             input: input.clone(),
             session: asking.session.clone(),
         };
@@ -362,7 +370,7 @@ impl PermissionEngine {
         };
 
         let mut lists = self.allowlists.lock().await;
-        lists.layer(scope).allowed.insert(rule);
+        lists.layer(scope).allowed.extend(missing);
         self.save(scope, lists.layer(scope));
         Ok(())
     }
@@ -416,47 +424,90 @@ impl PermissionEngine {
     }
 }
 
-/// The unit an "always" decision grants.
+/// The units an "always" decision grants, for one call.
+struct Keys {
+    /// Every rule the call needs. All of them have to be permitted.
+    rules: Vec<String>,
+    /// Why no set of rules can cover this call, when none can. The call is
+    /// then asked about every time and never offered a standing grant.
+    beyond: Option<&'static str>,
+}
+
+/// What a call is keyed by.
 ///
-/// Shell commands are keyed by their leading word so approving `git` does not
-/// also approve `rm`. A call that names a URL is keyed by that URL's host, for
-/// the same reason: "always allow fetching docs.rs" is a decision about a site
-/// the user trusts, and the tool-wide version of it is a standing grant to
-/// reach anywhere on the internet.
+/// A shell command is keyed by each program it runs, so approving `git` does
+/// not also approve `rm`, and `cd x && cargo test | tail` needs `cd`, `cargo`
+/// and `tail`. A call that names a URL is keyed by that URL's host, for the
+/// same reason: "always allow fetching docs.rs" is a decision about a site the
+/// user trusts, and the tool-wide version of it is a standing grant to reach
+/// anywhere on the internet.
 ///
 /// Everything else is keyed by name: the user is saying "this tool may write in
 /// this workspace", which is the granularity they actually reason about.
-fn rule_for(tool: &dyn Tool, input: &serde_json::Value) -> String {
+fn keys_for(tool: &dyn Tool, input: &serde_json::Value) -> Keys {
     if tool.effect() == Effect::Execute {
-        if let Some(program) = input
-            .get("command")
-            .and_then(|c| c.as_str())
-            .and_then(leading_word)
-        {
-            return format!("{}:{program}", tool.name());
+        if let Some(command) = input.get("command").and_then(|c| c.as_str()) {
+            let programs = Programs::of(command);
+            return Keys {
+                rules: programs
+                    .names
+                    .iter()
+                    .map(|program| format!("{}:{program}", tool.name()))
+                    .collect(),
+                beyond: programs.beyond,
+            };
         }
     }
     if tool.effect() == Effect::Network {
         if let Some(host) = input.get("url").and_then(|u| u.as_str()).and_then(host_of) {
-            return format!("{}:{host}", tool.name());
+            return Keys {
+                rules: vec![format!("{}:{host}", tool.name())],
+                beyond: None,
+            };
         }
     }
-    tool.name().to_string()
+    Keys {
+        rules: vec![tool.name().to_string()],
+        beyond: None,
+    }
 }
 
-fn describe_rule(rule: &str, effect: Effect, scope: Scope) -> String {
+/// What granting `rules` would mean, in a sentence the prompt shows.
+///
+/// `rules` are the ones the call still needs, so a chained command whose `cd`
+/// is already granted describes only the `cargo` it is asking for.
+fn describe_rules(rules: &[String], effect: Effect, scope: Scope) -> String {
     let where_ = match scope {
         Scope::Global => "in every workspace",
         Scope::Workspace => "in this workspace",
     };
-    match rule.split_once(':') {
-        Some((tool, qualifier)) if effect == Effect::Network => {
-            format!("Always allow `{tool}` to reach {qualifier} {where_}")
+    let Some(first) = rules.first() else {
+        return format!("Always allow this {where_}");
+    };
+    match first.split_once(':') {
+        Some((tool, host)) if effect == Effect::Network => {
+            format!("Always allow `{tool}` to reach {host} {where_}")
         }
-        Some((tool, program)) => {
-            format!("Always allow `{tool}` to run `{program}` commands {where_}")
+        Some((tool, _)) => {
+            let programs: Vec<String> = rules
+                .iter()
+                .map(|rule| format!("`{}`", rule.split_once(':').map_or(rule.as_str(), |r| r.1)))
+                .collect();
+            format!(
+                "Always allow `{tool}` to run {} commands {where_}",
+                list(&programs)
+            )
         }
-        None => format!("Always allow `{rule}` {where_}"),
+        None => format!("Always allow `{first}` {where_}"),
+    }
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
     }
 }
 
@@ -491,120 +542,6 @@ fn host_of(url: &str) -> Option<String> {
     Some(host)
         .filter(|h| !h.is_empty())
         .map(|h| h.to_ascii_lowercase())
-}
-
-/// First bare word of a command line, ignoring `VAR=value` prefixes.
-fn leading_word(command: &str) -> Option<&str> {
-    command
-        .split_whitespace()
-        .find(|w| !w.contains('='))
-        .map(|w| w.trim_start_matches(['(', '{']))
-        .filter(|w| !w.is_empty())
-}
-
-/// Programs whose whole job is to run the rest of their command line.
-///
-/// A standing grant for one of these is a grant for anything at all, so a
-/// command that starts with one is asked about every time. Matched by name, so
-/// `/usr/bin/env` is `env` and `pwsh.exe` is `pwsh`.
-const WRAPPERS: &[&str] = &[
-    "sh",
-    "bash",
-    "zsh",
-    "dash",
-    "ksh",
-    "fish",
-    "env",
-    "xargs",
-    "sudo",
-    "doas",
-    "su",
-    "nohup",
-    "time",
-    "exec",
-    "eval",
-    "command",
-    "builtin",
-    "nice",
-    "timeout",
-    "stdbuf",
-    "watch",
-    "cmd",
-    "powershell",
-    "pwsh",
-];
-
-/// What a command line does beyond running its leading program, if anything.
-///
-/// A standing grant is keyed by the first word, and the first word says nothing
-/// about the rest of the line: `git status; rm -rf ~` starts with `git`. So a
-/// line that chains another command onto it, pipes into another program, runs a
-/// command inside it, writes into a file, or hands itself to one of
-/// [`WRAPPERS`] is never covered by a standing grant and is never offered one.
-/// The answer finishes the sentence "this one …", for the places that say why.
-///
-/// Conservative on purpose. It does not parse shell, so a `;` inside quotes
-/// counts too — `git commit -m "fix; tidy"` is asked about each time — because a
-/// check that parses shell wrongly is worse than one that asks.
-pub fn compound_reason(command: &str) -> Option<&'static str> {
-    let mut line = without_stream_merges(command);
-    // Throwing output away reaches nothing either.
-    for discard in ["&>/dev/null", "&> /dev/null", ">/dev/null", "> /dev/null"] {
-        line = line.replace(discard, " ");
-    }
-    if ["$(", "`", "<(", ">("]
-        .iter()
-        .any(|mark| line.contains(mark))
-    {
-        return Some("runs another command inside it");
-    }
-    if line.contains("&>") {
-        return Some("writes its output into a file");
-    }
-    if line.contains(['\n', '\r', ';', '&']) || line.contains("||") {
-        return Some("chains another command onto it");
-    }
-    if line.contains('|') {
-        return Some("pipes into another program");
-    }
-    if line.contains('>') {
-        return Some("writes its output into a file");
-    }
-    let program = leading_word(command)?;
-    let lower = program
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(program)
-        .to_ascii_lowercase();
-    let name = lower.strip_suffix(".exe").unwrap_or(&lower);
-    WRAPPERS
-        .contains(&name)
-        .then_some("hands the rest of the line to another program")
-}
-
-/// `command` with every stream merge like `2>&1` taken out.
-///
-/// Sending one of a program's own streams into another reaches nothing new,
-/// and it is in nearly every command a model writes. `>&file`, which writes to
-/// a file, keeps its `>` for the check that comes after.
-fn without_stream_merges(command: &str) -> String {
-    let mut out = String::with_capacity(command.len());
-    let mut rest = command;
-    while let Some(at) = rest.find(">&") {
-        let after = &rest[at + 2..];
-        let target = after.len()
-            - after
-                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '-')
-                .len();
-        if target == 0 {
-            out.push_str(&rest[..=at]);
-        } else {
-            out.push_str(rest[..at].trim_end_matches(|c: char| c.is_ascii_digit()));
-        }
-        rest = &after[target..];
-    }
-    out.push_str(rest);
-    out
 }
 
 fn workspace_allowlist_file(workspace: &Path) -> PathBuf {
@@ -1179,47 +1116,9 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn a_command_that_only_runs_its_program_is_not_compound() {
-        for plain in [
-            "git status",
-            "cargo test 2>&1",
-            "cargo build 2>/dev/null",
-            "FOO=1 git log --oneline",
-            "npm run build >&2",
-        ] {
-            assert_eq!(compound_reason(plain), None, "{plain}");
-        }
-    }
-
-    #[test]
-    fn a_command_that_does_more_says_what() {
-        for (line, reason) in [
-            ("git status; rm -rf ~", "chains"),
-            ("git status && rm -rf ~", "chains"),
-            ("git status || rm -rf ~", "chains"),
-            ("sleep 100 &", "chains"),
-            ("git status\nrm -rf ~", "chains"),
-            ("git log | sh", "pipes"),
-            ("git show > ~/.bashrc", "file"),
-            ("git show &> out.txt", "file"),
-            ("git log $(rm -rf ~)", "inside"),
-            ("git log `rm -rf ~`", "inside"),
-            ("sh -c 'rm -rf ~'", "hands"),
-            ("/usr/bin/env rm -rf ~", "hands"),
-            ("sudo rm -rf /", "hands"),
-            ("pwsh.exe -c Remove-Item", "hands"),
-        ] {
-            let said = compound_reason(line)
-                .unwrap_or_else(|| panic!("{line:?} passed as a single program"));
-            assert!(said.contains(reason), "{line:?}: {said}");
-        }
-    }
-
     #[tokio::test]
     async fn a_standing_grant_does_not_cover_a_command_chained_onto_it() {
-        // The grant is keyed by the first word, and the first word of
-        // `git status; rm -rf ~` is `git`.
+        // `git status; rm -rf ~` runs `rm` as well, and only `git` is granted.
         let homes = Homes::new();
         let file = workspace_allowlist_file(homes.workspace.path());
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -1260,10 +1159,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chained_command_is_never_granted_always() {
-        // Nothing standing is offered, and an answer of "always" regardless is
-        // narrowed to this one call.
-        let (engine, _, homes) = engine(PermissionDecision::AllowAlways);
+    async fn a_chained_command_is_granted_by_its_parts() {
+        // One "always" on `cd x && cargo test | tail` grants the three programs
+        // it runs, and nothing more: `rm` still asks.
+        let (engine, calls, homes) = engine(PermissionDecision::AllowAlways);
         let run = Fake {
             name: "run_command",
             effect: Effect::Execute,
@@ -1271,15 +1170,140 @@ mod tests {
         engine
             .check(
                 &run,
-                &serde_json::json!({"command": "git status && git push"}),
+                &serde_json::json!({"command": "cd crates/x && cargo test 2>&1 | tail -20"}),
                 &Asking::default(),
             )
             .await
             .unwrap();
-        assert!(
-            !homes.wrote_workspace(),
-            "a standing grant was saved for a chained command"
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let rules: Vec<String> = engine
+            .allowed_rules()
+            .await
+            .into_iter()
+            .map(|r| r.rule)
+            .collect();
+        assert_eq!(
+            rules,
+            ["run_command:cargo", "run_command:cd", "run_command:tail"]
         );
+        assert!(homes.wrote_workspace());
+
+        for covered in [
+            "cargo build",
+            "cd crates/y && cargo test",
+            "cargo test | tail -5",
+        ] {
+            engine
+                .check(
+                    &run,
+                    &serde_json::json!({"command": covered}),
+                    &Asking::default(),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "every part was granted");
+
+        engine
+            .check(
+                &run,
+                &serde_json::json!({"command": "cargo clean && rm -rf target"}),
+                &Asking::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "rm was never granted");
+    }
+
+    #[tokio::test]
+    async fn the_offer_names_only_the_programs_still_missing() {
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"allowed": ["run_command:cd"]}"#).unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        let engine = homes.engine(Box::new(Offered {
+            seen: seen.clone(),
+            decision: PermissionDecision::AllowOnce,
+        }));
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+        engine
+            .check(
+                &run,
+                &serde_json::json!({"command": "cd x && cargo test | tail"}),
+                &Asking::default(),
+            )
+            .await
+            .unwrap();
+        let (offered, scope) = seen.lock().await.clone().unwrap();
+        assert!(offered);
+        assert_eq!(
+            scope,
+            "Always allow `run_command` to run `cargo` and `tail` commands in this workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_beyond_any_grant_is_asked_every_time() {
+        // Every program is granted, and the line still does something no
+        // program name stands for. Asked, never offered "always", and an
+        // answer of "always" regardless is narrowed to this one call.
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            r#"{"allowed": ["run_command:git", "run_command:sh"]}"#,
+        )
+        .unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        let engine = homes.engine(Box::new(Offered {
+            seen: seen.clone(),
+            decision: PermissionDecision::AllowAlways,
+        }));
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+        let before = std::fs::read_to_string(&file).unwrap();
+        for line in [
+            "git show > ~/.bashrc",
+            "git log $(rm -rf ~)",
+            "sh -c 'git status'",
+            "git apply <<EOF\npatch\nEOF",
+        ] {
+            *seen.lock().await = None;
+            engine
+                .check(
+                    &run,
+                    &serde_json::json!({"command": line}),
+                    &Asking::default(),
+                )
+                .await
+                .unwrap();
+            let (offered, _) = seen.lock().await.clone().unwrap_or_else(|| {
+                panic!("{line:?} was let through on the strength of its programs")
+            });
+            assert!(!offered, "{line:?} was offered a standing grant");
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    }
+
+    /// Keeps whether a standing grant was offered and how it was described.
+    struct Offered {
+        seen: Arc<Mutex<Option<(bool, String)>>>,
+        decision: PermissionDecision,
+    }
+
+    #[async_trait]
+    impl PermissionPrompt for Offered {
+        async fn request(&self, request: PermissionRequest) -> PermissionDecision {
+            *self.seen.lock().await = Some((request.offer_always, request.always_scope));
+            self.decision
+        }
     }
 
     #[test]
@@ -1377,7 +1401,11 @@ mod tests {
 
     #[test]
     fn a_network_grant_is_described_as_reaching_a_host_not_running_a_command() {
-        let described = describe_rule("fetch_url:docs.rs", Effect::Network, Scope::Workspace);
+        let described = describe_rules(
+            &["fetch_url:docs.rs".to_string()],
+            Effect::Network,
+            Scope::Workspace,
+        );
         assert!(described.contains("reach docs.rs"), "{described}");
         assert!(!described.contains("commands"), "{described}");
     }
@@ -1438,10 +1466,12 @@ mod tests {
     #[test]
     fn the_two_scopes_are_described_differently() {
         assert!(
-            describe_rule("write_file", Effect::Write, Scope::Workspace).contains("this workspace")
+            describe_rules(&["write_file".to_string()], Effect::Write, Scope::Workspace)
+                .contains("this workspace")
         );
         assert!(
-            describe_rule("write_file", Effect::Write, Scope::Global).contains("every workspace")
+            describe_rules(&["write_file".to_string()], Effect::Write, Scope::Global)
+                .contains("every workspace")
         );
     }
 
@@ -1483,12 +1513,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2, "rm must prompt separately");
-    }
-
-    #[test]
-    fn leading_word_skips_env_assignments() {
-        assert_eq!(leading_word("FOO=1 BAR=2 git status"), Some("git"));
-        assert_eq!(leading_word("  ls -la"), Some("ls"));
-        assert_eq!(leading_word(""), None);
     }
 }

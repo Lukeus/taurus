@@ -141,8 +141,9 @@ inside it and a review of it aren't turns, so neither fires
 `matches` narrows which calls a hook is about. Every field is optional.
 Without `matches`, the hook applies to everything on its event.
 
-- `commands` is keyed by the leading word of a command line, the same unit an
-  "always allow" decision uses, so `git` never matches `rm`.
+- `commands` matches any program a command line runs, the same unit an
+  "always allow" decision uses: a hook on `git` fires for `cd x && git push`,
+  and `git` never matches `rm`.
 - `paths` globs against the workspace-relative paths a call names, taken from
   each tool's own declaration of what it touches. One glob covers every tool
   that writes.

@@ -134,15 +134,14 @@ impl HookPayload {
         self
     }
 
-    /// The leading word of a `run_command` call, which is what `matches.commands`
-    /// is keyed by.
-    fn leading_word(&self) -> Option<&str> {
+    /// Every program a `run_command` call runs, which is what `matches.commands`
+    /// is keyed by. A hook on `git` is about `cd x && git push` too.
+    fn programs(&self) -> Vec<String> {
         self.input
-            .as_ref()?
-            .get("command")?
-            .as_str()?
-            .split_whitespace()
-            .next()
+            .as_ref()
+            .and_then(|input| input.get("command")?.as_str())
+            .map(|command| taurus_process::Programs::of(command).names)
+            .unwrap_or_default()
     }
 }
 
@@ -397,10 +396,8 @@ fn applies(hook: &Hook, filter: &Filter, payload: &HookPayload) -> bool {
     }
 
     if !matches.commands.is_empty() {
-        let Some(leading) = payload.leading_word() else {
-            return false;
-        };
-        if !matches.commands.iter().any(|c| c == leading) {
+        let programs = payload.programs();
+        if !matches.commands.iter().any(|c| programs.contains(c)) {
             return false;
         }
     }

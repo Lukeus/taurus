@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use std::io::{IsTerminal, Write};
 
 use async_trait::async_trait;
-use taurus_tools::{Effect, PermissionDecision, PermissionPrompt, PermissionRequest};
+use taurus_tools::{Effect, PermissionDecision, PermissionPrompt, PermissionRequest, Programs};
 
 /// What may run without a human present.
 #[derive(Clone, Debug, Default)]
@@ -33,50 +33,50 @@ impl Policy {
         if self.allow_tools.contains(&request.tool) {
             return true;
         }
-        // Only a command that runs its program and nothing else: the rest of
-        // `git status; rm -rf ~` is not `git`, and unattended is the last place
-        // to let it ride along. See `taurus_tools::compound_reason`.
-        if request.effect == Effect::Execute && compound(request).is_none() {
-            if let Some(program) = leading_word(&request.input) {
-                return self.allow_commands.contains(program);
+        // Every program the line runs has to be allowed: the rest of
+        // `git status; rm -rf ~` is `rm`, and unattended is the last place to
+        // let it ride along. A line that does something no program name
+        // stands for is never allowed this way. See `taurus_tools::Programs`.
+        if request.effect == Effect::Execute {
+            if let Some(programs) = programs(request) {
+                return programs.beyond.is_none()
+                    && programs
+                        .names
+                        .iter()
+                        .all(|program| self.allow_commands.contains(program));
             }
         }
         false
     }
 
-    /// The flag that would have allowed this call, for the refusal message.
+    /// The flags that would have allowed this call, for the refusal message.
     fn hint(&self, request: &PermissionRequest) -> String {
         if request.effect == Effect::Execute {
-            if let Some(reason) = compound(request) {
-                return format!(
-                    "--dangerously-allow-all (--allow-command covers a command that only runs \
-                     its program, and this one {reason})"
-                );
+            if let Some(programs) = programs(request) {
+                if let Some(reason) = programs.beyond {
+                    return format!(
+                        "--dangerously-allow-all (--allow-command covers the programs a \
+                         command runs, and this one {reason})"
+                    );
+                }
+                let flags: Vec<String> = programs
+                    .names
+                    .iter()
+                    .filter(|program| !self.allow_commands.contains(*program))
+                    .map(|program| format!("--allow-command {program}"))
+                    .collect();
+                if !flags.is_empty() {
+                    return flags.join(" ");
+                }
             }
         }
-        match (request.effect, leading_word(&request.input)) {
-            (Effect::Execute, Some(program)) => format!("--allow-command {program}"),
-            _ => format!("--allow {}", request.tool),
-        }
+        format!("--allow {}", request.tool)
     }
 }
 
-/// What a command does beyond running its program, if anything.
-fn compound(request: &PermissionRequest) -> Option<&'static str> {
-    request
-        .input
-        .get("command")?
-        .as_str()
-        .and_then(taurus_tools::compound_reason)
-}
-
-/// First bare word of the `command` argument, ignoring `VAR=value` prefixes.
-fn leading_word(input: &serde_json::Value) -> Option<&str> {
-    input
-        .get("command")?
-        .as_str()?
-        .split_whitespace()
-        .find(|w| !w.contains('='))
+/// What the `command` argument runs, when there is one.
+fn programs(request: &PermissionRequest) -> Option<Programs> {
+    request.input.get("command")?.as_str().map(Programs::of)
 }
 
 /// Asks on the terminal when there is one; falls back to the policy when not.
@@ -333,9 +333,9 @@ mod tests {
 
     #[tokio::test]
     async fn allowing_a_command_does_not_allow_what_is_chained_onto_it() {
-        // `--allow-command git` is keyed by the first word, and the first word
-        // of `git status; rm -rf .` is `git`. Unattended is the last place for
-        // the rest of the line to ride along.
+        // `--allow-command git` covers `git`, and `git status; rm -rf .` also
+        // runs `rm`. Unattended is the last place for it to ride along, so the
+        // refusal names the flag for the program that is missing.
         let policy = Policy {
             allow_commands: ["git".to_string()].into_iter().collect(),
             ..Default::default()
@@ -356,12 +356,36 @@ mod tests {
                 .await;
             assert_eq!(decision, PermissionDecision::Deny, "{command}");
         }
-        let hint = policy.hint(&request(
+        let chained = policy.hint(&request(
             "run_command",
             Effect::Execute,
             json!({"command": "git status; rm -rf ."}),
         ));
-        assert!(hint.starts_with("--dangerously-allow-all"), "{hint}");
+        assert_eq!(chained, "--allow-command rm");
+        let beyond = policy.hint(&request(
+            "run_command",
+            Effect::Execute,
+            json!({"command": "git show > ~/.bashrc"}),
+        ));
+        assert!(beyond.starts_with("--dangerously-allow-all"), "{beyond}");
+    }
+
+    #[tokio::test]
+    async fn a_chained_command_runs_when_every_program_is_allowed() {
+        let policy = Policy {
+            allow_commands: ["cd".to_string(), "cargo".to_string(), "tail".to_string()]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let decision = TerminalPrompt::non_interactive(policy)
+            .request(request(
+                "run_command",
+                Effect::Execute,
+                json!({"command": "cd crates/x && cargo test 2>&1 | tail -20"}),
+            ))
+            .await;
+        assert_eq!(decision, PermissionDecision::AllowOnce);
     }
 
     #[tokio::test]

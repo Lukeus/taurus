@@ -1111,6 +1111,17 @@ the backlog, and they're the minority.
   run do more is to grant it while you're there — "always" on the prompt — and
   then leave. The cost is that the first time a run needs something new, it
   gets a refusal and you find out in the morning.
+- **The permission gate reads shell syntax, not programs.** It splits a line
+  at the operators that start another command and keys each part by its
+  program's name, which is what lets one grant cover `cd x && cargo test`. It
+  knows the handful of programs whose whole job is to run the rest of the line
+  (`sh -c`, `sudo`, `xargs`, `python3 -c`, `find -exec`), and nothing about
+  the rest. `make`, `npm run`, `cargo run` and a `git` alias all run what the
+  project says, and a grant for one of them is a grant for that. A heredoc is
+  never covered either, because the body of `python3 <<EOF` is a script. The
+  alternative is a shell parser, and a parser that is wrong lets something
+  through, where a tokenizer that gives up asks. See
+  [Permissions](safety.md#permissions).
 - **A turn running unattended doesn't say so in its transcript.** The refusals
   do: each one reads "nobody is there to allow this" where the call would have
   been. But the switch itself leaves no line, so a conversation read back a
