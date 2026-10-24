@@ -818,9 +818,13 @@ the backlog, and they're the minority.
   the roster it started with. The costs are a one-turn delay at worst, and
   the same same-length-same-tick blind spot every fingerprint here has.
 
+  Plugins are on it through their hooks. A plugin you add, remove, or switch
+  on or off, a file its manifest names showing up, and a project you trust
+  all land on your next message.
+
   Two things *aren't* on this path and need a reload: the provider list and
-  `settings.json`. You edit both in the app most of the time, not in a file,
-  and both are re-read when you save them there. A hand edit to
+  the rest of `settings.json`. You edit both in the app most of the time, not
+  in a file, and both are re-read when you save them there. A hand edit to
   `providers.json` while the app is open is the case that waits.
 
 - **Only zsh and bash mark their commands.** The dock's blocks, the

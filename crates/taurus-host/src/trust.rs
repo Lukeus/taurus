@@ -52,6 +52,12 @@ fn trust_file() -> PathBuf {
     config::home_dir().join(TRUST_FILE)
 }
 
+/// Where the trusted set is kept, for a fingerprint that has to notice it
+/// change. See `host::hook_freshness`.
+pub(crate) fn file() -> PathBuf {
+    trust_file()
+}
+
 /// The key a workspace is stored under.
 ///
 /// Canonicalized, so the same directory reached through a symlink or a relative

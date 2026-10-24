@@ -36,7 +36,8 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -75,10 +76,50 @@ pub struct Entry {
     pub len: u64,
     pub modified: u64,
     /// The vector, little-endian `f32`, base64. See the module note.
+    ///
+    /// Fixed once the entry exists: [`Entry::vector`] remembers what this
+    /// decodes to, so changing it afterwards leaves the two disagreeing.
     pub vector: String,
+    /// What [`Entry::vector`] decoded to, the first time anything asked.
+    ///
+    /// Shared between clones, which is the point. The index held in memory
+    /// hands out clones of its entries, so a vector decoded for one search is
+    /// already decoded for the next — the 6.6 ms of a large index that was
+    /// otherwise paid on every query. See [`Index::load`].
+    #[serde(skip)]
+    decoded: Arc<OnceLock<Option<Arc<[f32]>>>>,
 }
 
 impl Entry {
+    /// An entry for a vector just embedded, already decoded.
+    pub fn new(
+        path: String,
+        start_line: usize,
+        end_line: usize,
+        len: u64,
+        modified: u64,
+        vector: &[f32],
+    ) -> Self {
+        Self {
+            path,
+            start_line,
+            end_line,
+            len,
+            modified,
+            vector: encode(vector),
+            decoded: Arc::new(OnceLock::from(Some(Arc::from(vector)))),
+        }
+    }
+
+    /// The vector, decoded once and remembered. `None` for one that is not a
+    /// whole number of floats.
+    pub fn vector(&self) -> Option<Arc<[f32]>> {
+        self.decoded
+            .get_or_init(|| self.decode().map(Arc::from))
+            .clone()
+    }
+
+    /// The vector decoded afresh, remembered nowhere.
     pub fn decode(&self) -> Option<Vec<f32>> {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(self.vector.as_bytes())
@@ -182,6 +223,78 @@ impl Ranking {
     }
 }
 
+/// The index this process last read or wrote, as it stood on disk then.
+///
+/// One, not one per workspace: it is the open workspace's that every search
+/// asks for, and an index is up to 24 MB of base64 plus its decoded vectors.
+/// Checked against the file's length and modification time on every load, so
+/// an index rewritten by anything else — another window, `taurus index` — is
+/// read again rather than answered from here.
+///
+/// Reached through [`Index::memory`] rather than named directly, so a test can
+/// hand an index memory of its own: tests run in parallel, and one sharing
+/// this slot evicts another's index from it, which hides exactly the stale
+/// answers they are there to catch.
+static HELD: Mutex<Option<Held>> = Mutex::new(None);
+
+/// Where an index keeps what it last read or wrote. See [`HELD`].
+#[derive(Clone, Copy)]
+enum Memory {
+    Process,
+    #[cfg(test)]
+    Own(&'static Mutex<Option<Held>>),
+}
+
+impl Memory {
+    fn slot(self) -> &'static Mutex<Option<Held>> {
+        match self {
+            Self::Process => &HELD,
+            #[cfg(test)]
+            Self::Own(slot) => slot,
+        }
+    }
+}
+
+struct Held {
+    path: PathBuf,
+    model: String,
+    stamp: Stamp,
+    entries: Vec<Entry>,
+}
+
+/// Length and modification time, the same pair a file's own staleness is
+/// judged by.
+type Stamp = (u64, Option<SystemTime>);
+
+fn stamp_of(path: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()))
+}
+
+/// What is held for `path`, if it is still the file on disk.
+fn held(memory: Memory, path: &Path, model: &str, stamp: Stamp) -> Option<Vec<Entry>> {
+    let held = memory.slot().lock().unwrap_or_else(|e| e.into_inner());
+    held.as_ref()
+        .filter(|h| h.path == path && h.model == model && h.stamp == stamp)
+        .map(|h| h.entries.clone())
+}
+
+fn hold(memory: Memory, path: &Path, model: &str, stamp: Stamp, entries: Vec<Entry>) {
+    *memory.slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(Held {
+        path: path.to_path_buf(),
+        model: model.to_string(),
+        stamp,
+        entries,
+    });
+}
+
+fn release(memory: Memory, path: &Path) {
+    let mut held = memory.slot().lock().unwrap_or_else(|e| e.into_inner());
+    if held.as_ref().is_some_and(|h| h.path == path) {
+        *held = None;
+    }
+}
+
 /// One workspace's index.
 ///
 /// Two paths and nothing else, so a caller that needs one on a blocking thread
@@ -190,6 +303,7 @@ impl Ranking {
 pub struct Index {
     path: PathBuf,
     workspace: PathBuf,
+    memory: Memory,
 }
 
 impl Index {
@@ -197,7 +311,21 @@ impl Index {
         Self {
             path: dir.into().join("index.jsonl"),
             workspace: workspace.into(),
+            memory: Memory::Process,
         }
+    }
+
+    /// The same index with memory nobody else shares. See [`HELD`].
+    #[cfg(test)]
+    pub(crate) fn remembering_alone(mut self) -> Self {
+        self.memory = Memory::Own(Box::leak(Box::new(Mutex::new(None))));
+        self
+    }
+
+    /// Drops what is held, so the next load reads the file.
+    #[cfg(test)]
+    pub(crate) fn release(&self) {
+        release(self.memory, &self.path);
     }
 
     pub fn path(&self) -> &Path {
@@ -209,7 +337,20 @@ impl Index {
     /// An index built by a different model, or by a newer Taurus, reads as
     /// empty rather than as an error: it is a cache, and the only correct
     /// response to one that cannot be understood is to rebuild it.
+    ///
+    /// Answered from memory when the file is the one this process last read or
+    /// wrote. Reading and parsing a large index is 8 ms, and every search
+    /// begins with a refresh that loads it.
     pub fn load(&self, model: &str) -> Vec<Entry> {
+        // Stamped before the read, so a file replaced while it is being read
+        // is held under the old stamp and read again next time, never the
+        // reverse.
+        let Some(stamp) = stamp_of(&self.path) else {
+            return Vec::new();
+        };
+        if let Some(entries) = held(self.memory, &self.path, model, stamp) {
+            return entries;
+        }
         let Ok(file) = std::fs::File::open(&self.path) else {
             return Vec::new();
         };
@@ -238,6 +379,7 @@ impl Index {
         }
 
         if usable {
+            hold(self.memory, &self.path, model, stamp, entries.clone());
             entries
         } else {
             Vec::new()
@@ -295,11 +437,22 @@ impl Index {
             let _ = std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600));
         }
 
-        std::fs::rename(&temporary, &self.path).map_err(|e| format!("{}: {e}", self.path.display()))
+        // Stamped from the temporary file, whose length and time the rename
+        // keeps: stamped after it, a write by somebody else landing in between
+        // would be held as this one.
+        let stamp = stamp_of(&temporary);
+        release(self.memory, &self.path);
+        std::fs::rename(&temporary, &self.path)
+            .map_err(|e| format!("{}: {e}", self.path.display()))?;
+        if let Some(stamp) = stamp {
+            hold(self.memory, &self.path, model, stamp, entries.to_vec());
+        }
+        Ok(())
     }
 
     /// Discards the index. A missing one is success.
     pub fn forget(&self) -> Result<(), String> {
+        release(self.memory, &self.path);
         match std::fs::remove_file(&self.path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -317,7 +470,7 @@ pub fn search(entries: &[Entry], query: &[f32], limit: usize, workspace: &Path) 
     let mut best: HashMap<&str, (f32, &Entry)> = HashMap::new();
 
     for entry in entries {
-        let Some(vector) = entry.decode() else {
+        let Some(vector) = entry.vector() else {
             continue;
         };
         if vector.len() != query.len() {
@@ -479,10 +632,10 @@ mod tests {
     /// passages of 768 dimensions, about 24 MB — and on what. Ignored, because
     /// only a release build's numbers mean anything.
     ///
-    /// Four numbers: reading the index off disk, copying its entries, decoding
-    /// every vector, and the search that decodes and scores them. They are why
-    /// the decoded vectors are not kept between searches. See
-    /// `docs/development.md` before adding a cache for them.
+    /// Five numbers: reading the index off disk, loading it from memory,
+    /// decoding every vector afresh, a read and its first search, and a load
+    /// and search with everything held. The last against the fourth is what
+    /// holding the index buys. See `docs/development.md`.
     #[test]
     #[ignore]
     fn search_code_cost_on_a_large_index() {
@@ -508,20 +661,27 @@ mod tests {
             }
             eprintln!("{label}  best of 5 {best:>10.1?}");
         };
-        time("load the index         ", &mut || {
+        time("read the index off disk ", &mut || {
+            index.release();
+            std::hint::black_box(index.load("m"));
+        });
+        time("load, held in memory    ", &mut || {
             std::hint::black_box(index.load("m"));
         });
         let loaded = index.load("m");
-        time("clone every entry      ", &mut || {
-            std::hint::black_box(loaded.clone());
-        });
-        time("decode every vector    ", &mut || {
+        time("decode every vector     ", &mut || {
             for e in &loaded {
                 std::hint::black_box(e.decode());
             }
         });
-        time("search: decode + score ", &mut || {
-            std::hint::black_box(search(&loaded, &query, 20, dir.path()));
+        time("read, then first search ", &mut || {
+            index.release();
+            let read = index.load("m");
+            std::hint::black_box(search(&read, &query, 20, dir.path()));
+        });
+        time("load and search, held   ", &mut || {
+            let held = index.load("m");
+            std::hint::black_box(search(&held, &query, 20, dir.path()));
         });
     }
 
@@ -652,14 +812,7 @@ mod tests {
     }
 
     fn entry(path: &str, vector: &[f32]) -> Entry {
-        Entry {
-            path: path.into(),
-            start_line: 1,
-            end_line: 10,
-            len: 100,
-            modified: 1,
-            vector: encode(vector),
-        }
+        Entry::new(path.into(), 1, 10, 100, 1, vector)
     }
 
     #[test]
@@ -843,5 +996,66 @@ mod tests {
     fn forgetting_an_index_that_is_not_there_is_success() {
         let dir = TempDir::new().unwrap();
         assert!(Index::new(dir.path(), dir.path()).forget().is_ok());
+    }
+
+    /// A vector decoded for one search is the one the next search gets: the
+    /// held index hands out clones that share it.
+    #[test]
+    fn a_held_index_keeps_its_decoded_vectors_between_loads() {
+        let dir = TempDir::new().unwrap();
+        let index = Index::new(dir.path(), dir.path()).remembering_alone();
+        index.save("m", &[entry("a.rs", &[1.0, 0.0])]).unwrap();
+        index.release();
+
+        let first = index.load("m")[0].vector().unwrap();
+        let second = index.load("m")[0].vector().unwrap();
+        assert!(Arc::ptr_eq(&first, &second), "decoded twice");
+        assert_eq!(&*first, &[1.0, 0.0]);
+    }
+
+    /// Anything else may rewrite the file — another window, `taurus index` —
+    /// and what it wrote is what the next load returns.
+    #[test]
+    fn an_index_rewritten_elsewhere_is_read_again() {
+        let dir = TempDir::new().unwrap();
+        let index = Index::new(dir.path(), dir.path()).remembering_alone();
+        index.save("m", &[entry("a.rs", &[1.0])]).unwrap();
+        assert_eq!(index.load("m").len(), 1);
+
+        // A line added by a second process, which this one's memory knows
+        // nothing of: a different length, so a different stamp whatever the
+        // clock says.
+        let line = serde_json::to_string(&RecordRef::Entry(&entry("b.rs", &[2.0]))).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(index.path())
+            .unwrap();
+        writeln!(file, "{line}").unwrap();
+        drop(file);
+
+        let loaded = index.load("m");
+        assert_eq!(paths_of(&loaded), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn a_held_index_answers_only_for_its_own_model() {
+        let dir = TempDir::new().unwrap();
+        let index = Index::new(dir.path(), dir.path()).remembering_alone();
+        index.save("m", &[entry("a.rs", &[1.0])]).unwrap();
+        assert!(index.load("another").is_empty());
+        assert_eq!(index.load("m").len(), 1);
+    }
+
+    #[test]
+    fn a_forgotten_index_is_not_answered_from_memory() {
+        let dir = TempDir::new().unwrap();
+        let index = Index::new(dir.path(), dir.path()).remembering_alone();
+        index.save("m", &[entry("a.rs", &[1.0])]).unwrap();
+        index.forget().unwrap();
+        assert!(index.load("m").is_empty());
+    }
+
+    fn paths_of(entries: &[Entry]) -> Vec<&str> {
+        entries.iter().map(|e| e.path.as_str()).collect()
     }
 }
