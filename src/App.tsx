@@ -17,6 +17,7 @@ import {} from "./components/Attachments";
 import {} from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
 import { CanvasSlot } from "./components/CanvasSlot";
+import { LeavingDialog } from "./components/LeavingDialog";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { NotesPane } from "./components/NotesPane";
 import { useNotebook, type Which } from "./state/notebook";
@@ -202,6 +203,9 @@ export default function App() {
       interrupted: s.interrupted,
       error: s.error,
       permission: s.permission,
+      leaving: s.leaving,
+      grantLeaving: s.grantLeaving,
+      dismissLeaving: s.dismissLeaving,
       proposals: s.proposals,
       agentProposals: s.agentProposals,
       init: s.init,
@@ -1646,6 +1650,14 @@ export default function App() {
           request={store.permission}
           askedBy={askedBy(store.permission, store.session?.id, store.sessions)}
           onDecide={store.answerPermission}
+        />
+      )}
+
+      {store.leaving && (
+        <LeavingDialog
+          rules={store.leaving}
+          onGrant={store.grantLeaving}
+          onClose={store.dismissLeaving}
         />
       )}
 

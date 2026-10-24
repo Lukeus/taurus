@@ -9,7 +9,7 @@
 //! every workspace. Both are consulted, so a grant made once globally is not
 //! asked again in a project that has never seen it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -250,6 +250,17 @@ pub struct PermissionEngine {
     /// allow in this workspace" would persist a decision nothing would ever
     /// read back, so the offer is withdrawn and the grant narrows to this call.
     workspace_rules: bool,
+    /// What each conversation has allowed once, by the conversation's id.
+    ///
+    /// Kept for the moment somebody leaves. "Allow once" is a decision about
+    /// the call in front of them, and the rules it would have taken to make
+    /// that decision standing are exactly what an unattended run is refused
+    /// next. So the switch that sets a conversation to unattended offers them
+    /// back, and this is where it finds them. Never consulted by [`check`]:
+    /// remembering a rule here allows nothing by itself.
+    ///
+    /// [`check`]: Self::check
+    once: Mutex<HashMap<String, BTreeSet<String>>>,
 }
 
 impl PermissionEngine {
@@ -270,6 +281,7 @@ impl PermissionEngine {
             prompt,
             allowlists: Mutex::new(allowlists),
             workspace_rules: true,
+            once: Mutex::new(HashMap::new()),
         }
     }
 
@@ -354,7 +366,19 @@ impl PermissionEngine {
         }
 
         let scope = match self.prompt.request(request).await {
-            PermissionDecision::AllowOnce => return Ok(()),
+            PermissionDecision::AllowOnce => {
+                // Remembered only where "always" was on offer: what could not
+                // have been made standing now cannot be made standing later.
+                if let (true, Some(session)) = (offer_workspace, &asking.session) {
+                    self.once
+                        .lock()
+                        .await
+                        .entry(session.clone())
+                        .or_default()
+                        .extend(missing);
+                }
+                return Ok(());
+            }
             PermissionDecision::Deny => return Err(ToolError::Denied),
             // A workspace grant with no workspace layer to keep it in is
             // honored for this call and not written down. Narrowing rather than
@@ -373,6 +397,38 @@ impl PermissionEngine {
         lists.layer(scope).allowed.extend(missing);
         self.save(scope, lists.layer(scope));
         Ok(())
+    }
+
+    /// What `session` has allowed once and could make standing: every rule it
+    /// said yes to for one call that no layer permits yet, in rule order.
+    pub async fn allowed_once(&self, session: &str) -> Vec<String> {
+        let once = self.once.lock().await;
+        let Some(rules) = once.get(session) else {
+            return Vec::new();
+        };
+        let lists = self.allowlists.lock().await;
+        rules
+            .iter()
+            .filter(|rule| !lists.permits(rule))
+            .cloned()
+            .collect()
+    }
+
+    /// Makes `rules` standing in this workspace, as "always" on each of their
+    /// prompts would have.
+    ///
+    /// Workspace only, because this is the pill's half of "allow always", and
+    /// the pill never offers "everywhere": running commands is never offered
+    /// globally, and a decision made on the way out the door is not the moment
+    /// for the widest grant there is. Nothing in a workspace whose own rules
+    /// are not read, for the same reason `revoke` does nothing there.
+    pub async fn grant(&self, rules: &[String]) {
+        if !self.workspace_rules || rules.is_empty() {
+            return;
+        }
+        let mut lists = self.allowlists.lock().await;
+        lists.workspace.allowed.extend(rules.iter().cloned());
+        self.save(Scope::Workspace, &lists.workspace);
     }
 
     pub async fn allowed_rules(&self) -> Vec<AllowedRule> {
@@ -1290,6 +1346,61 @@ mod tests {
             assert!(!offered, "{line:?} was offered a standing grant");
         }
         assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn what_was_allowed_once_is_remembered_for_the_conversation() {
+        let (engine, calls, homes) = engine(PermissionDecision::AllowOnce);
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+        let here = Asking {
+            session: Some("here".into()),
+            unattended: false,
+        };
+        engine
+            .check(
+                &run,
+                &serde_json::json!({"command": "cd x && cargo test"}),
+                &here,
+            )
+            .await
+            .unwrap();
+        // Beyond any grant, so never offered "always", so not remembered.
+        engine
+            .check(
+                &run,
+                &serde_json::json!({"command": "git show > out.txt"}),
+                &here,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.allowed_once("here").await,
+            ["run_command:cargo", "run_command:cd"]
+        );
+        assert!(engine.allowed_once("elsewhere").await.is_empty());
+        assert!(!homes.wrote_workspace(), "allowing once wrote nothing");
+
+        engine.grant(&engine.allowed_once("here").await).await;
+        assert!(engine.allowed_once("here").await.is_empty());
+        assert!(homes.wrote_workspace());
+        let asked = calls.load(Ordering::SeqCst);
+        engine
+            .check(&run, &serde_json::json!({"command": "cargo build"}), &here)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), asked, "the grant is standing");
+    }
+
+    #[tokio::test]
+    async fn a_grant_goes_nowhere_in_a_workspace_whose_rules_are_not_read() {
+        let homes = Homes::new();
+        let engine = homes.engine(Box::new(DenyAll)).with_workspace_rules(false);
+        engine.grant(&["run_command:cargo".to_string()]).await;
+        assert!(!homes.wrote_workspace());
+        assert!(engine.allowed_rules().await.is_empty());
     }
 
     /// Keeps whether a standing grant was offered and how it was described.

@@ -42,9 +42,12 @@ night working and tells you in the morning what it couldn't do.
 It never allows anything extra. Whatever a standing grant already covers
 doesn't reach a prompt at all, so the only calls this changes are the ones
 you'd have been asked about, and the only answer it gives them is no. The way
-to let a long run do more is to grant it while you're there — **Allow always**
-on the prompt — and then leave. It isn't saved either: the conversation asks
-again tomorrow.
+to let a long run do more is to grant it while you're there, and the switch
+helps with that: setting it lists everything this conversation got an **Allow
+once** for that nothing permits yet, and one press makes those standing for
+the workspace. Those are the calls the run is about to be refused, so it's the
+right moment to decide. Unpick any, or leave them all; the switch itself
+writes nothing. It isn't saved either: the conversation asks again tomorrow.
 
 A prompt from a conversation that isn't the one on screen says whose it is,
 since a turn you left running can be the one asking.

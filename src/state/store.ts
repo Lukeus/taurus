@@ -322,6 +322,12 @@ interface Store {
   interrupted: InterruptedTurn | null;
   /** Set while a turn is running so the composer can show Stop instead of Send. */
   permission: PermissionRequest | null;
+  /**
+   * What this conversation allowed once and is about to be refused, offered
+   * as standing grants the moment it is set to unattended. `null` when the
+   * offer is not up: nothing was allowed once, or it has been answered.
+   */
+  leaving: string[] | null;
   proposals: SkillProposal[];
   agentProposals: AgentProposal[];
   /**
@@ -360,6 +366,13 @@ interface Store {
    * and a dialog left up is exactly what stops it.
    */
   setUnattended: (unattended: boolean) => Promise<void>;
+  /**
+   * Makes the rules the leaving dialog offered standing for this workspace.
+   * The same write "Allow always" on each of their prompts would have made.
+   */
+  grantLeaving: (rules: string[]) => Promise<void>;
+  /** Closes the leaving dialog with nothing granted. */
+  dismissLeaving: () => void;
   /**
    * Erases a saved conversation. Deleting the open one starts a replacement on
    * the same provider and model, so the app is never left without a session.
@@ -706,6 +719,7 @@ export const useStore = create<Store>((set, get) => ({
   sent: null,
   interrupted: null,
   permission: null,
+  leaving: null,
   proposals: [],
   agentProposals: [],
   datasets: [],
@@ -1268,7 +1282,32 @@ export const useStore = create<Store>((set, get) => ({
     // as long as somebody is away, so leaving answers it. Refused, because
     // that is the only answer this switch ever gives — see `set_unattended`.
     if (unattended && permission) await get().answerPermission("deny");
+    if (!unattended) return set({ leaving: null });
+
+    // What was allowed once is what the run is about to be refused, so this
+    // is the moment to offer making it standing. The switch itself widens
+    // nothing — the offer is a separate, deliberate press, and declining it
+    // leaves the conversation unattended all the same.
+    try {
+      const rules = await api.onceAllowedRules(session.id);
+      if (rules.length && get().session?.id === session.id) {
+        set({ leaving: rules });
+      }
+    } catch (e) {
+      console.warn("could not list what this conversation allowed once", e);
+    }
   },
+
+  grantLeaving: async (rules) => {
+    set({ leaving: null });
+    try {
+      await api.grantPermissionRules(rules);
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  dismissLeaving: () => set({ leaving: null }),
 
   answerPermission: async (decision) => {
     const { permission } = get();

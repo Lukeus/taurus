@@ -2930,6 +2930,10 @@ body.resizing-y * {
   font-size: 12.5px;
   color: var(--text-faint);
 }
+/* The rules the leaving dialog offers, between its sentence and its buttons. */
+.dialog .leaving-rules {
+  margin: 0 0 20px;
+}
 /* Which conversation is asking, when it is not the one on screen. Warm rather
    than faint: it is the one line here that changes what the reader thinks they
    are approving, and a footnote colour would file it with the small print. */

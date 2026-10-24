@@ -180,8 +180,17 @@ refuse. There's no desktop equivalent of `--allow`, because a switch that could
 widen what a turn may do would be a second permission surface trusted as much
 as `permissions.json` and kept in step with it by hand. Anything a standing
 grant already covers never reaches a prompt, so leaving takes nothing away from
-what you've allowed — it only decides what becomes of the rest. To let a long
-run do more, grant it while you're there and then leave.
+what you've allowed — it only decides what becomes of the rest.
+
+What the run is about to be refused is, almost always, what you just said
+**Allow once** to. So the moment you set a conversation to unattended, Taurus
+lists those: every rule this conversation allowed once that nothing permits
+yet, picked by default. One press makes them standing for this workspace, the
+same write **Allow always** on each prompt would have made, into the same
+`permissions.json`. Unpick any you'd rather it kept asking about, or leave
+them all as they are. The switch itself writes nothing, and declining the
+offer leaves the conversation unattended all the same. A command that could
+never be granted "always" isn't offered here either.
 
 Nothing about it is saved. The conversation asks again tomorrow, and a
 conversation you didn't set it on is unaffected.

@@ -1108,9 +1108,14 @@ the backlog, and they're the minority.
   much while I'm gone". That's deliberate: a switch that could widen what a
   turn may do would be a second permission surface, trusted as much as
   `permissions.json` and kept in step with it by hand. The way to let a long
-  run do more is to grant it while you're there — "always" on the prompt — and
-  then leave. The cost is that the first time a run needs something new, it
-  gets a refusal and you find out in the morning.
+  run do more is to grant it while you're there, and the switch offers to:
+  what this conversation allowed once is listed as you set it, and one press
+  makes those standing in the workspace's own `permissions.json`. That's the
+  same file, not a second surface. The cost that's left is that the first
+  time a run needs something it has never asked for, it gets a refusal and
+  you find out in the morning. A prompt already on screen when you flip the
+  switch is refused, not offered: it was never answered, so there's nothing
+  to make standing.
 - **The permission gate reads shell syntax, not programs.** It splits a line
   at the operators that start another command and keys each part by its
   program's name, which is what lets one grant cover `cd x && cargo test`. It

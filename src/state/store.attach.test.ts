@@ -36,7 +36,9 @@ const idle = (command: string): Promise<unknown> => {
   if (command === "resume_session") {
     return Promise.resolve({ ...session("other"), messages: [], switches: [] });
   }
-  return Promise.resolve(["list_sessions", "list_checkpoints"].includes(command) ? [] : undefined);
+  return Promise.resolve(
+    ["list_sessions", "list_checkpoints", "once_allowed_rules"].includes(command) ? [] : undefined,
+  );
 };
 
 // A warning is a failure the assertions cannot see — a stub answering the
