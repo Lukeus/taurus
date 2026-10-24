@@ -2144,6 +2144,32 @@ async fn a_plugin_waiting_on_a_file_it_names_loads_when_the_file_appears() {
 }
 
 #[tokio::test]
+async fn a_plugin_waiting_on_a_command_file_it_names_loads_when_the_file_appears() {
+    // The same wait, through the part a plugin's commands/ added: a missing
+    // command file is as much a problem as a missing hooks file.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let root = crate::plugins::dir(Scope::Global, None)
+        .unwrap()
+        .join("guard");
+    plugin_with_a_hook(&root, "guard", r#", "commands": "./extra/triage.md""#);
+    // The folder already there, so only the named file appearing can be
+    // what's noticed: a new folder moves the plugin's own stamp.
+    std::fs::create_dir_all(root.join("extra")).unwrap();
+    host.reload().await;
+    assert!(
+        hook_names(&host).await.is_empty(),
+        "it loaded without the file"
+    );
+
+    std::fs::write(root.join("extra/triage.md"), "Triage the open issues.").unwrap();
+    a_turn(&host).await;
+
+    assert_eq!(hook_names(&host).await, ["guard:lint"]);
+}
+
+#[tokio::test]
 async fn trusting_a_workspace_between_turns_brings_its_plugins_hooks() {
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();

@@ -276,6 +276,8 @@ fn consulted(
             "skills",
             "agents",
             "com.github.copilot/agents",
+            "commands",
+            "com.github.copilot/commands",
         ]);
     let mut out: Vec<PathBuf> = std::iter::once(root.to_path_buf())
         .chain(unprompted.map(|path| root.join(path)))
@@ -283,6 +285,7 @@ fn consulted(
     for value in [
         &manifest.skills,
         &manifest.agents,
+        &manifest.commands,
         &manifest.hooks,
         &manifest.mcp_servers,
     ]
