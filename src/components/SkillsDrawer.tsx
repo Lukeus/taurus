@@ -258,6 +258,9 @@ export function originLabel(
     // The name already says which plugin: `ops:deploy`.
     case "plugin":
       return "plugin";
+    // A command file rather than a skill folder: `commands/review.md`.
+    case "plugin_command":
+      return "plugin command";
   }
 }
 

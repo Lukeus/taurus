@@ -44,6 +44,7 @@ export function TrustBanner({
             </li>
           )}
           {items.skills > 0 && <li>{count(items.skills, "skill")}</li>}
+          {items.commands > 0 && <li>{count(items.commands, "command")}</li>}
           {items.agents > 0 && <li>{count(items.agents, "sub-agent")}</li>}
           {items.instructions > 0 && (
             <li>{count(items.instructions, "instruction file")}</li>

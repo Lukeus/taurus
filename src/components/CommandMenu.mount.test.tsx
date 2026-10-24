@@ -50,6 +50,33 @@ describe("the command menu", () => {
     unmount();
   });
 
+  it("shows a plugin command as a command, with what to type after it", () => {
+    const { host, unmount } = mount(
+      <CommandMenu
+        commands={[
+          {
+            name: "ops:fix-issue",
+            kind: "command",
+            when_to_use: "Fix an issue",
+            argument_hint: "[number] [priority]",
+          },
+          ...commands,
+        ]}
+        active={0}
+        onPick={() => {}}
+      />,
+    );
+
+    const rows = [...host.querySelectorAll(".command-row")];
+    expect(rows[0].querySelector(".command-kind")?.textContent).toBe("command");
+    expect(rows[0].querySelector(".command-hint")?.textContent).toBe(
+      "[number] [priority]",
+    );
+    // A row without a hint has no empty slot for one.
+    expect(rows[1].querySelector(".command-hint")).toBeNull();
+    unmount();
+  });
+
   it("marks the highlighted row for a screen reader as well as the eye", () => {
     const { host, unmount } = mount(
       <CommandMenu commands={commands} active={1} onPick={() => {}} />,
