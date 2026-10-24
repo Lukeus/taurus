@@ -278,8 +278,10 @@ mod tests {
 
     #[test]
     fn elevenlabs_without_a_voice_says_where_to_pick_one() {
-        let mut settings = SpeechSettings::default();
-        settings.engine = SpeechEngine::ElevenLabs;
+        let settings = SpeechSettings {
+            engine: SpeechEngine::ElevenLabs,
+            ..SpeechSettings::default()
+        };
         let err = resolve(&settings).unwrap_err();
         assert!(err.contains("Pick an ElevenLabs voice"), "{err}");
     }
