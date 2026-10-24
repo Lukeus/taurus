@@ -282,6 +282,8 @@ pub fn run() {
             commands::respond_permission,
             commands::answer_questions,
             commands::list_permission_rules,
+            commands::once_allowed_rules,
+            commands::grant_permission_rules,
             commands::revoke_permission_rule,
             commands::list_notes,
             commands::list_pages,

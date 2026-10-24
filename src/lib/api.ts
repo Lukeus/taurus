@@ -556,6 +556,17 @@ export const revokePermissionRule = (rule: string, scope: Scope) =>
   invoke<void>("revoke_permission_rule", { rule, scope });
 
 /**
+ * The rules this conversation said "allow once" to that nothing permits yet —
+ * what an unattended run is about to be refused.
+ */
+export const onceAllowedRules = (sessionId: string) =>
+  invoke<string[]>("once_allowed_rules", { sessionId });
+
+/** Makes rules standing for this workspace, as "Allow always" would have. */
+export const grantPermissionRules = (rules: string[]) =>
+  invoke<void>("grant_permission_rules", { rules });
+
+/**
  * What earlier conversations in this workspace wrote down for the next one.
  *
  * Newest first, which is the order they are worth reading in and the order they

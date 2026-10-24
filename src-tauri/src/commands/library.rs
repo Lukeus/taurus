@@ -17,6 +17,37 @@ pub async fn revoke_permission_rule(
     Ok(())
 }
 
+/// What a conversation has allowed once and could make standing. Asked when
+/// it is set to unattended, which is when those are about to be refused. See
+/// `PermissionEngine::allowed_once`.
+#[tauri::command]
+pub async fn once_allowed_rules(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> CmdResult<Vec<String>> {
+    Ok(state
+        .host
+        .permissions()
+        .await
+        .allowed_once(&session_id)
+        .await)
+}
+
+/// Makes rules standing for this workspace, as "Allow always" on each prompt
+/// would have. See `PermissionEngine::grant`.
+#[tauri::command]
+pub async fn grant_permission_rules(
+    state: State<'_, Arc<AppState>>,
+    rules: Vec<String>,
+) -> CmdResult<()> {
+    state.host.permissions().await.grant(&rules).await;
+    info!(
+        count = rules.len(),
+        "permission rules granted for the workspace"
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_skills(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<SkillSummary>> {
     // Rescanned first, the same as `list_agents`: the whole authoring surface
