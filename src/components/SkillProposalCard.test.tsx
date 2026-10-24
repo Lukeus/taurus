@@ -18,6 +18,7 @@ const proposal = (patch: Partial<SkillProposal> = {}): SkillProposal => ({
   when_to_use: "Preparing release notes for a tagged version",
   body: "1. List merged PRs since the last tag.\n2. Group them by label.",
   scripts: [],
+  files: [],
   rationale: "Worked this out the hard way twice",
   replaces_existing: false,
   ...patch,
@@ -56,7 +57,7 @@ describe("skill proposal card", () => {
       proposal({
         scripts: [
           {
-            path: "collect.sh",
+            path: "scripts/collect.sh",
             interpreter: "bash",
             description: "collect PRs",
             content: "#!/bin/bash\necho SECRET_MARKER\n",
@@ -64,9 +65,19 @@ describe("skill proposal card", () => {
         ],
       }),
     );
-    expect(html).toContain("collect.sh");
+    expect(html).toContain("scripts/collect.sh");
     expect(html).toContain("bash");
     expect(html).not.toContain("SECRET_MARKER");
+  });
+
+  it("names a bundled reference the same way, behind a click", () => {
+    const html = render(
+      proposal({
+        files: [{ path: "references/FORMAT.md", content: "REFERENCE_MARKER" }],
+      }),
+    );
+    expect(html).toContain("references/FORMAT.md");
+    expect(html).not.toContain("REFERENCE_MARKER");
   });
 
   it("offers both destinations and neither is preselected as permanent", () => {
