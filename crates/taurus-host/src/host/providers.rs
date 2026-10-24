@@ -177,7 +177,7 @@ impl Host {
     /// inherited and overridden value into the global file, so a setting made
     /// for one project would silently follow the user into all the others.
     pub async fn global_providers(&self) -> Vec<ProviderConfig> {
-        config::load_providers(None).0
+        off_runtime_or_default(|| config::load_providers(None).0).await
     }
 
     pub async fn provider_config(&self, id: &str) -> Option<ProviderConfig> {
@@ -217,14 +217,16 @@ impl Host {
         {
             return Err(format!("no provider configured with id '{provider_id}'"));
         }
-        secrets::store(provider_id, key)?;
+        let (id, key) = (provider_id.to_string(), key.to_string());
+        off_runtime("saving the key", move || secrets::store(&id, &key)).await?;
         // The provider built with the old key would go on sending it.
         self.forget_providers();
         Ok(())
     }
 
     pub async fn clear_provider_key(&self, provider_id: &str) -> Result<(), String> {
-        secrets::clear(provider_id)?;
+        let id = provider_id.to_string();
+        off_runtime("removing the key", move || secrets::clear(&id)).await?;
         self.forget_providers();
         Ok(())
     }

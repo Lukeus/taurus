@@ -339,20 +339,6 @@ impl ToolOutput {
         self.images().next().is_some()
     }
 
-    /// Everything except the images, or `None` if that would be nothing.
-    ///
-    /// For a model that cannot see. See [`ToolOutput::without_images`] for why
-    /// the caller usually wants that instead.
-    pub fn text_blocks_only(&self) -> Option<Self> {
-        let kept: Vec<ToolResultBlock> = self
-            .0
-            .iter()
-            .filter(|b| !matches!(b, ToolResultBlock::Image { .. }))
-            .cloned()
-            .collect();
-        Self::blocks(kept).ok()
-    }
-
     /// This result as a model with no vision should see it.
     ///
     /// Each image becomes a line saying what was there. Dropping them outright

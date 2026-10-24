@@ -54,7 +54,12 @@ impl PromptedTools {
             }
             _ => instructions,
         });
-        request.messages = request.messages.iter().map(Self::flatten_message).collect();
+        // Moved rather than copied: the request already holds its own copy of
+        // the history, and most messages pass through untouched.
+        request.messages = std::mem::take(&mut request.messages)
+            .into_iter()
+            .map(Self::flatten_message)
+            .collect();
         request.tools.clear();
         Self::add_stop_sequences(&mut request.stop_sequences);
     }
@@ -123,7 +128,7 @@ impl PromptedTools {
     /// Renders tool-use and tool-result blocks as text, leaving everything else
     /// untouched. A model that never saw a `tools` parameter also cannot read
     /// structured tool messages in its history.
-    fn flatten_message(message: &Message) -> Message {
+    fn flatten_message(message: Message) -> Message {
         let needs_flattening = message.content.iter().any(|b| {
             matches!(
                 b,
@@ -131,12 +136,12 @@ impl PromptedTools {
             )
         });
         if !needs_flattening {
-            return message.clone();
+            return message;
         }
 
         let mut text = String::new();
         let mut passthrough = Vec::new();
-        for block in &message.content {
+        for block in message.content {
             match block {
                 ContentBlock::ToolUse { name, input, .. } => {
                     let call = serde_json::json!({ "name": name, "input": input });
@@ -145,17 +150,17 @@ impl PromptedTools {
                 ContentBlock::ToolResult {
                     content, is_error, ..
                 } => {
-                    let label = if *is_error { ERROR } else { RESULT };
+                    let label = if is_error { ERROR } else { RESULT };
                     text.push_str(&format!("<{label}>\n{}\n</{label}>\n", content.to_text()));
                 }
                 ContentBlock::Text { text: t } => {
-                    text.push_str(t);
+                    text.push_str(&t);
                     text.push('\n');
                 }
                 // Thinking is dropped: replaying it as plain text invites the
                 // model to imitate the format instead of the behavior.
                 ContentBlock::Thinking { .. } => {}
-                other => passthrough.push(other.clone()),
+                other => passthrough.push(other),
             }
         }
 

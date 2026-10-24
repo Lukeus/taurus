@@ -363,7 +363,15 @@ impl taurus_tools::Tool for Remember {
         // Rejections come back as tool errors rather than as a silent trim, so
         // a model that wrote too much can write less instead of believing a
         // truncated note was kept whole.
-        let notes = append(&self.workspace, &self.session, &input.note)
+        //
+        // On a blocking thread: `append` reads the notes, rewrites them and
+        // renames the file into place under a process-wide lock, and a
+        // delegate writing a note at the same moment would hold a runtime
+        // worker for the length of this one's write.
+        let (workspace, session) = (self.workspace.clone(), self.session.clone());
+        let notes = tokio::task::spawn_blocking(move || append(&workspace, &session, &input.note))
+            .await
+            .map_err(|e| taurus_tools::ToolError::Failed(format!("writing the note failed: {e}")))?
             .map_err(taurus_tools::ToolError::InvalidInput)?;
 
         tracing::info!(kept = notes.len(), "note written");

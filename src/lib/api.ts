@@ -743,9 +743,6 @@ export const generateAgent = (
 /** Ends a draft `generateAgent` is still waiting on. Safe when none is. */
 export const stopAgentDraft = () => invoke<void>("stop_agent_draft");
 
-export const createAgent = (scope: Scope, name: string) =>
-  invoke<string>("create_agent", { scope, name });
-
 /**
  * Opens a layer's `mcp.json`, creating it if absent, and returns its path.
  *

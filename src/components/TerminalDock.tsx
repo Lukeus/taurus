@@ -350,7 +350,7 @@ export function TerminalDock({
         // Unmounted while the shell was starting: close the one that just
         // opened rather than leaking it behind a component that is gone.
         if (!live) {
-          void api.closeTerminal(id);
+          api.closeTerminal(id).catch((e) => console.warn("could not close the terminal", e));
           return;
         }
 
@@ -361,7 +361,11 @@ export function TerminalDock({
         // round trip — so this is the real geometry rather than the one asked
         // for.
         void api.resizeTerminal(id, emulator.rows, emulator.cols).catch(() => {});
-        for (const data of early.splice(0)) void api.writeTerminal(id, data);
+        for (const data of early.splice(0)) {
+          // What was typed before the shell was ready fails the way a
+          // keystroke does, on screen rather than in the console.
+          api.writeTerminal(id, data).catch((e) => setProblem(String(e)));
+        }
         emulator.focus();
       })
       .catch((e) => setProblem(String(e)));
@@ -373,7 +377,9 @@ export function TerminalDock({
       marks.dispose();
       const shells = [...opened.current];
       opened.current.clear();
-      for (const id of shells) void api.closeTerminal(id);
+      for (const id of shells) {
+        api.closeTerminal(id).catch((e) => console.warn("could not close the terminal", e));
+      }
       emulator.dispose();
       term.current = null;
       fit.current = null;

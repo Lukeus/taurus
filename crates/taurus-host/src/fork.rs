@@ -764,7 +764,7 @@ mod tests {
     async fn a_fork_keeps_the_original_and_puts_the_files_back_to_before_the_turn() {
         let world = World::new();
         let talk = three_turns(&world).await;
-        let original = talk.session.id.clone();
+        let original = talk.session.id;
 
         let forked = fork(&world.store, &world.ws, &original, 2, false).unwrap();
         let id = forked.id.clone().unwrap();
@@ -957,7 +957,7 @@ mod tests {
     async fn a_dry_run_says_what_would_change_and_changes_nothing() {
         let world = World::new();
         let talk = three_turns(&world).await;
-        let original = talk.session.id.clone();
+        let original = talk.session.id;
         let before = sessions::list(Some(&world.ws)).len();
 
         let plan = fork(&world.store, &world.ws, &original, 2, true).unwrap();
@@ -993,7 +993,7 @@ mod tests {
     async fn a_set_aside_branch_diffs_against_its_own_files_not_the_workspace() {
         let world = World::new();
         let talk = three_turns(&world).await;
-        let original = talk.session.id.clone();
+        let original = talk.session.id;
         fork(&world.store, &world.ws, &original, 2, false).unwrap();
         assert_eq!(world.read("a.txt").as_deref(), Some("one"));
 

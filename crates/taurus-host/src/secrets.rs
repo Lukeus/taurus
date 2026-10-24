@@ -40,13 +40,6 @@ pub enum KeyStatus {
     Overridden { variable: String },
 }
 
-impl KeyStatus {
-    /// Whether a key will be sent at all.
-    pub fn is_set(&self) -> bool {
-        !matches!(self, Self::Missing)
-    }
-}
-
 /// The credential store, where there is one.
 ///
 /// Every platform difference is confined to this module and its twins below, so

@@ -348,30 +348,6 @@ pub async fn agent_roster_cost(state: State<'_, Arc<AppState>>) -> CmdResult<usi
     Ok(state.host.roster_cost().await)
 }
 
-/// Writes a starter agent file and opens it.
-///
-/// Disk stays the source of truth — there is no in-app editor, deliberately —
-/// but nobody should have to already know the frontmatter to write their first
-/// agent. The template documents every key in place.
-#[tauri::command]
-pub async fn create_agent(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<AppState>>,
-    scope: Scope,
-    name: String,
-) -> CmdResult<String> {
-    let workspace = state.host.workspace().await;
-    let path = taurus_host::config::create_agent_file(scope, Some(&workspace), &name)?;
-    state.host.rescan_agents().await;
-    emit_status(&state).await;
-
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_path(path.to_string_lossy(), None::<&str>)
-        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
-    Ok(path.display().to_string())
-}
-
 #[tauri::command]
 pub async fn list_proposals(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<SkillProposal>> {
     Ok(state

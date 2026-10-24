@@ -80,7 +80,7 @@ export const useSpeech = create<Speech>((set) => ({
     epoch++;
     fed = false;
     set({ reading: null, speaking: false });
-    void api.speechStop();
+    api.speechStop().catch((e) => console.warn("could not stop reading aloud", e));
   },
 
   dismiss: () => set({ failed: null }),

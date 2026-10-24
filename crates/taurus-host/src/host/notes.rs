@@ -8,7 +8,8 @@ impl Host {
     /// Newest first, which is the order they are worth reading in and the order
     /// they reach the prompt. See [`crate::memory`].
     pub async fn notes(&self) -> Vec<memory::Note> {
-        let mut notes = memory::load(&self.workspace.read().await.clone());
+        let workspace = self.workspace.read().await.clone();
+        let mut notes = off_runtime_or_default(move || memory::load(&workspace)).await;
         notes.reverse();
         notes
     }
@@ -16,7 +17,11 @@ impl Host {
     /// Drops one, and returns what is left — in the same order [`Self::notes`]
     /// gives them, so a caller can redraw from the answer.
     pub async fn forget_note(&self, id: &str) -> Result<Vec<memory::Note>, String> {
-        let mut left = memory::forget(&self.workspace.read().await.clone(), id)?;
+        let (workspace, id) = (self.workspace.read().await.clone(), id.to_string());
+        let mut left = off_runtime("forgetting the note", move || {
+            memory::forget(&workspace, &id)
+        })
+        .await?;
         left.reverse();
         Ok(left)
     }
@@ -31,7 +36,8 @@ impl Host {
     /// live in `.taurus/notes/` where they can be committed, and reach the model
     /// only when somebody asks about one.
     pub async fn notebook(&self) -> Vec<notebook::PageRef> {
-        notebook::list(Some(&self.workspace().await))
+        let workspace = self.workspace().await;
+        off_runtime_or_default(move || notebook::list(Some(&workspace))).await
     }
 
     pub async fn read_page(
@@ -40,7 +46,11 @@ impl Host {
         kind: notebook::PageKind,
         name: &str,
     ) -> Result<notebook::Page, String> {
-        notebook::read(scope, Some(&self.workspace().await), kind, name)
+        let (workspace, name) = (self.workspace().await, name.to_string());
+        off_runtime("reading the note", move || {
+            notebook::read(scope, Some(&workspace), kind, &name)
+        })
+        .await
     }
 
     /// Writes a note, unless it has changed since the editor read it.
@@ -55,14 +65,13 @@ impl Host {
         text: &str,
         fingerprint: &str,
     ) -> Result<notebook::PageSaved, String> {
-        notebook::save(
-            scope,
-            Some(&self.workspace().await),
-            kind,
-            name,
-            text,
-            fingerprint,
-        )
+        let workspace = self.workspace().await;
+        let (name, text, fingerprint) =
+            (name.to_string(), text.to_string(), fingerprint.to_string());
+        off_runtime("saving the note", move || {
+            notebook::save(scope, Some(&workspace), kind, &name, &text, &fingerprint)
+        })
+        .await
     }
 
     pub async fn create_page(
@@ -71,7 +80,11 @@ impl Host {
         kind: notebook::PageKind,
         name: &str,
     ) -> Result<notebook::Page, String> {
-        notebook::create(scope, Some(&self.workspace().await), kind, name)
+        let (workspace, name) = (self.workspace().await, name.to_string());
+        off_runtime("creating the note", move || {
+            notebook::create(scope, Some(&workspace), kind, &name)
+        })
+        .await
     }
 
     pub async fn rename_page(
@@ -81,7 +94,11 @@ impl Host {
         name: &str,
         to: &str,
     ) -> Result<notebook::Page, String> {
-        notebook::rename(scope, Some(&self.workspace().await), kind, name, to)
+        let (workspace, name, to) = (self.workspace().await, name.to_string(), to.to_string());
+        off_runtime("renaming the note", move || {
+            notebook::rename(scope, Some(&workspace), kind, &name, &to)
+        })
+        .await
     }
 
     pub async fn forget_page(
@@ -90,7 +107,11 @@ impl Host {
         kind: notebook::PageKind,
         name: &str,
     ) -> Result<Vec<notebook::PageRef>, String> {
-        notebook::forget(scope, Some(&self.workspace().await), kind, name)
+        let (workspace, name) = (self.workspace().await, name.to_string());
+        off_runtime("deleting the note", move || {
+            notebook::forget(scope, Some(&workspace), kind, &name)
+        })
+        .await
     }
 
     /* ------------------------------------------------------------- canvas */
@@ -166,6 +187,11 @@ impl Host {
         fingerprint: &str,
     ) -> Result<Saved, String> {
         let workspace = self.workspace().await;
-        crate::document::save(&workspace, path, text, fingerprint)
+        let (path, text, fingerprint) =
+            (path.to_string(), text.to_string(), fingerprint.to_string());
+        off_runtime("saving the file", move || {
+            crate::document::save(&workspace, &path, &text, &fingerprint)
+        })
+        .await
     }
 }

@@ -1481,46 +1481,63 @@ impl TurnRecorder {
         }
 
         let relative = crate::path_guard::display(&self.workspace, path);
-        // First capture wins, and a held pre-image is by definition older than
-        // anything a read here could produce, so it is preferred when present.
-        let before = held.unwrap_or_else(|| read_state(path));
+        let opening = !state.opened;
+        let header = opening.then(|| Record::Turn {
+            prompt: self.prompt.clone(),
+            at: now(),
+            branch: self.branch.clone(),
+            id: state.id.clone(),
+        });
 
-        // The turn's header goes down with its first file, so a log holds only
-        // turns that changed something.
-        if !state.opened {
+        // Off the runtime, like `capture_many`: the read is the whole file and
+        // the append is an open, a permission check, a write and a close, and
+        // every `write_file` and `edit_file` in a turn waits on this lock.
+        let (target, session, workspace) = (
+            path.to_path_buf(),
+            self.session.clone(),
+            self.workspace.clone(),
+        );
+        let landed = tokio::task::spawn_blocking(move || {
+            // First capture wins, and a held pre-image is by definition older
+            // than anything a read here could produce, so it is preferred when
+            // present.
+            let before = held.unwrap_or_else(|| read_state(&target));
+
+            // The turn's header goes down with its first file, so a log holds
+            // only turns that changed something.
+            //
             // Asks the file what header it has rather than whether it exists.
             // `append` creates the file before it writes, so a write that fails
             // leaves an empty one behind — and "it exists" would then be true
             // forever, so every later turn skipped the header and left a log
             // that `read_log` could not accept. Checking for the record itself
             // also repairs a log already in that state, on its next turn.
-            if !ensure_header(&log, &self.session, &self.workspace) {
-                state.disabled = true;
-                return;
+            if opening && !ensure_header(&log, &session, &workspace) {
+                return (false, false);
             }
-            if !append(
+            if let Some(header) = &header {
+                if !append(&log, header) {
+                    return (false, false);
+                }
+            }
+            let recorded = append(
                 &log,
-                &Record::Turn {
-                    prompt: self.prompt.clone(),
-                    at: now(),
-                    branch: self.branch.clone(),
-                    id: state.id.clone(),
+                &Record::Before {
+                    path: relative,
+                    state: before,
                 },
-            ) {
-                state.disabled = true;
-                return;
-            }
-            state.opened = true;
-        }
+            );
+            (true, recorded)
+        })
+        .await
+        .unwrap_or((false, false));
 
-        if !append(
-            &log,
-            &Record::Before {
-                path: relative,
-                state: before,
-            },
-        ) {
-            state.disabled = true;
+        match landed {
+            (true, recorded) => {
+                state.opened = true;
+                state.disabled = !recorded;
+            }
+            (false, _) => state.disabled = true,
         }
     }
 }

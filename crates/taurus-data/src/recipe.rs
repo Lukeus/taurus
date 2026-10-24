@@ -64,7 +64,7 @@
 //! goes through the workspace guard like every other, so a committed recipe
 //! cannot reach out of the project it is committed to.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -577,11 +577,6 @@ pub fn resolve(
         });
     }
     Ok((tables, start))
-}
-
-/// Where a recipe file goes, workspace-relative, for a name.
-pub fn path_for(name: &str) -> PathBuf {
-    PathBuf::from(RECIPE_DIR).join(format!("{name}.sql"))
 }
 
 #[cfg(test)]

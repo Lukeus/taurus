@@ -201,11 +201,19 @@ impl Host {
     /// Read from the conversation's own workspace, where its checkpoint log
     /// is, the same way a rewind finds it.
     pub async fn ensure_on_disk(&self, session_id: &str) -> Result<(), String> {
-        let workspace = match crate::sessions::workspace_of(session_id) {
+        // `workspace_of` lists every workspace directory to find this one.
+        let id = session_id.to_string();
+        let found = off_runtime_or_default(move || crate::sessions::workspace_of(&id)).await;
+        let workspace = match found {
             Some(workspace) => workspace,
             None => self.workspace.read().await.clone(),
         };
-        crate::fork::ensure_on_disk(&self.checkpoints_for(&workspace), session_id)
+        // Reads the conversation's whole checkpoint log, before every turn.
+        let (store, session_id) = (self.checkpoints_for(&workspace), session_id.to_string());
+        off_runtime("checking the checkpoints", move || {
+            crate::fork::ensure_on_disk(&store, &session_id)
+        })
+        .await
     }
 
     /// The open workspace's checkpoint logs, for the turn about to record into
@@ -258,24 +266,39 @@ impl Host {
     ) -> Result<crate::review::ReviewReport, String> {
         let workspace = self.workspace().await;
         let checkpoints = self.checkpoints_for(&workspace);
-        let changes = checkpoints.changes(session_id, &workspace, turn)?;
 
-        // What the turn said about itself, found through the id its
-        // checkpoint shares with its transcript. Absent for a turn recorded
-        // before the two were linked, which is then reviewed on its diff
-        // alone, as every turn used to be.
-        let claims = checkpoints
-            .conversation_turn(session_id, turn)?
-            .and_then(|id| crate::sessions::turn_messages(session_id, &id))
-            .and_then(|messages| crate::review::Claims::from_turn(&messages));
-        let prepared = crate::review::prepare(changes, claims.as_ref(), turn, model)?;
+        // Everything up to the model call reads files — the checkpoint log,
+        // the transcript, the stored review — so it runs on a blocking thread.
+        let read = {
+            let (workspace, session_id, model) =
+                (workspace.clone(), session_id.to_string(), model.to_string());
+            move || -> Result<Result<crate::review::ReviewReport, _>, String> {
+                let changes = checkpoints.changes(&session_id, &workspace, turn)?;
 
-        if !again {
-            if let Some(kept) = crate::review::stored(&workspace, session_id, &prepared.fingerprint)
-            {
-                return Ok(kept);
+                // What the turn said about itself, found through the id its
+                // checkpoint shares with its transcript. Absent for a turn
+                // recorded before the two were linked, which is then reviewed
+                // on its diff alone, as every turn used to be.
+                let claims = checkpoints
+                    .conversation_turn(&session_id, turn)?
+                    .and_then(|id| crate::sessions::turn_messages(&session_id, &id))
+                    .and_then(|messages| crate::review::Claims::from_turn(&messages));
+                let prepared = crate::review::prepare(changes, claims.as_ref(), turn, &model)?;
+
+                if !again {
+                    if let Some(kept) =
+                        crate::review::stored(&workspace, &session_id, &prepared.fingerprint)
+                    {
+                        return Ok(Ok(kept));
+                    }
+                }
+                Ok(Err(prepared))
             }
-        }
+        };
+        let prepared = match off_runtime("reading the turn", read).await? {
+            Ok(kept) => return Ok(kept),
+            Err(prepared) => prepared,
+        };
 
         // The shared registry, which is the one a delegate gets: it holds no
         // `ask_user`, no chart tools, and no plan board, because those address
@@ -292,7 +315,9 @@ impl Host {
             cancel,
         )
         .await?;
-        crate::review::store(&workspace, session_id, &report);
+        let (stored, session_id) = (report.clone(), session_id.to_string());
+        off_runtime_or_default(move || crate::review::store(&workspace, &session_id, &stored))
+            .await;
         Ok(report)
     }
 

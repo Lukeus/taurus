@@ -289,6 +289,32 @@ pub struct Host {
     plans: RwLock<std::collections::HashMap<String, PlanBoard>>,
 }
 
+/// Runs file or keychain work on a blocking thread, for an `async fn` that
+/// would otherwise do it on a runtime worker.
+///
+/// A worker held by a slow disk, or by a keychain waiting on its unlock
+/// dialog, is one the token forwarder and every other task are not getting.
+/// `what` names the work for the error a panicked thread turns into.
+pub(crate) async fn off_runtime<T, F>(what: &str, work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("{what} failed: {e}"))?
+}
+
+/// [`off_runtime`] for work that cannot fail, which falls back to `T`'s
+/// default if the thread does.
+pub(crate) async fn off_runtime_or_default<T, F>(work: F) -> T
+where
+    T: Default + Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.unwrap_or_default()
+}
+
 impl Host {
     pub fn new(
         workspace: PathBuf,
@@ -926,17 +952,21 @@ impl Host {
         // fingerprint stale rather than be recorded as already seen.
         *self.agents_seen.write().await = agent_freshness(&sources);
 
-        let (mut agents, errors) = AgentCatalog::discover(&sources);
+        // On a blocking thread, like the skill scan: a read and a parse of
+        // every agent file, on each turn boundary where one of them moved.
+        let scanned = {
+            let sources = sources.clone();
+            tokio::task::spawn_blocking(move || AgentCatalog::discover(&sources)).await
+        };
+        let (mut agents, errors) = scanned.unwrap_or_else(|_| AgentCatalog::discover(&sources));
         info!(
             agents = agents.len(),
             problems = errors.len(),
             "agents loaded"
         );
 
-        let mut problems = Problem::tag(
-            ProblemSource::Agents,
-            errors.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
-        );
+        let mut problems =
+            Problem::tag(ProblemSource::Agents, errors.iter().map(|e| e.to_string()));
         problems.extend(Problem::tag(
             ProblemSource::Agents,
             cross_check_tools(&mut agents, available),

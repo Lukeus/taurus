@@ -59,11 +59,6 @@ export function resolveWith(theme: Theme, custom: CustomTheme | null): ResolvedT
   }
 }
 
-/** Whether `mode` is one this theme can actually paint. */
-export function supports(custom: CustomTheme | null, mode: ResolvedTheme): boolean {
-  return custom === null || custom.modes === "both" || custom.modes === `${mode}_only`;
-}
-
 /**
  * What a theme file's colour names are called in the stylesheet.
  *

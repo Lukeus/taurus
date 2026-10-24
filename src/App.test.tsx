@@ -62,6 +62,7 @@ import App, {
   askedBy,
   currentProvider,
   lastActivity,
+  lastSentence,
   offered,
   isAsking,
   onScreenFor,
@@ -481,6 +482,13 @@ describe("what the turn strip says", () => {
     expect(lastActivity([said("I read the file. Nothing looks wrong here.")])).toBe(
       "Nothing looks wrong here.",
     );
+  });
+
+  it("finds the last sentence from the end, across any run of whitespace", () => {
+    expect(lastSentence("One.  Two!\n\nThree? Four")).toBe("Four");
+    expect(lastSentence("  no break at all  ")).toBe("no break at all");
+    expect(lastSentence("Ends on one. ")).toBe("Ends on one.");
+    expect(lastSentence("v1.2 is out")).toBe("v1.2 is out");
   });
 
   it("falls back to a finished tool while nothing newer has happened", () => {
