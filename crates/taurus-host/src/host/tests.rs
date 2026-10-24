@@ -2051,6 +2051,141 @@ async fn a_hook_file_written_between_turns_takes_effect_on_the_next_one() {
     );
 }
 
+/// A plugin at `root` named `name`, with one hook called `lint`, and
+/// whatever else `manifest` adds to its manifest.
+fn plugin_with_a_hook(root: &Path, name: &str, manifest: &str) {
+    let write = |path: &str, text: &str| {
+        let full = root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    };
+    write(
+        ".claude-plugin/plugin.json",
+        &format!(r#"{{"name": "{name}"{manifest}}}"#),
+    );
+    write(
+        "hooks/hooks.json",
+        r#"{"hooks": {"lint": {"on": "pre_tool_use", "command": "true"}}}"#,
+    );
+}
+
+async fn hook_names(host: &Host) -> Vec<String> {
+    host.hook_summaries()
+        .await
+        .into_iter()
+        .map(|hook| hook.name)
+        .collect()
+}
+
+// The hooks fingerprint is restated at a turn boundary rather than rebuilt
+// from every plugin. These are the ways the hooks in force can change without
+// any file the last load read changing, and each has to be noticed anyway.
+
+#[tokio::test]
+async fn a_plugin_installed_between_turns_brings_its_hooks_to_the_next_one() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+    assert!(hook_names(&host).await.is_empty());
+
+    let plugins = crate::plugins::dir(Scope::Global, None).unwrap();
+    plugin_with_a_hook(&plugins.join("guard"), "guard", "");
+    a_turn(&host).await;
+
+    assert_eq!(hook_names(&host).await, ["guard:lint"]);
+}
+
+#[tokio::test]
+async fn a_plugin_switched_off_between_turns_takes_its_hooks_with_it() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let plugins = crate::plugins::dir(Scope::Global, None).unwrap();
+    plugin_with_a_hook(&plugins.join("guard"), "guard", "");
+    host.reload().await;
+    assert_eq!(hook_names(&host).await, ["guard:lint"]);
+
+    crate::plugins::set_enabled("guard", Scope::Global, None, false).unwrap();
+    a_turn(&host).await;
+
+    assert!(hook_names(&host).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_plugin_waiting_on_a_file_it_names_loads_when_the_file_appears() {
+    // A manifest naming a hooks file that is not there is a problem, and a
+    // plugin with a problem does not load. None of the files that load read
+    // changes when the missing one is written, so it is watched where it
+    // would appear.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let root = crate::plugins::dir(Scope::Global, None)
+        .unwrap()
+        .join("guard");
+    plugin_with_a_hook(&root, "guard", r#", "hooks": "./more/hooks.json""#);
+    host.reload().await;
+    assert!(
+        hook_names(&host).await.is_empty(),
+        "it loaded without the file"
+    );
+
+    std::fs::create_dir_all(root.join("more")).unwrap();
+    std::fs::write(
+        root.join("more/hooks.json"),
+        r#"{"hooks": {"format": {"on": "post_tool_use", "command": "true"}}}"#,
+    )
+    .unwrap();
+    a_turn(&host).await;
+
+    let names = hook_names(&host).await;
+    assert!(names.contains(&"guard:format".to_string()), "{names:?}");
+}
+
+#[tokio::test]
+async fn trusting_a_workspace_between_turns_brings_its_plugins_hooks() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = untrusted_host(&workspace);
+    let plugins = crate::plugins::dir(Scope::Workspace, Some(&workspace)).unwrap();
+    plugin_with_a_hook(&plugins.join("guard"), "guard", "");
+    host.reload().await;
+    assert!(
+        hook_names(&host).await.is_empty(),
+        "an untrusted project's plugin loaded"
+    );
+
+    crate::trust::trust(&workspace).unwrap();
+    a_turn(&host).await;
+
+    assert_eq!(hook_names(&host).await, ["guard:lint"]);
+}
+
+#[tokio::test]
+async fn a_plugins_hook_edited_between_turns_takes_effect_on_the_next_one() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let root = crate::plugins::dir(Scope::Global, None)
+        .unwrap()
+        .join("guard");
+    plugin_with_a_hook(&root, "guard", "");
+    host.reload().await;
+
+    std::fs::write(
+        root.join("hooks/hooks.json"),
+        r#"{"hooks": {"lint": {"on": "pre_tool_use", "command": "true"},
+            "format": {"on": "post_tool_use", "command": "true"}}}"#,
+    )
+    .unwrap();
+    a_turn(&host).await;
+
+    let mut names = hook_names(&host).await;
+    names.sort();
+    assert_eq!(names, ["guard:format", "guard:lint"]);
+}
+
 #[tokio::test]
 async fn an_agent_file_deleted_between_turns_is_gone_by_the_next_one() {
     let dir = TempDir::new().unwrap();
@@ -3446,4 +3581,66 @@ async fn a_review_is_shown_what_the_turn_claimed_and_answered_once_per_question(
         .expect("a second review");
     assert!(!redone.cached);
     assert_eq!(redone.text, "Still unsupported.");
+}
+
+/// What noticing a hook change costs at a turn boundary, with twenty plugins
+/// installed. Release only: `cargo test --release -p taurus-host --lib
+/// hook_freshness_cost -- --ignored --nocapture`. See `docs/development.md`.
+#[test]
+#[ignore]
+fn hook_freshness_cost_with_twenty_plugins() {
+    let _home = isolated_home();
+    let workspace = TempDir::new().unwrap();
+    crate::trust::trust(workspace.path()).unwrap();
+    for n in 0..20 {
+        let root = crate::plugins::dir(Scope::Global, None)
+            .unwrap()
+            .join(format!("p{n}"));
+        let files = [
+            (
+                ".claude-plugin/plugin.json".to_string(),
+                format!(r#"{{"name": "p{n}", "version": "1.0.0", "description": "A plugin"}}"#),
+            ),
+            (
+                ".mcp.json".to_string(),
+                r#"{"mcpServers": {"db": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/db"}}}"#
+                    .to_string(),
+            ),
+            (
+                "hooks/hooks.json".to_string(),
+                r#"{"hooks": {"lint": {"on": "pre_tool_use", "command": "./lint.sh"}}}"#
+                    .to_string(),
+            ),
+            (
+                "skills/a/SKILL.md".to_string(),
+                "---\nname: a\ndescription: A\n---\n\nA.\n".to_string(),
+            ),
+            (
+                "skills/b/SKILL.md".to_string(),
+                "---\nname: b\ndescription: B\n---\n\nB.\n".to_string(),
+            ),
+        ];
+        for (path, text) in files {
+            let full = root.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+        }
+    }
+    let time = |label: &str, f: &mut dyn FnMut()| {
+        f();
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..20 {
+            let t = std::time::Instant::now();
+            f();
+            best = best.min(t.elapsed());
+        }
+        eprintln!("{label}  best of 20 {best:>10.1?}");
+    };
+    time("built from every plugin  ", &mut || {
+        std::hint::black_box(hook_freshness(workspace.path()));
+    });
+    let built = hook_freshness(workspace.path());
+    time("restated at a turn       ", &mut || {
+        std::hint::black_box(built.refreshed());
+    });
 }

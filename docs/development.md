@@ -669,13 +669,21 @@ cargo build --release -p taurus-tools --example output
 cargo test --release -p taurus-provider-anthropic --lib request_build_cost -- --ignored --nocapture
 
 # What search_code spends in this process on a large index: 6,000 passages of
-# 768 dimensions, about 24 MB. Release, as above. Measured: reading the index
-# off disk 7.6 ms, copying its entries 0.7 ms, decoding every vector 6.6 ms,
-# and the search that decodes and scores them 9.6 ms. That is why the decoded
-# vectors are not kept between searches: keeping them would save about 14 ms of
-# a search, and cost a cache threaded through the refresh and invalidated on
-# every save.
+# 768 dimensions, about 24 MB. Release, as above. The process holds the index
+# it last read or wrote, checked against the file's length and modification
+# time on every load, and each entry remembers its decoded vector. Measured:
+# reading the index off disk 9.1 ms and loading it held 0.8 ms; a read and its
+# first search 19.9 ms, and a load and search with everything held 4.1 ms.
+# The cost is memory: one index, base64 and decoded, about 42 MB at this size.
 cargo test --release -p taurus-index --lib search_code_cost -- --ignored --nocapture
+
+# What noticing a hook change costs at a turn boundary, with twenty plugins
+# installed. Release, as above. The fingerprint is built when hooks load,
+# from every path each plugin's load consulted, and only restated after
+# that. Measured: building it 3.0 ms, which happens on a reload, and
+# restating it 0.5 ms, which happens twice a turn. Rebuilding it every turn,
+# which meant parsing every plugin, was 2.4 ms a time.
+cargo test --release -p taurus-host --lib hook_freshness_cost -- --ignored --nocapture
 
 # What the context estimate costs over a long session: 300 messages, a hundred
 # write_file calls with 1 KB of arguments and a 4 KB result each. The loop

@@ -769,7 +769,11 @@ impl Host {
 
     /// Re-reads both hook files and installs the runner they describe.
     async fn load_hooks(&self, workspace: &Path) -> Vec<Problem> {
-        *self.hooks_seen.write().await = hook_freshness(workspace);
+        // Taken before the read, for the reason `load_instructions` gives, and
+        // off the runtime: it reads every installed plugin.
+        let stamped = workspace.to_path_buf();
+        *self.hooks_seen.write().await =
+            off_runtime_or_default(move || hook_freshness(&stamped)).await;
 
         let (hooks, hook_problems) = config::load_hooks(Some(workspace));
         *self.hooks.write().await = Arc::new(hooks);
@@ -855,11 +859,14 @@ impl Host {
         // is a few hundred blocking calls — made twice a turn, on the runtime
         // that carries every other command.
         let seen = self.instructions_seen.read().await.clone();
+        let hooks_seen = self.hooks_seen.read().await.clone();
         let taken = {
-            let (seen, workspace) = (seen.clone(), workspace.clone());
-            tokio::task::spawn_blocking(move || TurnStamps::take(&seen, &workspace)).await
+            let (seen, hooks_seen, workspace) =
+                (seen.clone(), hooks_seen.clone(), workspace.clone());
+            tokio::task::spawn_blocking(move || TurnStamps::take(&seen, &hooks_seen, &workspace))
+                .await
         };
-        let now = taken.unwrap_or_else(|_| TurnStamps::take(&seen, &workspace));
+        let now = taken.unwrap_or_else(|_| TurnStamps::take(&seen, &hooks_seen, &workspace));
 
         // Against the files the last read depended on, restated — not against
         // the source list. The two are different sets whenever a brief imports
@@ -880,11 +887,10 @@ impl Host {
             moved |= self.rescan_skills().await;
         }
 
-        // Rebuilt rather than restated, unlike instructions: a hook file has no
-        // imports, so the set to watch is knowable from the config layer — and
-        // rebuilding it is what also notices the set *changing*, which is what
-        // trusting a workspace does.
-        if *self.hooks_seen.read().await != now.hooks {
+        // Restated, like instructions. The set changing — a workspace trusted,
+        // a plugin added or switched on — moves a file the set already holds.
+        // See `hook_freshness`.
+        if hooks_seen != now.hooks {
             let found = self.load_hooks(&workspace).await;
             self.replace_problems(ProblemSource::Hooks, found).await;
             moved = true;
@@ -1149,22 +1155,39 @@ fn disable(registry: &mut ToolRegistry, disabled: &[String]) -> Vec<String> {
 /// `.md` and not `.agent.md`, because both spellings are read: Copilot's
 /// doubled extension still ends in `.md`, and narrowing the suffix would leave
 /// a Taurus-native file in the same folder unwatched.
-/// A fingerprint over the `hooks.json` of every layer that would be read.
+/// A fingerprint over everything the hooks in force were loaded from.
 ///
-/// The directories rather than a fixed pair, because [`config::config_dirs`] is
-/// trust-gated: an untrusted workspace contributes no layer at all, and
-/// trusting one adds a file that was not being watched a moment ago. Built from
-/// the config layer on both sides of the comparison, so that change registers
-/// as a change.
+/// Built when hooks load, and only restated at a turn boundary, the way the
+/// brief is. Rebuilding it meant reading and parsing every installed plugin
+/// twice a turn to learn which files to `stat`; restating `stat`s them. So
+/// the list has to hold everything whose change could change which hooks
+/// load, and each part is here for that:
+///
+/// - every layer's `hooks.json`, as [`config::config_dirs`] names them now;
+/// - the trust file, because both that list and which plugin folders count
+///   are trust-gated, and trusting a workspace is a write to it;
+/// - both layers' `settings.json`, where plugins are switched on and off;
+/// - both plugin folders, whose stamps move when a plugin is added or removed;
+/// - and every installed plugin's [`Plugin::consulted`] — not only the active
+///   ones, since a plugin kept from loading by a missing file starts loading
+///   when the file appears.
+///
+/// A settings change unrelated to plugins also moves it, and costs one
+/// reload of the hooks. That is the price of not parsing settings to find out.
+///
+/// [`Plugin::consulted`]: crate::plugins::Plugin::consulted
 fn hook_freshness(workspace: &Path) -> Freshness {
     let mut files: Vec<PathBuf> = config::config_dirs(Some(workspace))
         .iter()
         .map(|dir| taurus_hooks::config_file(dir))
         .collect();
-    // And every active plugin's. A plugin switched on or off changes which
-    // files are in this list, which registers as a change too.
-    for plugin in crate::plugins::active(crate::trust::for_reading(Some(workspace))) {
-        files.extend(plugin.hook_files().iter().cloned());
+    files.push(crate::trust::file());
+    for scope in [Scope::Global, Scope::Workspace] {
+        files.extend(config::settings_file(scope, Some(workspace)));
+        files.extend(crate::plugins::dir(scope, Some(workspace)));
+    }
+    for plugin in crate::plugins::installed(crate::trust::for_reading(Some(workspace))) {
+        files.extend(plugin.consulted().iter().cloned());
     }
     Freshness::of_files(files.iter().map(PathBuf::as_path))
 }
@@ -1185,8 +1208,8 @@ fn agent_freshness(sources: &[taurus_agents::AgentSource]) -> Freshness {
     Freshness::of_dirs(sources.iter().map(|s| s.dir.as_path()), ".md", false)
 }
 
-/// What a turn boundary compares with what is held: the brief restated, and
-/// the roster, the skills and the hooks fingerprinted afresh. See
+/// What a turn boundary compares with what is held: the brief and the hooks
+/// restated, and the roster and the skills fingerprinted afresh. See
 /// [`Host::refresh_for_turn`].
 struct TurnStamps {
     instructions: Freshness,
@@ -1198,12 +1221,12 @@ struct TurnStamps {
 impl TurnStamps {
     /// A `stat` per file each and a directory listing or two, every one of them
     /// a blocking call — which is why a turn takes these on a blocking thread.
-    fn take(instructions: &Freshness, workspace: &Path) -> Self {
+    fn take(instructions: &Freshness, hooks: &Freshness, workspace: &Path) -> Self {
         Self {
             instructions: instructions.refreshed(),
             agents: agent_freshness(&config::agent_sources(Some(workspace))),
             skills: skill_freshness(&config::skill_sources(Some(workspace))),
-            hooks: hook_freshness(workspace),
+            hooks: hooks.refreshed(),
         }
     }
 }

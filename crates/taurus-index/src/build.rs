@@ -30,7 +30,7 @@ use taurus_provider::Provider;
 use tokio_util::sync::CancellationToken;
 
 use crate::chunk;
-use crate::store::{encode, stamp, Entry, Index, MAX_FILES, MAX_FILE_BYTES};
+use crate::store::{stamp, Entry, Index, MAX_FILES, MAX_FILE_BYTES};
 
 /// Chunks sent to the backend in one request.
 ///
@@ -241,14 +241,14 @@ pub async fn refresh(
                 whole = keep.len();
                 current = Some(path.as_str());
             }
-            keep.push(Entry {
-                path: path.clone(),
-                start_line: piece.start_line,
-                end_line: piece.end_line,
-                len: *len,
-                modified: *modified,
-                vector: encode(&vector),
-            });
+            keep.push(Entry::new(
+                path.clone(),
+                piece.start_line,
+                piece.end_line,
+                *len,
+                *modified,
+                &vector,
+            ));
         }
 
         // Reported after the batch lands rather than before it is sent, so the

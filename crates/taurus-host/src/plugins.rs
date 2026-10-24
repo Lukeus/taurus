@@ -175,6 +175,9 @@ pub struct Plugin {
     mcp: taurus_mcp::McpConfig,
     hooks: taurus_hooks::HookConfig,
     hook_files: Vec<PathBuf>,
+    /// Every path [`load`] looked at to decide what this plugin is, whether it
+    /// was there or not. See [`Plugin::consulted`].
+    consulted: Vec<PathBuf>,
 }
 
 impl Plugin {
@@ -224,6 +227,71 @@ impl Plugin {
     pub fn hook_files(&self) -> &[PathBuf] {
         &self.hook_files
     }
+
+    /// Every path whose change could change what loading this plugin finds:
+    /// whether it loads, its problems, and its hooks.
+    ///
+    /// Present or not, the way a fingerprint wants them. A missing path the
+    /// manifest names is a problem that keeps the plugin from loading, and
+    /// the file appearing is exactly the change worth noticing. All of them
+    /// sit inside the plugin's folder, because [`inside`] refuses a path that
+    /// leaves it. What a skill or agent folder holds is not here: it changes
+    /// the plugin's library, which is watched on its own, and not its hooks.
+    pub fn consulted(&self) -> &[PathBuf] {
+        &self.consulted
+    }
+}
+
+/// What [`Plugin::consulted`] holds for a plugin at `root`.
+///
+/// Every place [`load`] looks without being told, and every path the
+/// manifest names. A named path is joined as written rather than resolved,
+/// so a missing one is watched where it would appear.
+fn consulted(
+    root: &Path,
+    manifest: &Manifest,
+    mcp_files: &[PathBuf],
+    hook_files: &[PathBuf],
+) -> Vec<PathBuf> {
+    let unprompted = MANIFESTS
+        .iter()
+        .chain(HOOK_FILES)
+        .chain(UNSUPPORTED_PATHS.iter().map(|(path, _)| path))
+        .chain(&[
+            SOURCE_FILE,
+            ".mcp.json",
+            "skills",
+            "agents",
+            "com.github.copilot/agents",
+        ]);
+    let mut out: Vec<PathBuf> = std::iter::once(root.to_path_buf())
+        .chain(unprompted.map(|path| root.join(path)))
+        .collect();
+    for value in [
+        &manifest.skills,
+        &manifest.agents,
+        &manifest.hooks,
+        &manifest.mcp_servers,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let named: Vec<&serde_json::Value> = match value {
+            serde_json::Value::Array(items) => items.iter().collect(),
+            one => vec![one],
+        };
+        out.extend(
+            named
+                .into_iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(|text| root.join(text.strip_prefix("./").unwrap_or(text))),
+        );
+    }
+    out.extend(mcp_files.iter().cloned());
+    out.extend(hook_files.iter().cloned());
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The key a plugin's MCP server is registered under. Its tools are then
@@ -637,6 +705,8 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
         taurus_hook_files.push(file);
     }
 
+    let consulted = consulted(root, &manifest, &mcp_files, &taurus_hook_files);
+
     let source = std::fs::read_to_string(root.join(SOURCE_FILE))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok());
@@ -681,6 +751,7 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
         mcp,
         hooks,
         hook_files: taurus_hook_files,
+        consulted,
     }
 }
 
