@@ -247,12 +247,6 @@ impl StreamAccumulator {
         }
     }
 
-    /// Tool-use ids whose input JSON failed to parse. The agent loop turns
-    /// these into error tool results so the model can retry.
-    pub fn malformed_tool_inputs(&self) -> &[String] {
-        &self.malformed_tool_input
-    }
-
     pub fn usage(&self) -> TokenUsage {
         self.usage
     }

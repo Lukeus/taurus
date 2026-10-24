@@ -49,7 +49,8 @@ impl Host {
     }
 
     pub async fn set_search_key(&self, backend_id: &str, key: &str) -> Result<(), String> {
-        secrets::store(&config::search_key_id(backend_id), key)?;
+        let (id, key) = (config::search_key_id(backend_id), key.to_string());
+        off_runtime("saving the key", move || secrets::store(&id, &key)).await?;
         // A saved key can be the thing that makes a selected backend resolve,
         // and the tools are only registered for one that does.
         self.reload_local().await;
@@ -57,7 +58,8 @@ impl Host {
     }
 
     pub async fn clear_search_key(&self, backend_id: &str) -> Result<(), String> {
-        secrets::clear(&config::search_key_id(backend_id))?;
+        let id = config::search_key_id(backend_id);
+        off_runtime("removing the key", move || secrets::clear(&id)).await?;
         self.reload_local().await;
         Ok(())
     }
@@ -491,7 +493,9 @@ impl Host {
     /// Where each speech service's key is coming from.
     pub async fn speech_key_statuses(&self) -> Vec<(config::SpeechEngine, secrets::KeyStatus)> {
         let speech = self.settings().await.speech;
-        [
+        // On a blocking thread, like `key_statuses`: each status is a read of
+        // the OS keychain, which with a locked keychain waits on its dialog.
+        let statuses = [
             (
                 config::SpeechEngine::ElevenLabs,
                 speech.elevenlabs.api_key_env,
@@ -502,8 +506,8 @@ impl Host {
         .map(|(engine, variable)| {
             let status = secrets::status(&config::speech_key_id(engine), variable.as_deref());
             (engine, status)
-        })
-        .collect()
+        });
+        off_runtime_or_default(move || statuses.collect()).await
     }
 
     /// The key a speech service will be sent, honoring the environment over
@@ -557,7 +561,7 @@ impl Host {
             .embedding_provider_id()
             .await
             .ok_or("No provider is configured, so there is nothing to embed with.")?;
-        let provider = self.provider(&id).await.map_err(|e| e.to_string())?;
+        let provider = self.provider(&id).await?;
 
         let workspace = self.workspace.read().await.clone();
         let index = taurus_index::Index::new(

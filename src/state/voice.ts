@@ -134,7 +134,7 @@ export const useVoice = create<Voice>((set, get) => ({
     }
     if (mine !== attempt) {
       // Escape arrived while it was opening.
-      void api.cancelListening();
+      api.cancelListening().catch((e) => console.warn("could not stop listening", e));
       return;
     }
     set({ phase: { kind: "listening", since: Date.now() } });
@@ -163,7 +163,7 @@ export const useVoice = create<Voice>((set, get) => ({
     if (phase.kind === "idle" || phase.kind === "offer") return;
     attempt++;
     set({ phase: { kind: "idle" }, level: 0 });
-    void api.cancelListening();
+    api.cancelListening().catch((e) => console.warn("could not stop listening", e));
   },
 
   startDownload: async (model, fromMic) => {
@@ -198,7 +198,7 @@ export const useVoice = create<Voice>((set, get) => ({
   },
 
   stopDownload: () => {
-    void api.stopVoiceDownload();
+    api.stopVoiceDownload().catch((e) => console.warn("could not stop the download", e));
   },
 
   decline: () => {

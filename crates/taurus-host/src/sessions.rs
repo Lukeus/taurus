@@ -1617,11 +1617,6 @@ pub(crate) fn mentions_at(path: &Path, needle: &str) -> bool {
     }
 }
 
-/// [`mentions_at`] for a transcript known only by its id.
-pub fn mentions(id: &str, needle: &str) -> bool {
-    find(id).is_none_or(|path| mentions_at(&path, needle))
-}
-
 /// Whether one line of a transcript holds `needle`, as lowercasing the line
 /// would find it.
 ///

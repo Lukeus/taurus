@@ -2173,7 +2173,9 @@ function Attention() {
     // changes what is *shown* without changing what is owed.
     const rose = owed > before.current;
     before.current = owed;
-    void api.attention(away ? owed : 0, rose && away);
+    api
+      .attention(away ? owed : 0, rose && away)
+      .catch((e) => console.warn("could not update the dock badge", e));
   }, [owed, away]);
 
   return null;
@@ -2210,14 +2212,30 @@ export function isAsking(entries: Entry[]): boolean {
  * something. Prose is cut to its last sentence rather than its first: the
  * first is a paragraph old by the time anyone reads this.
  */
+/**
+ * The last sentence of `text`, found from the end.
+ *
+ * Runs on every frame of a streaming answer, so it walks back to the last
+ * sentence break rather than splitting the whole answer to keep one piece.
+ * A break is `.`, `!` or `?` followed by whitespace, as it always was.
+ */
+export function lastSentence(text: string): string {
+  const trimmed = text.trim();
+  for (let i = trimmed.length - 1; i > 0; i--) {
+    if (/\s/.test(trimmed[i]) && /[.!?]/.test(trimmed[i - 1])) {
+      let start = i;
+      while (start < trimmed.length && /\s/.test(trimmed[start])) start++;
+      return trimmed.slice(start);
+    }
+  }
+  return trimmed;
+}
+
 export function lastActivity(entries: Entry[]): string | null {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry.kind === "tool" && entry.status === "running") return entry.preview;
-    if (entry.kind === "assistant" && entry.text.trim()) {
-      const sentences = entry.text.trim().split(/(?<=[.!?])\s+/);
-      return sentences[sentences.length - 1] ?? null;
-    }
+    if (entry.kind === "assistant" && entry.text.trim()) return lastSentence(entry.text);
     // A finished tool is worth showing only while nothing newer has happened,
     // which is exactly the gap between one call ending and the next beginning.
     if (entry.kind === "tool") return entry.preview;

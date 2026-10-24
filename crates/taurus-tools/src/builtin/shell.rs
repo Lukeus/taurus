@@ -190,7 +190,7 @@ impl Tool for RunCommand {
                         output.exit_code,
                         // One stream, so it is named for what it is rather
                         // than for a half of the pair it does not have.
-                        &for_the_model(output.output, "output", ctx),
+                        &shown(output.output, "output", ctx).await,
                         // A terminal has one stream, so there is no stderr to
                         // label. Saying so keeps the model from reading its
                         // absence as the command having written nothing to it.
@@ -200,7 +200,7 @@ impl Tool for RunCommand {
                 }
                 // Ran out of time. What it printed first is still the model's.
                 Err(crate::builtin::pty::PtyError::TimedOut { after, printed }) => {
-                    let printed = combined(&for_the_model(printed, "output", ctx), None);
+                    let printed = combined(&shown(printed, "output", ctx).await, None);
                     return Err(ToolError::Failed(timed_out(after, true, &printed)));
                 }
                 // The command itself went wrong, or was canceled. Re-running it
@@ -271,17 +271,17 @@ impl Tool for RunCommand {
                     drain_stdout.within(KILL_GRACE),
                     drain_stderr.within(KILL_GRACE)
                 );
-                let printed = combined(
-                    &for_the_model(stdout, "stdout", ctx),
-                    Some(&for_the_model(stderr, "stderr", ctx)),
-                );
+                let (stdout, stderr) =
+                    tokio::join!(shown(stdout, "stdout", ctx), shown(stderr, "stderr", ctx));
+                let printed = combined(&stdout, Some(&stderr));
                 return Err(ToolError::Failed(timed_out(timeout, false, &printed)));
             }
         };
 
         let code = status.code();
-        let stdout = for_the_model(drain_stdout.all().await, "stdout", ctx);
-        let stderr = for_the_model(drain_stderr.all().await, "stderr", ctx);
+        let (stdout, stderr) = tokio::join!(drain_stdout.all(), drain_stderr.all());
+        let (stdout, stderr) =
+            tokio::join!(shown(stdout, "stdout", ctx), shown(stderr, "stderr", ctx));
         let mut report = report_for(code, &stdout, Some(&stderr));
 
         // Said in the result rather than only in a log, because the model is
@@ -775,6 +775,18 @@ fn fit(raw: &str, stream: &str, ctx: &ToolContext) -> String {
     overflow::cut(shown, output_cap(ctx.budget), |omitted| {
         elision(omitted, raw, stream, ctx)
     })
+}
+
+/// [`for_the_model`], on a blocking thread.
+///
+/// A held stream is up to 8 MB, condensing it is three passes that each build
+/// a copy, and an overflowing one is spilled to a file. None of that belongs
+/// on a runtime worker that the rest of the turn is waiting on.
+async fn shown(captured: Captured, stream: &'static str, ctx: &ToolContext) -> String {
+    let ctx = ctx.clone();
+    tokio::task::spawn_blocking(move || for_the_model(captured, stream, &ctx))
+        .await
+        .unwrap_or_else(|e| format!("({stream} could not be shown: {e})"))
 }
 
 /// What the model reads of a captured stream: [`fit`] for one held whole, and
@@ -1320,7 +1332,7 @@ mod tests {
     fn the_cut_is_sized_to_the_window_that_has_to_hold_it() {
         let (ctx, _dir) = test_ctx();
         let small = ctx.clone().with_budget(OutputBudget::for_window(8_192));
-        let large = ctx.clone().with_budget(OutputBudget::for_window(1_000_000));
+        let large = ctx.with_budget(OutputBudget::for_window(1_000_000));
         let text = "x".repeat(output_cap(large.budget) * 2);
 
         let cut_small = fit(&text, "stdout", &small);

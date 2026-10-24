@@ -14,7 +14,7 @@
 //! for something that appears nowhere pays only the prefilter — every file
 //! read, nothing parsed — and is the floor. A search that hits pays to rebuild
 //! each conversation that matched. If those two are close on a large history,
-//! the prefilter in `sessions::mentions` is not doing its job, and the palette
+//! the prefilter in `sessions::mentions_at` is not doing its job, and the palette
 //! will feel like it stutters a word behind the typing.
 
 use std::path::PathBuf;

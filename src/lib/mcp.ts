@@ -11,7 +11,6 @@ import type {
   CatalogEntry,
   McpServerDraft,
   McpServerView,
-  McpTransport,
   McpValue,
   Scope,
 } from "./api";
@@ -180,17 +179,6 @@ export function draftProblem(draft: McpServerDraft): string | null {
 export function blankValue(): McpValue {
   return { key: "", value: "", secret: false };
 }
-
-/**
- * Whether this transport uses `env` or `headers`.
- *
- * The two are the same control over the same idea — names and values the server
- * needs — and the only difference is which key they are written under.
- */
-export function valuesFor(transport: McpTransport): "env" | "headers" {
-  return transport === "stdio" ? "env" : "headers";
-}
-
 
 /**
  * What a catalogue entry still needs before it can be installed.

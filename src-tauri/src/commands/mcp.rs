@@ -86,7 +86,7 @@ pub async fn mcp_environment() -> CmdResult<McpEnvironment> {
             .map(|p| p.display().to_string())
             .collect(),
         added: outcome.added.clone(),
-        skipped: outcome.skipped.clone(),
+        skipped: outcome.skipped,
     })
 }
 

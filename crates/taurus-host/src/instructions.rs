@@ -761,7 +761,7 @@ mod tests {
             "---\napplyTo: \"**/*.py\"\ndescription: Python rules\n---\n\nUse four spaces.\n",
         );
 
-        let loaded = load(vec![source(file.clone(), InstructionsOrigin::Copilot)]);
+        let loaded = load(vec![source(file, InstructionsOrigin::Copilot)]);
         assert_eq!(loaded.instructions.len(), 1);
         assert_eq!(
             loaded.instructions[0].applies_to.as_deref(),
@@ -794,7 +794,7 @@ mod tests {
             "---\ndescription: only when asked\n---\n\nDo the thing.\n",
         );
 
-        let loaded = load(vec![source(file.clone(), InstructionsOrigin::Copilot)]);
+        let loaded = load(vec![source(file, InstructionsOrigin::Copilot)]);
         assert!(loaded.instructions.is_empty());
         assert_eq!(loaded.problems.len(), 1);
         assert!(
@@ -812,7 +812,7 @@ mod tests {
         let dir = tempdir();
         let file = write(dir.path(), "CLAUDE.md", "---\n\nUse tabs.\n");
 
-        let loaded = load(vec![source(file.clone(), InstructionsOrigin::Claude)]);
+        let loaded = load(vec![source(file, InstructionsOrigin::Claude)]);
         assert_eq!(loaded.instructions.len(), 1);
         assert!(
             loaded.instructions[0].body.starts_with("---"),

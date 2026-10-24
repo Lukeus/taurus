@@ -308,7 +308,6 @@ pub fn run() {
             commands::list_commands,
             commands::list_agents,
             commands::agent_roster_cost,
-            commands::create_agent,
             commands::list_proposals,
             commands::respond_skill_proposal,
             commands::list_agent_proposals,
