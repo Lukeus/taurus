@@ -63,9 +63,8 @@ pub struct UpdateDownload {
 /// entry per kind (`linux-x86_64-deb`, `windows-x86_64-msi` and so on), so a
 /// `.deb` install is offered a `.deb`, not an AppImage.
 fn cannot_install() -> Option<String> {
-    tauri::is_dev().then(|| {
-        "This is a development build. Updates install into an installed copy.".to_string()
-    })
+    tauri::is_dev()
+        .then(|| "This is a development build. Updates install into an installed copy.".to_string())
 }
 
 #[tauri::command]

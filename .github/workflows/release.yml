@@ -241,9 +241,12 @@ jobs:
             echo "$name=${!name}" >> "$GITHUB_ENV"
           done
           # `%1` is the file the bundler is signing: the exe, then each installer.
+          # Concatenated rather than a template literal, whose `${…}` inside
+          # the shell's single quotes reads to shellcheck as a mistake.
           node -e '
             const { ENDPOINT, ACCOUNT, PROFILE } = process.env;
-            const signCommand = `trusted-signing-cli -e ${ENDPOINT} -a ${ACCOUNT} -c ${PROFILE} -d Taurus %1`;
+            const signCommand =
+              "trusted-signing-cli -e " + ENDPOINT + " -a " + ACCOUNT + " -c " + PROFILE + " -d Taurus %1";
             require("node:fs").writeFileSync(
               "windows-signing.json",
               JSON.stringify({ bundle: { windows: { signCommand } } }),
