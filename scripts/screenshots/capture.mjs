@@ -108,6 +108,10 @@ const SHOTS = [
   // photograph can check — that the split is a split, and that a line number
   // lands on the line it counts.
   { name: "canvas", shot: "canvas", theme: "dark" },
+  // The same file grown long, with the editor scrolled a hundred lines down.
+  // The only check that the painted text and the gutter follow the box: every
+  // other canvas shot is of a file shorter than the panel, which never moves.
+  { name: "canvas-scrolled", shot: "canvas-scrolled", theme: "dark" },
   // The notebook: both scopes in the list, one note open in the editor that
   // wraps. The only picture of the pane, and the only check of the prose editor
   // there is — jsdom measures nothing, so a mount test can prove the text is in
