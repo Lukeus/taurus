@@ -173,6 +173,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(commands::PendingUpdate::default())
         // A shell started under a pty is not in this process's tree in any way
         // the OS will tidy up, so a closed window would otherwise leave one
         // running — along with whatever it was in the middle of. Destroyed
@@ -349,6 +351,8 @@ pub fn run() {
             commands::set_voice_model,
             commands::voice_download,
             commands::stop_voice_download,
+            commands::check_for_update,
+            commands::install_update,
             commands::delete_voice_model,
             commands::voice_start,
             commands::voice_stop,

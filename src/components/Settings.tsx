@@ -24,6 +24,7 @@ import { SearchTab, useIndexBuild, CodeSearch } from "./settings/SearchTab";
 import { Field, same } from "./settings/Field";
 import { PermissionsTab } from "./settings/PermissionsTab";
 import { VoiceTab } from "./settings/VoiceTab";
+import { UpdatesSection } from "./settings/UpdatesSection";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
 
 type Tab = "models" | "search" | "permissions" | "behavior" | "voice" | "appearance";
@@ -364,6 +365,8 @@ export function Settings({ onClose }: { onClose: () => void }) {
       {tab === "appearance" && (
         <ThemePicker theme={status?.settings.theme ?? "system"} />
       )}
+
+      <UpdatesSection />
 
       <section className="section">
         <span className="micro">Files</span>
