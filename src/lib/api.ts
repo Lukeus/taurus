@@ -65,6 +65,7 @@ import type { FlowStage } from "../bindings/FlowStage";
 import type { CreatedSession } from "../bindings/CreatedSession";
 import type { IndexProgress } from "../bindings/IndexProgress";
 import type { Instructions } from "../bindings/Instructions";
+import type { InstructionsTier } from "../bindings/InstructionsTier";
 import type { KeyStatus } from "../bindings/KeyStatus";
 import type { McpEnvironment } from "../bindings/McpEnvironment";
 import type { McpServerDraft } from "../bindings/McpServerDraft";
@@ -232,6 +233,7 @@ export type {
   FlowStage,
   IndexProgress,
   Instructions,
+  InstructionsTier,
   JobOutput,
   KeyStatus,
   McpEnvironment,
@@ -578,6 +580,13 @@ export const listNotes = () => invoke<Note[]>("list_notes");
  *  the file rather than from its own guess about what the file now says. */
 export const forgetNote = (id: string) => invoke<Note[]>("forget_note", { id });
 
+/** Writes a note of your own. Answers with every note, newest first. */
+export const addNote = (text: string) => invoke<Note[]>("add_note", { text });
+
+/** Changes one note's text. Answers with every note, newest first. */
+export const editNote = (id: string, text: string) =>
+  invoke<Note[]>("edit_note", { id, text });
+
 /**
  * Where the context window went — for one conversation, or for all of them.
  *
@@ -710,12 +719,6 @@ export const listAgents = () => invoke<AgentSummary[]>("list_agents");
 /** Characters of every request the roster costs. */
 export const agentRosterCost = () => invoke<number>("agent_roster_cost");
 
-/**
- * Writes a starter agent file in `scope` and opens it, returning its path.
- *
- * Disk stays the source of truth; this only means nobody has to already know
- * the frontmatter to write their first one.
- */
 /** Every tool this session has, for the agent editor's picker. */
 export const listTools = () => invoke<string[]>("list_tools");
 
@@ -730,7 +733,60 @@ export const saveAgent = (
     "name" | "description" | "prompt" | "tools" | "max_iterations"
   >,
   target: AgentSaveTarget,
-) => invoke<string>("save_agent", { draft, target });
+  /** A plugin you made, to save it into instead of `target`. */
+  plugin?: string,
+) => invoke<string>("save_agent", { draft, target, plugin: plugin ?? null });
+
+/**
+ * The file to open to change an agent. Writes a copy of your own first when
+ * the agent is built in, another tool's, or a fetched plugin's — the card says
+ * which before the click.
+ */
+export const agentFile = (name: string) => invoke<string>("agent_file", { name });
+
+/** Deletes an agent file Taurus owns. Resolves to the file that went. */
+export const deleteAgent = (name: string) => invoke<string>("delete_agent", { name });
+
+/**
+ * Writes a skill from the editor. Refuses a name already there: the editor
+ * makes new skills, and an existing one is changed by opening its file.
+ */
+export const createSkill = (
+  draft: Pick<SkillProposal, "name" | "description" | "when_to_use" | "body">,
+  target: SaveTarget,
+  plugin?: string,
+) =>
+  invoke<string>("create_skill", {
+    // The backend's type, filled out: the editor writes no scripts or files,
+    // and the review-card fields mean nothing for a skill nobody proposed.
+    draft: {
+      id: "",
+      scripts: [],
+      files: [],
+      rationale: "",
+      replaces_existing: false,
+      ...draft,
+    } satisfies SkillProposal,
+    target,
+    plugin: plugin ?? null,
+  });
+
+/** Drafts a skill from a description, for the editor to fill in. */
+export const generateSkill = (description: string, providerId: string, model: string) =>
+  invoke<SkillProposal>("generate_skill", { description, providerId, model });
+
+/** Ends a draft `generateSkill` is still waiting on. Safe when none is. */
+export const stopSkillDraft = () => invoke<void>("stop_skill_draft");
+
+/** Deletes a skill Taurus wrote. Resolves to the folder that went. */
+export const deleteSkill = (name: string) => invoke<string>("delete_skill", { name });
+
+/** Copies a skill into your own folder of its tier. Resolves to the copy. */
+export const copySkill = (name: string) => invoke<string>("copy_skill", { name });
+
+/** The `TAURUS.md` for a tier, created empty if absent. Resolves to its path. */
+export const startBrief = (tier: InstructionsTier) =>
+  invoke<string>("start_brief", { tier });
 
 /** Drafts an agent from a description, for the editor to fill in. */
 export const generateAgent = (
@@ -1090,6 +1146,10 @@ export const listPlugins = () => invoke<PluginSummary[]>("list_plugins");
  */
 export const addPlugin = (from: string, project: boolean, gitRef?: string) =>
   invoke<PluginSummary[]>("add_plugin", { from, project, gitRef: gitRef || null });
+
+/** Makes an empty plugin of your own. Returns the list it changed. */
+export const newPlugin = (name: string, description: string, project: boolean) =>
+  invoke<PluginSummary[]>("new_plugin", { name, description, project });
 
 /** Fetches a plugin again from where it was added from. */
 export const updatePlugin = (name: string, project: boolean) =>

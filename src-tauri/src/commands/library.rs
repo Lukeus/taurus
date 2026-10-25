@@ -123,13 +123,38 @@ pub async fn list_tools(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<String
 /// The same path an approved proposal takes — same validation, same writer,
 /// same rescan — because a hand-written agent and a generated one are the same
 /// file, and two writers would drift.
+///
+/// Unlike an approved proposal, whose card says before anyone approves it that
+/// it replaces an agent of the same name, the editor is for making a new one,
+/// and refuses a file already there. To change an agent, open it.
+///
+/// `plugin` saves it into a plugin you made instead of `target`.
 #[tauri::command]
 pub async fn save_agent(
     state: State<'_, Arc<AppState>>,
     draft: AgentProposal,
     target: AgentSaveTarget,
+    plugin: Option<String>,
 ) -> CmdResult<String> {
-    let root = validated_agent_root(&state, &draft, target).await?;
+    let root = match plugin.as_deref() {
+        None => validated_agent_root(&state, &draft, target).await?,
+        Some(plugin) => {
+            validated_agent_root(&state, &draft, target).await?;
+            state
+                .host
+                .agent_save_root(SaveTarget::User, Some(plugin))
+                .await?
+        }
+    };
+    let file = root.join(format!("{}.md", draft.name));
+    if file.exists() {
+        return Err(format!(
+            "an agent file named {}.md is already at {}. Open that agent to change it, or \
+             choose another name.",
+            draft.name,
+            root.display()
+        ));
+    }
     let path = save_agent_file(&draft, &root).map_err(|e| format!("could not save agent: {e}"))?;
     info!(agent = %draft.name, path = %path.display(), "agent saved from the editor");
 
@@ -212,41 +237,20 @@ pub async fn generate_agent(
         .map(str::to_string)
         .collect();
 
-    let provider = state.host.provider(&provider_id).await?;
-    let mut request = ChatRequest::new(
-        &model,
-        vec![Message::user(format!(
-            "Draft a sub-agent for: {}\n\nAllowed tools: {}",
-            description.trim(),
-            available.join(", ")
-        ))],
+    let prompt = format!(
+        "Draft a sub-agent for: {}\n\nAllowed tools: {}",
+        description.trim(),
+        available.join(", ")
     );
-    request.system = Some(draft_system());
-
-    // Filed where the editor can reach it. A draft on a local model takes
-    // minutes, and closing the editor has to be able to end one: see
-    // `stop_agent_draft`.
-    let running = state.stoppable.start(AGENT_DRAFT);
-    let cancel = running.cancel.clone();
-    let (tx, mut rx) = mpsc::channel(64);
-    let handle = tokio::spawn(async move { provider.stream(request, tx, cancel).await });
-
-    let mut acc = StreamAccumulator::new();
-    while let Some(event) = rx.recv().await {
-        acc.push(event);
-    }
-    let stop = handle
-        .await
-        .map_err(|e| format!("the draft did not finish: {e}"))?
-        .map_err(|e| format!("could not reach {provider_id}: {e}"))?;
-    // Before the text is read: what a stopped draft has said so far is not an
-    // answer, and reading it would report a model that "did not answer with
-    // JSON" to someone who pressed Stop.
-    if stop == StopReason::Canceled {
-        return Err("Drafting stopped.".into());
-    }
-
-    let text = acc.finish().0.text();
+    let text = one_shot(
+        &state,
+        AGENT_DRAFT,
+        &provider_id,
+        &model,
+        draft_system(),
+        prompt,
+    )
+    .await?;
     let json = extract_json(&text).ok_or_else(|| {
         format!(
             "{model} did not answer with JSON. It said: {}",
@@ -283,6 +287,46 @@ pub async fn generate_agent(
 
     info!(agent = %proposal.name, "agent drafted");
     Ok(proposal)
+}
+
+/// One completion with no tools, for an editor's Generate button. Answers with
+/// the text, or says it was stopped.
+///
+/// Filed in [`AppState::stoppable`] under `key`, where the editor can reach it.
+/// A draft on a local model takes minutes, and closing the editor has to be
+/// able to end one.
+async fn one_shot(
+    state: &AppState,
+    key: &str,
+    provider_id: &str,
+    model: &str,
+    system: String,
+    prompt: String,
+) -> CmdResult<String> {
+    let provider = state.host.provider(provider_id).await?;
+    let mut request = ChatRequest::new(model, vec![Message::user(prompt)]);
+    request.system = Some(system);
+
+    let running = state.stoppable.start(key);
+    let cancel = running.cancel.clone();
+    let (tx, mut rx) = mpsc::channel(64);
+    let handle = tokio::spawn(async move { provider.stream(request, tx, cancel).await });
+
+    let mut acc = StreamAccumulator::new();
+    while let Some(event) = rx.recv().await {
+        acc.push(event);
+    }
+    let stop = handle
+        .await
+        .map_err(|e| format!("the draft did not finish: {e}"))?
+        .map_err(|e| format!("could not reach {provider_id}: {e}"))?;
+    // Before the text is read: what a stopped draft has said so far is not an
+    // answer, and reading it would report a model that "did not answer with
+    // JSON" to someone who pressed Stop.
+    if stop == StopReason::Canceled {
+        return Err("Drafting stopped.".into());
+    }
+    Ok(acc.finish().0.text())
 }
 
 #[derive(Deserialize)]
@@ -384,7 +428,22 @@ pub async fn respond_skill_proposal(
         return Ok(None);
     }
 
-    let proposal = response.edited.unwrap_or(original);
+    // Re-checked when the person changed it, as an agent proposal is: what the
+    // model proposed passed on the way in, and an edited name or trigger line
+    // never has. The bundling check is not run again — the scripts are the
+    // model's and weren't edited, and a procedure the person rewrote to name a
+    // file is one they mean to add.
+    let proposal = match response.edited {
+        Some(edited) => {
+            taurus_skills::proposal::validate_proposal(
+                &edited,
+                &*state.host.catalog().read().await,
+            )
+            .map_err(|e| format!("this skill can't be saved as written: {e}"))?;
+            edited
+        }
+        None => original,
+    };
     let root = match response.target.unwrap_or(SaveTarget::Project) {
         SaveTarget::Project => {
             taurus_host::config::workspace_skills_dir(&state.host.workspace().await)
@@ -560,4 +619,146 @@ async fn validated_agent_root(
         }
         AgentSaveTarget::User => taurus_host::config::user_agents_dir(),
     })
+}
+
+/* ------------------------------------------------------------- authoring */
+
+/// Where a skill draft is filed in [`AppState::stoppable`].
+pub(super) const SKILL_DRAFT: &str = "skill-draft";
+
+/// Ends a draft [`generate_skill`] is still waiting on.
+#[tauri::command]
+pub fn stop_skill_draft(state: State<'_, Arc<AppState>>) {
+    state.stoppable.stop(SKILL_DRAFT);
+}
+
+/// What the model is told to produce for the skill editor's Generate button.
+/// JSON for the reason [`draft_system`] gives: every field lands in a box the
+/// person can correct, and none of it is YAML that is nearly right.
+pub(super) fn skill_draft_system() -> String {
+    format!(
+        "\
+You draft a skill for a coding agent: a written procedure it loads when the \
+situation calls for it. Reply with JSON only — no prose, no markdown fence.
+
+Fields:
+- name: kebab-case, specific, e.g. \"cut-release\"
+- description: one sentence on what the skill does.
+- when_to_use: the situation in which the agent should open this skill, under \
+{TRIGGER} characters. It is the only text the agent sees when deciding, so \
+describe the trigger, not the capability.
+- body: the procedure, as markdown. Numbered steps the agent can follow \
+without asking anything: the commands to run, what to check, what to report. \
+Do not name script files; this skill has none yet.",
+        TRIGGER = taurus_skills::skill::TRIGGER_MAX,
+    )
+}
+
+#[derive(Deserialize)]
+pub(super) struct DraftedSkill {
+    name: String,
+    description: String,
+    when_to_use: String,
+    body: String,
+}
+
+/// Drafts a skill from a description, for the editor to fill in. A starting
+/// point, like [`generate_agent`]: it lands in the editor's fields and the
+/// person saves it.
+#[tauri::command]
+pub async fn generate_skill(
+    state: State<'_, Arc<AppState>>,
+    description: String,
+    provider_id: String,
+    model: String,
+) -> CmdResult<SkillProposal> {
+    if description.trim().is_empty() {
+        return Err("describe what the skill should do first".into());
+    }
+    let prompt = format!("Draft a skill for: {}", description.trim());
+    let text = one_shot(
+        &state,
+        SKILL_DRAFT,
+        &provider_id,
+        &model,
+        skill_draft_system(),
+        prompt,
+    )
+    .await?;
+    let json = extract_json(&text).ok_or_else(|| {
+        format!(
+            "{model} did not answer with JSON. It said: {}",
+            brief(&text)
+        )
+    })?;
+    let drafted: DraftedSkill = serde_json::from_str(json)
+        .map_err(|e| format!("{model} answered with JSON that does not fit a skill: {e}"))?;
+    info!(skill = %drafted.name, "skill drafted");
+    Ok(SkillProposal::new(
+        drafted.name.trim(),
+        drafted.description.trim(),
+        drafted.when_to_use.trim(),
+        drafted.body.trim(),
+    ))
+}
+
+/// Saves a skill written in the editor. Answers with its folder. See
+/// [`taurus_host::Host::create_skill`].
+#[tauri::command]
+pub async fn create_skill(
+    state: State<'_, Arc<AppState>>,
+    draft: SkillProposal,
+    target: SaveTarget,
+    plugin: Option<String>,
+) -> CmdResult<String> {
+    let dir = state
+        .host
+        .create_skill(&draft, target, plugin.as_deref())
+        .await?;
+    emit_status(&state).await;
+    Ok(dir)
+}
+
+/// Deletes a skill Taurus wrote. Answers with the folder that went.
+#[tauri::command]
+pub async fn delete_skill(state: State<'_, Arc<AppState>>, name: String) -> CmdResult<String> {
+    let dir = state.host.delete_skill(&name).await?;
+    emit_status(&state).await;
+    Ok(dir)
+}
+
+/// Copies a skill into your own folder of the same tier, to change there.
+/// Answers with the copy's folder.
+#[tauri::command]
+pub async fn copy_skill(state: State<'_, Arc<AppState>>, name: String) -> CmdResult<String> {
+    let dir = state.host.copy_skill(&name).await?;
+    emit_status(&state).await;
+    Ok(dir)
+}
+
+/// The file to open in the canvas to change an agent, writing a copy of your
+/// own first when it can't be changed where it is.
+#[tauri::command]
+pub async fn agent_file(state: State<'_, Arc<AppState>>, name: String) -> CmdResult<String> {
+    let path = state.host.agent_file(&name).await?;
+    emit_status(&state).await;
+    Ok(path)
+}
+
+/// Deletes an agent file Taurus owns. Answers with the file that went.
+#[tauri::command]
+pub async fn delete_agent(state: State<'_, Arc<AppState>>, name: String) -> CmdResult<String> {
+    let path = state.host.delete_agent(&name).await?;
+    emit_status(&state).await;
+    Ok(path)
+}
+
+/// The `TAURUS.md` for a tier, created empty if it isn't there, for the canvas
+/// to open.
+#[tauri::command]
+pub async fn start_brief(
+    state: State<'_, Arc<AppState>>,
+    tier: taurus_host::InstructionsTier,
+) -> CmdResult<String> {
+    state.host.start_brief(tier).await
 }

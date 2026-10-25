@@ -1043,6 +1043,21 @@ export default function App() {
   };
 
   /**
+   * Opens a skill, agent or brief in the canvas, from a library drawer.
+   *
+   * Closes the drawer, which would otherwise sit over the file it just
+   * opened, and Changes, which takes the column the canvas needs. A file
+   * outside the workspace is reachable here only because it is one a drawer
+   * listed — see `taurus_host::library::editable_roots`.
+   */
+  const openLibraryFile = (path: string) => {
+    setSkillsOpen(false);
+    setAgentsOpen(false);
+    setChangesOpen(false);
+    showDocument(path, null);
+  };
+
+  /**
    * Opens a note in the notes pane, from a card in the transcript.
    *
    * Switches panes, unlike `showDocument`, because the notes pane replaces the
@@ -1451,8 +1466,8 @@ export default function App() {
                 <SkillProposalCard
                   key={p.id}
                   proposal={p}
-                  onResolve={(approve, target) =>
-                    store.resolveProposal(p.id, approve, target)
+                  onResolve={(approve, target, edited) =>
+                    store.resolveProposal(p.id, approve, target, edited)
                   }
                 />
               ))}
@@ -1460,8 +1475,8 @@ export default function App() {
                 <AgentProposalCard
                   key={p.id}
                   proposal={p}
-                  onResolve={(approve, target) =>
-                    store.resolveAgentProposal(p.id, approve, target)
+                  onResolve={(approve, target, edited) =>
+                    store.resolveAgentProposal(p.id, approve, target, edited)
                   }
                 />
               ))}
@@ -1719,8 +1734,12 @@ export default function App() {
             onClose={() => setDelegate(null)}
           />
         )}
-        {skillsOpen && <SkillsDrawer onClose={() => setSkillsOpen(false)} />}
-        {agentsOpen && <AgentsDrawer onClose={() => setAgentsOpen(false)} />}
+        {skillsOpen && (
+          <SkillsDrawer onClose={() => setSkillsOpen(false)} onOpenFile={openLibraryFile} />
+        )}
+        {agentsOpen && (
+          <AgentsDrawer onClose={() => setAgentsOpen(false)} onOpenFile={openLibraryFile} />
+        )}
         {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
 
         {pluginsOpen && (

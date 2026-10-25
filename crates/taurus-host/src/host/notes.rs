@@ -26,6 +26,30 @@ impl Host {
         Ok(left)
     }
 
+    /// Writes a note of your own, read into every later conversation here as
+    /// the model's are. Answers with every note, newest first. See
+    /// [`memory::BY_YOU`].
+    pub async fn add_note(&self, text: &str) -> Result<Vec<memory::Note>, String> {
+        let (workspace, text) = (self.workspace().await, text.to_string());
+        let mut notes = off_runtime("writing the note", move || {
+            memory::append(&workspace, memory::BY_YOU, &text)
+        })
+        .await?;
+        notes.reverse();
+        Ok(notes)
+    }
+
+    /// Changes one note's text. Answers with every note, newest first.
+    pub async fn edit_note(&self, id: &str, text: &str) -> Result<Vec<memory::Note>, String> {
+        let (workspace, id, text) = (self.workspace().await, id.to_string(), text.to_string());
+        let mut notes = off_runtime("changing the note", move || {
+            memory::edit(&workspace, &id, &text)
+        })
+        .await?;
+        notes.reverse();
+        Ok(notes)
+    }
+
     /* ----------------------------------------------------------- notebook */
 
     /// Every note somebody has written, in both scopes.
@@ -134,8 +158,12 @@ impl Host {
         // On a blocking thread: a document is read whole, up to
         // `MAX_DOCUMENT_BYTES`, and the canvas opens one beside a live turn.
         tokio::task::spawn_blocking(move || {
-            let resolved =
-                taurus_tools::path_guard::resolve(&workspace, &path).map_err(|e| e.to_string())?;
+            // The workspace, and the library's personal folders: a person
+            // changing a skill they use everywhere opens it here too. Never
+            // widened for a tool. See `crate::library`.
+            let also = crate::library::editable_roots();
+            let resolved = taurus_tools::path_guard::resolve_within(&workspace, &also, &path)
+                .map_err(|e| e.to_string())?;
             let shown = taurus_tools::path_guard::display(&workspace, &resolved);
 
             let meta =
@@ -190,7 +218,8 @@ impl Host {
         let (path, text, fingerprint) =
             (path.to_string(), text.to_string(), fingerprint.to_string());
         off_runtime("saving the file", move || {
-            crate::document::save(&workspace, &path, &text, &fingerprint)
+            let also = crate::library::editable_roots();
+            crate::document::save(&workspace, &also, &path, &text, &fingerprint)
         })
         .await
     }

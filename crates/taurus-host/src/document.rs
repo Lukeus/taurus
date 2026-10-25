@@ -147,8 +147,18 @@ pub enum Saved {
 /// The rule and the line-ending care are in [`write_if_current`], which the
 /// notebook shares; this is the canvas's half — resolving a workspace-relative
 /// path through the guard, and naming it the way the rest of the app does.
-pub fn save(workspace: &Path, path: &str, text: &str, fingerprint: &str) -> Result<Saved, String> {
-    let resolved = taurus_tools::path_guard::resolve(workspace, path).map_err(|e| e.to_string())?;
+///
+/// `also` is the library's personal folders, which a person may open here
+/// though they're outside the workspace. See [`crate::library::editable_roots`].
+pub fn save(
+    workspace: &Path,
+    also: &[std::path::PathBuf],
+    path: &str,
+    text: &str,
+    fingerprint: &str,
+) -> Result<Saved, String> {
+    let resolved = taurus_tools::path_guard::resolve_within(workspace, also, path)
+        .map_err(|e| e.to_string())?;
     let shown = taurus_tools::path_guard::display(workspace, &resolved);
 
     let document = |w: Written| Document {
@@ -304,7 +314,7 @@ mod tests {
     /* ----------------------------------------------------------- saving */
 
     fn saved(dir: &TempDir, name: &str, text: &str, at: &str) -> Saved {
-        save(&dir.path().canonicalize().unwrap(), name, text, at).unwrap()
+        save(&dir.path().canonicalize().unwrap(), &[], name, text, at).unwrap()
     }
 
     #[test]
@@ -395,7 +405,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         write(&dir, "a.md", "one\n");
         let root = dir.path().canonicalize().unwrap();
-        assert!(save(&root, "../escaped.md", "x", "1-2").is_err());
+        assert!(save(&root, &[], "../escaped.md", "x", "1-2").is_err());
     }
 
     #[test]

@@ -871,6 +871,50 @@ pub fn add(
     Ok(load(&target, scope, workspace).summary)
 }
 
+/// Makes an empty plugin of your own: a manifest, and folders for skills and
+/// agents. Answers with it as a listing shows it.
+///
+/// What you'd write by hand to start one, in Claude Code's layout, so the
+/// result is a plugin any client that reads that layout can load. It records
+/// no source, which is what makes it yours: nothing updates it, so the skill
+/// and agent editors can save into it and its files can be changed in place.
+pub fn scaffold(
+    name: &str,
+    description: &str,
+    scope: Scope,
+    workspace: Option<&Path>,
+) -> Result<PluginSummary, String> {
+    check_name(name)?;
+    let plugins = dir(scope, workspace).ok_or("there's no project open to make it in")?;
+    let root = plugins.join(name);
+    if root.exists() {
+        return Err(format!(
+            "there's already a plugin folder at {}. Choose another name.",
+            root.display()
+        ));
+    }
+    let mut manifest = serde_json::Map::new();
+    manifest.insert("name".into(), name.into());
+    manifest.insert("version".into(), "0.1.0".into());
+    let description = description.trim();
+    if !description.is_empty() {
+        manifest.insert("description".into(), description.into());
+    }
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(manifest))
+        .map_err(|e| e.to_string())?;
+    let make = || -> std::io::Result<()> {
+        std::fs::create_dir_all(root.join(".claude-plugin"))?;
+        std::fs::create_dir_all(root.join("skills"))?;
+        std::fs::create_dir_all(root.join("agents"))?;
+        std::fs::write(root.join(MANIFEST), format!("{text}\n"))
+    };
+    if let Err(e) = make() {
+        let _ = std::fs::remove_dir_all(&root);
+        return Err(format!("could not make {}: {e}", root.display()));
+    }
+    Ok(load(&root, scope, workspace).summary)
+}
+
 /// Fetches an installed plugin again from where it came from, and puts the
 /// new copy in place of the old one. The old one stays if anything fails.
 pub fn update(name: &str, scope: Scope, workspace: Option<&Path>) -> Result<PluginSummary, String> {
@@ -1203,7 +1247,7 @@ fn clone(
 /// Copies a folder's files, leaving out `.git` and links. A link in a plugin
 /// could point anywhere on the machine it was made on, and copying through
 /// one would install whatever it points at on this one.
-fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
     for entry in std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -1602,6 +1646,27 @@ mod tests {
                 ("commands/status.md", "Say the status."),
             ],
         );
+    }
+
+    #[test]
+    fn a_new_plugin_loads_and_is_yours() {
+        let _home = isolated_home();
+        let summary = scaffold("kit", "My own tools", Scope::Global, None).unwrap();
+        assert!(summary.problems.is_empty(), "{:?}", summary.problems);
+        assert_eq!(summary.description.as_deref(), Some("My own tools"));
+        assert!(summary.source.is_none(), "nothing to update it from");
+        let root = Path::new(&summary.root);
+        assert!(root.join("skills").is_dir() && root.join("agents").is_dir());
+    }
+
+    #[test]
+    fn a_new_plugin_needs_a_usable_name_and_a_free_folder() {
+        let _home = isolated_home();
+        assert!(scaffold("My Kit", "", Scope::Global, None).is_err());
+        assert!(scaffold("claude-tools", "", Scope::Global, None).is_err());
+        scaffold("kit", "", Scope::Global, None).unwrap();
+        let err = scaffold("kit", "", Scope::Global, None).unwrap_err();
+        assert!(err.contains("already a plugin folder"), "{err}");
     }
 
     #[test]

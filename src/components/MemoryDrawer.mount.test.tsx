@@ -68,13 +68,53 @@ describe("the memory drawer", () => {
 
   it("says there is nothing here in a way that needs no action", async () => {
     // An empty memory is the ordinary state of a new workspace, not a problem
-    // to fix — and the user cannot write one of these themselves anyway.
+    // to fix.
     invoke.mockResolvedValue([]);
 
     const { host } = await mount({ onClose: () => {} });
 
     expect(host.textContent).toContain("Nothing has been written down");
-    expect(host.textContent).toContain("the agent writes these itself");
+    expect(host.textContent).toContain("writes these itself");
+  });
+
+  it("writes a note of yours and redraws from the answer", async () => {
+    invoke.mockResolvedValueOnce([]);
+    const { host, click } = await mount({ onClose: () => {} });
+
+    const box = host.querySelector<HTMLTextAreaElement>("#memory-new")!;
+    await act(async () => {
+      // React tracks the value through its own setter; assigning `.value`
+      // directly would be swallowed as no change.
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      set.call(box, "staging has the migration");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    invoke.mockResolvedValueOnce([
+      { id: "y", at: Math.floor(Date.now() / 1000), session: "", text: "staging has the migration" },
+    ]);
+    await click(buttonSaying(host, "Add note"));
+
+    expect(invoke).toHaveBeenLastCalledWith("add_note", { text: "staging has the migration" });
+    expect(host.textContent).toContain("by you");
+    // A note of yours has no conversation to open.
+    expect(buttonSaying(host, "where it came from")).toBeUndefined();
+  });
+
+  it("changes a note in place, keeping the editor open when the save is refused", async () => {
+    invoke.mockResolvedValueOnce([note("a", "first")]);
+    const { host, click } = await mount({ onClose: () => {}, onOpenSession: () => {} });
+
+    await click(buttonSaying(host, "Edit"));
+    invoke.mockRejectedValueOnce("That note isn't there any more.");
+    await click(buttonSaying(host, "Save"));
+    expect(invoke).toHaveBeenLastCalledWith("edit_note", { id: "a", text: "first" });
+    expect(host.textContent).toContain("isn't there any more");
+    expect(host.querySelector('textarea[aria-label="Note"]')).not.toBeNull();
+
+    invoke.mockResolvedValueOnce([note("a", "first, changed")]);
+    await click(buttonSaying(host, "Save"));
+    expect(host.querySelector('textarea[aria-label="Note"]')).toBeNull();
+    expect(host.textContent).toContain("first, changed");
   });
 
   it("redraws from what the backend says is left, not from its own guess", async () => {

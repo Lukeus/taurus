@@ -184,10 +184,19 @@ the backlog, and they're the minority.
   `PATH`, a plugin's own settings, `userConfig` and dependencies. Each is
   listed on the plugin by name, with why. Command files are the one with a
   near equivalent: a user-invocable skill is a `/command`.
-- **A plugin's skills and agents aren't edited in the app.** Their files are
-  the plugin's, and an edit would be lost on the next `update`. Change the
-  plugin, or copy the part into your own `skills/` or `agents/` under a name of
-  your own.
+- **An installed plugin's skills and agents aren't edited in place.** Their
+  files are replaced on the next `update`, so an edit would be lost later. The
+  drawers copy one into your own folder under its own name instead. A plugin
+  you made has no source and nothing updates it, so its parts are edited in
+  place.
+- **The skill editor makes new skills. It doesn't change existing ones.** A
+  skill is changed by opening its `SKILL.md` in the canvas, because a form
+  would drop frontmatter keys it doesn't model. For the same reason the editor
+  writes no scripts or reference files: those are added beside `SKILL.md`
+  after it's saved.
+- **Taurus doesn't delete another tool's skills or agents.** A file in
+  `.claude`, `.agents` or Copilot's folders can be opened and copied from the
+  drawers, but deleting it is left to you, where it lives.
 - **An MCP server's own OAuth client isn't used.** Taurus registers its own
   client when you sign in. A plugin server that names one in `oauth` and only
   accepts it won't let Taurus sign in. The plugin says which servers name one.

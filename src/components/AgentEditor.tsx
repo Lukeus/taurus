@@ -11,6 +11,13 @@ import { useStore } from "../state/store";
 import { DrawerHead } from "./Drawer";
 import { Modal } from "./Modal";
 import { Problem } from "./Problem";
+import { label, SaveTargetPills, split, usePluginTargets, type SaveTo } from "./SaveTarget";
+
+/** The fields this editor writes. `model:` and `provider:` are the file's. */
+export type AgentDraft = Pick<
+  AgentProposal,
+  "name" | "description" | "prompt" | "tools" | "max_iterations"
+>;
 
 /**
  * Writing an agent without already knowing the frontmatter.
@@ -26,11 +33,26 @@ import { Problem } from "./Problem";
  * Generate is a starting point, not a result. It fills the same boxes the user
  * would have typed into, and every one stays editable — which is what keeps
  * this an editor with a draft button rather than a wizard.
+ *
+ * It makes new agents, and fills in a proposal someone wants to change before
+ * approving it. An agent already on disk is changed by opening its file, which
+ * keeps `model:`, `provider:` and anything another tool wrote there.
  */
 export function AgentEditor({
+  initial,
+  title = "New agent",
+  offerPlugins = true,
+  onSubmit,
   onClose,
   onSaved,
 }: {
+  /** Fields to start from — a proposal being changed before it's approved. */
+  initial?: AgentDraft;
+  title?: string;
+  /** Whether plugins you made are offered as a place to save. */
+  offerPlugins?: boolean;
+  /** What Save does. Saves a new agent unless given. */
+  onSubmit?: (draft: AgentDraft, target: "project" | "user", plugin?: string) => Promise<unknown>;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
@@ -39,13 +61,16 @@ export function AgentEditor({
   const [ask, setAsk] = useState("");
   const [generating, setGenerating] = useState(false);
 
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [maxIterations, setMaxIterations] = useState(DEFAULT_AGENT_ITERATIONS);
+  const [name, setName] = useState(initial?.name ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [prompt, setPrompt] = useState(initial?.prompt ?? "");
+  const [maxIterations, setMaxIterations] = useState(
+    initial?.max_iterations ?? DEFAULT_AGENT_ITERATIONS,
+  );
   /** `null` is inherit-the-caller's-tools, which is not the same as none. */
-  const [tools, setTools] = useState<string[] | null>(null);
-  const [target, setTarget] = useState<"project" | "user">("project");
+  const [tools, setTools] = useState<string[] | null>(initial?.tools ?? null);
+  const [to, setTo] = useState<SaveTo>("project");
+  const plugins = usePluginTargets(offerPlugins);
 
   const [available, setAvailable] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -101,11 +126,12 @@ export function AgentEditor({
   const save = async () => {
     setSaving(true);
     setError(null);
+    const draft = { name: name.trim(), description, prompt, tools, max_iterations: maxIterations };
+    const { target, plugin } = split(to);
     try {
-      await api.saveAgent(
-        { name, description, prompt, tools, max_iterations: maxIterations },
-        target,
-      );
+      await (onSubmit
+        ? onSubmit(draft, target, plugin)
+        : api.saveAgent(draft, target, plugin));
       await onSaved();
     } catch (e) {
       setError(String(e));
@@ -128,12 +154,11 @@ export function AgentEditor({
   return (
     <Modal onClose={onClose} className="scrim modal-scrim">
       <div className="modal agent-editor" onClick={(e) => e.stopPropagation()}>
-        <DrawerHead title="New agent" onClose={onClose}>
-          <span className={`tag ${target === "project" ? "project" : ""}`}>
-            {target === "project" ? "project" : "all projects"}
-          </span>
+        <DrawerHead title={title} onClose={onClose}>
+          <span className={`tag ${to === "project" ? "project" : ""}`}>{label(to)}</span>
         </DrawerHead>
 
+        {!initial && (
         <section className="agent-generate">
           <span className="micro">Describe what it should do</span>
           <textarea
@@ -162,6 +187,7 @@ export function AgentEditor({
             )}
           </div>
         </section>
+        )}
 
         <div className="agent-fields">
           <div className="field-row">
@@ -257,19 +283,7 @@ export function AgentEditor({
         </div>
 
         <footer className="agent-editor-foot">
-          <span className="micro">Save to</span>
-          <button
-            className={`pill${target === "project" ? " on" : ""}`}
-            onClick={() => setTarget("project")}
-          >
-            this project
-          </button>
-          <button
-            className={`pill${target === "user" ? " on" : ""}`}
-            onClick={() => setTarget("user")}
-          >
-            all projects
-          </button>
+          <SaveTargetPills value={to} onChange={setTo} plugins={plugins} />
           <div className="spacer" />
           <button className="quiet" onClick={onClose}>
             Cancel

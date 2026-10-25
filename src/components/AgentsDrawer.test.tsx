@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import type { AgentSummary } from "../lib/api";
-import { chips, partition } from "./AgentsDrawer";
+import { agentActions, chips, partition } from "./AgentsDrawer";
 
 const agent = (patch: Partial<AgentSummary> = {}): AgentSummary => ({
   name: "reviewer",
@@ -22,6 +22,7 @@ const agent = (patch: Partial<AgentSummary> = {}): AgentSummary => ({
   shadows: null,
   degraded: null,
   path: "/home/me/.taurus/agents/reviewer.md",
+  managed: false,
   ...patch,
 });
 
@@ -86,5 +87,25 @@ describe("tool chips on a card", () => {
 
   it("never reports a negative overflow", () => {
     expect(chips([]).hidden).toBe(0);
+  });
+});
+
+describe("what an agent card offers", () => {
+  it("deletes a file Taurus owns", () => {
+    expect(agentActions(agent()).deletable).toBe(true);
+  });
+
+  it("never deletes a built-in, and says Edit writes a copy", () => {
+    const actions = agentActions(agent({ tier: "builtin", path: null, forks_on_edit: true }));
+    expect(actions.deletable).toBe(false);
+    expect(actions.editHint).toContain("copy of the built-in");
+  });
+
+  it("names the copy of a fetched plugin's agent", () => {
+    const actions = agentActions(
+      agent({ name: "ops:reviewer", plugin: "ops", managed: true, forks_on_edit: true }),
+    );
+    expect(actions.deletable).toBe(false);
+    expect(actions.editHint).toContain("named reviewer");
   });
 });

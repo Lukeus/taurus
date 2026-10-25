@@ -124,3 +124,25 @@ async fn reopening_a_released_conversation_keeps_it() {
 
     assert!(!entry.was_released());
 }
+
+#[test]
+fn the_skill_draft_prompt_quotes_the_trigger_limit_the_loader_enforces() {
+    let system = library::skill_draft_system();
+    assert!(
+        system.contains(&format!(
+            "under {} characters",
+            taurus_skills::skill::TRIGGER_MAX
+        )),
+        "{system}"
+    );
+}
+
+#[test]
+fn a_skill_draft_in_a_fence_is_still_read() {
+    let reply = "Here you go:\n```json\n{\"name\": \"cut-release\", \"description\": \"Cuts a \
+                 release\", \"when_to_use\": \"When a release is asked for\", \"body\": \"1. Run \
+                 the tests. {braces} included.\"}\n```";
+    let json = library::extract_json(reply).expect("an object");
+    let drafted: library::DraftedSkill = serde_json::from_str(json).expect("a skill");
+    let _ = drafted;
+}

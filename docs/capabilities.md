@@ -85,6 +85,13 @@ A file longer than 12 KB is cut on a line boundary, and both the prompt and
 the Skills drawer say so. Without the cap, a checked-in handbook could spend an
 8k model's whole context before it read a line of code.
 
+Each file in the Skills drawer's **Instructions** list has an **Open** button
+that puts it in the canvas beside the conversation. If you have no
+`TAURUS.md`, the list offers to start one, for this project
+(`.taurus/TAURUS.md`) or for every project (`~/.taurus/TAURUS.md`). It starts
+empty, because a starter paragraph you forgot to delete would be paid for on
+every request.
+
 **An edit lands on your next message.** Taurus re-reads the brief at the
 start of every turn, along with any file it imports, which is often where the
 whole brief lives. So you can edit `AGENTS.md` with a conversation open and it
@@ -150,6 +157,25 @@ see it:
 
 The same list is `taurus notes list`, and the same button is
 `taurus notes forget <id>`.
+
+**You can write one too, and change any of them.** The drawer has a box for a
+note of your own, and every note has an **Edit** button. A note of yours is
+carried into every later conversation here exactly as the model's are, so a
+fact like "staging has the migration, production doesn't" is said once rather
+than at the top of every conversation. It's marked **by you**, because the
+model's notes are the ones worth checking. An edit keeps the note's place in
+the order: it's still as old as when it was first written, so changing an old
+note can't push a newer one out of the prompt.
+
+```bash
+taurus notes add "Staging has the 0042 migration; production doesn't."
+taurus notes edit 7bd2 "Staging and production both have the 0042 migration."
+```
+
+The same 2 KB limit applies to yours.
+
+![The Memory drawer: a note you wrote, marked by you, above two the model
+wrote, each with Edit and Forget](screenshots/memory.png)
 
 Notes are capped at 2 KB. A longer one is refused, not truncated, because a
 note cut off mid-sentence still reads like a fact. The prompt carries the
@@ -253,6 +279,11 @@ workspace while it worked, is refused. The refusal tells the model to bundle
 that script under `scripts/`. The one exception is a file your project tracks
 in git, which a project skill may lean on.
 
+**Edit…** on the card opens the proposal in the skill editor, to change the
+name, the trigger line or the procedure before saving it. Whatever you change
+is checked again on the way out, because a hand-edited name or trigger line
+hasn't been. The scripts and files the model bundled come along unchanged.
+
 What gets written is a skill any client can read, and that the
 specification's `skills-ref validate` accepts. The frontmatter is only
 `name`, `description` and `metadata`, with the trigger line under `metadata`.
@@ -262,6 +293,53 @@ puts it.
 
 Nothing touches disk until you approve it. Approving reloads the catalog, so
 the skill is usable in the session that wrote it.
+
+**You can write one yourself.** **New skill** in the Skills drawer opens an
+editor with four fields: the name, a one-sentence description, the trigger
+line, and the procedure. Describe what you want and **Generate** drafts all
+four with the conversation's model. Every field stays editable, and nothing
+is saved until you press Save. Each rule the loader enforces shows in the form
+before you save: kebab-case, the 200-character trigger line. A skill is saved
+into this project's `.taurus/skills`, your `~/.taurus/skills`, or a plugin you
+made. It goes through the same checks and the same writer as an approved
+proposal, so it's a skill any client can read. A name already in use is
+refused rather than overwritten.
+
+![The skill editor: a description to draft from, then the name, description,
+trigger line and procedure, and where to save it](screenshots/skill-editor.png)
+
+The editor makes new skills. It doesn't change one already on disk. **Open**
+on a skill's card puts its `SKILL.md` in the canvas instead, where you edit
+the whole file. That's deliberate: a skill's frontmatter can carry keys this
+form doesn't know, like `license`, `allowed-tools`, or whatever another client
+added. A form that rebuilt the file from four fields would delete them on
+every save. Scripts and reference files go beside `SKILL.md` once it exists.
+
+What a card offers depends on where the skill lives:
+
+| Where it lives | Open | Copy to mine | Delete |
+|---|---|---|---|
+| A `.taurus/skills` folder | yes | no | yes |
+| Another tool's folder (`.claude`, `.agents`, Copilot's) | yes | yes | no |
+| A plugin you made | yes | no | yes |
+| A plugin you installed from somewhere | no | yes | no |
+
+Taurus deletes only what it wrote. A skill in `.claude/skills` belongs to
+Claude Code as much as to Taurus, so its card offers a copy into the
+`.taurus/skills` of the same tier, which shadows the original without
+touching it. An installed plugin's files are replaced on its next update, so
+an edit there would be lost later. Its skill is copied under its own name
+instead: `engineering:code-review` becomes `code-review`, which is yours.
+
+The canvas opens files in the workspace, so the personal tier needed a way in.
+It can also open the files the library drawers list from your home directory:
+your skill and agent folders, Claude's and Copilot's personal ones, your
+personal instructions files, and plugins you made. Nothing else outside the
+workspace opens there, and the model's tools reach no further than before.
+
+![The Skills drawer: a project skill with Open and Delete, a skill from
+.claude with Open and Copy to mine, and an installed plugin's skill with only
+Copy to mine](screenshots/skills.png)
 
 **A new or edited skill is available on your next message.** The eight
 directories are checked at the start of each turn and rescanned only when
@@ -477,7 +555,7 @@ opening either drawer. Typing the full name works straight away regardless,
 because that path resolves against a fresh roster.
 
 `max_iterations:` is how many model/tool round trips this agent gets before
-it's stopped, between 1 and 200. You can edit it on the agent's card in the
+it's stopped, between 1 and 200. You can change it on the agent's card in the
 Agents drawer as well as in the file. The card edit rewrites the file in
 place, so `model:` and anything else you set by hand survives.
 
@@ -534,10 +612,28 @@ taurus agents check         # non-zero if an agent will not load or cannot run a
 taurus sessions --agents ID # what one conversation delegated, and where it was written
 ```
 
-You write agents in a text editor, as you do skills. The drawer's
-**New agent…** writes a starter file with every key documented in place and
-opens it. The drawer rescans on open, so editing a file and reopening shows
-what's actually on disk.
+**New agent** in the Agents drawer opens an editor: the name, the
+description, the tools it may use, its iteration limit, and its system prompt.
+**Generate** drafts them from a sentence, and every field stays editable. It
+saves into this project's `.taurus/agents`, your `~/.taurus/agents`, or a
+plugin you made, and refuses a name already there.
+
+**Edit** on an agent's card opens its file in the canvas, where `model:`,
+`provider:` and anything else you set by hand stay as they are. When the
+agent can't be changed where it is, Edit writes a copy of your own first and
+opens that. That happens for a built-in, which has no file, for an agent in
+another tool's folder, and for an installed plugin's agent. The copy goes into
+the `.taurus/agents` of the same tier, so it shadows the original. The card's
+hint says which will happen before you click. **Delete** is offered only for a
+file Taurus owns. Deleting a copy that shadowed a built-in brings the built-in
+back.
+
+![The Agents drawer: a built-in whose Edit writes a copy, a project agent
+with Edit and Delete, and an installed plugin's agent](screenshots/agents.png)
+
+You can also write agents in a text editor, as you can skills. The drawer
+rescans on open, so editing a file and reopening shows what's actually on
+disk.
 
 The agent can also write one for you. `propose_agent` is the twin of
 `propose_skill`, gated by its own setting. A skill is a procedure the model
@@ -552,9 +648,9 @@ A proposal is validated before it reaches a review card:
 - no near-duplicate of an agent already on the roster
 - no tool this session doesn't have
 
-Nothing touches disk until you approve it. The card is editable, so it's
-validated again on the way out, because a hand-edited name or tool list hasn't
-been checked.
+Nothing touches disk until you approve it. **Edit…** on the card opens the
+proposal in the agent editor, so it's validated again on the way out, because
+a hand-edited name or tool list hasn't been checked.
 
 The risk stays bounded because a proposed agent can't reach past the session
 that wrote it:

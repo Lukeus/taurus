@@ -161,8 +161,16 @@ fn writing() -> std::sync::MutexGuard<'static, ()> {
     WRITING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Adds a note, and returns everything now held.
-pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, String> {
+/// The `session` of a note a person wrote, rather than a conversation.
+///
+/// Empty, because there is no conversation to open from it, and because no
+/// conversation's id is empty: [`section`] leaves out the notes of the
+/// conversation being built for, and a person's note is never one of those.
+pub const BY_YOU: &str = "";
+
+/// A note's text, trimmed, or why it can't be one. The same rules for the model
+/// and for a person: a note is paid for on every request either way.
+fn checked(text: &str) -> Result<&str, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("A note needs something in it.".into());
@@ -175,6 +183,14 @@ pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, 
             text.len()
         ));
     }
+    Ok(text)
+}
+
+/// Adds a note, and returns everything now held.
+///
+/// `session` is the conversation that wrote it, or [`BY_YOU`].
+pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, String> {
+    let text = checked(text)?;
 
     let _writing = writing();
     let mut notes = load(workspace);
@@ -190,6 +206,24 @@ pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, 
         notes.drain(..notes.len() - MAX_KEPT);
     }
 
+    write(workspace, &notes)?;
+    Ok(notes)
+}
+
+/// Changes one note's text, and returns everything now held.
+///
+/// The id and the time stay. The time is when the note was first written,
+/// which is what "newest first" orders by, and an edit that moved a note to
+/// the top would push a newer one out of the prompt to make room for it.
+pub fn edit(workspace: &Path, id: &str, text: &str) -> Result<Vec<Note>, String> {
+    let text = checked(text)?;
+    let _writing = writing();
+    let mut notes = load(workspace);
+    let note = notes
+        .iter_mut()
+        .find(|note| note.id == id)
+        .ok_or("That note isn't there any more. It may have been forgotten in another window.")?;
+    note.text = text.to_string();
     write(workspace, &notes)?;
     Ok(notes)
 }
@@ -471,6 +505,53 @@ mod tests {
         let a = load(Path::new("/projects/a"));
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].text, "about a");
+    }
+
+    #[test]
+    fn a_note_you_write_reaches_every_conversation() {
+        let _home = isolated_home();
+        append(
+            &workspace(),
+            BY_YOU,
+            "Staging is the only place the migration has run.",
+        )
+        .unwrap();
+        let notes = load(&workspace());
+        let text = section(&notes, "any-conversation").expect("carried");
+        assert!(text.contains("Staging is the only place"), "{text}");
+    }
+
+    #[test]
+    fn an_edit_keeps_the_id_and_the_time() {
+        let _home = isolated_home();
+        let before = append(&workspace(), "s1", "The flaky test is a clock.").unwrap();
+        let note = before[0].clone();
+        let after = edit(
+            &workspace(),
+            &note.id,
+            "The flaky test is the clock in auth_test.",
+        )
+        .unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, note.id);
+        assert_eq!(after[0].at, note.at);
+        assert_eq!(after[0].text, "The flaky test is the clock in auth_test.");
+    }
+
+    #[test]
+    fn an_edit_is_held_to_the_same_limits_as_a_new_note() {
+        let _home = isolated_home();
+        let id = append(&workspace(), "s1", "Short.").unwrap()[0].id.clone();
+        assert!(edit(&workspace(), &id, "   ").is_err());
+        assert!(edit(&workspace(), &id, &"x".repeat(MAX_NOTE_BYTES + 1)).is_err());
+        assert_eq!(load(&workspace())[0].text, "Short.");
+    }
+
+    #[test]
+    fn an_edit_to_a_note_that_went_says_so() {
+        let _home = isolated_home();
+        let err = edit(&workspace(), "gone", "Anything.").unwrap_err();
+        assert!(err.contains("isn't there"), "{err}");
     }
 
     #[test]

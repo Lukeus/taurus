@@ -466,6 +466,12 @@ pub struct SkillSummary {
     /// See [`Skill::command_file`].
     #[ts(optional)]
     pub command_file: Option<String>,
+    /// Its plugin is fetched from somewhere, so its files are replaced when
+    /// the plugin is updated and are not changed here. Always false for a
+    /// skill that isn't a plugin's. The catalog can't know where a plugin came
+    /// from; the host fills this in.
+    #[serde(default)]
+    pub managed: bool,
 }
 
 impl From<&Skill> for SkillSummary {
@@ -489,6 +495,7 @@ impl From<&Skill> for SkillSummary {
                 .command_file
                 .as_ref()
                 .map(|file| file.display().to_string()),
+            managed: false,
         }
     }
 }

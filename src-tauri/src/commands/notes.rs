@@ -140,3 +140,22 @@ pub async fn forget_note(state: State<'_, Arc<AppState>>, id: String) -> CmdResu
     emit_status(&state).await;
     Ok(left)
 }
+
+/// Writes a note of your own, carried into every later conversation here.
+/// Answers with every note, newest first, as [`forget_note`] does.
+#[tauri::command]
+pub async fn add_note(state: State<'_, Arc<AppState>>, text: String) -> CmdResult<Vec<Note>> {
+    let notes = state.host.add_note(&text).await?;
+    emit_status(&state).await;
+    Ok(notes)
+}
+
+/// Changes one note's text. Answers with every note, newest first.
+#[tauri::command]
+pub async fn edit_note(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    text: String,
+) -> CmdResult<Vec<Note>> {
+    state.host.edit_note(&id, &text).await
+}

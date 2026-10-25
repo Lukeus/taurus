@@ -217,9 +217,15 @@ pub struct AgentSummary {
     /// the file belongs to another client. What the drawer says before it lets
     /// anyone change anything.
     pub forks_on_edit: bool,
-    /// See [`AgentDefinition::plugin`]. The drawer offers no edit for one.
+    /// See [`AgentDefinition::plugin`].
     #[ts(optional)]
     pub plugin: Option<String>,
+    /// Its plugin is fetched from somewhere, so its file is replaced when the
+    /// plugin is updated, and an edit writes a copy of your own instead. False
+    /// for an agent that isn't a plugin's. Filled in by the host, which is the
+    /// layer that knows where a plugin came from.
+    #[serde(default)]
+    pub managed: bool,
 }
 
 impl From<&AgentDefinition> for AgentSummary {
@@ -240,6 +246,7 @@ impl From<&AgentDefinition> for AgentSummary {
             degraded: agent.degraded.clone(),
             path: agent.path.as_ref().map(|p| p.display().to_string()),
             plugin: agent.plugin.clone(),
+            managed: false,
         }
     }
 }
