@@ -771,13 +771,13 @@ an explanation, not a conversation that just stops:
   can see is one it can argue with.
 
   Set it in **Settings → Behavior**, or as `max_iterations` in
-  `settings.json`, between 1 and 100. Raise it for long refactors that need
+  `settings.json`, between 1 and 200. Raise it for long refactors that need
   more rounds. Lower it to catch a model going in circles sooner. It's read
   every turn, so a change applies to the next message, not the next launch.
   It layers like the rest of that file, so one project can raise it without
   loosening it everywhere.
 
-  A hundred is the hard ceiling, the same one a sub-agent's `max_iterations`
+  Two hundred is the hard ceiling, the same one a sub-agent's `max_iterations`
   is validated against. A larger number is clamped, not refused, because a
   settings file that won't load is a worse answer to a typo than a number
   brought back into range.

@@ -42,6 +42,7 @@ import {
   GLOBAL_PROVIDERS,
   DOCUMENT,
   DOCUMENT_EVENTS,
+  LONG_DOCUMENT,
   DOCUMENT_PROMPT,
   MCP_ENVIRONMENT,
   MOTION_EVENTS,
@@ -294,6 +295,9 @@ window.__TAURI_INTERNALS__ = {
         },
       };
     }
+    // The scrolled shot needs a file longer than the panel; every other canvas
+    // shot is of the short one.
+    if (cmd === "open_document" && shot === "canvas-scrolled") return LONG_DOCUMENT;
     // The conflict shot needs a save that comes back refused, which is a
     // decision about *this* call rather than a fixed answer — so it is here
     // rather than in `ANSWERS`.
@@ -817,6 +821,21 @@ requestAnimationFrame(() => {
         // only exists once there is a document in it.
         await until(() => document.querySelector(".doc-input"));
         scrollTo(transcript, document.querySelector(".document-card"));
+      },
+      // The editor scrolled a hundred lines down, which no other shot does: the
+      // only check that the painted text and the gutter follow the box. jsdom
+      // scrolls nothing, and a file shorter than the panel never moves, so the
+      // two layers standing still while the box scrolled went unseen until
+      // somebody opened a long file and found it blank.
+      "canvas-scrolled": async () => {
+        const area = (await until(() =>
+          document.querySelector(".doc-input"),
+        )) as HTMLTextAreaElement;
+        scrollTo(transcript, document.querySelector(".document-card"));
+        area.scrollTop = 99 * Number.parseFloat(getComputedStyle(area).lineHeight);
+        await until(() =>
+          [...document.querySelectorAll(".doc-line-no")].find((n) => n.textContent === "100"),
+        );
       },
       // The other half, taken the way somebody takes it: press the card's own
       // button and photograph where it lands. Async because the grid does not

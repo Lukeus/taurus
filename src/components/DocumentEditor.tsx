@@ -142,7 +142,16 @@ export function DocumentEditor({
     if (!area) return;
     setScroll(area.scrollTop);
     setHeight(area.clientHeight);
-    if (ghost.current) ghost.current.scrollLeft = area.scrollLeft;
+    // Both ways, and the gutter too. Only the box has a scrollbar; the other
+    // two are `overflow: hidden` and are moved here to the same place. Moving
+    // only the paint sideways left both of them at the top of the file while
+    // the box scrolled down, so past the first screen the window of painted
+    // lines sat below what either layer showed, and the editor read as blank.
+    if (ghost.current) {
+      ghost.current.scrollTop = area.scrollTop;
+      ghost.current.scrollLeft = area.scrollLeft;
+    }
+    if (rail.current) rail.current.scrollTop = area.scrollTop;
   }, []);
 
   useLayoutEffect(view, [view, text]);
@@ -162,6 +171,19 @@ export function DocumentEditor({
     const count = Math.ceil(height / row) + OVERSCAN * 2;
     return { from: first, to: Math.min(lines.length, first + count) };
   }, [row, height, scroll, lines.length]);
+
+  /*
+   * Put both layers back where the box is after every repaint of the window,
+   * not only on a scroll event. Moving the window rewrites what is above the
+   * viewport in both layers, and a scroll position set before that rewrite is
+   * not guaranteed to survive it.
+   */
+  useLayoutEffect(() => {
+    const area = box.current;
+    if (!area) return;
+    if (ghost.current) ghost.current.scrollTop = area.scrollTop;
+    if (rail.current) rail.current.scrollTop = area.scrollTop;
+  }, [window_.from, window_.to]);
 
   const painted = useMemo(
     // Joined back with the newlines that `split` removed, so what the scanner
@@ -226,6 +248,12 @@ export function DocumentEditor({
             </div>
           );
         })}
+        {/* What is below the window, so the gutter is as tall as the file and
+            can be scrolled as far as the box is. One row more than that, for
+            the reason the paint ends on a newline: the box loses a row to its
+            sideways scrollbar and can scroll that much further than a layer
+            without one. */}
+        <div style={{ height: (Math.max(0, total - window_.to) + 1) * row }} />
       </div>
 
       <div className="doc-scroll">

@@ -6638,6 +6638,12 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 .doc-ink {
   overflow: hidden;
+  /* Scrolled by `DocumentEditor` to where the box is, and only by it. Left to
+     itself, the browser's scroll anchoring moves this layer whenever the
+     window of painted lines shifts, trying to keep some span in place. A span
+     here is a token, not a line, so the correction lands the paint dozens of
+     lines away from the text it covers. */
+  overflow-anchor: none;
 }
 .doc-input {
   position: absolute;
@@ -6665,6 +6671,8 @@ button.link:where(:not(.excalidraw *)):hover {
   user-select: none;
   border-right: 1px solid var(--rule);
   background: var(--bg-raised);
+  /* Scrolled to where the box is, and by nothing else. See `.doc-ink`. */
+  overflow-anchor: none;
 }
 .doc-line-no {
   /* The same font size and line-height as the text it numbers. Not a smaller

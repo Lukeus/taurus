@@ -13,13 +13,13 @@ pub const DESCRIPTION_LIMIT: usize = 200;
 /// Ceiling on `max_iterations`. A file saying `100000` against a concurrency of
 /// two is a runaway, and the ceiling is cheaper than the incident.
 ///
-/// A hundred is a long turn rather than an incident: past that, what catches a
+/// Two hundred is a long turn rather than an incident: past that, what catches a
 /// model going in circles is the stall detector, which notices a repeated
-/// failing call in three rounds rather than a hundred. This is the ceiling for
+/// failing call in three rounds rather than two hundred. This is the ceiling for
 /// both places iterations are counted — a parent turn's
 /// `settings.max_iterations` and a sub-agent's frontmatter — so the two cannot
 /// be governed by different rules.
-pub const MAX_ITERATIONS_LIMIT: u32 = 100;
+pub const MAX_ITERATIONS_LIMIT: u32 = 200;
 
 /// Where an agent came from. Later tiers shadow earlier ones by name, so a
 /// project can override a personal agent, and either can override a built-in.

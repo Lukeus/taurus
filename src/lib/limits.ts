@@ -28,7 +28,7 @@ export const DESCRIPTION_LIMIT = 200;
  * iterations are counted: a parent turn's `max_iterations` in `settings.json`
  * and a sub-agent's in its frontmatter.
  */
-export const MAX_ITERATIONS_LIMIT = 100;
+export const MAX_ITERATIONS_LIMIT = 200;
 
 /** What a parent turn gets when nobody has said otherwise. */
 export const DEFAULT_MAX_ITERATIONS = 25;

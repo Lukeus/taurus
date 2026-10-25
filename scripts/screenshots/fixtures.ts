@@ -568,6 +568,34 @@ window that never stops spinning.
 `,
 };
 
+/**
+ * The same file grown long enough to scroll, for the shot that scrolls it.
+ *
+ * Every other canvas shot opens a file shorter than the panel, so none of them
+ * ever moved the editor — and the painted layer and the gutter not following
+ * the scroll went unseen for as long as that was true. A history section
+ * rather than filler, so the picture still reads as a document.
+ */
+export const LONG_DOCUMENT = (() => {
+  const history = Array.from({ length: 40 }, (_, i) => {
+    const day = String(28 - (i % 28)).padStart(2, "0");
+    const month = String(9 - Math.floor(i / 28)).padStart(2, "0");
+    return [
+      `### 2026-${month}-${day}`,
+      "",
+      `- Attempt ${(i % 4) + 1} of four now logs the provider's request id.`,
+      "",
+    ].join("\n");
+  }).join("\n");
+  const text = `${DOCUMENT.text}\n## History\n\n${history}`;
+  return {
+    ...DOCUMENT,
+    lines: text.split("\n").length,
+    fingerprint: "4096-1",
+    text,
+  };
+})();
+
 /** A turn that answers a question by pointing at a passage rather than
  *  quoting it — which is the whole argument for the tool. */
 export const DOCUMENT_PROMPT = "how do we handle retries? show me the doc";
