@@ -105,6 +105,7 @@ impl SkillProposal {
                     description: s.description.clone(),
                 })
                 .collect(),
+            argument_hint: None,
         }
     }
 }

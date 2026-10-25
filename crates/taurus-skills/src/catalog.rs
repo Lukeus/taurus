@@ -47,22 +47,43 @@ impl SkillCatalog {
         let mut interpreters = interpreter::Interpreters::default();
 
         for source in sources {
-            if !source.dir.is_dir() {
-                continue;
-            }
-            let entries = match std::fs::read_dir(&source.dir) {
-                Ok(entries) => entries,
-                Err(e) => {
-                    problems.push(SkillError::Io(e));
+            // A command source holds files, not folders: every `.md` in it, at
+            // any depth, is one command, and a manifest may name one file on
+            // its own. See `crate::command_file`.
+            let found: Vec<(PathBuf, Result<Skill, SkillError>)> = if source.origin
+                == SkillOrigin::PluginCommand
+            {
+                command_files(&source.dir)
+                    .into_iter()
+                    .map(|file| {
+                        let loaded = crate::command_file::load(&file, source.tier, source.origin);
+                        (file, loaded)
+                    })
+                    .collect()
+            } else {
+                if !source.dir.is_dir() {
                     continue;
                 }
+                let entries = match std::fs::read_dir(&source.dir) {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        problems.push(SkillError::Io(e));
+                        continue;
+                    }
+                };
+                entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|dir| dir.is_dir())
+                    .map(|dir| {
+                        let loaded =
+                            load_skill(&dir, source.tier, source.origin, &mut interpreters);
+                        (dir, loaded)
+                    })
+                    .collect()
             };
-            for entry in entries.flatten() {
-                let dir = entry.path();
-                if !dir.is_dir() {
-                    continue;
-                }
-                match load_skill(&dir, source.tier, source.origin, &mut interpreters) {
+            for (dir, loaded) in found {
+                match loaded {
                     Ok(mut skill) => {
                         if let Some(plugin) = &source.plugin {
                             skill.frontmatter.name = format!("{plugin}:{}", skill.name());
@@ -168,6 +189,36 @@ impl SkillCatalog {
     }
 }
 
+/// Every command file under `dir`, sorted, so two with the same name in
+/// different folders settle the same way every time. A `dir` that is a file
+/// is the one command.
+pub fn command_files(dir: &Path) -> Vec<PathBuf> {
+    if dir.is_file() {
+        return vec![dir.to_path_buf()];
+    }
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let hidden = entry.file_name().to_string_lossy().starts_with('.');
+            if hidden {
+                continue;
+            }
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 /// Directories a skill may bundle resources in, per the specification.
 const RESOURCE_DIRS: [&str; 3] = ["scripts", "references", "assets"];
 
@@ -225,6 +276,7 @@ fn load_skill(
         warnings,
         degraded,
         plugin: None,
+        command_file: None,
     })
 }
 

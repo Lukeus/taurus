@@ -36,8 +36,11 @@
 //!
 //! # What isn't run
 //!
-//! Some parts of Claude's format have nothing to run them here: `commands/`,
-//! LSP servers, output styles, workflows, themes, monitors, `bin/`, a
+//! A plugin's `commands/` are its `/commands`: each Markdown file in them is
+//! read as a one-file skill named `plugin:file`, the way Claude Code folded
+//! its commands into skills. See [`taurus_skills::command_file`].
+//!
+//! Some parts of Claude's format have nothing to run them here: LSP servers, output styles, workflows, themes, monitors, `bin/`, a
 //! plugin's own `settings.json`, `userConfig` and dependencies. They're
 //! listed by name as unsupported, with why, rather than skipped in silence,
 //! and so is any hook event or hook type a translated hooks file has that
@@ -128,6 +131,9 @@ pub struct PluginSummary {
     pub skills: Vec<String>,
     /// Its agents' file names, the same way.
     pub agents: Vec<String>,
+    /// Its commands, by the file names that make them: `review-pr` for
+    /// `commands/review-pr.md`, run as `/plugin:review-pr`.
+    pub commands: Vec<String>,
     /// Its MCP servers, by the names the plugin gives them.
     pub mcp_servers: Vec<String>,
     /// Its hooks, by name.
@@ -147,7 +153,7 @@ pub struct PluginSummary {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub struct Unsupported {
-    /// What it is, as the plugin has it: `commands/`, `lspServers`.
+    /// What it is, as the plugin has it: `output-styles/`, `lspServers`.
     pub part: String,
     pub reason: String,
 }
@@ -172,6 +178,7 @@ pub struct Plugin {
     root: PathBuf,
     skill_dirs: Vec<PathBuf>,
     agent_dirs: Vec<PathBuf>,
+    command_dirs: Vec<PathBuf>,
     mcp: taurus_mcp::McpConfig,
     hooks: taurus_hooks::HookConfig,
     hook_files: Vec<PathBuf>,
@@ -206,6 +213,12 @@ impl Plugin {
     /// Directories of agents, each `<agent>.md`.
     pub fn agent_dirs(&self) -> &[PathBuf] {
         &self.agent_dirs
+    }
+
+    /// Where its commands are: folders of `<command>.md`, or single files a
+    /// manifest named.
+    pub fn command_dirs(&self) -> &[PathBuf] {
+        &self.command_dirs
     }
 
     /// Its MCP servers, keyed by [`server_key`], with its paths filled in.
@@ -263,6 +276,8 @@ fn consulted(
             "skills",
             "agents",
             "com.github.copilot/agents",
+            "commands",
+            "com.github.copilot/commands",
         ]);
     let mut out: Vec<PathBuf> = std::iter::once(root.to_path_buf())
         .chain(unprompted.map(|path| root.join(path)))
@@ -270,6 +285,7 @@ fn consulted(
     for value in [
         &manifest.skills,
         &manifest.agents,
+        &manifest.commands,
         &manifest.hooks,
         &manifest.mcp_servers,
     ]
@@ -405,6 +421,7 @@ struct Manifest {
     default_enabled: Option<bool>,
     skills: Option<serde_json::Value>,
     agents: Option<serde_json::Value>,
+    commands: Option<serde_json::Value>,
     hooks: Option<serde_json::Value>,
     mcp_servers: Option<serde_json::Value>,
     #[serde(flatten)]
@@ -429,10 +446,6 @@ const DESCRIPTIVE: &[&str] = &[
 
 /// Manifest keys Claude Code documents that name a part Taurus can't run.
 const UNSUPPORTED_KEYS: &[(&str, &str)] = &[
-    (
-        "commands",
-        "Taurus has no command files; a skill marked user-invocable is its /command",
-    ),
     ("lspServers", "Taurus doesn't run language servers"),
     ("outputStyles", "Taurus has no output styles"),
     ("workflows", "Taurus has no workflow scripts"),
@@ -458,10 +471,6 @@ const UNSUPPORTED_KEYS: &[(&str, &str)] = &[
 
 /// Folders and files at a plugin's root that name a part Taurus can't run.
 const UNSUPPORTED_PATHS: &[(&str, &str)] = &[
-    (
-        "commands",
-        "Taurus has no command files; a skill marked user-invocable is its /command",
-    ),
     (".lsp.json", "Taurus doesn't run language servers"),
     ("output-styles", "Taurus has no output styles"),
     ("workflows", "Taurus has no workflow scripts"),
@@ -472,10 +481,6 @@ const UNSUPPORTED_PATHS: &[(&str, &str)] = &[
         "Taurus doesn't put a plugin's programs on PATH; its MCP servers and hooks can still name them by path",
     ),
     ("settings.json", "a plugin can't change Taurus's settings"),
-    (
-        "com.github.copilot/commands",
-        "Taurus has no command files; a skill marked user-invocable is its /command",
-    ),
     (
         "com.github.copilot/rules",
         "Taurus has no rule files from plugins; put them in a skill",
@@ -589,6 +594,20 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
             .filter(|dir| dir.is_dir())
             .collect(),
     };
+
+    // Commands: the default folders, plus any folder or file the manifest
+    // adds. Added to rather than replaced, as Claude Code does for commands.
+    let mut command_dirs: Vec<PathBuf> = ["commands", "com.github.copilot/commands"]
+        .iter()
+        .map(|dir| root.join(dir))
+        .filter(|dir| dir.is_dir())
+        .map(canonical)
+        .collect();
+    for path in paths(root, manifest.commands.as_ref(), "commands", &mut problems) {
+        if !command_dirs.contains(&path) {
+            command_dirs.push(path);
+        }
+    }
 
     let vars = Vars::new(root, &name, workspace);
 
@@ -725,6 +744,7 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
             stem.strip_suffix(".agent").unwrap_or(stem).to_string()
         })
         .collect(),
+        commands: command_names(&command_dirs),
         mcp_servers: server_names,
         hooks: hooks
             .hooks
@@ -748,11 +768,37 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
         root: root.to_path_buf(),
         skill_dirs,
         agent_dirs,
+        command_dirs,
         mcp,
         hooks,
         hook_files: taurus_hook_files,
         consulted,
     }
+}
+
+/// The names the command files under `dirs` run as, sorted: each file's
+/// name without `.md`, at any depth. A path that is itself a file is one.
+fn command_names(dirs: &[PathBuf]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut pending: Vec<PathBuf> = dirs.to_vec();
+    while let Some(path) = pending.pop() {
+        if path.is_file() {
+            if path.extension().is_some_and(|e| e == "md") {
+                if let Some(stem) = path.file_stem() {
+                    names.push(stem.to_string_lossy().into_owned());
+                }
+            }
+            continue;
+        }
+        for entry in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+            if !entry.file_name().to_string_lossy().starts_with('.') {
+                pending.push(entry.path());
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Switches a plugin on or off in one scope's `settings.json`.
@@ -1578,15 +1624,9 @@ mod tests {
         assert_eq!(summary.agents, ["reviewer"]);
         assert_eq!(summary.mcp_servers, ["db"]);
         assert_eq!(summary.hooks, ["lint"]);
-        // The manifest key and the folder are one part, named once.
-        assert_eq!(
-            summary
-                .unsupported
-                .iter()
-                .map(|u| u.part.as_str())
-                .collect::<Vec<_>>(),
-            ["commands"]
-        );
+        // The manifest key and the folder are the same commands, found once.
+        assert_eq!(summary.commands, ["status"]);
+        assert!(summary.unsupported.is_empty(), "{:?}", summary.unsupported);
 
         // Named under the plugin, with its paths filled in.
         let root = plugin.root().display().to_string();
@@ -1955,6 +1995,7 @@ mod tests {
         assert!(status.decision_needed);
         assert_eq!(status.pending.plugins, ["ops"]);
         assert_eq!(status.pending.skills, 1);
+        assert_eq!(status.pending.commands, 1, "its command, counted as one");
         assert!(status.pending.mcp_commands[0].starts_with("plugin_ops_db: "));
         assert!(status.pending.hook_commands[0].starts_with("ops:lint: "));
 

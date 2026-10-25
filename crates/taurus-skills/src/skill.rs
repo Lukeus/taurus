@@ -69,6 +69,10 @@ pub enum SkillOrigin {
     /// is named `plugin:skill` so two plugins can't collide, with each other
     /// or with a skill of your own.
     Plugin,
+    /// A plugin's `commands/`: one Markdown file per `/command`, the shape
+    /// Claude Code's commands have. Each file is read as a skill whose
+    /// procedure is the file, named `plugin:file`. See [`crate::command_file`].
+    PluginCommand,
 }
 
 /// The longest trigger line that may reach the system prompt.
@@ -167,6 +171,20 @@ pub struct SkillFrontmatter {
     pub allowed_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scripts: Vec<SkillScript>,
+    /// What to type after the name, shown beside it in the command menu:
+    /// `<pr-number> [priority]`. Claude Code's field, and only a hint; it
+    /// checks nothing.
+    ///
+    /// Read leniently. Claude's own examples write it unquoted, and
+    /// `argument-hint: [message]` is a YAML list, so a list is read back as
+    /// the brackets it was typed with rather than failing the whole skill.
+    #[serde(
+        default,
+        alias = "argument-hint",
+        deserialize_with = "deserialize_hint",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub argument_hint: Option<String>,
 }
 
 // The specification's other optional fields — `license`, `metadata` — are
@@ -184,7 +202,7 @@ fn default_true() -> bool {
 }
 
 /// Accepts `allowed_tools` as either a YAML list or a space-separated string.
-fn deserialize_tool_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+pub(crate) fn deserialize_tool_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -202,11 +220,46 @@ where
     })
 }
 
+/// Accepts `argument_hint` as a string, or as the list an unquoted
+/// `[message]` parses to.
+fn deserialize_hint<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(
+        Option::<serde_yaml_ng::Value>::deserialize(deserializer)?.and_then(|value| {
+            match value {
+                serde_yaml_ng::Value::String(text) => Some(text),
+                serde_yaml_ng::Value::Sequence(items) => Some(
+                    items
+                        .iter()
+                        .map(|item| format!("[{}]", hint_text(item)))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                serde_yaml_ng::Value::Null => None,
+                other => Some(hint_text(&other)),
+            }
+            .filter(|text| !text.trim().is_empty())
+        }),
+    )
+}
+
+fn hint_text(value: &serde_yaml_ng::Value) -> String {
+    match value {
+        serde_yaml_ng::Value::String(text) => text.clone(),
+        other => serde_yaml_ng::to_string(other)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    }
+}
+
 /// Collapses a `description` into something the size of a trigger line.
 ///
 /// Whitespace is flattened first because a folded YAML scalar arrives with the
 /// author's line breaks in it, and a catalog is one line per skill.
-fn condense(description: &str) -> String {
+pub(crate) fn condense(description: &str) -> String {
     let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= DESCRIPTION_TRIGGER_MAX {
         return flat;
@@ -249,6 +302,10 @@ pub struct Skill {
     /// The plugin it came with, when it did. Its files are the plugin's, so
     /// it's changed by changing the plugin rather than here.
     pub plugin: Option<String>,
+    /// The file it was read from, for a command rather than a skill folder.
+    /// A command renders as itself rather than as a procedure. See
+    /// [`crate::command_file`].
+    pub command_file: Option<PathBuf>,
 }
 
 impl Skill {
@@ -299,6 +356,9 @@ impl Skill {
     /// have to recognize two shapes for it. `args` is what the user typed after
     /// the command, and is empty for a tool call.
     pub fn render(&self, args: &str) -> String {
+        if let Some(file) = &self.command_file {
+            return crate::command_file::render(self, file, args);
+        }
         let mut out = format!(
             "# Skill: {}\n\n{}\n\n",
             self.frontmatter.name, self.frontmatter.description
@@ -400,6 +460,12 @@ pub struct SkillSummary {
     /// See [`Skill::plugin`].
     #[ts(optional)]
     pub plugin: Option<String>,
+    /// See [`SkillFrontmatter::argument_hint`].
+    #[ts(optional)]
+    pub argument_hint: Option<String>,
+    /// See [`Skill::command_file`].
+    #[ts(optional)]
+    pub command_file: Option<String>,
 }
 
 impl From<&Skill> for SkillSummary {
@@ -418,6 +484,11 @@ impl From<&Skill> for SkillSummary {
             degraded: skill.degraded.clone(),
             dir: skill.dir.display().to_string(),
             plugin: skill.plugin.clone(),
+            argument_hint: skill.frontmatter.argument_hint.clone(),
+            command_file: skill
+                .command_file
+                .as_ref()
+                .map(|file| file.display().to_string()),
         }
     }
 }
@@ -539,7 +610,7 @@ fn metadata_when_to_use(yaml: &str) -> Option<String> {
 ///
 /// Returns `None` when there was nothing to change, so the caller reports the
 /// original parse error instead of an identical second one.
-fn quote_scalars(yaml: &str) -> Option<String> {
+pub(crate) fn quote_scalars(yaml: &str) -> Option<String> {
     let mut changed = false;
     let fixed = yaml
         .lines()
@@ -648,7 +719,7 @@ pub fn validate(frontmatter: &SkillFrontmatter, path: &str) -> Result<Vec<String
     Ok(warnings)
 }
 
-fn is_kebab_case(s: &str) -> bool {
+pub(crate) fn is_kebab_case(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -702,6 +773,7 @@ Do the thing.
             user_invocable: true,
             allowed_tools: vec![],
             scripts: vec![],
+            argument_hint: None,
         }
     }
 
@@ -716,6 +788,7 @@ Do the thing.
             warnings: Vec::new(),
             degraded: None,
             plugin: None,
+            command_file: None,
         }
     }
 
