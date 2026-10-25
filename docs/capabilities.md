@@ -193,8 +193,8 @@ another client. The procedure itself loads on demand through the `load_skill`
 tool. That's what makes a fifty-skill library affordable on a model with an 8k
 context window.
 
-`when_to_use` is an optional Taurus field. It's worth writing for skills you
-keep here. The specification's `description` does two jobs at once: what the
+`when_to_use` is an optional Taurus field, read from the top level or from
+under `metadata`. It's worth writing for skills you keep here. The specification's `description` does two jobs at once: what the
 skill does, and when to use it. When the whole context is 8k, 200 characters
 aimed at the decision beat 1024 aimed at a catalog listing.
 
@@ -240,6 +240,25 @@ validated before it reaches a review card:
 - non-empty trigger under 200 characters
 - no near-duplicate of an existing skill
 - no destructive script patterns
+- every script under `scripts/`, with an extension that says what runs it.
+  A bare `extract.py` is put in `scripts/` for you.
+- every reference under `references/` and every asset under `assets/`
+- everything the procedure uses is in the proposal
+
+That last one is what keeps a skill working once it leaves the conversation
+that wrote it. A procedure that names `scripts/extract.py` or
+`references/FORMAT.md` has to include that file with its contents. One that
+runs a script from somewhere else, like a helper the model wrote into your
+workspace while it worked, is refused. The refusal tells the model to bundle
+that script under `scripts/`. The one exception is a file your project tracks
+in git, which a project skill may lean on.
+
+What gets written is a skill any client can read, and that the
+specification's `skills-ref validate` accepts. The frontmatter is only
+`name`, `description` and `metadata`, with the trigger line under `metadata`.
+The scripts are listed in the procedure under a **Scripts** heading, by the
+paths they're saved at. Each script and file sits where the specification
+puts it.
 
 Nothing touches disk until you approve it. Approving reloads the catalog, so
 the skill is usable in the session that wrote it.

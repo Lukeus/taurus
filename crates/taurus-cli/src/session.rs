@@ -496,6 +496,9 @@ fn review(proposal: &SkillProposal) -> bool {
             script.path, script.interpreter
         );
     }
+    for file in &proposal.files {
+        let _ = writeln!(err, "    bundles file: {}", file.path);
+    }
     let _ = write!(err, "  [v] view  [y] save  [n] discard: ");
     let _ = err.flush();
 
@@ -510,6 +513,9 @@ fn review(proposal: &SkillProposal) -> bool {
             let _ = writeln!(err, "\n{}\n", proposal.body);
             for script in &proposal.scripts {
                 let _ = writeln!(err, "--- {} ---\n{}\n", script.path, script.content);
+            }
+            for file in &proposal.files {
+                let _ = writeln!(err, "--- {} ---\n{}\n", file.path, file.content);
             }
             let _ = write!(err, "  [y] save  [n] discard: ");
             let _ = err.flush();

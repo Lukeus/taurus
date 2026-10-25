@@ -13,7 +13,9 @@ use taurus_tools::{Effect, Tool, ToolContext, ToolError, ToolResult};
 
 use crate::catalog::SkillCatalog;
 use crate::interpreter;
-use crate::proposal::{validate_proposal, ProposalSink, ProposedScript, SkillProposal};
+use crate::proposal::{
+    check_bundled, validate_proposal, ProposalSink, ProposedFile, ProposedScript, SkillProposal,
+};
 
 /// Shared, hot-reloadable catalog. Approving a skill updates it in place, so a
 /// running session can use a skill it just wrote.
@@ -402,6 +404,31 @@ fn report(out: &str, err: &str, script: &str, ctx: &ToolContext) -> String {
 
 // ------------------------------------------------------------- propose_skill
 
+/// The files the workspace keeps in git, by their paths from its root.
+///
+/// What [`check_bundled`] lets a project skill lean on. Empty when there's no
+/// repository, no git, or no answer within a few seconds: then nothing counts
+/// as the project's, and a procedure has to carry what it uses.
+async fn tracked_files(workspace: &std::path::Path) -> std::collections::HashSet<String> {
+    let listing = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["ls-files", "-z"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    match tokio::time::timeout(std::time::Duration::from_secs(5), listing).await {
+        Ok(Ok(out)) if out.status.success() => out
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .collect(),
+        _ => std::collections::HashSet::new(),
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct ProposeSkillInput {
     /// Kebab-case identifier, e.g. `release-notes`.
@@ -415,9 +442,17 @@ pub struct ProposeSkillInput {
     /// The procedure itself, as markdown: numbered steps, specific commands,
     /// and the gotchas you hit. Write it for someone who has never done this.
     pub body: String,
-    /// Optional scripts to bundle with the skill.
+    /// Scripts the procedure runs, bundled into the skill with their full
+    /// source. Every script the procedure runs belongs here, including one you
+    /// wrote while working: a skill is a folder that has to work wherever it's
+    /// copied, so it can't lean on a file in this workspace. Refer to each in
+    /// the procedure by its path, `scripts/<name>`.
     #[serde(default)]
     pub scripts: Vec<ProposeScriptInput>,
+    /// Other files the procedure points at: documentation under
+    /// `references/`, templates and data under `assets/`. Text only.
+    #[serde(default)]
+    pub files: Vec<ProposeFileInput>,
     /// Why this is worth keeping. Shown to the user, not stored.
     #[serde(default)]
     pub rationale: String,
@@ -425,13 +460,22 @@ pub struct ProposeSkillInput {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ProposeScriptInput {
-    /// File name inside the skill directory, e.g. `extract.py`.
+    /// Where it goes in the skill, under `scripts/`: `scripts/extract.py`. A
+    /// bare file name is put in `scripts/`. The extension says what runs it.
     pub path: String,
     /// One of: python3, node, bash, sh, pwsh, deno, ruby.
     pub interpreter: String,
     #[serde(default)]
     pub description: String,
     /// The complete script source.
+    pub content: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ProposeFileInput {
+    /// Under `references/` or `assets/`: `references/API.md`.
+    pub path: String,
+    /// The complete contents.
     pub content: String,
 }
 
@@ -462,8 +506,11 @@ impl Tool for ProposeSkill {
          solved something non-obvious that will come up again — a multi-step workflow, a tool's \
          quirks, a project convention you had to discover. Do not propose one for a single \
          command, for something already covered by an existing skill, or for facts specific to \
-         this one task. The user reviews every proposal before it is saved, so you can keep \
-         working immediately after calling this."
+         this one task. A skill is a folder in the Agent Skills format: the procedure, plus any \
+         scripts it runs under scripts/ and any files it points at under references/ or \
+         assets/, all included here with their contents. Refer to them by those paths. The user \
+         reviews every proposal before it is saved, so you can keep working immediately after \
+         calling this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -483,7 +530,7 @@ impl Tool for ProposeSkill {
         )
     }
 
-    async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: ProposeSkillInput = parse_input(input)?;
 
         let mut proposal =
@@ -493,10 +540,18 @@ impl Tool for ProposeSkill {
             .scripts
             .into_iter()
             .map(|s| ProposedScript {
-                path: s.path,
+                path: crate::proposal::place_script(&s.path),
                 interpreter: s.interpreter,
                 description: s.description,
                 content: s.content,
+            })
+            .collect();
+        proposal.files = input
+            .files
+            .into_iter()
+            .map(|f| ProposedFile {
+                path: f.path.trim().trim_start_matches("./").to_string(),
+                content: f.content,
             })
             .collect();
 
@@ -508,6 +563,9 @@ impl Tool for ProposeSkill {
             validate_proposal(&proposal, &catalog)
                 .map_err(|e| ToolError::InvalidInput(e.to_string()))?;
         }
+        let tracked = tracked_files(&ctx.workspace).await;
+        check_bundled(&proposal, |path| tracked.contains(path))
+            .map_err(|e| ToolError::InvalidInput(e.to_string()))?;
 
         let name = proposal.name.clone();
         info!(skill = %name, "skill proposed");
@@ -959,5 +1017,61 @@ mod tests {
         .unwrap();
 
         assert!(sink.proposals.lock().await[0].replaces_existing);
+    }
+
+    #[tokio::test]
+    async fn propose_skill_puts_a_bare_script_name_in_scripts() {
+        let f = fixture(&[]);
+        let sink = Arc::new(CollectingSink::default());
+        let tool = ProposeSkill::new(f.catalog.clone(), sink.clone());
+
+        tool.execute(
+            serde_json::json!({
+                "name": "pdf-tables",
+                "description": "Pull the tables out of a PDF report",
+                "when_to_use": "Extracting tables from a PDF someone hands you",
+                "body": "1. Run scripts/extract.py on the PDF.\n2. Check each table's header row.",
+                "scripts": [{
+                    "path": "extract.py",
+                    "interpreter": "python3",
+                    "content": "print('tables')\n"
+                }]
+            }),
+            &f.ctx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sink.proposals.lock().await[0].scripts[0].path,
+            "scripts/extract.py"
+        );
+    }
+
+    #[tokio::test]
+    async fn propose_skill_refuses_a_procedure_that_runs_a_script_it_left_behind() {
+        let f = fixture(&[]);
+        let sink = Arc::new(CollectingSink::default());
+        let tool = ProposeSkill::new(f.catalog.clone(), sink.clone());
+
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "name": "pdf-tables",
+                    "description": "Pull the tables out of a PDF report",
+                    "when_to_use": "Extracting tables from a PDF someone hands you",
+                    "body": "1. Run `python3 extract_tables.py report.pdf`.\n2. Check each table.",
+                }),
+                &f.ctx,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("isn't in the skill"), "{err}");
+        assert!(
+            err.to_string().contains("scripts/extract_tables.py"),
+            "{err}"
+        );
+        assert!(sink.proposals.lock().await.is_empty());
     }
 }

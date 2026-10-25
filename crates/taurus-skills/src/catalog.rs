@@ -278,7 +278,7 @@ fn undeclared_scripts(declared: &[SkillScript], resources: &[String]) -> Vec<Ski
             Some(SkillScript {
                 path: path.clone(),
                 interpreter: interpreter::for_extension(extension)?.to_string(),
-                description: "found in scripts/; not described in the skill".to_string(),
+                description: "in scripts/; the procedure says when to run it".to_string(),
             })
         })
         .collect()
