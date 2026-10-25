@@ -79,6 +79,14 @@ const SHOTS = [
   // A plugin as Taurus reads it: its parts, what isn't run here and why, and
   // one whose name stops it loading.
   { name: "plugins", shot: "plugins", theme: "dark" },
+  // The library drawers, each with one card of every kind it treats
+  // differently: what Open, Copy, Edit and Delete do is decided by where a
+  // skill or agent lives, and a frame of things that all live in one place
+  // would show one answer.
+  { name: "skills", shot: "skills", theme: "dark" },
+  { name: "skill-editor", shot: "skill-editor", theme: "dark" },
+  { name: "agents", shot: "agents", theme: "dark" },
+  { name: "memory", shot: "memory", theme: "dark" },
   // The catalogue, searched for something it cannot offer — which is half of
   // what a curated list is for, and the half a registry search cannot do.
   { name: "mcp-catalog", shot: "catalog", theme: "dark" },

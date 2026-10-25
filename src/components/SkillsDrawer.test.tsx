@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import type { Instructions, SkillSummary } from "../lib/api";
-import { InstructionsSection, originLabel, partition } from "./SkillsDrawer";
+import { InstructionsSection, originLabel, partition, skillActions } from "./SkillsDrawer";
 
 const skill = (patch: Partial<SkillSummary> = {}): SkillSummary => ({
   name: "release-notes",
@@ -24,6 +24,7 @@ const skill = (patch: Partial<SkillSummary> = {}): SkillSummary => ({
   warnings: [],
   degraded: null,
   dir: "/home/me/.taurus/skills/release-notes",
+  managed: false,
   ...patch,
 });
 
@@ -178,5 +179,66 @@ describe("the instructions section", () => {
     const html = renderToStaticMarkup(<InstructionsSection instructions={[]} />);
     expect(html).toContain("AGENTS.md");
     expect(html).toContain("Rescan");
+  });
+});
+
+describe("what a skill card offers", () => {
+  it("opens and deletes a skill Taurus wrote, and offers no copy", () => {
+    expect(skillActions(skill())).toEqual({
+      open: "/home/me/.taurus/skills/release-notes/SKILL.md",
+      copy: false,
+      remove: true,
+    });
+  });
+
+  it("opens another tool's skill and copies it, but never deletes it", () => {
+    const actions = skillActions(skill({ origin: "claude" }));
+    expect(actions.open).toBeTruthy();
+    expect(actions.copy).toBe(true);
+    expect(actions.remove).toBe(false);
+  });
+
+  it("only copies a fetched plugin's skill, whose files its next update replaces", () => {
+    expect(skillActions(skill({ origin: "plugin", plugin: "ops", managed: true }))).toEqual({
+      open: null,
+      copy: true,
+      remove: false,
+    });
+  });
+
+  it("treats a skill in a plugin you made as yours", () => {
+    const actions = skillActions(skill({ origin: "plugin", plugin: "kit", managed: false }));
+    expect(actions.open).toBeTruthy();
+    expect(actions.copy).toBe(false);
+    expect(actions.remove).toBe(true);
+  });
+
+  it("opens a plugin command's own file", () => {
+    const actions = skillActions(
+      skill({ origin: "plugin_command", plugin: "kit", command_file: "/p/kit/commands/review.md" }),
+    );
+    expect(actions.open).toBe("/p/kit/commands/review.md");
+    expect(actions.remove).toBe(false);
+  });
+});
+
+describe("starting a brief", () => {
+  const entry = (tier: "user" | "project", origin: Instructions["source"]["origin"]) =>
+    ({
+      source: { tier, origin, path: `/${tier}/${origin}.md` },
+      body: "x",
+      truncated: false,
+      applies_to: null,
+    }) as Instructions;
+
+  it("offers a TAURUS.md only for a tier that has none", () => {
+    const html = renderToStaticMarkup(
+      <InstructionsSection
+        instructions={[entry("project", "taurus"), entry("user", "claude")]}
+        onStart={() => {}}
+      />,
+    );
+    expect(html).toContain("Start a personal TAURUS.md");
+    expect(html).not.toContain("Start a project TAURUS.md");
   });
 });

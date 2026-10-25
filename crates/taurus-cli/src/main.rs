@@ -191,7 +191,7 @@ enum Command {
         #[command(flatten)]
         session: SessionArgs,
     },
-    /// Read or prune what earlier conversations left for the next one.
+    /// Read, write or prune what earlier conversations left for the next one.
     Notes {
         #[command(subcommand)]
         command: notes_cmd::NotesCommand,

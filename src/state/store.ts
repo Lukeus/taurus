@@ -441,15 +441,18 @@ interface Store {
    * card catches that to make itself answerable again — see `QuestionsCard`.
    */
   answerQuestions: (id: string, answers: Answer[]) => Promise<void>;
+  /** `edited` is the proposal as the person changed it in the editor. */
   resolveProposal: (
     id: string,
     approve: boolean,
     target?: "project" | "user",
+    edited?: SkillProposal,
   ) => Promise<void>;
   resolveAgentProposal: (
     id: string,
     approve: boolean,
     target?: "project" | "user",
+    edited?: AgentProposal,
   ) => Promise<void>;
   /**
    * Moves the whole app to another folder.
@@ -1343,8 +1346,8 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
-  resolveProposal: async (id, approve, target = "project") => {
-    await api.respondSkillProposal(id, approve, approve ? target : undefined);
+  resolveProposal: async (id, approve, target = "project", edited) => {
+    await api.respondSkillProposal(id, approve, approve ? target : undefined, edited);
     set((s) => ({
       proposals: s.proposals.filter((p) => p.id !== id),
       entries: [
@@ -1361,8 +1364,8 @@ export const useStore = create<Store>((set, get) => ({
     // which pushes the new count with everything else on `EVENT_STATUS`.
   },
 
-  resolveAgentProposal: async (id, approve, target = "project") => {
-    await api.respondAgentProposal(id, approve, approve ? target : undefined);
+  resolveAgentProposal: async (id, approve, target = "project", edited) => {
+    await api.respondAgentProposal(id, approve, approve ? target : undefined, edited);
     set((s) => ({
       agentProposals: s.agentProposals.filter((p) => p.id !== id),
       entries: [

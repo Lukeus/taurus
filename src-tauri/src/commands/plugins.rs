@@ -30,6 +30,23 @@ pub async fn add_plugin(
     changed(&state, &workspace).await
 }
 
+/// Makes an empty plugin of your own. See `taurus_host::plugins::scaffold`.
+#[tauri::command]
+pub async fn new_plugin(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    description: String,
+    project: bool,
+) -> CmdResult<Vec<PluginSummary>> {
+    let workspace = state.host.workspace().await;
+    let ws = workspace.clone();
+    off_runtime(move || {
+        plugins::scaffold(name.trim(), &description, scope(project), Some(&ws)).map(|_| ())
+    })
+    .await?;
+    changed(&state, &workspace).await
+}
+
 /// Fetches a plugin again from where it was added from.
 #[tauri::command]
 pub async fn update_plugin(

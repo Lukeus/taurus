@@ -49,6 +49,10 @@ import {
   MCP_SERVERS,
   MODELS,
   PLUGINS,
+  LIBRARY_AGENTS,
+  LIBRARY_INSTRUCTIONS,
+  LIBRARY_SKILLS,
+  MEMORY_NOTES,
   ELEVENLABS_VOICES,
   KEY_STATUSES,
   PERMISSION,
@@ -190,11 +194,14 @@ const ANSWERS: Record<string, unknown> = {
   list_checkpoints: CHECKPOINTS,
   repo_status: REPO,
   conversation_changes: CONVERSATION_CHANGES,
-  list_skills: [],
+  // Empty everywhere but the library scenes, whose drawers are the picture.
+  list_skills: ["skills", "skill-editor"].includes(shot) ? LIBRARY_SKILLS : [],
+  list_instructions: shot === "skills" ? LIBRARY_INSTRUCTIONS : [],
   list_commands: [],
-  list_agents: [],
+  list_agents: shot === "agents" ? LIBRARY_AGENTS : [],
   list_tools: [],
-  agent_roster_cost: 0,
+  agent_roster_cost: shot === "agents" ? 1_240 : 0,
+  list_notes: shot === "memory" ? MEMORY_NOTES : [],
   list_datasets: DATASETS,
   dataset_profile: DATA_PROFILE,
   list_recipes: RECIPES,
@@ -955,6 +962,26 @@ requestAnimationFrame(() => {
       plugins: async () => {
         (await click(".rail-link", (b) => b.startsWith("Plugins")))();
         await until(() => document.querySelector(".drawer .plugin-card"));
+      },
+      // The library drawers, each gated on its list like `mcp`: what a card
+      // offers depends on where the thing lives, and the fixtures hold one of
+      // each kind.
+      skills: async () => {
+        (await click(".rail-link", (b) => b.startsWith("Skills")))();
+        await until(() => document.querySelector(".drawer .card"));
+      },
+      "skill-editor": async () => {
+        (await click(".rail-link", (b) => b.startsWith("Skills")))();
+        (await click(".card-add", (b) => b.startsWith("New skill")))();
+        await until(() => document.querySelector(".skill-editor"));
+      },
+      agents: async () => {
+        (await click(".rail-link", (b) => b.startsWith("Agents")))();
+        await until(() => document.querySelector(".drawer .card.agent"));
+      },
+      memory: async () => {
+        (await click(".rail-link", (b) => b.startsWith("Memory")))();
+        await until(() => document.querySelector(".drawer .card"));
       },
     }[shot];
     // A frame for React to paint the seeded entries before anything is

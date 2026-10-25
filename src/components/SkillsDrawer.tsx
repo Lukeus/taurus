@@ -1,11 +1,13 @@
 import { useState } from "react";
 
 import * as api from "../lib/api";
-import type { Instructions, SkillSummary } from "../lib/api";
+import type { Instructions, InstructionsTier, SkillSummary } from "../lib/api";
+import { useArmed } from "../lib/armed";
 import { plural } from "../lib/format";
 import { useStore } from "../state/store";
 import { Drawer } from "./Drawer";
 import { Problem, Problems } from "./Problem";
+import { SkillEditor } from "./SkillEditor";
 import { useLoad } from "../lib/load";
 
 type Filter = "all" | "project" | "attention";
@@ -18,8 +20,20 @@ type Filter = "all" | "project" | "attention";
  * will not run is the one that needs finding, so it gets its own filter and
  * says what went wrong rather than only that something did.
  */
-export function SkillsDrawer({ onClose }: { onClose: () => void }) {
+export function SkillsDrawer({
+  onClose,
+  onOpenFile,
+}: {
+  onClose: () => void;
+  /** Opens a file in the canvas beside the conversation, closing this. */
+  onOpenFile: (path: string) => void;
+}) {
   const [filter, setFilter] = useState<Filter>("all");
+  const [creating, setCreating] = useState(false);
+  // What a card's Delete or Copy said, when it refused. Above the list rather
+  // than on the card, because a refused copy may mean a card that moved.
+  const [failed, setFailed] = useState<string | null>(null);
+  const { armed, arm, disarm } = useArmed<string>();
   /*
    * One stable slice, narrowed here rather than in the selector.
    *
@@ -66,6 +80,20 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
 
   const { all, project, attention, shown } = partition(skills ?? [], filter);
 
+  /** Runs a card's action, then reads the library again. */
+  const act = async (run: () => Promise<unknown>) => {
+    setFailed(null);
+    try {
+      await run();
+      await catalog.reload();
+      await refreshStatus();
+    } catch (e) {
+      setFailed(String(e));
+    } finally {
+      disarm();
+    }
+  };
+
   return (
     <Drawer
       title="Skills"
@@ -91,8 +119,21 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
           {rescanning ? "Rescanning…" : "Rescan"}
         </button>
       }
+      overlay={
+        creating && (
+          <SkillEditor
+            onClose={() => setCreating(false)}
+            onSaved={async () => {
+              setCreating(false);
+              await catalog.reload();
+              await refreshStatus();
+            }}
+          />
+        )
+      }
     >
       {catalog.error && <Problem>{catalog.error}</Problem>}
+      {failed && <Problem>{failed}</Problem>}
 
       {skills === null ? (
         // Not "All 0" over an empty list, which is what a drawer that has
@@ -127,7 +168,7 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
       {skills !== null && shown.length === 0 && (
         <p className="drawer-empty">
           {filter === "all"
-            ? "No skills yet. Taurus will offer to write one when it works out a procedure worth keeping."
+            ? "No skills yet. Write one below, or Taurus will offer to when it works out a procedure worth keeping."
             : "Nothing here."}
         </p>
       )}
@@ -187,17 +228,121 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
                   uses {skill.allowed_tools.join(", ")}
                 </span>
               )}
+              <SkillActions
+                skill={skill}
+                armed={armed === skill.name}
+                onOpen={onOpenFile}
+                onCopy={() => act(() => api.copySkill(skill.name))}
+                onDelete={() =>
+                  armed === skill.name
+                    ? act(() => api.deleteSkill(skill.name))
+                    : arm(skill.name)
+                }
+              />
             </div>
           </li>
         ))}
       </ul>
 
-      <InstructionsSection instructions={instructions} />
+      <div className="drawer-foot">
+        <button className="card-add" onClick={() => setCreating(true)}>
+          New skill — a folder with SKILL.md
+        </button>
+      </div>
+
+      <InstructionsSection
+        instructions={instructions}
+        onOpen={onOpenFile}
+        onStart={async (tier) => {
+          setFailed(null);
+          try {
+            onOpenFile(await api.startBrief(tier));
+          } catch (e) {
+            setFailed(String(e));
+          }
+        }}
+      />
 
       {problems.length > 0 && (
         <Problems problems={problems.map((p) => p.message)} />
       )}
     </Drawer>
+  );
+}
+
+/**
+ * What a card offers, worked out from where the skill lives.
+ *
+ * - **Open** for any skill whose file you can keep: your own, another tool's
+ *   (it's your file, in that tool's folder), and a plugin you made. Not a
+ *   fetched plugin's, whose files are replaced on its next update.
+ * - **Copy** where opening isn't the answer: a fetched plugin's skill, which
+ *   becomes one of yours under its own name, and another tool's, which gets a
+ *   copy in `.taurus/skills` that shadows it without touching the original.
+ * - **Delete** only for what Taurus wrote, or what's in a plugin you made.
+ */
+export function skillActions(skill: SkillSummary) {
+  const fetched = !!skill.plugin && skill.managed;
+  const borrowed = !skill.plugin && skill.origin !== "taurus";
+  return {
+    open: fetched ? null : (skill.command_file ?? `${skill.dir}/SKILL.md`),
+    copy: fetched || borrowed,
+    remove:
+      (!skill.plugin && skill.origin === "taurus") ||
+      (!!skill.plugin && !skill.managed && skill.origin === "plugin"),
+  };
+}
+
+function SkillActions({
+  skill,
+  armed,
+  onOpen,
+  onCopy,
+  onDelete,
+}: {
+  skill: SkillSummary;
+  armed: boolean;
+  onOpen: (path: string) => void;
+  onCopy: () => void;
+  onDelete: () => void;
+}) {
+  const { open, copy, remove } = skillActions(skill);
+  const where = skill.tier === "project" ? "this project's" : "your";
+  return (
+    <div className="card-row">
+      {open && (
+        <button
+          className="quiet"
+          data-tip="Open SKILL.md in the editor beside the conversation"
+          onClick={() => onOpen(open)}
+        >
+          Open
+        </button>
+      )}
+      {copy && (
+        <button
+          className="quiet"
+          data-tip={
+            skill.plugin
+              ? `Copy it into ${where} .taurus/skills, to change there`
+              : `Copy it into ${where} .taurus/skills, where it replaces this one`
+          }
+          onClick={onCopy}
+        >
+          Copy to mine
+        </button>
+      )}
+      <div className="spacer" />
+      {remove && (
+        <button
+          className={armed ? "danger" : "quiet"}
+          data-tip={`Deletes ${skill.dir}`}
+          onClick={onDelete}
+        >
+          {armed ? "Delete it" : "Delete"}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -275,9 +420,21 @@ export function originLabel(
  */
 export function InstructionsSection({
   instructions,
+  onOpen,
+  onStart,
 }: {
   instructions: Instructions[];
+  onOpen?: (path: string) => void;
+  /** Creates the tier's `TAURUS.md` if needed and opens it. */
+  onStart?: (tier: InstructionsTier) => void;
 }) {
+  // Offered per tier, and only where Taurus's own file isn't already listed.
+  // A brief in AGENTS.md or CLAUDE.md is a fine brief; this is the way in for
+  // someone who has none, or wants one only Taurus reads.
+  const missing = (["project", "user"] as const).filter(
+    (tier) =>
+      !instructions.some((e) => e.source.tier === tier && e.source.origin === "taurus"),
+  );
   return (
     <section className="section">
       <div className="section-head">
@@ -285,8 +442,9 @@ export function InstructionsSection({
       </div>
       {instructions.length === 0 && (
         <p className="drawer-empty">
-          No AGENTS.md, CLAUDE.md, or TAURUS.md found. Add one to the project
-          root or your home directory, then Rescan.
+          {onStart
+            ? "No AGENTS.md, CLAUDE.md, or TAURUS.md found. Start one below, or add one to the project root or your home directory."
+            : "No AGENTS.md, CLAUDE.md, or TAURUS.md found. Add one to the project root or your home directory, then Rescan."}
         </p>
       )}
       {instructions.map((entry) => (
@@ -300,8 +458,35 @@ export function InstructionsSection({
             {entry.applies_to && ` \u00b7 ${entry.applies_to}`}
             {entry.truncated && " \u00b7 truncated"}
           </span>
+          {onOpen && (
+            <button
+              className="quiet"
+              data-tip="Open it in the editor beside the conversation"
+              onClick={() => onOpen(entry.source.path)}
+            >
+              Open
+            </button>
+          )}
         </div>
       ))}
+      {onStart && missing.length > 0 && (
+        <div className="card-row">
+          {missing.map((tier) => (
+            <button
+              key={tier}
+              className="quiet"
+              data-tip={
+                tier === "project"
+                  ? "Creates .taurus/TAURUS.md in this project, read in every conversation here"
+                  : "Creates ~/.taurus/TAURUS.md, read in every conversation everywhere"
+              }
+              onClick={() => onStart(tier)}
+            >
+              {tier === "project" ? "Start a project TAURUS.md" : "Start a personal TAURUS.md"}
+            </button>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

@@ -21,13 +21,34 @@ impl Host {
     }
 
     pub async fn skills(&self) -> Vec<SkillSummary> {
-        self.catalog.read().await.summaries()
+        let mut skills = self.catalog.read().await.summaries();
+        if skills.iter().any(|skill| skill.plugin.is_some()) {
+            let managed = self.managed_plugins().await;
+            for skill in &mut skills {
+                skill.managed = skill.plugin.as_ref().is_some_and(|p| managed.contains(p));
+            }
+        }
+        skills
     }
 
     /// The sub-agent roster: the built-ins, plus whatever the last reload found
     /// on disk, with anything that shadowed something else saying so.
+    ///
+    /// A plugin's agent is marked by where its plugin came from: one fetched
+    /// from somewhere is copied to be changed, and one you made is changed in
+    /// place, like any file of your own.
     pub async fn agents(&self) -> Vec<AgentSummary> {
-        self.agents.read().await.summaries()
+        let mut agents = self.agents.read().await.summaries();
+        if agents.iter().any(|agent| agent.plugin.is_some()) {
+            let managed = self.managed_plugins().await;
+            for agent in &mut agents {
+                if let Some(plugin) = &agent.plugin {
+                    agent.managed = managed.contains(plugin);
+                    agent.forks_on_edit = agent.managed;
+                }
+            }
+        }
+        agents
     }
 
     /// Characters of every request the roster costs. Shown next to the roster,

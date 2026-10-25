@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { AgentProposal } from "../lib/api";
+import { AgentEditor } from "./AgentEditor";
 
 /**
  * The approval gate for a generated sub-agent.
@@ -20,9 +21,14 @@ export function AgentProposalCard({
   onResolve,
 }: {
   proposal: AgentProposal;
-  onResolve: (approve: boolean, target: "project" | "user") => void;
+  onResolve: (
+    approve: boolean,
+    target: "project" | "user",
+    edited?: AgentProposal,
+  ) => void | Promise<void>;
 }) {
   const [target, setTarget] = useState<"project" | "user">("project");
+  const [editing, setEditing] = useState(false);
   const [showPrompt, setShowPrompt] = useState(true);
 
   return (
@@ -85,10 +91,23 @@ export function AgentProposalCard({
         <button className="quiet" onClick={() => onResolve(false, target)}>
           Discard
         </button>
+        <button className="quiet" onClick={() => setEditing(true)}>
+          Edit…
+        </button>
         <button className="primary" onClick={() => onResolve(true, target)}>
           Save agent
         </button>
       </div>
+      {editing && (
+        <AgentEditor
+          title={`Edit ${proposal.name} before saving`}
+          initial={proposal}
+          offerPlugins={false}
+          onSubmit={(draft, to) => Promise.resolve(onResolve(true, to, { ...proposal, ...draft }))}
+          onClose={() => setEditing(false)}
+          onSaved={() => setEditing(false)}
+        />
+      )}
     </div>
   );
 }

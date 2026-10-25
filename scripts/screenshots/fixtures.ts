@@ -94,6 +94,7 @@ export const PLUGINS = [
       "Streamline engineering workflows — standups, code review, architecture decisions, incident response, and technical documentation.",
     enabled: true,
     shadowed: false,
+    commands: [],
     skills: ["architecture", "code-review", "debug", "standup", "tech-debt", "testing-strategy"],
     agents: [],
     mcp_servers: ["asana", "atlassian", "datadog", "github", "linear", "notion", "slack"],
@@ -114,6 +115,7 @@ export const PLUGINS = [
     description: "Cut, tag and announce a release the way this repository does it.",
     enabled: true,
     shadowed: false,
+    commands: [],
     skills: ["cut-release", "changelog"],
     agents: ["release-checker"],
     mcp_servers: [],
@@ -133,6 +135,7 @@ export const PLUGINS = [
     root: "/Users/you/.taurus/plugins/design-tools",
     enabled: true,
     shadowed: false,
+    commands: [],
     skills: [],
     agents: [],
     mcp_servers: [],
@@ -1516,4 +1519,147 @@ export const ELEVENLABS_VOICES = [
   { id: "JBFqnCBsd6RMkjVDRZzb", name: "George", detail: "british, male" },
   { id: "pFZP5JQG7iQjIQuC4Bku", name: "Lily", detail: "british, female" },
   { id: "q0p9Wb3mUu5e1Gs1Nf2c", name: "Studio narrator", detail: "cloned" },
+];
+
+/**
+ * The Skills drawer with one of each kind of card: a skill of yours, one
+ * another tool installed, and one a fetched plugin brought — because which of
+ * Open, Copy and Delete a card offers is decided by where the skill lives, and
+ * a frame of three skills of your own would show only one answer.
+ */
+export const LIBRARY_SKILLS = [
+  {
+    name: "cut-release",
+    description: "Cuts a release: tests, version bump, tag, push.",
+    when_to_use: "When asked to cut, tag or ship a release of this project",
+    version: 1,
+    tier: "project",
+    origin: "taurus",
+    compatibility: null,
+    allowed_tools: [],
+    scripts: [{ path: "scripts/bump.sh", interpreter: "bash", description: "Bumps the version" }],
+    warnings: [],
+    degraded: null,
+    dir: "/Users/you/code/taurus/.taurus/skills/cut-release",
+    managed: false,
+  },
+  {
+    name: "pdf",
+    description: "Reads, fills and merges PDF files.",
+    when_to_use: "When a task involves reading or producing a PDF",
+    version: 1,
+    tier: "user",
+    origin: "claude",
+    compatibility: "Requires Python 3.11+",
+    allowed_tools: [],
+    scripts: [],
+    warnings: [],
+    degraded: null,
+    dir: "/Users/you/.claude/skills/pdf",
+    managed: false,
+  },
+  {
+    name: "engineering:code-review",
+    description: "Reviews a change for correctness, security and performance.",
+    when_to_use: "When a diff or PR is to be reviewed before merging",
+    version: 1,
+    tier: "user",
+    origin: "plugin",
+    compatibility: null,
+    allowed_tools: [],
+    scripts: [],
+    warnings: [],
+    degraded: null,
+    dir: "/Users/you/.taurus/plugins/engineering/skills/code-review",
+    plugin: "engineering",
+    managed: true,
+  },
+];
+
+export const LIBRARY_INSTRUCTIONS = [
+  {
+    source: { tier: "user", origin: "claude", path: "/Users/you/.claude/CLAUDE.md" },
+    body: "Prefer small commits.",
+    truncated: false,
+    applies_to: null,
+  },
+  {
+    source: { tier: "project", origin: "agents", path: "/Users/you/code/taurus/AGENTS.md" },
+    body: "Run cargo test before committing.",
+    truncated: false,
+    applies_to: null,
+  },
+];
+
+/**
+ * The Agents drawer: a built-in, one of yours that replaces nothing, and a
+ * fetched plugin's — Edit opens the second and writes a copy of the other two,
+ * and the hints say which.
+ */
+export const LIBRARY_AGENTS = [
+  {
+    name: "explorer",
+    description: "The answer is in the code and only needs reading.",
+    tier: "builtin",
+    tools: ["read_file", "list_dir", "glob", "grep", "load_skill"],
+    max_iterations: 20,
+    model: null,
+    provider: null,
+    shadows: null,
+    degraded: null,
+    path: null,
+    forks_on_edit: true,
+    managed: false,
+  },
+  {
+    name: "migration-checker",
+    description: "Checks a schema migration is reversible and matches schema.sql.",
+    tier: "project",
+    tools: ["read_file", "grep", "run_command"],
+    max_iterations: 25,
+    model: null,
+    provider: null,
+    shadows: null,
+    degraded: null,
+    path: "/Users/you/code/taurus/.taurus/agents/migration-checker.md",
+    forks_on_edit: false,
+    managed: false,
+  },
+  {
+    name: "engineering:reviewer",
+    description: "Reviews a diff for correctness bugs and reports each with its line.",
+    tier: "user",
+    tools: null,
+    max_iterations: 20,
+    model: null,
+    provider: null,
+    shadows: null,
+    degraded: null,
+    path: "/Users/you/.taurus/plugins/engineering/agents/reviewer.md",
+    forks_on_edit: true,
+    plugin: "engineering",
+    managed: true,
+  },
+];
+
+/** The Memory drawer: two of the model's notes and one of yours. */
+export const MEMORY_NOTES = [
+  {
+    id: "n3",
+    at: NOW - 600,
+    session: "",
+    text: "Staging has the 0042 migration; production does not. schema.sql is the source of truth.",
+  },
+  {
+    id: "n2",
+    at: NOW - 3 * 3600,
+    session: "s1",
+    text: "The flaky auth test is the clock in auth_test.rs, not the token code. Freeze time there.",
+  },
+  {
+    id: "n1",
+    at: NOW - 2 * 86_400,
+    session: "s1",
+    text: "The rail paint bug is half fixed: hover is done, the focus ring still flickers.",
+  },
 ];

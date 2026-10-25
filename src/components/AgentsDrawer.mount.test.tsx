@@ -114,7 +114,7 @@ const mountLoaded = async () => {
   const host = document.createElement("div");
   document.body.appendChild(host);
   await act(async () => {
-    createRoot(host).render(<AgentsDrawer onClose={() => {}} />);
+    createRoot(host).render(<AgentsDrawer onClose={() => {}} onOpenFile={() => {}} />);
   });
   return host;
 };
@@ -247,7 +247,7 @@ describe("opening the agents drawer", () => {
   it("mounts and stays mounted with nothing loaded yet", () => {
     useStore.setState({ status: null });
 
-    const { html, unmount } = mount(<AgentsDrawer onClose={() => {}} />);
+    const { html, unmount } = mount(<AgentsDrawer onClose={() => {}} onOpenFile={() => {}} />);
     expect(html).toContain("Agents");
     // The shadowing rule, which is the one thing about this list that cannot
     // be worked out by looking at it.
@@ -272,7 +272,7 @@ describe("opening the agents drawer", () => {
       } as never,
     });
 
-    const { html, unmount } = mount(<AgentsDrawer onClose={() => {}} />);
+    const { html, unmount } = mount(<AgentsDrawer onClose={() => {}} onOpenFile={() => {}} />);
     expect(html).toContain("rename one to match");
     // The skills drawer owns skill failures; this one must not repeat them.
     expect(html).not.toContain("not this drawer's problem");

@@ -26,6 +26,18 @@ pub enum PluginCommand {
         #[arg(long)]
         project: bool,
     },
+    /// Make an empty plugin of your own, with folders for skills and agents.
+    New {
+        /// Lowercase letters, digits and hyphens. Its parts are named
+        /// `name:part`.
+        name: String,
+        /// One line on what it's for.
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Make it in this project's .taurus/plugins/ rather than yours.
+        #[arg(long)]
+        project: bool,
+    },
     /// Fetch a plugin again from where it was added from.
     Update {
         name: String,
@@ -99,6 +111,21 @@ pub async fn run(host: &Host, command: PluginCommand) -> Result<ExitCode, String
             println!("Installed {} at {}.\n", summary.name, summary.root);
             print(&summary, trust::is_trusted(&workspace));
             println!("\n{}", next_step(&summary, &workspace));
+            Ok(ExitCode::SUCCESS)
+        }
+
+        PluginCommand::New {
+            name,
+            description,
+            project,
+        } => {
+            let summary = plugins::scaffold(&name, &description, scope(project), ws)?;
+            println!("Made {} at {}.", summary.name, summary.root);
+            println!(
+                "Put skills in its skills/ folder and agents in agents/, or save them into it \
+                 from the app's editors. They're named {}:<name>.",
+                summary.name
+            );
             Ok(ExitCode::SUCCESS)
         }
 

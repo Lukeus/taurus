@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { SkillProposal } from "../lib/api";
+import { SkillEditor } from "./SkillEditor";
 
 /**
  * The approval gate for a generated skill.
@@ -15,9 +16,14 @@ export function SkillProposalCard({
   onResolve,
 }: {
   proposal: SkillProposal;
-  onResolve: (approve: boolean, target: "project" | "user") => void;
+  onResolve: (
+    approve: boolean,
+    target: "project" | "user",
+    edited?: SkillProposal,
+  ) => void | Promise<void>;
 }) {
   const [target, setTarget] = useState<"project" | "user">("project");
+  const [editing, setEditing] = useState(false);
   const [showBody, setShowBody] = useState(true);
   const [openScript, setOpenScript] = useState<string | null>(null);
   // Scripts and the references and assets beside them, opened one at a time
@@ -105,10 +111,26 @@ export function SkillProposalCard({
         <button className="quiet" onClick={() => onResolve(false, target)}>
           Discard
         </button>
+        {/* The scripts and files the model bundled ride along unchanged: the
+            editor changes the four fields a person is likely to want to,
+            and every script is still shown above before anything is saved. */}
+        <button className="quiet" onClick={() => setEditing(true)}>
+          Edit…
+        </button>
         <button className="primary" onClick={() => onResolve(true, target)}>
           Save skill
         </button>
       </div>
+      {editing && (
+        <SkillEditor
+          title={`Edit ${proposal.name} before saving`}
+          initial={proposal}
+          offerPlugins={false}
+          onSubmit={(draft, to) => Promise.resolve(onResolve(true, to, { ...proposal, ...draft }))}
+          onClose={() => setEditing(false)}
+          onSaved={() => setEditing(false)}
+        />
+      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
   DEFAULT_MAX_ITERATIONS,
   MAX_ITERATIONS_LIMIT,
 } from "../lib/limits";
+import { useArmed } from "../lib/armed";
 import { AgentEditor } from "./AgentEditor";
 import { useStore } from "../state/store";
 import { Drawer } from "./Drawer";
@@ -25,9 +26,18 @@ type Filter = "all" | "builtin" | "attention";
  * that renders a catalog assembled at startup would be showing the state of a
  * directory the user has since edited.
  */
-export function AgentsDrawer({ onClose }: { onClose: () => void }) {
+export function AgentsDrawer({
+  onClose,
+  onOpenFile,
+}: {
+  onClose: () => void;
+  /** Opens a file in the canvas beside the conversation, closing this. */
+  onOpenFile: (path: string) => void;
+}) {
   const [filter, setFilter] = useState<Filter>("all");
   const [creating, setCreating] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const { armed, arm, disarm } = useArmed<string>();
 
   /*
    * One stable slice, narrowed here rather than in the selector — see the same
@@ -61,6 +71,29 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
   const refresh = roster.reload;
 
   const { all, builtin, attention, shown } = partition(agents ?? [], filter);
+
+  /** Edit: the file to open, written first when it's a copy. */
+  const open = async (name: string) => {
+    setFailed(null);
+    try {
+      onOpenFile(await api.agentFile(name));
+    } catch (e) {
+      setFailed(String(e));
+    }
+  };
+
+  const remove = async (name: string) => {
+    if (armed !== name) return arm(name);
+    setFailed(null);
+    try {
+      await api.deleteAgent(name);
+      await refresh();
+    } catch (e) {
+      setFailed(String(e));
+    } finally {
+      disarm();
+    }
+  };
 
   return (
     <Drawer
@@ -113,6 +146,7 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
       </p>
 
       {roster.error && <Problem>{roster.error}</Problem>}
+      {failed && <Problem>{failed}</Problem>}
 
       {agents === null ? (
         // A count of zero is an answer, and this is not one yet. The same
@@ -148,7 +182,14 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
 
       <ul className="card-list">
         {shown.map((agent) => (
-          <AgentCard key={agent.name} agent={agent} onChanged={refresh} />
+          <AgentCard
+            key={agent.name}
+            agent={agent}
+            armed={armed === agent.name}
+            onChanged={refresh}
+            onEdit={() => open(agent.name)}
+            onDelete={() => remove(agent.name)}
+          />
         ))}
       </ul>
 
@@ -180,11 +221,18 @@ export function AgentsDrawer({ onClose }: { onClose: () => void }) {
  */
 function AgentCard({
   agent,
+  armed,
   onChanged,
+  onEdit,
+  onDelete,
 }: {
   agent: AgentSummary;
+  armed: boolean;
   onChanged: () => Promise<void>;
+  onEdit: () => void;
+  onDelete: () => void;
 }) {
+  const { deletable, editHint } = agentActions(agent);
   const tools = agent.tools ? chips(agent.tools) : null;
   // Everything that is true of every agent, on one line, because separately
   // they are four lines of grey that push the next card off the screen. The
@@ -205,7 +253,15 @@ function AgentCard({
             {TIER_LABEL[agent.tier]}
           </span>
           {agent.plugin && (
-            <span className="tag" tabIndex={0} data-tip="Change it by changing the plugin">
+            <span
+              className="tag"
+              tabIndex={0}
+              data-tip={
+                agent.managed
+                  ? "Fetched with its plugin; Edit writes a copy of your own"
+                  : "From a plugin you made"
+              }
+            >
               plugin
             </span>
           )}
@@ -234,9 +290,9 @@ function AgentCard({
         {agent.degraded && (
           <span className="card-files warn">{agent.degraded}</span>
         )}
-        {/* Not for a plugin's agent: its file is the plugin's, and a copy saved
-            under a `plugin:agent` name is a file no agent loads from. */}
-        {agent.plugin ? (
+        {/* Not for a fetched plugin's agent: its file is replaced on update,
+            and retuning it means writing a copy, which Edit already does. */}
+        {agent.plugin && agent.managed ? (
           <span className="card-files">
             up to {agent.max_iterations} rounds · from plugin {agent.plugin}
           </span>
@@ -244,9 +300,48 @@ function AgentCard({
           <IterationField agent={agent} onChanged={onChanged} />
         )}
         <span className="card-files">{meta.join(" · ")}</span>
+        <div className="card-row">
+          <button className="quiet" data-tip={editHint} onClick={onEdit}>
+            Edit
+          </button>
+          <div className="spacer" />
+          {deletable && (
+            <button
+              className={armed ? "danger" : "quiet"}
+              data-tip={
+                agent.shadows
+                  ? `Deletes ${agent.path}; the ${TIER_LABEL[agent.shadows]} agent it replaced is back`
+                  : `Deletes ${agent.path}`
+              }
+              onClick={onDelete}
+            >
+              {armed ? "Delete it" : "Delete"}
+            </button>
+          )}
+        </div>
       </div>
     </li>
   );
+}
+
+/**
+ * What a card offers. Edit always — it opens the file, or writes a copy of
+ * your own first when the agent is built in, another tool's, or a fetched
+ * plugin's, and the hint says which before the click. Delete only for a file
+ * Taurus owns: one of yours, or one in a plugin you made.
+ */
+export function agentActions(agent: AgentSummary) {
+  const copies = agent.forks_on_edit;
+  return {
+    deletable: agent.path !== null && !copies,
+    editHint: !copies
+      ? "Open it in the editor beside the conversation"
+      : agent.path === null
+        ? "Writes a copy of the built-in that replaces it, and opens that"
+        : agent.plugin
+          ? `Writes a copy of your own named ${agent.name.split(":").pop()}, and opens that`
+          : "Writes a copy of your own that replaces this one, and opens that",
+  };
 }
 
 /**

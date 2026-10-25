@@ -79,35 +79,25 @@ impl Host {
         let limit = limit.clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT);
         let workspace = self.workspace.read().await.clone();
 
-        let (mut definition, path, forks) = {
-            let catalog = self.agents.read().await;
-            let definition = catalog
-                .get(name)
-                .ok_or_else(|| format!("no agent named '{name}'"))?
-                .clone();
-            // A built-in has nothing to write back to; a borrowed file is not
-            // ours to rewrite, because `write_to` serializes the frontmatter
-            // Taurus knows and would drop whatever the other client put there.
-            // Both fork into a Taurus-owned file that shadows the original.
-            //
-            // Into the *same tier*, which is the part that is easy to get
-            // wrong. A built-in is below both tiers, so a user-tier copy
-            // shadows it — but a borrowed project agent is not, and a user-tier
-            // copy of one would sit underneath the file it was meant to
-            // override and change nothing. Within a tier the Taurus directory
-            // is read last, so a copy beside a borrowed file wins.
-            let forks = definition.path.is_none() || definition.borrowed;
-            let path = match (forks, definition.tier) {
-                (false, _) => definition
-                    .path
-                    .clone()
-                    .expect("not forking means there is a file"),
-                (true, AgentTier::Project) => config::workspace_agents_dir(&workspace)
-                    .join(format!("{}.md", definition.name())),
-                (true, _) => config::user_agents_dir().join(format!("{}.md", definition.name())),
-            };
-            (definition, path, forks)
+        let mut definition = self
+            .agents
+            .read()
+            .await
+            .get(name)
+            .ok_or_else(|| format!("no agent named '{name}'"))?
+            .clone();
+        // Where the agent editor's Edit writes, by the same rule, so the two
+        // never disagree about which file an agent lives in. See
+        // `crate::library::agent_edit_target`.
+        let managed = match &definition.plugin {
+            Some(plugin) => self.managed_plugins().await.contains(plugin),
+            None => false,
         };
+        let (path, forks) = crate::library::agent_edit_target(&definition, &workspace, managed);
+        // A plugin's agent is named `plugin:agent` in the catalog and `agent`
+        // in its file. Written back as loaded, the colon would land in the
+        // file and the agent would never load again.
+        definition.frontmatter.name = crate::library::own_name(&definition).to_string();
 
         if definition.frontmatter.max_iterations == limit && !forks {
             return Ok(path.display().to_string());

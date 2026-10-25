@@ -18,7 +18,7 @@ use tracing::info;
 
 use taurus_agents::catalog::{AgentCatalog, SharedAgentCatalog};
 use taurus_agents::proposal::AgentProposalSink;
-use taurus_agents::{AgentDefinition, AgentSummary, AgentTier};
+use taurus_agents::{AgentDefinition, AgentSummary};
 use taurus_core::{Agent, AgentConfig, AgentModel, ModelOverrides, ProposeAgent, SpawnSubagent};
 use taurus_mcp::{McpManager, ServerStatus};
 use taurus_provider::Provider;
@@ -1322,6 +1322,7 @@ fn located(agent: &AgentDefinition) -> String {
 
 mod catalog;
 mod data;
+mod library;
 mod mcp;
 mod notes;
 mod providers;

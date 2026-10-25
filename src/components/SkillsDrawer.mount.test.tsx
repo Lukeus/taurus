@@ -50,7 +50,7 @@ describe("opening the drawer", () => {
     // than loop — the drawer opened onto nothing at all.
     useStore.setState({ status: null });
 
-    const { html, unmount } = mount(<SkillsDrawer onClose={() => {}} />);
+    const { html, unmount } = mount(<SkillsDrawer onClose={() => {}} onOpenFile={() => {}} />);
     expect(html).toContain("Skills");
     expect(html).toContain("Instructions");
     unmount();
@@ -71,7 +71,7 @@ describe("opening the drawer", () => {
       } as never,
     });
 
-    const { html, unmount } = mount(<SkillsDrawer onClose={() => {}} />);
+    const { html, unmount } = mount(<SkillsDrawer onClose={() => {}} onOpenFile={() => {}} />);
     expect(html).toContain("python3 not found");
     // Settings owns provider failures; this drawer must not repeat them. MCP
     // moved out with its servers, on the same rule: a problem belongs on the
@@ -94,7 +94,7 @@ describe("opening the drawer", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
-    await act(async () => root.render(<SkillsDrawer onClose={() => {}} />));
+    await act(async () => root.render(<SkillsDrawer onClose={() => {}} onOpenFile={() => {}} />));
 
     expect(host.textContent).toContain("skills directory is unreadable");
     expect(host.textContent).not.toContain("All 0");

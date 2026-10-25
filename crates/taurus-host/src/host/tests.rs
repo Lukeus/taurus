@@ -1,6 +1,7 @@
 use super::*;
 use crate::testing::{isolated_home, HomeGuard};
 use async_trait::async_trait;
+use taurus_agents::AgentTier;
 use taurus_tools::builtin::fs::{ReadFile, WriteFile};
 use taurus_tools::{DenyAll, Tool, ToolError};
 use tempfile::TempDir;
@@ -3796,4 +3797,72 @@ fn hook_freshness_cost_with_twenty_plugins() {
     time("restated at a turn       ", &mut || {
         std::hint::black_box(built.refreshed());
     });
+}
+
+#[tokio::test]
+async fn the_canvas_opens_a_personal_skill_and_nothing_else_outside_the_workspace() {
+    let workspace = TempDir::new().unwrap();
+    let (host, _home) = host(workspace.path());
+
+    let skill = config::user_skills_dir().join("cut-release/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(
+        &skill,
+        "---\nname: cut-release\ndescription: x\n---\nSteps.\n",
+    )
+    .unwrap();
+    let path = skill.display().to_string();
+
+    let document = host
+        .open_document(&path)
+        .await
+        .expect("a personal skill opens");
+    assert!(document.text.contains("Steps."));
+    let saved = host
+        .save_document(
+            &path,
+            "---\nname: cut-release\ndescription: x\n---\nMore steps.\n",
+            &document.fingerprint,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(saved, Saved::Written { .. }), "{saved:?}");
+    assert!(std::fs::read_to_string(&skill)
+        .unwrap()
+        .contains("More steps."));
+
+    // The config home itself is outside the workspace and not a library
+    // folder: providers and settings stay out of the canvas.
+    let settings = config::home_dir().join("settings.json");
+    std::fs::write(&settings, "{}").unwrap();
+    let refused = host.open_document(&settings.display().to_string()).await;
+    assert!(refused.is_err(), "{refused:?}");
+}
+
+#[tokio::test]
+async fn a_skill_made_in_the_editor_is_in_the_catalog_and_deleting_it_takes_it_out() {
+    let workspace = TempDir::new().unwrap();
+    let (host, _home) = host(workspace.path());
+    let draft = taurus_skills::SkillProposal::new(
+        "cut-release",
+        "Cuts a release",
+        "When a release is asked for",
+        "1. Run the tests.\n2. Bump the version.\n3. Tag the commit and push the tag.",
+    );
+
+    host.create_skill(&draft, taurus_skills::SaveTarget::User, None)
+        .await
+        .unwrap();
+    assert!(host.skills().await.iter().any(|s| s.name == "cut-release"));
+
+    let again = host
+        .create_skill(&draft, taurus_skills::SaveTarget::User, None)
+        .await;
+    assert!(
+        again.is_err(),
+        "a second save under the same name is refused"
+    );
+
+    host.delete_skill("cut-release").await.unwrap();
+    assert!(!host.skills().await.iter().any(|s| s.name == "cut-release"));
 }

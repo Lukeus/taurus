@@ -14,6 +14,19 @@ use taurus_host::Host;
 pub enum NotesCommand {
     /// List what has been written down for this workspace, newest first.
     List,
+    /// Write a note of your own. It's read into every later conversation in
+    /// this workspace, the way the model's own notes are.
+    Add {
+        /// What to carry forward: a sentence or two, up to 2 KB.
+        text: String,
+    },
+    /// Change one note's text, by the id `list` prints.
+    Edit {
+        /// The id shown in the first column of `taurus notes list`.
+        id: String,
+        /// The note's new text.
+        text: String,
+    },
     /// Remove one note, by the id `list` prints.
     Forget {
         /// The id shown in the first column of `taurus notes list`.
@@ -29,7 +42,8 @@ pub async fn run(host: &Host, command: NotesCommand) -> Result<ExitCode, String>
                 println!("Nothing has been written down for this workspace yet.");
                 println!(
                     "The model writes these itself, with `remember`, when it learns something \
-                     worth carrying to the next conversation."
+                     worth carrying to the next conversation. Write one yourself with \
+                     `taurus notes add`."
                 );
                 return Ok(ExitCode::SUCCESS);
             }
@@ -37,7 +51,18 @@ pub async fn run(host: &Host, command: NotesCommand) -> Result<ExitCode, String>
             for note in notes {
                 // The short id is enough to name one by hand and is what
                 // `forget` accepts as a prefix.
-                println!("{}  {}", &note.id[..8.min(note.id.len())], when(note.at));
+                // A note you wrote says so: the model's are the ones you'd
+                // want to check.
+                let by = if note.session == taurus_host::memory::BY_YOU {
+                    "  by you"
+                } else {
+                    ""
+                };
+                println!(
+                    "{}  {}{by}",
+                    &note.id[..8.min(note.id.len())],
+                    when(note.at)
+                );
                 for line in note.text.lines() {
                     println!("    {line}");
                 }
@@ -45,37 +70,58 @@ pub async fn run(host: &Host, command: NotesCommand) -> Result<ExitCode, String>
             Ok(ExitCode::SUCCESS)
         }
 
-        NotesCommand::Forget { id } => {
-            // Matched by prefix, because the full id is a uuid and nobody is
-            // going to type one. An ambiguous prefix is refused rather than
-            // resolved arbitrarily — deleting the wrong note is not something
-            // this can offer to undo.
-            let notes = host.notes().await;
-            let matched: Vec<_> = notes.iter().filter(|n| n.id.starts_with(&id)).collect();
+        NotesCommand::Add { text } => {
+            host.add_note(&text).await?;
+            println!("Written. The next conversation here starts out knowing it.");
+            Ok(ExitCode::SUCCESS)
+        }
 
-            match matched.as_slice() {
-                [] => {
-                    println!("No note here starts with {id}.");
-                    Ok(ExitCode::FAILURE)
-                }
-                [note] => {
-                    let text = note.text.clone();
-                    host.forget_note(&note.id.clone()).await?;
-                    println!("Forgotten: {}", first_line(&text));
-                    Ok(ExitCode::SUCCESS)
-                }
-                several => {
-                    println!("{id} matches {} notes. Use more of the id:", several.len());
-                    for note in several {
-                        println!(
-                            "  {}  {}",
-                            &note.id[..12.min(note.id.len())],
-                            first_line(&note.text)
-                        );
-                    }
-                    Ok(ExitCode::FAILURE)
-                }
+        NotesCommand::Edit { id, text } => {
+            let notes = host.notes().await;
+            let Some(note) = one_note(&notes, &id) else {
+                return Ok(ExitCode::FAILURE);
+            };
+            host.edit_note(&note.id.clone(), &text).await?;
+            println!("Changed: {}", first_line(&text));
+            Ok(ExitCode::SUCCESS)
+        }
+
+        NotesCommand::Forget { id } => {
+            let notes = host.notes().await;
+            let Some(note) = one_note(&notes, &id) else {
+                return Ok(ExitCode::FAILURE);
+            };
+            let text = note.text.clone();
+            host.forget_note(&note.id.clone()).await?;
+            println!("Forgotten: {}", first_line(&text));
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// The one note an id prefix names, or `None` after saying why not.
+///
+/// Matched by prefix, because the full id is a uuid and nobody is going to type
+/// one. An ambiguous prefix is refused rather than resolved arbitrarily —
+/// changing or deleting the wrong note is not something this can offer to undo.
+fn one_note<'a>(notes: &'a [taurus_host::Note], id: &str) -> Option<&'a taurus_host::Note> {
+    let matched: Vec<_> = notes.iter().filter(|n| n.id.starts_with(id)).collect();
+    match matched.as_slice() {
+        [] => {
+            println!("No note here starts with {id}.");
+            None
+        }
+        [note] => Some(note),
+        several => {
+            println!("{id} matches {} notes. Use more of the id:", several.len());
+            for note in several {
+                println!(
+                    "  {}  {}",
+                    &note.id[..12.min(note.id.len())],
+                    first_line(&note.text)
+                );
             }
+            None
         }
     }
 }

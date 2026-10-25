@@ -565,7 +565,16 @@ taurus plugin disable ops                      # or enable; --project for this p
 taurus plugin update ops                       # fetch it again from where it came from
 taurus plugin remove ops
 taurus plugin validate ./ops-plugin            # check one without installing it
+taurus plugin new kit --description "My tools" # an empty plugin of your own
 ```
+
+**A plugin can be one you made.** `taurus plugin new`, or **Make a plugin** in
+the Plugins drawer, writes a manifest and empty `skills/` and `agents/`
+folders. It has no source, so nothing updates it. The skill and agent editors
+offer it as a place to save, and its skills and agents open, change and
+delete like your own. That's the way to bundle what you've written so it can
+be shared, since the folder is a plugin any client that reads Claude Code's
+layout can load.
 
 A plugin with no `.claude-plugin/plugin.json` is named after the folder or
 repository it came from. Hand `add` a marketplace (a repository with

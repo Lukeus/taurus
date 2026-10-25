@@ -88,6 +88,7 @@ taurus run --json "count the rust files" | jq   # for scripts
 taurus rewind --to last                         # undo what the last turn wrote
 taurus fork --at last                           # try it again, keeping the first try
 taurus plugin add <folder or git URL>           # a Claude Code plugin, as it is
+taurus notes add "staging has the migration"    # tell the next conversation something
 ```
 
 Both use `~/.taurus`, so they share providers, skills, and the permission
@@ -216,13 +217,14 @@ writes down.
 - [**Instructions**](docs/capabilities.md#instructions): reads the `AGENTS.md`
   and `CLAUDE.md` you already have, so you don't need a seventh copy.
 - [**Skills**](docs/capabilities.md#skills): works a procedure out once, writes
-  it down, and asks before keeping it. Nothing is saved behind your back.
+  it down, and asks before keeping it. Nothing is saved behind your back. Write
+  your own in the app, or open any skill to change it.
 - [**Memory**](docs/capabilities.md#memory): writes down what you'd otherwise
-  have to tell the next conversation in this workspace again. You can read
-  every note and forget any of them.
+  have to tell the next conversation in this workspace again. You can read,
+  change and forget every note, and write your own.
 - [**Sub-agents**](docs/capabilities.md#sub-agents): delegates to a scoped
   context with its own tools, so a search that would fill the window happens
-  somewhere else.
+  somewhere else. Write, edit and delete them in the app.
 - [**Slash commands**](docs/capabilities.md#slash-commands): one namespace for
   skills, sub-agents, and built-ins.
 

@@ -70,7 +70,8 @@ export function PluginsDrawer({
         under one name, laid out the way Claude Code lays them out. Its parts
         are named under it, so <code>ops:deploy</code> is plugin{" "}
         <code>ops</code>'s deploy skill or command and can't replace one of
-        yours.
+        yours. Make one of your own to bundle skills and agents you've
+        written.
       </p>
 
       <AddPlugin
@@ -79,6 +80,15 @@ export function PluginsDrawer({
         adding={working === "add"}
         onAdd={(from, project, gitRef) =>
           change("add", () => api.addPlugin(from, project, gitRef))
+        }
+      />
+
+      <NewPlugin
+        disabled={!idle}
+        why={why}
+        making={working === "new"}
+        onMake={(name, description, project) =>
+          change("new", () => api.newPlugin(name, description, project))
         }
       />
 
@@ -224,6 +234,80 @@ function Parts({ plugin }: { plugin: PluginSummary }) {
         </p>
       ))}
     </>
+  );
+}
+
+/**
+ * An empty plugin of your own: a manifest and folders for skills and agents.
+ * Nothing updates it, so the skill and agent editors offer it as a place to
+ * save, and what's in it can be changed and deleted like your own.
+ */
+function NewPlugin({
+  disabled,
+  why,
+  making,
+  onMake,
+}: {
+  disabled: boolean;
+  why?: string;
+  making: boolean;
+  onMake: (name: string, description: string, project: boolean) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [project, setProject] = useState(false);
+  // The rule `check_name` enforces, shown before the click: its parts are
+  // named `name:part`, which has to be typeable as a /command.
+  const shaped = /^[a-z][a-z0-9-]*$/.test(name.trim());
+
+  return (
+    <section className="section plugin-add">
+      <label className="micro" htmlFor="plugin-new">
+        Make a plugin
+      </label>
+      <div className="card-row">
+        <input
+          id="plugin-new"
+          className="font-mono"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="name — lowercase, digits and hyphens"
+        />
+        <input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="What it's for (optional)"
+          aria-label="What it's for"
+        />
+      </div>
+      <div className="card-row">
+        <label className="card-files">
+          <input
+            type="checkbox"
+            checked={project}
+            onChange={(e) => setProject(e.target.checked)}
+          />{" "}
+          In this project's <code>.taurus/plugins/</code>
+        </label>
+        <div className="spacer" />
+        <button
+          disabled={disabled || !shaped}
+          data-tip={
+            why ??
+            (name && !shaped
+              ? "Lowercase letters, digits and hyphens, starting with a letter"
+              : undefined)
+          }
+          onClick={async () => {
+            await onMake(name.trim(), description.trim(), project);
+            setName("");
+            setDescription("");
+          }}
+        >
+          {making ? "Making…" : "Make"}
+        </button>
+      </div>
+    </section>
   );
 }
 
