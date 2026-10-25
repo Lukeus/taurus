@@ -458,7 +458,7 @@ opening either drawer. Typing the full name works straight away regardless,
 because that path resolves against a fresh roster.
 
 `max_iterations:` is how many model/tool round trips this agent gets before
-it's stopped, between 1 and 100. You can edit it on the agent's card in the
+it's stopped, between 1 and 200. You can edit it on the agent's card in the
 Agents drawer as well as in the file. The card edit rewrites the file in
 place, so `model:` and anything else you set by hand survives.
 
