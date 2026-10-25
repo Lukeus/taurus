@@ -88,11 +88,16 @@ export function CommandMenu({
             }}
           >
             <span className="command-name">/{command.name}</span>
+            {/* What to type next, as the author wrote it. Beside the name
+                because it reads as the rest of the line being typed. */}
+            {command.argument_hint && (
+              <span className="command-hint">{command.argument_hint}</span>
+            )}
             <span className="command-when">{command.when_to_use}</span>
-            {/* The two kinds do different things with the rest of the line —
-                one runs a procedure here, the other hands the job to an agent
-                with its own context — so which it is belongs on the row rather
-                than in the sending. Last, so it lands in a column of its own
+            {/* The kinds do different things with the rest of the line — a
+                skill or a command runs here, an agent takes the job to its
+                own context — so which it is belongs on the row rather than
+                in the sending. Last, so it lands in a column of its own
                 and the trigger lines stay a block of text to read down. */}
             <span className={`tag command-kind ${command.kind}`}>
               {command.kind}

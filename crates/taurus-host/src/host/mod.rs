@@ -1192,16 +1192,30 @@ fn hook_freshness(workspace: &Path) -> Freshness {
     Freshness::of_files(files.iter().map(PathBuf::as_path))
 }
 
-/// A fingerprint over every `SKILL.md` a scan of these sources would read.
+/// A fingerprint over every file a scan of these sources would read.
 ///
-/// One level inside each source directory, because that is the layout: a source
-/// holds a folder per skill and the folder holds the file. See
+/// For a skill source, one level inside it, because that is the layout: a
+/// source holds a folder per skill and the folder holds the file. See
 /// [`Freshness::of_child_dirs`] for why neither of the other two shapes fits.
+/// A plugin's commands are files rather than folders, at any depth, so they
+/// are watched as the scan reads them: every `.md` under the folder, or the
+/// one file a manifest named.
 fn skill_freshness(sources: &[taurus_skills::SkillSource]) -> Freshness {
+    let (commands, skills): (Vec<&taurus_skills::SkillSource>, Vec<_>) = sources
+        .iter()
+        .partition(|s| s.origin == taurus_skills::SkillOrigin::PluginCommand);
+    let (files, folders): (Vec<&taurus_skills::SkillSource>, Vec<_>) =
+        commands.into_iter().partition(|s| s.dir.is_file());
     Freshness::of_child_dirs(
-        sources.iter().map(|s| s.dir.as_path()),
+        skills.iter().map(|s| s.dir.as_path()),
         taurus_skills::catalog::SKILL_FILE,
     )
+    .and(Freshness::of_dirs(
+        folders.iter().map(|s| s.dir.as_path()),
+        ".md",
+        true,
+    ))
+    .and(Freshness::of_files(files.iter().map(|s| s.dir.as_path())))
 }
 
 fn agent_freshness(sources: &[taurus_agents::AgentSource]) -> Freshness {

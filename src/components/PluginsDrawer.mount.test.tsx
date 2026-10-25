@@ -28,13 +28,14 @@ const plugin = (overrides: Partial<PluginSummary> = {}): PluginSummary => ({
   enabled: true,
   shadowed: false,
   skills: ["deploy"],
+  commands: ["status"],
   agents: ["reviewer"],
   mcp_servers: ["db"],
   hooks: [],
   unsupported: [
     {
-      part: "commands/",
-      reason: "Taurus has no command files; a skill marked user-invocable is its /command",
+      part: "output-styles/",
+      reason: "Taurus has no output styles",
     },
   ],
   problems: [],
@@ -90,7 +91,7 @@ describe("the plugins drawer", () => {
     expect(drawer.text()).toContain("deploy");
     expect(drawer.text()).toContain("reviewer");
     expect(drawer.text()).toContain("not run here");
-    expect(drawer.text()).toContain("commands/");
+    expect(drawer.text()).toContain("output-styles/");
     expect(drawer.text()).toContain("at 0123456789ab");
   });
 

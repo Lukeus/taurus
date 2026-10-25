@@ -17,6 +17,7 @@ import { TrustBanner } from "./TrustBanner";
 
 const EMPTY: PendingConfig = {
   skills: 0,
+  commands: 0,
   agents: 0,
   mcp_servers: 0,
   mcp_commands: [],

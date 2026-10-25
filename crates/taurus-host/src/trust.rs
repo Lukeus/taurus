@@ -224,6 +224,9 @@ pub fn for_reading(workspace: Option<&Path>) -> Option<&Path> {
 #[ts(export)]
 pub struct PendingConfig {
     pub skills: usize,
+    /// A project plugin's command files. Each is a prompt that runs when
+    /// typed, so it adds a `/command` rather than running anything itself.
+    pub commands: usize,
     pub agents: usize,
     /// Servers the workspace's `mcp.json` defines. The entries that would start
     /// a child process, which is why they are named as well as counted.
@@ -285,6 +288,9 @@ impl PendingConfig {
         };
         if self.skills > 0 {
             lines.push(plural(self.skills, "skill", "skills"));
+        }
+        if self.commands > 0 {
+            lines.push(plural(self.commands, "command", "commands"));
         }
         if self.agents > 0 {
             lines.push(plural(self.agents, "sub-agent", "sub-agents"));
@@ -382,7 +388,12 @@ pub fn pending(workspace: &Path) -> PendingConfig {
     // second list of paths here, so a new location added there cannot quietly
     // fall outside the gate.
     for source in config::all_skill_sources(Some(workspace)) {
-        if source.tier == taurus_skills::SkillTier::Project {
+        if source.tier != taurus_skills::SkillTier::Project {
+            continue;
+        }
+        if source.origin == taurus_skills::SkillOrigin::PluginCommand {
+            pending.commands += taurus_skills::catalog::command_files(&source.dir).len();
+        } else {
             pending.skills += count_entries(&source.dir);
         }
     }
