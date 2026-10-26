@@ -293,6 +293,31 @@ describe("reading a turn", () => {
   });
 });
 
+describe("a log that can't be read", () => {
+  // The one thing this pane must never say about an unreadable log is that
+  // the conversation changed nothing.
+  it("says why, and not that no files changed", async () => {
+    backend({ list_checkpoints: new Error("the checkpoint log is damaged at line 4") });
+    const ui = await open();
+    expect(ui.text()).toContain("damaged at line 4");
+    expect(ui.text()).not.toContain("has not changed any files");
+    ui.unmount();
+  });
+
+  it("says why a turn's changes can't be shown, and not that none could be read", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: false },
+      turn_changes: new Error("checkpoint s1 is unreadable"),
+    });
+    const ui = await open();
+    await ui.click("View changes");
+    expect(ui.text()).toContain("checkpoint s1 is unreadable");
+    expect(ui.text()).not.toContain("none of them could be read");
+    ui.unmount();
+  });
+});
+
 describe("committing a turn", () => {
   it("offers no commit for a workspace that is not a repository", async () => {
     backend({

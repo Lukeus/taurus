@@ -67,6 +67,17 @@ export function CanvasSlot({
    */
   const [typed, setTyped] = useState("");
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  /**
+   * Why the last save failed, for the header word that says it did. The
+   * banner it also goes to can be dismissed; the word stays until the next
+   * keystroke tries again, so it carries its own reason.
+   */
+  const [saveError, setSaveError] = useState<string | null>(null);
+  /**
+   * The running turn deleted or moved the open file. What's on screen is
+   * what it last held, and the header says the file itself is gone.
+   */
+  const [gone, setGone] = useState(false);
   /** The other version, when a save was refused because somebody got there
    *  first. Both are kept; neither is chosen here. */
   const [conflict, setConflict] = useState<Document | null>(null);
@@ -92,6 +103,8 @@ export function CanvasSlot({
     setConflict(null);
     setFlash(null);
     setSaveState("idle");
+    setSaveError(null);
+    setGone(false);
     api
       .openDocument(path)
       .then((read) => {
@@ -125,6 +138,7 @@ export function CanvasSlot({
   useEffect(() => {
     if (!doc || conflict || typed === doc.text) return;
     setSaveState("typing");
+    setSaveError(null);
     const timer = setTimeout(() => {
       setSaveState("saving");
       api
@@ -143,6 +157,7 @@ export function CanvasSlot({
         })
         .catch((e) => {
           setSaveState("failed");
+          setSaveError(String(e));
           noteError(String(e));
         });
     }, SAVE_AFTER_MS);
@@ -166,6 +181,7 @@ export function CanvasSlot({
       .openDocument(doc.path)
       .then((read) => {
         if (!current) return;
+        setGone(false);
         const what = reconcile({ base: doc.text, draft: typed }, read.text);
         if (what.kind === "same") {
           // Still take the new fingerprint: the bytes match, but the file has
@@ -185,7 +201,9 @@ export function CanvasSlot({
       .catch(() => {
         // A file the turn deleted or moved. Left as it was rather than blanked
         // — what is on screen is still what was there, and saying so with an
-        // empty editor would be a lie about the file.
+        // empty editor would be a lie about the file. The header says the
+        // file is gone, which before this only a failed save found out.
+        if (current) setGone(true);
       });
     return () => {
       current = false;
@@ -217,6 +235,8 @@ export function CanvasSlot({
           document={doc}
           draft={typed}
           state={saveState}
+          stateWhy={saveError}
+          gone={gone}
           flash={flash}
           conflict={conflict}
           error={docError}

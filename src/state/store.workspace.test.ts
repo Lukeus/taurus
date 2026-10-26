@@ -102,6 +102,23 @@ const calls = (command: string) =>
   invoke.mock.calls.filter(([name]) => name === command);
 
 describe("switching workspace", () => {
+  it("says why a switch was refused, and reopens the folder it is still on", async () => {
+    // The window is cleared before the switch is asked for. A refusal used to
+    // leave it blank, with no conversation and nothing saying why.
+    backend({ set_workspace: new Error("/gone is not a directory") });
+    await useStore.getState().setWorkspace("/gone");
+    const state = useStore.getState();
+    expect(state.error).toContain("Couldn't open /gone");
+    expect(state.error).toContain("not a directory");
+    expect(state.session?.id).toBe("in-project-b");
+  });
+
+  it("says why trusting a workspace failed", async () => {
+    backend({ trust_workspace: new Error("trust.json is not valid JSON, so it wasn't overwritten") });
+    await useStore.getState().decideTrust(true);
+    expect(useStore.getState().error).toContain("trust.json is not valid JSON");
+  });
+
   it("closes the conversation belonging to the folder being left", async () => {
     // Its transcript is written under the old workspace's directory and its
     // checkpoints are keyed by it. A turn sent after the switch would edit one

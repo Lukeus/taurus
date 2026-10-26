@@ -40,10 +40,10 @@ export function PluginsDrawer({
     api
       .listPlugins()
       .then(setPlugins)
-      .catch((e) => {
-        setPlugins([]);
-        setFailed(String(e));
-      });
+      // Left unread rather than emptied, as the Skills and Agents drawers do:
+      // "No plugins installed" under a failed read claims something the read
+      // couldn't find out.
+      .catch((e) => setFailed(`Couldn't list the plugins: ${e}`));
   }, []);
 
   const change = async (label: string, run: () => Promise<PluginSummary[]>) => {
@@ -95,7 +95,7 @@ export function PluginsDrawer({
       {failed && <Problem>{failed}</Problem>}
 
       {plugins === null ? (
-        <p className="drawer-loading">Reading…</p>
+        !failed && <p className="drawer-loading">Reading…</p>
       ) : plugins.length === 0 ? (
         <p className="drawer-empty">
           No plugins installed. Add one from a folder or a git URL above; it

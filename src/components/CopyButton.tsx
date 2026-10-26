@@ -19,7 +19,13 @@ export function CopyButton({
   className?: string;
   label?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  // Said either way, for the reason above: a refused copy that said nothing
+  // looked like a button nobody had pressed.
+  const [said, setSaid] = useState<"copied" | "couldn't copy" | null>(null);
+  const say = (word: "copied" | "couldn't copy") => {
+    setSaid(word);
+    setTimeout(() => setSaid(null), 1200);
+  };
 
   return (
     <button
@@ -29,14 +35,15 @@ export function CopyButton({
           await navigator.clipboard.writeText(
             typeof text === "function" ? text() : text,
           );
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
+          say("copied");
         } catch {
-          // Clipboard access can be refused; saying nothing beats an alert.
+          // Clipboard access can be refused. One word in the button, not an
+          // alert: it's said where the person is looking.
+          say("couldn't copy");
         }
       }}
     >
-      {copied ? "copied" : label}
+      {said ?? label}
     </button>
   );
 }

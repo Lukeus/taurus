@@ -210,21 +210,26 @@ export function SearchTab() {
 export function useIndexBuild() {
   const [progress, setProgress] = useState<IndexProgress | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
+  // Apart from `outcome`, because a refusal ("nomic-embed-text is not pulled
+  // on ollama") is something to fix, and set as a muted hint it read like a
+  // report. A build that was stopped ends normally and lands in `outcome`.
+  const [failure, setFailure] = useState<string | null>(null);
   const build = async () => {
     // Seeded before the first report, so the button switches to Stop on the
     // click rather than whenever the first batch lands — which on a cold
     // Ollama is several seconds of a button that looks like it did nothing.
     setProgress({ done: 0, total: 0 });
     setOutcome(null);
+    setFailure(null);
     try {
       setOutcome(await api.buildIndex(setProgress));
     } catch (e) {
-      setOutcome(String(e));
+      setFailure(`The index wasn't built: ${e}`);
     } finally {
       setProgress(null);
     }
   };
-  return { progress, outcome, onBuild: () => void build() };
+  return { progress, outcome, failure, onBuild: () => void build() };
 }
 
 /**
@@ -247,6 +252,7 @@ export function CodeSearch({
   rerankProvider,
   progress,
   outcome,
+  failure = null,
   onBuild,
 }: {
   model: string;
@@ -256,6 +262,8 @@ export function CodeSearch({
   /** A build in progress, held by `Settings` so a tab switch does not lose it. */
   progress: IndexProgress | null;
   outcome: string | null;
+  /** Why the last build failed, as against how it went. */
+  failure?: string | null;
   onBuild: () => void;
 }) {
   const refresh = useStore((s) => s.refresh);
@@ -271,6 +279,9 @@ export function CodeSearch({
   useEffect(() => setRerankDraft(rerankModel), [rerankModel]);
   useEffect(() => setRerankProviderDraft(rerankProvider), [rerankProvider]);
   const building = progress !== null;
+  // A refused save used to be an unhandled rejection, with the field snapping
+  // back on the next refresh as the only sign.
+  const [error, setError] = useState<string | null>(null);
 
   // Model and provider save together, because the backend takes them together:
   // a model with no provider embeds on whichever backend the conversation is
@@ -282,8 +293,15 @@ export function CodeSearch({
     ) {
       return;
     }
-    await api.setEmbeddingModel(nextModel, nextProvider);
-    await refresh();
+    setError(null);
+    try {
+      await api.setEmbeddingModel(nextModel, nextProvider);
+      await refresh();
+    } catch (e) {
+      setDraft(model);
+      setEmbedProviderDraft(provider);
+      setError(`The embedding model wasn't saved: ${e}`);
+    }
   };
 
   // Both fields save together, because the backend takes them together: a
@@ -297,8 +315,15 @@ export function CodeSearch({
     ) {
       return;
     }
-    await api.setRerank(nextModel, nextProvider);
-    await refresh();
+    setError(null);
+    try {
+      await api.setRerank(nextModel, nextProvider);
+      await refresh();
+    } catch (e) {
+      setRerankDraft(rerankModel);
+      setRerankProviderDraft(rerankProvider);
+      setError(`The reranking model wasn't saved: ${e}`);
+    }
   };
 
 
@@ -310,6 +335,7 @@ export function CodeSearch({
   return (
     <section className="section">
       <span className="micro">Search the codebase</span>
+      {error && <Problem>{error}</Problem>}
       <Field
         label="Embedding model"
         hint={
@@ -364,6 +390,7 @@ export function CodeSearch({
             </div>
           )}
           {outcome && !building && <p className="hint">{outcome}</p>}
+          {failure && !building && <Problem>{failure}</Problem>}
           <p className="hint">
             A search builds this itself the first time, inside whichever turn
             reaches for it. Building it here pays the same cost where you can

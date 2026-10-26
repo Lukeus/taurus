@@ -100,9 +100,11 @@ export function ChangesDrawer({
         if (showing.current === asked) setTurns(list);
       })
       .catch((e) => {
+        // The list is left as it was, not emptied: an empty list says this
+        // conversation changed no files, and a log that couldn't be read
+        // doesn't know that.
         if (showing.current !== asked) return;
         setError(String(e));
-        setTurns([]);
       });
   };
 
@@ -830,7 +832,7 @@ export function TurnDetail({
         ),
       )}
 
-      {changes?.length === 0 && (
+      {changes?.length === 0 && !error && (
         <p className="card-files">
           This turn's pre-images are recorded, but none of them could be read
           back as text.

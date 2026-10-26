@@ -272,6 +272,24 @@ describe("the canvas", () => {
     }
   });
 
+  it("carries why a save failed on the word that says it did", () => {
+    // The reason also goes to the banner, which can be dismissed. The word
+    // stays until the next keystroke, so it has to explain itself.
+    const host = canvas({ state: "failed", stateWhy: "src/main.rs is read-only." });
+    const word = host.querySelector(".canvas-state") as HTMLElement;
+    expect(word.dataset.tip).toContain("src/main.rs is read-only.");
+    expect(word.dataset.tip).toContain("Typing tries again");
+  });
+
+  it("says when the file it shows is gone from disk", () => {
+    const host = canvas({ gone: true });
+    const word = host.querySelector(".canvas-state") as HTMLElement;
+    expect(word.textContent).toBe("Gone from disk");
+    expect(word.dataset.tip).toContain("deleted or moved");
+    // The text stays: it's what the file last held.
+    expect(box(host).value).toBe(CODE);
+  });
+
   /** The editor shows what has been typed, not what is on disk. */
   it("shows the buffer rather than the file", () => {
     const host = canvas({ draft: "typed over it\n" });
