@@ -15,6 +15,9 @@ import { Attachments } from "./Attachments";
 import { QuestionsCard } from "./QuestionsCard";
 import { TableCard } from "./TableCard";
 import { reportLabel } from "../lib/delegate";
+import { stateOf } from "../lib/agents";
+import { useNow } from "../lib/useNow";
+import { useAgentsView } from "../state/agentsView";
 import { duration, plural } from "../lib/format";
 import { useStable } from "../lib/stable";
 import type { Answer, LineRange } from "../lib/api";
@@ -1010,6 +1013,7 @@ function ToolRow({
   const [open, setOpen] = useState(false);
   const kind = TOOL_CLASS[step.name] ?? "other";
   const terminal = STREAMS_OUTPUT.has(step.name);
+  const showAgent = useAgentsView((v) => v.show);
 
   // While it runs, what has been streamed; once it is done, the result — which
   // is the authoritative copy, truncated at both ends rather than the tail
@@ -1080,7 +1084,8 @@ function ToolRow({
           the row opened: the point is that a long call looks alive, and that
           is no use behind a click. Dropped once it finishes, when the result
           is the more useful thing to have in the same space. */}
-      {!terminal && status === "running" && step.steps.length > 0 && (
+      {step.name === SPAWN_TOOL && status === "running" && <DelegateLive id={step.id} />}
+      {!terminal && step.name !== SPAWN_TOOL && status === "running" && step.steps.length > 0 && (
         <ul className="run-substeps">
           {step.steps.slice(-MAX_VISIBLE_SUBSTEPS).map((label, i) => (
             <li key={`${i}-${label}`}>{label}</li>
@@ -1091,13 +1096,24 @@ function ToolRow({
           way. Outside the head button rather than in it — a button inside a
           button is not a thing — and present while the call is still running
           too: a delegation that looks stuck is the one worth looking into. */}
-      {step.transcript && onOpenDelegate && (
-        <button
-          className="run-row-delegate"
-          onClick={() => step.transcript && onOpenDelegate(step.transcript)}
-        >
-          Read what this {step.transcript.agent} did →
-        </button>
+      {(step.name === SPAWN_TOOL || (step.transcript && onOpenDelegate)) && (
+        <div className="run-row-links">
+          {/* Every agent in the conversation, side by side, with this one
+              opened up: what it's doing, has done, and is saying. */}
+          {step.name === SPAWN_TOOL && (
+            <button className="run-row-activity" onClick={() => showAgent(step.id)}>
+              {status === "running" ? "Watch it work →" : "Show its activity →"}
+            </button>
+          )}
+          {step.transcript && onOpenDelegate && (
+            <button
+              className="run-row-delegate"
+              onClick={() => step.transcript && onOpenDelegate(step.transcript)}
+            >
+              Read what this {step.transcript.agent} did →
+            </button>
+          )}
+        </div>
       )}
 
       {!terminal && open && step.output && (
@@ -1157,6 +1173,57 @@ function Terminal({
  * now; the whole list would push the conversation off the screen.
  */
 const MAX_VISIBLE_SUBSTEPS = 4;
+
+/** The delegation tool, whose card summarizes a whole delegate's run. */
+const SPAWN_TOOL = "spawn_subagent";
+
+/** A delegate tool call's mark, by how it came out. */
+const CALL_MARK = { running: "…", ok: "✓", failed: "✕" } as const;
+
+/**
+ * What a running delegation is doing, under its card: which round, how long,
+ * and its last few tool calls with how each came out.
+ *
+ * Read from the agents state rather than the card's own steps: the delegate
+ * reports typed steps, and the agents panel draws the same run in full. This
+ * subscribes to its own delegation only, so a busy delegate redraws its card
+ * and not the transcript.
+ */
+function DelegateLive({ id }: { id: string }) {
+  const run = useStore((s) => s.agents[id]);
+  const now = useNow(true);
+  if (!run) return null;
+  const state = stateOf(run);
+  const meta = [
+    state === "queued"
+      ? "waiting for a free slot"
+      : run.round > 0
+        ? `round ${run.round}${run.maxRounds ? ` of ${run.maxRounds}` : ""}`
+        : "starting",
+    run.startedAt ? duration(now - run.startedAt) : null,
+    run.retrying ? "retrying" : null,
+  ].filter(Boolean);
+  return (
+    <>
+      <p className="run-agent-meta">{meta.join(" · ")}</p>
+      {run.tools.length > 0 && (
+        <ul className="run-substeps run-agent-calls">
+          {run.tools.slice(-MAX_VISIBLE_SUBSTEPS).map((tool) => {
+            const mark = tool.ok === undefined ? "running" : tool.ok ? "ok" : "failed";
+            return (
+              <li key={tool.call} data-state={mark}>
+                <span className="run-agent-mark" aria-label={mark}>
+                  {CALL_MARK[mark]}
+                </span>{" "}
+                {tool.preview}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </>
+  );
+}
 
 /**
  * How long the run took, or `null` when it cannot be known.

@@ -27,7 +27,7 @@ pub mod view;
 pub use budget::OutputBudget;
 pub use builtin::pty::sideload_status;
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, Rewind, TurnChange, TurnRecorder};
-pub use delegate::{DelegateReport, Disposition, Owner, Touched};
+pub use delegate::{now_ms, DelegateReport, DelegateStep, Disposition, Owner, Touched};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::expand_env;
 pub use jobs::{BackgroundJob, JobOutput, Jobs};

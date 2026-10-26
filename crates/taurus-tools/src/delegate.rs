@@ -60,6 +60,84 @@ pub enum Owner {
     User,
 }
 
+/// One thing a running delegate did, for whatever draws it while it runs.
+///
+/// The delegate's own conversation stays its own: the parent's transcript
+/// records one call and the report it came back with. What this carries is
+/// the view of that conversation as it happens, for a panel that shows every
+/// agent in a turn, so a delegation that runs for a minute is a delegation
+/// you can watch rather than a card that says "running".
+///
+/// Typed here rather than as `UiEvent`, which this crate can't see; see
+/// [`crate::tool::ToolProgress`]. Times are Unix milliseconds, stamped where
+/// the thing happened, so a window that attaches late still draws the right
+/// durations.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum DelegateStep {
+    /// Every slot is taken, so it waits for one before it starts.
+    Queued {
+        #[ts(type = "number")]
+        at: u64,
+    },
+    /// It has a slot and is starting.
+    Started {
+        agent: String,
+        model: String,
+        /// Its own round limit, which is the agent's, not the parent's.
+        max_rounds: u32,
+        #[ts(type = "number")]
+        at: u64,
+    },
+    /// It began a round.
+    Round { n: u32 },
+    /// Some of what it's writing, as it streams.
+    Text { text: String },
+    /// Some of its reasoning, as it streams.
+    Thinking { text: String },
+    /// It called a tool. `call` is the delegate's own call id.
+    ToolStarted {
+        call: String,
+        name: String,
+        preview: String,
+        #[ts(type = "number")]
+        at: u64,
+    },
+    /// That call came back.
+    ToolFinished {
+        call: String,
+        ok: bool,
+        #[ts(type = "number")]
+        at: u64,
+    },
+    /// How full its context is, before each request.
+    Context { used: u32, window: u32 },
+    /// A request failed and is being tried again.
+    Retrying {
+        attempt: u32,
+        of: u32,
+        reason: String,
+    },
+    /// Its turn hit an error it couldn't continue past.
+    Error { message: String },
+    /// It stopped. How it stopped is the report, sent beside this.
+    Finished {
+        input_tokens: u32,
+        output_tokens: u32,
+        #[ts(type = "number")]
+        at: u64,
+    },
+}
+
+/// Now, as [`DelegateStep`] stamps it.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 /// A delegate's report, as the parent's card draws it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

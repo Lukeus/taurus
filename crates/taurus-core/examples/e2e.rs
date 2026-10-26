@@ -76,6 +76,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = std::io::stdout().flush();
                 }
                 UiEvent::ToolProgress { label, .. } => println!("      · {label}"),
+                UiEvent::DelegateActivity {
+                    step: taurus_tools::DelegateStep::ToolStarted { preview, .. },
+                    ..
+                } => println!("      · {preview}"),
+                // The rest of a delegate's run is for the app's agents panel.
+                UiEvent::DelegateActivity { .. } => {}
                 UiEvent::FilesChanged { paths } => {
                     println!("\n  ~ {} changed so far", paths.len())
                 }

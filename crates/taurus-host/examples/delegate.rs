@@ -16,8 +16,10 @@
 //!    `blocked` on the user, or `failed`.
 //! 3. **write**: a file to create. Expect `done`, with the file listed.
 //!
-//! Asserted: every report has a status line, and a `done` write lists the
-//! file it wrote. Printed, not asserted: how often `finish` was called and
+//! Asserted: every report has a status line, a `done` write lists the file
+//! it wrote, and the delegate's activity (what the agent activity panel
+//! draws) starts with `started`, ends with `finished`, and finishes every
+//! call it started. Printed, not asserted: how often `finish` was called and
 //! what it said, because a model may legitimately get those wrong and this is
 //! a measurement, not a gate.
 //!
@@ -64,10 +66,11 @@ const TASKS: [Task; 3] = [
     },
 ];
 
-/// Keeps the report the delegation sends to the card.
+/// Keeps the report the delegation sends to the card, and its activity.
 #[derive(Default)]
 struct Card {
     report: Mutex<Option<DelegateReport>>,
+    steps: Mutex<Vec<taurus_tools::DelegateStep>>,
 }
 
 #[async_trait]
@@ -76,6 +79,10 @@ impl ToolProgress for Card {
 
     async fn delegate_report(&self, report: DelegateReport) {
         *self.report.lock().await = Some(report);
+    }
+
+    async fn activity(&self, step: taurus_tools::DelegateStep) {
+        self.steps.lock().await.push(step);
     }
 }
 
@@ -153,6 +160,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("every delegation sends its card a report");
 
             assert!(text.starts_with("Status: "), "no status line: {text}");
+
+            // What the agent activity panel is drawn from, from a real model.
+            let (rounds, calls, words) = {
+                use taurus_tools::DelegateStep as Step;
+                let steps = card.steps.lock().await;
+                assert!(
+                    matches!(steps.first(), Some(Step::Started { .. })),
+                    "activity starts with `started`"
+                );
+                assert!(
+                    matches!(steps.last(), Some(Step::Finished { .. })),
+                    "activity ends with `finished`"
+                );
+                let started: Vec<&String> = steps
+                    .iter()
+                    .filter_map(|s| match s {
+                        Step::ToolStarted { call, .. } => Some(call),
+                        _ => None,
+                    })
+                    .collect();
+                for call in &started {
+                    assert!(
+                        steps.iter().any(
+                            |s| matches!(s, Step::ToolFinished { call: back, .. } if back == *call)
+                        ),
+                        "call {call} started and never finished"
+                    );
+                }
+                let rounds = steps.iter().filter(|s| matches!(s, Step::Round { .. })).count();
+                let words: usize = steps
+                    .iter()
+                    .map(|s| match s {
+                        Step::Text { text } => text.len(),
+                        _ => 0,
+                    })
+                    .sum();
+                (rounds, started.len(), words)
+            };
             if task.name == "write" && report.disposition == Disposition::Done {
                 assert!(
                     report.files.iter().any(|f| f == "notes.txt"),
@@ -174,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => String::new(),
             };
             println!(
-                "{:<12} run {run}  {:<10}{who}  files={:?}  {:.1}s",
+                "{:<12} run {run}  {:<10}{who}  files={:?}  {:.1}s  rounds={rounds} calls={calls} text={words}B",
                 task.name,
                 report.disposition.as_str(),
                 report.files,

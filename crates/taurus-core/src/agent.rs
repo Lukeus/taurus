@@ -2376,6 +2376,16 @@ impl ToolProgress for CallProgress {
             .await;
     }
 
+    async fn activity(&self, step: taurus_tools::DelegateStep) {
+        let _ = self
+            .ui
+            .send(UiEvent::DelegateActivity {
+                id: self.id.clone(),
+                step,
+            })
+            .await;
+    }
+
     async fn step(&self, label: String) {
         // Dropped rather than allowed to stall the tool if the UI is gone or
         // behind: progress is by definition the part that can be missed.

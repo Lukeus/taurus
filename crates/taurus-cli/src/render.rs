@@ -194,9 +194,40 @@ impl Renderer {
                 self.dim(&format!("    · {agent} transcript: {session}"));
             }
 
-            // Indented under the call it belongs to. Delegation is the only
-            // thing that reports these, and watching the child work is the
+            // A delegate's run, indented under the call that started it: each
+            // tool it calls, a wait for a slot, and trouble. Its prose and
+            // reasoning stay out, as they stay out of the app's transcript;
+            // the report says what it found. Watching the child work is the
             // difference between a minute of silence and a minute of progress.
+            UiEvent::DelegateActivity { step, .. } => {
+                if self.quiet {
+                    return;
+                }
+                let line = match step {
+                    taurus_tools::DelegateStep::ToolStarted { preview, .. } => {
+                        format!("    · {preview}")
+                    }
+                    taurus_tools::DelegateStep::Queued { .. } => {
+                        "    · waiting for a free delegate slot".to_string()
+                    }
+                    taurus_tools::DelegateStep::Started { agent, model, .. } if self.verbose => {
+                        format!("    · {agent} started on {model}")
+                    }
+                    taurus_tools::DelegateStep::Error { message } => {
+                        self.break_text();
+                        self.break_thinking();
+                        self.warn(&format!("    ! delegate: {message}"));
+                        return;
+                    }
+                    _ => return,
+                };
+                self.break_text();
+                self.break_thinking();
+                self.dim(&line);
+            }
+
+            // Indented under the call it belongs to. Nothing built in reports
+            // these now that delegation reports typed steps, but a tool may.
             UiEvent::ToolProgress { label, .. } => {
                 if self.quiet {
                     return;

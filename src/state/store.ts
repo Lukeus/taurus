@@ -10,6 +10,14 @@ import { create } from "zustand";
 
 import * as api from "../lib/api";
 import { reportFromText, takeBackgroundReports } from "../lib/delegate";
+import {
+  MAX_AGENT_TEXT,
+  MAX_AGENT_TOOLS,
+  mergeAgents,
+  NO_AGENTS,
+  type AgentRun,
+  type Agents,
+} from "../lib/agents";
 import * as speech from "./speech";
 import type {
   Answer,
@@ -231,6 +239,19 @@ interface Store {
    */
   context: { used: number; window: number; budget: number } | null;
   /**
+   * Every delegation this window has watched in the conversation on screen,
+   * by the parent's call id: what each delegate is doing, has done, and how
+   * it stopped. Drawn by the agents panel and summarized on each card. Live
+   * only, like a card's steps; a reopened conversation rebuilds what it can
+   * from the delegates' transcripts.
+   */
+  agents: Agents;
+  /**
+   * The reopened conversation's delegates, as its resume listed them, for
+   * `restoreAgents` to read back. Empty for a conversation started here.
+   */
+  delegates: SessionMeta[];
+  /**
    * Set while a turn is running in the conversation on screen.
    *
    * Derived from what the backend says rather than from having a call
@@ -429,6 +450,11 @@ interface Store {
   forkBefore: (sessionId: string, turnId: string) => Promise<Forked>;
   /** Puts this conversation's files back in the workspace. See `away`. */
   switchHere: () => Promise<void>;
+  /**
+   * Reads each delegate of a reopened conversation back from its transcript,
+   * for the agents panel. Only the ones this window didn't watch, once each.
+   */
+  restoreAgents: () => Promise<void>;
   /** Throws away a message typed ahead, without sending it. */
   unqueue: () => void;
   stop: () => Promise<void>;
@@ -623,6 +649,7 @@ function turnStream(
       entries: foldEvents(events, s.entries),
       changed: events.reduce(mergeChanged, s.changed),
       context: events.reduce(mergeContext, s.context),
+      agents: events.reduce(mergeAgents, s.agents),
     }));
     // Conditional, and deliberately so: a turn re-reads nothing on principle
     // (see the note at the end of `send`). This is not that — it fires only on
@@ -712,6 +739,8 @@ export const useStore = create<Store>((set, get) => ({
   opening: null,
   wrote: null,
   context: null,
+  agents: NO_AGENTS,
+  delegates: [],
   busy: false,
   turn: null,
   unattended: false,
@@ -887,6 +916,8 @@ export const useStore = create<Store>((set, get) => ({
       // moment between the two shows the safe answer.
       unattended: false,
       context: null,
+      agents: NO_AGENTS,
+      delegates: [],
       error: null,
       proposals: [],
       agentProposals: [],
@@ -947,6 +978,8 @@ export const useStore = create<Store>((set, get) => ({
       sent: null,
       unattended: false,
         context: null,
+        agents: NO_AGENTS,
+        delegates,
         error: null,
         proposals: [],
         agentProposals: [],
@@ -1032,6 +1065,8 @@ export const useStore = create<Store>((set, get) => ({
       queued: null,
       sent: null,
       context: null,
+      agents: NO_AGENTS,
+      delegates: [],
       proposals: [],
       agentProposals: [],
     });
@@ -1257,6 +1292,26 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
+  restoreAgents: async () => {
+    const session = get().session;
+    if (!session) return;
+    // In turn rather than all at once: a conversation that delegated thirty
+    // times is thirty files, and the panel fills as they arrive.
+    for (const meta of get().delegates) {
+      const call = meta.call;
+      if (!call || get().agents[call] || get().session?.id !== session.id) continue;
+      let run: AgentRun;
+      try {
+        run = runFromMessages(call, meta, await api.readSubagentTranscript(session.id, meta.id));
+      } catch (e) {
+        run = { ...runFromMessages(call, meta, []), error: `Couldn't read its transcript: ${e}` };
+      }
+      // A live run that arrived meanwhile wins: it's the fuller account.
+      if (get().session?.id !== session.id || get().agents[call]) continue;
+      set((s) => ({ agents: { ...s.agents, [call]: run } }));
+    }
+  },
+
   unqueue: () => set({ queued: null }),
 
   stop: async () => {
@@ -1427,6 +1482,8 @@ export const useStore = create<Store>((set, get) => ({
       queued: null,
       sent: null,
       context: null,
+      agents: NO_AGENTS,
+      delegates: [],
       permission: null,
       proposals: [],
       agentProposals: [],
@@ -2298,6 +2355,54 @@ function supersedePlans(entries: Entry[]): Entry[] {
 
 const PREVIEW_MAX_CHARS = 120;
 
+/**
+ * A delegate's run, read back from its own transcript, for a reopened
+ * conversation's agents panel.
+ *
+ * What a transcript holds: its rounds, its calls and how each came out, and
+ * what it wrote. Not when each call ran or what the delegate spent, which is
+ * why the result is marked `restored` and its calls carry no times. Its
+ * bounds are the transcript file's: started when its header was written,
+ * finished when it was last written to.
+ */
+export function runFromMessages(call: string, meta: SessionMeta, messages: Message[]): AgentRun {
+  const tools: AgentRun["tools"] = [];
+  const said: string[] = [];
+  let round = 0;
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      round += 1;
+      for (const block of message.content) {
+        if (block.type === "text" && block.text.trim()) said.push(block.text.trim());
+        if (block.type === "tool_use") {
+          tools.push({ call: block.id, name: block.name, preview: preview(block.input) });
+        }
+      }
+    } else {
+      for (const block of message.content) {
+        if (block.type !== "tool_result") continue;
+        const tool = tools.find((t) => t.call === block.tool_use_id);
+        if (tool) tool.ok = !block.is_error;
+      }
+    }
+  }
+  const text = said.join("\n\n");
+  return {
+    id: call,
+    agent: meta.agent ?? undefined,
+    model: meta.model,
+    session: meta.id,
+    startedAt: meta.started * 1000,
+    finishedAt: meta.updated * 1000,
+    round,
+    tools: tools.slice(-MAX_AGENT_TOOLS),
+    text: text.length > MAX_AGENT_TEXT ? text.slice(text.length - MAX_AGENT_TEXT) : text,
+    thinking: "",
+    detached: false,
+    restored: true,
+  };
+}
+
 function preview(input: unknown): string {
   let text: string;
   try {
@@ -2490,6 +2595,11 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
 
     case "tool_progress":
       return addProgress(entries, event.id, [event.label]);
+
+    // A delegate's run is the agents panel's (see `mergeAgents`). The
+    // transcript keeps the call and its report, as it always has.
+    case "delegate_activity":
+      return entries;
 
     case "tool_call_finished":
       return entries.map((e) =>

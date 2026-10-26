@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
-import { entriesFromMessages, type Entry } from "../state/store";
+import { entriesFromMessages, useStore, type Entry } from "../state/store";
 import { DrawerHead } from "./Drawer";
 import { ResizeHandle, useResizableWidth } from "./ResizeHandle";
 import { Transcript } from "./Transcript";
@@ -45,6 +45,14 @@ export function DelegateTranscript({
   });
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Followed while it runs. Its transcript is written once a round, so a new
+  // round, a finished call, and its stopping are the moments there's more on
+  // disk to read. Opened on one this window didn't watch, this is a snapshot,
+  // as it always was.
+  const progress = useStore((s) => {
+    const run = Object.values(s.agents).find((r) => r.session === subagentId);
+    return run ? `${run.round}:${run.tools.filter((t) => t.ok !== undefined).length}:${run.finishedAt ?? ""}` : "";
+  });
 
   useEffect(() => {
     let live = true;
@@ -55,7 +63,7 @@ export function DelegateTranscript({
     return () => {
       live = false;
     };
-  }, [sessionId, subagentId]);
+  }, [sessionId, subagentId, progress]);
 
   return (
     <Modal onClose={onClose}>

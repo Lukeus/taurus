@@ -167,6 +167,12 @@ pub trait ToolProgress: Send + Sync {
     /// This call has returned, and its work goes on in the background. Its
     /// report comes later, through [`Self::delegate_report`].
     async fn detached(&self) {}
+
+    /// Something this call's delegate did while it runs. Delegation is the
+    /// only caller. See [`crate::delegate::DelegateStep`].
+    async fn activity(&self, step: crate::delegate::DelegateStep) {
+        let _ = step;
+    }
 }
 
 /// Everything a tool needs at call time.
@@ -482,6 +488,14 @@ impl ToolContext {
     pub async fn report_delegate(&self, report: crate::delegate::DelegateReport) {
         if let Some(progress) = &self.progress {
             progress.delegate_report(report).await;
+        }
+    }
+
+    /// Hands on something this call's delegate did. See
+    /// [`ToolProgress::activity`].
+    pub async fn report_activity(&self, step: crate::delegate::DelegateStep) {
+        if let Some(progress) = &self.progress {
+            progress.activity(step).await;
         }
     }
 

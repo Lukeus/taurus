@@ -527,11 +527,21 @@ the backlog, and they're the minority.
   isn't built and probably shouldn't be: a rewind onto another branch is
   occasionally exactly what someone means, and the warning is what separates
   that from an accident.
-- **A sub-agent's answer is summarized, not streamed.** Its tool calls appear
-  under the delegation card as it makes them, so a long delegation looks
-  alive, not hung. Its reasoning and prose stay inside the child. That part is
-  deliberate: the parent asked for a conclusion, and inlining a second
-  conversation into the transcript is what delegation exists to avoid.
+- **A sub-agent's answer is summarized, not streamed.** In the transcript, that
+  is. The parent asked for a conclusion, and inlining a second conversation
+  into the transcript is what delegation exists to avoid. Everything else
+  streams to **Agent activity**: the delegate's calls, its prose, and its
+  reasoning, as it works (see
+  [Watching delegates work](capabilities.md#watching-delegates-work)). The
+  card shows its round and its last few calls.
+
+  A conversation you reopen is read back from each delegate's own
+  transcript when you open the panel: its rounds, its calls and how they came
+  out, and what it wrote. Two things aren't in a transcript, so they aren't
+  there: how long each call took, and what the delegate spent. Its bar on the
+  timeline runs from when its transcript was started to when it was last
+  written. A delegate recorded by an older build, which didn't note the call
+  that started it, shows only its report.
 
   You can still read it afterwards. Every delegate keeps its own transcript
   beside its parent's, written as it runs. The delegation card opens it in a

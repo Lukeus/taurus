@@ -468,7 +468,7 @@ turn that ends any other way (an error, the iteration ceiling, a stall)
 stops its background work and waits up to ten seconds for it to wind down,
 so nothing outlives the turn it was started in.
 
-The card stays live, with the child's steps under it, until the report
+The card stays live, with the child's latest calls under it, until the report
 arrives. Then it shows the report's status like any other delegation. In a
 reopened conversation, the delivered report is back on its card, not drawn
 as a message you sent. The CLI prints a line when a background report lands.
@@ -478,6 +478,45 @@ and read a file meanwhile did both and answered from the report in 3 of 3
 turns. On `qwen3.5:9b` it was 2 of 3: the third died on Ollama failing to
 parse the model's tool call, and it ended at once instead of waiting on the
 delegate.
+
+### Watching delegates work
+
+The transcript keeps a delegation as one call and its report. To see what a
+delegate is doing while it does it, open **Agent activity**. It's in ⌘K, and
+in the top bar as "2 agents working" while any are. Each delegation card also
+has **Watch it work**, which opens the panel on that delegate.
+
+![Agent activity: three delegates under one question, two running side by
+side, one opened to its calls and what it's saying](screenshots/activity.png)
+
+The panel sits in the column Changes and the canvas use. It's a tree: each
+question you asked is the root, with the delegates started while answering it
+under it. Each delegate shows:
+
+- how it stands: waiting for a slot, running, done, blocked, failed, or
+  stopped
+- its model, the round it's on out of its own limit, its clock, how many calls
+  it has made, and what it cost
+- the call it's in the middle of
+
+The delegates of one question share a timeline, so two that ran side by side
+have bars that overlap. A faint stretch before a bar is time spent waiting for
+one of the two slots.
+
+Open a delegate and you get every call it made, with how each came out and how
+long it took, what it's writing as it streams, and its reasoning, folded. Its
+report goes at the top once it has one. **Read its whole transcript** opens the
+transcript drawer, which follows a delegate that's still running.
+
+The card itself shows the delegate's round, its clock, and its last four calls
+with a mark for each.
+
+A window that opens a conversation mid-turn still gets the whole turn's
+delegates, including a background one started rounds ago. A conversation you
+reopen later is read back from each delegate's transcript, without the timing
+of each call (see [Known gaps](known-gaps.md)). The CLI prints each
+call a delegate makes under its card, as it did before, and notes a delegate
+waiting for a slot.
 
 You can add your own. An agent is a markdown file in `~/.taurus/agents` or
 `<workspace>/.taurus/agents`. The file name is the agent's name, and the body
