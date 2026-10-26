@@ -750,11 +750,21 @@ export const useStore = create<Store>((set, get) => ({
     // in the window before anything is there to catch it.
     listing.catch(() => {});
 
-    const [status, trust] = await Promise.all([api.getStatus(), api.workspaceTrust()]);
     // Read at startup, not on first refresh: the banner is about the state the
     // session is already running in, and one that appeared a minute later would
     // be reporting config that had been unread the whole time.
-    set({ status, trust });
+    //
+    // A failure is said, and the rest of startup still runs. Unhandled, it
+    // left the window on the first-run screen with no listeners wired, so not
+    // even a later status push could bring it back.
+    try {
+      const [status, trust] = await Promise.all([api.getStatus(), api.workspaceTrust()]);
+      set({ status, trust });
+    } catch (e) {
+      set({
+        error: `Taurus couldn't read its status at startup: ${e}. It fills in on the next update; restart the app if it doesn't.`,
+      });
+    }
 
     api.onPermissionRequest((permission) => set({ permission }));
     api.onSkillProposal((proposal) =>
@@ -1432,7 +1442,20 @@ export const useStore = create<Store>((set, get) => ({
     // folder's settings at the moment that decision is made, and the new folder
     // would open on the old one's model. A push is for state nothing is waiting
     // on; this is sequenced.
-    const { status, trust, sessions } = await api.setWorkspace(path);
+    let switched;
+    try {
+      switched = await api.setWorkspace(path);
+    } catch (e) {
+      // Refused: the folder is gone, isn't one, or a turn started there in
+      // the meantime. The window was already cleared for the move, so the
+      // folder it's still on is opened again rather than left blank. The
+      // reason is set after, because reopening a conversation clears the
+      // banner.
+      await get().adoptWorkspace();
+      set({ error: `Couldn't open ${path}: ${e}` });
+      return;
+    }
+    const { status, trust, sessions } = switched;
     // Emptied rather than left standing: the previous folder's datasets are
     // not this one's, and a pane drawn from them would name files that are not
     // here. Refilled by the fetch below.
@@ -1453,11 +1476,18 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   decideTrust: async (trusted) => {
-    set({
-      trust: trusted
-        ? await api.trustWorkspace()
-        : await api.revokeWorkspaceTrust(),
-    });
+    // Can fail for real: a trust.json that won't parse is refused rather than
+    // overwritten, and the file may not be writable. Unreported, the banner
+    // just stayed up after the click.
+    try {
+      set({
+        trust: trusted
+          ? await api.trustWorkspace()
+          : await api.revokeWorkspaceTrust(),
+      });
+    } catch (e) {
+      set({ error: String(e) });
+    }
   },
 
   reload: async () => {

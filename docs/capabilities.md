@@ -769,7 +769,10 @@ file, and an unsaved buffer breaks that silently. You'd ask about the
 paragraph on screen and get an answer about the one on disk.
 
 The header says **Unsaved** while a save is pending and **Saving…** while it
-runs. Silence means it's written.
+runs. Silence means it's written. **Not saved** means the write failed. Its
+tip says why, and your next keystroke tries again. **Gone from disk** means
+a turn deleted or moved the file while it was open. The editor keeps showing
+what the file last held.
 
 ### When you both write at once
 

@@ -18,7 +18,8 @@ export function PermissionsTab({
   error,
   onRevoke,
 }: {
-  rules: AllowedRule[];
+  /** Null while they're read, and when they couldn't be. */
+  rules: AllowedRule[] | null;
   /** Why the last revoke did not take, under the list it was made from. */
   error: string | null;
   onRevoke: (allowed: AllowedRule) => void;
@@ -29,7 +30,9 @@ export function PermissionsTab({
         Approvals you marked “always”. Revoking one puts the next such
         call back in front of you.
       </p>
-      {rules.length === 0 ? (
+      {rules === null ? (
+        !error && <p className="drawer-loading">Reading…</p>
+      ) : rules.length === 0 ? (
         <p className="drawer-empty">
           Nothing has been granted permanently yet.
         </p>

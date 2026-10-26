@@ -36,6 +36,8 @@ export function Canvas({
   document,
   draft,
   state,
+  stateWhy = null,
+  gone = false,
   flash,
   conflict,
   error,
@@ -56,6 +58,10 @@ export function Canvas({
   draft: string;
   /** Where the save has got to, for the one word in the header that says so. */
   state: SaveState;
+  /** Why a save failed, as the tip on the word that says it did. */
+  stateWhy?: string | null;
+  /** The file was deleted or moved since it was read. */
+  gone?: boolean;
   /** Lines somebody else just changed, to tint briefly. */
   flash: { from: number; to: number } | null;
   /**
@@ -136,8 +142,28 @@ export function Canvas({
             never goes away is furniture; "Saving…" that appears for 200ms on
             every keystroke is a flicker. So: silence when there is nothing to
             say, and a word when there is. */}
-        {state !== "idle" && (
-          <span className={`canvas-state ${state}`}>{SAVE_WORD[state]}</span>
+        {gone ? (
+          <span
+            className="canvas-state failed"
+            tabIndex={0}
+            data-tip="The running turn deleted or moved this file. What's shown is what it last held."
+          >
+            Gone from disk
+          </span>
+        ) : (
+          state !== "idle" && (
+            <span
+              className={`canvas-state ${state}`}
+              tabIndex={state === "failed" ? 0 : undefined}
+              data-tip={
+                state === "failed"
+                  ? `${stateWhy ?? "The write failed."} Typing tries again.`
+                  : undefined
+              }
+            >
+              {SAVE_WORD[state]}
+            </span>
+          )
         )}
 
         {document && state === "idle" && (

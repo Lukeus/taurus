@@ -505,6 +505,55 @@ describe("a write that does not take", () => {
     expect(host.textContent).toContain("permissions.json is read-only");
   });
 
+  it("says why a step limit did not take, and shows the one still in use", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "set_max_iterations"
+        ? Promise.reject("settings.json is read-only")
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    click(host, "Behavior");
+    const field = host.querySelector<HTMLInputElement>('[aria-label="Steps per message"]')!;
+    const before = field.value;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        field,
+        String(Number(before) === 50 ? 60 : 50),
+      );
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+
+    expect(host.textContent).toContain("Steps per message stayed at");
+    expect(host.textContent).toContain("settings.json is read-only");
+    expect(field.value).toBe(before);
+  });
+
+  it("says the permanent approvals couldn't be read, rather than that there are none", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "list_permission_rules"
+        ? Promise.reject("permissions.json is not valid JSON")
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    click(host, "Permissions");
+    expect(host.textContent).toContain("permissions.json is not valid JSON");
+    expect(host.textContent).not.toContain("Nothing has been granted");
+  });
+
+  it("says the themes folder couldn't be read", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "list_themes"
+        ? Promise.reject("permission denied")
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    await act(async () => click(host, "Appearance"));
+    expect(host.textContent).toContain("Couldn't read the themes folder: permission denied");
+  });
+
   it("says why a switch did not move", async () => {
     invoke.mockImplementation((...args: unknown[]) =>
       args[0] === "set_skill_synthesis"

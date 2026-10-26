@@ -50,7 +50,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
   // Rows rather than bare providers, so each card is keyed by something that
   // stays with it. See `Row`.
   const [draft, setDraft] = useState<Row[] | null>(null);
-  const [rules, setRules] = useState<AllowedRule[]>([]);
+  // Null until read, and left null when the read fails: an empty list would
+  // say nothing had been granted, which a failed read can't know.
+  const [rules, setRules] = useState<AllowedRule[] | null>(null);
+  const [rulesError, setRulesError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   /** The providers as last read or saved: what Save compares the draft against. */
@@ -106,7 +109,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
         setLoaded(list);
       })
       .catch((e) => setError(String(e)));
-    api.listPermissionRules().then(setRules).catch(() => setRules([]));
+    api
+      .listPermissionRules()
+      .then(setRules)
+      .catch((e) => setRulesError(`Couldn't read the permanent approvals: ${e}`));
     api.keychainAvailable().then(setKeychain).catch(() => setKeychain(false));
     refreshKeys();
   }, []);
@@ -245,6 +251,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
             rerankProvider={status?.settings.rerank_provider ?? ""}
             progress={index.progress}
             outcome={index.outcome}
+            failure={index.failure}
             onBuild={index.onBuild}
           />
         </>
@@ -253,7 +260,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
       {tab === "permissions" && (
         <PermissionsTab
           rules={rules}
-          error={error}
+          error={error ?? rulesError}
           onRevoke={(allowed) =>
             run(async () => {
               await api.revokePermissionRule(allowed.rule, allowed.scope);
@@ -352,9 +359,11 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
           <IterationLimit
             limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
+            onError={setError}
           />
           <ContextLimit
             limit={status?.settings.context_limit ?? DEFAULT_CONTEXT_LIMIT}
+            onError={setError}
           />
           {error && <Problem>{error}</Problem>}
         </>
@@ -390,7 +399,17 @@ export function Settings({ onClose }: { onClose: () => void }) {
  * on commit rather than rejected, so the field always shows what will actually
  * be used.
  */
-export function IterationLimit({ limit }: { limit: number }) {
+export function IterationLimit({
+  limit,
+  onError,
+}: {
+  limit: number;
+  /**
+   * Told why a write didn't take, or `null` as one starts. The field goes
+   * back to the number in use, so it never shows a limit that isn't one.
+   */
+  onError?: (message: string | null) => void;
+}) {
   const refresh = useStore((s) => s.refresh);
   const [draft, setDraft] = useState(String(limit));
 
@@ -402,8 +421,14 @@ export function IterationLimit({ limit }: { limit: number }) {
     const next = clampIterations(draft, limit);
     setDraft(String(next));
     if (next === limit) return;
-    await api.setMaxIterations(next);
-    await refresh();
+    onError?.(null);
+    try {
+      await api.setMaxIterations(next);
+      await refresh();
+    } catch (e) {
+      setDraft(String(limit));
+      onError?.(`Steps per message stayed at ${limit}: ${e}`);
+    }
   };
 
   return (
@@ -431,7 +456,14 @@ export function IterationLimit({ limit }: { limit: number }) {
  * Shown in thousands and read back in whatever form was typed, because the
  * numbers are six digits and the one people know is "200k".
  */
-export function ContextLimit({ limit }: { limit: number }) {
+export function ContextLimit({
+  limit,
+  onError,
+}: {
+  limit: number;
+  /** As `IterationLimit`'s. */
+  onError?: (message: string | null) => void;
+}) {
   const refresh = useStore((s) => s.refresh);
   const shown = (n: number) => (n === 0 ? "0" : `${Math.round(n / 1000)}k`);
   const [draft, setDraft] = useState(shown(limit));
@@ -442,8 +474,14 @@ export function ContextLimit({ limit }: { limit: number }) {
     const next = clampContextLimit(draft, limit);
     setDraft(shown(next));
     if (next === limit) return;
-    await api.setContextLimit(next);
-    await refresh();
+    onError?.(null);
+    try {
+      await api.setContextLimit(next);
+      await refresh();
+    } catch (e) {
+      setDraft(shown(limit));
+      onError?.(`Working context stayed at ${shown(limit)}: ${e}`);
+    }
   };
 
   return (
@@ -496,7 +534,12 @@ export function ThemePicker({ theme }: { theme: Theme }) {
     api
       .listThemes()
       .then(setThemes)
-      .catch(() => setThemes([]));
+      .catch((e) => {
+        // The Brand row still offers the built-in theme, but says why the
+        // rest are missing rather than looking like there are none.
+        setThemes([]);
+        setError(`Couldn't read the themes folder: ${e}`);
+      });
   };
   useEffect(load, []);
 

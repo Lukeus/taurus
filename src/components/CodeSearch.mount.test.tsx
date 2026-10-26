@@ -174,7 +174,29 @@ describe("building the code index from settings", () => {
     });
 
     expect(host.textContent).toMatch(/not found/);
+    // As a problem to fix, not a muted line like a summary.
+    expect(host.querySelector(".problem, [role=alert]")?.textContent).toMatch(
+      /The index wasn't built/,
+    );
     expect(button(host, "Build index now")).toBeTruthy();
+  });
+
+  it("says why a model wasn't saved, and puts the field back", async () => {
+    invoke.mockImplementationOnce(() => Promise.reject("settings.json is read-only"));
+    const host = await mount("");
+    const field = host.querySelector("input")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        field,
+        "nomic-embed-text",
+      );
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("The embedding model wasn't saved: settings.json is read-only");
+    expect(field.value).toBe("");
   });
 });
 

@@ -128,7 +128,11 @@ export function TerminalDock({
   const [stopFailed, setStopFailed] = useState<{ id: number; why: string } | null>(
     null,
   );
-  const [ended, setEnded] = useState<number | null | "gone">(null);
+  /**
+   * How the shell ended: its exit code, `"gone"` when it went without one, or
+   * `"failed"` when it never started. Any of them offers Restart.
+   */
+  const [ended, setEnded] = useState<number | null | "gone" | "failed">(null);
   /**
    * Bumped to start over.
    *
@@ -368,7 +372,17 @@ export function TerminalDock({
         }
         emulator.focus();
       })
-      .catch((e) => setProblem(String(e)));
+      .catch((e) => {
+        // It never started: a `$SHELL` that isn't there, or no pty. Marked
+        // ended so Restart is offered and typing stops queueing for a shell
+        // that isn't coming. Before, the pane sat on a cursor with no way to
+        // retry but closing the dock.
+        if (!live) return;
+        gone = true;
+        early.length = 0;
+        setProblem(`The shell couldn't start: ${e}`);
+        setEnded("failed");
+      });
 
     return () => {
       live = false;
@@ -441,6 +455,7 @@ export function TerminalDock({
   const ask = (block: Block) => {
     const id = session.current;
     if (!id) return;
+    setProblem(null);
     void api
       .terminalBlock(id, block.id)
       .then((text) => onAsk(askAboutBlock(text.block, text.output)))
@@ -468,7 +483,9 @@ export function TerminalDock({
         )}
         {onShell && ended !== null && (
           <span className="dock-ended">
-            {ended === "gone"
+            {ended === "failed"
+              ? "shell didn't start"
+              : ended === "gone"
               ? "shell ended"
               : ended === 0
                 ? "shell exited"
@@ -530,7 +547,17 @@ export function TerminalDock({
           ✕
         </button>
       </header>
-      {onShell && problem && <p className="dock-problem">{problem}</p>}
+      {onShell && problem && (
+        <p className="dock-problem flex items-center gap-2" role="alert">
+          <span>{sentence(problem)}</span>
+          <span className="spacer" />
+          {/* The shell is usually still fine under it, and Restart is only
+              offered once it isn't, so the message needs its own way out. */}
+          <button className="quiet" onClick={() => setProblem(null)} aria-label="Dismiss">
+            ✕
+          </button>
+        </p>
+      )}
       {/* Hidden rather than unmounted: this is a live shell, and the emulator
           holding it is also the only copy of its scrollback. */}
       <div className="dock-screen" ref={host} hidden={!onShell} />
@@ -603,3 +630,7 @@ function read(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+/** A backend message, which starts lowercase, shown as a sentence. */
+function sentence(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}

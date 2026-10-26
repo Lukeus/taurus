@@ -159,6 +159,14 @@ describe("the plugins drawer", () => {
     expect(drawer.button("Remove")?.disabled).toBe(true);
   });
 
+  it("says the list couldn't be read, rather than that nothing is installed", async () => {
+    invoke.mockImplementation(() => Promise.reject("~/.taurus/plugins: permission denied"));
+    const drawer = await mount();
+    expect(drawer.text()).toContain("Couldn't list the plugins");
+    expect(drawer.text()).not.toContain("No plugins installed");
+    expect(drawer.text()).not.toContain("Reading…");
+  });
+
   it("says why a change was refused", async () => {
     invoke.mockImplementation((command: string) =>
       command === "list_plugins"

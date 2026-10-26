@@ -698,6 +698,20 @@ describe("the query view", () => {
     expect(panel.querySelector(".schema-join")?.textContent).toContain("user_id");
   });
 
+  it("says a table's file couldn't be read, rather than reading forever", async () => {
+    // The tables read leaves out a dataset whose file has moved. The panel
+    // used to wait for it with "Reading…" that never ended.
+    answering(() => Promise.resolve(null), []);
+    const host = await queryTab();
+    await act(async () => {
+      (host.querySelector(".query-tables") as HTMLButtonElement).click();
+    });
+    const panel = host.querySelector(".schema-box") as HTMLElement;
+    expect(panel.textContent).toContain("couldn't be read");
+    expect(panel.textContent).toContain(EVENTS.name);
+    expect(panel.textContent).not.toContain("Reading what each table");
+  });
+
   it("says so when the query matched nothing, rather than drawing an empty table", async () => {
     answering(() =>
       Promise.resolve({

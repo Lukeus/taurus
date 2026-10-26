@@ -106,6 +106,9 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
   // The voices for the engine on screen. ElevenLabs's need a key, and are
   // asked for again when one is stored.
   useEffect(() => {
+    // Cleared on every engine change, so one engine's failure isn't shown
+    // under another's fields.
+    setVoicesError(null);
     if (!engine || engine === "openai") {
       setVoices(engine === "openai" ? [] : null);
       return;
@@ -235,6 +238,10 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
           </select>
         </Field>
       )}
+      {/* Why the list is empty, which on Linux without espeak-ng is the
+          backend saying what to install. It used to show only for
+          ElevenLabs, leaving this select disabled with no reason. */}
+      {draft.engine === "system" && voicesError && <Problem>{voicesError}</Problem>}
 
       {draft.engine === "elevenlabs" && (
         <div className="card-list">

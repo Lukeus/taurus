@@ -577,18 +577,27 @@ function Query({
    * suggestions and nothing else.
    */
   const [schemas, setSchemas] = useState<DataTable[]>([]);
+  // Whether that read has answered, and how. The panel needs it; completion
+  // doesn't. Without it, a read that failed or left every table out (their
+  // files moved) kept the panel on "Reading…" for good.
+  const [schemasRead, setSchemasRead] = useState<{ error: string | null } | null>(null);
   const [showSchema, setShowSchema] = useState(false);
 
   const loaded = datasets.map((d) => d.name).join(",");
   useEffect(() => {
     let live = true;
+    setSchemasRead(null);
     api
       .datasetTables()
-      .then((found) => live && setSchemas(found))
-      // Silently. This feeds completion and a reference panel, and a workspace
-      // whose files have moved should still be able to type a query and be
-      // told what is wrong by the engine, in the one message that knows.
-      .catch(() => {});
+      .then((found) => {
+        if (!live) return;
+        setSchemas(found);
+        setSchemasRead({ error: null });
+      })
+      // Quietly for completion. A workspace whose files have moved should
+      // still be able to type a query and be told what's wrong by the engine,
+      // in the one message that knows. The tables panel says it, if opened.
+      .catch((e) => live && setSchemasRead({ error: String(e) }));
     return () => {
       live = false;
     };
@@ -668,7 +677,15 @@ function Query({
         </div>
       </div>
 
-      {showSchema && <Schema tables={schemas} />}
+      {showSchema && (
+        <Schema
+          tables={schemas}
+          read={schemasRead}
+          missing={datasets
+            .map((d) => d.name)
+            .filter((name) => !schemas.some((t) => t.name === name))}
+        />
+      )}
 
       {problem && (
         <p className="data-problem">
@@ -737,7 +754,17 @@ function Query({
  * column are two files that can be joined on it, and finding that out otherwise
  * means reading two profiles side by side and holding forty names in your head.
  */
-function Schema({ tables }: { tables: DataTable[] }) {
+function Schema({
+  tables,
+  read,
+  missing,
+}: {
+  tables: DataTable[];
+  /** Null while the read is out; its error, if it failed. */
+  read: { error: string | null } | null;
+  /** Loaded datasets the read left out, because their files couldn't be read. */
+  missing: string[];
+}) {
   const shared = joinable(tables);
   return (
     <div className="schema-box">
@@ -781,8 +808,31 @@ function Schema({ tables }: { tables: DataTable[] }) {
           </div>
         </div>
       ))}
-      {tables.length === 0 && (
-        <p className="micro">Reading what each table has in it…</p>
+      {read === null ? (
+        tables.length === 0 && <p className="micro">Reading what each table has in it…</p>
+      ) : read.error ? (
+        <p className="micro warn">Couldn't read the tables: {read.error}</p>
+      ) : (
+        missing.length > 0 && (
+          <p className="micro warn">
+            {missing.length === 1 ? (
+              <>
+                <code>{missing[0]}</code>'s file couldn't be read. It may have moved.
+              </>
+            ) : (
+              <>
+                {missing.length} loaded files couldn't be read:{" "}
+                {missing.map((name, i) => (
+                  <span key={name}>
+                    {i > 0 && ", "}
+                    <code>{name}</code>
+                  </span>
+                ))}
+                . They may have moved.
+              </>
+            )}
+          </p>
+        )
       )}
     </div>
   );
