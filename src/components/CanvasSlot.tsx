@@ -205,6 +205,36 @@ export function CanvasSlot({
     return () => clearTimeout(timer);
   }, [flash]);
 
+  /*
+   * Escape closes it, the way Escape closes Changes, which takes turns with
+   * this in the same column.
+   *
+   * Only an Escape aimed here: focus in the canvas, or on nothing. Escape in
+   * the composer already means something there (stop reading, drop a
+   * recording), and closing the file as well would be one key doing two
+   * things. In the editor the first press leaves the field and the next one
+   * closes, so a press meant as "stop editing" doesn't throw the file away.
+   * Only while the column is this one's, so it never closes a file hidden
+   * under Changes.
+   */
+  useEffect(() => {
+    if (!showing) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      const inCanvas = !!target?.closest?.(".canvas");
+      const nowhere = !target || target === document.body || target === document.documentElement;
+      if (!inCanvas && !nowhere) return;
+      if (inCanvas && target?.closest?.("input, textarea, select, [contenteditable='true']")) {
+        target.blur();
+        return;
+      }
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showing, onClose]);
+
   if (!showing) return null;
 
   return (

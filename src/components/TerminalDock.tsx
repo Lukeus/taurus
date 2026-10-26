@@ -7,6 +7,7 @@ import * as api from "../lib/api";
 import type { BackgroundJob, Block } from "../lib/api";
 import { useWindowPalette } from "../lib/windowTheme";
 import { basename } from "../lib/format";
+import { APPLE, TERMINAL_SHORTCUT } from "../lib/keys";
 import {
   acknowledger,
   askAboutBlock,
@@ -17,7 +18,7 @@ import {
   duration,
   fade,
 } from "../lib/terminal";
-import { DockTabs, JobScreen } from "./JobScreen";
+import { DockTabs, JobScreen, panelId, tabId } from "./JobScreen";
 
 /**
  * The terminal dock: a real shell, in the window the agent works in.
@@ -237,7 +238,9 @@ export function TerminalDock({
         element.dataset.chosen = String(chosenRef.current === block.id);
         element.setAttribute("role", "button");
         element.setAttribute("aria-label", describeBlock(block));
-        element.title = describeBlock(block);
+        // The app's tip, not `title`, which drew the OS tooltip here while
+        // every control beside it drew the themed one.
+        element.dataset.tip = describeBlock(block);
         element.onmousedown = (event) => {
           // Before the dock's own mousedown, which would put focus back in
           // the emulator and start a selection there.
@@ -274,7 +277,9 @@ export function TerminalDock({
     // ⌘↑ / ⌘↓ step between commands, the way iTerm2 and Terminal.app step
     // between marks. Ctrl+Shift elsewhere, because a bare Ctrl+arrow is a
     // word jump a shell's line editor already owns.
-    const mac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+    // `APPLE`, the one platform check the labels use too, rather than the
+    // deprecated `navigator.platform`, so the chord and its label agree.
+    const mac = APPLE;
     emulator.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
       if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return true;
@@ -480,7 +485,7 @@ export function TerminalDock({
             <span className="dock-block-mark" aria-hidden="true">
               {blockMark(current)}
             </span>
-            <code className="dock-block-command" title={describeBlock(current)}>
+            <code className="dock-block-command" data-tip={describeBlock(current)}>
               {current.command || "(command line not reported)"}
             </code>
             <span className="dock-block-meta">
@@ -525,7 +530,7 @@ export function TerminalDock({
           className="dock-close"
           aria-label="Hide the terminal"
           onClick={onClose}
-          data-tip="Hide the terminal (⌃`)"
+          data-tip={`Hide the terminal (${TERMINAL_SHORTCUT})`}
         >
           ✕
         </button>
@@ -533,7 +538,17 @@ export function TerminalDock({
       {onShell && problem && <p className="dock-problem">{problem}</p>}
       {/* Hidden rather than unmounted: this is a live shell, and the emulator
           holding it is also the only copy of its scrollback. */}
-      <div className="dock-screen" ref={host} hidden={!onShell} />
+      <div
+        className="dock-screen"
+        ref={host}
+        hidden={!onShell}
+        // Only a tab panel while there are tabs: alone, it's just the terminal.
+        {...(jobs.length > 0 && {
+          role: "tabpanel",
+          id: panelId(null),
+          "aria-labelledby": tabId(null),
+        })}
+      />
       {shown && (
         <JobScreen
           key={shown.id}

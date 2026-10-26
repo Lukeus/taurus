@@ -92,6 +92,7 @@ export function ProseEditor({
   onChange,
   onBlur,
   placeholder,
+  label,
   sketches = NONE,
   notes = NONE,
 }: {
@@ -100,6 +101,11 @@ export function ProseEditor({
   /** Saves now rather than waiting out the debounce — see `NotesPane`. */
   onBlur?: () => void;
   placeholder?: string;
+  /**
+   * What the box is called to a screen reader. The placeholder is no name: it
+   * goes as soon as there's text.
+   */
+  label?: string;
   /** The sketches in this note's notebook, which the menu offers to embed. */
   sketches?: readonly string[];
   /** The other notes in its notebook, which the menu offers to link to. */
@@ -236,6 +242,7 @@ export function ProseEditor({
       <textarea
         ref={box}
         className={`painted-input prose-input${runs ? "" : " plain"}`}
+        aria-label={label}
         value={text}
         onChange={(e) => {
           onChange(e.target.value);

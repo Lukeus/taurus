@@ -148,6 +148,16 @@ describe("deleting a conversation", () => {
     expect(host.textContent).not.toContain("delete this");
   });
 
+  it("keeps a keyboard user's place through the question", () => {
+    // Arming swaps the trash can for Delete and Keep. Without a landing,
+    // focus fell to the page and the second press was hard to reach.
+    const host = mount();
+    press(host, '[aria-label="Delete Rename it"]');
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Keep this conversation");
+    press(host, '[aria-label="Keep this conversation"]');
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Delete Rename it");
+  });
+
   it("only ever has one question open", () => {
     // Two armed rows is two Delete buttons a few pixels apart, both of which
     // erase something different and neither of which says which.

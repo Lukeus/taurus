@@ -25,6 +25,7 @@ import { Field, same } from "./settings/Field";
 import { PermissionsTab } from "./settings/PermissionsTab";
 import { VoiceTab } from "./settings/VoiceTab";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
+import { onTabKeys } from "../lib/tabs";
 
 type Tab = "models" | "search" | "permissions" | "behavior" | "voice" | "appearance";
 
@@ -153,12 +154,13 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
   return (
     <Drawer title="Settings" onClose={onClose}>
-      <div className="pill-row" role="tablist" aria-label="Settings">
+      <div className="pill-row" role="tablist" aria-label="Settings" onKeyDown={onTabKeys}>
         {TABS.map(([value, label]) => (
           <button
             key={value}
             role="tab"
             aria-selected={tab === value}
+            tabIndex={tab === value ? 0 : -1}
             className={`pill${tab === value ? " on" : ""}`}
             onClick={() => setTab(value)}
           >
@@ -555,12 +557,13 @@ export function ThemePicker({ theme }: { theme: Theme }) {
     <>
       <section className="section">
         <span className="micro">Appearance</span>
-        <div className="pill-row" role="radiogroup" aria-label="Theme">
+        <div className="pill-row" role="radiogroup" aria-label="Theme" onKeyDown={onTabKeys}>
           {THEMES.map(([value, label]) => (
             <button
               key={value}
               role="radio"
               aria-checked={theme === value}
+              tabIndex={theme === value ? 0 : -1}
               className={`pill${theme === value ? " on" : ""}`}
               /* A theme that fills in only one palette has said which one it
                  is. Leaving the other two live would leave two controls that
@@ -590,10 +593,11 @@ export function ThemePicker({ theme }: { theme: Theme }) {
 
       <section className="section">
         <span className="micro">Brand</span>
-        <div className="pill-row" role="radiogroup" aria-label="Brand">
+        <div className="pill-row" role="radiogroup" aria-label="Brand" onKeyDown={onTabKeys}>
           <button
             role="radio"
             aria-checked={custom === null}
+            tabIndex={custom === null ? 0 : -1}
             className={`pill${custom === null ? " on" : ""}`}
             onClick={() => void chooseBrand("")}
           >
@@ -604,6 +608,7 @@ export function ThemePicker({ theme }: { theme: Theme }) {
               key={t.id}
               role="radio"
               aria-checked={custom?.id === t.id}
+              tabIndex={custom?.id === t.id ? 0 : -1}
               className={`pill${custom?.id === t.id ? " on" : ""}`}
               data-tip={
                 t.scope === "workspace"

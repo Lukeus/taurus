@@ -10,7 +10,7 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
-import { chord, isChord } from "./lib/keys";
+import { chord, isChord, TERMINAL_SHORTCUT } from "./lib/keys";
 import type { Action } from "./lib/palette";
 
 import {} from "./components/Attachments";
@@ -887,7 +887,7 @@ export default function App() {
         label: "Terminal",
         group: "Panels",
         keywords: "shell console command line",
-        shortcut: "Ctrl+`",
+        shortcut: TERMINAL_SHORTCUT,
         run: () => setTerminalOpen((open) => !open),
       },
       {
@@ -1571,7 +1571,10 @@ export default function App() {
         )}
 
         {store.error && (
-          <div className="banner error">
+          // An alert, like the conflict banner: the trust banner and the
+          // composer's notices are announced, and this one, the banner that
+          // reports failures, wasn't.
+          <div className="banner error" role="alert">
             {/* A slow pulse on a dot, and nothing else. The motion spec is
                 explicit about this one: no shake, no flash — a banner that
                 flinches trains the reader to stop reading banners. The pulse

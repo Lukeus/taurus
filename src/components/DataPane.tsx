@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { FORMAT_LABEL } from "./DatasetCard";
 import { SqlEditor } from "./SqlEditor";
 import { onTabKeys } from "../lib/tabs";
+import { chord, COMPLETE_SHORTCUT } from "../lib/keys";
 import * as api from "../lib/api";
 import type {
   DataColumn,
@@ -139,12 +140,13 @@ export function DataPane({
         {/* Chips rather than a second sidebar. The rail is already one, and a
             workspace with three datasets does not need a column of its own to
             hold three names. */}
-        <div className="data-tabs" role="tablist" aria-label="Datasets">
+        <div className="data-tabs" role="tablist" aria-label="Datasets" onKeyDown={onTabKeys}>
           {datasets.map((d) => (
             <button
               key={d.name}
               role="tab"
               aria-selected={d.name === dataset.name}
+              tabIndex={d.name === dataset.name ? 0 : -1}
               className={`data-chip${d.name === dataset.name ? " on" : ""}`}
               data-tip={d.path}
               onClick={() => onSelect(d.name)}
@@ -657,7 +659,9 @@ function Query({
             {tableLine(schemas, datasets)}
           </button>
           <div className="spacer" />
-          <span className="micro">⌃space complete · ⌘↵ run</span>
+          <span className="micro">
+            {COMPLETE_SHORTCUT} complete · {chord("↵")} run
+          </span>
           <button
             className="primary"
             disabled={running || !sql.trim()}

@@ -355,7 +355,12 @@ function ServerCard({
     <li className={`card mcp${server.disabled ? " off" : ""}`}>
       <div className="card-body">
         <div className="card-row">
-          <span className={`dot ${state.tone === "ok" ? "ok" : state.tone === "error" ? "error" : ""}`} />
+          {/* The color is the only cue on screen, so it's said as well. */}
+          <span
+            className={`dot ${state.tone === "ok" ? "ok" : state.tone === "error" ? "error" : ""}`}
+            role="img"
+            aria-label={state.label}
+          />
           <span className="card-title">{server.name}</span>
           <span className="tag">{stdio ? "stdio" : "http"}</span>
           <span className={`tag ${server.scope === "workspace" ? "project" : ""}`}>

@@ -898,7 +898,9 @@ function Thinking({ text }: { text: string }) {
       <div className="rule">
         <span className="micro">Reasoning</span>
         <div className="rule-line" />
-        <button onClick={() => setOpen(!open)}>{open ? "hide" : "show"}</button>
+        <button onClick={() => setOpen(!open)} aria-expanded={open}>
+          {open ? "hide" : "show"}
+        </button>
       </div>
       {open && <pre className="thinking-body">{text}</pre>}
     </>
@@ -957,7 +959,7 @@ const ToolRun = memo(function ToolRun({
 
   return (
     <div className={`run${open ? " open" : ""}`}>
-      <button className="run-head" onClick={() => setTouched(!open)}>
+      <button className="run-head" aria-expanded={open} onClick={() => setTouched(!open)}>
         <span className={`dot ${failed ? "error" : running ? "warn" : "ok"}`} />
         <span className="run-steps">
           {plural(steps.length, "step")}
@@ -1027,8 +1029,13 @@ function ToolRow({
       <button
         className="run-row-head"
         disabled={!step.output}
+        // Every other fold in the app says whether it's open; these three
+        // didn't, so a screen reader heard a plain button.
+        aria-expanded={step.output ? open : undefined}
         onClick={() => setOpen(!open)}
-        data-tip={step.output ? "Show what it returned" : undefined}
+        data-tip={
+          step.output ? (open ? "Hide what it returned" : "Show what it returned") : undefined
+        }
       >
         <span className="glyph">{TOOL_GLYPH[step.name] ?? "●"}</span>
         <span className="run-row-text">{step.preview}</span>

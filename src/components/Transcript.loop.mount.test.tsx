@@ -122,8 +122,11 @@ describe("a run of tool calls", () => {
     const first = [ask("u1", "read main"), ran("t1")];
     const { host, runs, rerender, click } = mount(first);
 
+    expect(host.querySelector(".run-head")?.getAttribute("aria-expanded")).toBe("true");
     click(host.querySelector(".run-head"));
     expect(runs()[0].className).not.toContain("open");
+    // And says so to a screen reader, the way every other fold does.
+    expect(host.querySelector(".run-head")?.getAttribute("aria-expanded")).toBe("false");
 
     rerender([...first, ask("u2", "now the tests"), ran("t2")]);
     // Already shut, and it stays shut rather than being shut a second time.

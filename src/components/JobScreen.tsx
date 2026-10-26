@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from "react";
 
 import type { BackgroundJob } from "../lib/api";
 import { mark, title, tone } from "../lib/jobs";
+import { onTabKeys } from "../lib/tabs";
 
 /**
  * The background commands, in the dock.
@@ -32,11 +33,14 @@ export function DockTabs({
   onWatch: (id: number | null) => void;
 }) {
   return (
-    <div className="dock-tabs" role="tablist" aria-label="Terminal tabs">
+    <div className="dock-tabs" role="tablist" aria-label="Terminal tabs" onKeyDown={onTabKeys}>
       <button
         className={`dock-tab${watching === null ? " on" : ""}`}
         role="tab"
+        id={tabId(null)}
+        aria-controls={panelId(null)}
         aria-selected={watching === null}
+        tabIndex={watching === null ? 0 : -1}
         onClick={() => onWatch(null)}
       >
         Terminal
@@ -46,12 +50,15 @@ export function DockTabs({
           key={job.id}
           className={`dock-tab ${tone(job)}${watching === job.id ? " on" : ""}`}
           role="tab"
+          id={tabId(job.id)}
+          aria-controls={panelId(job.id)}
           aria-selected={watching === job.id}
+          tabIndex={watching === job.id ? 0 : -1}
           onClick={() => onWatch(job.id)}
           /* The label is clipped to fit a strip; the tip is the command as it
-             was actually run, which is the thing worth being able to check. */
+             was actually run, which is the thing worth being able to check.
+             Not `title` as well: that drew the OS tooltip over this one. */
           data-tip={job.command}
-          title={job.command}
         >
           <span className="dock-tab-num">#{job.id}</span>
           {mark(job) && <span className="dock-tab-mark">{mark(job)}</span>}
@@ -102,7 +109,12 @@ export function JobScreen({
   }, [text]);
 
   return (
-    <div className="job-pane">
+    <div
+      className="job-pane"
+      role="tabpanel"
+      id={panelId(job.id)}
+      aria-labelledby={tabId(job.id)}
+    >
       <div className="job-bar">
         <span className={`job-status ${tone(job)}`}>{job.status}</span>
         <div className="spacer" />
@@ -135,3 +147,10 @@ export function JobScreen({
     </div>
   );
 }
+
+/**
+ * The ids that tie a dock tab to what it shows, so a screen reader can say
+ * which tab a pane belongs to. `null` is the shell.
+ */
+export const tabId = (job: number | null) => `dock-tab-${job ?? "shell"}`;
+export const panelId = (job: number | null) => `dock-panel-${job ?? "shell"}`;

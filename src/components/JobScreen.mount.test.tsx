@@ -74,7 +74,7 @@ describe("the tab strip", () => {
       />,
     );
     const tab = host.querySelectorAll(".dock-tab")[1];
-    expect(tab.getAttribute("title")).toBe("cargo test --workspace --all-features");
+    expect(tab.getAttribute("data-tip")).toBe("cargo test --workspace --all-features");
     expect(tab.textContent).toContain("…");
   });
 
