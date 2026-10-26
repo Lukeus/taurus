@@ -1006,10 +1006,63 @@ To exercise the workflow without cutting a tag, run it from the Actions tab.
 `workflow_dispatch` builds all three platforms, publishes nothing, and leaves
 the bundles as workflow artifacts you can download and open.
 
-Two things a release does **not** do yet:
+### Signing
 
-- **Code signing.** No Apple Developer or Windows certificates are wired up.
-  Gatekeeper stops a downloaded `.dmg`, and SmartScreen stops the `.msi`, until
-  the user works around it.
+A release is signed twice over: the updater signs every bundle so installed
+copies can trust what they download, and Apple and Microsoft certificates sign
+the apps so Gatekeeper and SmartScreen let a first download open. All of it
+comes from repository secrets. Each half is on only when its secrets are set,
+so a fork without them still builds, unsigned.
+
+| Secret | What it is |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | The updater key, the contents of `~/.tauri/taurus.key`. Required: with `createUpdaterArtifacts` on, `tauri build` fails without it. |
+| `TAURI_SIGNING_PASSWORD` | That key's password. The workflow passes it as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, the name the bundler reads. |
+| `APPLE_CERTIFICATE` | A Developer ID Application certificate exported as `.p12`, then `base64 -i cert.p12`. |
+| `APPLE_CERTIFICATE_PASSWORD` | The password the `.p12` was exported with. |
+| `APPLE_SIGNING_IDENTITY` | The certificate's name, `Developer ID Application: Name (TEAMID)`. |
+| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | For notarization. The password is an app-specific one from account.apple.com, not the account's. |
+| `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` | A Microsoft Entra app registration with the Trusted Signing Certificate Profile Signer role on the signing account. |
+| `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | The Trusted Signing account's endpoint (`https://eus.codesigning.azure.net`, say), its name, and the certificate profile's name. |
+
+Setting `APPLE_CERTIFICATE` without the other five fails the macOS job, and
+`AZURE_CLIENT_ID` without the other five fails the Windows job. A half-set
+group is a mistake worth hearing about, not a reason to ship unsigned.
+
+The updater's public key is `plugins.updater.pubkey` in `tauri.conf.json`.
+It's the contents of `~/.tauri/taurus.key.pub` exactly as the file has it, one
+base64 line, with no PEM header around it. A new key pair means every copy
+already installed rejects every later update, so treat the private key as
+permanent: keep a copy somewhere other than this machine.
+
+To build a bundle locally you need the key too:
+
+```bash
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/taurus.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=…
+pnpm tauri build
+```
+
+`pnpm tauri dev` doesn't bundle and doesn't need it.
+
+### Updates
+
+Each platform job uploads its bundles' `.sig` files and merges its entries into
+one `latest.json` on the draft. Installed copies read that file from
+`releases/latest/download/latest.json`, which GitHub serves from the newest
+published release, so a draft is invisible to them until it's published.
+
+Two jobs that finish close together can each upload a `latest.json` missing
+the other's entry. So the publish job reads the file back and keeps the release
+a draft unless `darwin-aarch64`, `darwin-x86_64`, `linux-x86_64` and
+`windows-x86_64` are all in it. If one is missing, re-run that platform's job,
+then the publish job.
+
+Installing is Settings › Updates, and nothing checks on its own. 0.3.0 and
+earlier have no updater, so moving from those to the first release with one is
+a manual download.
+
+Something a release does **not** do yet:
+
 - **The `taurus` CLI.** No release carries it. The only way to get it is
   `cargo install --path crates/taurus-cli` from a clone.

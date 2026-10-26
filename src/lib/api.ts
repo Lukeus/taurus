@@ -161,9 +161,13 @@ import type { SpeechSettings } from "../bindings/SpeechSettings";
 import type { SpeechState } from "../bindings/SpeechState";
 import type { SpeechStatus } from "../bindings/SpeechStatus";
 import type { VoiceInfo } from "../bindings/VoiceInfo";
+import type { AvailableUpdate } from "../bindings/AvailableUpdate";
+import type { UpdateCheck } from "../bindings/UpdateCheck";
+import type { UpdateDownload } from "../bindings/UpdateDownload";
 
 export type { VoiceDownload, VoiceModel, VoiceStatus };
 export type { SpeechEngine, SpeechSettings, SpeechState, SpeechStatus, VoiceInfo };
+export type { AvailableUpdate, UpdateCheck, UpdateDownload };
 
 export type {
   ModelLatency,
@@ -1467,6 +1471,25 @@ export const stopListening = () => invoke<string>("voice_stop");
 
 /** Closes the microphone and drops the audio, or stops a transcription. */
 export const cancelListening = () => invoke<void>("voice_cancel");
+
+/* ---------------------------------------------------------------- updates */
+
+/**
+ * Asks the newest release whether there's a later version. Only ever called
+ * when someone presses the button; nothing checks in the background.
+ */
+export const checkForUpdate = () => invoke<UpdateCheck>("check_for_update");
+
+/**
+ * Downloads the update the last check found, verifies its signature, installs
+ * it and restarts the app. Resolves only when it fails: on success the window
+ * goes away.
+ */
+export const installUpdate = (onProgress: (p: UpdateDownload) => void) => {
+  const channel = new Channel<UpdateDownload>();
+  channel.onmessage = onProgress;
+  return invoke<void>("install_update", { onProgress: channel });
+};
 
 /* ----------------------------------------------------------------- speech */
 

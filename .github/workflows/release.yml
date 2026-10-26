@@ -172,6 +172,88 @@ jobs:
       - name: Generate TypeScript bindings
         run: pnpm bindings
 
+      # Code signing, each half on only when its secrets are there. An empty
+      # variable is not the same as an absent one: the bundler sees
+      # `APPLE_CERTIFICATE=""` as a certificate to import and fails on it, so
+      # passing every secret straight into `env` would break the unsigned build
+      # for anyone without them, a fork included. Only the ones that have a
+      # value are exported.
+      #
+      # macOS: a Developer ID Application certificate (the .p12, base64) is
+      # imported into a throwaway keychain by the bundler, and the app is
+      # notarized with an app-specific password. Without notarization a signed
+      # app still meets Gatekeeper's "cannot be opened" on first launch.
+      - name: Load the macOS signing secrets
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::warning::No APPLE_CERTIFICATE secret; the macOS build is unsigned and Gatekeeper will stop it."
+            exit 0
+          fi
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                      APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::APPLE_CERTIFICATE is set but $name isn't; signing needs all six."
+              exit 1
+            fi
+            # A base64 certificate is one long line, which is what GITHUB_ENV's
+            # NAME=value form needs.
+            echo "$name=${!name}" >> "$GITHUB_ENV"
+          done
+
+      # Windows: Azure Trusted Signing, the route that doesn't need a hardware
+      # token on the runner. The sign command lives in a config file written
+      # here and merged with `--config`, not in `tauri.conf.json`, because a
+      # `signCommand` there runs on every local Windows build too, and fails on
+      # every machine that isn't this runner.
+      - name: Set up Windows signing
+        id: winsign
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+        run: |
+          if [ -z "$AZURE_CLIENT_ID" ]; then
+            echo "::warning::No AZURE_CLIENT_ID secret; the Windows build is unsigned and SmartScreen will warn on it."
+            exit 0
+          fi
+          for name in AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID ENDPOINT ACCOUNT PROFILE; do
+            if [ -z "${!name}" ]; then
+              echo "::error::AZURE_CLIENT_ID is set but the secret behind $name isn't; signing needs all six."
+              exit 1
+            fi
+          done
+          cargo install trusted-signing-cli --locked
+          for name in AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID; do
+            echo "$name=${!name}" >> "$GITHUB_ENV"
+          done
+          # `%1` is the file the bundler is signing: the exe, then each installer.
+          # Concatenated rather than a template literal, whose `${…}` inside
+          # the shell's single quotes reads to shellcheck as a mistake.
+          node -e '
+            const { ENDPOINT, ACCOUNT, PROFILE } = process.env;
+            const signCommand =
+              "trusted-signing-cli -e " + ENDPOINT + " -a " + ACCOUNT + " -c " + PROFILE + " -d Taurus %1";
+            require("node:fs").writeFileSync(
+              "windows-signing.json",
+              JSON.stringify({ bundle: { windows: { signCommand } } }),
+            );
+          '
+          echo "args=--config windows-signing.json" >> "$GITHUB_OUTPUT"
+
       # Builds the bundles named by `tauri.conf.json` (`bundle.targets: all`),
       # then uploads them to the draft `prepare` opened. On a dry run
       # `releaseId` and `tagName` are both empty, which is how this action is
@@ -188,17 +270,22 @@ jobs:
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ steps.winsign.outputs.args }}
           includeDebug: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Updater signing keys, kept for when there is an updater to sign for.
-          # `tauri.conf.json` declares no `plugins.updater` and asks for no
-          # updater artifacts, so today these are read and nothing uses them.
-          # Left in place rather than deleted because turning the updater on is
-          # a decision about the product, not about this file.
+          # The updater's signing key. `bundle.createUpdaterArtifacts` makes
+          # every bundle come with a `.sig`, and `tauri build` fails outright
+          # without this key, so a release can't ship unsigned updates by
+          # accident. The app checks each `.sig` against `plugins.updater.pubkey`
+          # before it installs anything.
+          #
+          # The password's variable is `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+          # `TAURI_SIGNING_PASSWORD` is the secret's name, and is not a name
+          # the bundler reads: passed under it, an encrypted key fails to
+          # decrypt.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PASSWORD }}
 
       # What makes a dry run inspectable rather than merely green. `v0` has no
       # `uploadWorkflowArtifacts` input to do this — passing one built three
@@ -252,6 +339,35 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Each platform job merges its own entry into the one `latest.json` on
+      # the draft by downloading it, adding to it and uploading it again. Two
+      # jobs that finish close together can each upload a copy missing the
+      # other's entry, and a release published like that leaves one platform's
+      # users never offered the update, with nothing failing to say so. So the
+      # file is read back here and the release stays a draft unless every
+      # platform is in it. Re-running the job whose platform is missing adds it.
+      - name: Every platform is in latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          asset=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --paginate \
+            --jq '.[] | select(.name == "latest.json") | .id')
+          if [ -z "$asset" ]; then
+            echo "::error::The draft has no latest.json, so no installed copy would be offered this update."
+            exit 1
+          fi
+          gh api "repos/$REPO/releases/assets/$asset" \
+            -H "Accept: application/octet-stream" > latest.json
+          missing=$(jq -r '["darwin-aarch64", "darwin-x86_64", "linux-x86_64", "windows-x86_64"]
+            - (.platforms | keys) | join(" ")' latest.json)
+          if [ -n "$missing" ]; then
+            echo "::error::latest.json has no entry for: $missing. Re-run the job for that platform, then this one."
+            exit 1
+          fi
+          jq -r '.platforms | keys | join(", ")' latest.json
+
       # By id, not by tag: a draft cannot be addressed by its tag, which is why
       # `gh release edit "$TAG"` would not find this one.
       - name: Take the release out of draft

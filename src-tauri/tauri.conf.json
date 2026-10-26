@@ -9,6 +9,14 @@
     "beforeBuildCommand": "pnpm build && node scripts/conpty.mjs",
     "frontendDist": "../dist"
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ5RjE1ODYyODkxRkU5RTAKUldUZzZSK0pZbGp4MlhDRHo2YXVHWWNCaGZjRVNmbUcyV245d202cFV2OEp2VlVhOWRmWUd4UFAK",
+      "endpoints": [
+        "https://github.com/Lukeus/taurus/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "app": {
     "windows": [
       {
@@ -28,6 +36,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
