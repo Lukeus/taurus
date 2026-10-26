@@ -178,8 +178,8 @@ export function Settings({ onClose }: { onClose: () => void }) {
         <>
           <p className="drawer-intro">
             Saved to <code>~/.taurus/providers.json</code>, shared with the
-            CLI. API keys are never stored here — name the environment
-            variable that holds one.
+            CLI. Keys never go in that file: store one below and it goes to
+            your OS keychain, or name an environment variable that holds it.
           </p>
 
           {/* A providers.json that will not parse is why the list below can

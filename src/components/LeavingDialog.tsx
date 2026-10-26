@@ -22,7 +22,7 @@ export function describeRule(rule: string): string {
  * does not cover, and what it is about to be refused is, almost always, what
  * the person just said "allow once" to. This shows those, picked by default,
  * and one press makes them standing for the workspace — the same write that
- * "Allow always" on each of their prompts would have made.
+ * "Always here" on each of their prompts would have made.
  *
  * Dismissible, and dismissing it changes nothing: the conversation is already
  * unattended, and declining the offer means it refuses as it would have. The

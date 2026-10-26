@@ -496,7 +496,9 @@ To stop it, do any of these:
   back into the box.
 - Open another conversation.
 
-⌘K has both actions too, **Read replies aloud** and **Stop reading**.
+⌘K has both actions too. **Read replies aloud** turns the setting on, and
+reads **Turn off reading replies aloud** while it's on. **Stop reading**
+silences the reply being read and leaves the setting alone.
 
 ### What gets read
 

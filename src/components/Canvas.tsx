@@ -201,7 +201,7 @@ export function Canvas({
       {conflict && (
         <ConflictBanner
           className="canvas-conflict"
-          title="Taurus changed this file while you were typing."
+          title="This file changed while you were typing."
           onTakeTheirs={onTakeTheirs}
           onKeepMine={onKeepMine}
         />

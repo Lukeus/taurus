@@ -568,7 +568,7 @@ export const revokePermissionRule = (rule: string, scope: Scope) =>
 export const onceAllowedRules = (sessionId: string) =>
   invoke<string[]>("once_allowed_rules", { sessionId });
 
-/** Makes rules standing for this workspace, as "Allow always" would have. */
+/** Makes rules standing for this workspace, as "Always here" would have. */
 export const grantPermissionRules = (rules: string[]) =>
   invoke<void>("grant_permission_rules", { rules });
 

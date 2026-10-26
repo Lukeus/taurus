@@ -700,7 +700,7 @@ async fn every_request_says_how_full_the_window_is() {
     let readings: Vec<(u32, u32)> = events
         .iter()
         .filter_map(|e| match e {
-            UiEvent::ContextUsed { used, window } => Some((*used, *window)),
+            UiEvent::ContextUsed { used, window, .. } => Some((*used, *window)),
             _ => None,
         })
         .collect();
@@ -717,6 +717,14 @@ async fn every_request_says_how_full_the_window_is() {
         readings[0]
     );
     assert!(readings[1].0 > readings[0].0, "{readings:?}");
+
+    // Where compaction starts goes with the reading, so the meter can say
+    // "summarizing" at the harness's point rather than at a guess.
+    for event in &events {
+        if let UiEvent::ContextUsed { window, budget, .. } = event {
+            assert!(*budget > 0 && *budget < *window, "{budget} of {window}");
+        }
+    }
 }
 
 #[tokio::test]

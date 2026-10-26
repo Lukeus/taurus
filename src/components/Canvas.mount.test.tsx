@@ -325,7 +325,7 @@ describe("the canvas", () => {
       conflict: doc("src/main.rs", "theirs\n"),
     });
     const bar = host.querySelector(".canvas-conflict");
-    expect(bar?.textContent).toContain("Taurus changed this file while you were typing");
+    expect(bar?.textContent).toContain("This file changed while you were typing");
     // The typing is still there — the point of not choosing.
     expect(box(host).value).toBe("mine\n");
     expect(bar?.textContent).toContain("still here, unsaved");

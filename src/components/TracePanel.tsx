@@ -99,8 +99,10 @@ export function TracePanel({
     <Drawer title="Traces" onClose={onClose} panel="traces">
       <p className="drawer-intro">
         What each turn spent its wall time on, from the spans the harness
-        emits. Kept in memory for this run of the app only — set an OTLP
-        endpoint in Settings to send the same spans somewhere that keeps them.
+        emits. Kept in memory for this run of the app only. To send the same
+        spans somewhere that keeps them, set{" "}
+        <code className="md-inline-code">otlp_endpoint</code> in settings.json,
+        or <code className="md-inline-code">OTEL_EXPORTER_OTLP_ENDPOINT</code>.
       </p>
 
       <div className="usage-scope" role="tablist" aria-label="Which turns" onKeyDown={onTabKeys}>

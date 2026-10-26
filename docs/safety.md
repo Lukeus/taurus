@@ -186,7 +186,7 @@ What the run is about to be refused is, almost always, what you just said
 **Allow once** to. So the moment you set a conversation to unattended, Taurus
 lists those: every rule this conversation allowed once that nothing permits
 yet, picked by default. One press makes them standing for this workspace, the
-same write **Allow always** on each prompt would have made, into the same
+same write **Always here** on each prompt would have made, into the same
 `permissions.json`. Unpick any you'd rather it kept asking about, or leave
 them all as they are. The switch itself writes nothing, and declining the
 offer leaves the conversation unattended all the same. A command that could

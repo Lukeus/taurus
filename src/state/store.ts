@@ -229,7 +229,7 @@ interface Store {
    * for and may be the built-in assumption — which is worth seeing, since it
    * is the one number here a person can correct.
    */
-  context: { used: number; window: number } | null;
+  context: { used: number; window: number; budget: number } | null;
   /**
    * Set while a turn is running in the conversation on screen.
    *
@@ -368,7 +368,7 @@ interface Store {
   setUnattended: (unattended: boolean) => Promise<void>;
   /**
    * Makes the rules the leaving dialog offered standing for this workspace.
-   * The same write "Allow always" on each of their prompts would have made.
+   * The same write "Always here" on each of their prompts would have made.
    */
   grantLeaving: (rules: string[]) => Promise<void>;
   /** Closes the leaving dialog with nothing granted. */
@@ -2414,10 +2414,14 @@ export function mergeContext(
   event: UiEvent,
 ): Store["context"] {
   if (event.type !== "context_used") return context;
-  if (context?.used === event.used && context.window === event.window) {
+  if (
+    context?.used === event.used &&
+    context.window === event.window &&
+    context.budget === event.budget
+  ) {
     return context;
   }
-  return { used: event.used, window: event.window };
+  return { used: event.used, window: event.window, budget: event.budget };
 }
 
 export function mergeChanged(changed: string[], event: UiEvent): string[] {

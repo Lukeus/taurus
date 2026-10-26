@@ -269,7 +269,7 @@ pub fn read(
     let meta = std::fs::metadata(&path)
         .map_err(|_| format!("There is no {word} called '{name}' any more."))?;
     if meta.len() > kind.max_bytes() {
-        return Err(too_big(kind, name, meta.len()));
+        return Err(too_big(scope, kind, name, meta.len()));
     }
     let text =
         std::fs::read_to_string(&path).map_err(|e| format!("Could not read '{name}': {e}"))?;
@@ -287,13 +287,22 @@ pub fn read(
 /// The two kinds are too big for different reasons, and the message says the
 /// one that is true: prose that long has outgrown being a note, while a sketch
 /// that size is nearly always pictures pasted into it.
-fn too_big(kind: PageKind, name: &str, size: u64) -> String {
+///
+/// A note names where to open it instead. The canvas reaches a project note's
+/// file but not a global one, which lives outside the workspace, so the
+/// advice differs by scope.
+fn too_big(scope: Scope, kind: PageKind, name: &str, size: u64) -> String {
     match kind {
         PageKind::Note => format!(
-            "'{name}' is {} and the editor opens notes up to {}. It is a file rather than a note \
-             now — open it in the canvas instead.",
+            "'{name}' is {} and the editor opens notes up to {}. It's a file rather than a note \
+             now: open {} {}.",
             bytes(size),
-            bytes(MAX_NOTE_BYTES)
+            bytes(MAX_NOTE_BYTES),
+            shown(scope, kind, name),
+            match scope {
+                Scope::Workspace => "in the canvas instead",
+                Scope::Global => "in an editor of your own",
+            }
         ),
         PageKind::Sketch => format!(
             "The sketch '{name}' is {} and sketches open up to {}. A sketch that size is nearly \
@@ -322,7 +331,7 @@ pub fn save(
     if text.len() as u64 > kind.max_bytes() {
         return Err(format!(
             "Not saved. {}",
-            too_big(kind, name, text.len() as u64)
+            too_big(scope, kind, name, text.len() as u64)
         ));
     }
     let wrote = document::write_if_current(&path, &format!("'{name}'"), text, fingerprint)?;
@@ -919,6 +928,7 @@ impl taurus_tools::Tool for WriteNote {
         let name = check(&input.name).map_err(ToolError::InvalidInput)?;
         if input.text.len() as u64 > MAX_NOTE_BYTES {
             return Err(ToolError::InvalidInput(too_big(
+                input.scope,
                 PageKind::Note,
                 &name,
                 input.text.len() as u64,
@@ -1332,7 +1342,16 @@ mod tests {
             std::fs::write(&path, "x".repeat(MAX_NOTE_BYTES as usize + 1)).unwrap();
             let why = read(Scope::Workspace, Some(w), PageKind::Note, "Huge").unwrap_err();
             assert!(why.contains("512 KB"), "{why}");
-            assert!(why.contains("canvas"), "{why}");
+            assert!(why.contains(".taurus/notes/Huge.md in the canvas"), "{why}");
+
+            // A global note is outside the workspace, where the canvas can't
+            // reach, so it isn't sent there.
+            page(Scope::Global, w, "Huge");
+            let global = dir(Scope::Global, Some(w)).unwrap().join("Huge.md");
+            std::fs::write(&global, "x".repeat(MAX_NOTE_BYTES as usize + 1)).unwrap();
+            let why = read(Scope::Global, Some(w), PageKind::Note, "Huge").unwrap_err();
+            assert!(!why.contains("canvas"), "{why}");
+            assert!(why.contains("in an editor of your own"), "{why}");
         });
     }
 

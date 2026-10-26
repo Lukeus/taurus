@@ -25,8 +25,8 @@ const into = (onOpen: () => void = () => {}) => {
 const mount = (onOpen: () => void = () => {}) => into(onOpen).innerHTML;
 
 /** Puts a reading in the store the way a running turn does. */
-const reading = (used: number, window: number | null) =>
-  useStore.setState({ context: window === null ? null : { used, window } });
+const reading = (used: number, window: number | null, budget = 0) =>
+  useStore.setState({ context: window === null ? null : { used, window, budget } });
 
 beforeEach(() => reading(0, null));
 afterEach(() => {
@@ -61,6 +61,17 @@ describe("ContextMeter", () => {
     const html = mount();
     expect(html).toContain("summarized");
     expect(html).toContain("full");
+  });
+
+  it("says summarizing at the harness's own point, not at a fixed share", () => {
+    // 200k window, 168k budget: 82% is still below where compaction starts.
+    reading(164_000, 200_000, 168_000);
+    expect(mount()).not.toContain("summarized");
+    reading(168_000, 200_000, 168_000);
+    expect(mount()).toContain("summarized");
+    // 128k window, 96k budget: 76% is already past it.
+    reading(97_000, 128_000, 96_000);
+    expect(mount()).toContain("summarized");
   });
 
   it("does not divide by a window of zero", () => {

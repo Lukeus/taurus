@@ -18,8 +18,9 @@ use taurus_tools::{Effect, PermissionDecision, PermissionPrompt, PermissionReque
 pub struct Policy {
     /// Tool names granted up front, e.g. `write_file`.
     pub allow_tools: BTreeSet<String>,
-    /// Shell programs granted up front, e.g. `git`. Matches the leading word,
-    /// the same unit the interactive "allow always" uses.
+    /// Shell programs granted up front, e.g. `git`. A chained line passes
+    /// only when every program it runs is here, the same unit the interactive
+    /// "always here" uses; a redirect or substitution never passes.
     pub allow_commands: BTreeSet<String>,
     /// Grants everything. Only for throwaway or already-sandboxed environments.
     pub allow_all: bool,
@@ -124,11 +125,9 @@ impl TerminalPrompt {
         // read — there is nowhere to keep the decision. See `taurus_host::trust`.
         let mut keys = String::from("  [y] once");
         if request.offer_always {
-            keys.push_str(if request.always_global_scope.is_some() {
-                "  [a] always here"
-            } else {
-                "  [a] always"
-            });
+            // "always here" whether or not "everywhere" is beside it: a
+            // standing grant without one is still kept in this workspace.
+            keys.push_str("  [a] always here");
         }
         if request.always_global_scope.is_some() {
             keys.push_str("  [g] always everywhere");

@@ -624,7 +624,10 @@ export function Composer({
               the box for it to do it to, so the line does not spend a turn
               announcing a rule about text that has not been typed. */}
           <span className="composer-hint">
-            {micHint ? (
+            {/* Nothing about Enter while the box can't be typed into: the
+                placeholder says what's missing, and "↵ send" beside a
+                disabled box was two controls disagreeing. */}
+            {!ready ? null : micHint ? (
               micHint
             ) : speaking ? (
               "reading aloud · esc stops"

@@ -185,6 +185,13 @@ pub enum UiEvent {
         used: u32,
         /// What the model can hold.
         window: u32,
+        /// Where compaction starts: the window less what's held back for the
+        /// reply. Carried rather than guessed, because the reserve is a
+        /// clamped share of the window, so the point is a different
+        /// percentage on every model. Zero from a recording made before it
+        /// was sent.
+        #[serde(default)]
+        budget: u32,
     },
     TurnFinished {
         stop_reason: StopReason,
