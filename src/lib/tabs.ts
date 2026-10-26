@@ -12,10 +12,14 @@ import type { KeyboardEvent } from "react";
  * rather than landed on. The tabs themselves carry a roving `tabIndex` — 0 on
  * the selected one, -1 on the rest — so Tab reaches the row once and the
  * arrows do the rest.
+ *
+ * A `radiogroup` of pill buttons makes the same promise and keeps it the same
+ * way, so this goes on those too: it moves among `role="radio"` as readily as
+ * among `role="tab"`.
  */
 export function onTabKeys(e: KeyboardEvent<HTMLElement>): void {
   const tabs = [
-    ...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+    ...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"], [role="radio"]'),
   ].filter((tab) => !tab.disabled);
   const at = tabs.indexOf(document.activeElement as HTMLButtonElement);
   if (at < 0 || tabs.length === 0) return;

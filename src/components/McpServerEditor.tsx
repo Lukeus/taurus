@@ -197,6 +197,7 @@ export function McpServerEditor({
                 <button
                   key={kind}
                   className={`pill${draft.transport === kind ? " on" : ""}`}
+                  aria-pressed={draft.transport === kind}
                   onClick={() => change({ transport: kind })}
                 >
                   {kind === "stdio" ? "Running a program" : "An HTTP endpoint"}

@@ -23,6 +23,7 @@ import { ProseEditor } from "./ProseEditor";
 import { SketchHost } from "./SketchEmbed";
 import { useArmed } from "../lib/armed";
 import { ConflictBanner } from "./ConflictBanner";
+import { onTabKeys } from "../lib/tabs";
 
 /**
  * The sketch editor, loaded the first time a sketch is opened.
@@ -396,12 +397,18 @@ export function NotesPane({
 
             {page.kind === "note" ? (
               <>
-                <div className="notes-modes" role="tablist" aria-label="How to show it">
+                <div
+                  className="notes-modes"
+                  role="tablist"
+                  aria-label="How to show it"
+                  onKeyDown={onTabKeys}
+                >
                   {(["write", "split", "read"] as const).map((m) => (
                     <button
                       key={m}
                       role="tab"
                       aria-selected={mode === m}
+                      tabIndex={mode === m ? 0 : -1}
                       className={`seg${mode === m ? " on" : ""}`}
                       onClick={() => switchTo(m)}
                       data-tip={MODE_TIP[m]}
@@ -503,6 +510,7 @@ export function NotesPane({
                   onBlur={() => void notebook.flush()}
                   // The one key worth knowing, said where it is used.
                   placeholder="Write in Markdown. Type / at the start of a line for a heading, a list, a diagram or a sketch."
+                  label={page.name}
                   sketches={sketchNames}
                   notes={linkable}
                 />
@@ -604,7 +612,12 @@ function Group({
         <span className="micro">{scope === "workspace" ? "Project" : "Global"}</span>
         <div className="spacer" />
         {!disabled && (
-          <button className="notes-new" onClick={onOpen} aria-label={`New ${label} note or sketch`}>
+          <button
+            className="notes-new"
+            onClick={onOpen}
+            aria-label={`New ${label} note or sketch`}
+            data-tip={`New ${label} note or sketch`}
+          >
             +
           </button>
         )}
@@ -618,12 +631,18 @@ function Group({
         <>
           {making !== null && (
             <div className="notes-make">
-              <div className="notes-kind" role="radiogroup" aria-label="What to make">
+              <div
+                className="notes-kind"
+                role="radiogroup"
+                aria-label="What to make"
+                onKeyDown={onTabKeys}
+              >
                 {(["note", "sketch"] as const).map((kind) => (
                   <button
                     key={kind}
                     role="radio"
                     aria-checked={making.kind === kind}
+                    tabIndex={making.kind === kind ? 0 : -1}
                     className={`seg${making.kind === kind ? " on" : ""}`}
                     onClick={() => onChange({ kind, name: making.name })}
                   >

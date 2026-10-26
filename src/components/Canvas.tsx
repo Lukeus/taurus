@@ -6,6 +6,7 @@ import { DocumentEditor } from "./DocumentEditor";
 import { Markdown } from "./Markdown";
 import { ConflictBanner } from "./ConflictBanner";
 import type { SaveState } from "../state/notebook";
+import { onTabKeys } from "../lib/tabs";
 
 /**
  * The file open beside the conversation.
@@ -175,12 +176,18 @@ export function Canvas({
         {/* Only where there is something to switch to. A `.rs` file has one
             way of being read and a control offering one choice is furniture. */}
         {prose && (
-          <div className="canvas-modes" role="tablist" aria-label="How to read it">
+          <div
+            className="canvas-modes"
+            role="tablist"
+            aria-label="How to read it"
+            onKeyDown={onTabKeys}
+          >
             {(["preview", "source"] as const).map((m) => (
               <button
                 key={m}
                 role="tab"
                 aria-selected={mode === m}
+                tabIndex={mode === m ? 0 : -1}
                 className={`seg${mode === m ? " on" : ""}`}
                 onClick={() => setMode(m)}
               >

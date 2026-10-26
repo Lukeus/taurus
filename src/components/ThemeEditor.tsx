@@ -12,6 +12,7 @@ import {
 } from "../lib/theme";
 import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
+import { onTabKeys } from "../lib/tabs";
 
 /**
  * The editor behind "Customize" in Settings › Appearance.
@@ -200,12 +201,18 @@ export function ThemeEditor({
       {/* Which palette the fields below edit. It repaints the window with
           them, because a light palette edited while the window is dark is a
           light palette nobody has looked at. */}
-      <div className="pill-row" role="radiogroup" aria-label="Palette being edited">
+      <div
+        className="pill-row"
+        role="radiogroup"
+        aria-label="Palette being edited"
+        onKeyDown={onTabKeys}
+      >
         {(["dark", "light"] as const).map((which) => (
           <button
             key={which}
             role="radio"
             aria-checked={painting === which}
+            tabIndex={painting === which ? 0 : -1}
             className={`pill${painting === which ? " on" : ""}`}
             onClick={() => setPainting(which)}
           >

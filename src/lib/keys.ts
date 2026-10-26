@@ -27,6 +27,16 @@ export const MOD = APPLE ? "⌘" : "Ctrl";
 export const chord = (key: string): string => `${MOD}${APPLE ? "" : "+"}${key}`;
 
 /**
+ * The terminal's key, which is Control on every platform, Mac included: ⌘`
+ * is the system's own "next window". So it can't go through `chord`, and it
+ * was spelled three ways in three places before it lived here.
+ */
+export const TERMINAL_SHORTCUT = APPLE ? "⌃`" : "Ctrl+`";
+
+/** Completion in the query box: Control and Space everywhere. */
+export const COMPLETE_SHORTCUT = APPLE ? "⌃Space" : "Ctrl+Space";
+
+/**
  * Whether this event is the platform's own modifier plus `key`, and nothing
  * else.
  *

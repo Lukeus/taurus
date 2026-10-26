@@ -81,3 +81,44 @@ describe("a row of tabs", () => {
     expect(ui.tab("three").tabIndex).toBe(-1);
   });
 });
+
+function Pills() {
+  const [on, setOn] = useState("system");
+  return (
+    <div role="radiogroup" aria-label="Theme" onKeyDown={onTabKeys}>
+      {["system", "light", "dark"].map((name) => (
+        <button
+          key={name}
+          role="radio"
+          aria-checked={on === name}
+          tabIndex={on === name ? 0 : -1}
+          onClick={() => setOn(name)}
+        >
+          {name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+describe("a group of radio pills", () => {
+  // A radiogroup promises the arrows as a tablist does. Its pills were each
+  // their own Tab stop, and the arrows did nothing.
+  it("moves and selects with the arrows", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => createRoot(host).render(<Pills />));
+    const pill = (name: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(
+        (p) => p.textContent === name,
+      )!;
+    pill("system").focus();
+    act(() => {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
+    });
+    expect(pill("light").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(pill("light"));
+  });
+});

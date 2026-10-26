@@ -1,5 +1,6 @@
-import { memo, type ReactNode } from "react";
+import { memo, useRef, type ReactNode } from "react";
 
+import { TERMINAL_SHORTCUT } from "../lib/keys";
 import type { SessionMeta, Theme } from "../lib/api";
 import { forkPlace } from "../lib/branches";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
@@ -195,6 +196,13 @@ export const Rail = memo(function Rail({
    * It lets go on its own, and on Escape — see `useArmed`.
    */
   const { armed: arming, arm, disarm } = useArmed<string>();
+  /*
+   * The row whose trash can should take focus back once its question goes
+   * away. Arming swaps that button for Delete and Keep, so focus would fall to
+   * the page and a keyboard user would be left nowhere. Keep takes focus on
+   * arming; this hands it back to the trash can on Keep, Escape or the lapse.
+   */
+  const refocus = useRef<string | null>(null);
 
   /** Which sections are folded. Outlives the window — see `useSections`. */
   const sections = useSections();
@@ -282,6 +290,8 @@ export const Rail = memo(function Rail({
               className={DELETE_ICON}
               aria-label="Keep this conversation"
               data-tip="Keep it"
+              // The safe landing. Delete is one more press away, by Tab.
+              autoFocus
               onClick={disarm}
             >
               ✕
@@ -305,7 +315,19 @@ export const Rail = memo(function Rail({
             disabled={busy && current}
             aria-label={`Delete ${title}`}
             data-tip="Delete this conversation"
-            onClick={() => arm(session.id)}
+            ref={(element) => {
+              // Only when focus has nowhere else to be: a click on another
+              // row's trash can arms that one, and its Keep has the focus.
+              const loose = !document.activeElement || document.activeElement === document.body;
+              if (element && refocus.current === session.id && loose) {
+                refocus.current = null;
+                element.focus();
+              }
+            }}
+            onClick={() => {
+              refocus.current = session.id;
+              arm(session.id);
+            }}
           >
             <TrashIcon />
           </button>
@@ -565,7 +587,7 @@ export const Rail = memo(function Rail({
             data-tip={
               jobsRunning > 0
                 ? `${plural(jobsRunning, "command")} running in the background`
-                : "A shell in this folder (⌃`)"
+                : `A shell in this folder (${TERMINAL_SHORTCUT})`
             }
           >
             <span className={`${GLYPH} text-faint`}>
