@@ -18,8 +18,8 @@ use taurus_agents::{builtin, AgentDefinition};
 use taurus_provider::{Message, Provider};
 use taurus_tools::tool::{parse_input, schema_for};
 use taurus_tools::{
-    Arrival, DelegateReport, Disposition, Effect, Tool, ToolContext, ToolError, ToolRegistry,
-    ToolResult, Touched,
+    now_ms, Arrival, DelegateReport, DelegateStep, Disposition, Effect, Tool, ToolContext,
+    ToolError, ToolRegistry, ToolResult, Touched,
 };
 
 use crate::agent::{Agent, AgentConfig, AgentError, TurnOutcome, TurnRecorder};
@@ -455,8 +455,24 @@ impl Launch {
     async fn run(self, prompt: String, ctx: ToolContext) -> String {
         // Held for the whole run, in whichever task that is. A background
         // delegate waiting for a permit hasn't started, which is still right:
-        // the cap is on children running, not children asked for.
-        let _permit = self.permits.acquire_owned().await;
+        // the cap is on children running, not children asked for. Said when
+        // it has to wait, so a card waiting on a slot isn't mistaken for one
+        // that has stalled.
+        let _permit = match self.permits.clone().try_acquire_owned() {
+            Ok(permit) => Ok(permit),
+            Err(_) => {
+                ctx.report_activity(DelegateStep::Queued { at: now_ms() })
+                    .await;
+                self.permits.clone().acquire_owned().await
+            }
+        };
+        ctx.report_activity(DelegateStep::Started {
+            agent: self.name.clone(),
+            model: self.model.clone(),
+            max_rounds: self.config.max_iterations,
+            at: now_ms(),
+        })
+        .await;
 
         // Before the agent, because opening a recorder needs the id of the
         // conversation it is recording.
@@ -488,19 +504,22 @@ impl Launch {
 
         info!(kind = %self.name, model = %self.model, "spawning sub-agent");
 
-        // The child's own text and results stay inside the child — the parent's
-        // transcript should show one delegation, not a second conversation. But
-        // *what it is doing* is forwarded as it happens: a delegation can run
-        // for a minute, and a card that says "running" for that long is
-        // indistinguishable from one that has hung.
+        // The child's own text and results stay out of the parent's
+        // transcript — it shows one delegation, not a second conversation.
+        // But the child's run is forwarded as it happens, as typed steps under
+        // the parent's call: a delegation can run for a minute, and a card
+        // that says "running" for that long is indistinguishable from one that
+        // has hung. The agents panel draws all of it; the card draws a line.
         let (tx, mut rx) = mpsc::channel::<UiEvent>(256);
         let progress = ctx.clone();
         let collector = tokio::spawn(async move {
             let mut tools: Vec<String> = Vec::new();
             while let Some(event) = rx.recv().await {
-                if let UiEvent::ToolCallStarted { name, preview, .. } = event {
-                    progress.report(preview).await;
-                    tools.push(name);
+                if let UiEvent::ToolCallStarted { name, .. } = &event {
+                    tools.push(name.clone());
+                }
+                if let Some(step) = step_of(event) {
+                    progress.report_activity(step).await;
                 }
             }
             tools
@@ -514,6 +533,12 @@ impl Launch {
         // the parent's bill. Its transcript is kept apart from the parent's
         // listing, so this is the only place it is counted.
         ctx.add_spent(&session.usage);
+        ctx.report_activity(DelegateStep::Finished {
+            input_tokens: session.usage.input_tokens,
+            output_tokens: session.usage.output_tokens,
+            at: now_ms(),
+        })
+        .await;
 
         let reported = self.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
         let report = report_for(reported, &outcome, &session, touched.paths());
@@ -525,6 +550,45 @@ impl Launch {
         }
         text
     }
+}
+
+/// What a child's event says to someone watching the delegation, if anything.
+///
+/// Only what an agent visibly does: its rounds, its words, its tool calls and
+/// how they came out, how full it is, and trouble. Its own bookkeeping (turn
+/// boundaries, files changed, compaction) is either in the report or not
+/// something a person watching needs.
+fn step_of(event: UiEvent) -> Option<DelegateStep> {
+    Some(match event {
+        UiEvent::IterationStarted { iteration } => DelegateStep::Round { n: iteration },
+        UiEvent::TextDelta { text } => DelegateStep::Text { text },
+        UiEvent::ThinkingDelta { text } => DelegateStep::Thinking { text },
+        UiEvent::ToolCallStarted {
+            id, name, preview, ..
+        } => DelegateStep::ToolStarted {
+            call: id,
+            name,
+            preview,
+            at: now_ms(),
+        },
+        UiEvent::ToolCallFinished { id, ok, .. } => DelegateStep::ToolFinished {
+            call: id,
+            ok,
+            at: now_ms(),
+        },
+        UiEvent::ContextUsed { used, window, .. } => DelegateStep::Context { used, window },
+        UiEvent::Retrying {
+            attempt,
+            of,
+            reason,
+        } => DelegateStep::Retrying {
+            attempt,
+            of,
+            reason,
+        },
+        UiEvent::Error { message } => DelegateStep::Error { message },
+        _ => return None,
+    })
 }
 
 /// The report a delegation hands back, from what the child said and how its
@@ -715,6 +779,7 @@ mod tests {
     struct SpyProgress {
         transcripts: tokio::sync::Mutex<Vec<(String, String)>>,
         reports: tokio::sync::Mutex<Vec<DelegateReport>>,
+        steps: tokio::sync::Mutex<Vec<DelegateStep>>,
     }
 
     #[async_trait]
@@ -727,6 +792,10 @@ mod tests {
 
         async fn delegate_report(&self, report: DelegateReport) {
             self.reports.lock().await.push(report);
+        }
+
+        async fn activity(&self, step: DelegateStep) {
+            self.steps.lock().await.push(step);
         }
     }
 
@@ -838,6 +907,102 @@ mod tests {
         );
         // No second request to write a closing paragraph nobody reads.
         assert_eq!(provider.request_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_delegation_reports_its_run_as_it_happens() {
+        // The agents panel draws a delegate from these: it started, which
+        // round it's on, each tool call and how it came out, and that it
+        // stopped. A card that only said "running" for a minute looked hung.
+        let (tool, ctx, dir) = fixture(vec![
+            ScriptedTurn::tool_call("r1", "list_dir", serde_json::json!({ "path": "." })),
+            finish(
+                "f1",
+                serde_json::json!({ "disposition": "done", "summary": "Listed it." }),
+            ),
+        ]);
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let progress = Arc::new(SpyProgress::default());
+        let ctx = ctx.with_progress(progress.clone());
+        tool.execute(
+            serde_json::json!({
+                "agent_type": "explorer",
+                "prompt": "List what is at the top of the workspace."
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let steps = progress.steps.lock().await;
+        let kinds: Vec<&str> = steps
+            .iter()
+            .map(|step| match step {
+                DelegateStep::Queued { .. } => "queued",
+                DelegateStep::Started { .. } => "started",
+                DelegateStep::Round { .. } => "round",
+                DelegateStep::Text { .. } => "text",
+                DelegateStep::Thinking { .. } => "thinking",
+                DelegateStep::ToolStarted { .. } => "tool_started",
+                DelegateStep::ToolFinished { .. } => "tool_finished",
+                DelegateStep::Context { .. } => "context",
+                DelegateStep::Retrying { .. } => "retrying",
+                DelegateStep::Error { .. } => "error",
+                DelegateStep::Finished { .. } => "finished",
+            })
+            .filter(|kind| *kind != "context")
+            .collect();
+        assert_eq!(kinds.first(), Some(&"started"), "{kinds:?}");
+        assert_eq!(kinds.last(), Some(&"finished"), "{kinds:?}");
+        let listed = steps.iter().position(|step| {
+            matches!(step, DelegateStep::ToolStarted { call, name, .. } if call == "r1" && name == "list_dir")
+        });
+        let back = steps.iter().position(|step| {
+            matches!(step, DelegateStep::ToolFinished { call, ok: true, .. } if call == "r1")
+        });
+        assert!(listed.is_some() && back > listed, "{kinds:?}");
+        assert!(kinds.contains(&"round"), "{kinds:?}");
+        let DelegateStep::Started {
+            agent, max_rounds, ..
+        } = &steps[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(agent, "explorer");
+        assert!(*max_rounds > 0);
+    }
+
+    #[tokio::test]
+    async fn a_delegation_waiting_for_a_slot_says_so_before_it_starts() {
+        let (tool, ctx, _dir) = fixture(vec![finish(
+            "f1",
+            serde_json::json!({ "disposition": "done", "summary": "Done." }),
+        )]);
+        // Both slots taken, as two delegates already running would hold them.
+        let held = tool.permits.clone().acquire_many_owned(2).await.unwrap();
+        let progress = Arc::new(SpyProgress::default());
+        let ctx = ctx.with_progress(progress.clone());
+        let run = tokio::spawn(async move {
+            tool.execute(
+                serde_json::json!({
+                    "agent_type": "explorer",
+                    "prompt": "Find where the server's port is configured."
+                }),
+                &ctx,
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(matches!(
+            progress.steps.lock().await.as_slice(),
+            [DelegateStep::Queued { .. }]
+        ));
+        drop(held);
+        run.await.unwrap().unwrap();
+        assert!(matches!(
+            progress.steps.lock().await.get(1),
+            Some(DelegateStep::Started { .. })
+        ));
     }
 
     #[tokio::test]

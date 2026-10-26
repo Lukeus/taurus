@@ -30,6 +30,16 @@
 //! reasoning model is not small, and a view that arrives after the cap has
 //! bitten is told how much of the round it is missing rather than left to
 //! begin mid-sentence.
+//!
+//! # Delegates
+//!
+//! A delegate's run is the exception to "disk has the rounds that finished".
+//! The parent's transcript keeps one call and its report, never the child's
+//! steps, and a background delegate goes on across rounds of the parent. So
+//! everything about delegations is kept apart, in `agents`, for the whole
+//! turn: a window that opens mid-turn can draw every agent in it, not only
+//! the ones started this round. It's sent after the round, so a card the
+//! round is about to draw exists before what's said about it arrives.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -58,6 +68,11 @@ const MAX_REPLAY_BYTES: usize = 256 * 1024;
 /// events rather than by the count of small ones.
 const EVENT_OVERHEAD: usize = 64;
 
+/// Largest record of delegate activity held for the whole turn. See the
+/// module's "Delegates". Larger than a round's, because it outlives rounds
+/// and holds several agents; still a cap, because a delegate is a model too.
+const MAX_AGENTS_BYTES: usize = 512 * 1024;
+
 /// Charged for a call that carries something to draw in place of its row — a
 /// query result, a plan board.
 ///
@@ -85,6 +100,9 @@ pub struct Live {
 struct Fan {
     views: Vec<Channel<UiEvent>>,
     replay: Replay,
+    /// Every delegation's events, for the whole turn. See the module's
+    /// "Delegates".
+    agents: Replay,
 }
 
 impl Live {
@@ -118,7 +136,11 @@ impl Live {
             // The round the transcript is about to be missing is this one.
             fan.replay.clear();
         }
-        fan.replay.push(event.clone());
+        if about_a_delegate(&event) {
+            fan.agents.push_capped(event.clone(), MAX_AGENTS_BYTES);
+        } else {
+            fan.replay.push(event.clone());
+        }
         fan.views.retain(|view| view.send(event.clone()).is_ok());
     }
 
@@ -130,14 +152,16 @@ impl Live {
     /// avoiding here.
     pub async fn attach(&self, view: Channel<UiEvent>) -> usize {
         let mut fan = self.fan.lock().await;
-        for event in &fan.replay.events {
+        // The round first, then the delegates: a card drawn by this round has
+        // to exist before what's said about its delegate lands on it.
+        for event in fan.replay.events.iter().chain(&fan.agents.events) {
             // A view that cannot take the catch-up cannot take what follows
             // either, so it is never registered.
             if view.send(event.clone()).is_err() {
                 return 0;
             }
         }
-        let dropped = fan.replay.dropped;
+        let dropped = fan.replay.dropped + fan.agents.dropped;
         fan.views.push(view);
         dropped
     }
@@ -167,9 +191,39 @@ impl Replay {
     /// whole cap on the per-event overhead of a model that streams in small
     /// pieces.
     fn push(&mut self, event: UiEvent) {
+        self.push_capped(event, MAX_REPLAY_BYTES);
+    }
+
+    fn push_capped(&mut self, event: UiEvent, cap: usize) {
+        use taurus_tools::DelegateStep::{Text, Thinking};
         match (&event, self.events.back_mut()) {
             (UiEvent::TextDelta { text }, Some(UiEvent::TextDelta { text: held }))
             | (UiEvent::ThinkingDelta { text }, Some(UiEvent::ThinkingDelta { text: held })) => {
+                held.push_str(text);
+                self.bytes += text.len();
+            }
+            // A delegate streams as its parent does, and only one delegate's
+            // run of a kind is merged: concurrent delegates interleave.
+            (
+                UiEvent::DelegateActivity {
+                    id,
+                    step: Text { text },
+                },
+                Some(UiEvent::DelegateActivity {
+                    id: held_id,
+                    step: Text { text: held },
+                }),
+            )
+            | (
+                UiEvent::DelegateActivity {
+                    id,
+                    step: Thinking { text },
+                },
+                Some(UiEvent::DelegateActivity {
+                    id: held_id,
+                    step: Thinking { text: held },
+                }),
+            ) if id == held_id => {
                 held.push_str(text);
                 self.bytes += text.len();
             }
@@ -178,7 +232,7 @@ impl Replay {
                 self.events.push_back(event);
             }
         }
-        while self.bytes > MAX_REPLAY_BYTES {
+        while self.bytes > cap {
             let Some(gone) = self.events.pop_front() else {
                 break;
             };
@@ -202,12 +256,38 @@ fn weight(event: &UiEvent) -> usize {
             output.len() + images.iter().map(|image| image.data.len()).sum::<usize>()
         }
         UiEvent::ToolProgress { label, .. } => label.len(),
+        UiEvent::DelegateActivity { step, .. } => {
+            use taurus_tools::DelegateStep as Step;
+            match step {
+                Step::Text { text } | Step::Thinking { text } => text.len(),
+                Step::ToolStarted { preview, .. } => preview.len(),
+                Step::Retrying { reason, .. } => reason.len(),
+                Step::Error { message } => message.len(),
+                _ => 0,
+            }
+        }
+        UiEvent::DelegateReport { report, .. } => report.summary.len(),
         UiEvent::Retrying { reason, .. } => reason.len(),
         UiEvent::FilesChanged { paths } => paths.iter().map(String::len).sum(),
         UiEvent::Error { message } => message.len(),
         _ => 0,
     };
     EVENT_OVERHEAD + payload
+}
+
+/// Whether an event is about a delegation rather than the round it's in.
+///
+/// A delegation's steps, and the three events that tie a card to its child:
+/// where the transcript is, that it went to the background, and its report.
+/// A background delegate's arrive rounds after its card was drawn.
+fn about_a_delegate(event: &UiEvent) -> bool {
+    matches!(
+        event,
+        UiEvent::DelegateActivity { .. }
+            | UiEvent::ToolTranscript { .. }
+            | UiEvent::ToolDetached { .. }
+            | UiEvent::DelegateReport { .. }
+    )
 }
 
 fn now() -> u64 {
@@ -316,6 +396,47 @@ mod tests {
             "the transcript on disk has the rounds that finished: {said}"
         );
         assert_eq!(live.iteration(), 2);
+    }
+
+    /// A delegate's run isn't on disk, and a background one outlives the
+    /// round that started it, so a late view gets all of it.
+    #[tokio::test]
+    async fn a_view_arriving_late_gets_every_delegate_of_the_turn() {
+        use taurus_tools::DelegateStep;
+        let live = Live::new();
+        live.publish(UiEvent::IterationStarted { iteration: 1 })
+            .await;
+        live.publish(UiEvent::ToolDetached { id: "bg".into() })
+            .await;
+        live.publish(UiEvent::DelegateActivity {
+            id: "bg".into(),
+            step: DelegateStep::Text {
+                text: "Reading ".into(),
+            },
+        })
+        .await;
+        live.publish(UiEvent::DelegateActivity {
+            id: "bg".into(),
+            step: DelegateStep::Text {
+                text: "the config.".into(),
+            },
+        })
+        .await;
+        live.publish(UiEvent::IterationStarted { iteration: 2 })
+            .await;
+        live.publish(text("the parent goes on")).await;
+
+        let late = View::default();
+        live.attach(late.open()).await;
+        let said = late.said();
+        assert!(said.contains("tool_detached"), "{said}");
+        // Merged, as the parent's own deltas are.
+        assert!(said.contains("Reading the config."), "{said}");
+        // The round comes first, so the card exists before its delegate does.
+        assert!(
+            said.find("the parent goes on") < said.find("tool_detached"),
+            "{said}"
+        );
     }
 
     /// A conversation nobody has opened yet still runs, and the replay is what

@@ -17,6 +17,7 @@ import {} from "./components/Attachments";
 import {} from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
 import { CanvasSlot } from "./components/CanvasSlot";
+import { useAgentsView } from "./state/agentsView";
 import { LeavingDialog } from "./components/LeavingDialog";
 import { PermissionDialog } from "./components/PermissionDialog";
 import { NotesPane } from "./components/NotesPane";
@@ -96,6 +97,7 @@ const PANELS = {
   palette: () => import("./components/CommandPalette"),
   changes: () => import("./components/ChangesDrawer"),
   delegate: () => import("./components/DelegateTranscript"),
+  activity: () => import("./components/AgentsPanel"),
 };
 
 const Settings = lazy(() => PANELS.settings().then((m) => ({ default: m.Settings })));
@@ -122,6 +124,9 @@ const ChangesDrawer = lazy(() =>
 );
 const DelegateTranscript = lazy(() =>
   PANELS.delegate().then((m) => ({ default: m.DelegateTranscript })),
+);
+const AgentsPanel = lazy(() =>
+  PANELS.activity().then((m) => ({ default: m.AgentsPanel })),
 );
 
 /*
@@ -413,6 +418,32 @@ export default function App() {
   const [find, setFind] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
+  /**
+   * Agent activity shares the column with Changes and the canvas. Whichever
+   * of the two panels was opened last has it: opening one shuts the other,
+   * so neither is left open underneath with nothing saying so.
+   */
+  const agentsView = useAgentsView();
+  // A number, so the top bar redraws when it changes and not on every word a
+  // delegate streams.
+  const agentsWorking = useStore(
+    (s) =>
+      Object.values(s.agents ?? {}).filter(
+        (run) => run.finishedAt === undefined && (run.startedAt ?? run.queuedAt) !== undefined,
+      ).length,
+  );
+  const openChanges = () => {
+    useAgentsView.getState().close();
+    setChangesOpen(true);
+  };
+  useEffect(() => {
+    if (agentsView.open) setChangesOpen(false);
+  }, [agentsView.open, agentsView.focus]);
+  const activityPane = useResizableWidth({
+    storageKey: "taurus.activityWidth",
+    grow: -1,
+    ...CHANGES_WIDTH,
+  });
   /**
    * Workspaces whose trust banner has been waved off in this window.
    *
@@ -891,12 +922,20 @@ export default function App() {
         run: () => setTerminalOpen((open) => !open),
       },
       {
+        id: "activity",
+        label: "Agent activity",
+        group: "Panels",
+        keywords: "delegates subagents sub-agents workers parallel tree running spawn",
+        unavailable: store.session ? undefined : "No conversation open",
+        run: () => useAgentsView.getState().show(),
+      },
+      {
         id: "changes",
         label: "Changes",
         group: "Panels",
         keywords: "diff undo rewind revert commit git",
         unavailable: store.session ? undefined : "No conversation open",
-        run: () => setChangesOpen(true),
+        run: openChanges,
       },
       {
         id: "context",
@@ -1122,8 +1161,14 @@ export default function App() {
    * puts the file back because the file never went anywhere. See the slot in
    * `main` for why there is only one.
    */
-  const side: "changes" | "canvas" | null =
-    changesOpen && store.session ? "changes" : canvas ? "canvas" : null;
+  const side: "changes" | "activity" | "canvas" | null =
+    changesOpen && store.session
+      ? "changes"
+      : agentsView.open && store.session
+        ? "activity"
+        : canvas
+          ? "canvas"
+          : null;
 
   /**
    * Sends a message that was typed ahead and then not fired, because the turn
@@ -1284,11 +1329,25 @@ export default function App() {
 
           <div className="spacer" />
 
+          {/* Only while there's something to watch. Delegates working in the
+              background, or two side by side, are otherwise one line each
+              inside a folded run of tool calls. */}
+          {store.session && agentsWorking > 0 && (
+            <button
+              className="chip"
+              data-tip="What each delegate is doing"
+              onClick={() => agentsView.show()}
+            >
+              <span className="dot warn" />
+              {agentsWorking === 1 ? "1 agent working" : `${agentsWorking} agents working`}
+            </button>
+          )}
+
           {store.session && (
             <button
               className="chip"
               data-tip="Files this conversation changed, and the way back"
-              onClick={() => setChangesOpen(true)}
+              onClick={openChanges}
             >
               <span className={`dot${store.changed.length > 0 ? " accent" : ""}`} />
               {store.changed.length > 0
@@ -1525,6 +1584,23 @@ export default function App() {
                       });
                       return forked;
                     }}
+                  />
+                </Suspense>
+              </div>
+            </>
+          )}
+
+          {side === "activity" && store.session && (
+            <>
+              <ResizeHandle pane={activityPane} label="Agent activity width" />
+              <div className="side-slot" style={{ width: activityPane.size }}>
+                <Suspense fallback={<aside className="drawer agents-pane" />}>
+                  <AgentsPanel
+                    model={store.session.model}
+                    busy={store.busy}
+                    focus={agentsView.focus}
+                    onClose={agentsView.close}
+                    onOpenTranscript={setDelegate}
                   />
                 </Suspense>
               </div>

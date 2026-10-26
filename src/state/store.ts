@@ -10,6 +10,7 @@ import { create } from "zustand";
 
 import * as api from "../lib/api";
 import { reportFromText, takeBackgroundReports } from "../lib/delegate";
+import { mergeAgents, NO_AGENTS, type Agents } from "../lib/agents";
 import * as speech from "./speech";
 import type {
   Answer,
@@ -230,6 +231,14 @@ interface Store {
    * is the one number here a person can correct.
    */
   context: { used: number; window: number } | null;
+  /**
+   * Every delegation this window has watched in the conversation on screen,
+   * by the parent's call id: what each delegate is doing, has done, and how
+   * it stopped. Drawn by the agents panel and summarized on each card. Live
+   * only, like a card's steps; a reopened conversation rebuilds what it can
+   * from the delegates' transcripts.
+   */
+  agents: Agents;
   /**
    * Set while a turn is running in the conversation on screen.
    *
@@ -623,6 +632,7 @@ function turnStream(
       entries: foldEvents(events, s.entries),
       changed: events.reduce(mergeChanged, s.changed),
       context: events.reduce(mergeContext, s.context),
+      agents: events.reduce(mergeAgents, s.agents),
     }));
     // Conditional, and deliberately so: a turn re-reads nothing on principle
     // (see the note at the end of `send`). This is not that — it fires only on
@@ -712,6 +722,7 @@ export const useStore = create<Store>((set, get) => ({
   opening: null,
   wrote: null,
   context: null,
+  agents: NO_AGENTS,
   busy: false,
   turn: null,
   unattended: false,
@@ -877,6 +888,7 @@ export const useStore = create<Store>((set, get) => ({
       // moment between the two shows the safe answer.
       unattended: false,
       context: null,
+      agents: NO_AGENTS,
       error: null,
       proposals: [],
       agentProposals: [],
@@ -937,6 +949,7 @@ export const useStore = create<Store>((set, get) => ({
       sent: null,
       unattended: false,
         context: null,
+        agents: NO_AGENTS,
         error: null,
         proposals: [],
         agentProposals: [],
@@ -1022,6 +1035,7 @@ export const useStore = create<Store>((set, get) => ({
       queued: null,
       sent: null,
       context: null,
+      agents: NO_AGENTS,
       proposals: [],
       agentProposals: [],
     });
@@ -1417,6 +1431,7 @@ export const useStore = create<Store>((set, get) => ({
       queued: null,
       sent: null,
       context: null,
+      agents: NO_AGENTS,
       permission: null,
       proposals: [],
       agentProposals: [],
@@ -2456,6 +2471,11 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
 
     case "tool_progress":
       return addProgress(entries, event.id, [event.label]);
+
+    // A delegate's run is the agents panel's (see `mergeAgents`). The
+    // transcript keeps the call and its report, as it always has.
+    case "delegate_activity":
+      return entries;
 
     case "tool_call_finished":
       return entries.map((e) =>

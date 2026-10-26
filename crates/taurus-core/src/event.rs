@@ -83,6 +83,18 @@ pub enum UiEvent {
         id: String,
         report: taurus_tools::DelegateReport,
     },
+    /// Something a delegation's child did, as it does it.
+    ///
+    /// Only delegation emits this, for the whole of the child's run and,
+    /// for a background delegate, after its call has returned. The child's
+    /// prose and reasoning ride here too: they're drawn in the agents panel
+    /// and never in the parent's transcript, which keeps one call and its
+    /// report. See [`taurus_tools::DelegateStep`].
+    DelegateActivity {
+        /// The call this belongs under, matching its `ToolCallStarted`.
+        id: String,
+        step: taurus_tools::DelegateStep,
+    },
     /// A call has returned, and its work goes on in the background: a
     /// delegate started with `background`. Its card stays live until the
     /// matching `DelegateReport` arrives, which may be several rounds later.

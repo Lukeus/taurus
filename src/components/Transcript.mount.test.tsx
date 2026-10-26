@@ -9,7 +9,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { Transcript } from "./Transcript";
 import type { Answer, TranscriptView } from "../lib/api";
-import type { Entry } from "../state/store";
+import { useStore, type Entry } from "../state/store";
+import { useAgentsView } from "../state/agentsView";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -451,17 +452,43 @@ describe("a delegation", () => {
   });
 
   it("in the background, stays live until its report arrives", () => {
+    useStore.setState({
+      agents: {
+        d1: {
+          id: "d1",
+          agent: "explorer",
+          startedAt: Date.now() - 4_000,
+          maxRounds: 20,
+          round: 2,
+          tools: [{ call: "g1", name: "grep", preview: "Search for parse", startedAt: Date.now() - 1_000 }],
+          text: "",
+          thinking: "",
+          detached: true,
+        },
+      },
+    });
     const { host } = mount([
       delegation({
         status: "ok",
         detached: true,
         output: "Started explorer in the background.",
-        steps: ["Search for parse"],
       }),
     ]);
     expect(host.querySelector(".run-row")?.classList.contains("running")).toBe(true);
     expect(host.querySelector(".run-row-status")?.textContent).toBe("…");
-    expect(host.querySelector(".run-substeps")?.textContent).toContain("Search for parse");
+    // Its round and its last calls, read from what the delegate reported.
+    expect(host.querySelector(".run-agent-meta")?.textContent).toContain("round 2 of 20");
+    expect(host.querySelector(".run-agent-calls")?.textContent).toContain("Search for parse");
+    useStore.setState({ agents: {} });
+  });
+
+  it("offers to watch it in the activity panel", () => {
+    const { host, click } = mount([delegation()]);
+    const watch = host.querySelector(".run-row-activity");
+    expect(watch?.textContent).toContain("Watch it work");
+    click(watch);
+    expect(useAgentsView.getState()).toMatchObject({ open: true, focus: "d1" });
+    useAgentsView.getState().close();
   });
 
   it("offers nothing when nothing was recorded", () => {
