@@ -671,4 +671,24 @@ describe("saving providers", () => {
     click(host, "Remove");
     expect(save().disabled).toBe(false);
   });
+
+  it("says why a save was refused, and keeps the edit", async () => {
+    // The write used to fail quietly: the drawer said "Saved" and then
+    // reloaded the old list over the edit.
+    withProviders();
+    const answer = invoke.getMockImplementation()!;
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "save_providers"
+        ? Promise.reject("could not save /home/x/.taurus/providers.json: Read-only file system")
+        : answer(...args),
+    );
+    const host = await mount();
+    const before = cards(host).length;
+    click(host, "Remove");
+    await act(async () => click(host, "Save"));
+
+    expect(host.textContent).toContain("Read-only file system");
+    expect(host.querySelector(".settings-actions")?.textContent).not.toContain("Saved");
+    expect(cards(host)).toHaveLength(before - 1);
+  });
 });

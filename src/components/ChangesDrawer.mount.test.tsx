@@ -785,6 +785,54 @@ describe("forking from a turn", () => {
   });
 });
 
+describe("a conversation whose files are set aside", () => {
+  // Another branch has the workspace, so the files a rewind or a commit would
+  // touch are that branch's. The transcript hides its fork button in this
+  // state; the pane has to agree, or Rewind writes over the other branch.
+  it("offers no rewind, fork or commit, and says how to get them back", async () => {
+    backend({
+      list_checkpoints: [TURN],
+      repo_status: { repository: true, branch: "main" },
+      turn_changes: [DIFF],
+    });
+    const onFork = vi.fn(() => Promise.resolve({}));
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <ChangesDrawer
+          sessionId="s1"
+          busy={false}
+          away="s2"
+          onClose={() => {}}
+          onFork={onFork as never}
+        />,
+      );
+    });
+    const button = (text: string) =>
+      [...host.querySelectorAll("button")].find((b) =>
+        (b.textContent ?? "").includes(text),
+      );
+
+    for (const label of ["Rewind to before this", "Fork here"]) {
+      expect(button(label)?.disabled, label).toBe(true);
+      expect(button(label)?.dataset.tip, label).toContain("Switch to this conversation");
+    }
+
+    // Reading still works: the diff is the log's, not the disk's.
+    await act(async () => button("View changes")!.click());
+    expect(host.textContent).toContain("let new = 2;");
+    expect(button("Commit this turn")?.disabled).toBe(true);
+    expect(button("Commit this turn")?.dataset.tip).toContain("set aside");
+
+    await act(async () => button("Fork here")!.click());
+    expect(onFork).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith("rewind_to", expect.anything());
+    await act(async () => root.unmount());
+  });
+});
+
 describe("comparing branches", () => {
   const BRANCH = {
     id: "s2",

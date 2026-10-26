@@ -169,4 +169,31 @@ describe("the plugins drawer", () => {
     await drawer.click("Update");
     expect(drawer.text()).toContain("git couldn't fetch");
   });
+
+  it("keeps the address that was typed when an add is refused, and clears it once one works", async () => {
+    // A refused git address is usually a typo away from right. Clearing it
+    // made the fix a retype of the whole URL.
+    let refuse = true;
+    invoke.mockImplementation((command: string) =>
+      command === "list_plugins"
+        ? Promise.resolve([])
+        : refuse
+          ? Promise.reject("git couldn't find the ref v9")
+          : Promise.resolve([plugin()]),
+    );
+    const drawer = await mount();
+    const [from] = drawer.host.querySelectorAll("input");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(from, "https://example.invalid/ops.git");
+      from.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await drawer.click("Add");
+    expect(drawer.text()).toContain("couldn't find the ref");
+    expect(from.value).toBe("https://example.invalid/ops.git");
+
+    refuse = false;
+    await drawer.click("Add");
+    expect(from.value).toBe("");
+  });
 });

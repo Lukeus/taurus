@@ -95,7 +95,7 @@ pub async fn save_providers(
     if providers.is_empty() {
         return Err("at least one provider must be configured".into());
     }
-    state.host.set_providers(providers).await;
+    state.host.set_providers(providers).await?;
     emit_status(&state).await;
     Ok(())
 }

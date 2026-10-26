@@ -40,11 +40,18 @@ export function ThemeEditor({
   editing,
   /** The mode the app is in, which is the one the editor opens on. */
   mode,
+  /**
+   * The themes already on this machine. A new theme is saved under its name,
+   * so one named like an existing theme replaces that file, and the editor
+   * says so before Save rather than after.
+   */
+  existing = [],
   onClose,
   onSaved,
 }: {
   editing: CustomTheme | null;
   mode: ResolvedTheme;
+  existing?: CustomTheme[];
   onClose: () => void;
   onSaved: (id: string) => void;
 }) {
@@ -85,8 +92,8 @@ export function ThemeEditor({
       const bare = livePalette();
       setBases((b) => ({ ...b, [painting]: bare }));
     }
-    previewTheme(painting, asTheme(draft));
-  }, [draft, painting, bases]);
+    previewTheme(painting, asTheme(draft, editing));
+  }, [draft, painting, bases, editing]);
 
   /*
    * And put it back on the way out, whichever way out was taken — Save,
@@ -154,6 +161,12 @@ export function ThemeEditor({
   };
 
   const named = draft.name.trim().length > 0;
+  // Only a new theme can land on another one: an edit keeps its own id
+  // whatever it's renamed to. New themes go to the user's folder, so that's
+  // the only layer a name can collide in.
+  const replacing = editing
+    ? undefined
+    : existing.find((t) => t.scope === "global" && named && t.id === slug(draft.name));
 
   return (
     <Drawer
@@ -168,6 +181,12 @@ export function ThemeEditor({
         </code>
         . The window is showing this draft; closing without saving puts it back.
       </p>
+      {replacing && (
+        <p className="hint warn" role="status">
+          A theme called {replacing.name} is already saved there. Saving this
+          one replaces it. Pick another name to keep both.
+        </p>
+      )}
 
       <label className="settings-field">
         <span className="micro">Name</span>
@@ -328,7 +347,7 @@ export function ThemeEditor({
 
       <div className="settings-actions">
         <button className="primary" disabled={!named || saving} onClick={save}>
-          {saving ? "Saving…" : "Save theme"}
+          {saving ? "Saving…" : replacing ? `Replace ${replacing.name}` : "Save theme"}
         </button>
         <button onClick={onClose}>Cancel</button>
         {!named && <span className="hint">A theme needs a name to be saved under.</span>}
@@ -461,7 +480,7 @@ function start(editing: CustomTheme | null, mode: ResolvedTheme): Draft {
         mono: editing.fonts.mono ?? "",
       },
       wordmark: editing.wordmark,
-      logo: "",
+      logo: editing.logo_source ?? "",
       shape: {
         radius: editing.shape.radius?.toString() ?? "",
         gutter: editing.shape.gutter?.toString() ?? "",
@@ -480,8 +499,14 @@ function start(editing: CustomTheme | null, mode: ResolvedTheme): Draft {
   };
 }
 
-/** The draft as something the preview can paint. */
-function asTheme(draft: Draft): CustomTheme {
+/**
+ * The draft as something the preview can paint.
+ *
+ * The logo is the one part a draft can't paint by itself: the window needs it
+ * read and inlined, which only the backend does. While the field still names
+ * the file the theme was opened with, the picture it came with is shown.
+ */
+function asTheme(draft: Draft, editing: CustomTheme | null = null): CustomTheme {
   return {
     id: "",
     name: draft.name,
@@ -495,7 +520,9 @@ function asTheme(draft: Draft): CustomTheme {
       mono: draft.fonts.mono || null,
     },
     wordmark: draft.wordmark,
-    logo: null,
+    logo:
+      editing && draft.logo.trim() === (editing.logo_source ?? "") ? editing.logo : null,
+    logo_source: draft.logo.trim() || null,
     shape: shapeOf(draft),
     // Both, always. The editor paints whichever mode it is showing, and a
     // draft that pinned one would stop the switch above from working.

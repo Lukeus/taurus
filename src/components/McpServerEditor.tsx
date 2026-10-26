@@ -38,6 +38,7 @@ import { Modal } from "./Modal";
 export function McpServerEditor({
   server,
   initial,
+  taken = [],
   onClose,
   onSaved,
 }: {
@@ -53,6 +54,12 @@ export function McpServerEditor({
    * into the file that skips this form.
    */
   initial?: McpServerDraft | null;
+  /**
+   * The servers already configured. A save is an upsert by name, so a new
+   * entry, or a rename, that lands on one of these would replace it. The
+   * backend refuses that too; this says so while the name is being typed.
+   */
+  taken?: McpServerRef[];
   onClose: () => void;
   onSaved: (servers: McpServerView[]) => void;
 }) {
@@ -95,7 +102,19 @@ export function McpServerEditor({
     return { ...draft, command, args };
   };
 
-  const problem = draftProblem(resolved());
+  const clash = taken.find(
+    (t) =>
+      t.scope === draft.scope &&
+      t.name === draft.name.trim() &&
+      !(server && server.scope === t.scope && server.name === t.name),
+  );
+  const problem =
+    draftProblem(resolved()) ??
+    (clash
+      ? `A server called ${clash.name} is already in ${
+          clash.scope === "global" ? "~/.taurus/mcp.json" : ".taurus/mcp.json"
+        }. Give this one another name, or edit that one.`
+      : null);
 
   /*
    * The entry being edited, sent on every save and every test rather than only

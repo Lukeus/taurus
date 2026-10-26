@@ -51,6 +51,7 @@ import { Problem } from "./Problem";
 export function ChangesDrawer({
   sessionId,
   busy,
+  away = null,
   onClose,
   onFork,
   branches = [],
@@ -58,6 +59,13 @@ export function ChangesDrawer({
 }: {
   sessionId: string;
   busy: boolean;
+  /**
+   * The branch that has the workspace while this conversation's files are
+   * set aside, or `null` when they're on disk. Set aside, the files a rewind
+   * or a commit would touch are that branch's, so neither is offered; the
+   * backend refuses both as well. Reading, comparing and reviewing stay.
+   */
+  away?: string | null;
   onClose: () => void;
   /**
    * Starts a new conversation from before `turn` and opens it. One click,
@@ -328,11 +336,13 @@ export function ChangesDrawer({
                           // Rewinding under a running turn would race the tool
                           // calls still writing. The backend refuses too; this
                           // just stops the user reaching for it.
-                          disabled={busy}
+                          disabled={busy || away !== null}
                           data-tip={
-                            busy
-                              ? "Wait for the current turn to finish"
-                              : "Undo this turn and everything after it"
+                            away !== null
+                              ? SET_ASIDE_TIP
+                              : busy
+                                ? "Wait for the current turn to finish"
+                                : "Undo this turn and everything after it"
                           }
                           onClick={() => preview(turn.turn)}
                         >
@@ -341,11 +351,13 @@ export function ChangesDrawer({
                         {onFork && (
                           <button
                             className="quiet"
-                            disabled={busy || forking !== null}
+                            disabled={busy || away !== null || forking !== null}
                             data-tip={
-                              busy
-                                ? "Wait for the current turn to finish"
-                                : "Try it again in a new conversation. This one is kept, and its files are set aside until you switch back."
+                              away !== null
+                                ? SET_ASIDE_TIP
+                                : busy
+                                  ? "Wait for the current turn to finish"
+                                  : "Try it again in a new conversation. This one is kept, and its files are set aside until you switch back."
                             }
                             onClick={() => fork(turn.turn)}
                           >
@@ -366,9 +378,10 @@ export function ChangesDrawer({
                       turns={turns ?? []}
                       repo={repo}
                       busy={busy}
+                      away={away !== null}
                       onCommitted={refresh}
                       onForkWith={
-                        onFork && !busy && forking === null
+                        onFork && !busy && away === null && forking === null
                           ? (finding) => fork(turn.turn, finding)
                           : undefined
                       }
@@ -403,7 +416,7 @@ export function ChangesDrawer({
                           // A running turn could be writing the same files, and
                           // the backend refuses a rewind under one anyway; see
                           // the preview button above.
-                          disabled={applying || busy}
+                          disabled={applying || busy || away !== null}
                           onClick={apply}
                         >
                           {applying ? "Rewinding…" : `Rewind to before turn ${turn.turn}`}
@@ -417,8 +430,9 @@ export function ChangesDrawer({
           </ul>
 
           <p className="drawer-foot">
-            run_command is not covered — a shell command's reach is not knowable
-            before it runs.
+            Commands Taurus runs are covered too. What you type in the terminal
+            and your own edits in the canvas are not, so git is the way back
+            for those.
           </p>
         </aside>
   );
@@ -701,6 +715,13 @@ function ReviewText({
   );
 }
 
+/**
+ * Why a write is off while this conversation's files are set aside. Names the
+ * way back, which is the banner above the composer.
+ */
+const SET_ASIDE_TIP =
+  "This conversation's files are set aside while another branch has the workspace. Switch to this conversation first.";
+
 const FORK_WITH_TIP =
   "Try this turn again in a new conversation, with this added to its question. This conversation is kept, and its files are set aside until you switch back.";
 
@@ -716,6 +737,7 @@ export function TurnDetail({
   turns,
   repo,
   busy,
+  away = false,
   onCommitted,
   onForkWith,
 }: {
@@ -724,6 +746,8 @@ export function TurnDetail({
   turns: Checkpoint[];
   repo: RepoStatus | null;
   busy: boolean;
+  /** This conversation's files are set aside. See `ChangesDrawer`'s `away`. */
+  away?: boolean;
   /**
    * Forks before this turn with a finding from its review added to its
    * question. Absent while that can't happen: a turn running, a fork already
@@ -945,9 +969,11 @@ export function TurnDetail({
             <button
               // Committing under a running turn would capture a tree that is
               // still being written. The backend refuses too.
-              disabled={busy || committing || message.trim() === ""}
+              disabled={busy || away || committing || message.trim() === ""}
               data-tip={
-                busy
+                away
+                  ? SET_ASIDE_TIP
+                  : busy
                   ? "Wait for the current turn to finish"
                   : `Commit this turn's ${plural(turn.files.length, "file")} to ${
                       repo.branch ?? "the current commit"

@@ -402,6 +402,21 @@ pub async fn commit_turn(
     let workspace = session_workspace(&state, &session_id).await;
     let checkpoints = state.host.checkpoints_for(&workspace);
 
+    // Set aside, this turn's files aren't the ones on disk: another branch's
+    // are. Committing would put that branch's work in history under this
+    // turn's message.
+    let away = {
+        let (store, id) = (checkpoints.clone(), session_id.clone());
+        off_runtime(move || store.away(&id)).await?
+    };
+    if let Some(other) = away {
+        return Err(taurus_tools::checkpoint::set_aside(
+            &session_id,
+            &other,
+            "a commit here would put that branch's files in history under this turn's message",
+        ));
+    }
+
     // Re-read rather than trusting a path list from the frontend, so what is
     // committed is what was recorded. Off the runtime, the same read
     // `list_checkpoints` makes: the whole log, for one turn's file names.

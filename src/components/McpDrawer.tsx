@@ -294,6 +294,7 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
         <McpServerEditor
           server={editing === "new" ? null : editing}
           initial={prefilled}
+          taken={servers ?? []}
           // Cleared on both exits. Left behind, it would reopen under the
           // next "Add by hand" carrying the last catalogue entry's command.
           onClose={() => {

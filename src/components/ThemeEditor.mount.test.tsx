@@ -29,6 +29,7 @@ const theme = (over: Partial<CustomTheme> = {}): CustomTheme => ({
   fonts: { display: null, body: null, mono: null },
   wordmark: null,
   logo: null,
+  logo_source: null,
   shape: { radius: null, gutter: null, "rail-gutter": null },
   modes: "both",
   ...over,
@@ -249,6 +250,66 @@ describe("saving", () => {
       "save_theme",
       expect.objectContaining({ scope: "workspace" }),
     );
+  });
+
+  it("keeps the logo a theme names when it is edited and saved", async () => {
+    // The resolved theme carries its logo inlined, which can't be written
+    // back. Seeding the field from nothing saved every edited theme without
+    // its logo.
+    const host = mount(
+      <ThemeEditor
+        editing={theme({ logo: "data:image/svg+xml;base64,PHN2Zy8+", logo_source: "acme.svg" })}
+        mode="dark"
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    const field = host.querySelector<HTMLInputElement>('input[placeholder="mark.svg"]');
+    expect(field?.value).toBe("acme.svg");
+    click(host, "Save theme");
+    await act(async () => {});
+    const [, payload] = invoke.mock.calls[0] as unknown as [
+      string,
+      { theme: { brand: { logo: string | null } } },
+    ];
+    expect(payload.theme.brand.logo).toBe("acme.svg");
+  });
+
+  it("says before saving that a new theme would replace one of the same name", () => {
+    const host = mount(
+      <ThemeEditor
+        editing={null}
+        mode="dark"
+        existing={[theme()]}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    const name = host.querySelector<HTMLInputElement>('input[placeholder="Midnight"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(
+        name,
+        "midnight",
+      );
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("Saving this one replaces it");
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Replace Midnight")).toBe(
+      true,
+    );
+
+    // A workspace theme of the same name isn't touched: new themes are saved
+    // in the user's folder.
+    const elsewhere = mount(
+      <ThemeEditor
+        editing={null}
+        mode="dark"
+        existing={[theme({ scope: "workspace" })]}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    expect(elsewhere.textContent).not.toContain("replaces it");
   });
 
   it("will not save a theme with no name to store it under", () => {

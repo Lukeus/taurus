@@ -669,6 +669,7 @@ export function ThemePicker({ theme }: { theme: Theme }) {
         <ThemeEditor
           editing={editing.theme}
           mode={resolveWith(theme, custom)}
+          existing={themes ?? []}
           onClose={() => setEditing(null)}
           onSaved={(id) => {
             setEditing(null);

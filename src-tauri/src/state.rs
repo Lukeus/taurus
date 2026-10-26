@@ -322,7 +322,7 @@ impl AppState {
         let pending_agent_proposals: Arc<DashMap<String, AgentProposal>> = Arc::new(DashMap::new());
 
         let host = Host::new(
-            Host::default_workspace(),
+            Host::app_workspace(),
             Arc::new(UiPrompts {
                 app: app.clone(),
                 pending: pending_permissions.clone(),

@@ -108,7 +108,24 @@ pub async fn save_mcp_server(
     previous: Option<McpServerRef>,
 ) -> CmdResult<Vec<McpServerView>> {
     let workspace = state.host.workspace().await;
-    let source = previous.clone().unwrap_or_else(|| draft.origin());
+    // A save is an upsert by name. Landing on another server's name, from an
+    // add or a rename, would replace that server and take its held-back
+    // secrets with it, so it's refused rather than merged.
+    let target = draft.origin();
+    let moving = previous
+        .as_ref()
+        .is_none_or(|p| p.scope != target.scope || p.name.trim() != target.name.trim());
+    if moving && stored(&workspace, &target).is_some() {
+        let file = match target.scope {
+            Scope::Global => "~/.taurus/mcp.json",
+            Scope::Workspace => ".taurus/mcp.json",
+        };
+        return Err(format!(
+            "A server called {} is already in {file}. Give this one another name, or edit that one.",
+            target.name.trim()
+        ));
+    }
+    let source = previous.clone().unwrap_or(target);
     let server = draft.to_config(stored(&workspace, &source).as_ref());
 
     taurus_host::config::save_mcp_server(draft.scope, Some(&workspace), &draft.name, &server)?;

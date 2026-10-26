@@ -370,16 +370,39 @@ impl Host {
 
     /// The workspace remembered from last time, else the current directory.
     ///
-    /// Global layer only: there is no workspace yet to read a second layer
-    /// from, which is exactly why `last_workspace` is written globally.
+    /// For the CLI, where the directory it's run from is a choice. The desktop
+    /// app uses [`Host::app_workspace`].
     pub fn default_workspace() -> PathBuf {
-        let candidate = config::read_settings(Scope::Global, None)
-            .last_workspace
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
+        let candidate = Self::remembered_workspace()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         candidate.canonicalize().unwrap_or(candidate)
+    }
+
+    /// The workspace the desktop app opens on: the one remembered from last
+    /// time, else the user's home folder.
+    ///
+    /// Not the current directory. An app launched from the Dock or Finder
+    /// starts in `/`, and one launched from Explorer in its install folder,
+    /// and the first run used to open on whichever of those it got. Nobody
+    /// chose either, and `/` read as a folder named nothing.
+    pub fn app_workspace() -> PathBuf {
+        let candidate = Self::remembered_workspace()
+            .or_else(|| directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()))
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        candidate.canonicalize().unwrap_or(candidate)
+    }
+
+    /// The workspace last opened, if it's still a folder.
+    ///
+    /// Global layer only: there is no workspace yet to read a second layer
+    /// from, which is exactly why `last_workspace` is written globally.
+    fn remembered_workspace() -> Option<PathBuf> {
+        config::read_settings(Scope::Global, None)
+            .last_workspace
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
     }
 
     /// Re-resolves both config layers, rescans skills, restarts the MCP servers

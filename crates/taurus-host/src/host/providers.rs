@@ -194,12 +194,16 @@ impl Host {
     /// The effective list is then re-resolved rather than assumed to equal what
     /// was passed in: if this workspace overrides one of these providers, the
     /// override still wins, and the UI must show what will actually be used.
-    pub async fn set_providers(&self, providers: Vec<ProviderConfig>) {
-        config::save_providers(&providers);
+    ///
+    /// A refused write is returned and changes nothing in memory, so the list
+    /// in use stays the one on disk.
+    pub async fn set_providers(&self, providers: Vec<ProviderConfig>) -> Result<(), String> {
+        config::save_providers(&providers)?;
         let workspace = self.workspace.read().await.clone();
         let (effective, _) = config::load_providers(Some(&workspace));
         *self.providers.write().await = effective;
         self.forget_providers();
+        Ok(())
     }
 
     /// Stores a provider's API key in the OS credential store.

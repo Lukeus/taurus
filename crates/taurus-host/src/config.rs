@@ -915,7 +915,11 @@ pub fn load_providers(workspace: Option<&Path>) -> (Vec<ProviderConfig>, Vec<Str
         Ok(Some(_)) => default_providers(),
         Ok(None) => {
             let providers = default_providers();
-            save_providers(&providers);
+            // Written so there's a file to edit, but the defaults work
+            // without it: a read-only home costs the file, not the app.
+            if let Err(e) = save_providers(&providers) {
+                tracing::warn!(error = %e, "could not write the default providers.json");
+            }
             providers
         }
         Err(e) => {
@@ -960,14 +964,21 @@ pub fn load_providers(workspace: Option<&Path>) -> (Vec<ProviderConfig>, Vec<Str
 /// Edits from the UI always land globally: the workspace layer is a hand-written
 /// override, and round-tripping the merged view into it would bake every
 /// inherited value into the project file.
-pub fn save_providers(providers: &[ProviderConfig]) {
-    let Some(path) = providers_file(Scope::Global, None) else {
-        return;
-    };
+///
+/// Unlike the settings writes, a failure here is returned. Saving providers is
+/// the thing the person asked for, not a side effect of it, and swallowing the
+/// error let Settings say "Saved" and then show the old list.
+pub fn save_providers(providers: &[ProviderConfig]) -> Result<(), String> {
+    let path = providers_file(Scope::Global, None)
+        .ok_or("there's no home folder to keep providers.json in")?;
     let entries: Vec<ProviderEntry> = providers.iter().map(ProviderEntry::from).collect();
-    if let Ok(json) = serde_json::to_string_pretty(&entries) {
-        write_config(&path, &json);
+    let json = serde_json::to_string_pretty(&entries)
+        .map_err(|e| format!("could not write the provider list: {e}"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     }
+    replace_file(&path, &json).map_err(|e| format!("could not save {}: {e}", path.display()))
 }
 
 /// Which palette the window paints in.
@@ -2464,9 +2475,21 @@ mod tests {
     fn saving_providers_writes_the_global_layer_only() {
         with_home(|home| {
             let ws = trusted_workspace();
-            save_providers(&default_providers());
+            save_providers(&default_providers()).unwrap();
             assert!(home.join("providers.json").is_file());
             assert!(!workspace_dir(ws.path()).join("providers.json").exists());
+        });
+    }
+
+    #[test]
+    fn a_refused_providers_write_is_reported_with_its_path() {
+        // Settings said "Saved" over a write that never landed, then showed
+        // the old list. A folder where the file goes is a refusal on every
+        // platform, without needing permissions.
+        with_home(|home| {
+            std::fs::create_dir_all(home.join("providers.json")).unwrap();
+            let refused = save_providers(&default_providers()).unwrap_err();
+            assert!(refused.contains("providers.json"), "{refused}");
         });
     }
 

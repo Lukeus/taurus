@@ -46,14 +46,24 @@ export function PluginsDrawer({
       });
   }, []);
 
-  const change = async (label: string, run: () => Promise<PluginSummary[]>) => {
-    if (working) return;
+  /**
+   * Runs one change and reports whether it went through, so a form clears
+   * what was typed only when it did. A refused git address is usually one
+   * typo away from right, and wiping it made the fix a retype.
+   */
+  const change = async (
+    label: string,
+    run: () => Promise<PluginSummary[]>,
+  ): Promise<boolean> => {
+    if (working) return false;
     setFailed(null);
     setWorking(label);
     try {
       setPlugins(await run());
+      return true;
     } catch (e) {
       setFailed(String(e));
+      return false;
     } finally {
       setWorking(null);
       disarm();
@@ -251,7 +261,8 @@ function NewPlugin({
   disabled: boolean;
   why?: string;
   making: boolean;
-  onMake: (name: string, description: string, project: boolean) => Promise<void>;
+  /** Resolves true once the plugin is made, false when it was refused. */
+  onMake: (name: string, description: string, project: boolean) => Promise<boolean>;
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -299,9 +310,10 @@ function NewPlugin({
               : undefined)
           }
           onClick={async () => {
-            await onMake(name.trim(), description.trim(), project);
-            setName("");
-            setDescription("");
+            if (await onMake(name.trim(), description.trim(), project)) {
+              setName("");
+              setDescription("");
+            }
           }}
         >
           {making ? "Making…" : "Make"}
@@ -321,7 +333,8 @@ function AddPlugin({
   disabled: boolean;
   why?: string;
   adding: boolean;
-  onAdd: (from: string, project: boolean, gitRef?: string) => Promise<void>;
+  /** Resolves true once the plugin is installed, false when it was refused. */
+  onAdd: (from: string, project: boolean, gitRef?: string) => Promise<boolean>;
 }) {
   const [from, setFrom] = useState("");
   const [gitRef, setGitRef] = useState("");
@@ -373,9 +386,10 @@ function AddPlugin({
           disabled={disabled || from.trim() === ""}
           data-tip={why}
           onClick={async () => {
-            await onAdd(from.trim(), project, git ? gitRef.trim() : undefined);
-            setFrom("");
-            setGitRef("");
+            if (await onAdd(from.trim(), project, git ? gitRef.trim() : undefined)) {
+              setFrom("");
+              setGitRef("");
+            }
           }}
         >
           {adding ? (git ? "Cloning…" : "Adding…") : "Add"}
