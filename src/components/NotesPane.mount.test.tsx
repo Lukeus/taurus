@@ -320,6 +320,13 @@ describe("a note that is open", () => {
     );
   });
 
+  it("says where a global one is, not just that it's global", async () => {
+    const { host } = await openOne("# Auth redesign\n", "global");
+    expect(host.querySelector(".notes-where")?.textContent).toBe(
+      "~/.taurus/notes/Auth redesign.md",
+    );
+  });
+
   it("renders the Markdown in Read, and draws a mermaid block", async () => {
     const { host, click } = await openOne(
       "# Auth redesign\n\n```mermaid\nflowchart LR\n  a[Client] --> b[API]\n```\n",

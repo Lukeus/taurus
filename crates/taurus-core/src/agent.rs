@@ -1720,7 +1720,13 @@ impl Agent {
         let used = session
             .calibrated(session.estimated_tokens())
             .saturating_add(overhead);
-        let _ = ui.send(UiEvent::ContextUsed { used, window }).await;
+        let _ = ui
+            .send(UiEvent::ContextUsed {
+                used,
+                window,
+                budget,
+            })
+            .await;
         if used < budget {
             // A leg can end before the window is full, when the model is
             // already showing what a full one does to it. See

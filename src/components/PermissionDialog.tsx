@@ -137,7 +137,9 @@ export function PermissionDialog({
               onClick={() => onDecide("allow_always")}
               data-tip={request.always_scope}
             >
-              {request.always_global_scope ? "Always here" : "Allow always"}
+              {/* One name whether or not "everywhere" is beside it, the
+                  name the docs use. The tip says what "here" covers. */}
+              Always here
             </button>
           )}
           {/* Absent where the wider grant is not on offer — running commands,

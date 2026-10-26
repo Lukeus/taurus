@@ -360,7 +360,10 @@ impl PermissionEngine {
         // cannot do that without knowing what was refused.
         if asking.unattended {
             return Err(ToolError::Rejected(format!(
-                "nobody is there to allow this. The conversation is running unattended, so a                  call that needs a decision is refused rather than left waiting for one — this                  one was: {}. Carry on without it where you can, and say plainly what you could                  not do.",
+                "nobody is there to allow this. The conversation is running unattended, so a \
+                 call that needs a decision is refused rather than left waiting for one. This \
+                 one was: {}. Carry on without it where you can, and say plainly what you could \
+                 not do.",
                 request.preview
             )));
         }
@@ -819,6 +822,9 @@ mod tests {
             panic!("expected a refusal on the merits, got {refused:?}");
         };
         assert!(why.contains("unattended"), "{why}");
+        // The model reads this, and so does anyone reading the transcript.
+        // It once carried runs of indentation from a broken line continuation.
+        assert!(!why.contains("  "), "no runs of spaces: {why}");
     }
 
     /// It narrows and never widens. What a standing grant covers is answered

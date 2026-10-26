@@ -52,7 +52,13 @@ export default function SketchEditor({
   onChange,
   drain,
   viewKey,
+  file,
 }: {
+  /**
+   * Where the file is, as the person would find it, for the message about a
+   * sketch that can't be read: they'll need to open it.
+   */
+  file?: string;
   /** The `.excalidraw` file as last read. Only read when `generation` moves. */
   text: string;
   /**
@@ -199,8 +205,8 @@ export default function SketchEditor({
         <b>This sketch could not be read.</b>
         <span>{parsed.why}</span>
         <span>
-          The file is untouched. Fix it in a text editor, or delete it from the
-          list.
+          The file is untouched. Fix {file ? <code>{file}</code> : "it"} in an
+          editor, or use Delete above to remove it.
         </span>
       </div>
     );

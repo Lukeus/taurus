@@ -854,7 +854,10 @@ export default function App() {
       },
       {
         id: "read-aloud",
-        label: readAloud ? "Stop reading replies aloud" : "Read replies aloud",
+        // A setting, so it says it turns something on or off. "Stop reading
+        // replies aloud" sat beside "Stop reading", which silences one reply,
+        // and the two differed by two words.
+        label: readAloud ? "Turn off reading replies aloud" : "Read replies aloud",
         group: "Do",
         keywords: "voice speak speech say tts listen hear audio",
         unavailable: store.status ? undefined : "Still loading",

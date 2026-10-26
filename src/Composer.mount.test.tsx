@@ -33,6 +33,7 @@ type Options = {
   busy?: boolean;
   queued?: Outgoing | null;
   focus?: number;
+  ready?: boolean;
 };
 
 function mount(options: Options = {}) {
@@ -58,7 +59,7 @@ function mount(options: Options = {}) {
         focus={opts.focus ?? 0}
         busy={opts.busy ?? false}
         stopping={false}
-        ready
+        ready={opts.ready ?? true}
         vision={false}
         workspace="/src/taurus"
         library="0:0"
@@ -169,6 +170,11 @@ describe("Enter while a turn is running", () => {
     enter();
 
     expect(sent.map((s) => s.text)).toEqual(["and then profile it"]);
+  });
+
+  it("promises nothing about Enter while there's no model to send to", () => {
+    const { hint } = mount({ ready: false });
+    expect(hint()).not.toContain("send");
   });
 
   it("says so before it is pressed", () => {

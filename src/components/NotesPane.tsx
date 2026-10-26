@@ -347,7 +347,11 @@ export function NotesPane({
                   {page.name}
                 </span>
                 <span className="notes-where">
-                  {page.scope === "workspace" ? pathOf(page.name, page.kind) : "global"}
+                  {/* A path either way: "global" alone named the scope and not
+                      where the file is, which is what this line is for. */}
+                  {page.scope === "workspace"
+                    ? pathOf(page.name, page.kind)
+                    : `~/${pathOf(page.name, page.kind)}`}
                 </span>
               </>
             ) : (
@@ -472,6 +476,11 @@ export function NotesPane({
                   // Where it was being looked at, kept on this machine rather
                   // than in the file — see `sketchView.ts`.
                   viewKey={viewKeyFor(page)}
+                  file={
+                    page.scope === "workspace"
+                      ? pathOf(page.name, "sketch")
+                      : `~/${pathOf(page.name, "sketch")}`
+                  }
                 />
               </Suspense>
             </div>

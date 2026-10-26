@@ -1,7 +1,10 @@
 import { useStore } from "../state/store";
 
-/** Where the harness begins summarizing, as a fraction of the window. */
-const COMPACTS_AT = 0.8;
+/**
+ * Where the harness begins summarizing, as a share of the window, for a
+ * reading recorded before the harness sent its own point.
+ */
+const COMPACTS_AT_BEFORE = 0.8;
 
 /** Below this it is a number nobody needs and one more thing on screen. */
 const WORTH_SAYING = 0.5;
@@ -39,7 +42,11 @@ export function ContextMeter({ onOpen }: { onOpen: () => void }) {
   if (fraction < WORTH_SAYING) return null;
 
   const percent = Math.min(100, Math.round(fraction * 100));
-  const summarizing = fraction >= COMPACTS_AT;
+  // The harness's own point: the window less what it holds back for the
+  // reply. That reserve is a clamped share of the window, so it's 84% of a
+  // 200k window and 75% of a 128k one, and a fixed 80% was wrong both ways.
+  const budget = context.budget > 0 ? context.budget : context.window * COMPACTS_AT_BEFORE;
+  const summarizing = context.used >= budget;
 
   return (
     <button

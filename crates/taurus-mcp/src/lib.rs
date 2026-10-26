@@ -675,8 +675,8 @@ fn start_failure(command: &str, error: &std::io::Error) -> String {
     }
     format!(
         "`{command}` is not on this application's PATH. It searched: {}. If it is installed by \
-         nvm, pyenv, or Homebrew, either restart Taurus so it can read your shell's PATH, or give \
-         the full path to the program as `command`.",
+         nvm, pyenv, or Homebrew, press Reconnect in the MCP panel so Taurus reads your shell's \
+         PATH again, or give the full path to the program as `command`.",
         taurus_tools::login_path::current()
     )
 }

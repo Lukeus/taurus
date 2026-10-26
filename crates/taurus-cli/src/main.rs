@@ -320,7 +320,9 @@ pub struct PolicyArgs {
     pub allow: Vec<String>,
 
     /// Allow a shell program without prompting, e.g. `--allow-command git`.
-    /// Repeatable. Matches the leading word only, so `git` does not grant `rm`.
+    /// Repeatable. A chained line needs one for each program it runs, so
+    /// `git` does not grant `git status; rm -rf .`, and a redirect or a `$(...)`
+    /// is never covered.
     #[arg(long = "allow-command", value_name = "PROGRAM")]
     pub allow_command: Vec<String>,
 

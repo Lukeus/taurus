@@ -187,8 +187,10 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
         Read replies aloud as they arrive
       </label>
 
+      {/* Not "Voice": each service below has a Voice field of its own, and
+          two fields with one name read as one question asked twice. */}
       <Field
-        label="Voice"
+        label="Spoken by"
         hint={
           draft.engine === "system"
             ? "Your computer's own voices. Nothing is sent anywhere."
