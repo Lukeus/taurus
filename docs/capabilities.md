@@ -486,6 +486,9 @@ delegate is doing while it does it, open **Agent activity**. It's in ⌘K, and
 in the top bar as "2 agents working" while any are. Each delegation card also
 has **Watch it work**, which opens the panel on that delegate.
 
+![Agent activity: three delegates under one question, two running side by
+side, one opened to its calls and what it's saying](screenshots/activity.png)
+
 The panel sits in the column Changes and the canvas use. It's a tree: each
 question you asked is the root, with the delegates started while answering it
 under it. Each delegate shows:
@@ -509,7 +512,9 @@ The card itself shows the delegate's round, its clock, and its last four calls
 with a mark for each.
 
 A window that opens a conversation mid-turn still gets the whole turn's
-delegates, including a background one started rounds ago. The CLI prints each
+delegates, including a background one started rounds ago. A conversation you
+reopen later is read back from each delegate's transcript, without the timing
+of each call (see [Known gaps](known-gaps.md)). The CLI prints each
 call a delegate makes under its card, as it did before, and notes a delegate
 waiting for a slot.
 

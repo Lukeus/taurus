@@ -44,6 +44,14 @@ export function AgentsPanel(props: {
   // word, and `App` deliberately doesn't redraw for that.
   const entries = useStore((s) => s.entries);
   const agents = useStore((s) => s.agents);
+  const session = useStore((s) => s.session?.id);
+  const restore = useStore((s) => s.restoreAgents);
+  // A reopened conversation's delegates, read back from their transcripts
+  // when the panel is opened rather than on every reopen: most conversations
+  // are reopened to read the answer, not to watch the work behind it.
+  useEffect(() => {
+    if (session) void restore();
+  }, [session, restore]);
   return <AgentsView {...props} entries={entries} agents={agents} />;
 }
 
@@ -318,9 +326,11 @@ function AgentNode({
                       {mark === "running" ? "…" : mark === "ok" ? "✓" : "✕"}
                     </span>
                     <span className="agents-call">{tool.preview}</span>
-                    <span className="agents-took">
-                      {duration((tool.endedAt ?? now) - tool.startedAt)}
-                    </span>
+                    {tool.startedAt !== undefined && (
+                      <span className="agents-took">
+                        {duration((tool.endedAt ?? now) - tool.startedAt)}
+                      </span>
+                    )}
                   </li>
                 );
               })}
@@ -335,8 +345,15 @@ function AgentNode({
           )}
           {!run && (
             <p className="drawer-empty">
-              This window didn&apos;t watch this delegation run, so only its
-              report is here. Its transcript has the rest.
+              {call.transcript
+                ? "Reading what it did from its transcript…"
+                : "This window didn't watch it, and no transcript is linked to it, so only its report is here."}
+            </p>
+          )}
+          {run?.restored && (
+            <p className="agents-context">
+              Read back from its transcript. How long each call took and what it
+              spent weren&apos;t recorded there.
             </p>
           )}
           {run?.context && run.context.window > 0 && (

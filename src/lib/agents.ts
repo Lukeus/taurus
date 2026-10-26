@@ -36,6 +36,12 @@ export type AgentRun = {
   /** Its call returned and it went on in the background. */
   detached: boolean;
   report?: DelegateReport;
+  /**
+   * Rebuilt from the delegate's transcript on a reopened conversation, not
+   * watched. Its calls and prose are there; the times of each call and what
+   * it spent aren't, because a transcript doesn't record them.
+   */
+  restored?: boolean;
 };
 
 export type AgentTool = {
@@ -43,7 +49,8 @@ export type AgentTool = {
   call: string;
   name: string;
   preview: string;
-  startedAt: number;
+  /** Absent on a run rebuilt from a transcript, which records no times. */
+  startedAt?: number;
   endedAt?: number;
   /** Absent while it runs. */
   ok?: boolean;

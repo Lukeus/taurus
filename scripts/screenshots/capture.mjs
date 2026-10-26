@@ -192,6 +192,11 @@ const SHOTS = [
   // The rail with a section folded. An open section looks like the plain list
   // it replaced, so the shut one is the only state that shows the feature.
   { name: "rail", shot: "rail", theme: "dark" },
+  // Agent activity: three delegates under one question, two of them side by
+  // side on the shared clock, one still running with its calls and its words
+  // opened up. Opened from the top bar's chip, which only exists while
+  // delegates are working.
+  { name: "activity", shot: "activity", theme: "dark" },
   // A background command, on screen while it is still the model's to read.
   // The tab strip is the whole feature — a test run that failed, a dev server
   // that will not finish on its own, and the shell they sit beside.

@@ -535,10 +535,13 @@ the backlog, and they're the minority.
   [Watching delegates work](capabilities.md#watching-delegates-work)). The
   card shows its round and its last few calls.
 
-  The panel draws what this window watched. A conversation you reopen shows
-  each delegation's report and transcript, but not its calls, its prose, or
-  its timeline: those aren't in the parent's transcript, and the panel
-  doesn't read them back out of the delegate's.
+  A conversation you reopen is read back from each delegate's own
+  transcript when you open the panel: its rounds, its calls and how they came
+  out, and what it wrote. Two things aren't in a transcript, so they aren't
+  there: how long each call took, and what the delegate spent. Its bar on the
+  timeline runs from when its transcript was started to when it was last
+  written. A delegate recorded by an older build, which didn't note the call
+  that started it, shows only its report.
 
   You can still read it afterwards. Every delegate keeps its own transcript
   beside its parent's, written as it runs. The delegation card opens it in a

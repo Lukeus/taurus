@@ -874,6 +874,64 @@ requestAnimationFrame(() => {
       // on hover or focus, which no scene does, and a picture of a hover is a
       // picture of one moment of it. It is checked against a real browser
       // instead; `Tooltip.tsx` says what that check covers.
+      activity: async () => {
+        const now = Date.now();
+        const call = (id: string, agent: string, task: string, status: "running" | "ok") => ({
+          kind: "tool" as const,
+          id,
+          name: "spawn_subagent",
+          preview: `Delegate to ${agent}: ${task}`,
+          status,
+          steps: [],
+          output: status === "ok" ? "Status: done." : undefined,
+        });
+        const tools = (list: [string, boolean | undefined, number, number?][]) =>
+          list.map(([preview, ok, started, ended], i) => ({
+            call: `t${i}-${preview}`,
+            name: preview.split(" ")[0],
+            preview,
+            ok,
+            startedAt: now - started,
+            endedAt: ended === undefined ? undefined : now - ended,
+          }));
+        useStore.setState((s) => ({
+          busy: true,
+          entries: [
+            ...s.entries,
+            { kind: "user", id: "act-q", text: "Why does the release build take twice as long as debug?" },
+            call("act-1", "explorer", "find where the release profile is configured", "ok"),
+            call("act-2", "explorer", "list every build script and what it generates", "running"),
+            call("act-3", "coder", "time the release build with codegen-units=16 and report", "running"),
+          ],
+          agents: {
+            "act-1": {
+              id: "act-1", agent: "explorer", model: "qwen3.6:27b", session: "c-1",
+              startedAt: now - 64_000, finishedAt: now - 41_000, maxRounds: 20, round: 4,
+              tools: tools([["grep profile.release", true, 60_000, 59_000], ["read_file Cargo.toml", true, 55_000, 54_500], ["read_file .cargo/config.toml", true, 50_000, 49_600]]),
+              text: "The release profile sets `lto = \"fat\"` and `codegen-units = 1` in Cargo.toml.",
+              thinking: "", detached: false, usage: { input: 18_400, output: 620 },
+              report: { disposition: "done", summary: "Release uses fat LTO and one codegen unit.", files: [] },
+            },
+            "act-2": {
+              id: "act-2", agent: "explorer", model: "qwen3.6:27b", session: "c-2",
+              startedAt: now - 62_000, maxRounds: 20, round: 6,
+              tools: tools([["glob **/build.rs", true, 58_000, 57_800], ["read_file crates/taurus-voice/build.rs", true, 40_000, 39_000], ["grep cc::Build", true, 30_000, 29_500], ["read_file vendor/whisper/CMakeLists.txt", undefined, 4_000]]),
+              text: "Two build scripts do real work. `taurus-voice` compiles whisper.cpp with CMake on every clean build, which is most of the release time.",
+              thinking: "", detached: false, context: { used: 21_000, window: 200_000 },
+            },
+            "act-3": {
+              id: "act-3", agent: "coder", model: "qwen3.6:27b", session: "c-3",
+              queuedAt: now - 60_000, startedAt: now - 41_000, maxRounds: 30, round: 2,
+              tools: tools([["run_command cargo build --release --timings", undefined, 30_000]]),
+              text: "", thinking: "", detached: false,
+            },
+          },
+        }));
+        (await click(".topbar .chip", (b) => b.includes("agents working")))();
+        const { useAgentsView } = await import("../../src/state/agentsView");
+        useAgentsView.getState().show("act-2");
+        await until(() => document.querySelector(".agents-node.open .agents-calls"));
+      },
       rail: async () => {
         (await click(".rail-group", (b) => b.includes("Earlier")))();
       },

@@ -144,7 +144,7 @@ describe("the agent activity panel", () => {
     const text = ui.host.textContent ?? "";
     expect(text).toContain("explorer");
     expect(text).toContain("Needs you to: choose a port");
-    expect(text).toContain("didn't watch this delegation");
+    expect(text).toContain("no transcript is linked");
     ui.unmount();
   });
 

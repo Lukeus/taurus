@@ -1744,6 +1744,9 @@ body.resizing-y * {
   font-size: 11px;
   color: var(--text-faint);
 }
+.agents-body .run-row-delegate {
+  margin-left: 0;
+}
 .agents-reasoning .thinking-body {
   max-height: 240px;
   overflow-y: auto;
