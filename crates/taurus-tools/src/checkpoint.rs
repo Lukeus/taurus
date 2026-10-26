@@ -528,6 +528,17 @@ impl CheckpointStore {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
         let log = read_log::<State>(&path)?;
+        // Set aside, this conversation's files aren't the ones on disk: the
+        // workspace holds another branch's. Its pre-images would be written
+        // over that branch's work. A dry run is refused too, so a plan is
+        // never shown for a rewind that can't be made.
+        if let Some(other) = &log.away {
+            return Err(set_aside(
+                session_id,
+                other,
+                "rewinding it would write its old files over that branch's work",
+            ));
+        }
         let index = check_turn(session_id, turn, log.turns.len())?;
         let undoing = &log.turns[index..];
 
@@ -901,6 +912,19 @@ fn joined(names: &[&str]) -> String {
         [first, last] => format!("{first} and {last}"),
         [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
     }
+}
+
+/// Refuses a write to a conversation whose files are set aside, naming the
+/// branch that has the workspace and the way back to this one.
+///
+/// `would` finishes the sentence "while that branch has the workspace, …":
+/// what the refused write would have done to the other branch's files.
+pub fn set_aside(session_id: &str, other: &str, would: &str) -> String {
+    format!(
+        "this conversation's files are set aside while another branch of it ({other}) has the \
+         workspace, so {would}. Switch to this conversation first: Switch in the app, or \
+         `taurus fork --switch --id {session_id}`."
+    )
 }
 
 /// Turns a 1-based turn number into an index, or says why it is not one.

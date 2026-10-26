@@ -802,6 +802,18 @@ mod tests {
             refused.contains(&format!("taurus fork --switch --id {original}")),
             "{refused}"
         );
+
+        // Nor can the original be rewound while it's set aside: its
+        // pre-images would land on the fork's files. A plan is refused too,
+        // so nothing offers a rewind that can't be made.
+        for dry_run in [true, false] {
+            let refused = world
+                .store
+                .rewind(&original, &world.ws, 1, dry_run)
+                .unwrap_err();
+            assert!(refused.contains("set aside"), "{refused}");
+            assert!(refused.contains(&id), "names the branch on disk: {refused}");
+        }
     }
 
     #[tokio::test]

@@ -30,6 +30,7 @@ const brand = (over: Partial<CustomTheme> = {}): CustomTheme => ({
   fonts: { display: null, body: null, mono: null },
   wordmark: null,
   logo: null,
+  logo_source: null,
   shape: { radius: null, gutter: null, "rail-gutter": null },
   modes: "both",
   ...over,

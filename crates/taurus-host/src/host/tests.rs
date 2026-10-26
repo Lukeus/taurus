@@ -169,7 +169,8 @@ async fn a_provider_is_built_once_so_a_turn_does_not_reach_the_keychain() {
     let (host, _home) = host(&workspace);
     let id = "built-once";
     host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:9")])
-        .await;
+        .await
+        .unwrap();
     host.set_provider_key(id, "sk-first").await.unwrap();
 
     let before = secrets::reads(id);
@@ -192,7 +193,8 @@ async fn a_provider_is_built_once_so_a_turn_does_not_reach_the_keychain() {
     // And an edited config, for the same reason: an edited base URL takes
     // effect on the next message, not the next launch.
     host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:10")])
-        .await;
+        .await
+        .unwrap();
     let edited = host.provider(id).await.unwrap();
     assert!(!Arc::ptr_eq(&rekeyed, &edited));
 }
@@ -207,7 +209,8 @@ async fn a_reload_that_changes_no_provider_keeps_the_ones_already_built() {
     let (host, _home) = host(&workspace);
     let id = "kept-across-reloads";
     host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:9")])
-        .await;
+        .await
+        .unwrap();
     host.set_provider_key(id, "sk-kept").await.unwrap();
 
     let before = secrets::reads(id);
@@ -245,7 +248,8 @@ async fn wiring_in_semantic_search_reads_no_key_until_something_is_embedded() {
     let (host, _home) = host(&workspace);
     let id = "embeds-later";
     host.set_providers(vec![keyed_provider(id, "http://127.0.0.1:9")])
-        .await;
+        .await
+        .unwrap();
     host.set_provider_key(id, "sk-embed").await.unwrap();
 
     let before = secrets::reads(id);
@@ -3865,4 +3869,25 @@ async fn a_skill_made_in_the_editor_is_in_the_catalog_and_deleting_it_takes_it_o
 
     host.delete_skill("cut-release").await.unwrap();
     assert!(!host.skills().await.iter().any(|s| s.name == "cut-release"));
+}
+
+#[test]
+fn the_app_opens_on_the_home_folder_until_one_is_chosen() {
+    // A Dock launch starts in `/`. The first run used to open there.
+    let _home = isolated_home();
+    let home = directories::BaseDirs::new()
+        .unwrap()
+        .home_dir()
+        .to_path_buf();
+    assert_eq!(
+        Host::app_workspace(),
+        home.canonicalize().unwrap_or(home),
+        "with nothing remembered, the home folder"
+    );
+
+    let chosen = TempDir::new().unwrap();
+    config::edit_settings(Scope::Global, None, |s| {
+        s.last_workspace = Some(chosen.path().display().to_string())
+    });
+    assert_eq!(Host::app_workspace(), chosen.path().canonicalize().unwrap());
 }

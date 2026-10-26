@@ -193,6 +193,41 @@ describe("saving", () => {
     expect(host.innerHTML).toContain("letters, digits, hyphens");
     unmount();
   });
+
+  it("won't add a second server under a name that file already has", async () => {
+    // A save is an upsert by name, so "Add another" from the catalog, saved
+    // without renaming, replaced the first server and took its token.
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const render = (existing: McpServerView | null) =>
+      act(() =>
+        root.render(
+          <McpServerEditor
+            server={existing}
+            taken={[server()]}
+            onClose={() => {}}
+            onSaved={() => {}}
+          />,
+        ),
+      );
+    render(null);
+    await type(host, "Name", "github");
+    await type(host, "Command", "npx -y pkg");
+    const button = (label: string) =>
+      [...host.querySelectorAll("button")].find((b) => b.textContent?.startsWith(label));
+    expect(button("Add and connect")?.disabled).toBe(true);
+    expect(host.textContent).toContain("A server called github is already in ~/.taurus/mcp.json");
+
+    await type(host, "Name", "github-work");
+    expect(button("Add and connect")?.disabled).toBe(false);
+    act(() => root.unmount());
+
+    // Editing that same server is not a clash with itself.
+    const again = mount(server());
+    expect(again.host.textContent).not.toContain("is already in");
+    again.unmount();
+  });
 });
 
 describe("testing before saving", () => {

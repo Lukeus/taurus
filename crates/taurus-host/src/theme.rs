@@ -250,6 +250,12 @@ pub struct CustomTheme {
     /// the second is in `problems`, and a missing logo must not cost the
     /// palette that came with it.
     pub logo: Option<String>,
+    /// The `brand.logo` the file names, as it's written there.
+    ///
+    /// What the editor puts back on save. `logo` is the picture and can't
+    /// be written back, so an editor seeded from it alone would save every
+    /// edited theme without its logo.
+    pub logo_source: Option<String>,
     pub shape: Shape,
     pub modes: ThemeModes,
 }
@@ -447,6 +453,7 @@ fn read_theme(
             fonts: file.fonts,
             wordmark: file.brand.wordmark,
             logo,
+            logo_source: file.brand.logo.clone(),
             shape: clamp_shape(file.shape, path, &mut problems),
             modes,
         },
@@ -893,6 +900,8 @@ mod tests {
             .as_ref()
             .unwrap()
             .starts_with("data:image/svg+xml;base64,"));
+        // And the path as written, which is what an edit saves back.
+        assert_eq!(themes[0].logo_source.as_deref(), Some("mark.svg"));
     }
 
     #[test]

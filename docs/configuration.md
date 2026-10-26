@@ -1459,7 +1459,9 @@ of it is re-resolved on every workspace switch, not just at startup.
 Two values are deliberately not layered:
 
 - `last_workspace` is written globally only. A pointer to a workspace, stored
-  inside the workspace it names, could only ever point at itself.
+  inside the workspace it names, could only ever point at itself. It's the
+  folder the app and the CLI open on. Before there is one, the app opens on
+  your home folder and the CLI on the directory you run it from.
 - Edits from the app's provider settings also write globally. The workspace
   layer is meant to be hand-written and version-controlled, and round-tripping
   the merged view into it would bake every inherited value into the project

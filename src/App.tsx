@@ -1509,6 +1509,7 @@ export default function App() {
                   <ChangesDrawer
                     sessionId={store.session.id}
                     busy={store.busy}
+                    away={store.away}
                     onClose={() => setChangesOpen(false)}
                     // The new conversation opens with the question it was
                     // forked before, ready to be asked again or differently.
