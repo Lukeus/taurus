@@ -52,6 +52,7 @@ const status = (skills: boolean, agents: boolean) => ({
     disabled_tools: [],
     theme: "system",
     max_iterations: 25,
+    from_project: [] as string[],
   },
 });
 
@@ -565,6 +566,46 @@ describe("a write that does not take", () => {
     await flip(checkbox(host, "propose skills"));
 
     expect(host.textContent).toContain("settings.json is read-only");
+  });
+
+  it("says why a theme did not change, rather than leaving it half-applied", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "set_theme"
+        ? Promise.reject("settings.json doesn't parse")
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    await act(async () => click(host, "Appearance"));
+    await act(async () => click(host, "Dark"));
+
+    expect(host.textContent).toContain("The theme stayed as it was: settings.json doesn't parse");
+  });
+
+  it("puts a settings.json that won't parse at the top of Behavior", async () => {
+    const s = status(true, true);
+    s.problems = [
+      { source: "settings", message: "~/.taurus/settings.json doesn't parse" },
+    ] as never[];
+    state.status = s;
+    const host = await mount();
+    click(host, "Behavior");
+
+    expect(host.textContent).toContain("~/.taurus/settings.json doesn't parse");
+  });
+
+  it("says when the project's own file sets a value, and only that one", async () => {
+    const s = status(true, true);
+    s.settings.from_project = ["max_iterations"];
+    state.status = s;
+    const host = await mount();
+    click(host, "Behavior");
+
+    const notes = [...host.querySelectorAll("p.hint")].filter((p) =>
+      p.textContent?.includes(".taurus/settings.json sets this"),
+    );
+    expect(notes).toHaveLength(1);
+    // Right after the field it's about.
+    expect(notes[0].previousElementSibling?.textContent).toContain("Steps per message");
   });
 
   it("says the stored keys could not be read, rather than asking for a saved provider to be saved", async () => {

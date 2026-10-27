@@ -69,6 +69,11 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const providerProblems = (status?.problems ?? []).filter(
     (p) => p.source === "providers",
   );
+  // A settings.json that won't parse: every value on Behavior is coming from
+  // somewhere else until it's fixed, and every save there will be refused.
+  const settingsProblems = (status?.problems ?? []).filter(
+    (p) => p.source === "settings",
+  );
 
   // Re-read rather than patched locally: storing a key can change what another
   // row reports — an environment variable that was the only source becomes an
@@ -277,6 +282,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
       {tab === "behavior" && (
         <>
+          {settingsProblems.length > 0 && (
+            <Problems problems={settingsProblems.map((p) => p.message)} />
+          )}
+
           <label className="settings-check">
             <input
               type="checkbox"
@@ -297,6 +306,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
               </span>
             </span>
           </label>
+          <FromProject field="skill_synthesis_enabled" />
 
           <label className="settings-check">
             <input
@@ -319,6 +329,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
               </span>
             </span>
           </label>
+          <FromProject field="agent_synthesis_enabled" />
 
           <label className="settings-check">
             <input
@@ -340,6 +351,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
               </span>
             </span>
           </label>
+          <FromProject field="shell_integration" />
 
           <label className="settings-check">
             <input
@@ -361,21 +373,25 @@ export function Settings({ onClose }: { onClose: () => void }) {
               </span>
             </span>
           </label>
+          <FromProject field="context_strategy" />
 
           <IterationLimit
             limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
             onError={setError}
           />
+          <FromProject field="max_iterations" />
           <DelegateLimit
             count={
               status?.settings.max_concurrent_agents ?? DEFAULT_CONCURRENT_AGENTS
             }
             onError={setError}
           />
+          <FromProject field="max_concurrent_agents" />
           <ContextLimit
             limit={status?.settings.context_limit ?? DEFAULT_CONTEXT_LIMIT}
             onError={setError}
           />
+          <FromProject field="context_limit" />
           {error && <Problem>{error}</Problem>}
         </>
       )}
@@ -398,6 +414,24 @@ export function Settings({ onClose }: { onClose: () => void }) {
         </dl>
       </section>
     </Drawer>
+  );
+}
+
+/**
+ * Says so when the open project's own settings file sets this field.
+ *
+ * Settings writes the global file, and a project's value wins over it, so a
+ * change made here can't show in this workspace: the switch or number moves
+ * back to the project's. Without this that read as the write not taking.
+ */
+export function FromProject({ field }: { field: string }) {
+  const status = useStore((s) => s.status);
+  if (!status?.settings.from_project.includes(field)) return null;
+  return (
+    <p className="hint">
+      This project's <code>.taurus/settings.json</code> sets this, so that's
+      what is used here. A change here applies to your other workspaces.
+    </p>
   );
 }
 
@@ -604,17 +638,31 @@ export function ThemePicker({ theme }: { theme: Theme }) {
   };
   useEffect(load, []);
 
+  // Painted back by hand when the write fails: the settings didn't change, so
+  // the refresh that follows has nothing new to repaint from.
   const chooseMode = async (next: Theme) => {
+    setError(null);
     applyTheme(next, custom);
-    await api.setTheme(next);
+    try {
+      await api.setTheme(next);
+    } catch (e) {
+      applyTheme(theme, custom);
+      setError(`The theme stayed as it was: ${e}`);
+    }
     await refresh();
   };
 
   const chooseBrand = async (id: string) => {
     setArming(false);
+    setError(null);
     const picked = themes?.find((t) => t.id === id) ?? null;
     applyTheme(theme, picked);
-    await api.setThemeId(id);
+    try {
+      await api.setThemeId(id);
+    } catch (e) {
+      applyTheme(theme, custom);
+      setError(`The theme stayed as it was: ${e}`);
+    }
     await refresh();
   };
 

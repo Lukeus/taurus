@@ -477,7 +477,7 @@ pub async fn set_agent_iterations(
 
 #[tauri::command]
 pub async fn set_max_iterations(state: State<'_, Arc<AppState>>, limit: u32) -> CmdResult<()> {
-    state.host.set_max_iterations(limit).await;
+    state.host.set_max_iterations(limit).await?;
     emit_status(&state).await;
     Ok(())
 }
@@ -487,21 +487,21 @@ pub async fn set_max_concurrent_agents(
     state: State<'_, Arc<AppState>>,
     count: u32,
 ) -> CmdResult<()> {
-    state.host.set_max_concurrent_agents(count).await;
+    state.host.set_max_concurrent_agents(count).await?;
     emit_status(&state).await;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn set_context_limit(state: State<'_, Arc<AppState>>, limit: u32) -> CmdResult<()> {
-    state.host.set_context_limit(limit).await;
+    state.host.set_context_limit(limit).await?;
     emit_status(&state).await;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn set_skill_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
-    state.host.set_skill_synthesis(enabled).await;
+    state.host.set_skill_synthesis(enabled).await?;
     emit_status(&state).await;
     Ok(())
 }
@@ -577,7 +577,7 @@ pub async fn set_context_strategy(
     state: State<'_, Arc<AppState>>,
     strategy: taurus_core::ContextStrategy,
 ) -> CmdResult<()> {
-    state.host.set_context_strategy(strategy).await;
+    state.host.set_context_strategy(strategy).await?;
     emit_status(&state).await;
     Ok(())
 }
@@ -587,13 +587,13 @@ pub async fn set_shell_integration(
     state: State<'_, Arc<AppState>>,
     enabled: bool,
 ) -> CmdResult<()> {
-    state.host.set_shell_integration(enabled).await;
+    state.host.set_shell_integration(enabled).await?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn set_agent_synthesis(state: State<'_, Arc<AppState>>, enabled: bool) -> CmdResult<()> {
-    state.host.set_agent_synthesis(enabled).await;
+    state.host.set_agent_synthesis(enabled).await?;
     emit_status(&state).await;
     Ok(())
 }

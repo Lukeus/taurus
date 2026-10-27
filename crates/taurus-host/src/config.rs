@@ -1221,6 +1221,15 @@ pub struct Settings {
     /// their defaults for that project.
     #[serde(default)]
     pub plugins: BTreeMap<String, bool>,
+    /// The fields the open project's own `.taurus/settings.json` sets, by
+    /// their names in that file. Empty when the project isn't trusted.
+    ///
+    /// What lets Settings say why a value it just wrote didn't take. The app
+    /// writes the global layer, and a field the project sets wins over it, so
+    /// without this a changed number snapped back to the project's with
+    /// nothing on screen to say whose it was.
+    #[serde(default)]
+    pub from_project: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -1445,6 +1454,7 @@ impl Default for Settings {
             voice_model: default_voice_model(),
             speech: SpeechSettings::default(),
             plugins: BTreeMap::new(),
+            from_project: Vec::new(),
         }
     }
 }
@@ -1619,23 +1629,75 @@ impl StoredSettings {
                 .unwrap_or(defaults.voice_model),
             speech: self.speech.unwrap_or(defaults.speech),
             plugins: self.plugins.unwrap_or(defaults.plugins),
+            from_project: Vec::new(),
+        }
+    }
+
+    /// The names of the fields this layer sets, as they're spelled in its file.
+    fn keys(&self) -> Vec<String> {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(fields)) => fields.into_iter().map(|(k, _)| k).collect(),
+            _ => Vec::new(),
         }
     }
 }
 
+/// One layer as it stands, for reading. A file that is missing or won't parse
+/// reads as empty, so a typo costs that layer's preferences rather than the
+/// app; [`settings_problems`] is what says so.
 pub fn read_settings(scope: Scope, workspace: Option<&Path>) -> StoredSettings {
-    settings_file(scope, workspace)
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    read_layer(scope, workspace).unwrap_or_default()
+}
+
+/// One layer, or why it can't be read. A file that isn't there is an empty
+/// layer, not an error.
+fn read_layer(scope: Scope, workspace: Option<&Path>) -> Result<StoredSettings, String> {
+    let Some(path) = settings_file(scope, workspace) else {
+        return Ok(StoredSettings::default());
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(StoredSettings::default()),
+        Err(e) => return Err(format!("couldn't read {}: {e}", path.display())),
+    };
+    serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "{} doesn't parse ({e}), so its settings aren't in use. Fix the file or delete it; \
+             until then nothing in the app will write to it.",
+            path.display()
+        )
+    })
+}
+
+/// Why either layer's settings file can't be read, if it can't.
+///
+/// Trust-gated like [`load_settings`]: an untrusted project's file isn't read,
+/// so whatever is wrong with it isn't this app's to report yet.
+pub fn settings_problems(workspace: Option<&Path>) -> Vec<String> {
+    let workspace = crate::trust::for_reading(workspace);
+    let mut problems = Vec::new();
+    for scope in [Scope::Global, Scope::Workspace] {
+        if scope == Scope::Workspace && workspace.is_none() {
+            continue;
+        }
+        if let Err(e) = read_layer(scope, workspace) {
+            problems.push(e);
+        }
+    }
+    problems
 }
 
 /// Reads both layers and resolves them field by field.
 pub fn load_settings(workspace: Option<&Path>) -> Settings {
     let workspace = crate::trust::for_reading(workspace);
     let mut merged = read_settings(Scope::Global, workspace);
-    merged.overlay(read_settings(Scope::Workspace, workspace));
-    merged.resolve()
+    let project = read_settings(Scope::Workspace, workspace);
+    let from_project = project.keys();
+    merged.overlay(project);
+    Settings {
+        from_project,
+        ..merged.resolve()
+    }
 }
 
 /// Read-modify-writes one layer.
@@ -1643,19 +1705,25 @@ pub fn load_settings(workspace: Option<&Path>) -> Settings {
 /// Only the fields the closure touches are written, so hand-edited keys in the
 /// same file survive, and a value that is only meaningful in the other layer is
 /// never copied down into this one.
+///
+/// Refuses a file that exists and won't parse. Reading it as empty and writing
+/// the edit back was how one checkbox replaced a hand-edited file that had a
+/// trailing comma with a file holding only that checkbox.
 pub fn edit_settings(
     scope: Scope,
     workspace: Option<&Path>,
     edit: impl FnOnce(&mut StoredSettings),
-) {
+) -> Result<(), String> {
     let Some(path) = settings_file(scope, workspace) else {
-        return;
+        return Ok(());
     };
-    let mut stored = read_settings(scope, workspace);
+    let mut stored = read_layer(scope, workspace)?;
     edit(&mut stored);
-    if let Ok(json) = serde_json::to_string_pretty(&stored) {
-        write_config(&path, &json);
+    let json = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
+    replace_file(&path, &json).map_err(|e| format!("couldn't write {}: {e}", path.display()))
 }
 
 /// Writes a config file, creating its directory.
@@ -1977,7 +2045,8 @@ mod tests {
         let resolved = serde_json::to_value(full.resolve()).unwrap();
         let resolved = resolved.as_object().unwrap();
         let stored = stored.as_object().unwrap();
-        for field in resolved.keys() {
+        // Derived from which layer set what, not stored in either.
+        for field in resolved.keys().filter(|f| *f != "from_project") {
             assert!(
                 stored.contains_key(field),
                 "the fixture leaves `{field}` unset"
@@ -2351,6 +2420,58 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_file_that_will_not_parse_is_refused_rather_than_replaced() {
+        with_home(|home| {
+            // A trailing comma: the hand edit Traces and Usage both send
+            // people to make.
+            let broken = "{\n  \"theme\": \"dark\",\n  \"otlp_endpoint\": \"http://localhost:4318\",\n}\n";
+            write(home.join("settings.json"), broken);
+
+            let refused = edit_settings(Scope::Global, None, |s| s.max_iterations = Some(10));
+
+            let reason = refused.expect_err("an unparseable file was written over");
+            assert!(reason.contains("settings.json"), "{reason}");
+            assert!(reason.contains("doesn't parse"), "{reason}");
+            assert_eq!(
+                std::fs::read_to_string(home.join("settings.json")).unwrap(),
+                broken
+            );
+        });
+    }
+
+    #[test]
+    fn a_settings_file_that_will_not_parse_is_reported_and_a_missing_one_is_not() {
+        with_home(|home| {
+            assert!(settings_problems(None).is_empty());
+
+            write(home.join("settings.json"), "{ not json");
+            let problems = settings_problems(None);
+            assert_eq!(problems.len(), 1);
+            assert!(problems[0].contains("settings.json"), "{problems:?}");
+        });
+    }
+
+    #[test]
+    fn resolved_settings_name_the_fields_the_project_sets() {
+        with_home(|home| {
+            let ws = trusted_workspace();
+            write(home.join("settings.json"), r#"{"max_iterations": 10}"#);
+            write(
+                workspace_dir(ws.path()).join("settings.json"),
+                r#"{"max_iterations": 50, "context_strategy": "relay"}"#,
+            );
+
+            let settings = load_settings(Some(ws.path()));
+            assert_eq!(settings.max_iterations, 50);
+            let mut fields = settings.from_project.clone();
+            fields.sort();
+            assert_eq!(fields, ["context_strategy", "max_iterations"]);
+            // Global alone has no project to name.
+            assert!(load_settings(None).from_project.is_empty());
+        });
+    }
+
+    #[test]
     fn settings_resolve_field_by_field_rather_than_file_by_file() {
         with_home(|home| {
             let ws = trusted_workspace();
@@ -2504,7 +2625,7 @@ mod tests {
     #[test]
     fn a_stored_theme_survives_the_round_trip() {
         with_home(|home| {
-            edit_settings(Scope::Global, None, |s| s.theme = Some(Theme::Light));
+            edit_settings(Scope::Global, None, |s| s.theme = Some(Theme::Light)).unwrap();
 
             let text = std::fs::read_to_string(home.join("settings.json")).unwrap();
             assert!(text.contains("\"theme\": \"light\""), "{text}");
@@ -2523,7 +2644,7 @@ mod tests {
 
             edit_settings(Scope::Workspace, Some(ws.path()), |s| {
                 s.last_model = Some("project-model".into())
-            });
+            }).unwrap();
 
             assert_eq!(
                 read_settings(Scope::Global, None).last_model.as_deref(),
@@ -2542,7 +2663,7 @@ mod tests {
         with_home(|ws_home| {
             edit_settings(Scope::Global, None, |s| {
                 s.last_provider = Some("ollama".into())
-            });
+            }).unwrap();
             let text = std::fs::read_to_string(ws_home.join("settings.json")).unwrap();
             assert!(text.contains("last_provider"));
             assert!(

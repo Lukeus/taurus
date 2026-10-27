@@ -40,6 +40,8 @@ pub enum ProblemSource {
     /// A file under `themes/` that will not load, or names a colour, a size or
     /// a logo the app cannot use.
     Themes,
+    /// `settings.json` itself — a layer that won't parse, and so isn't in use.
+    Settings,
 }
 
 impl ProblemSource {
@@ -48,7 +50,7 @@ impl ProblemSource {
     /// What a check that has to hold for all of them walks, so a test never
     /// lists them by hand and falls behind. A new variant does not compile
     /// until [`Self::label`] names it; this is the other place it goes.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Providers,
         Self::Search,
         Self::Mcp,
@@ -58,6 +60,7 @@ impl ProblemSource {
         Self::Instructions,
         Self::Hooks,
         Self::Themes,
+        Self::Settings,
     ];
 
     /// Where a person goes to fix this, in the words the UI uses for it.
@@ -69,6 +72,9 @@ impl ProblemSource {
             // file is both visible and explicable.
             Self::Agents => "Agents",
             Self::Themes => "Settings › Appearance",
+            // Behavior, because that's the tab whose values come from this
+            // file and where a save would otherwise be refused unexplained.
+            Self::Settings => "Settings › Behavior",
             // The screen that lists what the agent can reach, which is exactly
             // what a disabled tool changes.
             Self::Tools => "Skills",
@@ -91,6 +97,7 @@ impl ProblemSource {
             Self::Instructions => "instructions",
             Self::Hooks => "hooks",
             Self::Themes => "themes",
+            Self::Settings => "settings",
         }
     }
 }

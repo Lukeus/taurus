@@ -489,10 +489,15 @@ impl Host {
             (Scope::Global, None),
             (Scope::Workspace, Some(workspace.as_path())),
         ] {
-            config::edit_settings(scope, dir, |s| {
+            // Logged rather than returned: remembering the model is a side
+            // effect of a turn that has already happened, and a settings file
+            // that won't parse is reported on its own by the next reload.
+            if let Err(e) = config::edit_settings(scope, dir, |s| {
                 s.last_provider = Some(provider_id.to_string());
                 s.last_model = Some(model.to_string());
-            });
+            }) {
+                tracing::warn!(error = %e, "could not remember the model");
+            }
         }
 
         let mut settings = self.settings.write().await;

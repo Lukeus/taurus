@@ -253,7 +253,7 @@ async fn wiring_in_semantic_search_reads_no_key_until_something_is_embedded() {
     host.set_provider_key(id, "sk-embed").await.unwrap();
 
     let before = secrets::reads(id);
-    host.set_embedding_model("nomic-embed-text", id).await;
+    host.set_embedding_model("nomic-embed-text", id).await.unwrap();
     host.reload_local().await;
     assert!(
         host.registry.read().await.get("search_code").is_some(),
@@ -288,7 +288,7 @@ async fn the_theme_in_force_is_read_again_only_when_its_file_moves() {
     let themes = theme::ensure_themes_dir(Scope::Global, None).unwrap();
     let file = themes.join("brand.json");
     std::fs::write(&file, r##"{"name":"Brand","dark":{"ink":"#000"}}"##).unwrap();
-    host.set_theme_id("brand".into()).await;
+    host.set_theme_id("brand".into()).await.unwrap();
     let name = |theme: Option<CustomTheme>| theme.map(|t| t.name);
 
     assert_eq!(name(host.active_theme().await).as_deref(), Some("Brand"));
@@ -957,14 +957,14 @@ async fn toggling_agent_synthesis_adds_and_removes_the_tool_without_a_reload() {
         .iter()
         .any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
 
-    host.set_agent_synthesis(false).await;
+    host.set_agent_synthesis(false).await.unwrap();
     assert!(!host
         .tool_names()
         .await
         .iter()
         .any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
 
-    host.set_agent_synthesis(true).await;
+    host.set_agent_synthesis(true).await.unwrap();
     assert!(host
         .tool_names()
         .await
@@ -1005,14 +1005,14 @@ async fn toggling_synthesis_adds_and_removes_the_tool_without_a_reload() {
         .iter()
         .any(|t| t == taurus_skills::PROPOSE_TOOL));
 
-    host.set_skill_synthesis(false).await;
+    host.set_skill_synthesis(false).await.unwrap();
     assert!(!host
         .tool_names()
         .await
         .iter()
         .any(|t| t == taurus_skills::PROPOSE_TOOL));
 
-    host.set_skill_synthesis(true).await;
+    host.set_skill_synthesis(true).await.unwrap();
     assert!(host
         .tool_names()
         .await
@@ -3955,6 +3955,6 @@ fn the_app_opens_on_the_home_folder_until_one_is_chosen() {
     let chosen = TempDir::new().unwrap();
     config::edit_settings(Scope::Global, None, |s| {
         s.last_workspace = Some(chosen.path().display().to_string())
-    });
+    }).unwrap();
     assert_eq!(Host::app_workspace(), chosen.path().canonicalize().unwrap());
 }

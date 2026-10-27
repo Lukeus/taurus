@@ -121,28 +121,28 @@ impl Host {
     ///
     /// No registry work, unlike the two toggles below — this changes a number
     /// the next turn reads, not which tools exist.
-    pub async fn set_max_iterations(&self, limit: u32) {
+    pub async fn set_max_iterations(&self, limit: u32) -> Result<(), String> {
         let limit = limit.clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT);
         self.edit_global_setting(|s| s.max_iterations = Some(limit))
-            .await;
+            .await
     }
 
     /// How many sub-agents one turn may run at once, for every workspace. See
     /// [`crate::config::Settings::max_concurrent_agents`]. Clamped on the way
     /// in, like the iteration ceiling.
-    pub async fn set_max_concurrent_agents(&self, count: u32) {
+    pub async fn set_max_concurrent_agents(&self, count: u32) -> Result<(), String> {
         let count = count.clamp(1, crate::MAX_CONCURRENT_SUBAGENTS_LIMIT);
         self.edit_global_setting(|s| s.max_concurrent_agents = Some(count))
-            .await;
+            .await
     }
 
     /// How much of a model's window a turn fills before it makes room. See
     /// [`crate::config::Settings::context_limit`]. Clamped on the way in, like
     /// the iteration ceiling, so what is written is what will be used.
-    pub async fn set_context_limit(&self, limit: u32) {
+    pub async fn set_context_limit(&self, limit: u32) -> Result<(), String> {
         let limit = crate::config::clamp_context_limit(limit);
         self.edit_global_setting(|s| s.context_limit = Some(limit))
-            .await;
+            .await
     }
 
     /// Writes one global setting and reloads the resolved ones.
@@ -150,19 +150,27 @@ impl Host {
     /// What every setter the UI calls does, and the reason it is one function:
     /// the global file is the layer the UI edits, and the workspace's layer
     /// still has to be applied over it before anything reads the result.
-    pub(super) async fn edit_global_setting(&self, edit: impl FnOnce(&mut config::StoredSettings)) {
-        config::edit_settings(Scope::Global, None, edit);
+    ///
+    /// Says why when the write didn't land — a global file that won't parse,
+    /// a directory that can't be written — rather than reloading as if it had,
+    /// which left a switch that moved and then moved back.
+    pub(super) async fn edit_global_setting(
+        &self,
+        edit: impl FnOnce(&mut config::StoredSettings),
+    ) -> Result<(), String> {
+        config::edit_settings(Scope::Global, None, edit)?;
         let workspace = self.workspace.read().await.clone();
         *self.settings.write().await = config::load_settings(Some(&workspace));
+        Ok(())
     }
 
     /// Toggles skill synthesis for every workspace.
     ///
     /// A project that wants it off regardless can say so in its own
     /// `.taurus/settings.json`, which this will not overwrite.
-    pub async fn set_skill_synthesis(&self, enabled: bool) {
+    pub async fn set_skill_synthesis(&self, enabled: bool) -> Result<(), String> {
         self.edit_global_setting(|s| s.skill_synthesis_enabled = Some(enabled))
-            .await;
+            .await?;
 
         // The tool follows the setting rather than waiting for a reload, so
         // turning synthesis off stops paying for its schema on the next request
@@ -183,20 +191,21 @@ impl Host {
                 self.proposals.clone(),
             )));
         }
+        Ok(())
     }
 
     /// Turns the terminal dock's shell integration on or off, everywhere.
     ///
     /// Nothing else follows it: a shell already running keeps the hooks it
     /// started with, and the next one opened reads this.
-    pub async fn set_context_strategy(&self, strategy: taurus_core::ContextStrategy) {
+    pub async fn set_context_strategy(&self, strategy: taurus_core::ContextStrategy) -> Result<(), String> {
         self.edit_global_setting(|s| s.context_strategy = Some(strategy))
-            .await;
+            .await
     }
 
-    pub async fn set_shell_integration(&self, enabled: bool) {
+    pub async fn set_shell_integration(&self, enabled: bool) -> Result<(), String> {
         self.edit_global_setting(|s| s.shell_integration = Some(enabled))
-            .await;
+            .await
     }
 
     /// Whether a shell opened now should get the integration.
@@ -208,9 +217,9 @@ impl Host {
     ///
     /// The twin of [`Host::set_skill_synthesis`], down to not rebuilding the
     /// registry: a checkbox has no business dropping every MCP connection.
-    pub async fn set_agent_synthesis(&self, enabled: bool) {
+    pub async fn set_agent_synthesis(&self, enabled: bool) -> Result<(), String> {
         self.edit_global_setting(|s| s.agent_synthesis_enabled = Some(enabled))
-            .await;
+            .await?;
 
         let resolved = self.settings.read().await.clone();
         let mut registry = self.registry.write().await;
@@ -227,6 +236,7 @@ impl Host {
                 self.agent_proposals.clone(),
             )));
         }
+        Ok(())
     }
 
     /// Sets the palette for every workspace.
@@ -235,8 +245,8 @@ impl Host {
     /// the person looking at the screen, not of the project on it, and writing
     /// it into a workspace file would hand one repo the power to decide how the
     /// app looks everywhere it is opened.
-    pub async fn set_theme(&self, theme: Theme) {
-        self.edit_global_setting(|s| s.theme = Some(theme)).await;
+    pub async fn set_theme(&self, theme: Theme) -> Result<(), String> {
+        self.edit_global_setting(|s| s.theme = Some(theme)).await
     }
 
     /// Picks the custom theme painting over that palette, or none of them.
@@ -246,8 +256,8 @@ impl Host {
     /// can still ship one and name it in its own `settings.json` by hand —
     /// that is a layer, and a hand-edited layer is a different thing from a
     /// click in the app quietly writing into somebody's project.
-    pub async fn set_theme_id(&self, id: String) {
-        self.edit_global_setting(|s| s.theme_id = Some(id)).await;
+    pub async fn set_theme_id(&self, id: String) -> Result<(), String> {
+        self.edit_global_setting(|s| s.theme_id = Some(id)).await
     }
 
     /// The custom theme in force, if there is one.
@@ -345,7 +355,7 @@ impl Host {
         let workspace = self.workspace.read().await.clone();
         theme::delete_theme(scope, Some(&workspace), id)?;
         if self.settings.read().await.theme_id == id {
-            self.set_theme_id(String::new()).await;
+            self.set_theme_id(String::new()).await?;
         }
         Ok(())
     }
@@ -437,14 +447,14 @@ impl Host {
     ///
     /// Global only. It names a model on the machine's own server, which is a
     /// property of the machine rather than of any one project.
-    pub async fn set_embedding_model(&self, model: &str, provider: &str) {
+    pub async fn set_embedding_model(&self, model: &str, provider: &str) -> Result<(), String> {
         let model = model.trim().to_string();
         let provider = provider.trim().to_string();
         self.edit_global_setting(|s| {
             s.embedding_model = Some(model);
             s.embedding_provider = Some(provider);
         })
-        .await;
+        .await
     }
 
     /// Which reranking model reorders search results, and which provider
@@ -459,14 +469,14 @@ impl Host {
     /// the conversation happened to be on — which for the common Ollama setup
     /// is a backend that cannot rerank at all, and so a round trip that fails
     /// on every search until the second field lands.
-    pub async fn set_rerank(&self, model: &str, provider: &str) {
+    pub async fn set_rerank(&self, model: &str, provider: &str) -> Result<(), String> {
         let model = model.trim().to_string();
         let provider = provider.trim().to_string();
         self.edit_global_setting(|s| {
             s.rerank_model = Some(model);
             s.rerank_provider = Some(provider);
         })
-        .await;
+        .await
     }
 
     /// Which speech model the mic transcribes with.
@@ -475,18 +485,18 @@ impl Host {
     /// carry it, and a project setting naming one that isn't downloaded would
     /// turn the mic into a download prompt in that one folder. The caller
     /// checks the name against the catalog; this crate doesn't know it.
-    pub async fn set_voice_model(&self, model: &str) {
+    pub async fn set_voice_model(&self, model: &str) -> Result<(), String> {
         let model = model.trim().to_string();
         self.edit_global_setting(|s| s.voice_model = Some(model))
-            .await;
+            .await
     }
 
     /// How replies are read aloud.
     ///
     /// Global, like the speech model: which voice somebody wants to hear is
     /// theirs, not the project's. A workspace file can still set it by hand.
-    pub async fn set_speech(&self, speech: config::SpeechSettings) {
-        self.edit_global_setting(|s| s.speech = Some(speech)).await;
+    pub async fn set_speech(&self, speech: config::SpeechSettings) -> Result<(), String> {
+        self.edit_global_setting(|s| s.speech = Some(speech)).await
     }
 
     /// Where each speech service's key is coming from.

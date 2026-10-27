@@ -826,8 +826,7 @@ pub fn set_enabled(
             .plugins
             .get_or_insert_with(BTreeMap::new)
             .insert(name.to_string(), enabled);
-    });
-    Ok(())
+    })
 }
 
 /// Installs a plugin from a folder or a git URL into one scope, and returns
@@ -975,8 +974,7 @@ pub fn remove(name: &str, scope: Scope, workspace: Option<&Path>) -> Result<(), 
         if settings.plugins.as_ref().is_some_and(BTreeMap::is_empty) {
             settings.plugins = None;
         }
-    });
-    Ok(())
+    })
 }
 
 /// Whether `from` names a git repository rather than a folder.
@@ -2020,11 +2018,11 @@ mod tests {
 
         config::edit_settings(Scope::Global, None, |s| {
             s.plugins = Some(BTreeMap::from([("ops".into(), false)]))
-        });
+        }).unwrap();
         assert!(on(None).is_empty());
         config::edit_settings(Scope::Workspace, Some(ws), |s| {
             s.plugins = Some(BTreeMap::from([("quiet".into(), true)]))
-        });
+        }).unwrap();
         // The project switched one on and said nothing of the other, which
         // stays as you left it.
         assert_eq!(on(Some(ws)), ["quiet"]);
