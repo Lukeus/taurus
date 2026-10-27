@@ -567,6 +567,13 @@ requestAnimationFrame(() => {
         (await click(".settings-tab", (b) => b === "Hooks"))();
         await until(() => document.querySelector(".hook-card"));
       },
+      // Settings › Terminal: a chosen shell and font, and the marking switch
+      // that moved here from Behavior.
+      "terminal-settings": async () => {
+        (await click(".rail-link b", (b) => b === "Settings"))();
+        (await click(".settings-tab", (b) => b === "Terminal"))();
+        await until(() => document.querySelector('input[aria-label="Shell"]'));
+      },
       appearance: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();
         (await click(".settings-tab", (b) => b === "Appearance"))();

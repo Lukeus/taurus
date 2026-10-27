@@ -966,3 +966,76 @@ describe("the tracing tab", () => {
     expect(host.textContent).toContain("isn't an OTLP/HTTP address");
   });
 });
+
+/** Types into a field and leaves it, which is when these fields save. */
+const fill = async (host: HTMLElement, label: string, value: string) => {
+  const input = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+  if (!input) throw new Error(`no ${label} field in: ${host.innerHTML}`);
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => {
+    set.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {
+    input.focus();
+    input.blur();
+  });
+  return input;
+};
+
+describe("the terminal tab", () => {
+  it("saves the shell when the field is left", async () => {
+    const host = await mount();
+    click(host, "Terminal");
+    await fill(host, "Shell", "fish");
+    expect(invoke).toHaveBeenCalledWith("set_terminal_shell", { program: "fish" });
+  });
+
+  it("keeps a refused shell on screen beside the reason", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "set_terminal_shell"
+        ? Promise.reject('No program called "fishh" is on this app\'s PATH.')
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    click(host, "Terminal");
+    const input = await fill(host, "Shell", "fishh");
+    expect(host.textContent).toContain('No program called "fishh"');
+    expect(input.value).toBe("fishh");
+  });
+
+  it("pulls an out-of-range size back before saving it", async () => {
+    const host = await mount();
+    click(host, "Terminal");
+    const input = await fill(host, "Terminal font size", "40");
+    expect(invoke).toHaveBeenCalledWith("set_terminal_font", { family: "", size: 24 });
+    expect(input.value).toBe("24");
+  });
+
+  it("has the command-marking switch, which left Behavior for it", async () => {
+    const host = await mount();
+    click(host, "Behavior");
+    expect(host.textContent).not.toContain("Mark each command");
+    click(host, "Terminal");
+    expect(host.textContent).toContain("Mark each command");
+  });
+});
+
+describe("the notification switch", () => {
+  it("writes through its own command", async () => {
+    const host = await mount();
+    click(host, "Behavior");
+    await flip(checkbox(host, "turn finishes while I'm elsewhere"));
+    expect(invoke).toHaveBeenCalledWith("set_notify_when_done", { on: false });
+  });
+});
+
+describe("the interface size", () => {
+  it("is applied the moment a size is picked", async () => {
+    const host = await mount();
+    click(host, "Appearance");
+    await act(async () => click(host, "125%"));
+    expect(invoke).toHaveBeenCalledWith("set_ui_scale", { percent: 125 });
+    expect(refresh).toHaveBeenCalled();
+  });
+});

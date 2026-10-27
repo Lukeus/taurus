@@ -932,6 +932,13 @@ instead of printing a hundred of them. Resizing the pane tells the shell its
 new geometry, so a full-screen program reflows with it instead of drawing at
 the size it started at.
 
+**Settings › Terminal** picks a different shell, by name or full path, for the
+next one you open. It's read from your own settings only. A project can't name
+the program that runs when you open a terminal. The same tab sets the font and
+its size, which apply to the shell that's open. A font you name goes in front
+of the app's own, so the icons a prompt draws still come from the app's font
+when yours doesn't have them.
+
 ### The commands the model started
 
 ![The terminal dock with three tabs — the shell, a `cargo test --workspace`
@@ -1038,7 +1045,7 @@ commands.
 
 zsh and bash are integrated. fish, PowerShell and `cmd.exe` start exactly as
 before, with no marks, so the dock works but has no blocks.
-**Mark each command in the terminal** in Settings → Behavior turns the hooks
+**Mark each command** in Settings › Terminal turns the hooks
 off for the next shell you open. Two things still aren't wired: what you run
 isn't checkpointed the way the agent's own commands are, and the agent's own
 `run_command` calls don't appear in the pane. Both are written down in

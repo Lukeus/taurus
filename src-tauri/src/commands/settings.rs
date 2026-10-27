@@ -297,3 +297,53 @@ pub async fn set_hook(
     emit_status(&state).await;
     Ok(())
 }
+
+#[tauri::command]
+pub async fn set_notify_when_done(state: State<'_, Arc<AppState>>, on: bool) -> CmdResult<()> {
+    state.host.set_notify_when_done(on).await?;
+    emit_status(&state).await;
+    Ok(())
+}
+
+/// Saves the interface size and redraws the window at it.
+#[tauri::command]
+pub async fn set_ui_scale(state: State<'_, Arc<AppState>>, percent: u32) -> CmdResult<()> {
+    let percent = state.host.set_ui_scale(percent).await?;
+    if let Some(window) = tauri::Manager::get_webview_window(&state.app, "main") {
+        apply_ui_scale(&window, percent);
+    }
+    emit_status(&state).await;
+    Ok(())
+}
+
+/// The webview's own zoom, so text, spacing and the terminal's canvas scale
+/// together. A CSS `zoom` would scale the drawing and not the emulator's idea
+/// of where the mouse is, which puts every click in the terminal a few cells
+/// off.
+pub fn apply_ui_scale(window: &tauri::WebviewWindow, percent: u32) {
+    let percent = percent.clamp(
+        taurus_host::config::MIN_UI_SCALE,
+        taurus_host::config::MAX_UI_SCALE,
+    );
+    if let Err(e) = window.set_zoom(f64::from(percent) / 100.0) {
+        tracing::warn!(error = %e, percent, "could not set the interface size");
+    }
+}
+
+#[tauri::command]
+pub async fn set_terminal_shell(state: State<'_, Arc<AppState>>, program: String) -> CmdResult<()> {
+    state.host.set_terminal_shell(&program).await?;
+    emit_status(&state).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_terminal_font(
+    state: State<'_, Arc<AppState>>,
+    family: String,
+    size: u32,
+) -> CmdResult<()> {
+    state.host.set_terminal_font(&family, size).await?;
+    emit_status(&state).await;
+    Ok(())
+}

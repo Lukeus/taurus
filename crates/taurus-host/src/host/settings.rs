@@ -172,6 +172,53 @@ impl Host {
             .await
     }
 
+    /// Whether a turn that finishes while you're elsewhere sends a system
+    /// notification. Global: it's about the person, not the project.
+    pub async fn set_notify_when_done(&self, on: bool) -> Result<(), String> {
+        self.edit_global_setting(|s| s.notify_when_done = Some(on)).await
+    }
+
+    /// How large the interface is drawn, in percent. Clamped on the way in, so
+    /// what's written is what's used. The caller applies it to the window.
+    pub async fn set_ui_scale(&self, percent: u32) -> Result<u32, String> {
+        let percent = percent.clamp(config::MIN_UI_SCALE, config::MAX_UI_SCALE);
+        self.edit_global_setting(|s| s.ui_scale = Some(percent)).await?;
+        Ok(percent)
+    }
+
+    /// The program the terminal dock starts. Empty is the login shell.
+    ///
+    /// Checked here rather than when a terminal opens, so a typo is said
+    /// while the field is still on screen. Applies to the next shell opened;
+    /// one already running keeps going.
+    pub async fn set_terminal_shell(&self, program: &str) -> Result<(), String> {
+        let program = program.trim().to_string();
+        if !program.is_empty() && taurus_tools::login_path::which(&program).is_none() {
+            return Err(if program.contains('/') || program.contains('\\') {
+                format!("{program} isn't a program this app can run.")
+            } else {
+                format!(
+                    "No program called \"{program}\" is on this app's PATH. Give its full \
+                     path instead, like /opt/homebrew/bin/{program}."
+                )
+            });
+        }
+        self.edit_global_setting(|s| s.terminal_shell = Some(program))
+            .await
+    }
+
+    /// The terminal's font family and size. An empty family is the app's own
+    /// monospace stack. The size is clamped on the way in.
+    pub async fn set_terminal_font(&self, family: &str, size: u32) -> Result<(), String> {
+        let family = family.trim().to_string();
+        let size = size.clamp(config::MIN_TERMINAL_FONT_SIZE, config::MAX_TERMINAL_FONT_SIZE);
+        self.edit_global_setting(|s| {
+            s.terminal_font = Some(family);
+            s.terminal_font_size = Some(size);
+        })
+        .await
+    }
+
     /// Whether exported traces may carry the messages themselves. Read at the
     /// start of each turn, so it takes effect on the next one.
     pub async fn set_otlp_capture_content(&self, capture: bool) -> Result<(), String> {

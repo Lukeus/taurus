@@ -708,6 +708,12 @@ with something pending. Alt-tabbing away from a permission dialog isn't news
 about it. A turn that finishes unwatched counts as one thing owed, and coming
 back clears it.
 
+It also sends a system notification, naming the conversation and saying how
+long the turn took or what stopped it. That happens when Taurus isn't the app
+in front, or when you've moved to another conversation while it ran. A turn
+you stopped yourself doesn't send one. **Tell me when a turn finishes while
+I'm elsewhere** in Settings › Behavior turns this off.
+
 Windows gets no badge. It has no taskbar badge count, and the documented
 substitute, an overlay icon, means shipping a rendered image per number. The
 taskbar flash carries the signal there. On Linux the badge needs a desktop

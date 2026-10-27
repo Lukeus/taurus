@@ -6,6 +6,8 @@ import "../vendor.css";
 import * as api from "../lib/api";
 import type { BackgroundJob, Block } from "../lib/api";
 import { useWindowPalette } from "../lib/windowTheme";
+import { useStore } from "../state/store";
+import { DEFAULT_TERMINAL_FONT_SIZE } from "../lib/limits";
 import { basename } from "../lib/format";
 import { APPLE, TERMINAL_SHORTCUT } from "../lib/keys";
 import {
@@ -157,18 +159,24 @@ export function TerminalDock({
   /** Each command's line in the scrollback, by block number. */
   const markers = useRef<Map<number, IMarker>>(new Map());
 
+  // Settings › Terminal. Held in a ref as well, so a shell built after a
+  // change starts in it without `start` having to be rebuilt to see it.
+  const fontFamily = useStore((s) => s.status?.settings.terminal_font ?? "");
+  const fontSize = useStore(
+    (s) => s.status?.settings.terminal_font_size ?? DEFAULT_TERMINAL_FONT_SIZE,
+  );
+  const font = useRef({ family: fontFamily, size: fontSize });
+  font.current = { family: fontFamily, size: fontSize };
+
   /** Builds the shell, and returns the teardown for it. */
   const start = useCallback(() => {
     const element = host.current;
     if (!element) return;
 
     const emulator = new Terminal({
-      // Not `--mono`: a prompt draws its separators and icons from the
-      // private-use area, and the app's face has nothing there. See
-      // `--mono-terminal` in the stylesheet for what is in the stack and why
-      // the names are spelled out.
-      fontFamily: read("--mono-terminal") || read("--mono") || "monospace",
-      fontSize: 13,
+      // See `terminalFont` for why this isn't `--mono`.
+      fontFamily: terminalFont(font.current.family),
+      fontSize: font.current.size,
       // A terminal is read in long lines and the app's body leading is set for
       // prose; at the body's ratio the rows drift apart enough that a box-drawn
       // frame stops looking like one.
@@ -435,6 +443,20 @@ export function TerminalDock({
     return () => observer.disconnect();
   }, []);
 
+  // A font changed in Settings applies to the shell that's open, refitted so
+  // the shell is told how many columns the new size leaves.
+  useEffect(() => {
+    const emulator = term.current;
+    if (!emulator) return;
+    emulator.options.fontFamily = terminalFont(fontFamily);
+    emulator.options.fontSize = fontSize;
+    try {
+      fit.current?.fit();
+    } catch {
+      // Laid out to nothing; the next resize refits.
+    }
+  }, [fontFamily, fontSize]);
+
   // Follows the window, whatever moved it: the preference, the system's
   // appearance under "system", or one custom theme swapped for another in the
   // same mode. The colours are the stylesheet's, so this only has to re-read
@@ -648,4 +670,19 @@ function read(name: string): string {
 /** A backend message, which starts lowercase, shown as a sentence. */
 function sentence(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * The family to hand the emulator: the one Settings names, ahead of the app's
+ * own stack rather than instead of it.
+ *
+ * Not `--mono`: a prompt draws its separators and icons from the private-use
+ * area, and the app's face has nothing there. See `--mono-terminal` in the
+ * stylesheet for what is in the stack and why the names are spelled out. A
+ * chosen face that lacks those glyphs still gets them from the stack behind it.
+ */
+export function terminalFont(chosen: string): string {
+  const stack = read("--mono-terminal") || read("--mono") || "monospace";
+  const name = chosen.trim().replace(/"/g, "");
+  return name ? `"${name}", ${stack}` : stack;
 }

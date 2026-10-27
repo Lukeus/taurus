@@ -52,6 +52,18 @@ compile_error!(
 ///
 /// Best-effort throughout. Every failure here costs a flash, and none of them
 /// is worth refusing to open the window over.
+/// Draws the window at the interface size Settings names, before the first
+/// frame, so a person who set 125% never sees it at 100% first.
+fn zoom_window(app: &tauri::App) {
+    // Global layer only, for `paint_window`'s reason: no folder is open yet.
+    let Some(percent) = config::read_settings(Scope::Global, None).ui_scale else {
+        return;
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        commands::apply_ui_scale(&window, percent);
+    }
+}
+
 fn paint_window(app: &tauri::App) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -174,6 +186,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Driven from Rust only, when a turn ends, so the webview is granted
+        // nothing for it. See `commands::notify_done`.
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(commands::PendingUpdate::default())
         // A shell started under a pty is not in this process's tree in any way
@@ -223,6 +238,7 @@ pub fn run() {
         })
         .setup(|app| {
             paint_window(app);
+            zoom_window(app);
 
             let state = Arc::new(state::AppState::new(app.handle().clone(), traces, export));
             app.manage(state.clone());
@@ -354,6 +370,10 @@ pub fn run() {
             commands::set_otlp_capture_content,
             commands::hook_list,
             commands::set_hook,
+            commands::set_notify_when_done,
+            commands::set_ui_scale,
+            commands::set_terminal_shell,
+            commands::set_terminal_font,
             commands::build_index,
             commands::stop_index_build,
             commands::voice_status,

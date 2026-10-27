@@ -1382,6 +1382,32 @@ pub struct Settings {
     /// their defaults for that project.
     #[serde(default)]
     pub plugins: BTreeMap<String, bool>,
+    /// Whether a turn that finishes while you're elsewhere says so with a
+    /// system notification. Elsewhere is another app, or another conversation:
+    /// a turn finishing on the screen you're looking at needs no telling.
+    #[serde(default = "default_true")]
+    pub notify_when_done: bool,
+    /// How large the whole interface is drawn, in percent. The webview's own
+    /// zoom, so text, spacing and the terminal scale together. Clamped to
+    /// [`MIN_UI_SCALE`]..=[`MAX_UI_SCALE`].
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: u32,
+    /// The program the terminal dock starts, by name or path. Empty is the
+    /// login shell: `$SHELL` on macOS and Linux, PowerShell on Windows.
+    ///
+    /// Read from your own settings only, never a project's. Which program
+    /// runs in your terminal is yours to say, and a repository naming one
+    /// would be a cloned file choosing what executes when you open a shell.
+    #[serde(default)]
+    pub terminal_shell: String,
+    /// The terminal's font family. Empty is the app's monospace stack, which
+    /// carries the private-use glyphs prompts draw with.
+    #[serde(default)]
+    pub terminal_font: String,
+    /// The terminal's font size in pixels, [`MIN_TERMINAL_FONT_SIZE`] to
+    /// [`MAX_TERMINAL_FONT_SIZE`].
+    #[serde(default = "default_terminal_font_size")]
+    pub terminal_font_size: u32,
     /// The fields the open project's own `.taurus/settings.json` sets, by
     /// their names in that file. Empty when the project isn't trusted.
     ///
@@ -1412,6 +1438,25 @@ fn default_context_limit() -> u32 {
 fn default_voice_model() -> String {
     DEFAULT_VOICE_MODEL.to_string()
 }
+
+fn default_ui_scale() -> u32 {
+    100
+}
+
+/// The smallest and largest interface sizes, in percent. Below three quarters
+/// the micro-labels stop being legible; past half again the drawers outgrow a
+/// laptop screen.
+pub const MIN_UI_SCALE: u32 = 75;
+pub const MAX_UI_SCALE: u32 = 150;
+
+fn default_terminal_font_size() -> u32 {
+    DEFAULT_TERMINAL_FONT_SIZE
+}
+
+/// The terminal's size as it shipped before this was a setting.
+pub const DEFAULT_TERMINAL_FONT_SIZE: u32 = 13;
+pub const MIN_TERMINAL_FONT_SIZE: u32 = 9;
+pub const MAX_TERMINAL_FONT_SIZE: u32 = 24;
 
 /// See [`Settings::voice_model`]. Kept in step with `taurus_voice::DEFAULT_MODEL`
 /// by a test in the app, which is the crate that depends on both.
@@ -1615,6 +1660,11 @@ impl Default for Settings {
             voice_model: default_voice_model(),
             speech: SpeechSettings::default(),
             plugins: BTreeMap::new(),
+            notify_when_done: true,
+            ui_scale: default_ui_scale(),
+            terminal_shell: String::new(),
+            terminal_font: String::new(),
+            terminal_font_size: DEFAULT_TERMINAL_FONT_SIZE,
             from_project: Vec::new(),
         }
     }
@@ -1694,6 +1744,22 @@ pub struct StoredSettings {
     /// See [`Settings::plugins`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<BTreeMap<String, bool>>,
+    /// See [`Settings::notify_when_done`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_when_done: Option<bool>,
+    /// See [`Settings::ui_scale`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_scale: Option<u32>,
+    /// See [`Settings::terminal_shell`]. Ignored in a project's file; see
+    /// [`load_settings`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_shell: Option<String>,
+    /// See [`Settings::terminal_font`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_font: Option<String>,
+    /// See [`Settings::terminal_font_size`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_font_size: Option<u32>,
 }
 
 impl StoredSettings {
@@ -1729,6 +1795,11 @@ impl StoredSettings {
         // belong together, and half of one project's ElevenLabs settings over
         // the user's would be a voice nobody picked.
         self.speech = other.speech.or(self.speech.take());
+        self.notify_when_done = other.notify_when_done.or(self.notify_when_done);
+        self.ui_scale = other.ui_scale.or(self.ui_scale);
+        self.terminal_shell = other.terminal_shell.or(self.terminal_shell.take());
+        self.terminal_font = other.terminal_font.or(self.terminal_font.take());
+        self.terminal_font_size = other.terminal_font_size.or(self.terminal_font_size);
         // Name by name. See `Settings::plugins`.
         if let Some(theirs) = other.plugins {
             self.plugins
@@ -1790,6 +1861,25 @@ impl StoredSettings {
                 .unwrap_or(defaults.voice_model),
             speech: self.speech.unwrap_or(defaults.speech),
             plugins: self.plugins.unwrap_or(defaults.plugins),
+            notify_when_done: self.notify_when_done.unwrap_or(defaults.notify_when_done),
+            // Clamped like the iteration ceiling: a typo'd number brought back
+            // into range beats a window drawn at 5% or 900%.
+            ui_scale: self
+                .ui_scale
+                .unwrap_or(defaults.ui_scale)
+                .clamp(MIN_UI_SCALE, MAX_UI_SCALE),
+            terminal_shell: self
+                .terminal_shell
+                .map(|s| s.trim().to_string())
+                .unwrap_or(defaults.terminal_shell),
+            terminal_font: self
+                .terminal_font
+                .map(|s| s.trim().to_string())
+                .unwrap_or(defaults.terminal_font),
+            terminal_font_size: self
+                .terminal_font_size
+                .unwrap_or(defaults.terminal_font_size)
+                .clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE),
             from_project: Vec::new(),
         }
     }
@@ -1852,7 +1942,9 @@ pub fn settings_problems(workspace: Option<&Path>) -> Vec<String> {
 pub fn load_settings(workspace: Option<&Path>) -> Settings {
     let workspace = crate::trust::for_reading(workspace);
     let mut merged = read_settings(Scope::Global, workspace);
-    let project = read_settings(Scope::Workspace, workspace);
+    let mut project = read_settings(Scope::Workspace, workspace);
+    // Never a project's. See `Settings::terminal_shell`.
+    project.terminal_shell = None;
     let from_project = project.keys();
     merged.overlay(project);
     Settings {
@@ -2158,6 +2250,11 @@ mod tests {
                 ..Default::default()
             }),
             plugins: Some(BTreeMap::from([("lint-pack".into(), false)])),
+            notify_when_done: Some(false),
+            ui_scale: Some(125),
+            terminal_shell: Some("/opt/homebrew/bin/fish".into()),
+            terminal_font: Some("JetBrains Mono".into()),
+            terminal_font_size: Some(15),
         }
     }
 

@@ -31,6 +31,7 @@ import { UpdatesSection } from "./settings/UpdatesSection";
 import { ToolsTab } from "./settings/ToolsTab";
 import { TracingTab } from "./settings/TracingTab";
 import { HooksTab } from "./settings/HooksTab";
+import { TerminalTab } from "./settings/TerminalTab";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
 import { onTabKeys } from "../lib/tabs";
 
@@ -40,6 +41,7 @@ export type SettingsTab =
   | "tools"
   | "permissions"
   | "hooks"
+  | "terminal"
   | "behavior"
   | "voice"
   | "appearance"
@@ -404,6 +406,8 @@ export function Settings({
 
           {tab === "hooks" && <HooksTab />}
 
+          {tab === "terminal" && <TerminalTab />}
+
           {tab === "permissions" && (
             <PermissionsTab
               rules={rules}
@@ -471,24 +475,25 @@ export function Settings({
               <label className="settings-check">
                 <input
                   type="checkbox"
-                  checked={status?.settings.shell_integration ?? true}
+                  checked={status?.settings.notify_when_done ?? true}
                   onChange={(e) => {
                     const on = e.target.checked;
                     run(setBehaviorError, async () => {
-                      await api.setShellIntegration(on);
+                      await api.setNotifyWhenDone(on);
                       await refresh();
                     });
                   }}
                 />
                 <span>
-                  Mark each command in the terminal
+                  Tell me when a turn finishes while I'm elsewhere
                   <span className="hint">
-                    Lets you ask Taurus about a command you ran, and lets Taurus
-                    read them. Applies to the next shell you open.
+                    A system notification, when Taurus isn't the app in front
+                    or you've moved to another conversation. Not for a turn you
+                    stopped.
                   </span>
                 </span>
               </label>
-              <FromProject field="shell_integration" />
+              <FromProject field="notify_when_done" />
 
               <label className="settings-check">
                 <input
@@ -536,7 +541,10 @@ export function Settings({
           {tab === "voice" && <VoiceTab />}
 
           {tab === "appearance" && (
-            <ThemePicker theme={status?.settings.theme ?? "system"} />
+            <ThemePicker
+                theme={status?.settings.theme ?? "system"}
+                uiScale={status?.settings.ui_scale ?? 100}
+              />
           )}
 
           {/* Its own tab rather than the foot of every one. Under each tab it
@@ -743,7 +751,14 @@ export function ContextLimit({
  * and the only setting here that can change on its own, at dusk, without
  * anybody touching it.
  */
-export function ThemePicker({ theme }: { theme: Theme }) {
+export function ThemePicker({
+  theme,
+  uiScale = 100,
+}: {
+  theme: Theme;
+  /** The interface size in force, in percent. */
+  uiScale?: number;
+}) {
   const status = useStore((s) => s.status);
   const refresh = useStore((s) => s.refresh);
   const custom = status?.theme ?? null;
@@ -874,6 +889,37 @@ export function ThemePicker({ theme }: { theme: Theme }) {
       </section>
 
       <section className="section">
+        <span className="micro">Interface size</span>
+        <div className="pill-row" role="radiogroup" aria-label="Interface size" onKeyDown={onTabKeys}>
+          {UI_SCALES.map((percent) => {
+            const on = uiScale === percent;
+            return (
+              <button
+                key={percent}
+                role="radio"
+                aria-checked={on}
+                tabIndex={on ? 0 : -1}
+                className={`pill${on ? " on" : ""}`}
+                onClick={() => {
+                  setError(null);
+                  api
+                    .setUiScale(percent)
+                    .then(() => refresh())
+                    .catch((e) => setError(`The size stayed as it was: ${e}`));
+                }}
+              >
+                {percent}%
+              </button>
+            );
+          })}
+        </div>
+        <p className="hint">
+          Text, spacing and the terminal together, in every window. Applied as
+          soon as you pick one.
+        </p>
+      </section>
+
+      <section className="section">
         <span className="micro">Brand</span>
         <div className="pill-row" role="radiogroup" aria-label="Brand" onKeyDown={onTabKeys}>
           <button
@@ -966,6 +1012,13 @@ export function ThemePicker({ theme }: { theme: Theme }) {
   );
 }
 
+/**
+ * The sizes offered. Steps rather than a slider, because each one is a
+ * redraw of the whole window and a slider dragged across six of them would be
+ * six redraws for the one somebody let go on.
+ */
+const UI_SCALES = [75, 90, 100, 110, 125, 150];
+
 const THEMES: [Theme, string][] = [
   ["system", "System"],
   ["light", "Light"],
@@ -979,6 +1032,7 @@ const TABS: [Tab, string][] = [
   ["permissions", "Permissions"],
   ["hooks", "Hooks"],
   ["behavior", "Behavior"],
+  ["terminal", "Terminal"],
   ["voice", "Voice"],
   // Its own tab rather than the last section of Behavior, which is where it
   // started. Behavior is what the agent is allowed to do on its own — propose

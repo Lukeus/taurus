@@ -50,6 +50,13 @@ export const STATUS = {
     disabled_tools: ["load_dataset", "propose_agent"],
     // Nothing set by the project, so no "this project sets this" notes.
     from_project: [],
+    notify_when_done: true,
+    ui_scale: 100,
+    terminal_shell: "/opt/homebrew/bin/fish",
+    // Empty, so the terminal-blocks shot keeps the face it was taken in.
+    terminal_font: "",
+    terminal_font_size: 13,
+    shell_integration: true,
     theme: "dark",
     // Off, as it ships. The speaker beside the mic draws its off state in
     // every shot of the composer.
