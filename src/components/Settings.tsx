@@ -30,6 +30,7 @@ import { VoiceTab } from "./settings/VoiceTab";
 import { UpdatesSection } from "./settings/UpdatesSection";
 import { ToolsTab } from "./settings/ToolsTab";
 import { TracingTab } from "./settings/TracingTab";
+import { HooksTab } from "./settings/HooksTab";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
 import { onTabKeys } from "../lib/tabs";
 
@@ -38,6 +39,7 @@ export type SettingsTab =
   | "search"
   | "tools"
   | "permissions"
+  | "hooks"
   | "behavior"
   | "voice"
   | "appearance"
@@ -399,6 +401,8 @@ export function Settings({
           {tab === "tools" && <ToolsTab />}
 
           {tab === "tracing" && <TracingTab />}
+
+          {tab === "hooks" && <HooksTab />}
 
           {tab === "permissions" && (
             <PermissionsTab
@@ -973,6 +977,7 @@ const TABS: [Tab, string][] = [
   ["search", "Search"],
   ["tools", "Tools"],
   ["permissions", "Permissions"],
+  ["hooks", "Hooks"],
   ["behavior", "Behavior"],
   ["voice", "Voice"],
   // Its own tab rather than the last section of Behavior, which is where it

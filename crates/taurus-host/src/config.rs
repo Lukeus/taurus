@@ -335,6 +335,167 @@ pub fn search_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
     scope_dir(scope, workspace).map(|d| taurus_web::config::config_file(&d))
 }
 
+/// Where a hook came from, or which layer's say on it is in effect.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum HookLayer {
+    /// A plugin's, which only a `hooks.json` can switch off.
+    Plugin { name: String },
+    Global,
+    Workspace,
+}
+
+/// One hook as Settings › Hooks lists it.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HookView {
+    pub hook: taurus_hooks::HookSummary,
+    pub defined_in: HookLayer,
+    /// Whose on/off is in effect: where switching it back on has to happen.
+    pub decided_by: HookLayer,
+    pub enabled: bool,
+}
+
+/// Every hook the layers define, on or off, lowest layer first in the same
+/// order [`load_hooks`] reads them. A file that won't parse is left out here
+/// and reported by that.
+pub fn hook_listing(workspace: Option<&Path>) -> Vec<HookView> {
+    let readable = crate::trust::for_reading(workspace);
+    let mut layers: Vec<(HookLayer, taurus_hooks::HookConfig)> = crate::plugins::active(readable)
+        .iter()
+        .map(|plugin| {
+            (
+                HookLayer::Plugin {
+                    name: plugin.name().to_string(),
+                },
+                plugin.hooks().clone(),
+            )
+        })
+        .collect();
+    for (scope, label) in [
+        (Scope::Global, HookLayer::Global),
+        (Scope::Workspace, HookLayer::Workspace),
+    ] {
+        if scope == Scope::Workspace && readable.is_none() {
+            continue;
+        }
+        if let Some(Ok(layer)) = scope_dir(scope, readable).map(|dir| taurus_hooks::load(&dir)) {
+            layers.push((label, layer));
+        }
+    }
+    taurus_hooks::layered(layers)
+        .into_iter()
+        .map(|listed| HookView {
+            hook: taurus_hooks::summarize(&listed.name, &listed.hook),
+            defined_in: listed.defined_in,
+            decided_by: listed.decided_by,
+            enabled: listed.enabled,
+        })
+        .collect()
+}
+
+/// Switches a hook on or off in one layer's `hooks.json`.
+///
+/// A hook defined in that layer gets its own `disabled` flag; one from a layer
+/// below gets a `{"disabled": true}` toggle, which is what the file format
+/// gives a layer for switching off what it didn't write. Switching on removes
+/// the toggle, and if a layer below still has it off — a plugin that ships it
+/// off, or the global file under a project — this layer says on outright.
+///
+/// Edited as JSON rather than through [`taurus_hooks::HookConfig`], which
+/// drops entries that don't parse: saving a switch must not delete the broken
+/// hook beside it that somebody is halfway through fixing.
+pub fn set_hook(
+    workspace: Option<&Path>,
+    name: &str,
+    scope: Scope,
+    enabled: bool,
+) -> Result<(), String> {
+    let readable = crate::trust::for_reading(workspace);
+    if scope == Scope::Workspace && readable.is_none() {
+        return Err("this project isn't trusted, so its hooks.json isn't read. Trust it \
+                    first, or switch the hook off everywhere."
+            .into());
+    }
+    let listed = hook_listing(workspace);
+    let Some(hook) = listed.iter().find(|h| h.hook.name == name) else {
+        return Err(format!("no hook named \"{name}\" is configured here"));
+    };
+    let here = match scope {
+        Scope::Global => HookLayer::Global,
+        Scope::Workspace => HookLayer::Workspace,
+    };
+    let defined_here = hook.defined_in == here;
+
+    edit_hooks_file(scope, readable, |hooks| {
+        if defined_here {
+            let Some(entry) = hooks.get_mut(name).and_then(|e| e.as_object_mut()) else {
+                return Err(format!("\"{name}\" isn't an entry this file can switch"));
+            };
+            if enabled {
+                entry.remove("disabled");
+            } else {
+                entry.insert("disabled".into(), true.into());
+            }
+        } else if enabled {
+            hooks.remove(name);
+        } else {
+            hooks.insert(name.into(), serde_json::json!({ "disabled": true }));
+        }
+        Ok(())
+    })?;
+
+    let still_off = || {
+        hook_listing(workspace)
+            .iter()
+            .any(|h| h.hook.name == name && !h.enabled)
+    };
+    if enabled && !defined_here && still_off() {
+        edit_hooks_file(scope, readable, |hooks| {
+            hooks.insert(name.into(), serde_json::json!({ "disabled": false }));
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Read-modify-writes one layer's `hooks.json` as JSON, creating it if need be.
+///
+/// Refuses a file that exists and won't parse, for the reason
+/// [`edit_settings`] does.
+fn edit_hooks_file(
+    scope: Scope,
+    workspace: Option<&Path>,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<(), String>,
+) -> Result<(), String> {
+    let dir = scope_dir(scope, workspace).ok_or("there's no project open")?;
+    let path = taurus_hooks::config_file(&dir);
+    let mut doc: serde_json::Value = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| {
+            format!(
+                "{} doesn't parse ({e}). Fix it first; nothing was written.",
+                path.display()
+            )
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(format!("couldn't read {}: {e}", path.display())),
+    };
+    let not_object = || format!("{} has no `hooks` object to switch in", path.display());
+    let hooks = doc
+        .as_object_mut()
+        .ok_or_else(not_object)?
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(not_object)?;
+    edit(hooks)?;
+    let json = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(&dir);
+    replace_file(&path, &format!("{json}\n"))
+        .map_err(|e| format!("couldn't write {}: {e}", path.display()))
+}
+
 /// Both layers of `hooks.json`, merged, with anything unusable reported.
 ///
 /// Trust-gated through [`config_dirs`], so a cloned repository's hooks do not
@@ -2416,6 +2577,118 @@ mod tests {
             let (providers, _) = load_providers(None);
             assert_eq!(providers.len(), 1);
             assert!(home.join("providers.json").is_file());
+        });
+    }
+
+    fn hooks_at(dir: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(taurus_hooks::config_file(dir)).unwrap())
+            .unwrap()
+    }
+
+    fn hook_enabled(ws: &Path, name: &str) -> bool {
+        hook_listing(Some(ws))
+            .iter()
+            .find(|h| h.hook.name == name)
+            .unwrap()
+            .enabled
+    }
+
+    #[test]
+    fn a_global_hook_is_switched_off_in_one_project_without_touching_yours() {
+        with_home(|home| {
+            let ws = trusted_workspace();
+            let global = r#"{"hooks":{"guard":{"on":"pre_tool_use","command":"true"}}}"#;
+            write(home.join("hooks.json"), global);
+
+            set_hook(Some(ws.path()), "guard", Scope::Workspace, false).unwrap();
+            assert!(!hook_enabled(ws.path(), "guard"));
+            assert_eq!(
+                hooks_at(&workspace_dir(ws.path()))["hooks"]["guard"],
+                serde_json::json!({ "disabled": true })
+            );
+            assert_eq!(std::fs::read_to_string(home.join("hooks.json")).unwrap(), global);
+            let listed = hook_listing(Some(ws.path()));
+            assert_eq!(listed[0].defined_in, HookLayer::Global);
+            assert_eq!(listed[0].decided_by, HookLayer::Workspace);
+
+            // Back on takes the toggle away rather than stating "on" forever.
+            set_hook(Some(ws.path()), "guard", Scope::Workspace, true).unwrap();
+            assert!(hook_enabled(ws.path(), "guard"));
+            assert!(hooks_at(&workspace_dir(ws.path()))["hooks"].get("guard").is_none());
+        });
+    }
+
+    #[test]
+    fn a_hook_defined_in_the_file_gets_its_own_flag_and_its_broken_neighbour_survives() {
+        with_home(|home| {
+            write(
+                home.join("hooks.json"),
+                r#"{"hooks":{
+                    "guard":{"on":"pre_tool_use","command":"true"},
+                    "half-written":{"on":"pre_tool_use"}
+                }}"#,
+            );
+
+            set_hook(None, "guard", Scope::Global, false).unwrap();
+            let file = hooks_at(home);
+            assert_eq!(file["hooks"]["guard"]["disabled"], true);
+            assert_eq!(file["hooks"]["guard"]["command"], "true");
+            assert!(file["hooks"].get("half-written").is_some(), "{file}");
+
+            set_hook(None, "guard", Scope::Global, true).unwrap();
+            assert!(hooks_at(home)["hooks"]["guard"].get("disabled").is_none());
+        });
+    }
+
+    #[test]
+    fn switching_on_says_so_outright_when_a_layer_below_still_has_it_off() {
+        with_home(|home| {
+            let ws = trusted_workspace();
+            write(
+                home.join("hooks.json"),
+                r#"{"hooks":{"fmt":{"on":"stop","command":"true","disabled":true}}}"#,
+            );
+
+            set_hook(Some(ws.path()), "fmt", Scope::Workspace, true).unwrap();
+            assert!(hook_enabled(ws.path(), "fmt"));
+            assert_eq!(
+                hooks_at(&workspace_dir(ws.path()))["hooks"]["fmt"],
+                serde_json::json!({ "disabled": false })
+            );
+        });
+    }
+
+    #[test]
+    fn a_hooks_file_that_will_not_parse_is_refused_and_left_alone() {
+        with_home(|home| {
+            let ws = trusted_workspace();
+            write(
+                home.join("hooks.json"),
+                r#"{"hooks":{"guard":{"on":"pre_tool_use","command":"true"}}}"#,
+            );
+            let broken = "{ \"hooks\": { ";
+            write(workspace_dir(ws.path()).join("hooks.json"), broken);
+
+            let reason = set_hook(Some(ws.path()), "guard", Scope::Workspace, false).unwrap_err();
+            assert!(reason.contains("doesn't parse"), "{reason}");
+            assert_eq!(
+                std::fs::read_to_string(workspace_dir(ws.path()).join("hooks.json")).unwrap(),
+                broken
+            );
+        });
+    }
+
+    #[test]
+    fn an_untrusted_project_is_not_written_a_hook_switch_it_would_ignore() {
+        with_home(|home| {
+            let ws = TempDir::new().unwrap();
+            write(
+                home.join("hooks.json"),
+                r#"{"hooks":{"guard":{"on":"pre_tool_use","command":"true"}}}"#,
+            );
+            let reason = set_hook(Some(ws.path()), "guard", Scope::Workspace, false).unwrap_err();
+            assert!(reason.contains("isn't trusted"), "{reason}");
+            assert!(!workspace_dir(ws.path()).join("hooks.json").exists());
         });
     }
 

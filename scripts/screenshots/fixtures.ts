@@ -1710,3 +1710,46 @@ export const TOOL_SWITCHES = [
     enabled: true,
   })),
 ];
+
+/**
+ * Settings › Hooks: a guard of yours, the project switching your formatter
+ * off, and a plugin's hook in Claude Code's format.
+ */
+export const HOOKS = [
+  {
+    hook: {
+      name: "format-rust",
+      on: "post_tool_use",
+      command: "cargo fmt",
+      matches: "paths **/*.rs",
+      timeout_seconds: 30,
+    },
+    defined_in: { kind: "global" },
+    decided_by: { kind: "workspace" },
+    enabled: false,
+  },
+  {
+    hook: {
+      name: "no-force-push",
+      on: "pre_tool_use",
+      command: "./scripts/no-force-push.sh",
+      matches: "run_command; commands starting git",
+      timeout_seconds: 30,
+    },
+    defined_in: { kind: "global" },
+    decided_by: { kind: "global" },
+    enabled: true,
+  },
+  {
+    hook: {
+      name: "secrets:scan",
+      on: "pre_tool_use",
+      command: "node ${CLAUDE_PLUGIN_ROOT}/scan.js",
+      matches: "PreToolUse (Claude Code format); tools matching Write|Edit",
+      timeout_seconds: 60,
+    },
+    defined_in: { kind: "plugin", name: "secrets" },
+    decided_by: { kind: "plugin", name: "secrets" },
+    enabled: true,
+  },
+];

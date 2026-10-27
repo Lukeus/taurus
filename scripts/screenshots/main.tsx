@@ -66,6 +66,7 @@ import {
   STATUS,
   USAGE,
   TOOL_SWITCHES,
+  HOOKS,
   TRACES,
   THEMES,
 } from "./fixtures";
@@ -230,6 +231,7 @@ const ANSWERS: Record<string, unknown> = {
   search_sessions: SEARCH_HITS,
   usage_report: USAGE,
   tool_switches: TOOL_SWITCHES,
+  hook_list: HOOKS,
   trace_report: TRACES,
   mcp_environment: MCP_ENVIRONMENT,
   list_themes: THEMES,
@@ -557,6 +559,13 @@ requestAnimationFrame(() => {
         (await click(".rail-link b", (b) => b === "Settings"))();
         (await click(".settings-tab", (b) => b === "Tools"))();
         await until(() => document.querySelector(".tools-group"));
+      },
+      // Settings › Hooks: yours, a plugin's in another agent's format, and
+      // one the project switched off, saying which file did it.
+      hooks: async () => {
+        (await click(".rail-link b", (b) => b === "Settings"))();
+        (await click(".settings-tab", (b) => b === "Hooks"))();
+        await until(() => document.querySelector(".hook-card"));
       },
       appearance: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();

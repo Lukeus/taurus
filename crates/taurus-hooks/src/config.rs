@@ -293,6 +293,55 @@ fn is_toggle(value: &serde_json::Value) -> bool {
         .is_some_and(|map| map.len() == 1 && map.contains_key("disabled"))
 }
 
+/// One named hook after every layer has had its say, kept whether or not it
+/// runs. What a screen that switches hooks on and off lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Layered<L> {
+    pub name: String,
+    pub hook: Hook,
+    /// The layer whose entry is the hook itself: the last one to define it.
+    pub defined_in: L,
+    /// The layer whose say on `disabled` is the one in effect: the defining
+    /// layer's own flag, or a later toggle.
+    pub decided_by: L,
+    pub enabled: bool,
+}
+
+/// [`merge`]'s rules, keeping the hooks that end up off and where each one's
+/// state was decided. Each layer comes with a label of the caller's choosing.
+///
+/// Problems aren't reported here; [`merge`] is what does, for the set that
+/// runs.
+pub fn layered<L: Clone>(layers: Vec<(L, HookConfig)>) -> Vec<Layered<L>> {
+    let mut merged: BTreeMap<String, Layered<L>> = BTreeMap::new();
+    for (label, layer) in layers {
+        for (name, entry) in layer.hooks {
+            match entry {
+                HookEntry::Toggle(toggle) => {
+                    if let Some(base) = merged.get_mut(&name) {
+                        base.enabled = !toggle.disabled;
+                        base.decided_by = label.clone();
+                    }
+                }
+                HookEntry::Hook(hook) => {
+                    let enabled = !hook.disabled;
+                    merged.insert(
+                        name.clone(),
+                        Layered {
+                            name,
+                            hook: *hook,
+                            defined_in: label.clone(),
+                            decided_by: label.clone(),
+                            enabled,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    merged.into_values().collect()
+}
+
 /// Layers, lowest precedence first, into the set that will actually run.
 ///
 /// Returns the enabled hooks in name order and everything that could not be
@@ -402,6 +451,52 @@ mod tests {
         let (enabled, problems) = merge(vec![global, workspace]);
         assert!(enabled.is_empty(), "{enabled:?}");
         assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    fn parsed(body: &str) -> HookConfig {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), body);
+        load(dir.path()).unwrap()
+    }
+
+    #[test]
+    fn a_listing_keeps_what_is_off_and_says_which_layer_decided() {
+        let layers = vec![
+            (
+                "global",
+                parsed(r#"{"hooks":{
+                    "guard": {"on":"pre_tool_use","command":"true"},
+                    "fmt": {"on":"post_tool_use","command":"true","disabled":true},
+                    "lint": {"on":"post_tool_use","command":"true"}
+                }}"#),
+            ),
+            (
+                "project",
+                parsed(r#"{"hooks":{
+                    "guard": {"disabled": true},
+                    "lint": {"on":"stop","command":"false"},
+                    "ghost": {"disabled": true}
+                }}"#),
+            ),
+        ];
+
+        let listed = layered(layers);
+        let find = |name: &str| listed.iter().find(|l| l.name == name).unwrap();
+
+        let guard = find("guard");
+        assert!(!guard.enabled);
+        assert_eq!((guard.defined_in, guard.decided_by), ("global", "project"));
+
+        let fmt = find("fmt");
+        assert!(!fmt.enabled, "a hook off by its own flag is listed, off");
+        assert_eq!(fmt.decided_by, "global");
+
+        let lint = find("lint");
+        assert_eq!(lint.defined_in, "project", "a later definition replaces");
+        assert_eq!(lint.hook.on, HookEvent::Stop);
+
+        // A toggle for nothing is `merge`'s to report, not a hook to list.
+        assert!(listed.iter().all(|l| l.name != "ghost"));
     }
 
     #[test]

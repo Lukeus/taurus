@@ -56,6 +56,9 @@ import type { DiffLineKind } from "../bindings/DiffLineKind";
 import type { FileDiff } from "../bindings/FileDiff";
 import type { SchemaCost } from "../bindings/SchemaCost";
 import type { ToolSwitch } from "../bindings/ToolSwitch";
+import type { HookView } from "../bindings/HookView";
+import type { HookLayer } from "../bindings/HookLayer";
+import type { HookEvent } from "../bindings/HookEvent";
 import type { TraceExport } from "../bindings/TraceExport";
 import type { SearchResults } from "../bindings/SearchResults";
 import type { SessionHit } from "../bindings/SessionHit";
@@ -233,6 +236,9 @@ export type {
   SchemaCost,
   ToolSwitch,
   TraceExport,
+  HookView,
+  HookLayer,
+  HookEvent,
   SearchResults,
   SessionHit,
   TranscriptMatch,
@@ -1066,6 +1072,13 @@ export const traceExport = () => invoke<TraceExport>("trace_export");
 /** Where traces go from the next launch on. Empty sends them nowhere. */
 export const setOtlpEndpoint = (endpoint: string) =>
   invoke<void>("set_otlp_endpoint", { endpoint });
+
+/** Every hook the layers define, on or off, and which layer decided each. */
+export const hookList = () => invoke<HookView[]>("hook_list");
+
+/** Switches a hook on or off in one layer's hooks.json. */
+export const setHook = (name: string, scope: Scope, enabled: boolean) =>
+  invoke<void>("set_hook", { name, scope, enabled });
 
 /** Whether exported traces carry the messages, from the next turn on. */
 export const setOtlpCaptureContent = (capture: boolean) =>
