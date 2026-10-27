@@ -630,7 +630,9 @@ cargo run -p taurus-tools --example sweep -- .
 # Replays every saved conversation through the real trimming at 16k, 32k, 64k
 # and 200k windows, and checks each cut read against what the model did next.
 # Reads ~/.taurus/sessions and writes nothing. Transcripts can't show this on
-# their own: they're written before trimming reaches a message.
+# their own: they're written before trimming reaches a message. Compares
+# cutting by age with the ranked order the agent uses; TRIM_LOW_WATER=0.66
+# tries another stopping point.
 cargo run -p taurus-host --example trim_replay
 
 # What grep costs on a tree too big to judge by eye. Needs no provider, and

@@ -1049,7 +1049,22 @@ first, with no model call:
 - Results older than the verbatim tail keep their first few lines and say
   what went.
 
-Only if that doesn't get under budget is the older half summarized. The
+The older results go in an order, not all at once. First, a read of a file
+something has written since: it's out of date, so it's the safest cut and the
+most misleading thing to keep. Next, everything looked at once, and command
+output. Last, a file or pattern the model has read more than once. Cutting
+stops once the conversation is down to half the budget.
+
+The order comes from replaying saved conversations through trimming
+(`cargo run -p taurus-host --example trim_replay`). A cut read the model had
+read before came back to it about 60% of the time, one it had read once about
+14%, and age alone predicted nothing. Half the budget is where ranking stops
+costing anything: every cut edits an old message and loses the cached prefix
+from there, and at half, trims happen no more often than when everything old
+was cut. At a 64k window, 20% fewer of the files the model came back to were
+cut; at 200k, 38% fewer.
+
+Only if trimming doesn't get under budget is the older half summarized. The
 block itself always stays. Replacing its text keeps every tool call paired
 with a result, which is what providers actually validate.
 

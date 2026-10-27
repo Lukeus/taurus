@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 
 use taurus_core::session::split_for_compaction;
-use taurus_core::Session;
+use taurus_core::{Session, TrimRules};
 use taurus_host::sessions;
 use taurus_provider::{ContentBlock, Message};
 
@@ -41,7 +41,14 @@ const BUDGETS: &[(&str, u32)] = &[
 
 /// The tools a repeat of which supersedes the earlier answer, as `Agent::is_read`
 /// answers for the builtins, and the ones whose target is worth following.
-const READS: &[&str] = &["read_file", "grep", "glob", "list_dir", "search_code", "read_note"];
+const READS: &[&str] = &[
+    "read_file",
+    "grep",
+    "glob",
+    "list_dir",
+    "search_code",
+    "read_note",
+];
 const WRITES: &[&str] = &["write_file", "edit_file", "write_note", "run_command"];
 
 /// What a call is about: the file, pattern or directory it names.
@@ -66,6 +73,8 @@ struct Call {
 struct Tally {
     conversations_trimmed: usize,
     trims: usize,
+    /// Times trimming wasn't enough and the head was summarized away.
+    summaries: usize,
     results_cut: usize,
     reads_cut: usize,
     /// Of `reads_cut`, the ones whose target the model read again later,
@@ -112,16 +121,21 @@ fn main() {
     );
 
     for &(window, budget) in BUDGETS {
-        let mut tally = Tally::default();
-        for conversation in &loaded {
-            replay(&conversation.session, budget, &mut tally);
-        }
-        println!(
-            "{window:>5} window ({budget} budget): {} conversations trimmed, {} trims, {} results cut",
-            tally.conversations_trimmed, tally.trims, tally.results_cut
-        );
-        if tally.reads_cut > 0 {
+        for mode in [Mode::Age, Mode::Ranked] {
+            let mut tally = Tally::default();
+            for conversation in &loaded {
+                replay(&conversation.session, budget, mode, &mut tally);
+            }
             println!(
+            "{window:>5} window ({budget} budget), {}: {} conversations trimmed, {} trims, {} summaries, {} results cut",
+            mode.label(),
+            tally.conversations_trimmed,
+            tally.trims,
+            tally.summaries,
+            tally.results_cut
+        );
+            if tally.reads_cut > 0 {
+                println!(
                 "       of {} reads cut ({} more were stale already): {} came back to later ({:.0}%), {} named in a later reply ({:.0}%)",
                 tally.reads_cut,
                 tally.stale,
@@ -130,17 +144,60 @@ fn main() {
                 tally.named_later,
                 percent(tally.named_later, tally.reads_cut),
             );
-            for (label, (had, back)) in [
-                ("named in a reply before the cut", tally.named_before),
-                ("read more than once before the cut", tally.read_before),
-                ("neither", tally.neither),
-            ] {
-                println!(
-                    "         {label:<36} {had:>4} cut, {back:>4} came back ({:.0}%)",
-                    percent(back, had)
-                );
+                for (label, (had, back)) in [
+                    ("named in a reply before the cut", tally.named_before),
+                    ("read more than once before the cut", tally.read_before),
+                    ("neither", tally.neither),
+                ] {
+                    println!(
+                        "         {label:<36} {had:>4} cut, {back:>4} came back ({:.0}%)",
+                        percent(back, had)
+                    );
+                }
             }
         }
+        println!();
+    }
+}
+
+/// Which trimming to replay.
+#[derive(Clone, Copy)]
+enum Mode {
+    /// Everything old and large, every time: what trimming did before it was
+    /// ranked.
+    Age,
+    /// `Session::trim_toward` as `Agent` calls it: stale reads first, files
+    /// read more than once last, stopping at half the budget.
+    Ranked,
+}
+
+impl Mode {
+    fn label(self) -> &'static str {
+        match self {
+            Mode::Age => "by age",
+            Mode::Ranked => "ranked",
+        }
+    }
+}
+
+/// How far below the budget a ranked trim stops: `Agent`'s `TRIM_LOW_WATER`,
+/// unless `TRIM_LOW_WATER` in the environment asks to try another.
+fn low_water() -> f32 {
+    std::env::var("TRIM_LOW_WATER")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.5)
+}
+
+/// The files a call writes, standing in for the registry's `touches`.
+fn writes_to(name: &str, input: &serde_json::Value) -> Vec<String> {
+    match name {
+        "write_file" | "edit_file" | "write_note" => input
+            .get("path")
+            .and_then(|p| p.as_str())
+            .map(|p| vec![p.to_string()])
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 
@@ -183,7 +240,7 @@ fn comes_back<'a>(later: impl IntoIterator<Item = &'a Call>, call: &Call) -> boo
 
 /// Replays one conversation at one budget, and adds what trimming cut to the
 /// tally, judged against what the model went on to do.
-fn replay(original: &Session, budget: u32, tally: &mut Tally) {
+fn replay(original: &Session, budget: u32, mode: Mode, tally: &mut Tally) {
     let messages = &original.messages;
     let calls = calls_of(messages);
     let by_id: HashMap<String, usize> = messages
@@ -195,7 +252,7 @@ fn replay(original: &Session, budget: u32, tally: &mut Tally) {
 
     let mut session = Session::new(original.model.clone());
     let mut cut: HashMap<String, usize> = HashMap::new();
-    for message in messages {
+    for (at, message) in messages.iter().enumerate() {
         session.push(message.clone());
         if session.estimated_tokens() <= budget {
             continue;
@@ -203,12 +260,34 @@ fn replay(original: &Session, budget: u32, tally: &mut Tally) {
         // The boundary `compact_if_needed` uses: eight messages, or half the
         // budget, whichever binds first.
         let (_, kept) = split_for_compaction(&session.messages, 8, budget / 2);
-        let trimmed = session.trim_tool_results(kept, &is_read);
+        let trimmed = match mode {
+            Mode::Age => session.trim_tool_results(kept, &is_read),
+            Mode::Ranked => {
+                let rules = TrimRules {
+                    repeats_supersede: &is_read,
+                    writes_to: &writes_to,
+                };
+                session.trim_toward(kept, &rules, (budget as f32 * low_water()) as u32)
+            }
+        };
+        // Still over after trimming: the agent would summarize, which drops
+        // the head of the history for a paragraph. Stood in for by a fixed
+        // note the size of a short summary, since a summary needs a model.
+        // What a summary drops isn't counted as cut — trimming didn't cut it.
+        if session.estimated_tokens() > budget {
+            let (drop, _) = split_for_compaction(&session.messages, 8, budget / 2);
+            if drop > 0 {
+                tally.summaries += 1;
+                session.summarize_front(drop, Message::user("[summary] ".repeat(200)));
+            }
+        }
         if trimmed.is_empty() {
             continue;
         }
         tally.trims += 1;
-        let now = session.messages.len();
+        // Indexed in the original conversation, which is what the calls the
+        // cut is judged against are numbered in.
+        let now = at + 1;
         for message in &session.messages {
             for block in &message.content {
                 if let ContentBlock::ToolResult {
