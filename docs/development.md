@@ -626,6 +626,13 @@ cargo run -p taurus-host --example notes -- --check
 # thread.
 cargo run -p taurus-tools --example sweep -- .
 
+# Whether trimming old tool output cuts what the model goes on to need.
+# Replays every saved conversation through the real trimming at 16k, 32k, 64k
+# and 200k windows, and checks each cut read against what the model did next.
+# Reads ~/.taurus/sessions and writes nothing. Transcripts can't show this on
+# their own: they're written before trimming reaches a message.
+cargo run -p taurus-host --example trim_replay
+
 # What grep costs on a tree too big to judge by eye. Needs no provider, and
 # writes only inside a temp directory it makes and removes. Release, because
 # the regex crate built for debug is a different program. Three numbers: a
