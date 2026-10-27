@@ -7,10 +7,13 @@ import type {
   Theme,
 } from "../lib/api";
 import {
+  clampConcurrentAgents,
   clampContextLimit,
   clampIterations,
+  DEFAULT_CONCURRENT_AGENTS,
   DEFAULT_CONTEXT_LIMIT,
   DEFAULT_MAX_ITERATIONS,
+  MAX_CONCURRENT_AGENTS_LIMIT,
   MAX_ITERATIONS_LIMIT,
 } from "../lib/limits";
 import { applyTheme, resolveWith } from "../lib/theme";
@@ -363,6 +366,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
             limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
             onError={setError}
           />
+          <DelegateLimit
+            count={
+              status?.settings.max_concurrent_agents ?? DEFAULT_CONCURRENT_AGENTS
+            }
+            onError={setError}
+          />
           <ContextLimit
             limit={status?.settings.context_limit ?? DEFAULT_CONTEXT_LIMIT}
             onError={setError}
@@ -441,6 +450,56 @@ export function IterationLimit({
       <input
         inputMode="numeric"
         aria-label="Steps per message"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+      />
+    </Field>
+  );
+}
+
+/**
+ * How many sub-agents one turn runs at once. Committed on blur or Enter, for
+ * the reason `IterationLimit` gives.
+ */
+export function DelegateLimit({
+  count,
+  onError,
+}: {
+  count: number;
+  /** As `IterationLimit`'s. */
+  onError?: (message: string | null) => void;
+}) {
+  const refresh = useStore((s) => s.refresh);
+  const [draft, setDraft] = useState(String(count));
+
+  useEffect(() => setDraft(String(count)), [count]);
+
+  const commit = async () => {
+    const next = clampConcurrentAgents(draft, count);
+    setDraft(String(next));
+    if (next === count) return;
+    onError?.(null);
+    try {
+      await api.setMaxConcurrentAgents(next);
+      await refresh();
+    } catch (e) {
+      setDraft(String(count));
+      onError?.(`Agents at once stayed at ${count}: ${e}`);
+    }
+  };
+
+  return (
+    <Field
+      label="Agents at once"
+      hint={`How many sub-agents one message runs at the same time. More wait their turn. Keep it low on a local model sharing one GPU; raise it on a hosted one. 1–${MAX_CONCURRENT_AGENTS_LIMIT}, ${DEFAULT_CONCURRENT_AGENTS} by default.`}
+    >
+      <input
+        inputMode="numeric"
+        aria-label="Agents at once"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}

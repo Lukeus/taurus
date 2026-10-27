@@ -479,6 +479,22 @@ turns. On `qwen3.5:9b` it was 2 of 3: the third died on Ollama failing to
 parse the model's tool call, and it ended at once instead of waiting on the
 delegate.
 
+### How many run at once
+
+One message runs two delegates at a time by default, background and
+foreground together. A third doesn't get refused. Its card says it's waiting
+for a slot, and it starts when one of the others finishes.
+
+Two suits a local model, where every delegate streams from the same GPU and
+a third mostly slows the other two down. A hosted model doesn't have that
+limit, so raise it there. Set **Agents at once** in Settings, or
+`max_concurrent_agents` in `settings.json`, anywhere from 1 to 8. Put it in a
+project's `.taurus/settings.json` to raise it for that project only. The
+next message you send uses the new number.
+
+The limit applies to each message separately. Two conversations working at
+the same time can each run their own delegates.
+
 ### Watching delegates work
 
 The transcript keeps a delegation as one call and its report. To see what a

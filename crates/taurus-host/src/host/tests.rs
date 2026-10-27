@@ -507,6 +507,73 @@ async fn a_delegation_leaves_its_transcript_under_the_conversation_that_spawned_
     );
 }
 
+/// Runs one turn that asks for two explorers in the same round, and returns
+/// how many of them had to wait for a slot.
+async fn delegates_queued_with(settings: &str) -> usize {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    write_settings(&workspace, settings);
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+
+    let explore = |id| {
+        (
+            id,
+            taurus_core::SPAWN_TOOL,
+            serde_json::json!({ "agent_type": "explorer", "prompt": "Report what is here." }),
+        )
+    };
+    let provider = taurus_core::testing::FakeProvider::new(vec![
+        taurus_core::testing::ScriptedTurn::tool_calls(vec![explore("a"), explore("b")]),
+        taurus_core::testing::ScriptedTurn::text("Nothing."),
+        taurus_core::testing::ScriptedTurn::text("Nothing."),
+        taurus_core::testing::ScriptedTurn::text("It is empty."),
+    ]);
+    let agent = host
+        .build_agent(
+            provider,
+            "fake",
+            CancellationToken::new(),
+            TurnRef {
+                session_id: "conversation1",
+                prompt: "what is here?",
+                unattended: None,
+            },
+        )
+        .await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let collect = tokio::spawn(async move {
+        let mut queued = 0;
+        while let Some(event) = rx.recv().await {
+            if let taurus_core::UiEvent::DelegateActivity {
+                step: taurus_tools::DelegateStep::Queued { .. },
+                ..
+            } = event
+            {
+                queued += 1;
+            }
+        }
+        queued
+    });
+    let mut session = taurus_core::Session::new("fake");
+    session.id = "conversation1".into();
+    agent
+        .run_turn(&mut session, taurus_provider::Message::user("what is here?"), tx)
+        .await
+        .expect("the turn should finish");
+    collect.await.unwrap()
+}
+
+/// The setting has to reach the spawn tool a turn is built with, not only
+/// the settings file: this is the test that would notice the turn still
+/// reading the compiled-in default.
+#[tokio::test]
+async fn a_turn_runs_as_many_delegates_at_once_as_settings_allow() {
+    assert_eq!(delegates_queued_with(r#"{"max_concurrent_agents": 1}"#).await, 1);
+    assert_eq!(delegates_queued_with(r#"{"max_concurrent_agents": 2}"#).await, 0);
+}
+
 fn agent_problems(problems: &[Problem]) -> Vec<String> {
     problems
         .iter()

@@ -56,9 +56,15 @@ use crate::sessions::SubagentLogs;
 use crate::theme::{self, CustomTheme};
 use crate::usage;
 
-/// How many sub-agents may run at once. Low on purpose: each is a full model
-/// stream, and local hardware serves them all from the same GPU.
+/// How many sub-agents may run at once until Settings says otherwise. Low on
+/// purpose: each is a full model stream, and local hardware serves them all
+/// from the same GPU. See [`crate::config::Settings::max_concurrent_agents`].
 pub const MAX_CONCURRENT_SUBAGENTS: usize = 2;
+
+/// The most sub-agents Settings may let one turn run at once. Past this the
+/// bottleneck is the provider's rate limit, and a model that asks for more
+/// delegates than this is usually one that has misread the task.
+pub const MAX_CONCURRENT_SUBAGENTS_LIMIT: u32 = 8;
 
 /// How many characters of agent roster are worth carrying before it is worth
 /// saying so.

@@ -49,6 +49,19 @@ export function clampIterations(text: string, fallback: number): number {
   return Math.min(Math.max(parsed, 1), MAX_ITERATIONS_LIMIT);
 }
 
+/** Matches `MAX_CONCURRENT_SUBAGENTS_LIMIT` in `taurus-host`. */
+export const MAX_CONCURRENT_AGENTS_LIMIT = 8;
+
+/** Matches `MAX_CONCURRENT_SUBAGENTS`: what a turn runs at once by default. */
+export const DEFAULT_CONCURRENT_AGENTS = 2;
+
+/** As `clampIterations`, for how many sub-agents run at once. */
+export function clampConcurrentAgents(text: string, fallback: number): number {
+  const parsed = Number.parseInt(text, 10);
+  if (Number.isNaN(parsed)) return fallback;
+  return Math.min(Math.max(parsed, 1), MAX_CONCURRENT_AGENTS_LIMIT);
+}
+
 /** Matches `DEFAULT_CONTEXT_LIMIT` in `taurus-host`'s config. */
 export const DEFAULT_CONTEXT_LIMIT = 200_000;
 

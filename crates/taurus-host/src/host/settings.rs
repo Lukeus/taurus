@@ -127,6 +127,15 @@ impl Host {
             .await;
     }
 
+    /// How many sub-agents one turn may run at once, for every workspace. See
+    /// [`crate::config::Settings::max_concurrent_agents`]. Clamped on the way
+    /// in, like the iteration ceiling.
+    pub async fn set_max_concurrent_agents(&self, count: u32) {
+        let count = count.clamp(1, crate::MAX_CONCURRENT_SUBAGENTS_LIMIT);
+        self.edit_global_setting(|s| s.max_concurrent_agents = Some(count))
+            .await;
+    }
+
     /// How much of a model's window a turn fills before it makes room. See
     /// [`crate::config::Settings::context_limit`]. Clamped on the way in, like
     /// the iteration ceiling, so what is written is what will be used.
