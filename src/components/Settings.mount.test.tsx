@@ -917,3 +917,52 @@ describe("closing with providers unsaved", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 });
+
+describe("being sent to one tab", () => {
+  it("opens on the tab a panel asked for, over the one it was closed on", async () => {
+    localStorage.setItem("taurus.settings.tab", "voice");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await act(async () => {
+      createRoot(host).render(<Settings onClose={() => {}} initialTab="tracing" />);
+    });
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Tracing");
+  });
+});
+
+describe("the tracing tab", () => {
+  const endpoint = async (host: HTMLElement, value: string) => {
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="OTLP endpoint"]')!;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      set.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      input.focus();
+      input.blur();
+    });
+  };
+
+  it("saves the endpoint when the field is left", async () => {
+    const host = await mount();
+    click(host, "Tracing");
+    await endpoint(host, "http://localhost:4318");
+
+    expect(invoke).toHaveBeenCalledWith("set_otlp_endpoint", { endpoint: "http://localhost:4318" });
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("says why an endpoint was refused", async () => {
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "set_otlp_endpoint"
+        ? Promise.reject("\"localhost:4318\" isn't an OTLP/HTTP address.")
+        : Promise.resolve([]),
+    );
+    const host = await mount();
+    click(host, "Tracing");
+    await endpoint(host, "localhost:4318");
+
+    expect(host.textContent).toContain("isn't an OTLP/HTTP address");
+  });
+});

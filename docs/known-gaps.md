@@ -117,8 +117,8 @@ the backlog, and they're the minority.
   counts only what it spent before the turn stops waiting for it.
 - **Every enabled tool goes out with every request.** Nothing filters tools by
   relevance or loads them on demand, and an MCP server's tools are sent whole.
-  The Context panel names the heaviest schemas, and `disabled_tools` is how you
-  drop one. The tool list also changes when the terminal dock opens or closes
+  The Context panel names the heaviest schemas, and Settings › Tools is where
+  you drop one. The tool list also changes when the terminal dock opens or closes
   (`read_terminal` comes and goes with it) and when an MCP server connects or
   drops. Tools come first in a request, so the next request after any of those
   misses a hosted backend's prompt cache entirely.

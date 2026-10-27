@@ -98,6 +98,9 @@ const SHOTS = [
   // Settings form lives — the fields, the per-model overrides, and the row a
   // key is stored from.
   { name: "providers", shot: "providers", theme: "dark" },
+  // Settings › Tools, with a server's tools under Taurus's own and two
+  // switched off: the list `disabled_tools` used to be typed from.
+  { name: "tools", shot: "tools", theme: "dark" },
   // A profile rather than a page of rows, and a file with real problems in it:
   // one column 42% missing, one with too many distinct values to rank. A grid
   // of clean numbers would be a picture of a spreadsheet.

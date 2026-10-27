@@ -1127,12 +1127,17 @@ schemas get it too.
 `propose_skill` and `propose_agent`, the largest schemas here, are each
 registered only when their own setting is on, matching the prompt section that
 explains each. Offering one unexplained would pay for a tool the model has no
-reason to call. And a project can name anything it doesn't want in
-`settings.json`:
+reason to call. And you can switch off anything you don't use:
+**Settings › Tools** has a switch for every tool, grouped by MCP server, with
+what each one adds to every request. Behind it is `disabled_tools`, which a
+project can also set in its own `settings.json`:
 
 ```json
 { "disabled_tools": ["fetch_url", "mcp__some-server__rarely_used"] }
 ```
+
+When the open project sets that list, it replaces yours there, so the tab
+shows the project's list and leaves it alone. Change it in the project's file.
 
 A disabled tool isn't registered at all, so skills and sub-agents can't reach
 it either. A tool hidden from the model but still callable would be a
@@ -1140,7 +1145,8 @@ permission gap posing as a token saving. A name matching nothing is reported,
 because otherwise a typo looks exactly like a tool that's quietly still on.
 
 You can also name eight tools a turn adds for itself, though `taurus tools`
-doesn't list them. It prints what a *sub-agent* could be scoped to, and these
+doesn't list them. Settings › Tools does, marked "per turn" because they
+aren't measured until a turn adds them. It prints what a *sub-agent* could be scoped to, and these
 eight are exactly the ones a sub-agent never gets:
 
 - `spawn_subagent`, which is the delegation depth cap;
@@ -1166,7 +1172,7 @@ Two numbers on it are worth acting on:
   tool schema. It's not in the transcript. It goes out on every iteration of
   every turn whether or not anything is called, and it's why a conversation
   worth a thousand tokens can bill twenty. The heaviest schemas are named,
-  which tells you what to put in `disabled_tools`.
+  and the panel links to Settings › Tools, where you switch them off.
 
 That half is read from the live configuration, not a transcript, so it
 describes the *next* request. It's worth opening even where nothing has run

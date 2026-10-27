@@ -55,6 +55,8 @@ import type { DiffLine } from "../bindings/DiffLine";
 import type { DiffLineKind } from "../bindings/DiffLineKind";
 import type { FileDiff } from "../bindings/FileDiff";
 import type { SchemaCost } from "../bindings/SchemaCost";
+import type { ToolSwitch } from "../bindings/ToolSwitch";
+import type { TraceExport } from "../bindings/TraceExport";
 import type { SearchResults } from "../bindings/SearchResults";
 import type { SessionHit } from "../bindings/SessionHit";
 import type { TranscriptMatch } from "../bindings/TranscriptMatch";
@@ -229,6 +231,8 @@ export type {
   DiffLineKind,
   FileDiff,
   SchemaCost,
+  ToolSwitch,
+  TraceExport,
   SearchResults,
   SessionHit,
   TranscriptMatch,
@@ -1045,6 +1049,27 @@ export const setEmbeddingModel = (model: string, provider = "") =>
  */
 export const setRerank = (model: string, provider: string) =>
   invoke<void>("set_rerank", { model, provider });
+
+/** Every tool, on or off, with what its schema costs on each request. */
+export const toolSwitches = () => invoke<ToolSwitch[]>("tool_switches");
+
+/**
+ * Which tools to leave out, in every workspace. The whole list, not a change
+ * to it: what's sent is what the setting becomes.
+ */
+export const setDisabledTools = (names: string[]) =>
+  invoke<void>("set_disabled_tools", { names });
+
+/** Where this run of the app is exporting traces, as decided when it started. */
+export const traceExport = () => invoke<TraceExport>("trace_export");
+
+/** Where traces go from the next launch on. Empty sends them nowhere. */
+export const setOtlpEndpoint = (endpoint: string) =>
+  invoke<void>("set_otlp_endpoint", { endpoint });
+
+/** Whether exported traces carry the messages, from the next turn on. */
+export const setOtlpCaptureContent = (capture: boolean) =>
+  invoke<void>("set_otlp_capture_content", { capture });
 
 /**
  * Builds this workspace's code index now, resolving to its one-line summary.

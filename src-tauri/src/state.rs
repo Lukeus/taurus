@@ -204,6 +204,9 @@ pub struct AppState {
     /// second tab possible: "is it always like this" is a question about the
     /// machine, and every conversation this window has run is the sample.
     pub traces: Traces,
+    /// Where those spans are being exported, decided once when the subscriber
+    /// was installed. See `taurus_telemetry::Export`.
+    pub export: taurus_telemetry::Export,
     /// Cancels a **Build index** started from Settings.
     ///
     /// One, not one per session: the index belongs to the workspace rather than
@@ -313,7 +316,7 @@ impl Drop for Running<'_> {
 const FIRST_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl AppState {
-    pub fn new(app: AppHandle, traces: Traces) -> Self {
+    pub fn new(app: AppHandle, traces: Traces, export: taurus_telemetry::Export) -> Self {
         let pending_permissions: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>> =
             Arc::new(DashMap::new());
         let pending_questions: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>> =
@@ -350,6 +353,7 @@ impl AppState {
             pending_agent_proposals,
             terminals: Arc::new(Terminals::default()),
             traces,
+            export,
             index_build: Mutex::new(CancellationToken::new()),
             voice: Arc::new(taurus_voice::Voice::new(
                 taurus_host::config::home_dir()

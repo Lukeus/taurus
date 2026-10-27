@@ -75,9 +75,9 @@ impl ProblemSource {
             // Behavior, because that's the tab whose values come from this
             // file and where a save would otherwise be refused unexplained.
             Self::Settings => "Settings › Behavior",
-            // The screen that lists what the agent can reach, which is exactly
-            // what a disabled tool changes.
-            Self::Tools => "Skills",
+            // The tab with a switch for each tool, which is where a name that
+            // matches nothing is switched back on and so taken out.
+            Self::Tools => "Settings › Tools",
             // The drawer that lists what the agent knows and can reach, which
             // is where a brief that is not arriving belongs.
             Self::Instructions => "Skills",

@@ -112,12 +112,14 @@ afterEach(() => {
   invoke.mockReset();
 });
 
-async function mount(sessionId: string | null = "s1") {
+async function mount(sessionId: string | null = "s1", onOpenTracing?: () => void) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => {
-    root.render(<TracePanel sessionId={sessionId} onClose={() => {}} />);
+    root.render(
+      <TracePanel sessionId={sessionId} onClose={() => {}} onOpenTracing={onOpenTracing} />,
+    );
   });
   cleanup.push(() => {
     act(() => root.unmount());
@@ -304,5 +306,17 @@ describe("reading a duration", () => {
     expect(ms(7_400)).toBe("7.4s");
     expect(ms(59_900)).toBe("59.9s");
     expect(ms(72_000)).toBe("1m 12s");
+  });
+});
+
+describe("keeping the spans", () => {
+  it("sends you to Settings › Tracing to set an endpoint", async () => {
+    invoke.mockResolvedValue(report());
+    const open = vi.fn();
+    const ui = await mount("s1", open);
+
+    expect(ui.text()).not.toContain("settings.json");
+    await ui.click("Settings › Tracing");
+    expect(open).toHaveBeenCalledOnce();
   });
 });

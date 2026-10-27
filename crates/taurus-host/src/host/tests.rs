@@ -3958,3 +3958,64 @@ fn the_app_opens_on_the_home_folder_until_one_is_chosen() {
     }).unwrap();
     assert_eq!(Host::app_workspace(), chosen.path().canonicalize().unwrap());
 }
+
+#[tokio::test]
+async fn every_tool_has_a_switch_and_switching_one_off_takes_it_out() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+
+    let find = |switches: &[crate::usage::ToolSwitch], name: &str| {
+        switches.iter().find(|s| s.name == name).cloned()
+    };
+    let before = host.tool_switches().await;
+    let read = find(&before, "read_file").expect("read_file has a switch");
+    assert!(read.enabled);
+    assert!(read.server.is_none());
+    assert!(read.tokens.is_some_and(|t| t > 0), "a registered tool is measured");
+    // Added per turn, so on the list though not in the registry to measure.
+    let plan = find(&before, taurus_tools::builtin::plan::UPDATE_PLAN_TOOL).unwrap();
+    assert!(plan.enabled && plan.tokens.is_none());
+
+    host.set_disabled_tools(vec!["read_file".into(), "no_such_tool".into()])
+        .await
+        .unwrap();
+    host.reload().await;
+
+    assert!(!host.tool_names().await.contains(&"read_file".to_string()));
+    let after = host.tool_switches().await;
+    let read = find(&after, "read_file").expect("a tool that's off keeps its switch");
+    assert!(!read.enabled && read.tokens.is_none());
+    // A name that matches nothing is listed, off, so it can be taken out.
+    assert!(!find(&after, "no_such_tool").unwrap().enabled);
+
+    host.set_disabled_tools(Vec::new()).await.unwrap();
+    host.reload().await;
+    assert!(host.tool_names().await.contains(&"read_file".to_string()));
+    // Emptied rather than written as `[]`, so the file says nothing about it.
+    assert!(config::read_settings(Scope::Global, None).disabled_tools.is_none());
+}
+
+#[test]
+fn an_mcp_tool_is_filed_under_its_server() {
+    assert_eq!(
+        super::catalog::mcp_server_of(&taurus_mcp::namespaced("notes", "search")),
+        Some("notes".to_string())
+    );
+    assert_eq!(super::catalog::mcp_server_of("read_file"), None);
+}
+
+#[tokio::test]
+async fn an_otlp_endpoint_has_to_be_an_http_address() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+
+    let refused = host.set_otlp_endpoint("localhost:4318").await.unwrap_err();
+    assert!(refused.contains("http://"), "{refused}");
+    host.set_otlp_endpoint(" http://localhost:4318 ").await.unwrap();
+    assert_eq!(host.settings().await.otlp_endpoint, "http://localhost:4318");
+    host.set_otlp_endpoint("").await.unwrap();
+    assert_eq!(host.settings().await.otlp_endpoint, "");
+}

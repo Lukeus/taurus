@@ -34,10 +34,13 @@ function percentOf(part: number, whole: number): string {
 export function UsagePanel({
   sessionId,
   onClose,
+  onOpenTools,
 }: {
   /** The open conversation, or null if there is none to ask about. */
   sessionId: string | null;
   onClose: () => void;
+  /** Opens Settings › Tools, where the schemas below are switched off. */
+  onOpenTools?: () => void;
 }) {
   /**
    * Which account is on screen.
@@ -285,9 +288,15 @@ export function UsagePanel({
                 </tbody>
               </table>
               <p className="usage-note">
-                Turn off what this workspace does not use with{" "}
-                <code className="md-inline-code">disabled_tools</code> in
-                settings.json.
+                Turn off what this workspace doesn't use in{" "}
+                {onOpenTools ? (
+                  <button className="link" onClick={onOpenTools}>
+                    Settings › Tools
+                  </button>
+                ) : (
+                  "Settings › Tools"
+                )}
+                .
               </p>
             </>
           )}

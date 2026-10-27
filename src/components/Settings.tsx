@@ -24,21 +24,26 @@ import { ThemeEditor } from "./ThemeEditor";
 import { Problem, Problems } from "./Problem";
 import * as api from "../lib/api";
 import { SearchTab, useIndexBuild, CodeSearch } from "./settings/SearchTab";
-import { Field, same } from "./settings/Field";
+import { Field, FromProject, same } from "./settings/Field";
 import { PermissionsTab } from "./settings/PermissionsTab";
 import { VoiceTab } from "./settings/VoiceTab";
 import { UpdatesSection } from "./settings/UpdatesSection";
+import { ToolsTab } from "./settings/ToolsTab";
+import { TracingTab } from "./settings/TracingTab";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
 import { onTabKeys } from "../lib/tabs";
 
-type Tab =
+export type SettingsTab =
   | "models"
   | "search"
+  | "tools"
   | "permissions"
   | "behavior"
   | "voice"
   | "appearance"
+  | "tracing"
   | "about";
+type Tab = SettingsTab;
 
 /** Where the last tab looked at is kept, so the drawer reopens on it. */
 const TAB_KEY = "taurus.settings.tab";
@@ -73,11 +78,21 @@ function lastTab(): Tab {
  * so a close with unsaved providers asks first. Each tab keeps its own error
  * too: one shared between them put a failed provider save under Behavior.
  */
-export function Settings({ onClose }: { onClose: () => void }) {
+export function Settings({
+  onClose,
+  initialTab,
+}: {
+  onClose: () => void;
+  /**
+   * The tab to open on, for a panel that sends someone here to change one
+   * thing. Otherwise it's the last one looked at.
+   */
+  initialTab?: Tab;
+}) {
   const status = useStore((s) => s.status);
   const refresh = useStore((s) => s.refresh);
 
-  const [tab, setTabState] = useState<Tab>(lastTab);
+  const [tab, setTabState] = useState<Tab>(() => initialTab ?? lastTab());
   const setTab = (next: Tab) => {
     setTabState(next);
     try {
@@ -381,6 +396,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
             </>
           )}
 
+          {tab === "tools" && <ToolsTab />}
+
+          {tab === "tracing" && <TracingTab />}
+
           {tab === "permissions" && (
             <PermissionsTab
               rules={rules}
@@ -538,24 +557,6 @@ export function Settings({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </Drawer>
-  );
-}
-
-/**
- * Says so when the open project's own settings file sets this field.
- *
- * Settings writes the global file, and a project's value wins over it, so a
- * change made here can't show in this workspace: the switch or number moves
- * back to the project's. Without this that read as the write not taking.
- */
-export function FromProject({ field }: { field: string }) {
-  const status = useStore((s) => s.status);
-  if (!status?.settings.from_project.includes(field)) return null;
-  return (
-    <p className="hint">
-      This project's <code>.taurus/settings.json</code> sets this, so that's
-      what is used here. A change here applies to your other workspaces.
-    </p>
   );
 }
 
@@ -970,6 +971,7 @@ const THEMES: [Theme, string][] = [
 const TABS: [Tab, string][] = [
   ["models", "Models"],
   ["search", "Search"],
+  ["tools", "Tools"],
   ["permissions", "Permissions"],
   ["behavior", "Behavior"],
   ["voice", "Voice"],
@@ -981,6 +983,7 @@ const TABS: [Tab, string][] = [
   // and a tab whose name does not predict its contents is the same problem the
   // rail had with "Tools".
   ["appearance", "Appearance"],
+  ["tracing", "Tracing"],
   ["about", "About"],
 ];
 

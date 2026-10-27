@@ -136,6 +136,49 @@ impl Host {
             .await
     }
 
+    /// Which tools to leave out, for every workspace. See
+    /// [`crate::config::Settings::disabled_tools`].
+    ///
+    /// Only writes. The registry is rebuilt by a reload, which the caller runs
+    /// because it also has MCP tools to put back, and a reload is the one path
+    /// that already knows how to do both.
+    pub async fn set_disabled_tools(&self, mut names: Vec<String>) -> Result<(), String> {
+        names.retain(|n| !n.trim().is_empty());
+        names.sort();
+        names.dedup();
+        self.edit_global_setting(|s| {
+            s.disabled_tools = (!names.is_empty()).then_some(names);
+        })
+        .await
+    }
+
+    /// Where traces are sent. Empty sends them nowhere. Read when the app
+    /// starts, so this takes effect on the next launch; see
+    /// `taurus_telemetry::install`.
+    ///
+    /// Global only, like the exporter that reads it: a trace destination is a
+    /// property of the machine.
+    pub async fn set_otlp_endpoint(&self, endpoint: &str) -> Result<(), String> {
+        let endpoint = endpoint.trim().to_string();
+        if !endpoint.is_empty()
+            && !(endpoint.starts_with("http://") || endpoint.starts_with("https://"))
+        {
+            return Err(format!(
+                "\"{endpoint}\" isn't an OTLP/HTTP address. It starts with http:// or \
+                 https://, like http://localhost:4318."
+            ));
+        }
+        self.edit_global_setting(|s| s.otlp_endpoint = Some(endpoint))
+            .await
+    }
+
+    /// Whether exported traces may carry the messages themselves. Read at the
+    /// start of each turn, so it takes effect on the next one.
+    pub async fn set_otlp_capture_content(&self, capture: bool) -> Result<(), String> {
+        self.edit_global_setting(|s| s.otlp_capture_content = Some(capture))
+            .await
+    }
+
     /// How much of a model's window a turn fills before it makes room. See
     /// [`crate::config::Settings::context_limit`]. Clamped on the way in, like
     /// the iteration ceiling, so what is written is what will be used.

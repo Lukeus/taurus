@@ -46,12 +46,14 @@ afterEach(() => {
   invoke.mockReset();
 });
 
-async function mount(sessionId: string | null = "s1") {
+async function mount(sessionId: string | null = "s1", onOpenTools?: () => void) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => {
-    root.render(<UsagePanel sessionId={sessionId} onClose={() => {}} />);
+    root.render(
+      <UsagePanel sessionId={sessionId} onClose={() => {}} onOpenTools={onOpenTools} />,
+    );
   });
   cleanup.push(() => {
     act(() => root.unmount());
@@ -167,5 +169,17 @@ describe("the context account", () => {
     const ui = await mount("gone");
     expect(ui.text()).toContain("no such session");
     expect(ui.text()).not.toContain("Reading…");
+  });
+});
+
+describe("switching tools off", () => {
+  it("sends you to Settings › Tools rather than to settings.json", async () => {
+    invoke.mockResolvedValue(report());
+    const open = vi.fn();
+    const ui = await mount("s1", open);
+
+    expect(ui.text()).not.toContain("disabled_tools");
+    await ui.click("Settings › Tools");
+    expect(open).toHaveBeenCalledOnce();
   });
 });
