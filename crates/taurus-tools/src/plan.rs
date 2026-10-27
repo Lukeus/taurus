@@ -116,6 +116,34 @@ impl PlanBoard {
         !board.steps.is_empty() && board.steps.iter().any(|s| s.state != StepState::Done)
     }
 
+    /// The checks on steps marked done or in progress that none of `ran`
+    /// covers, in plan order.
+    ///
+    /// A check is covered when every part of it — split on `&&`, `;` and new
+    /// lines — appears in some command that ran, whitespace aside. Contained
+    /// rather than equal, because `cargo test -p parser -- --nocapture` is
+    /// that check run, and two parts may be two commands because a model runs
+    /// `cargo build` and then `grep` rather than chaining them. A check that
+    /// is prose rather than a command is never covered; the nudge that names
+    /// it says how to answer that in one line.
+    pub fn unrun_checks(&self, ran: &[String]) -> Vec<String> {
+        let ran: Vec<String> = ran.iter().map(|command| squash(command)).collect();
+        self.board()
+            .steps
+            .iter()
+            .filter(|step| step.state != StepState::Todo)
+            .filter_map(|step| step.check.clone())
+            .filter(|check| {
+                !check
+                    .split(['\n', ';'])
+                    .flat_map(|part| part.split("&&"))
+                    .map(squash)
+                    .filter(|part| !part.is_empty())
+                    .all(|part| ran.iter().any(|command| command.contains(&part)))
+            })
+            .collect()
+    }
+
     /// Poisoning here would mean a panic while holding a lock over a list walk
     /// that cannot panic. Taking the value back is better than bringing the
     /// session down over a checklist.
@@ -170,11 +198,15 @@ impl PlanBoard {
         });
         for (index, step) in board.steps.iter().enumerate() {
             out.push_str(&format!(
-                "{}. {} {}\n",
+                "{}. {} {}",
                 index + 1,
                 step.state.marker(),
                 step.text
             ));
+            if let Some(check) = &step.check {
+                out.push_str(&format!(" (check: {check})"));
+            }
+            out.push('\n');
         }
         out.push_str(
             "\nCall update_plan again the moment a step's state changes — send the whole list \
@@ -198,8 +230,8 @@ impl PlanBoard {
 /// One line saying where the plan stands, for the tool result.
 ///
 /// The tool result is deliberately not the whole list: the model is about to
-/// read the whole list in the system prompt anyway, and sending it twice per
-/// update buys nothing but tokens.
+/// read the whole list at the end of the request anyway, and sending it twice
+/// per update buys nothing but tokens.
 fn summarize(steps: &[Step]) -> String {
     let done = steps.iter().filter(|s| s.state == StepState::Done).count();
     let active = steps.iter().find(|s| s.state == StepState::Active);
@@ -225,7 +257,58 @@ mod tests {
             text: text.into(),
             state,
             active_form: None,
+            check: None,
         }
+    }
+
+    fn checked(text: &str, state: StepState, check: &str) -> Step {
+        Step {
+            check: Some(check.into()),
+            ..step(text, state)
+        }
+    }
+
+    #[test]
+    fn a_step_names_its_check_in_the_reminder() {
+        let board = PlanBoard::new();
+        board.set(vec![checked("Bump the version", StepState::Active, "cargo build")]);
+        assert!(board
+            .reminder()
+            .unwrap()
+            .contains("1. [>] Bump the version (check: cargo build)"));
+    }
+
+    #[test]
+    fn a_check_is_owed_until_every_part_of_it_has_run() {
+        let board = PlanBoard::new();
+        board.set(vec![
+            checked("Parse it", StepState::Done, "cargo test -p parser"),
+            checked("Bump it", StepState::Active, "cargo build && grep version config.toml"),
+            // Not started, so nothing is owed for it yet.
+            checked("Ship it", StepState::Todo, "cargo publish"),
+        ]);
+        let ran = |commands: &[&str]| {
+            board.unrun_checks(&commands.iter().map(|c| c.to_string()).collect::<Vec<_>>())
+        };
+
+        assert_eq!(
+            ran(&[]),
+            ["cargo test -p parser", "cargo build && grep version config.toml"]
+        );
+        // Contained, whitespace aside, and the parts of a chain may be two
+        // separate commands.
+        assert_eq!(
+            ran(&[
+                "cargo  test -p parser -- --nocapture",
+                "cargo build",
+                "grep version config.toml",
+            ]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            ran(&["cargo test -p parser", "cargo build"]),
+            ["cargo build && grep version config.toml"]
+        );
     }
 
     #[test]
@@ -409,4 +492,9 @@ mod tests {
         assert!(!reminder.contains("[ ] One"), "{reminder}");
         assert!(reminder.contains("[x] One"), "{reminder}");
     }
+}
+
+/// Runs of whitespace as one space, ends trimmed.
+fn squash(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

@@ -262,6 +262,11 @@ Four properties do the work, and each one has a test:
   instruction to keep a checklist is how a two-step turn grows a six-step
   plan.
 
+A step can carry a **check**: the command that proves it, like
+`2. [>] Add version to config.toml (check: cargo build)`. The model is told to
+run it before marking the step done, the panel shows it under the step, and
+the nudge below holds the turn to it.
+
 It's rebuilt, not appended, for the same reason it isn't a message. Copies
 pushed every iteration would pile up, each staler than the last, and the
 model would have to work out which of nine is current.
@@ -884,6 +889,26 @@ or a test run that updates its own snapshots, clears the debt. Nothing in a
 shell command tells those apart from a test runner writing a stamp. A nudge
 that fires wrongly costs a round trip and says something false. One that
 stays quiet just leaves a backstop unused.
+
+**When the plan names checks, the nudge names them instead.** "Run the
+project's tests" is something a small model has to work out first, and
+sometimes works out wrong. "Run `cargo test -p parser`" it just does. So in a
+turn that changed files, the nudge also fires when something ran since the
+last edit but not what the plan said would prove a step marked done or in
+progress:
+
+> You changed files, and your plan says how to check them. These haven't been
+> run since your last change:
+> - cargo build && grep version config.toml
+>
+> Run them now. If one can't be run here, say why in one line and stop.
+
+A check counts as run when each part of it (split at `&&`, `;` and new lines)
+appears in some command that ran, whitespace aside. So
+`cargo test -p parser -- --nocapture` is `cargo test -p parser` run, and the
+two halves of a chain can be two separate commands. A check written as prose
+is never matched, and the nudge's way out covers it. A plan carried over from
+an earlier turn isn't held to its checks unless this turn changed files.
 
 It fires once per turn, with a way out, so a documentation edit costs one
 round trip, not an argument. `verify_changes` in `AgentConfig` turns it off.

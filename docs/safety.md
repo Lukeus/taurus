@@ -299,6 +299,9 @@ server ask again.
 
 ## Running commands
 
+Every result starts with the exit code, `Exit code 0` included, so a
+successful build that printed warnings doesn't read like a failed one.
+
 Commands run with three pipes and no stdin by default. That's right for almost
 everything an agent runs. A model can't answer a `[y/N]` prompt, so a command
 that waits for one must fail on the timeout instead of hanging the session.
@@ -595,6 +598,12 @@ then treats it exactly like an `edit_file`.
 the model wrote and ran: all of it comes back. All of it also appears in the
 changed-file count and the **Changes** drawer, which is where you look to
 decide whether you want it back.
+
+The model is told too. The result of a command that changed files ends with
+a line naming them (`This command changed 2 files: Cargo.lock, src/lib.rs`),
+up to ten, and a count past that. A build that rewrote a lockfile or a
+formatter that touched nine files is otherwise something the model only
+learns by reading the tree again, or never.
 
 This runs whether the command succeeded, failed, timed out, or was canceled.
 A command killed halfway through has still written whatever it got as far as

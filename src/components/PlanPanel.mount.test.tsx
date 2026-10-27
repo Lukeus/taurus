@@ -140,3 +140,19 @@ describe("the pinned plan panel", () => {
     unmount();
   });
 });
+
+describe("a step's check", () => {
+  it("is shown under the step it proves, and only there", () => {
+    const { host, toggle, unmount } = mount(
+      plan([
+        { text: "Bump the version", state: "active", check: "cargo build" },
+        { text: "Write the changelog", state: "todo" },
+      ]),
+    );
+    toggle();
+    const checks = [...host.querySelectorAll(".plan-check")];
+    expect(checks.map((c) => c.textContent)).toEqual(["check: cargo build"]);
+    expect(checks[0].closest(".plan-step")?.textContent).toContain("Bump the version");
+    unmount();
+  });
+});

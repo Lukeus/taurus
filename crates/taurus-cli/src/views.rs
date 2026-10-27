@@ -711,16 +711,19 @@ mod tests {
                     text: "Read the parser".into(),
                     state: StepState::Done,
                     active_form: None,
+                    check: None,
                 },
                 Step {
                     text: "Add the token type".into(),
                     state: StepState::Active,
                     active_form: None,
+                    check: None,
                 },
                 Step {
                     text: "Update the tests".into(),
                     state: StepState::Todo,
                     active_form: None,
+                    check: None,
                 },
             ],
         };

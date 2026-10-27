@@ -291,11 +291,16 @@ impl ToolRegistry {
                 into.add(change.files.iter().map(String::as_str));
             }
 
-            // What it *did* record needs no announcement: the changed-file
-            // count in the header and the Changes drawer are both read straight
-            // off the log, and they are where someone goes to look.
-            //
-            // What it could not record does. Believing a turn is undoable when
+            // What it changed is said to the model, which has no Changes drawer
+            // to look in. A build that rewrote a lockfile, a formatter that
+            // touched nine files, a test run that left a snapshot behind: each
+            // is something the model would otherwise only learn by reading the
+            // tree again, or not at all.
+            if let Some(note) = changed_note(&change.files) {
+                annotate(&mut result, &note);
+            }
+
+            // What it could not record is said as well. Believing a turn is undoable when
             // it is not is the failure this whole path exists to prevent, and a
             // progress line would not do — those are dropped from the card the
             // moment the call finishes, which for a command is immediately.
@@ -437,6 +442,26 @@ fn vet_images(tool: &str, output: &mut taurus_provider::ToolOutput) {
 /// carries it too. `Canceled` and the structured input errors are left alone:
 /// they have no message of their own to extend, and a call that never ran
 /// changed nothing.
+/// The files a command changed, as a note on its result. Named up to a point;
+/// past it, counted, since a command that rewrote a generated tree would
+/// otherwise spend the context on a directory listing.
+fn changed_note(files: &[String]) -> Option<String> {
+    const NAMED: usize = 10;
+    match files.len() {
+        0 => None,
+        n if n <= NAMED => Some(format!(
+            "This command changed {}: {}",
+            if n == 1 { "1 file".to_string() } else { format!("{n} files") },
+            files.join(", ")
+        )),
+        n => Some(format!(
+            "This command changed {n} files: {}, and {} more",
+            files[..NAMED].join(", "),
+            n - NAMED
+        )),
+    }
+}
+
 fn annotate(result: &mut ToolResult, note: &str) {
     match result {
         // Appended as its own block rather than glued onto the last one. A

@@ -219,6 +219,10 @@ pub struct Step {
     /// Optional, and only ever shown while this is the step being worked on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_form: Option<String>,
+    /// Optional: the command that proves this step is done, such as
+    /// `cargo test -p parser`. Run it before you mark the step done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
 }
 
 /// Keys a model reaches for when it means `text`, best first.
@@ -246,6 +250,9 @@ const STATE_KEYS: &[&str] = &["state", "status"];
 /// tool uses, and a model that has seen that one reaches for it.
 const ACTIVE_FORM_KEYS: &[&str] = &["active_form", "activeForm", "active_text"];
 
+/// The same, for `check`.
+const CHECK_KEYS: &[&str] = &["check", "verify", "verification", "acceptance"];
+
 impl Step {
     /// Reads a step from whatever the model actually sent.
     ///
@@ -271,6 +278,7 @@ impl Step {
                     text,
                     state: StepState::default(),
                     active_form: None,
+                    check: None,
                 })
             }
             Value::Object(map) => map,
@@ -327,10 +335,25 @@ impl Step {
             }
         };
 
+        // Blank is absent, as for `active_form`: a check of "" names nothing to
+        // run, and holding a step to it would nudge about nothing.
+        let check = match CHECK_KEYS.iter().find_map(|key| map.remove(*key)) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(check)) if check.trim().is_empty() => None,
+            Some(Value::String(check)) => Some(check.trim().to_string()),
+            Some(other) => {
+                return Err(format!(
+                    "a step's `check` should be a command as a string, not {}",
+                    describe(&other)
+                ))
+            }
+        };
+
         Ok(Self {
             text,
             state,
             active_form,
+            check,
         })
     }
 }
@@ -653,6 +676,7 @@ mod tests {
                 text: "Add the token type".into(),
                 state: StepState::Active,
                 active_form: Some("Adding the token type".into()),
+                check: None,
             })
         );
     }
@@ -666,6 +690,7 @@ mod tests {
                 text: "Add the token type".into(),
                 state: StepState::Todo,
                 active_form: None,
+                check: None,
             })
         );
     }
@@ -783,5 +808,20 @@ mod tests {
             written,
             serde_json::json!({ "text": "One", "state": "todo" })
         );
+    }
+
+    #[test]
+    fn a_step_reads_its_check_under_the_names_a_model_guesses() {
+        let read = |value: serde_json::Value| Step::from_json(value).unwrap().check;
+        assert_eq!(
+            read(serde_json::json!({"text": "Bump it", "check": " cargo build "})),
+            Some("cargo build".into())
+        );
+        assert_eq!(
+            read(serde_json::json!({"text": "Bump it", "verify": "cargo build"})),
+            Some("cargo build".into())
+        );
+        assert_eq!(read(serde_json::json!({"text": "Bump it", "check": ""})), None);
+        assert!(Step::from_json(serde_json::json!({"text": "Bump it", "check": 3})).is_err());
     }
 }

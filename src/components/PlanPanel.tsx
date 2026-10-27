@@ -80,7 +80,16 @@ export function PlanPanel({ view }: { view: PlanView }) {
                 <span className="plan-mark" aria-hidden="true">
                   {step.state === "done" ? "✓" : ""}
                 </span>
-                <span className="plan-text">{step.text}</span>
+                <span className="plan-text">
+                  {step.text}
+                  {/* What the model said would prove the step, which is what
+                      it's asked to run before calling the work done. */}
+                  {step.check && (
+                    <span className="plan-check block font-mono text-11-5 text-faint wrap-anywhere">
+                      check: {step.check}
+                    </span>
+                  )}
+                </span>
                 <span className="plan-status">{STATUS[step.state]}</span>
               </li>
             ))}

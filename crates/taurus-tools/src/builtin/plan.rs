@@ -72,7 +72,9 @@ impl Tool for UpdatePlan {
          the plan in your reply, since the user is already looking at it. Give every step an \
          'active_form' as well: the same step written as something under way — 'Add the token \
          type' becomes 'Adding the token type' — which is what the user sees while that step is \
-         the one running."
+         the one running. When a step can be proved by running something, give it a 'check' too: \
+         the command that shows it worked, like 'cargo test -p parser'. Run it before you mark \
+         the step done."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -341,6 +343,7 @@ mod tests {
             text: text.into(),
             state,
             active_form: None,
+            check: None,
         }
     }
 

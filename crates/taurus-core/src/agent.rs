@@ -168,6 +168,20 @@ You changed files and have not run anything since. Check that work now — run \
 the project's tests, or build it, or run the thing you changed. If there is \
 genuinely nothing to run against it, say so in one line and stop.";
 
+/// [`VERIFY_NUDGE`], naming what the plan said would prove the work.
+fn checks_nudge(checks: &[String]) -> String {
+    let list = checks
+        .iter()
+        .map(|check| format!("- {check}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "You changed files, and your plan says how to check them. These haven't been run since \
+         your last change:\n{list}\nRun them now. If one can't be run here, say why in one line \
+         and stop."
+    )
+}
+
 /// Asked once per turn, when the model stops with steps still open on its plan.
 ///
 /// The failure it exists for is not a model that gave up half way. It is a
@@ -175,8 +189,8 @@ genuinely nothing to run against it, say so in one line and stop.";
 /// reported finishing *in prose* — leaving a checklist that says 2 of 3 and a
 /// panel that will still say so tomorrow. Telling it in the prompt to close the
 /// list does not fix this any more than telling it to run the tests fixes the
-/// other one: the plan is right there in the system prompt on every iteration,
-/// and it stops anyway.
+/// other one: the plan is restated at the end of every request, and it stops
+/// anyway.
 ///
 /// Phrased with the same way out as [`VERIFY_NUDGE`], for the same reason. A
 /// turn that genuinely stopped early — a question to ask, work it cannot do —
@@ -766,6 +780,13 @@ impl Agent {
             None => 0,
         };
         let mut unverified = false;
+        // How many files the turn had changed when it started, so the plan's
+        // checks are only asked for in a turn that changed some. A plan carried
+        // over from an earlier turn has steps done long ago, checked then.
+        let started_with = captured;
+        // The commands run since the last write, which is what a plan step's
+        // `check` is held against. See `PlanBoard::unrun_checks`.
+        let mut ran: Vec<String> = Vec::new();
         // A summarization that failed will fail again on the next iteration for
         // the same reason — the provider, the model, or the shape of the
         // request — and a session over budget asks on every one of them. One
@@ -909,7 +930,13 @@ impl Agent {
                 // and being told to in the system prompt demonstrably does not
                 // make a small model do it. Once per turn, it is asked
                 // directly, and the turn continues.
-                if let Some(nudge) = self.owed_nudge(unverified, &mut nudged, &mut plan_nudged) {
+                if let Some(nudge) = self.owed_nudge(
+                    unverified,
+                    &ran,
+                    captured > started_with,
+                    &mut nudged,
+                    &mut plan_nudged,
+                ) {
                     session.push(Message::user(nudge));
                     continue;
                 }
@@ -991,11 +1018,17 @@ impl Agent {
                 // rule excludes on purpose, so the run counted as work and the
                 // model was told it had not run anything since — one line after
                 // it ran the tests and reported them passing.
-                if self.checked_with_nothing_written_after(&assistant) {
+                let checked = self.checked_with_nothing_written_after(&assistant);
+                if checked {
                     unverified = false;
                 } else if wrote {
                     unverified = true;
                 }
+                let (rewrote, commands) = self.commands_after_last_write(&assistant);
+                if rewrote || (wrote && !checked) {
+                    ran.clear();
+                }
+                ran.extend(commands);
             }
 
             // Checked before the results are pushed, so the transcript ends on
@@ -1048,7 +1081,13 @@ impl Agent {
             // have met still apply: a delegate that reports done on work it
             // never ran gets asked to check it, and reports again.
             if ended {
-                if let Some(nudge) = self.owed_nudge(unverified, &mut nudged, &mut plan_nudged) {
+                if let Some(nudge) = self.owed_nudge(
+                    unverified,
+                    &ran,
+                    captured > started_with,
+                    &mut nudged,
+                    &mut plan_nudged,
+                ) {
                     session.push(Message::user(nudge));
                     continue;
                 }
@@ -1469,21 +1508,40 @@ impl Agent {
     /// Verify first, then the plan: checking the work can change what the
     /// plan should say, and a turn asked to close its list and then told to go
     /// and run something would have closed it one round too early.
+    ///
+    /// The verify nudge names the plan's own checks when it has some: "run
+    /// `cargo test -p parser`" is something a small model does, where "run the
+    /// project's tests" is something it has to work out first, and sometimes
+    /// works out wrong. Owed when nothing has run since the last write, or when
+    /// something has but not what the plan said would prove the step — and
+    /// only in a turn that changed files, for the reason `started_with` gives.
     fn owed_nudge(
         &self,
         unverified: bool,
+        ran: &[String],
+        wrote_this_turn: bool,
         nudged: &mut bool,
         plan_nudged: &mut bool,
-    ) -> Option<&'static str> {
-        if unverified && !*nudged && self.config.verify_changes {
-            *nudged = true;
-            info!("asking the model to check work it has not verified");
-            return Some(VERIFY_NUDGE);
+    ) -> Option<String> {
+        if !*nudged && self.config.verify_changes {
+            let unrun = match &self.plan {
+                Some(board) if wrote_this_turn => board.unrun_checks(ran),
+                _ => Vec::new(),
+            };
+            if unverified || !unrun.is_empty() {
+                *nudged = true;
+                info!(checks = unrun.len(), "asking the model to check work it has not verified");
+                return Some(if unrun.is_empty() {
+                    VERIFY_NUDGE.to_string()
+                } else {
+                    checks_nudge(&unrun)
+                });
+            }
         }
         if !*plan_nudged && self.plan.as_ref().is_some_and(|b| b.unfinished()) {
             *plan_nudged = true;
             info!("asking the model to close the steps it left open");
-            return Some(PLAN_NUDGE);
+            return Some(PLAN_NUDGE.to_string());
         }
         None
     }
@@ -1545,6 +1603,34 @@ impl Agent {
     /// has not run anything. A wrong nudge costs a round trip and says
     /// something false; a missed one leaves a backstop unused, with the system
     /// prompt still asking for the same thing.
+    /// Whether this round's calls wrote anything, and the commands it ran after
+    /// its last write, in the order they would run.
+    ///
+    /// The same ordering `checked_with_nothing_written_after` reads, for the
+    /// same reason: a check that ran before the edit it was meant to prove
+    /// didn't prove it.
+    fn commands_after_last_write(&self, assistant: &Message) -> (bool, Vec<String>) {
+        let (first, then): (Vec<_>, Vec<_>) = assistant
+            .tool_uses()
+            .partition(|(_, name, input)| self.runs_concurrently(name, input));
+        let mut wrote = false;
+        let mut commands = Vec::new();
+        for (_, name, input) in first.into_iter().chain(then) {
+            let Some(tool) = self.registry.get(name) else {
+                continue;
+            };
+            if tool.checks_work() {
+                if let Some(command) = input.get("command").and_then(|c| c.as_str()) {
+                    commands.push(command.to_string());
+                }
+            } else if !tool.touches(input).is_empty() {
+                wrote = true;
+                commands.clear();
+            }
+        }
+        (wrote, commands)
+    }
+
     fn checked_with_nothing_written_after(&self, assistant: &Message) -> bool {
         let (first, then): (Vec<_>, Vec<_>) = assistant
             .tool_uses()

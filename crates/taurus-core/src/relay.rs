@@ -204,7 +204,8 @@ fn commands_in(messages: &[Message]) -> Vec<Ran> {
 }
 
 /// How a finished command ended, read off the first line `run_command`
-/// writes. A zero exit writes no line of its own.
+/// writes. No such line is a zero too: transcripts from before a zero exit
+/// was stated have none.
 fn outcome_of(text: &str) -> String {
     let first = text.lines().next().unwrap_or("");
     if let Some(code) = first.strip_prefix("Exit code ") {
