@@ -310,23 +310,28 @@ impl HookRunner {
     pub fn summaries(&self) -> Vec<HookSummary> {
         self.hooks
             .iter()
-            .map(|(name, hook, _)| HookSummary {
-                name: name.clone(),
-                on: hook.on,
-                command: if hook.args.is_empty() {
-                    hook.command.clone()
-                } else {
-                    format!("{} {}", hook.command, hook.args.join(" "))
-                },
-                matches: match &hook.foreign {
-                    Some(foreign) => describe_foreign(foreign),
-                    None => hook.matches.as_ref().and_then(describe_match),
-                },
-                // What it will actually get, which is what a list of what will
-                // run is for. See `MAX_TIMEOUT_SECONDS`.
-                timeout_seconds: hook.timeout().as_secs(),
-            })
+            .map(|(name, hook, _)| summarize(name, hook))
             .collect()
+    }
+}
+
+/// One hook as a listing shows it, whether or not it will run.
+pub fn summarize(name: &str, hook: &Hook) -> HookSummary {
+    HookSummary {
+        name: name.to_string(),
+        on: hook.on,
+        command: if hook.args.is_empty() {
+            hook.command.clone()
+        } else {
+            format!("{} {}", hook.command, hook.args.join(" "))
+        },
+        matches: match &hook.foreign {
+            Some(foreign) => describe_foreign(foreign),
+            None => hook.matches.as_ref().and_then(describe_match),
+        },
+        // What it will actually get, which is what a list of what will run is
+        // for. See `MAX_TIMEOUT_SECONDS`.
+        timeout_seconds: hook.timeout().as_secs(),
     }
 }
 

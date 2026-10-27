@@ -383,6 +383,21 @@ impl Host {
         self.hooks.read().await.summaries()
     }
 
+    /// Every hook the layers define, on or off, for Settings › Hooks.
+    pub async fn hook_list(&self) -> Vec<config::HookView> {
+        let workspace = self.workspace.read().await.clone();
+        config::hook_listing(Some(&workspace))
+    }
+
+    /// Switches a hook on or off in one layer. See [`config::set_hook`].
+    ///
+    /// Only writes; the runner is rebuilt by the reload the caller runs, the
+    /// same one that re-reads every hook problem.
+    pub async fn set_hook(&self, name: &str, scope: Scope, enabled: bool) -> Result<(), String> {
+        let workspace = self.workspace.read().await.clone();
+        config::set_hook(Some(&workspace), name, scope, enabled)
+    }
+
     /// The files hooks are read from, in precedence order.
     ///
     /// Answers "why is my hook not running" in the one case a listing cannot:

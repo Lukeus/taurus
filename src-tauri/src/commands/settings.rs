@@ -274,3 +274,26 @@ pub async fn set_otlp_capture_content(
     emit_status(&state).await;
     Ok(())
 }
+
+/// Every hook the layers define, on or off, and where each was decided.
+#[tauri::command]
+pub async fn hook_list(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<Vec<taurus_host::config::HookView>> {
+    Ok(state.host.hook_list().await)
+}
+
+/// Switches a hook on or off in one layer's `hooks.json`, then rebuilds the
+/// hooks from every layer.
+#[tauri::command]
+pub async fn set_hook(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    scope: Scope,
+    enabled: bool,
+) -> CmdResult<()> {
+    state.host.set_hook(&name, scope, enabled).await?;
+    state.host.reload_local().await;
+    emit_status(&state).await;
+    Ok(())
+}

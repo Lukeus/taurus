@@ -101,6 +101,8 @@ const SHOTS = [
   // Settings › Tools, with a server's tools under Taurus's own and two
   // switched off: the list `disabled_tools` used to be typed from.
   { name: "tools", shot: "tools", theme: "dark" },
+  // Settings › Hooks, with one hook switched off by the project's file.
+  { name: "hooks", shot: "hooks", theme: "dark" },
   // A profile rather than a page of rows, and a file with real problems in it:
   // one column 42% missing, one with too many distinct values to rank. A grid
   // of clean numbers would be a picture of a spreadsheet.

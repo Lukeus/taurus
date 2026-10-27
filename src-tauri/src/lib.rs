@@ -352,6 +352,8 @@ pub fn run() {
             commands::trace_export,
             commands::set_otlp_endpoint,
             commands::set_otlp_capture_content,
+            commands::hook_list,
+            commands::set_hook,
             commands::build_index,
             commands::stop_index_build,
             commands::voice_status,

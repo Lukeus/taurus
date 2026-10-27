@@ -81,7 +81,8 @@ impl ProblemSource {
             // The drawer that lists what the agent knows and can reach, which
             // is where a brief that is not arriving belongs.
             Self::Instructions => "Skills",
-            Self::Mcp | Self::Skills | Self::Hooks => "Skills",
+            Self::Hooks => "Settings › Hooks",
+            Self::Mcp | Self::Skills => "Skills",
         }
     }
 

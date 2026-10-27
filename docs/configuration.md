@@ -220,6 +220,21 @@ taurus hooks list      # every hook that will run, and what narrows it
 taurus hooks check     # entries that would not load, with the field named
 ```
 
+**Settings › Hooks** shows the same in the app: every hook from your file,
+the project's, and each plugin, including the ones that are off and which
+file switched them off. It writes `hooks.json` for you when you switch one:
+
+- A hook you or a plugin defined can be switched off in this project only,
+  which adds `{"disabled": true}` under its name in the project's file, or
+  everywhere, which goes in yours.
+- A hook the project defines is switched off in the project's file.
+- Switching one back on removes the toggle that turned it off. If a layer
+  below still has it off, such as a plugin that ships it disabled, the file
+  says `{"disabled": false}` instead.
+
+It won't write a `hooks.json` that doesn't parse. Writing or changing a hook
+is still done in the file.
+
 Hooks follow the trust gate like every other layered file. A workspace's own
 `hooks.json` does nothing until you trust that workspace. See
 [Trusting a workspace](#trusting-a-workspace).
