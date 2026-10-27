@@ -119,6 +119,10 @@ impl TerminalPrompt {
         if let Some(diff) = &request.diff {
             let _ = write!(err, "{}", render_diff(diff));
         }
+        // Without it, a prompt with only [y] and [n] reads as a bug.
+        if let Some(reason) = &request.beyond_grant {
+            let _ = writeln!(err, "  asked every time: this one {reason}");
+        }
         // Both standing options appear only where the engine offers them, so
         // the prompt never advertises a key that would be quietly narrowed.
         // "always here" goes away in a workspace whose config is not being
@@ -261,6 +265,7 @@ mod tests {
             always_scope: "scope".into(),
             always_global_scope: None,
             offer_always: true,
+            beyond_grant: None,
             input,
             session: None,
         }

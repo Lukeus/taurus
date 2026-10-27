@@ -136,3 +136,27 @@ describe("deciding a permission from the keyboard", () => {
     ]);
   });
 });
+
+describe("a call no standing grant can cover", () => {
+  const HEREDOC = {
+    ...WRITE,
+    effect: "execute",
+    preview: "cat <<'EOF' > notes.md",
+    offer_always: false,
+    beyond_grant: "feeds a program a script written into the line",
+  } as unknown as PermissionRequest;
+
+  it("says why there is only Allow once", () => {
+    // Without the reason, a dialog with one affirmative button reads as a bug.
+    const { host } = mount(HEREDOC);
+    expect(host.textContent).toContain(
+      "Asked every time: this one feeds a program a script written into the line.",
+    );
+    expect(host.textContent).not.toContain("Always here");
+  });
+
+  it("says nothing of the kind when a grant is on offer", () => {
+    const { host } = mount();
+    expect(host.textContent).not.toContain("Asked every time");
+  });
+});
