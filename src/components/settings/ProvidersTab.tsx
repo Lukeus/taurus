@@ -575,15 +575,22 @@ export function ModelList({
                 fitting; what changes is that the field beside them exists.
             */}
             <div className="model-caps col-span-full grid grid-cols-2 gap-x-2 gap-y-1.5 pl-3 border-l border-rule [&_input]:col-span-full">
-              <input
-                inputMode="numeric"
-                aria-label={`Context length for ${model.id || `model ${i + 1}`}`}
-                value={model.context_length ?? ""}
-                placeholder="context length"
-                onChange={(e) =>
-                  patch(i, { context_length: parseContextLength(e.target.value) })
-                }
-              />
+              {/* Named on screen, not only in the placeholder: once a number
+                  is in it, a placeholder is gone and "128000" alone doesn't
+                  say what it counts. */}
+              <label className="model-context col-span-full flex items-center gap-2 text-12 text-faint">
+                <span className="shrink-0">Context</span>
+                <input
+                  inputMode="numeric"
+                  aria-label={`Context length for ${model.id || `model ${i + 1}`}`}
+                  value={model.context_length ?? ""}
+                  placeholder="from below"
+                  onChange={(e) =>
+                    patch(i, { context_length: parseContextLength(e.target.value) })
+                  }
+                />
+                <span className="shrink-0">tokens</span>
+              </label>
               <select
                 aria-label={`Tool calling for ${model.id || `model ${i + 1}`}`}
                 value={triState(model.native_tools ?? null)}

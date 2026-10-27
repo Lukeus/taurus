@@ -210,9 +210,7 @@ describe("rendering", () => {
     expect(html).toContain("Models");
     expect(html).toContain("Permissions");
     expect(html).toContain("Behavior");
-    // The paths block reads `status.workspace`, which is the field most
-    // likely to be dereferenced before it exists.
-    expect(html).toContain("This project");
+    expect(html).toContain("About");
   });
 });
 

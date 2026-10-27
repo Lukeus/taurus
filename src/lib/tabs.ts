@@ -16,6 +16,9 @@ import type { KeyboardEvent } from "react";
  * A `radiogroup` of pill buttons makes the same promise and keeps it the same
  * way, so this goes on those too: it moves among `role="radio"` as readily as
  * among `role="tab"`.
+ *
+ * A list with `aria-orientation="vertical"` moves with Up and Down instead,
+ * which is what a screen reader tells someone to press for one.
  */
 export function onTabKeys(e: KeyboardEvent<HTMLElement>): void {
   const tabs = [
@@ -23,10 +26,13 @@ export function onTabKeys(e: KeyboardEvent<HTMLElement>): void {
   ].filter((tab) => !tab.disabled);
   const at = tabs.indexOf(document.activeElement as HTMLButtonElement);
   if (at < 0 || tabs.length === 0) return;
+  const vertical = e.currentTarget.getAttribute("aria-orientation") === "vertical";
+  const next = vertical ? "ArrowDown" : "ArrowRight";
+  const previous = vertical ? "ArrowUp" : "ArrowLeft";
   const to =
-    e.key === "ArrowRight"
+    e.key === next
       ? (at + 1) % tabs.length
-      : e.key === "ArrowLeft"
+      : e.key === previous
         ? (at - 1 + tabs.length) % tabs.length
         : e.key === "Home"
           ? 0

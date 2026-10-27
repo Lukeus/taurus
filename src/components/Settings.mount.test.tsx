@@ -60,11 +60,11 @@ const status = (skills: boolean, agents: boolean) => ({
  * Async because mounting is: an effect asks Rust for the key statuses, and
  * those answers land after a synchronous `act` has already returned.
  */
-const mount = async () => {
+const mount = async (onClose: () => void = () => {}) => {
   const host = document.createElement("div");
   document.body.appendChild(host);
   await act(async () => {
-    createRoot(host).render(<Settings onClose={() => {}} />);
+    createRoot(host).render(<Settings onClose={onClose} />);
   });
   return host;
 };
@@ -106,6 +106,9 @@ const flip = async (input: HTMLInputElement) => {
 };
 
 beforeEach(() => {
+  // The drawer reopens on the last tab, so a test that clicked one would
+  // otherwise decide where the next test starts.
+  localStorage.clear();
   invoke.mockClear();
   refresh.mockClear();
   state.status = status(true, true);
@@ -780,5 +783,137 @@ describe("saving providers", () => {
     expect(host.textContent).toContain("Read-only file system");
     expect(host.querySelector(".settings-actions")?.textContent).not.toContain("Saved");
     expect(cards(host)).toHaveLength(before - 1);
+  });
+});
+
+describe("finding your way around", () => {
+  const selected = (host: HTMLElement) =>
+    host.querySelector('[role="tab"][aria-selected="true"]')?.textContent;
+
+  it("reopens on the tab it was closed on", async () => {
+    const first = await mount();
+    click(first, "Behavior");
+    document.body.innerHTML = "";
+
+    expect(selected(await mount())).toBe("Behavior");
+  });
+
+  it("opens on Models when the remembered tab is not one it has", async () => {
+    localStorage.setItem("taurus.settings.tab", "gone");
+    expect(selected(await mount())).toBe("Models");
+  });
+
+  it("keeps updates and the config paths on About, not under every tab", async () => {
+    state.status = null;
+    const host = await mount();
+    expect(host.textContent).not.toContain("Check for updates");
+    expect(host.textContent).not.toContain("This project");
+
+    click(host, "About");
+    expect(host.textContent).toContain("Check for updates");
+    // Read before a status has loaded, which is when `status.workspace` is
+    // most likely to be dereferenced before it exists.
+    expect(host.textContent).toContain("This project");
+  });
+
+  it("moves between the tabs with Up and Down", async () => {
+    const host = await mount();
+    const press = (key: string) =>
+      act(() => {
+        (document.activeElement as HTMLElement).dispatchEvent(
+          new KeyboardEvent("keydown", { key, bubbles: true }),
+        );
+      });
+    host.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')!.focus();
+
+    // Up from the first wraps to the last, and Down comes back. Not Down
+    // first: that lands on Search, whose read of its own settings would
+    // outlive this test.
+    press("ArrowUp");
+    expect(selected(host)).toBe("About");
+    press("ArrowDown");
+    expect(selected(host)).toBe("Models");
+  });
+});
+
+describe("each tab's own errors", () => {
+  it("keeps a failed provider save off Behavior", async () => {
+    withProviders();
+    const answer = invoke.getMockImplementation()!;
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "save_providers" ? Promise.reject("providers.json is read-only") : answer(...args),
+    );
+    const host = await mount();
+    click(host, "Remove");
+    await act(async () => click(host, "Save"));
+    expect(host.textContent).toContain("providers.json is read-only");
+
+    click(host, "Behavior");
+    expect(host.textContent).not.toContain("providers.json is read-only");
+  });
+});
+
+describe("closing with providers unsaved", () => {
+  const close = (host: HTMLElement) =>
+    act(() => {
+      host.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click();
+    });
+
+  it("closes at once when nothing is unsaved", async () => {
+    withProviders();
+    const onClose = vi.fn();
+    const host = await mount(onClose);
+    close(host);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("asks first, from Models, whichever tab it was closed from", async () => {
+    withProviders();
+    const onClose = vi.fn();
+    const host = await mount(onClose);
+    click(host, "Remove");
+    click(host, "Behavior");
+    close(host);
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Your provider changes aren't saved yet.");
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Models");
+  });
+
+  it("stays open to keep editing, and closes on Discard", async () => {
+    withProviders();
+    const onClose = vi.fn();
+    const host = await mount(onClose);
+    click(host, "Remove");
+    close(host);
+
+    click(host, "Keep editing");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain("aren't saved yet");
+
+    close(host);
+    click(host, "Discard");
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("saves and then closes, and stays open when the save fails", async () => {
+    withProviders();
+    const answer = invoke.getMockImplementation()!;
+    let refuse = true;
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "save_providers" && refuse ? Promise.reject("read-only") : answer(...args),
+    );
+    const onClose = vi.fn();
+    const host = await mount(onClose);
+    click(host, "Remove");
+    close(host);
+
+    await act(async () => click(host, "Save and close"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("read-only");
+
+    refuse = false;
+    await act(async () => click(host, "Save and close"));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

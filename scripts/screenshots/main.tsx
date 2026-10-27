@@ -551,7 +551,7 @@ requestAnimationFrame(() => {
       // brand row has anything in it.
       appearance: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();
-        (await click(".pill-row .pill", (b) => b === "Appearance"))();
+        (await click(".settings-tab", (b) => b === "Appearance"))();
       },
       // The mic pressed on a machine that has never used it: the offer to
       // download a model, above the box. Pressed rather than seeded, so the
@@ -567,7 +567,7 @@ requestAnimationFrame(() => {
       // leave a promise hanging in the page.
       voice: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();
-        (await click(".pill-row .pill", (b) => b === "Voice"))();
+        (await click(".settings-tab", (b) => b === "Voice"))();
         await until(() => document.querySelector(".voice-model"));
         useVoice.setState({
           download: { model: "small.en", done: 79_841_446, total: 190_098_681, fromMic: false },
@@ -578,7 +578,7 @@ requestAnimationFrame(() => {
       // after the key status says there's a key to ask with.
       speech: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();
-        (await click(".pill-row .pill", (b) => b === "Voice"))();
+        (await click(".settings-tab", (b) => b === "Voice"))();
         const section = await until(() =>
           document.querySelector(".speech-settings option[value='JBFqnCBsd6RMkjVDRZzb']")
             ? document.querySelector(".speech-settings")

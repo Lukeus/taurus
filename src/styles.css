@@ -3327,6 +3327,19 @@ body.resizing-y * {
 /* A drawer the user can size carries its handle on the edge facing the app,
    which is its left one — it is pinned to the right of the window, so the room
    it can take is all in that direction. */
+/* Settings is wider than the other drawers because it carries its own column
+   of tabs; the page beside them keeps about the width every drawer has. It
+   scrolls inside that page rather than as a whole, so the tabs and the drawer
+   head stay put. */
+.drawer.settings {
+  width: 600px;
+  overflow: hidden;
+}
+@media (max-width: 720px) {
+  .drawer.settings {
+    overflow-y: auto;
+  }
+}
 .drawer-dock {
   margin-left: auto;
   height: 100%;

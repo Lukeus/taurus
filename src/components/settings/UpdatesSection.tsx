@@ -13,8 +13,8 @@ type Phase =
 /**
  * The version running, and a way to move to a newer one.
  *
- * At the foot of every tab, beside the files, because it's about the app
- * rather than any one setting. Nothing here reaches the network until the
+ * On the About tab, beside the files, because it's about the app rather than
+ * any one setting. Nothing here reaches the network until the
  * button is pressed.
  */
 export function UpdatesSection() {
