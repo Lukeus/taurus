@@ -1763,15 +1763,22 @@ async fn a_command_the_model_ran_can_be_undone() {
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].files, vec!["built.txt", "doomed.txt", "keep.txt"]);
 
-    // And the turn is reported as ordinary. A sweep that covered the command
-    // has nothing to add to the result; only one that could not covers says so.
-    let finished = events.iter().find_map(|e| match e {
-        UiEvent::ToolCallFinished { output, .. } => Some(output),
-        _ => None,
-    });
+    // The model is told what changed, and nothing more: a sweep that covered
+    // the command has no warning to add.
+    let finished = events
+        .iter()
+        .find_map(|e| match e {
+            UiEvent::ToolCallFinished { output, .. } => Some(output),
+            _ => None,
+        })
+        .unwrap();
     assert!(
-        !finished.unwrap().contains("[taurus]"),
-        "a covered command should carry no warning: {finished:?}"
+        finished.contains("This command changed 3 files: built.txt, doomed.txt, keep.txt"),
+        "{finished}"
+    );
+    assert!(
+        !finished.contains("rewind will report") && !finished.contains("couldn't"),
+        "a covered command should carry no warning: {finished}"
     );
 
     store.rewind("s1", &workspace, 1, false).unwrap();
@@ -3318,4 +3325,108 @@ async fn a_working_context_compacts_a_large_window_early() {
     assert!(events
         .iter()
         .any(|e| matches!(e, UiEvent::ContextUsed { window: 8_000, .. })));
+}
+
+// ------------------------------------------------------------ a plan's checks
+
+/// `recorded` and `planning` at once: a turn whose writes are checkpointed and
+/// whose plan names its checks, which is the only turn the checks are held to.
+fn checked_plan(turns: Vec<ScriptedTurn>) -> (Agent, Arc<FakeProvider>, TempDir, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let logs = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
+    let store = taurus_tools::CheckpointStore::new(logs.path());
+    let tools = ToolContext::new(workspace.clone(), permissions, CancellationToken::new())
+        .with_checkpoints(store.begin_turn("s1", &workspace, "do some work"));
+    let board = taurus_tools::PlanBoard::new();
+    let mut registry = ToolRegistry::with_builtins();
+    registry.register(Arc::new(taurus_tools::builtin::plan::UpdatePlan::new(
+        board.clone(),
+    )));
+    let provider = FakeProvider::new(turns);
+    let agent = Agent::new(provider.clone(), registry, tools, AgentConfig::default())
+        .with_plan(board);
+    (agent, provider, dir, logs)
+}
+
+/// How many times the model was handed its plan's checks to run.
+fn check_nudges(request: &taurus_provider::ChatRequest) -> Vec<String> {
+    request
+        .messages
+        .iter()
+        .map(|m| m.text())
+        .filter(|text| text.contains("your plan says how to check them"))
+        .collect()
+}
+
+fn bump_plan(id: &str, state: &str) -> ScriptedTurn {
+    plan_call(
+        id,
+        serde_json::json!([{
+            "text": "Write the marker",
+            "state": state,
+            "check": "echo marker-checked"
+        }]),
+    )
+}
+
+#[tokio::test]
+async fn a_turn_that_ran_something_else_is_handed_the_check_its_plan_named() {
+    // The model ran *a* command after its edit, which clears the generic
+    // nudge — but not the one its own plan said would prove the step.
+    let (agent, provider, _dir, _logs) = checked_plan(vec![
+        bump_plan("p1", "active"),
+        ScriptedTurn::tool_call(
+            "w1",
+            "write_file",
+            serde_json::json!({"path": "marker.txt", "content": "x"}),
+        ),
+        ScriptedTurn::tool_call("r1", "run_command", serde_json::json!({"command": "echo unrelated"})),
+        bump_plan("p2", "done"),
+        ScriptedTurn::text("Done."),
+        ScriptedTurn::tool_call(
+            "r2",
+            "run_command",
+            serde_json::json!({"command": "echo marker-checked"}),
+        ),
+        ScriptedTurn::text("Checked, and it passes."),
+    ]);
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "write the marker").await;
+
+    let sent = provider.last_request().await.unwrap();
+    let nudged = check_nudges(&sent);
+    assert_eq!(nudged.len(), 1, "asked once, and only once: {nudged:#?}");
+    assert!(nudged[0].contains("- echo marker-checked"), "{}", nudged[0]);
+    assert_eq!(nudges(&sent), 0, "the generic nudge is replaced, not added to");
+}
+
+#[tokio::test]
+async fn a_turn_that_ran_its_check_is_left_alone() {
+    let (agent, provider, _dir, _logs) = checked_plan(vec![
+        bump_plan("p1", "active"),
+        ScriptedTurn::tool_call(
+            "w1",
+            "write_file",
+            serde_json::json!({"path": "marker.txt", "content": "x"}),
+        ),
+        ScriptedTurn::tool_call(
+            "r1",
+            "run_command",
+            serde_json::json!({"command": "echo marker-checked"}),
+        ),
+        bump_plan("p2", "done"),
+        ScriptedTurn::text("Done, and checked."),
+    ]);
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "write the marker").await;
+
+    let sent = provider.last_request().await.unwrap();
+    assert!(check_nudges(&sent).is_empty());
+    assert_eq!(nudges(&sent), 0);
 }

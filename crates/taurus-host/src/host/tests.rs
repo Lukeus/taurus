@@ -3169,6 +3169,7 @@ async fn a_conversation_keeps_its_checklist_and_does_not_share_it() {
         text: "Add the token type".into(),
         state: StepState::Active,
         active_form: None,
+        check: None,
     }]);
 
     // The same conversation, a message later.

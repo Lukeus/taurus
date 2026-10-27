@@ -318,10 +318,13 @@ fn with_no_terminal_note(reason: &str, report: &str) -> String {
 /// A non-zero exit is information for the model, not a harness failure:
 /// returning it as `Ok` lets the model read the compiler errors it just asked
 /// for instead of a bare error string.
+///
+/// A zero is stated too. Left out, success was the absence of a line, and a
+/// passing build that printed warnings read the same as a failing one until
+/// the model went looking for a line that wasn't there.
 fn report_for(code: Option<i32>, stdout: &str, stderr: Option<&str>) -> String {
     let report = combined(stdout, stderr);
     match code {
-        Some(0) => report,
         Some(code) => format!("Exit code {code}\n{report}"),
         None => format!("Killed by signal\n{report}"),
     }
@@ -1100,7 +1103,7 @@ mod tests {
             .execute(serde_json::json!({"command": "true"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(out.to_text(), "(no output)");
+        assert_eq!(out.to_text(), "Exit code 0\n(no output)");
     }
 
     /// Records progress reports with the moment each one arrived.
@@ -1646,7 +1649,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(out.to_text().trim(), "same\nsame\nsame\nsame\nsame");
+        assert_eq!(
+            out.to_text().trim(),
+            "Exit code 0\nsame\nsame\nsame\nsame\nsame"
+        );
     }
 
     /// Pulls the path back out of the sentence in the gap.
