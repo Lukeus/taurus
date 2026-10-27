@@ -61,6 +61,25 @@ pub struct SchemaCost {
     pub tokens: u32,
 }
 
+/// One tool as Settings › Tools lists it: whether it's on, and what leaving it
+/// on costs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ToolSwitch {
+    /// The exact name `disabled_tools` takes, which is the one `taurus tools`
+    /// prints.
+    pub name: String,
+    /// The MCP server it comes from, or none for one that ships with Taurus.
+    #[ts(optional)]
+    pub server: Option<String>,
+    /// What its schema adds to every request, estimated. None for a tool that
+    /// is off, and for one a turn adds for itself, since neither is in the
+    /// registry to be measured.
+    #[ts(optional)]
+    pub tokens: Option<u32>,
+    pub enabled: bool,
+}
+
 /// What advertising one tool costs, estimated.
 ///
 /// Here rather than inside [`Fixed::new`] because two screens ask it now: the

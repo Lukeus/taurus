@@ -209,3 +209,68 @@ pub async fn rescan_library(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
     }
     Ok(())
 }
+
+/// Every tool, with whether it's on and what it costs, for Settings › Tools.
+#[tauri::command]
+pub async fn tool_switches(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<Vec<taurus_host::usage::ToolSwitch>> {
+    Ok(state.host.tool_switches().await)
+}
+
+/// Saves which tools are off, then rebuilds the registry from it.
+///
+/// A whole reload, not the local half: switching an MCP tool back on has to
+/// put it back from its server's connection, and only `reload_mcp` does that.
+/// Servers that didn't change aren't restarted.
+#[tauri::command]
+pub async fn set_disabled_tools(
+    state: State<'_, Arc<AppState>>,
+    names: Vec<String>,
+) -> CmdResult<()> {
+    state.host.set_disabled_tools(names).await?;
+    state.host.reload().await;
+    emit_status(&state).await;
+    Ok(())
+}
+
+/// Where this run of the app is sending traces, as decided when it started.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct TraceExport {
+    /// Where spans are going, or would be if `failed` is set.
+    #[ts(optional)]
+    pub endpoint: Option<String>,
+    /// Whether `OTEL_EXPORTER_OTLP_ENDPOINT` chose it, over settings.
+    pub from_env: bool,
+    /// Why the exporter couldn't be built.
+    #[ts(optional)]
+    pub failed: Option<String>,
+}
+
+#[tauri::command]
+pub async fn trace_export(state: State<'_, Arc<AppState>>) -> CmdResult<TraceExport> {
+    let export = state.export.clone();
+    Ok(TraceExport {
+        endpoint: export.endpoint,
+        from_env: export.from_env,
+        failed: export.failed,
+    })
+}
+
+#[tauri::command]
+pub async fn set_otlp_endpoint(state: State<'_, Arc<AppState>>, endpoint: String) -> CmdResult<()> {
+    state.host.set_otlp_endpoint(&endpoint).await?;
+    emit_status(&state).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_otlp_capture_content(
+    state: State<'_, Arc<AppState>>,
+    capture: bool,
+) -> CmdResult<()> {
+    state.host.set_otlp_capture_content(capture).await?;
+    emit_status(&state).await;
+    Ok(())
+}

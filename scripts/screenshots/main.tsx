@@ -65,6 +65,7 @@ import {
   SPEECH_STATUS,
   STATUS,
   USAGE,
+  TOOL_SWITCHES,
   TRACES,
   THEMES,
 } from "./fixtures";
@@ -228,6 +229,7 @@ const ANSWERS: Record<string, unknown> = {
   programs_on_path: ["npx"],
   search_sessions: SEARCH_HITS,
   usage_report: USAGE,
+  tool_switches: TOOL_SWITCHES,
   trace_report: TRACES,
   mcp_environment: MCP_ENVIRONMENT,
   list_themes: THEMES,
@@ -549,6 +551,13 @@ requestAnimationFrame(() => {
       // `Settings`, and the picture is more honest for being of one somebody
       // clicked. The theme list arrives from the stub above, which is why the
       // brand row has anything in it.
+      // Settings › Tools: Taurus's own tools above a server's, two switched
+      // off, and the running total that's the reason to look.
+      tools: async () => {
+        (await click(".rail-link b", (b) => b === "Settings"))();
+        (await click(".settings-tab", (b) => b === "Tools"))();
+        await until(() => document.querySelector(".tools-group"));
+      },
       appearance: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();
         (await click(".settings-tab", (b) => b === "Appearance"))();

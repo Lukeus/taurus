@@ -29,10 +29,13 @@ import { Problem } from "./Problem";
 export function TracePanel({
   sessionId,
   onClose,
+  onOpenTracing,
 }: {
   /** The open conversation, or null if there is none to ask about. */
   sessionId: string | null;
   onClose: () => void;
+  /** Opens Settings › Tracing, where an endpoint is set. */
+  onOpenTracing?: () => void;
 }) {
   const [scope, setScope] = useState<"session" | "window">(
     sessionId ? "session" : "window",
@@ -100,9 +103,15 @@ export function TracePanel({
       <p className="drawer-intro">
         What each turn spent its wall time on, from the spans the harness
         emits. Kept in memory for this run of the app only. To send the same
-        spans somewhere that keeps them, set{" "}
-        <code className="md-inline-code">otlp_endpoint</code> in settings.json,
-        or <code className="md-inline-code">OTEL_EXPORTER_OTLP_ENDPOINT</code>.
+        spans somewhere that keeps them, set an endpoint in{" "}
+        {onOpenTracing ? (
+          <button className="link" onClick={onOpenTracing}>
+            Settings › Tracing
+          </button>
+        ) : (
+          "Settings › Tracing"
+        )}
+        , or <code className="md-inline-code">OTEL_EXPORTER_OTLP_ENDPOINT</code>.
       </p>
 
       <div className="usage-scope" role="tablist" aria-label="Which turns" onKeyDown={onTabKeys}>

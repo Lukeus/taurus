@@ -141,6 +141,7 @@ pub fn run() {
     // where the subscriber was installed, and a subscriber can only be
     // installed once.
     let traces = telemetry.traces();
+    let export = telemetry.export();
 
     // Before the builder, and so before anything is spawned: an app started from
     // the Dock inherits launchd's PATH, which is four system directories and
@@ -223,7 +224,7 @@ pub fn run() {
         .setup(|app| {
             paint_window(app);
 
-            let state = Arc::new(state::AppState::new(app.handle().clone(), traces));
+            let state = Arc::new(state::AppState::new(app.handle().clone(), traces, export));
             app.manage(state.clone());
             // The dock's shells, for `read_terminal`. Handed over once: the
             // host decides per turn whether one is running and marking its
@@ -346,6 +347,11 @@ pub fn run() {
             commands::set_window_background,
             commands::set_embedding_model,
             commands::set_rerank,
+            commands::tool_switches,
+            commands::set_disabled_tools,
+            commands::trace_export,
+            commands::set_otlp_endpoint,
+            commands::set_otlp_capture_content,
             commands::build_index,
             commands::stop_index_build,
             commands::voice_status,

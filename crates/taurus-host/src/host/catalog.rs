@@ -151,6 +151,38 @@ impl Host {
             .collect()
     }
 
+    /// Every tool there is a switch for: what's registered, what a turn adds
+    /// for itself, and what settings switched off. Sorted by server, then name,
+    /// with Taurus's own first.
+    ///
+    /// The switched-off ones are listed from the setting rather than found,
+    /// because a disabled tool is never registered — which is also why a name
+    /// in the setting that matches nothing still shows up here, off, where
+    /// switching it on is how it's taken out again.
+    pub async fn tool_switches(&self) -> Vec<crate::usage::ToolSwitch> {
+        let disabled = self.settings.read().await.disabled_tools.clone();
+        let mut switches: BTreeMap<String, crate::usage::ToolSwitch> = BTreeMap::new();
+        let switch = |name: &str, tokens: Option<u32>| crate::usage::ToolSwitch {
+            name: name.to_string(),
+            server: mcp_server_of(name),
+            tokens,
+            enabled: !disabled.iter().any(|d| d == name),
+        };
+        for def in self.tool_definitions().await {
+            let cost = crate::usage::schema_cost(&def);
+            switches.insert(def.name.clone(), switch(&def.name, Some(cost)));
+        }
+        let unmeasured = PER_TURN_TOOLS.iter().copied().chain(disabled.iter().map(String::as_str));
+        for name in unmeasured {
+            switches
+                .entry(name.to_string())
+                .or_insert_with(|| switch(name, None));
+        }
+        let mut switches: Vec<_> = switches.into_values().collect();
+        switches.sort_by(|a, b| a.server.cmp(&b.server).then_with(|| a.name.cmp(&b.name)));
+        switches
+    }
+
     /// What the model is told it can call, as it goes over the wire.
     ///
     /// The same list [`Host::build_agent`] would hand a turn, minus the spawn
@@ -187,4 +219,11 @@ impl Host {
             agent_synthesis,
         )
     }
+}
+
+/// The server an MCP tool's name says it comes from, or none for any other.
+pub(super) fn mcp_server_of(name: &str) -> Option<String> {
+    name.strip_prefix(taurus_mcp::NAMESPACE)
+        .and_then(|rest| rest.split_once("__"))
+        .map(|(server, _)| server.to_string())
 }

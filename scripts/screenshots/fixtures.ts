@@ -47,7 +47,9 @@ export const STATUS = {
     last_model: "qwen3.6:27b",
     skill_synthesis_enabled: true,
     agent_synthesis_enabled: true,
-    disabled_tools: [],
+    disabled_tools: ["load_dataset", "propose_agent"],
+    // Nothing set by the project, so no "this project sets this" notes.
+    from_project: [],
     theme: "dark",
     // Off, as it ships. The speaker beside the mic draws its off state in
     // every shot of the composer.
@@ -1662,4 +1664,49 @@ export const MEMORY_NOTES = [
     session: "s1",
     text: "The rail paint bug is half fixed: hover is done, the focus ring still flickers.",
   },
+];
+
+/**
+ * Settings › Tools: Taurus's own, two of them switched off, and a GitHub
+ * server whose schemas outweigh most of them — which is the case the tab
+ * exists for.
+ */
+export const TOOL_SWITCHES = [
+  ...(
+    [
+      ["edit_file", 310],
+      ["glob", 140],
+      ["grep", 260],
+      ["list_dir", 120],
+      ["load_dataset", 0],
+      ["propose_agent", 0],
+      ["propose_skill", 1_120],
+      ["query_data", 380],
+      ["read_file", 230],
+      ["run_command", 520],
+      // Added by each turn, so on the list but not measured.
+      ["update_plan", null],
+      ["write_file", 180],
+    ] as const
+  ).map(([name, tokens]) =>
+    tokens === 0
+      ? { name, enabled: false }
+      : tokens === null
+        ? { name, enabled: true }
+        : { name, tokens, enabled: true },
+  ),
+  ...(
+    [
+      ["create_issue", 640],
+      ["create_pull_request", 910],
+      ["get_file_contents", 420],
+      ["list_commits", 380],
+      ["search_code", 350],
+    ] as const
+  ).map(([tool, tokens]) => ({
+    name: `mcp__github__${tool}`,
+    server: "github",
+    tokens,
+    enabled: true,
+  })),
 ];

@@ -1,6 +1,6 @@
 // The form pieces every settings tab is built from.
 
-
+import { useStore } from "../../state/store";
 
 export function Field({
   label,
@@ -37,4 +37,22 @@ export function same(a: unknown, b: unknown): boolean {
     return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
   }
   return (a ?? null) === (b ?? null);
+}
+
+/**
+ * Says so when the open project's own settings file sets this field.
+ *
+ * Settings writes the global file, and a project's value wins over it, so a
+ * change made here can't show in this workspace: the switch or number moves
+ * back to the project's. Without this that read as the write not taking.
+ */
+export function FromProject({ field }: { field: string }) {
+  const status = useStore((s) => s.status);
+  if (!status?.settings.from_project.includes(field)) return null;
+  return (
+    <p className="hint">
+      This project's <code>.taurus/settings.json</code> sets this, so that's
+      what is used here. A change here applies to your other workspaces.
+    </p>
+  );
 }

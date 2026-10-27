@@ -979,11 +979,16 @@ selection alone isn't a working backend.
 
 Tracing is off, with no default endpoint: not localhost, not a vendor. A
 harness that reads private repositories has no business deciding where a
-description of that work goes, so you type the endpoint:
+description of that work goes, so you type the endpoint, in
+**Settings › Tracing** or in `settings.json`:
 
 ```json
 { "otlp_endpoint": "http://localhost:4318" }
 ```
+
+It's read when Taurus starts, so a new endpoint applies from the next launch.
+The tab says what this run is actually exporting to, so a change waiting on a
+restart, or an endpoint that couldn't be used, doesn't look like it's working.
 
 That's OTLP over HTTP, which Langfuse, Phoenix, Jaeger, Grafana Tempo,
 Honeycomb, and `docker run otel/opentelemetry-collector` all read. Spans
@@ -1024,7 +1029,8 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 taurus run "fix the flaky test
 
 **What's sent is the shape of a turn, not the turn.** Which model, how many
 tokens, how long, which tools ran, what failed. Not the conversation. Sending
-that takes a second setting, and it's off:
+that takes a second setting, **Include the messages themselves** on the same
+tab, and it's off:
 
 ```json
 { "otlp_capture_content": true }

@@ -78,6 +78,23 @@ const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 pub struct Guard {
     provider: Option<SdkTracerProvider>,
     traces: Traces,
+    export: Export,
+}
+
+/// What this process is doing with its traces, as decided once at startup.
+///
+/// Kept because the setting alone can't say it: the environment variable wins
+/// over it, a new endpoint isn't picked up until the next launch, and one that
+/// failed to build exports nothing. Settings shows this beside the field.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Export {
+    /// Where spans are going, or would have gone if `failed` is set. None
+    /// when nothing named an endpoint.
+    pub endpoint: Option<String>,
+    /// True when that endpoint came from [`ENDPOINT_ENV`] rather than settings.
+    pub from_env: bool,
+    /// Why no exporter could be built for it.
+    pub failed: Option<String>,
 }
 
 impl Guard {
@@ -90,6 +107,11 @@ impl Guard {
     /// afterwards if they want history.
     pub fn traces(&self) -> Traces {
         self.traces.clone()
+    }
+
+    /// Where this process is exporting to, if anywhere. See [`Export`].
+    pub fn export(&self) -> Export {
+        self.export.clone()
     }
 }
 
@@ -124,9 +146,16 @@ impl Drop for Guard {
 /// a collector and then do it again.
 pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Guard {
     let traces = Traces::new();
-    let endpoint = std::env::var(ENDPOINT_ENV)
+    let from_env = std::env::var(ENDPOINT_ENV)
         .ok()
-        .filter(|e| !e.trim().is_empty())
+        .filter(|e| !e.trim().is_empty());
+    let export = |endpoint: &str, failed: Option<String>| Export {
+        endpoint: Some(endpoint.to_string()),
+        from_env: from_env.is_some(),
+        failed,
+    };
+    let endpoint = from_env
+        .clone()
         .or_else(|| configured.map(str::to_string))
         .filter(|e| !e.trim().is_empty());
 
@@ -138,6 +167,7 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
         return Guard {
             provider: None,
             traces,
+            export: Export::default(),
         };
     };
 
@@ -161,6 +191,7 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
             Guard {
                 provider: Some(provider),
                 traces,
+                export: export(&endpoint, None),
             }
         }
         Err(e) => {
@@ -181,6 +212,7 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
             Guard {
                 provider: None,
                 traces,
+                export: export(&endpoint, Some(e.to_string())),
             }
         }
     }

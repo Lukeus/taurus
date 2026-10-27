@@ -12,6 +12,8 @@ import { useShallow } from "zustand/react/shallow";
 
 import { chord, isChord, TERMINAL_SHORTCUT } from "./lib/keys";
 import type { Action } from "./lib/palette";
+// Type only, so it's erased and Settings stays a lazily loaded chunk.
+import type { SettingsTab } from "./components/Settings";
 
 import {} from "./components/Attachments";
 import {} from "./components/ContextMeter";
@@ -417,6 +419,18 @@ export default function App() {
    */
   const [find, setFind] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * The tab Settings opens on when a panel sent someone there to change one
+   * thing; unset, it opens on the last tab looked at.
+   */
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
+  /** Swaps the panel that asked for the setting for Settings, on its tab. */
+  const openSettingsAt = useCallback((tab: SettingsTab) => {
+    setUsageOpen(false);
+    setTracesOpen(false);
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }, []);
   const [changesOpen, setChangesOpen] = useState(false);
   /**
    * Agent activity shares the column with Changes and the canvas. Whichever
@@ -1783,6 +1797,7 @@ export default function App() {
           <UsagePanel
             sessionId={store.session?.id ?? null}
             onClose={() => setUsageOpen(false)}
+            onOpenTools={() => openSettingsAt("tools")}
           />
         )}
 
@@ -1790,6 +1805,7 @@ export default function App() {
           <TracePanel
             sessionId={store.session?.id ?? null}
             onClose={() => setTracesOpen(false)}
+            onOpenTracing={() => openSettingsAt("tracing")}
           />
         )}
 
@@ -1832,7 +1848,15 @@ export default function App() {
             onClose={() => setPluginsOpen(false)}
           />
         )}
-        {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+        {settingsOpen && (
+          <Settings
+            initialTab={settingsTab}
+            onClose={() => {
+              setSettingsOpen(false);
+              setSettingsTab(undefined);
+            }}
+          />
+        )}
       </Suspense>
 
       {/* Last, so it paints over the drawers and dialogs above it without
