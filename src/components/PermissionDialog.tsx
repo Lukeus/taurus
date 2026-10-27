@@ -118,6 +118,13 @@ export function PermissionDialog({
         {request.offer_always && (
           <p className="dialog-footnote">{request.always_scope}.</p>
         )}
+        {/* In its place when no standing grant can cover the line. Without
+            it, a prompt with only "Allow once" on it reads as a bug. */}
+        {request.beyond_grant && (
+          <p className="dialog-footnote">
+            Asked every time: this one {request.beyond_grant}.
+          </p>
+        )}
 
         <div className="dialog-actions">
           {/* Not `autoFocus`. Focus lands on the dialog itself — see `Modal` —

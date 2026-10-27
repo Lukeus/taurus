@@ -129,6 +129,12 @@ already saved. A command that:
 Two things don't count: merging one of the program's own streams into another
 (`2>&1`), and throwing output away (`2>/dev/null`).
 
+The prompt for one of these says which reason applies, under the command line,
+so a prompt with only "Allow once" on it doesn't look like a bug. The model is
+told the same thing up front: `run_command`'s description steers it to
+`write_file` for files and to a script file over `python3 -c`, and a refusal in
+an unattended run names the reason and the way around it.
+
 The check knows quoting and the operators above, and nothing else. It doesn't
 know which programs run other programs: `make`, `npm run`, `cargo run` and a
 `git` alias all run what the project tells them to, and a grant for one of

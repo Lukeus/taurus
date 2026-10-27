@@ -112,7 +112,11 @@ impl Tool for RunCommand {
          it still asks. Set background to true for something that takes longer than the timeout \
          allows or is meant to keep running — a build from cold, a whole test suite, a dev server \
          — and read it later with check_command. Prefer read_file, glob, and grep over cat, find, \
-         and grep -r."
+         and grep -r. Write files with write_file or edit_file, not a heredoc or a redirect, and \
+         put a script in a file rather than python3 -c or node -e: a line that writes a file, \
+         runs code written into it, or starts with sh -c, env or xargs can never be allowed \
+         ahead of time, so the user is asked about it every time and an unattended run refuses \
+         it."
     }
 
     fn input_schema(&self) -> serde_json::Value {

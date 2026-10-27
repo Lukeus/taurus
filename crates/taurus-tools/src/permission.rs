@@ -78,6 +78,16 @@ pub struct PermissionRequest {
     /// permanence it cannot deliver, so it is told not to.
     #[serde(default = "offered_by_default")]
     pub offer_always: bool,
+    /// Why no standing grant can cover this call, when none can. Finishes the
+    /// sentence "this one …".
+    ///
+    /// Set for a command line that does something no program name stands for
+    /// — runs code written into the line, writes into a file, hands itself to
+    /// a shell. Neither "always" is on offer then, and without the reason a
+    /// prompt with only "Allow once" on it reads as a bug. See [`Programs`].
+    #[serde(default)]
+    #[ts(optional)]
+    pub beyond_grant: Option<String>,
     #[ts(type = "unknown")]
     pub input: serde_json::Value,
     /// Which conversation is asking.
@@ -346,6 +356,7 @@ impl PermissionEngine {
             offer_always: offer_workspace,
             always_global_scope: offer_global
                 .then(|| describe_rules(&missing, tool.effect(), Scope::Global)),
+            beyond_grant: keys.beyond.map(str::to_owned),
             input: input.clone(),
             session: asking.session.clone(),
         };
@@ -357,13 +368,23 @@ impl PermissionEngine {
         //
         // The preview goes into the message because this is the one refusal
         // the model is expected to work around rather than abandon, and it
-        // cannot do that without knowing what was refused.
+        // cannot do that without knowing what was refused. So does the reason
+        // no grant could have covered it: a heredoc refused here is usually a
+        // file write that `write_file` would have been allowed to make.
         if asking.unattended {
+            let never = match &request.beyond_grant {
+                Some(reason) => format!(
+                    " A line like this can never be allowed ahead of time, because it {reason}: \
+                     write files with write_file or edit_file, and put a script in a file \
+                     instead of the command line."
+                ),
+                None => String::new(),
+            };
             return Err(ToolError::Rejected(format!(
                 "nobody is there to allow this. The conversation is running unattended, so a \
                  call that needs a decision is refused rather than left waiting for one. This \
-                 one was: {}. Carry on without it where you can, and say plainly what you could \
-                 not do.",
+                 one was: {}.{never} Carry on without it where you can, and say plainly what \
+                 you could not do.",
                 request.preview
             )));
         }
@@ -1352,6 +1373,82 @@ mod tests {
             assert!(!offered, "{line:?} was offered a standing grant");
         }
         assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    }
+
+    /// Keeps the whole request, for the tests that read more than one field.
+    struct Asked {
+        seen: Arc<Mutex<Option<PermissionRequest>>>,
+    }
+
+    #[async_trait]
+    impl PermissionPrompt for Asked {
+        async fn request(&self, request: PermissionRequest) -> PermissionDecision {
+            *self.seen.lock().await = Some(request);
+            PermissionDecision::AllowOnce
+        }
+    }
+
+    const HEREDOC_REASON: &str = "feeds a program a script written into the line";
+
+    /// A prompt with only "Allow once" on it says why, so it does not read as
+    /// a bug, and one with "always" on it says nothing.
+    #[tokio::test]
+    async fn a_line_beyond_a_grant_says_why() {
+        let homes = Homes::new();
+        let seen = Arc::new(Mutex::new(None));
+        let engine = homes.engine(Box::new(Asked { seen: seen.clone() }));
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+        for (line, why) in [
+            ("cat <<'EOF' > notes.md\nhi\nEOF", Some(HEREDOC_REASON)),
+            (
+                "python3 -c 'print(1)'",
+                Some("runs code written into the line"),
+            ),
+            ("cargo test 2>&1 | tail -20", None),
+        ] {
+            engine
+                .check(
+                    &run,
+                    &serde_json::json!({"command": line}),
+                    &Asking::default(),
+                )
+                .await
+                .unwrap();
+            let request = seen.lock().await.take().unwrap();
+            assert_eq!(request.beyond_grant.as_deref(), why, "{line:?}");
+            assert_eq!(request.offer_always, why.is_none(), "{line:?}");
+        }
+    }
+
+    /// Refused unattended, the model is told the line could never have been
+    /// allowed and what to do instead, since that is what it can act on.
+    #[tokio::test]
+    async fn unattended_says_why_a_line_could_never_be_allowed() {
+        let (engine, _calls, _dir) = engine(PermissionDecision::AllowOnce);
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+        let refused = engine
+            .check(
+                &run,
+                &serde_json::json!({"command": "cat <<'EOF' > notes.md\nhi\nEOF"}),
+                &Asking {
+                    session: None,
+                    unattended: true,
+                },
+            )
+            .await
+            .unwrap_err();
+        let ToolError::Rejected(why) = refused else {
+            panic!("expected a refusal on the merits, got {refused:?}");
+        };
+        assert!(why.contains(HEREDOC_REASON), "{why}");
+        assert!(why.contains("write_file"), "{why}");
+        assert!(!why.contains("  "), "no runs of spaces: {why}");
     }
 
     #[tokio::test]
