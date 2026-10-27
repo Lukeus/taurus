@@ -63,22 +63,18 @@ impl Host {
         // bound before the next await, so no guard is held across one — see
         // `Self::rosters`.
         let roster = Arc::new(self.agents.read().await.to_vec());
+        let concurrent = self.settings.read().await.max_concurrent_agents as usize;
         let models = self.agent_models.read().await.clone();
         let logs = SubagentLogs::new(self.workspace().await, turn.session_id);
         registry.register(Arc::new(
-            SpawnSubagent::new(
-                provider.clone(),
-                self.registry.clone(),
-                model,
-                MAX_CONCURRENT_SUBAGENTS,
-            )
-            .with_defaults(base.clone())
-            .with_roster(roster, models)
-            // Every child's conversation is kept, under this one's. The parent
-            // transcript still records a delegation as one call and one answer
-            // — that is what delegating is for — but the work behind that
-            // answer is no longer thrown away with the tool result.
-            .with_recorder(Arc::new(logs)),
+            SpawnSubagent::new(provider.clone(), self.registry.clone(), model, concurrent)
+                .with_defaults(base.clone())
+                .with_roster(roster, models)
+                // Every child's conversation is kept, under this one's. The parent
+                // transcript still records a delegation as one call and one answer
+                // — that is what delegating is for — but the work behind that
+                // answer is no longer thrown away with the tool result.
+                .with_recorder(Arc::new(logs)),
         ));
 
         // Registered per turn, alongside the spawn tool and for the same

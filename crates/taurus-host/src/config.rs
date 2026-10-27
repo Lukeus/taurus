@@ -1160,6 +1160,17 @@ pub struct Settings {
     /// to cannot be governed by different rules.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
+    /// How many sub-agents one turn may run at once, background and
+    /// foreground together. One past it waits, and its card says it is
+    /// queued, rather than being refused.
+    ///
+    /// Two by default because a local model serves every delegate from the
+    /// same GPU, and a third stream mostly slows the other two down. A hosted
+    /// model has no such limit, so raise it there. Bounded by
+    /// [`crate::MAX_CONCURRENT_SUBAGENTS_LIMIT`], because a model that
+    /// misreads a task can ask for many more delegates than it needs.
+    #[serde(default = "default_max_concurrent_agents")]
+    pub max_concurrent_agents: u32,
     /// How a turn makes room once trimming old tool output isn't enough.
     ///
     /// `compact` summarizes the older history and keeps the recent messages.
@@ -1218,6 +1229,10 @@ fn default_true() -> bool {
 
 fn default_max_iterations() -> u32 {
     25
+}
+
+fn default_max_concurrent_agents() -> u32 {
+    crate::MAX_CONCURRENT_SUBAGENTS as u32
 }
 
 fn default_context_limit() -> u32 {
@@ -1424,6 +1439,7 @@ impl Default for Settings {
             otlp_endpoint: String::new(),
             otlp_capture_content: false,
             max_iterations: default_max_iterations(),
+            max_concurrent_agents: default_max_concurrent_agents(),
             context_strategy: taurus_core::ContextStrategy::Compact,
             context_limit: default_context_limit(),
             voice_model: default_voice_model(),
@@ -1488,6 +1504,10 @@ pub struct StoredSettings {
     /// long turns can raise it without loosening the ceiling everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_iterations: Option<u32>,
+    /// See [`Settings::max_concurrent_agents`]. Per-layer so a project on a
+    /// hosted model can run more at once than one on a local GPU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_agents: Option<u32>,
     /// See [`Settings::context_strategy`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_strategy: Option<taurus_core::ContextStrategy>,
@@ -1530,6 +1550,7 @@ impl StoredSettings {
         self.otlp_endpoint = other.otlp_endpoint.or(self.otlp_endpoint.take());
         self.otlp_capture_content = other.otlp_capture_content.or(self.otlp_capture_content);
         self.max_iterations = other.max_iterations.or(self.max_iterations);
+        self.max_concurrent_agents = other.max_concurrent_agents.or(self.max_concurrent_agents);
         self.context_strategy = other.context_strategy.or(self.context_strategy);
         self.context_limit = other.context_limit.or(self.context_limit);
         self.voice_model = other.voice_model.or(self.voice_model.take());
@@ -1579,6 +1600,12 @@ impl StoredSettings {
                 .max_iterations
                 .unwrap_or(defaults.max_iterations)
                 .clamp(1, taurus_agents::MAX_ITERATIONS_LIMIT),
+            // Clamped for the same reason. Zero would queue every delegate
+            // forever.
+            max_concurrent_agents: self
+                .max_concurrent_agents
+                .unwrap_or(defaults.max_concurrent_agents)
+                .clamp(1, crate::MAX_CONCURRENT_SUBAGENTS_LIMIT),
             context_strategy: self.context_strategy.unwrap_or(defaults.context_strategy),
             // Clamped for the same reason the iteration ceiling is.
             context_limit: clamp_context_limit(
@@ -1888,6 +1915,7 @@ mod tests {
             otlp_endpoint: Some("http://localhost:4318".into()),
             otlp_capture_content: Some(true),
             max_iterations: Some(42),
+            max_concurrent_agents: Some(4),
             context_strategy: Some(taurus_core::ContextStrategy::Relay),
             context_limit: Some(120_000),
             voice_model: Some("small.en".into()),
@@ -2393,6 +2421,59 @@ mod tests {
 
             assert_eq!(load_settings(Some(ws.path())).max_iterations, 40);
             assert_eq!(load_settings(None).max_iterations, 10);
+        });
+    }
+
+    #[test]
+    fn a_turn_runs_two_delegates_at_once_until_someone_says_otherwise() {
+        with_home(|home| {
+            write(home.join("settings.json"), r#"{"last_model": "m"}"#);
+            assert_eq!(load_settings(None).max_concurrent_agents, 2);
+        });
+    }
+
+    #[test]
+    fn a_hand_edited_delegate_count_is_clamped_rather_than_rejected() {
+        // Zero matters most: every delegate would queue and never start.
+        let ceiling = crate::MAX_CONCURRENT_SUBAGENTS_LIMIT;
+        for (written, resolved) in [
+            (0, 1),
+            (1, 1),
+            (4, 4),
+            (ceiling, ceiling),
+            (ceiling + 1, ceiling),
+        ] {
+            with_home(|home| {
+                write(
+                    home.join("settings.json"),
+                    &format!(r#"{{"max_concurrent_agents": {written}}}"#),
+                );
+                assert_eq!(
+                    load_settings(None).max_concurrent_agents,
+                    resolved,
+                    "{written} should resolve to {resolved}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn a_workspace_can_run_more_delegates_without_touching_the_global_count() {
+        // A project on a hosted model shouldn't have to raise the count for
+        // the ones sharing a local GPU.
+        with_home(|home| {
+            let ws = trusted_workspace();
+            write(
+                home.join("settings.json"),
+                r#"{"max_concurrent_agents": 2}"#,
+            );
+            write(
+                workspace_dir(ws.path()).join("settings.json"),
+                r#"{"max_concurrent_agents": 6}"#,
+            );
+
+            assert_eq!(load_settings(Some(ws.path())).max_concurrent_agents, 6);
+            assert_eq!(load_settings(None).max_concurrent_agents, 2);
         });
     }
 

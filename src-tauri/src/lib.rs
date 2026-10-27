@@ -334,6 +334,7 @@ pub fn run() {
             commands::start_brief,
             commands::set_skill_synthesis,
             commands::set_max_iterations,
+            commands::set_max_concurrent_agents,
             commands::set_context_limit,
             commands::set_agent_iterations,
             commands::set_theme,

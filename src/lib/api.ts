@@ -948,6 +948,10 @@ export const setSkillSynthesis = (enabled: boolean) =>
 export const setMaxIterations = (limit: number) =>
   invoke<void>("set_max_iterations", { limit });
 
+/** Sub-agents one turn may run at once. Clamped by the host. */
+export const setMaxConcurrentAgents = (count: number) =>
+  invoke<void>("set_max_concurrent_agents", { count });
+
 /** Tokens of a model's window a turn fills before compacting; 0 is all of it. Clamped by the host. */
 export const setContextLimit = (limit: number) =>
   invoke<void>("set_context_limit", { limit });

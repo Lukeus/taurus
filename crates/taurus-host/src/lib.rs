@@ -40,7 +40,10 @@ pub use config::{ProviderConfig, ProviderKind, Scope, Settings, Theme};
 pub use document::{Document, Saved};
 pub use fork::{Comparison, Forked, Side, Switched};
 pub use git::{Commit, Repo, RepoStatus};
-pub use host::{Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS};
+pub use host::{
+    Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS,
+    MAX_CONCURRENT_SUBAGENTS_LIMIT,
+};
 pub use instructions::{Instructions, InstructionsOrigin, InstructionsSource, InstructionsTier};
 pub use mcp_view::{McpServerDraft, McpServerRef, McpServerView, McpTransport, McpValue};
 pub use memory::Note;

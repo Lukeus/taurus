@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { clampContextLimit, MIN_CONTEXT_LIMIT } from "./limits";
+import {
+  clampConcurrentAgents,
+  clampContextLimit,
+  MAX_CONCURRENT_AGENTS_LIMIT,
+  MIN_CONTEXT_LIMIT,
+} from "./limits";
 
 describe("working context as typed", () => {
   it("reads the forms people write six-digit numbers in", () => {
@@ -19,5 +24,18 @@ describe("working context as typed", () => {
     expect(clampContextLimit("", 200_000)).toBe(200_000);
     expect(clampContextLimit("lots", 200_000)).toBe(200_000);
     expect(clampContextLimit("-5", 200_000)).toBe(200_000);
+  });
+});
+
+describe("agents at once as typed", () => {
+  it("brings a count into the range the host will use", () => {
+    expect(clampConcurrentAgents("0", 2)).toBe(1);
+    expect(clampConcurrentAgents("4", 2)).toBe(4);
+    expect(clampConcurrentAgents("99", 2)).toBe(MAX_CONCURRENT_AGENTS_LIMIT);
+  });
+
+  it("keeps what was there for anything it cannot read", () => {
+    expect(clampConcurrentAgents("", 3)).toBe(3);
+    expect(clampConcurrentAgents("many", 3)).toBe(3);
   });
 });
