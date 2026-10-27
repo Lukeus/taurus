@@ -31,7 +31,32 @@ import { UpdatesSection } from "./settings/UpdatesSection";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
 import { onTabKeys } from "../lib/tabs";
 
-type Tab = "models" | "search" | "permissions" | "behavior" | "voice" | "appearance";
+type Tab =
+  | "models"
+  | "search"
+  | "permissions"
+  | "behavior"
+  | "voice"
+  | "appearance"
+  | "about";
+
+/** Where the last tab looked at is kept, so the drawer reopens on it. */
+const TAB_KEY = "taurus.settings.tab";
+
+/**
+ * The tab the drawer opens on: the one it was closed on, or Models.
+ *
+ * Per-viewer and allowed to be lost, so local storage rather than
+ * settings.json, and every read survives storage that throws.
+ */
+function lastTab(): Tab {
+  try {
+    const kept = localStorage.getItem(TAB_KEY);
+    return TABS.find(([value]) => value === kept)?.[0] ?? "models";
+  } catch {
+    return "models";
+  }
+}
 
 /**
  * The settings drawer.
@@ -44,13 +69,25 @@ type Tab = "models" | "search" | "permissions" | "behavior" | "voice" | "appeara
  * settings screen over layered config can do.
  *
  * Each tab is a separate file's worth of state, so switching between them
- * never discards a draft — the provider draft outlives the tab.
+ * never discards a draft — the provider draft outlives the tab. Closing does,
+ * so a close with unsaved providers asks first. Each tab keeps its own error
+ * too: one shared between them put a failed provider save under Behavior.
  */
 export function Settings({ onClose }: { onClose: () => void }) {
   const status = useStore((s) => s.status);
   const refresh = useStore((s) => s.refresh);
 
-  const [tab, setTab] = useState<Tab>("models");
+  const [tab, setTabState] = useState<Tab>(lastTab);
+  const setTab = (next: Tab) => {
+    setTabState(next);
+    try {
+      localStorage.setItem(TAB_KEY, next);
+    } catch {
+      // Remembering the tab is a convenience; the drawer works without it.
+    }
+  };
+  /** True while a close is waiting on what to do with unsaved providers. */
+  const [leaving, setLeaving] = useState(false);
   // Rows rather than bare providers, so each card is keyed by something that
   // stays with it. See `Row`.
   const [draft, setDraft] = useState<Row[] | null>(null);
@@ -62,7 +99,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const [saved, setSaved] = useState(false);
   /** The providers as last read or saved: what Save compares the draft against. */
   const [loaded, setLoaded] = useState<ProviderConfig[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /** Why the provider list couldn't be read or saved. */
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  /** Why a switch or a limit on Behavior didn't take. */
+  const [behaviorError, setBehaviorError] = useState<string | null>(null);
+  /** Why a revoke didn't take. */
+  const [revokeError, setRevokeError] = useState<string | null>(null);
   const [keys, setKeys] = useState<Map<string, KeyStatus>>(new Map());
   const [keychain, setKeychain] = useState(false);
 
@@ -99,9 +141,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
    *
    * The Revoke button and the switches each awaited a write with nothing to
    * catch it: a failure was an unhandled rejection, and the control simply did
-   * not move.
+   * not move. The failure goes to the error of the tab the control is on.
    */
-  const run = (action: () => Promise<unknown>) => {
+  const run = (
+    setError: (message: string | null) => void,
+    action: () => Promise<unknown>,
+  ) => {
     setError(null);
     action().catch((e) => setError(String(e)));
   };
@@ -117,7 +162,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
         setDraft(rowsOf(list));
         setLoaded(list);
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => setModelsError(String(e)));
     api
       .listPermissionRules()
       .then(setRules)
@@ -144,10 +189,11 @@ export function Settings({ onClose }: { onClose: () => void }) {
     setSaved(false);
   };
 
-  const save = async () => {
-    if (!providers || problems.length > 0) return;
+  /** Saves the providers, and answers whether they were. */
+  const save = async (): Promise<boolean> => {
+    if (!providers || problems.length > 0) return false;
     setSaving(true);
-    setError(null);
+    setModelsError(null);
     try {
       await api.saveProviders(providers);
       await refresh();
@@ -160,259 +206,337 @@ export function Settings({ onClose }: { onClose: () => void }) {
       // be stored against, so its field has to stop saying "not saved yet".
       refreshKeys();
       setSaved(true);
+      return true;
     } catch (e) {
-      setError(String(e));
+      setModelsError(String(e));
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
+  /**
+   * Closes, unless that would throw away providers that aren't saved.
+   *
+   * Every way out comes through here — the ✕, Escape, a click on the scrim —
+   * because `Drawer` hands all three the same `onClose`. Asking moves to
+   * Models, since that's where the edit is and where the question is shown.
+   */
+  const close = () => {
+    if (dirty) {
+      setTab("models");
+      setLeaving(true);
+    } else {
+      onClose();
+    }
+  };
+
   return (
-    <Drawer title="Settings" onClose={onClose}>
-      <div className="pill-row" role="tablist" aria-label="Settings" onKeyDown={onTabKeys}>
-        {TABS.map(([value, label]) => (
-          <button
-            key={value}
-            role="tab"
-            aria-selected={tab === value}
-            tabIndex={tab === value ? 0 : -1}
-            className={`pill${tab === value ? " on" : ""}`}
-            onClick={() => setTab(value)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "models" && (
-        <>
-          <p className="drawer-intro">
-            Saved to <code>~/.taurus/providers.json</code>, shared with the
-            CLI. Keys never go in that file: store one below and it goes to
-            your OS keychain, or name an environment variable that holds it.
-          </p>
-
-          {/* A providers.json that will not parse is why the list below can
-              be empty or stale, so it belongs at the top of this tab rather
-              than in a drawer about skills, where it used to appear. */}
-          {providerProblems.length > 0 && (
-            <Problems problems={providerProblems.map((p) => p.message)} />
-          )}
-
-          <div className="card-list">
-            {draft?.map(({ row, provider }) => (
-              <ProviderForm
-                key={row}
-                provider={provider}
-                problems={problemsWith(provider, providers ?? [])}
-                overriddenBy={overrideOf(provider, status?.providers ?? [])}
-                keyStatus={keys.get(provider.id)}
-                keychainAvailable={keychain}
-                keysUnreadable={keysUnreadable}
-                onKeyChanged={refreshKeys}
-                onChange={(patch) => update(row, patch)}
-                onRemove={() => {
-                  setDraft((d) => d?.filter((r) => r.row !== row) ?? d);
-                  setSaved(false);
-                }}
-              />
-            ))}
-
+    <Drawer title="Settings" onClose={close} panel="settings">
+      {/* A column of tabs beside the page rather than a row above it. A row
+          of six pills already wrapped at this width, and the tabs still to
+          come would have made it three lines of navigation. Under 720px the
+          column folds back into a row that scrolls rather than wraps. */}
+      <div className="settings-body flex min-h-0 flex-1 gap-4 max-[720px]:flex-col">
+        <div
+          className="settings-nav flex w-[132px] flex-none flex-col gap-0.5 max-[720px]:w-auto max-[720px]:flex-row max-[720px]:overflow-x-auto"
+          role="tablist"
+          aria-label="Settings"
+          aria-orientation="vertical"
+          onKeyDown={onTabKeys}
+        >
+          {TABS.map(([value, label]) => (
             <button
-              className="card-add"
-              onClick={() => {
-                setDraft((d) => [
-                  ...(d ?? []),
-                  newRow(blankProvider(d?.map((r) => r.provider) ?? [])),
-                ]);
-                setSaved(false);
-              }}
+              key={value}
+              id={`settings-tab-${value}`}
+              role="tab"
+              aria-selected={tab === value}
+              aria-controls="settings-pane"
+              tabIndex={tab === value ? 0 : -1}
+              className={`settings-tab rounded-md border-0 px-2.5 py-1.5 text-left text-13 whitespace-nowrap ${
+                tab === value
+                  ? "bg-active text-ink"
+                  : "bg-transparent text-dim hover:bg-hover hover:text-ink"
+              }`}
+              onClick={() => setTab(value)}
             >
-              Add a provider
+              {label}
             </button>
-          </div>
-
-          <div className="settings-actions">
-            {saved && !saving && <span className="text-dim text-12">Saved</span>}
-            <div className="spacer" />
-            <button
-              className="primary"
-              onClick={save}
-              disabled={saving || !dirty || problems.length > 0 || !draft}
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-          </div>
-
-          {problems.map((problem) => (
-            <Problem key={problem}>{problem}</Problem>
           ))}
-          {error && <Problem>{error}</Problem>}
-        </>
-      )}
+        </div>
 
-      {tab === "search" && (
-        <>
-          <SearchTab />
-          <CodeSearch
-            model={status?.settings.embedding_model ?? ""}
-            provider={status?.settings.embedding_provider ?? ""}
-            rerankModel={status?.settings.rerank_model ?? ""}
-            rerankProvider={status?.settings.rerank_provider ?? ""}
-            progress={index.progress}
-            outcome={index.outcome}
-            failure={index.failure}
-            onBuild={index.onBuild}
-          />
-        </>
-      )}
+        <div
+          id="settings-pane"
+          role="tabpanel"
+          aria-labelledby={`settings-tab-${tab}`}
+          className="settings-pane flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto pr-1 [&>.section:first-child]:border-t-0 [&>.section:first-child]:pt-0"
+        >
+          {tab === "models" && (
+            <>
+              {leaving && dirty && (
+                <div
+                  className="settings-leaving flex flex-col gap-2 rounded-md border border-warn p-3 text-13"
+                  role="alertdialog"
+                  aria-label="Unsaved providers"
+                >
+                  <span>Your provider changes aren't saved yet.</span>
+                  <div className="settings-actions">
+                    <button
+                      className="primary"
+                      disabled={saving || problems.length > 0}
+                      data-tip={problems.length > 0 ? "Fix what's listed below first" : undefined}
+                      onClick={() => void save().then((ok) => ok && onClose())}
+                    >
+                      Save and close
+                    </button>
+                    <button className="danger" onClick={onClose}>
+                      Discard
+                    </button>
+                    <button onClick={() => setLeaving(false)}>Keep editing</button>
+                  </div>
+                </div>
+              )}
 
-      {tab === "permissions" && (
-        <PermissionsTab
-          rules={rules}
-          error={error ?? rulesError}
-          onRevoke={(allowed) =>
-            run(async () => {
-              await api.revokePermissionRule(allowed.rule, allowed.scope);
-              setRules(await api.listPermissionRules());
-            })
-          }
-        />
-      )}
+              <p className="drawer-intro">
+                Saved to <code>~/.taurus/providers.json</code>, shared with the
+                CLI. Keys never go in that file: store one below and it goes to
+                your OS keychain, or name an environment variable that holds it.
+              </p>
 
-      {tab === "behavior" && (
-        <>
-          {settingsProblems.length > 0 && (
-            <Problems problems={settingsProblems.map((p) => p.message)} />
+              {/* A providers.json that will not parse is why the list below can
+                  be empty or stale, so it belongs at the top of this tab rather
+                  than in a drawer about skills, where it used to appear. */}
+              {providerProblems.length > 0 && (
+                <Problems problems={providerProblems.map((p) => p.message)} />
+              )}
+
+              <div className="card-list">
+                {draft?.map(({ row, provider }) => (
+                  <ProviderForm
+                    key={row}
+                    provider={provider}
+                    problems={problemsWith(provider, providers ?? [])}
+                    overriddenBy={overrideOf(provider, status?.providers ?? [])}
+                    keyStatus={keys.get(provider.id)}
+                    keychainAvailable={keychain}
+                    keysUnreadable={keysUnreadable}
+                    onKeyChanged={refreshKeys}
+                    onChange={(patch) => update(row, patch)}
+                    onRemove={() => {
+                      setDraft((d) => d?.filter((r) => r.row !== row) ?? d);
+                      setSaved(false);
+                    }}
+                  />
+                ))}
+
+                <button
+                  className="card-add"
+                  onClick={() => {
+                    setDraft((d) => [
+                      ...(d ?? []),
+                      newRow(blankProvider(d?.map((r) => r.provider) ?? [])),
+                    ]);
+                    setSaved(false);
+                  }}
+                >
+                  Add a provider
+                </button>
+              </div>
+
+              {/* Pinned to the bottom of the pane: with a few providers open the
+                  list is longer than the drawer, and Save was below all of it. */}
+              <div className="settings-actions settings-save sticky bottom-0 -mb-px border-t border-rule bg-raised py-2.5">
+                {saved && !saving && <span className="text-dim text-12">Saved</span>}
+                {dirty && !saving && <span className="text-dim text-12">Unsaved changes</span>}
+                <div className="spacer" />
+                <button
+                  className="primary"
+                  onClick={() => void save()}
+                  disabled={saving || !dirty || problems.length > 0 || !draft}
+                >
+                  {saving ? "Saving…" : "Save"}
+                </button>
+              </div>
+
+              {problems.map((problem) => (
+                <Problem key={problem}>{problem}</Problem>
+              ))}
+              {modelsError && <Problem>{modelsError}</Problem>}
+            </>
           )}
 
-          <label className="settings-check">
-            <input
-              type="checkbox"
-              checked={status?.settings.skill_synthesis_enabled ?? true}
-              onChange={(e) => {
-                const on = e.target.checked;
-                run(async () => {
-                  await api.setSkillSynthesis(on);
-                  await refresh();
-                });
-              }}
+          {tab === "search" && (
+            <>
+              <SearchTab />
+              <CodeSearch
+                model={status?.settings.embedding_model ?? ""}
+                provider={status?.settings.embedding_provider ?? ""}
+                rerankModel={status?.settings.rerank_model ?? ""}
+                rerankProvider={status?.settings.rerank_provider ?? ""}
+                progress={index.progress}
+                outcome={index.outcome}
+                failure={index.failure}
+                onBuild={index.onBuild}
+              />
+            </>
+          )}
+
+          {tab === "permissions" && (
+            <PermissionsTab
+              rules={rules}
+              error={revokeError ?? rulesError}
+              onRevoke={(allowed) =>
+                run(setRevokeError, async () => {
+                  await api.revokePermissionRule(allowed.rule, allowed.scope);
+                  setRules(await api.listPermissionRules());
+                })
+              }
             />
-            <span>
-              Let Taurus propose skills
-              <span className="hint">
-                It offers a procedure it worked out; nothing is saved without
-                your approval.
-              </span>
-            </span>
-          </label>
-          <FromProject field="skill_synthesis_enabled" />
+          )}
 
-          <label className="settings-check">
-            <input
-              type="checkbox"
-              checked={status?.settings.agent_synthesis_enabled ?? true}
-              onChange={(e) => {
-                const on = e.target.checked;
-                run(async () => {
-                  await api.setAgentSynthesis(on);
-                  await refresh();
-                });
-              }}
-            />
-            <span>
-              Let Taurus propose sub-agents
-              <span className="hint">
-                It offers a delegate for work that recurs. It can never be
-                given a tool you do not have, and nothing is saved without
-                your approval.
-              </span>
-            </span>
-          </label>
-          <FromProject field="agent_synthesis_enabled" />
+          {tab === "behavior" && (
+            <>
+              {settingsProblems.length > 0 && (
+                <Problems problems={settingsProblems.map((p) => p.message)} />
+              )}
 
-          <label className="settings-check">
-            <input
-              type="checkbox"
-              checked={status?.settings.shell_integration ?? true}
-              onChange={(e) => {
-                const on = e.target.checked;
-                run(async () => {
-                  await api.setShellIntegration(on);
-                  await refresh();
-                });
-              }}
-            />
-            <span>
-              Mark each command in the terminal
-              <span className="hint">
-                Lets you ask Taurus about a command you ran, and lets Taurus
-                read them. Applies to the next shell you open.
-              </span>
-            </span>
-          </label>
-          <FromProject field="shell_integration" />
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={status?.settings.skill_synthesis_enabled ?? true}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    run(setBehaviorError, async () => {
+                      await api.setSkillSynthesis(on);
+                      await refresh();
+                    });
+                  }}
+                />
+                <span>
+                  Let Taurus propose skills
+                  <span className="hint">
+                    It offers a procedure it worked out; nothing is saved without
+                    your approval.
+                  </span>
+                </span>
+              </label>
+              <FromProject field="skill_synthesis_enabled" />
 
-          <label className="settings-check">
-            <input
-              type="checkbox"
-              checked={status?.settings.context_strategy === "relay"}
-              onChange={(e) => {
-                const strategy = e.target.checked ? "relay" : "compact";
-                run(async () => {
-                  await api.setContextStrategy(strategy);
-                  await refresh();
-                });
-              }}
-            />
-            <span>
-              Hand long turns to a fresh context
-              <span className="hint">
-                When the window fills, Taurus starts over from a short brief
-                instead of summarizing. Meant for small local models.
-              </span>
-            </span>
-          </label>
-          <FromProject field="context_strategy" />
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={status?.settings.agent_synthesis_enabled ?? true}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    run(setBehaviorError, async () => {
+                      await api.setAgentSynthesis(on);
+                      await refresh();
+                    });
+                  }}
+                />
+                <span>
+                  Let Taurus propose sub-agents
+                  <span className="hint">
+                    It offers a delegate for work that recurs. It can never be
+                    given a tool you do not have, and nothing is saved without
+                    your approval.
+                  </span>
+                </span>
+              </label>
+              <FromProject field="agent_synthesis_enabled" />
 
-          <IterationLimit
-            limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
-            onError={setError}
-          />
-          <FromProject field="max_iterations" />
-          <DelegateLimit
-            count={
-              status?.settings.max_concurrent_agents ?? DEFAULT_CONCURRENT_AGENTS
-            }
-            onError={setError}
-          />
-          <FromProject field="max_concurrent_agents" />
-          <ContextLimit
-            limit={status?.settings.context_limit ?? DEFAULT_CONTEXT_LIMIT}
-            onError={setError}
-          />
-          <FromProject field="context_limit" />
-          {error && <Problem>{error}</Problem>}
-        </>
-      )}
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={status?.settings.shell_integration ?? true}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    run(setBehaviorError, async () => {
+                      await api.setShellIntegration(on);
+                      await refresh();
+                    });
+                  }}
+                />
+                <span>
+                  Mark each command in the terminal
+                  <span className="hint">
+                    Lets you ask Taurus about a command you ran, and lets Taurus
+                    read them. Applies to the next shell you open.
+                  </span>
+                </span>
+              </label>
+              <FromProject field="shell_integration" />
 
-      {tab === "voice" && <VoiceTab />}
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={status?.settings.context_strategy === "relay"}
+                  onChange={(e) => {
+                    const strategy = e.target.checked ? "relay" : "compact";
+                    run(setBehaviorError, async () => {
+                      await api.setContextStrategy(strategy);
+                      await refresh();
+                    });
+                  }}
+                />
+                <span>
+                  Hand long turns to a fresh context
+                  <span className="hint">
+                    When the window fills, Taurus starts over from a short brief
+                    instead of summarizing. Meant for small local models.
+                  </span>
+                </span>
+              </label>
+              <FromProject field="context_strategy" />
 
-      {tab === "appearance" && (
-        <ThemePicker theme={status?.settings.theme ?? "system"} />
-      )}
+              <IterationLimit
+                limit={status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS}
+                onError={setBehaviorError}
+              />
+              <FromProject field="max_iterations" />
+              <DelegateLimit
+                count={
+                  status?.settings.max_concurrent_agents ?? DEFAULT_CONCURRENT_AGENTS
+                }
+                onError={setBehaviorError}
+              />
+              <FromProject field="max_concurrent_agents" />
+              <ContextLimit
+                limit={status?.settings.context_limit ?? DEFAULT_CONTEXT_LIMIT}
+                onError={setBehaviorError}
+              />
+              <FromProject field="context_limit" />
+              {behaviorError && <Problem>{behaviorError}</Problem>}
+            </>
+          )}
 
-      <UpdatesSection />
+          {tab === "voice" && <VoiceTab />}
 
-      <section className="section">
-        <span className="micro">Files</span>
-        <dl className="settings-paths m-0 grid grid-cols-[88px_1fr] gap-x-3 gap-y-1.5 text-12-5 [&_dt]:text-faint [&_dd]:m-0 [&_dd]:wrap-anywhere [&_dd]:font-mono [&_dd]:text-12 [&_dd]:text-dim">
-          <dt>Config</dt>
-          <dd>~/.taurus</dd>
-          <dt>This project</dt>
-          <dd>{status ? `${status.workspace}/.taurus` : "—"}</dd>
-        </dl>
-      </section>
+          {tab === "appearance" && (
+            <ThemePicker theme={status?.settings.theme ?? "system"} />
+          )}
+
+          {/* Its own tab rather than the foot of every one. Under each tab it
+              read as part of that tab — Voice ended with two "Files" sections, its
+              own and this one — and it pushed every tab's last control further
+              from the top for something looked at once a release. */}
+          {tab === "about" && (
+            <>
+              <UpdatesSection />
+
+              <section className="section">
+                <span className="micro">Files</span>
+                <dl className="settings-paths m-0 grid grid-cols-[88px_1fr] gap-x-3 gap-y-1.5 text-12-5 [&_dt]:text-faint [&_dd]:m-0 [&_dd]:wrap-anywhere [&_dd]:font-mono [&_dd]:text-12 [&_dd]:text-dim">
+                  <dt>Config</dt>
+                  <dd>~/.taurus</dd>
+                  <dt>This project</dt>
+                  <dd>{status ? `${status.workspace}/.taurus` : "—"}</dd>
+                </dl>
+              </section>
+            </>
+          )}
+        </div>
+      </div>
     </Drawer>
   );
 }
@@ -857,6 +981,7 @@ const TABS: [Tab, string][] = [
   // and a tab whose name does not predict its contents is the same problem the
   // rail had with "Tools".
   ["appearance", "Appearance"],
+  ["about", "About"],
 ];
 
 /*

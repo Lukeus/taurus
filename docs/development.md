@@ -1058,7 +1058,7 @@ a draft unless `darwin-aarch64`, `darwin-x86_64`, `linux-x86_64` and
 `windows-x86_64` are all in it. If one is missing, re-run that platform's job,
 then the publish job.
 
-Installing is Settings › Updates, and nothing checks on its own. 0.3.0 and
+Installing is Settings › About, and nothing checks on its own. 0.3.0 and
 earlier have no updater, so moving from those to the first release with one is
 a manual download.
 
