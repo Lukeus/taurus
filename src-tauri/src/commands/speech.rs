@@ -63,7 +63,7 @@ pub async fn save_speech_settings(
     settings: SpeechSettings,
 ) -> CmdResult<()> {
     let settings = tidy(settings)?;
-    state.host.set_speech(settings).await;
+    state.host.set_speech(settings).await?;
     forget_engine(&state);
     emit_status(&state).await;
     Ok(())

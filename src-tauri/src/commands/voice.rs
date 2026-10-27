@@ -101,7 +101,7 @@ pub async fn voice_status(state: State<'_, Arc<AppState>>) -> CmdResult<VoiceSta
 #[tauri::command]
 pub async fn set_voice_model(state: State<'_, Arc<AppState>>, model: String) -> CmdResult<()> {
     let spec = taurus_voice::spec(&model).map_err(text)?;
-    state.host.set_voice_model(spec.id).await;
+    state.host.set_voice_model(spec.id).await?;
     emit_status(&state).await;
     Ok(())
 }

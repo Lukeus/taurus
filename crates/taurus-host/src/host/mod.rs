@@ -462,6 +462,10 @@ impl Host {
             drop(held);
         }
         *self.settings.write().await = config::load_settings(Some(&workspace));
+        problems.extend(Problem::tag(
+            ProblemSource::Settings,
+            config::settings_problems(Some(&workspace)),
+        ));
 
         // Through the same two loaders a turn calls, so a reload and a turn
         // cannot come to disagree about what is installed — and so that both

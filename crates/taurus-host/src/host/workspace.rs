@@ -41,7 +41,13 @@ impl Host {
         let remembered = taurus_tools::path_guard::plain(&canonical)
             .display()
             .to_string();
-        config::edit_settings(Scope::Global, None, |s| s.last_workspace = Some(remembered));
+        // Logged rather than returned, like `remember_session`: the switch
+        // itself has happened either way.
+        if let Err(e) =
+            config::edit_settings(Scope::Global, None, |s| s.last_workspace = Some(remembered))
+        {
+            tracing::warn!(error = %e, "could not remember the workspace");
+        }
 
         // Reload re-resolves both layers, so the in-memory settings pick up the
         // new workspace's file without a second write. The local half only: the

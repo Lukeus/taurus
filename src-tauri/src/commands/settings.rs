@@ -4,7 +4,7 @@ use super::*;
 
 #[tauri::command]
 pub async fn set_theme(state: State<'_, Arc<AppState>>, theme: Theme) -> CmdResult<()> {
-    state.host.set_theme(theme).await;
+    state.host.set_theme(theme).await?;
     // The settings file stays the authority on which theme is in force, and
     // this is how the window is told what it now says.
     emit_status(&state).await;
@@ -13,7 +13,7 @@ pub async fn set_theme(state: State<'_, Arc<AppState>>, theme: Theme) -> CmdResu
 
 #[tauri::command]
 pub async fn set_theme_id(state: State<'_, Arc<AppState>>, id: String) -> CmdResult<()> {
-    state.host.set_theme_id(id).await;
+    state.host.set_theme_id(id).await?;
     emit_status(&state).await;
     Ok(())
 }
@@ -90,7 +90,7 @@ pub async fn set_embedding_model(
     model: String,
     provider: String,
 ) -> CmdResult<()> {
-    state.host.set_embedding_model(&model, &provider).await;
+    state.host.set_embedding_model(&model, &provider).await?;
     // The tool is registered by the local half of a reload, so without this a
     // model named here does not become a `search_code` until the next
     // workspace change — which reads as the setting not having taken. Only
@@ -107,7 +107,7 @@ pub async fn set_rerank(
     model: String,
     provider: String,
 ) -> CmdResult<()> {
-    state.host.set_rerank(&model, &provider).await;
+    state.host.set_rerank(&model, &provider).await?;
     // Same reason `set_embedding_model` reloads, and the same half: the
     // reranker is attached to `search_code` when the tool is registered, so
     // without this it does not take hold until the next workspace change.
