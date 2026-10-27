@@ -17,7 +17,7 @@ pub mod dialect;
 pub mod runner;
 
 pub use config::{
-    config_file, layered, load, load_file, merge, Hook, HookConfig, HookEntry, HookEvent,
-    Layered, Match,
+    config_file, layered, load, load_file, merge, Hook, HookConfig, HookEntry, HookEvent, Layered,
+    Match,
 };
 pub use runner::{summarize, HookPayload, HookRunner, HookSummary, Outcome, DENY};

@@ -172,7 +172,10 @@ impl Host {
             let cost = crate::usage::schema_cost(&def);
             switches.insert(def.name.clone(), switch(&def.name, Some(cost)));
         }
-        let unmeasured = PER_TURN_TOOLS.iter().copied().chain(disabled.iter().map(String::as_str));
+        let unmeasured = PER_TURN_TOOLS
+            .iter()
+            .copied()
+            .chain(disabled.iter().map(String::as_str));
         for name in unmeasured {
             switches
                 .entry(name.to_string())

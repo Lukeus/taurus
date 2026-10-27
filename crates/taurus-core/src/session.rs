@@ -366,16 +366,53 @@ impl Session {
         keep_recent: usize,
         repeats_supersede: &dyn Fn(&str) -> bool,
     ) -> Trimmed {
+        let rules = TrimRules {
+            repeats_supersede,
+            writes_to: &|_, _| Vec::new(),
+        };
+        self.trim_toward(keep_recent, &rules, 0)
+    }
+
+    /// [`Self::trim_tool_results`], cutting in order of how likely the model
+    /// is to need a result again, and stopping once the estimate is down to
+    /// `target`. A `target` of zero cuts everything there is to cut.
+    ///
+    /// Repeats are always collapsed: they are copies of an answer already
+    /// further down, and keeping them buys nothing. What is merely old is cut
+    /// in three ranks, oldest first within each:
+    ///
+    /// 1. A read of a file something has written since. Its contents are out
+    ///    of date, so it is the safest thing to cut and the most misleading to
+    ///    keep.
+    /// 2. Everything else that isn't the next rank: a file or pattern looked at
+    ///    once, a command's output, an MCP answer.
+    /// 3. A file or pattern the model has read more than once.
+    ///
+    /// The order is measured, not assumed. Replaying every saved conversation
+    /// through trimming (`cargo run -p taurus-host --example trim_replay`), a
+    /// cut read the model had read before came back to it about 60% of the
+    /// time; one it had read once, about 14%; and age alone predicted nothing.
+    ///
+    /// `target` should sit well below the budget rather than at it. Every cut
+    /// edits an old message, and an edited message invalidates a backend's
+    /// cached prefix from that point on — cutting just enough on every round
+    /// would do that every round.
+    pub fn trim_toward(&mut self, keep_recent: usize, rules: &TrimRules, target: u32) -> Trimmed {
         let cutoff = self.messages.len().saturating_sub(keep_recent);
         if cutoff == 0 {
             return Trimmed::default();
         }
+        let repeats_supersede = rules.repeats_supersede;
         let (call_of, last_use) = index_calls(&self.messages);
         let mutations = mutations_before(&self.messages, repeats_supersede);
+        let reads = read_counts(&self.messages);
+        let written = written_after(&self.messages, rules.writes_to);
 
         let mut trimmed = Trimmed::default();
+        // (rank, message, block, replacement, characters saved)
+        let mut candidates: Vec<(u8, usize, usize, String, usize)> = Vec::new();
         for (index, message) in self.messages.iter_mut().enumerate().take(cutoff) {
-            for block in &mut message.content {
+            for (position, block) in message.content.iter_mut().enumerate() {
                 let ContentBlock::ToolResult {
                     tool_use_id,
                     content,
@@ -401,29 +438,77 @@ impl Session {
                 // byte length it would look like the one result not worth
                 // shortening, which is exactly backwards.
                 let cost = output_chars(content);
-                let replacement = if superseded {
-                    superseded_note(&call.name)
-                } else if cost > squeeze_floor(&call.name) {
-                    squeeze(&content.to_text(), &call.name)
-                } else {
+                if superseded {
+                    let note = superseded_note(&call.name);
+                    // A note longer than what it replaces is not a saving.
+                    if note.len() < cost {
+                        trimmed.results += 1;
+                        trimmed.tokens_saved += ((cost - note.len()) / 4) as u32;
+                        // Replaces the images along with the text, which is
+                        // the point: reclaiming the window means letting go of
+                        // the most expensive block in it, not keeping the
+                        // picture and shortening the caption.
+                        content.replace_with_text(note);
+                    }
                     continue;
-                };
-
-                // A note longer than what it replaces is not a saving.
+                }
+                if cost <= squeeze_floor(&call.name) {
+                    continue;
+                }
+                let replacement = squeeze(&content.to_text(), &call.name);
                 if replacement.len() >= cost {
                     continue;
                 }
-                trimmed.results += 1;
-                trimmed.tokens_saved += ((cost - replacement.len()) / 4) as u32;
-                // Replaces the images along with the text, which is the point:
-                // reclaiming the window means letting go of the most expensive
-                // block in it, not keeping the picture and shortening the
-                // caption.
+                let rank = match &call.target {
+                    Some(target) if repeats_supersede(&call.name) => {
+                        if written.get(target).is_some_and(|&at| at > index) {
+                            0
+                        } else if reads
+                            .get(&(call.name.clone(), target.clone()))
+                            .copied()
+                            .unwrap_or(0)
+                            > 1
+                        {
+                            2
+                        } else {
+                            1
+                        }
+                    }
+                    _ => 1,
+                };
+                let saved = cost - replacement.len();
+                candidates.push((rank, index, position, replacement, saved));
+            }
+        }
+
+        candidates.sort_by_key(|&(rank, index, position, _, _)| (rank, index, position));
+        let mut estimate = self.estimated_tokens();
+        for (_, index, position, replacement, saved) in candidates {
+            if target > 0 && estimate <= target {
+                break;
+            }
+            if let ContentBlock::ToolResult { content, .. } =
+                &mut self.messages[index].content[position]
+            {
                 content.replace_with_text(replacement);
             }
+            let tokens = (saved / 4) as u32;
+            trimmed.results += 1;
+            trimmed.tokens_saved += tokens;
+            estimate = estimate.saturating_sub(tokens);
         }
         trimmed
     }
+}
+
+/// What [`Session::trim_toward`] needs to know about tools, which a session
+/// can't know on its own.
+pub struct TrimRules<'a> {
+    /// Whether asking this tool the same thing twice means the second answer
+    /// replaces the first. True for reads. See [`Session::trim_tool_results`].
+    pub repeats_supersede: &'a dyn Fn(&str) -> bool,
+    /// The files a call writes, as its tool declares them.
+    pub writes_to: &'a dyn Fn(&str, &serde_json::Value) -> Vec<String>,
 }
 
 /// What one [`Session::trim_tool_results`] pass gave back.
@@ -467,6 +552,8 @@ struct Call {
     /// Tool name plus serialized input. Two calls with the same signature ask
     /// the same question, so the later answer is the one worth keeping.
     signature: String,
+    /// The file or pattern it names, when it names one. See [`target_of`].
+    target: Option<String>,
 }
 
 /// Maps every tool-use id to its call, and every call signature to the last
@@ -504,11 +591,49 @@ fn index_calls(messages: &[Message]) -> (HashMap<String, Call>, HashMap<String, 
                 Call {
                     name: name.to_string(),
                     signature,
+                    target: target_of(input),
                 },
             );
         }
     }
     (call_of, last_use)
+}
+
+/// The file, pattern or directory a call names, from the field the builtins
+/// put it in. Normalized enough that `./src/a.rs` and `src/a.rs` are one file.
+fn target_of(input: &serde_json::Value) -> Option<String> {
+    ["path", "file", "pattern", "query", "dir"]
+        .iter()
+        .find_map(|key| input.get(*key)?.as_str())
+        .map(|value| value.trim().trim_start_matches("./").to_string())
+}
+
+/// How many times each tool was called on each target, across the whole
+/// history: the "read more than once" that ranks a result last to cut.
+fn read_counts(messages: &[Message]) -> HashMap<(String, String), usize> {
+    let mut counts = HashMap::new();
+    for (_, name, input) in messages.iter().flat_map(Message::tool_uses) {
+        if let Some(target) = target_of(input) {
+            *counts.entry((name.to_string(), target)).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// The last message each file was written in, by the tools' own account.
+fn written_after(
+    messages: &[Message],
+    writes_to: &dyn Fn(&str, &serde_json::Value) -> Vec<String>,
+) -> HashMap<String, usize> {
+    let mut last = HashMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        for (_, name, input) in message.tool_uses() {
+            for path in writes_to(name, input) {
+                last.insert(path.trim().trim_start_matches("./").to_string(), index);
+            }
+        }
+    }
+    last
 }
 
 /// A running count of world-changing tool calls, indexed so that
@@ -853,6 +978,96 @@ mod tests {
     /// Long enough to be worth shortening.
     fn bulky() -> String {
         "some output line\n".repeat(200)
+    }
+
+    /// The three ranks, one result each, in age order opposite to the order
+    /// they should go in: the file read twice is oldest, the stale one newest.
+    fn ranked() -> Session {
+        let mut session = Session::new("m");
+        let again = Message::new(
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "c2",
+                "read_file",
+                // Another window on the same file: a second look, not a repeat.
+                serde_json::json!({ "path": "c.rs", "offset": 40 }),
+            )],
+        );
+        session.messages = vec![
+            Message::user("work on it"),
+            call("c1", "read_file", "c.rs"),
+            result("c1", &bulky()),
+            again,
+            result("c2", "short"),
+            call("b1", "read_file", "b.rs"),
+            result("b1", &bulky()),
+            call("a1", "read_file", "./a.rs"),
+            result("a1", &bulky()),
+            call("w1", "edit_file", "a.rs"),
+            result("w1", "Edited a.rs"),
+            Message::assistant("done"),
+        ];
+        session
+    }
+
+    fn rules_with_writes<R>(run: impl FnOnce(&TrimRules) -> R) -> R {
+        let writes = |name: &str, input: &serde_json::Value| match name {
+            "edit_file" => vec![input["path"].as_str().unwrap_or_default().to_string()],
+            _ => Vec::new(),
+        };
+        run(&TrimRules {
+            repeats_supersede: &reads,
+            writes_to: &writes,
+        })
+    }
+
+    fn cut(session: &Session, index: usize) -> bool {
+        body_of(&session.messages[index]).contains("[shortened:")
+    }
+
+    #[test]
+    fn a_stale_read_goes_first_and_a_file_read_twice_goes_last() {
+        let mut session = ranked();
+        // One result's worth at a time: each target is a token under where the
+        // estimate stands, so exactly one cut reaches it.
+        let one = |session: &mut Session| {
+            let target = session.estimated_tokens() - 1;
+            rules_with_writes(|rules| session.trim_toward(1, rules, target))
+        };
+
+        assert_eq!(one(&mut session).results, 1);
+        assert!(
+            cut(&session, 8),
+            "a.rs, edited since it was read, goes first"
+        );
+        assert!(!cut(&session, 6) && !cut(&session, 2));
+
+        one(&mut session);
+        assert!(cut(&session, 6), "b.rs, read once, next");
+        assert!(!cut(&session, 2), "c.rs, read twice, is still whole");
+
+        one(&mut session);
+        assert!(cut(&session, 2), "and c.rs last");
+    }
+
+    #[test]
+    fn trimming_stops_at_its_target() {
+        let mut session = ranked();
+        let before = session.estimated_tokens();
+        let trimmed = rules_with_writes(|rules| session.trim_toward(1, rules, before - 1));
+        assert_eq!(trimmed.results, 1);
+        assert!(session.estimated_tokens() < before);
+        // Already under it: nothing to do.
+        let now = session.estimated_tokens();
+        let trimmed = rules_with_writes(|rules| session.trim_toward(1, rules, now + 10));
+        assert!(trimmed.is_empty());
+    }
+
+    #[test]
+    fn a_target_of_zero_cuts_everything_it_can() {
+        let mut session = ranked();
+        rules_with_writes(|rules| session.trim_toward(1, rules, 0));
+        assert!(cut(&session, 2) && cut(&session, 6) && cut(&session, 8));
     }
 
     #[test]

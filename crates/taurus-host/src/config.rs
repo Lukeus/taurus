@@ -341,7 +341,9 @@ pub fn search_file(scope: Scope, workspace: Option<&Path>) -> Option<PathBuf> {
 #[ts(export)]
 pub enum HookLayer {
     /// A plugin's, which only a `hooks.json` can switch off.
-    Plugin { name: String },
+    Plugin {
+        name: String,
+    },
     Global,
     Workspace,
 }
@@ -414,9 +416,11 @@ pub fn set_hook(
 ) -> Result<(), String> {
     let readable = crate::trust::for_reading(workspace);
     if scope == Scope::Workspace && readable.is_none() {
-        return Err("this project isn't trusted, so its hooks.json isn't read. Trust it \
+        return Err(
+            "this project isn't trusted, so its hooks.json isn't read. Trust it \
                     first, or switch the hook off everywhere."
-            .into());
+                .into(),
+        );
     }
     let listed = hook_listing(workspace);
     let Some(hook) = listed.iter().find(|h| h.hook.name == name) else {
@@ -2703,7 +2707,10 @@ mod tests {
                 hooks_at(&workspace_dir(ws.path()))["hooks"]["guard"],
                 serde_json::json!({ "disabled": true })
             );
-            assert_eq!(std::fs::read_to_string(home.join("hooks.json")).unwrap(), global);
+            assert_eq!(
+                std::fs::read_to_string(home.join("hooks.json")).unwrap(),
+                global
+            );
             let listed = hook_listing(Some(ws.path()));
             assert_eq!(listed[0].defined_in, HookLayer::Global);
             assert_eq!(listed[0].decided_by, HookLayer::Workspace);
@@ -2711,7 +2718,9 @@ mod tests {
             // Back on takes the toggle away rather than stating "on" forever.
             set_hook(Some(ws.path()), "guard", Scope::Workspace, true).unwrap();
             assert!(hook_enabled(ws.path(), "guard"));
-            assert!(hooks_at(&workspace_dir(ws.path()))["hooks"].get("guard").is_none());
+            assert!(hooks_at(&workspace_dir(ws.path()))["hooks"]
+                .get("guard")
+                .is_none());
         });
     }
 
@@ -2794,7 +2803,8 @@ mod tests {
         with_home(|home| {
             // A trailing comma: the hand edit Traces and Usage both send
             // people to make.
-            let broken = "{\n  \"theme\": \"dark\",\n  \"otlp_endpoint\": \"http://localhost:4318\",\n}\n";
+            let broken =
+                "{\n  \"theme\": \"dark\",\n  \"otlp_endpoint\": \"http://localhost:4318\",\n}\n";
             write(home.join("settings.json"), broken);
 
             let refused = edit_settings(Scope::Global, None, |s| s.max_iterations = Some(10));
@@ -3014,7 +3024,8 @@ mod tests {
 
             edit_settings(Scope::Workspace, Some(ws.path()), |s| {
                 s.last_model = Some("project-model".into())
-            }).unwrap();
+            })
+            .unwrap();
 
             assert_eq!(
                 read_settings(Scope::Global, None).last_model.as_deref(),
@@ -3033,7 +3044,8 @@ mod tests {
         with_home(|ws_home| {
             edit_settings(Scope::Global, None, |s| {
                 s.last_provider = Some("ollama".into())
-            }).unwrap();
+            })
+            .unwrap();
             let text = std::fs::read_to_string(ws_home.join("settings.json")).unwrap();
             assert!(text.contains("last_provider"));
             assert!(

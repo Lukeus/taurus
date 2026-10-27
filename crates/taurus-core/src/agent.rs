@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn, Instrument};
 
 use crate::event::{truncate_for_ui, ResultImage, UiEvent};
-use crate::session::{split_for_compaction, Session};
+use crate::session::{split_for_compaction, Session, TrimRules};
 
 /// How long consecutive deltas of one kind are gathered before being handed on.
 ///
@@ -200,6 +200,23 @@ const PLAN_NUDGE: &str = "\
 Your plan still has steps that are not marked done. If you finished them, call \
 update_plan now with the whole list and every finished step marked 'done'. If \
 you have stopped without finishing them, say why in one line and stop.";
+
+/// How far below the budget a trim brings the conversation, as a share of it.
+///
+/// Every trim edits an old message and costs a backend's cached prefix from
+/// there on, so stopping short of what age-only trimming cut means trimming
+/// again sooner. Measured over 78 saved conversations with
+/// `cargo run -p taurus-host --example trim_replay`, against cutting
+/// everything old:
+///
+/// - at half, trims as often as before (454 to 453 at 16k, 8 to 8 at 200k),
+///   and cuts 20% fewer still-used files at 64k and 38% fewer at 200k;
+/// - at two thirds, 2–10% more trims for a few points more at 16k and 32k;
+/// - at four fifths, up to 60% more trims.
+///
+/// Half buys the ranking's whole benefit where it is large without spending
+/// any of the cache, which is the trade this file makes everywhere else.
+const TRIM_LOW_WATER: f32 = 0.5;
 
 /// Tokens held back for the answer when the caller names no `max_tokens`.
 ///
@@ -1530,7 +1547,10 @@ impl Agent {
             };
             if unverified || !unrun.is_empty() {
                 *nudged = true;
-                info!(checks = unrun.len(), "asking the model to check work it has not verified");
+                info!(
+                    checks = unrun.len(),
+                    "asking the model to check work it has not verified"
+                );
                 return Some(if unrun.is_empty() {
                     VERIFY_NUDGE.to_string()
                 } else {
@@ -1878,7 +1898,29 @@ impl Agent {
             self.config.keep_recent_messages,
             keep_tokens,
         );
-        let trimmed = session.trim_tool_results(kept, &repeats_supersede);
+        // Down to a low-water mark rather than to the budget: each cut edits
+        // an old message and costs the cached prefix from there on, so a trim
+        // that freed just enough would be followed by another next round.
+        // In the messages' own uncalibrated units, since that is what the
+        // estimate it stops on is kept in.
+        let low_water = (budget as f32 * TRIM_LOW_WATER) as u32;
+        let target =
+            (low_water.saturating_sub(overhead) as f32 / session.calibration()).max(1.0) as u32;
+        // In a block of its own: the rules borrow closures that aren't `Send`,
+        // and this function goes on to await.
+        let trimmed = {
+            let writes_to = |name: &str, input: &serde_json::Value| {
+                self.registry
+                    .get(name)
+                    .map(|tool| tool.touches(input))
+                    .unwrap_or_default()
+            };
+            let rules = TrimRules {
+                repeats_supersede: &repeats_supersede,
+                writes_to: &writes_to,
+            };
+            session.trim_toward(kept, &rules, target)
+        };
         if !trimmed.is_empty() {
             info!(
                 results = trimmed.results,

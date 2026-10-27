@@ -464,19 +464,23 @@ mod tests {
         let layers = vec![
             (
                 "global",
-                parsed(r#"{"hooks":{
+                parsed(
+                    r#"{"hooks":{
                     "guard": {"on":"pre_tool_use","command":"true"},
                     "fmt": {"on":"post_tool_use","command":"true","disabled":true},
                     "lint": {"on":"post_tool_use","command":"true"}
-                }}"#),
+                }}"#,
+                ),
             ),
             (
                 "project",
-                parsed(r#"{"hooks":{
+                parsed(
+                    r#"{"hooks":{
                     "guard": {"disabled": true},
                     "lint": {"on":"stop","command":"false"},
                     "ghost": {"disabled": true}
-                }}"#),
+                }}"#,
+                ),
             ),
         ];
 

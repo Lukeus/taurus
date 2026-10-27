@@ -821,7 +821,10 @@ mod tests {
             read(serde_json::json!({"text": "Bump it", "verify": "cargo build"})),
             Some("cargo build".into())
         );
-        assert_eq!(read(serde_json::json!({"text": "Bump it", "check": ""})), None);
+        assert_eq!(
+            read(serde_json::json!({"text": "Bump it", "check": ""})),
+            None
+        );
         assert!(Step::from_json(serde_json::json!({"text": "Bump it", "check": 3})).is_err());
     }
 }
