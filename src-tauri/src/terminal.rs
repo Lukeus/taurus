@@ -325,15 +325,20 @@ impl Terminals {
     /// [`taurus_tools::login_path`]), so reading the profile again changes
     /// nothing a profile would normally set.
     ///
-    /// `integrate` says whether to add the hooks that mark each command.
+    /// `integrate` says whether to add the hooks that mark each command, and
+    /// `chosen` is the shell Settings names, empty for the login shell.
     pub fn open(
         self: &Arc<Self>,
         cwd: &Path,
         rows: u16,
         cols: u16,
         integrate: bool,
+        chosen: &str,
         events: Channel<TerminalEvent>,
     ) -> Result<String, String> {
+        // Before the pty, so a shell that has gone since it was chosen is
+        // said rather than leaving a pane open on nothing.
+        let chosen = chosen_shell(chosen, taurus_tools::login_path::which)?;
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: rows.max(1),
@@ -343,7 +348,7 @@ impl Terminals {
             })
             .map_err(|e| format!("could not open a terminal: {e}"))?;
 
-        let (mut builder, name) = shell(integrate);
+        let (mut builder, name) = shell(integrate, chosen.as_deref());
         // A child process is an edge, so the path crosses it in the plain form
         // rather than the verbatim one the workspace is canonicalized into. See
         // `taurus_tools::path_guard::plain`.
@@ -552,12 +557,57 @@ fn windows_shell(find: impl Fn(&str) -> Option<std::path::PathBuf>) -> Option<st
 /// Everywhere else this is unchanged: `$SHELL`, and the password database when
 /// that is unset. A login shell is a preference already stated, and there is
 /// nothing for the search above to improve on.
-fn shell(integrate: bool) -> (CommandBuilder, String) {
-    let (mut builder, name) = default_shell(integrate);
+fn shell(integrate: bool, chosen: Option<&Path>) -> (CommandBuilder, String) {
+    let (mut builder, name) = match chosen {
+        Some(program) => chosen_command(integrate, program),
+        None => default_shell(integrate),
+    };
     // A tab opened after Reconnect re-read the login shell's PATH gets it, so
     // a program installed since launch is on it there too.
     if let Some(path) = taurus_tools::login_path::replaced() {
         builder.env("PATH", path);
+    }
+    (builder, name)
+}
+
+/// Where the shell Settings names is, or none for the login shell.
+///
+/// Checked again here though the setter checks it too, because a shell can be
+/// uninstalled between the two, and the message should say which setting to
+/// change rather than how a spawn failed.
+fn chosen_shell(
+    chosen: &str,
+    find: impl Fn(&str) -> Option<std::path::PathBuf>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let chosen = chosen.trim();
+    if chosen.is_empty() {
+        return Ok(None);
+    }
+    find(chosen).map(Some).ok_or_else(|| {
+        format!(
+            "Settings › Terminal names \"{chosen}\" as the shell, and this app can't find \
+             it. Change it there, or empty the field for your login shell."
+        )
+    })
+}
+
+/// A chosen shell, started the way the login shell would be: with the hooks
+/// when it's one they're written for, and as a login shell when it takes `-l`.
+fn chosen_command(integrate: bool, program: &Path) -> (CommandBuilder, String) {
+    let text = program.to_string_lossy();
+    let name = taurus_tools::shell_integration::name_of(&text);
+    if integrate {
+        if let Some(integrated) =
+            taurus_tools::shell_integration::command(&text, &taurus_host::config::home_dir())
+        {
+            return (integrated, name);
+        }
+    }
+    let mut builder = CommandBuilder::new(program);
+    match name.as_str() {
+        "pwsh" | "powershell" => builder.arg("-NoLogo"),
+        "zsh" | "bash" | "fish" | "ksh" | "sh" | "nu" => builder.arg("-l"),
+        _ => {}
     }
     (builder, name)
 }
@@ -766,7 +816,7 @@ mod tests {
         let terminals = Arc::new(Terminals::default());
         let (channel, seen) = recorder();
         let id = terminals
-            .open(&std::env::temp_dir(), 24, 80, false, channel)
+            .open(&std::env::temp_dir(), 24, 80, false, "", channel)
             .expect("a shell must start");
 
         // Buffered by the pty until the shell is ready to read it, so there is
@@ -855,7 +905,7 @@ mod tests {
         let terminals = Arc::new(Terminals::default());
         let (channel, seen) = recorder();
         let id = terminals
-            .open(&std::env::temp_dir(), 24, 80, false, channel)
+            .open(&std::env::temp_dir(), 24, 80, false, "", channel)
             .expect("a shell must start");
         // Four times the high mark, from a program that ends when it is done.
         terminals
@@ -898,7 +948,7 @@ mod tests {
         let terminals = Arc::new(Terminals::default());
         let (channel, _seen) = recorder();
         let id = terminals
-            .open(&std::env::temp_dir(), 24, 80, false, channel)
+            .open(&std::env::temp_dir(), 24, 80, false, "", channel)
             .expect("a shell must start");
 
         terminals.resize(&id, 40, 120).expect("a resize must land");
@@ -970,7 +1020,7 @@ mod tests {
         let terminals = Arc::new(Terminals::default());
         let (channel, _seen) = recorder();
         let id = terminals
-            .open(&std::env::temp_dir(), 24, 80, false, channel)
+            .open(&std::env::temp_dir(), 24, 80, false, "", channel)
             .expect("a shell must start");
 
         // The pane closing and the shell exiting race, and neither is a
@@ -989,7 +1039,7 @@ mod tests {
             let (channel, seen) = recorder();
             ids.push(
                 terminals
-                    .open(&std::env::temp_dir(), 24, 80, false, channel)
+                    .open(&std::env::temp_dir(), 24, 80, false, "", channel)
                     .expect("a shell must start"),
             );
             sinks.push(seen);
@@ -1086,6 +1136,22 @@ mod tests {
             *lock(&held),
             7,
             "a keystroke must survive someone else's panic"
+        );
+    }
+
+    #[test]
+    fn an_empty_choice_is_the_login_shell_and_a_missing_one_names_the_setting() {
+        let nowhere = |_: &str| None;
+        assert_eq!(chosen_shell("  ", nowhere), Ok(None));
+
+        let reason = chosen_shell("fishh", nowhere).unwrap_err();
+        assert!(reason.contains("Settings › Terminal"), "{reason}");
+        assert!(reason.contains("fishh"), "{reason}");
+
+        let found = |name: &str| Some(PathBuf::from(format!("/opt/homebrew/bin/{name}")));
+        assert_eq!(
+            chosen_shell(" fish ", found),
+            Ok(Some(PathBuf::from("/opt/homebrew/bin/fish")))
         );
     }
 }

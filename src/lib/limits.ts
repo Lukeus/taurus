@@ -81,3 +81,6 @@ export function clampContextLimit(text: string, fallback: number): number {
   const tokens = Math.round(thousands ? parsed * 1000 : parsed);
   return tokens === 0 ? 0 : Math.max(tokens, MIN_CONTEXT_LIMIT);
 }
+
+/** The terminal's font size before it was a setting, and the default since. */
+export const DEFAULT_TERMINAL_FONT_SIZE = 13;

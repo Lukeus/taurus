@@ -103,6 +103,8 @@ const SHOTS = [
   { name: "tools", shot: "tools", theme: "dark" },
   // Settings › Hooks, with one hook switched off by the project's file.
   { name: "hooks", shot: "hooks", theme: "dark" },
+  // Settings › Terminal, with a shell and font chosen.
+  { name: "terminal-settings", shot: "terminal-settings", theme: "dark" },
   // A profile rather than a page of rows, and a file with real problems in it:
   // one column 42% missing, one with too many distinct values to rank. A grid
   // of clean numbers would be a picture of a spreadsheet.

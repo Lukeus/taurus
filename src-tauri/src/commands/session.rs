@@ -540,6 +540,16 @@ pub async fn send_message(
     let _ = fan.await;
     *entry.live.lock().await = None;
     emit_turn(state.inner(), &session_id, None).await;
+    // Before the release below, which is half of how it decides whether
+    // anybody saw this end.
+    notify_done(
+        state.inner(),
+        &session_id,
+        &entry,
+        live.started(),
+        outcome.as_ref().map(|o| o.stop_reason).map_err(|e| e.to_string()),
+    )
+    .await;
     // A conversation the window let go of mid-turn is released here: this is
     // the moment it stops being in use. See `close_session`.
     reap_released(state.inner(), &session_id, &entry).await;
@@ -967,5 +977,84 @@ pub async fn answer_questions(
         // can still be on screen after the turn behind it was cancelled, and a
         // click on it should do nothing rather than raise a banner.
         None => Ok(()),
+    }
+}
+
+/// Says a turn has ended, when nobody was watching it end.
+///
+/// Nobody watching is the window not being the app in front, or the window
+/// having moved on to another conversation, which is what a release records.
+/// A turn ending on the screen somebody is looking at needs no telling, and a
+/// turn somebody stopped was ended by them.
+async fn notify_done(
+    state: &AppState,
+    session_id: &str,
+    entry: &SessionEntry,
+    started: u64,
+    outcome: Result<taurus_provider::StopReason, String>,
+) {
+    if !state.host.settings().await.notify_when_done
+        || entry.cancel.lock().await.is_cancelled()
+        || outcome == Ok(taurus_provider::StopReason::Canceled)
+    {
+        return;
+    }
+    let focused = tauri::Manager::get_webview_window(&state.app, "main")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false);
+    if focused && !entry.was_released() {
+        return;
+    }
+
+    let id = session_id.to_string();
+    let title = off_runtime(move || Ok(sessions::meta(&id)))
+        .await
+        .ok()
+        .flatten()
+        .map(|meta| meta.title)
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| "A conversation".into());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(started);
+    let body = done_message(now.saturating_sub(started), outcome.err().as_deref());
+
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(e) = state.app.notification().builder().title(title).body(body).show() {
+        tracing::warn!(error = %e, "could not show the notification for a finished turn");
+    }
+}
+
+/// The notification's body: how long the turn took, or what stopped it.
+fn done_message(seconds: u64, failed: Option<&str>) -> String {
+    let took = match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m {}s", seconds / 60, seconds % 60),
+        _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
+    };
+    match failed {
+        // Cut, because a provider's error can be a page of JSON and a
+        // notification shows two lines of it.
+        Some(reason) => {
+            let reason: String = reason.chars().take(140).collect();
+            format!("Stopped after {took}: {reason}")
+        }
+        None => format!("Finished after {took}."),
+    }
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::done_message;
+
+    #[test]
+    fn says_how_long_or_what_stopped_it() {
+        assert_eq!(done_message(42, None), "Finished after 42s.");
+        assert_eq!(done_message(252, None), "Finished after 4m 12s.");
+        assert_eq!(done_message(3_900, None), "Finished after 1h 5m.");
+        let failed = done_message(10, Some(&"x".repeat(500)));
+        assert!(failed.starts_with("Stopped after 10s: xxx"));
+        assert!(failed.len() < 200, "{}", failed.len());
     }
 }

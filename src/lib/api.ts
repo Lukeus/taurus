@@ -1073,6 +1073,20 @@ export const traceExport = () => invoke<TraceExport>("trace_export");
 export const setOtlpEndpoint = (endpoint: string) =>
   invoke<void>("set_otlp_endpoint", { endpoint });
 
+/** Whether a turn finishing while you're elsewhere sends a notification. */
+export const setNotifyWhenDone = (on: boolean) => invoke<void>("set_notify_when_done", { on });
+
+/** How large the interface is drawn, in percent; applied to the window at once. */
+export const setUiScale = (percent: number) => invoke<void>("set_ui_scale", { percent });
+
+/** The program the terminal starts. Empty is the login shell. */
+export const setTerminalShell = (program: string) =>
+  invoke<void>("set_terminal_shell", { program });
+
+/** The terminal's font family (empty for the app's own) and size. */
+export const setTerminalFont = (family: string, size: number) =>
+  invoke<void>("set_terminal_font", { family, size });
+
 /** Every hook the layers define, on or off, and which layer decided each. */
 export const hookList = () => invoke<HookView[]>("hook_list");
 
