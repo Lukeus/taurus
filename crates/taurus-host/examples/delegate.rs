@@ -188,7 +188,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "call {call} started and never finished"
                     );
                 }
-                let rounds = steps.iter().filter(|s| matches!(s, Step::Round { .. })).count();
+                let rounds = steps
+                    .iter()
+                    .filter(|s| matches!(s, Step::Round { .. }))
+                    .count();
                 let words: usize = steps
                     .iter()
                     .map(|s| match s {

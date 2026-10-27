@@ -1530,7 +1530,10 @@ impl Agent {
             };
             if unverified || !unrun.is_empty() {
                 *nudged = true;
-                info!(checks = unrun.len(), "asking the model to check work it has not verified");
+                info!(
+                    checks = unrun.len(),
+                    "asking the model to check work it has not verified"
+                );
                 return Some(if unrun.is_empty() {
                     VERIFY_NUDGE.to_string()
                 } else {

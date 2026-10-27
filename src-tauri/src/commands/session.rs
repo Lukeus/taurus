@@ -547,7 +547,10 @@ pub async fn send_message(
         &session_id,
         &entry,
         live.started(),
-        outcome.as_ref().map(|o| o.stop_reason).map_err(|e| e.to_string()),
+        outcome
+            .as_ref()
+            .map(|o| o.stop_reason)
+            .map_err(|e| e.to_string()),
     )
     .await;
     // A conversation the window let go of mid-turn is released here: this is
@@ -1021,7 +1024,14 @@ async fn notify_done(
     let body = done_message(now.saturating_sub(started), outcome.err().as_deref());
 
     use tauri_plugin_notification::NotificationExt;
-    if let Err(e) = state.app.notification().builder().title(title).body(body).show() {
+    if let Err(e) = state
+        .app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+    {
         tracing::warn!(error = %e, "could not show the notification for a finished turn");
     }
 }

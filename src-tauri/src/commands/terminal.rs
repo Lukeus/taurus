@@ -66,7 +66,9 @@ pub async fn terminal_open(
     let cwd = if cwd.is_dir() { cwd } else { root };
     let integrate = state.host.shell_integration().await;
     let chosen = state.host.settings().await.terminal_shell;
-    state.terminals.open(&cwd, rows, cols, integrate, &chosen, on_event)
+    state
+        .terminals
+        .open(&cwd, rows, cols, integrate, &chosen, on_event)
 }
 
 /// A command and what it printed, escape sequences stripped.

@@ -160,9 +160,8 @@ impl Host {
     /// property of the machine.
     pub async fn set_otlp_endpoint(&self, endpoint: &str) -> Result<(), String> {
         let endpoint = endpoint.trim().to_string();
-        if !endpoint.is_empty()
-            && !(endpoint.starts_with("http://") || endpoint.starts_with("https://"))
-        {
+        let http = endpoint.starts_with("http://") || endpoint.starts_with("https://");
+        if !(endpoint.is_empty() || http) {
             return Err(format!(
                 "\"{endpoint}\" isn't an OTLP/HTTP address. It starts with http:// or \
                  https://, like http://localhost:4318."
@@ -175,14 +174,16 @@ impl Host {
     /// Whether a turn that finishes while you're elsewhere sends a system
     /// notification. Global: it's about the person, not the project.
     pub async fn set_notify_when_done(&self, on: bool) -> Result<(), String> {
-        self.edit_global_setting(|s| s.notify_when_done = Some(on)).await
+        self.edit_global_setting(|s| s.notify_when_done = Some(on))
+            .await
     }
 
     /// How large the interface is drawn, in percent. Clamped on the way in, so
     /// what's written is what's used. The caller applies it to the window.
     pub async fn set_ui_scale(&self, percent: u32) -> Result<u32, String> {
         let percent = percent.clamp(config::MIN_UI_SCALE, config::MAX_UI_SCALE);
-        self.edit_global_setting(|s| s.ui_scale = Some(percent)).await?;
+        self.edit_global_setting(|s| s.ui_scale = Some(percent))
+            .await?;
         Ok(percent)
     }
 
@@ -211,7 +212,10 @@ impl Host {
     /// monospace stack. The size is clamped on the way in.
     pub async fn set_terminal_font(&self, family: &str, size: u32) -> Result<(), String> {
         let family = family.trim().to_string();
-        let size = size.clamp(config::MIN_TERMINAL_FONT_SIZE, config::MAX_TERMINAL_FONT_SIZE);
+        let size = size.clamp(
+            config::MIN_TERMINAL_FONT_SIZE,
+            config::MAX_TERMINAL_FONT_SIZE,
+        );
         self.edit_global_setting(|s| {
             s.terminal_font = Some(family);
             s.terminal_font_size = Some(size);
@@ -288,7 +292,10 @@ impl Host {
     ///
     /// Nothing else follows it: a shell already running keeps the hooks it
     /// started with, and the next one opened reads this.
-    pub async fn set_context_strategy(&self, strategy: taurus_core::ContextStrategy) -> Result<(), String> {
+    pub async fn set_context_strategy(
+        &self,
+        strategy: taurus_core::ContextStrategy,
+    ) -> Result<(), String> {
         self.edit_global_setting(|s| s.context_strategy = Some(strategy))
             .await
     }

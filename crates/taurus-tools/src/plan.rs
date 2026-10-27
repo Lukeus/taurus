@@ -248,6 +248,11 @@ fn summarize(steps: &[Step]) -> String {
     line
 }
 
+/// Runs of whitespace as one space, ends trimmed.
+fn squash(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,7 +276,11 @@ mod tests {
     #[test]
     fn a_step_names_its_check_in_the_reminder() {
         let board = PlanBoard::new();
-        board.set(vec![checked("Bump the version", StepState::Active, "cargo build")]);
+        board.set(vec![checked(
+            "Bump the version",
+            StepState::Active,
+            "cargo build",
+        )]);
         assert!(board
             .reminder()
             .unwrap()
@@ -283,7 +292,11 @@ mod tests {
         let board = PlanBoard::new();
         board.set(vec![
             checked("Parse it", StepState::Done, "cargo test -p parser"),
-            checked("Bump it", StepState::Active, "cargo build && grep version config.toml"),
+            checked(
+                "Bump it",
+                StepState::Active,
+                "cargo build && grep version config.toml",
+            ),
             // Not started, so nothing is owed for it yet.
             checked("Ship it", StepState::Todo, "cargo publish"),
         ]);
@@ -293,7 +306,10 @@ mod tests {
 
         assert_eq!(
             ran(&[]),
-            ["cargo test -p parser", "cargo build && grep version config.toml"]
+            [
+                "cargo test -p parser",
+                "cargo build && grep version config.toml"
+            ]
         );
         // Contained, whitespace aside, and the parts of a chain may be two
         // separate commands.
@@ -492,9 +508,4 @@ mod tests {
         assert!(!reminder.contains("[ ] One"), "{reminder}");
         assert!(reminder.contains("[x] One"), "{reminder}");
     }
-}
-
-/// Runs of whitespace as one space, ends trimmed.
-fn squash(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

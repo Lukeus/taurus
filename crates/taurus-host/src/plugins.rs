@@ -2018,11 +2018,13 @@ mod tests {
 
         config::edit_settings(Scope::Global, None, |s| {
             s.plugins = Some(BTreeMap::from([("ops".into(), false)]))
-        }).unwrap();
+        })
+        .unwrap();
         assert!(on(None).is_empty());
         config::edit_settings(Scope::Workspace, Some(ws), |s| {
             s.plugins = Some(BTreeMap::from([("quiet".into(), true)]))
-        }).unwrap();
+        })
+        .unwrap();
         // The project switched one on and said nothing of the other, which
         // stays as you left it.
         assert_eq!(on(Some(ws)), ["quiet"]);

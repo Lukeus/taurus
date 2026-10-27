@@ -3349,8 +3349,8 @@ fn checked_plan(turns: Vec<ScriptedTurn>) -> (Agent, Arc<FakeProvider>, TempDir,
         board.clone(),
     )));
     let provider = FakeProvider::new(turns);
-    let agent = Agent::new(provider.clone(), registry, tools, AgentConfig::default())
-        .with_plan(board);
+    let agent =
+        Agent::new(provider.clone(), registry, tools, AgentConfig::default()).with_plan(board);
     (agent, provider, dir, logs)
 }
 
@@ -3386,7 +3386,11 @@ async fn a_turn_that_ran_something_else_is_handed_the_check_its_plan_named() {
             "write_file",
             serde_json::json!({"path": "marker.txt", "content": "x"}),
         ),
-        ScriptedTurn::tool_call("r1", "run_command", serde_json::json!({"command": "echo unrelated"})),
+        ScriptedTurn::tool_call(
+            "r1",
+            "run_command",
+            serde_json::json!({"command": "echo unrelated"}),
+        ),
         bump_plan("p2", "done"),
         ScriptedTurn::text("Done."),
         ScriptedTurn::tool_call(
@@ -3403,7 +3407,11 @@ async fn a_turn_that_ran_something_else_is_handed_the_check_its_plan_named() {
     let nudged = check_nudges(&sent);
     assert_eq!(nudged.len(), 1, "asked once, and only once: {nudged:#?}");
     assert!(nudged[0].contains("- echo marker-checked"), "{}", nudged[0]);
-    assert_eq!(nudges(&sent), 0, "the generic nudge is replaced, not added to");
+    assert_eq!(
+        nudges(&sent),
+        0,
+        "the generic nudge is replaced, not added to"
+    );
 }
 
 #[tokio::test]

@@ -451,7 +451,11 @@ fn changed_note(files: &[String]) -> Option<String> {
         0 => None,
         n if n <= NAMED => Some(format!(
             "This command changed {}: {}",
-            if n == 1 { "1 file".to_string() } else { format!("{n} files") },
+            if n == 1 {
+                "1 file".to_string()
+            } else {
+                format!("{n} files")
+            },
             files.join(", ")
         )),
         n => Some(format!(

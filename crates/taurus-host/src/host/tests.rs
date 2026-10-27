@@ -253,7 +253,9 @@ async fn wiring_in_semantic_search_reads_no_key_until_something_is_embedded() {
     host.set_provider_key(id, "sk-embed").await.unwrap();
 
     let before = secrets::reads(id);
-    host.set_embedding_model("nomic-embed-text", id).await.unwrap();
+    host.set_embedding_model("nomic-embed-text", id)
+        .await
+        .unwrap();
     host.reload_local().await;
     assert!(
         host.registry.read().await.get("search_code").is_some(),
@@ -559,7 +561,11 @@ async fn delegates_queued_with(settings: &str) -> usize {
     let mut session = taurus_core::Session::new("fake");
     session.id = "conversation1".into();
     agent
-        .run_turn(&mut session, taurus_provider::Message::user("what is here?"), tx)
+        .run_turn(
+            &mut session,
+            taurus_provider::Message::user("what is here?"),
+            tx,
+        )
         .await
         .expect("the turn should finish");
     collect.await.unwrap()
@@ -570,8 +576,14 @@ async fn delegates_queued_with(settings: &str) -> usize {
 /// reading the compiled-in default.
 #[tokio::test]
 async fn a_turn_runs_as_many_delegates_at_once_as_settings_allow() {
-    assert_eq!(delegates_queued_with(r#"{"max_concurrent_agents": 1}"#).await, 1);
-    assert_eq!(delegates_queued_with(r#"{"max_concurrent_agents": 2}"#).await, 0);
+    assert_eq!(
+        delegates_queued_with(r#"{"max_concurrent_agents": 1}"#).await,
+        1
+    );
+    assert_eq!(
+        delegates_queued_with(r#"{"max_concurrent_agents": 2}"#).await,
+        0
+    );
 }
 
 fn agent_problems(problems: &[Problem]) -> Vec<String> {
@@ -3956,7 +3968,8 @@ fn the_app_opens_on_the_home_folder_until_one_is_chosen() {
     let chosen = TempDir::new().unwrap();
     config::edit_settings(Scope::Global, None, |s| {
         s.last_workspace = Some(chosen.path().display().to_string())
-    }).unwrap();
+    })
+    .unwrap();
     assert_eq!(Host::app_workspace(), chosen.path().canonicalize().unwrap());
 }
 
@@ -3974,7 +3987,10 @@ async fn every_tool_has_a_switch_and_switching_one_off_takes_it_out() {
     let read = find(&before, "read_file").expect("read_file has a switch");
     assert!(read.enabled);
     assert!(read.server.is_none());
-    assert!(read.tokens.is_some_and(|t| t > 0), "a registered tool is measured");
+    assert!(
+        read.tokens.is_some_and(|t| t > 0),
+        "a registered tool is measured"
+    );
     // Added per turn, so on the list though not in the registry to measure.
     let plan = find(&before, taurus_tools::builtin::plan::UPDATE_PLAN_TOOL).unwrap();
     assert!(plan.enabled && plan.tokens.is_none());
@@ -3995,7 +4011,9 @@ async fn every_tool_has_a_switch_and_switching_one_off_takes_it_out() {
     host.reload().await;
     assert!(host.tool_names().await.contains(&"read_file".to_string()));
     // Emptied rather than written as `[]`, so the file says nothing about it.
-    assert!(config::read_settings(Scope::Global, None).disabled_tools.is_none());
+    assert!(config::read_settings(Scope::Global, None)
+        .disabled_tools
+        .is_none());
 }
 
 #[test]
@@ -4015,7 +4033,9 @@ async fn an_otlp_endpoint_has_to_be_an_http_address() {
 
     let refused = host.set_otlp_endpoint("localhost:4318").await.unwrap_err();
     assert!(refused.contains("http://"), "{refused}");
-    host.set_otlp_endpoint(" http://localhost:4318 ").await.unwrap();
+    host.set_otlp_endpoint(" http://localhost:4318 ")
+        .await
+        .unwrap();
     assert_eq!(host.settings().await.otlp_endpoint, "http://localhost:4318");
     host.set_otlp_endpoint("").await.unwrap();
     assert_eq!(host.settings().await.otlp_endpoint, "");
