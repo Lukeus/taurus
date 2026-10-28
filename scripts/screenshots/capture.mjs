@@ -76,6 +76,8 @@ const SHOTS = [
   // switched off — because the panel exists for the ones that are not working,
   // and a frame of four green rows would say nothing about what it is for.
   { name: "mcp", shot: "mcp", theme: "dark" },
+  // The server form with a token just typed and Keychain ticked beside it.
+  { name: "mcp-keychain", shot: "mcp-keychain", theme: "light" },
   // A plugin as Taurus reads it: its parts, what isn't run here and why, and
   // one whose name stops it loading.
   { name: "plugins", shot: "plugins", theme: "dark" },

@@ -51,6 +51,12 @@ pub struct McpValue {
     /// A literal is being held back. The panel shows that the key is set; a save
     /// that leaves it untouched keeps it.
     pub secret: bool,
+    /// Sent by the panel on a value just typed: save it to the keychain as a
+    /// saved credential and write the reference instead. Never sent back out.
+    /// See [`McpServerDraft::keep_in_keychain`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub keep: Option<bool>,
 }
 
 impl McpValue {
@@ -72,24 +78,34 @@ impl McpValue {
                 String::new()
             },
             secret: !is_reference,
+            keep: None,
         }
     }
+}
+
+/// The authorization schemes a header value may start with, which a saved
+/// credential leaves in the file: `Bearer ${secret:linear}`.
+const SCHEMES: [&str; 3] = ["Bearer ", "Token ", "Basic "];
+
+/// `value` split into its authorization scheme, if it starts with one, and the
+/// rest. The scheme keeps its spelling and its trailing space.
+fn split_scheme(value: &str) -> (&str, &str) {
+    let value = value.trim();
+    for scheme in SCHEMES {
+        if value
+            .get(..scheme.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(scheme))
+        {
+            return (&value[..scheme.len()], value[scheme.len()..].trim_start());
+        }
+    }
+    ("", value)
 }
 
 /// Whether `value` is one or more `${…}` references, optionally after an
 /// authorization scheme, and nothing else that could be a secret.
 fn names_only(value: &str) -> bool {
-    let mut rest = value.trim();
-    for scheme in ["Bearer ", "Token ", "Basic "] {
-        if let Some(after) = rest
-            .get(..scheme.len())
-            .filter(|head| head.eq_ignore_ascii_case(scheme))
-            .map(|_| &rest[scheme.len()..])
-        {
-            rest = after.trim_start();
-            break;
-        }
-    }
+    let (_, mut rest) = split_scheme(value);
     if rest.is_empty() {
         return false;
     }
@@ -300,6 +316,68 @@ impl McpServerDraft {
         }
     }
 
+    /// Moves every value marked [`McpValue::keep`] into the keychain as a saved
+    /// credential, and writes the reference in its place.
+    ///
+    /// Called before a save, so the token never reaches the file. Each is named
+    /// after the server and the key, `linear-authorization`, and is for the
+    /// server's own host when it has one. An authorization scheme stays in the
+    /// file, so `Bearer lin_123` becomes `Bearer ${secret:linear-authorization}`.
+    ///
+    /// Refused where a saved credential couldn't reach the server, rather than
+    /// saved and then refused at connect time: a project's program never gets
+    /// one, and an HTTP server needs a host to be pinned to.
+    pub fn keep_in_keychain(&mut self, profile_id: &str) -> Result<Vec<String>, String> {
+        let stdio = self.transport == McpTransport::Stdio;
+        let server = self.name.trim().to_string();
+        let values = if stdio {
+            &mut self.env
+        } else {
+            &mut self.headers
+        };
+        let kept: Vec<&mut McpValue> = values
+            .iter_mut()
+            .filter(|v| v.keep == Some(true) && !v.value.trim().is_empty())
+            .filter(|v| !names_only(&v.value))
+            .collect();
+        if kept.is_empty() {
+            return Ok(Vec::new());
+        }
+        if stdio && self.scope == Scope::Workspace {
+            return Err(
+                "A project's own program can't use a saved credential, so this token can't go \
+                 in the keychain. Save the server for every project instead, or untick \
+                 Keychain to write it into the file."
+                    .into(),
+            );
+        }
+        let hosts = if stdio {
+            Vec::new()
+        } else {
+            let host = taurus_tools::expand_env(self.url.trim())
+                .ok()
+                .and_then(|url| url::Url::parse(&url).ok())
+                .and_then(|url| url.host_str().map(str::to_string))
+                .ok_or(
+                    "Taurus needs the server's URL to know where the token may be sent. \
+                     Fill the URL in first.",
+                )?;
+            vec![host]
+        };
+
+        let mut names = Vec::new();
+        for value in kept {
+            let name = credential_name(&server, &value.key);
+            let (scheme, token) = split_scheme(&value.value);
+            crate::credentials::save(profile_id, &name, &hosts, Some(token))?;
+            value.value = format!("{scheme}${{secret:{name}}}");
+            value.keep = None;
+            value.secret = false;
+            names.push(name);
+        }
+        Ok(names)
+    }
+
     /// The entry to write, with held-back secrets taken from `existing`.
     pub fn to_config(&self, existing: Option<&ServerConfig>) -> ServerConfig {
         match self.transport {
@@ -371,6 +449,24 @@ fn merge_secrets(
     out
 }
 
+/// The saved credential a typed value becomes: the server and the key,
+/// lowercase, with anything a credential's name can't hold made a `-`.
+fn credential_name(server: &str, key: &str) -> String {
+    let raw = format!("{server}-{key}").to_ascii_lowercase();
+    let mut name = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        let c = if c.is_ascii_alphanumeric() || matches!(c, '_' | '.') {
+            c
+        } else {
+            '-'
+        };
+        if !(c == '-' && name.ends_with('-')) {
+            name.push(c);
+        }
+    }
+    name.trim_matches('-').to_string()
+}
+
 /// Where `command` is on this application's PATH.
 ///
 /// Skipped for a command that is already a path: the answer is either itself or
@@ -440,6 +536,7 @@ mod tests {
                 key: "TOKEN".into(),
                 value: String::new(),
                 secret: true,
+                keep: None,
             }],
             url: String::new(),
             headers: vec![],
@@ -468,6 +565,7 @@ mod tests {
                 key: "TOKEN".into(),
                 value: "${GITHUB_TOKEN}".into(),
                 secret: false,
+                keep: None,
             }],
             url: String::new(),
             headers: vec![],
@@ -510,6 +608,7 @@ mod tests {
                 key: "TOKEN".into(),
                 value: String::new(),
                 secret: true,
+                keep: None,
             }],
             None,
         )
@@ -530,6 +629,7 @@ mod tests {
                 key: "   ".into(),
                 value: "x".into(),
                 secret: false,
+                keep: None,
             }],
             url: String::new(),
             headers: vec![],
@@ -602,5 +702,137 @@ mod tests {
             None,
         );
         assert!(missing.program.is_none());
+    }
+
+    fn typed(key: &str, value: &str, keep: bool) -> McpValue {
+        McpValue {
+            key: key.into(),
+            value: value.into(),
+            secret: false,
+            keep: Some(keep),
+        }
+    }
+
+    fn remote(name: &str, headers: Vec<McpValue>, scope: Scope) -> McpServerDraft {
+        McpServerDraft {
+            name: name.into(),
+            scope,
+            transport: McpTransport::Http,
+            command: String::new(),
+            args: vec![],
+            env: vec![],
+            url: "https://MCP.Example.com/mcp".into(),
+            headers,
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn a_typed_token_goes_to_the_keychain_and_the_file_gets_its_name() {
+        let _home = crate::testing::isolated_home();
+        let mut draft = remote(
+            "Keep Test",
+            vec![typed("Authorization", "Bearer tok_123", true)],
+            // A project's file is fine for an HTTP server: the credential is
+            // pinned to its host.
+            Scope::Workspace,
+        );
+        let names = draft.keep_in_keychain(crate::profile::DEFAULT_ID).unwrap();
+        assert_eq!(names, ["keep-test-authorization"]);
+        assert_eq!(
+            draft.headers[0].value, "Bearer ${secret:keep-test-authorization}",
+            "the scheme stays in the file and only the token moves"
+        );
+        assert_eq!(draft.headers[0].keep, None);
+
+        let to = taurus_tools::Destination {
+            layer: Scope::Workspace,
+            host: Some("mcp.example.com"),
+        };
+        use taurus_tools::Credentials;
+        assert_eq!(
+            crate::credentials::ProfileCredentials
+                .reveal("keep-test-authorization", &to)
+                .unwrap(),
+            "tok_123"
+        );
+        let elsewhere = taurus_tools::Destination {
+            host: Some("other.example"),
+            ..to
+        };
+        assert!(crate::credentials::ProfileCredentials
+            .reveal("keep-test-authorization", &elsewhere)
+            .is_err());
+    }
+
+    #[test]
+    fn only_what_was_marked_and_is_a_literal_moves() {
+        let _home = crate::testing::isolated_home();
+        let mut draft = remote(
+            "only-marked",
+            vec![
+                typed("X-Trace", "on", false),
+                typed("Authorization", "Bearer ${secret:linear}", true),
+            ],
+            Scope::Global,
+        );
+        assert!(draft
+            .keep_in_keychain(crate::profile::DEFAULT_ID)
+            .unwrap()
+            .is_empty());
+        assert_eq!(draft.headers[0].value, "on");
+        assert_eq!(draft.headers[1].value, "Bearer ${secret:linear}");
+    }
+
+    #[test]
+    fn a_projects_program_is_refused_before_anything_is_stored() {
+        let _home = crate::testing::isolated_home();
+        let mut draft = McpServerDraft {
+            name: "local".into(),
+            scope: Scope::Workspace,
+            transport: McpTransport::Stdio,
+            command: "npx".into(),
+            args: vec![],
+            env: vec![typed("TOKEN", "tok", true)],
+            url: String::new(),
+            headers: vec![],
+            disabled: false,
+        };
+        let err = draft
+            .keep_in_keychain(crate::profile::DEFAULT_ID)
+            .unwrap_err();
+        assert!(err.contains("project's own program"), "{err}");
+        assert_eq!(draft.env[0].value, "tok");
+        assert!(crate::credentials::load(crate::profile::DEFAULT_ID)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn an_http_server_without_a_url_has_nowhere_to_pin_its_token() {
+        let _home = crate::testing::isolated_home();
+        let mut draft = remote(
+            "nourl",
+            vec![typed("Authorization", "tok", true)],
+            Scope::Global,
+        );
+        draft.url = String::new();
+        let err = draft
+            .keep_in_keychain(crate::profile::DEFAULT_ID)
+            .unwrap_err();
+        assert!(err.contains("URL"), "{err}");
+    }
+
+    #[test]
+    fn a_credential_name_is_made_from_the_server_and_the_key() {
+        assert_eq!(
+            credential_name("GitHub", "GITHUB_TOKEN"),
+            "github-github_token"
+        );
+        assert_eq!(
+            credential_name("my server", "X-Api-Key"),
+            "my-server-x-api-key"
+        );
+        assert_eq!(credential_name("a//b", "--k"), "a-b-k");
     }
 }
