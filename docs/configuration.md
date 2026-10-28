@@ -132,11 +132,50 @@ hook file safe to honor at all once you trust the project.
 | `post_tool_use` | After a tool call, pass or fail | No, the call has happened |
 | `user_prompt_submit` | When you send a message | Yes |
 | `stop` | When a turn ends | No |
+| `plan_change` | When the plan changes, by the model or by you | No |
 
 A turn here is one of yours: a message sent and answered. A delegation
 inside it and a review of it aren't turns, so neither fires
 `user_prompt_submit` or `stop`. Their tool calls still meet `pre_tool_use` and
 `post_tool_use`.
+
+**Following the plan.** `plan_change` fires whenever the plan's steps change:
+the model starting or finishing a step, writing a new plan, or you editing it.
+It's how a task tracker stays in step with Taurus without Taurus keeping task
+files of its own, and how word that a step is done reaches you when you've
+stepped away. It's told the plan as it is now and what moved:
+
+```json
+{
+  "event": "plan_change",
+  "workspace": "/Users/me/project",
+  "session_id": "s-1a2b",
+  "plan": {
+    "by": "model",
+    "revision": 7,
+    "steps": [
+      {"text": "Read the parser", "state": "done"},
+      {"text": "Add the token type", "state": "active"}
+    ],
+    "changes": [
+      {"text": "Read the parser", "from": "active", "to": "done"},
+      {"text": "Add the token type", "from": "todo", "to": "active"}
+    ]
+  }
+}
+```
+
+`by` is `model` or `user`. In `changes`, a `from` of `null` is a step that's
+new and a `to` of `null` is one that came off. Sending the same list again
+isn't a change, so it doesn't fire.
+
+A `plan_change` hook runs beside the turn, not in it. The model doesn't wait
+for it, pressing Stop doesn't cut it off, and what it prints goes to the log
+rather than to the model. Two can run at once, so if you mirror the plan
+somewhere, keep the highest `revision` you've seen and ignore anything older.
+A `post_tool_use` hook on `update_plan` isn't the same thing: it sees the list
+the model sent, which can differ from the plan once you've edited it, and it
+never sees your edits.
 
 `matches` narrows which calls a hook is about. Every field is optional.
 Without `matches`, the hook applies to everything on its event.

@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::plan::{same_steps, PlanBoard, Rules};
+use crate::plan::{same_steps, ChangedBy, PlanBoard, PlanChange, Rules};
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
 use crate::view::{Step, StepState, TranscriptView};
 
@@ -110,7 +110,7 @@ impl Tool for UpdatePlan {
         Some(TranscriptView::Plan { steps })
     }
 
-    async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: UpdatePlanInput = parse_input(input)?;
         let rules = self.board.rules();
         let (steps, kept) = honor_edits(input.steps, &rules);
@@ -126,7 +126,19 @@ impl Tool for UpdatePlan {
                 (error, _) => error,
             });
         }
-        let mut result = self.board.set(steps);
+        let mut result = self.board.set(steps.clone());
+        if let Some(change) = PlanChange::between(
+            &rules.previous,
+            &steps,
+            ChangedBy::Model,
+            self.board.revision(),
+        ) {
+            change.announce(
+                ctx.hooks.as_ref(),
+                &ctx.workspace,
+                ctx.session_id.as_deref(),
+            );
+        }
         if let Some(kept) = kept {
             result.push(' ');
             result.push_str(&kept);
@@ -927,6 +939,86 @@ mod tests {
             .into_iter()
             .map(|s| (s.text, s.state))
             .collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_plan_change_hook_hears_each_change_and_not_a_repeat() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (ctx, _dir) = test_ctx();
+        let scripts = tempfile::TempDir::new().unwrap();
+        // A file per run: they run beside the turn, so two can overlap, and
+        // appending to one file would interleave them.
+        let log = scripts.path().join("log");
+        std::fs::create_dir(&log).unwrap();
+        let script = scripts.path().join("hook");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ncat > '{}'/$$.json\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ctx = ctx.with_hooks(std::sync::Arc::new(taurus_hooks::HookRunner::new(vec![(
+            "mirror".into(),
+            taurus_hooks::Hook {
+                on: taurus_hooks::HookEvent::PlanChange,
+                command: script.display().to_string(),
+                args: vec![],
+                matches: None,
+                timeout_seconds: 5,
+                foreign: None,
+                disabled: false,
+            },
+        )])));
+        let tool = UpdatePlan::new(PlanBoard::new());
+
+        let first = vec![
+            step("Read the parser", StepState::Active),
+            step("Add the token type", StepState::Todo),
+        ];
+        tool.execute(input(first.clone()), &ctx).await.unwrap();
+        // Refused as a repeat, so nothing changed and nothing is said.
+        tool.execute(input(first), &ctx).await.unwrap_err();
+        tool.execute(
+            input(vec![
+                step("Read the parser", StepState::Done),
+                step("Add the token type", StepState::Active),
+            ]),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        // The hooks run beside the call, so wait for both to land.
+        let mut lines = Vec::new();
+        for _ in 0..100 {
+            lines = std::fs::read_dir(&log)
+                .unwrap()
+                .filter_map(|entry| std::fs::read_to_string(entry.ok()?.path()).ok())
+                .filter_map(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .collect();
+            if lines.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        lines.sort_by_key(|l| l["plan"]["revision"].as_u64());
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[0]["event"], "plan_change");
+        assert_eq!(lines[0]["plan"]["by"], "model");
+        assert_eq!(
+            lines[0]["plan"]["changes"][0],
+            serde_json::json!({"text": "Read the parser", "from": null, "to": "active"})
+        );
+        assert_eq!(
+            lines[1]["plan"]["changes"],
+            serde_json::json!([
+                {"text": "Read the parser", "from": "active", "to": "done"},
+                {"text": "Add the token type", "from": "todo", "to": "active"},
+            ])
+        );
+        assert!(lines[1]["plan"]["revision"].as_u64() > lines[0]["plan"]["revision"].as_u64());
     }
 
     #[tokio::test]

@@ -27,10 +27,12 @@ pub fn config_file(dir: &Path) -> PathBuf {
 
 /// When a hook runs.
 ///
-/// Four, deliberately. Each one is a place the harness already had a decision
+/// Five, deliberately. Each one is a place the harness already had a decision
 /// or a boundary — there is no event here invented so the list would look
 /// complete, because an event nobody can name a use for is still a promise to
-/// keep working forever.
+/// keep working forever. The fifth, [`HookEvent::PlanChange`], names its use:
+/// a task tracker kept in step with the plan, and word that a step is done
+/// reaching someone who isn't watching.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -54,6 +56,17 @@ pub enum HookEvent {
     UserPromptSubmit,
     /// When a turn finishes.
     Stop,
+    /// When the plan changes, whether the model sent a new list or the person
+    /// edited it.
+    ///
+    /// Not a tool event, though the model's changes come through
+    /// `update_plan`: a `post_tool_use` hook on that tool sees the list the
+    /// model sent, which isn't always the plan (the person's edits are put
+    /// back into it), never sees the person's edits at all, and isn't told
+    /// what changed. This is told all three. It observes and can't refuse, and
+    /// it runs beside the turn rather than in it, so a hook that posts
+    /// somewhere slow never holds the model up.
+    PlanChange,
 }
 
 impl HookEvent {
@@ -69,6 +82,7 @@ impl HookEvent {
             Self::PostToolUse => "post_tool_use",
             Self::UserPromptSubmit => "user_prompt_submit",
             Self::Stop => "stop",
+            Self::PlanChange => "plan_change",
         }
     }
 

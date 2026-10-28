@@ -66,6 +66,7 @@
 //! what keeps an edit inside the ordering rule `update_plan` holds the model
 //! to, since everything done stays at the front.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,9 @@ struct Board {
     /// What the person changed since the model last wrote the plan, said once
     /// in the reminder and cleared by the model's next [`PlanBoard::set`].
     edited: Option<PlanEdit>,
+    /// How many times the plan has changed, by anyone. Kept across a finished
+    /// plan being dropped, so a `plan_change` hook can order what it's told.
+    revision: u64,
 }
 
 /// What a person changed about the plan, by step text.
@@ -165,6 +169,108 @@ pub struct RestoredPlan {
     pub pending: Option<PlanEdit>,
 }
 
+/// Who changed the plan, for a `plan_change` hook.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangedBy {
+    Model,
+    User,
+}
+
+/// One step that changed. `from` is `None` for a step that's new, and `to` is
+/// `None` for one that came off.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct StepChange {
+    pub text: String,
+    pub from: Option<StepState>,
+    pub to: Option<StepState>,
+}
+
+/// What a `plan_change` hook is told: the plan as it is now, and how it got
+/// there from the one before.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PlanChange {
+    pub by: ChangedBy,
+    /// Counts up with every change to this conversation's plan. Hooks run
+    /// beside the turn, so two can overlap; this is how one that mirrors the
+    /// plan somewhere knows which of them is newer.
+    pub revision: u64,
+    pub steps: Vec<Step>,
+    pub changes: Vec<StepChange>,
+}
+
+impl PlanChange {
+    /// The change from `before` to `after`, by step text, or `None` when
+    /// nothing a hook would care about moved. A list sent again with the same
+    /// states is no news; a new order on its own isn't either, since `steps`
+    /// carries the order for anyone who keeps it.
+    pub fn between(before: &[Step], after: &[Step], by: ChangedBy, revision: u64) -> Option<Self> {
+        let mut changes: Vec<StepChange> = after
+            .iter()
+            .filter_map(|step| {
+                let was = before
+                    .iter()
+                    .find(|old| old.text.trim() == step.text.trim())
+                    .map(|old| old.state);
+                (was != Some(step.state)).then(|| StepChange {
+                    text: step.text.trim().to_string(),
+                    from: was,
+                    to: Some(step.state),
+                })
+            })
+            .collect();
+        changes.extend(
+            before
+                .iter()
+                .filter(|old| !has(after, &old.text))
+                .map(|old| StepChange {
+                    text: old.text.trim().to_string(),
+                    from: Some(old.state),
+                    to: None,
+                }),
+        );
+        (!changes.is_empty()).then(|| Self {
+            by,
+            revision,
+            steps: after.to_vec(),
+            changes,
+        })
+    }
+
+    /// Runs the `plan_change` hooks for this, in the background.
+    ///
+    /// Not awaited, and not stopped by the turn's Stop: a hook here observes,
+    /// and one posting a step to a tracker or a phone shouldn't hold the
+    /// model up, or be cut off because the person pressed Stop after the
+    /// change it's reporting. Each hook is still bounded by its own timeout.
+    pub fn announce(
+        self,
+        hooks: Option<&Arc<taurus_hooks::HookRunner>>,
+        workspace: &Path,
+        session_id: Option<&str>,
+    ) {
+        let Some(runner) = hooks.filter(|r| r.has(taurus_hooks::HookEvent::PlanChange)) else {
+            return;
+        };
+        let Ok(plan) = serde_json::to_value(&self) else {
+            return;
+        };
+        let mut payload =
+            taurus_hooks::HookPayload::new(taurus_hooks::HookEvent::PlanChange, workspace)
+                .with_plan(plan);
+        if let Some(id) = session_id {
+            payload = payload.with_session(id);
+        }
+        let runner = runner.clone();
+        tokio::spawn(async move {
+            let unstoppable = tokio_util::sync::CancellationToken::new();
+            for note in runner.run(&payload, &unstoppable).await.notes {
+                tracing::info!(%note, "plan_change hook");
+            }
+        });
+    }
+}
+
 /// Why an edit was not applied.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EditRefused {
@@ -214,6 +320,7 @@ impl PlanBoard {
             board.removed.clear();
         }
         board.steps = steps;
+        board.revision += 1;
         // Written in this turn, so it is no longer somebody else's checklist.
         board.carried = false;
         // Whatever the person changed, this list was written after reading it.
@@ -295,6 +402,7 @@ impl PlanBoard {
             None => edit.clone(),
         });
         board.steps = steps.clone();
+        board.revision += 1;
         Ok(Some((steps, edit)))
     }
 
@@ -342,6 +450,11 @@ impl PlanBoard {
 
     pub fn steps(&self) -> Vec<Step> {
         self.board().steps.clone()
+    }
+
+    /// How many times the plan has changed. See [`PlanChange::revision`].
+    pub fn revision(&self) -> u64 {
+        self.board().revision
     }
 
     /// Whether the plan on the board was written before this turn began.
@@ -414,7 +527,10 @@ impl PlanBoard {
             return false;
         }
         if board.steps.iter().all(|s| s.state == StepState::Done) {
-            *board = Board::default();
+            *board = Board {
+                revision: board.revision,
+                ..Board::default()
+            };
             return false;
         }
         board.carried = true;
@@ -1023,6 +1139,53 @@ mod tests {
         assert!(reminder.contains("added 'Three'."), "{reminder}");
         assert!(!reminder.contains("added 'Two'"), "{reminder}");
         assert!(!reminder.contains("removed 'Two'"), "{reminder}");
+    }
+
+    #[test]
+    fn a_plan_change_names_what_moved_and_nothing_else() {
+        let before = vec![
+            step("One", StepState::Active),
+            step("Two", StepState::Todo),
+            step("Three", StepState::Todo),
+        ];
+        let after = vec![
+            step("One", StepState::Done),
+            step("Two", StepState::Todo),
+            step("Four", StepState::Todo),
+        ];
+        let change = PlanChange::between(&before, &after, ChangedBy::User, 3).unwrap();
+        assert_eq!(change.by, ChangedBy::User);
+        assert_eq!(change.revision, 3);
+        assert_eq!(change.steps, after);
+        let moved = |text: &str, from, to| StepChange {
+            text: text.into(),
+            from,
+            to,
+        };
+        assert_eq!(
+            change.changes,
+            [
+                moved("One", Some(StepState::Active), Some(StepState::Done)),
+                moved("Four", None, Some(StepState::Todo)),
+                moved("Three", Some(StepState::Todo), None),
+            ]
+        );
+
+        // The same steps in the same states, reordered or not, is no news.
+        let mut shuffled = after.clone();
+        shuffled.reverse();
+        assert!(PlanChange::between(&after, &shuffled, ChangedBy::Model, 4).is_none());
+    }
+
+    #[test]
+    fn dropping_a_finished_plan_keeps_counting() {
+        let board = PlanBoard::new();
+        board.set(vec![step("One", StepState::Done)]);
+        assert_eq!(board.revision(), 1);
+        board.start_turn();
+        assert!(board.steps().is_empty());
+        board.set(vec![step("Two", StepState::Active)]);
+        assert_eq!(board.revision(), 2);
     }
 
     #[test]

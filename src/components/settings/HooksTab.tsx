@@ -12,6 +12,7 @@ const WHEN: Record<HookEvent, string> = {
   post_tool_use: "after a tool call",
   user_prompt_submit: "when you send a message",
   stop: "when a turn ends",
+  plan_change: "when the plan changes",
 };
 
 /**

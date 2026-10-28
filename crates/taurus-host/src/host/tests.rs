@@ -4040,3 +4040,70 @@ async fn an_otlp_endpoint_has_to_be_an_http_address() {
     host.set_otlp_endpoint("").await.unwrap();
     assert_eq!(host.settings().await.otlp_endpoint, "");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_plan_change_hook_hears_the_persons_edit() {
+    use std::os::unix::fs::PermissionsExt;
+    use taurus_tools::view::{Step, StepState};
+
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let scripts = TempDir::new().unwrap();
+    let heard = scripts.path().join("heard.json");
+    let script = scripts.path().join("hook");
+    std::fs::write(&script, format!("#!/bin/sh\ncat > '{}'\n", heard.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let taurus = workspace.join(".taurus");
+    std::fs::create_dir_all(&taurus).unwrap();
+    std::fs::write(
+        taurus.join("hooks.json"),
+        serde_json::json!({
+            "hooks": {"mirror": {"on": "plan_change", "command": script.display().to_string()}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    host.reload().await;
+    let hooks = host.hooks().await;
+    assert!(
+        hooks.has(taurus_hooks::HookEvent::PlanChange),
+        "{:?}",
+        hooks.summaries()
+    );
+
+    let step = |text: &str, state| Step {
+        text: text.into(),
+        state,
+        active_form: None,
+        check: None,
+    };
+    let plan = vec![step("Read the parser", StepState::Active)];
+    host.plan_board("s1").await.set(plan.clone());
+    let mut edited = plan.clone();
+    edited.push(step("Update the changelog", StepState::Todo));
+    host.edit_plan("s1", &plan, edited)
+        .await
+        .expect("a valid edit")
+        .expect("a change");
+
+    let mut said = serde_json::Value::Null;
+    for _ in 0..100 {
+        if let Some(value) = std::fs::read_to_string(&heard)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+        {
+            said = value;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(said["event"], "plan_change", "{said}");
+    assert_eq!(said["session_id"], "s1");
+    assert_eq!(said["plan"]["by"], "user");
+    assert_eq!(
+        said["plan"]["changes"],
+        serde_json::json!([{"text": "Update the changelog", "from": null, "to": "todo"}])
+    );
+}
