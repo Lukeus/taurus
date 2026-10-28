@@ -141,8 +141,11 @@ impl Host {
             }
             layers.push(layer);
         }
-        let (merged, merge_problems) = config::merge_mcp(layers);
+        let (mut merged, merge_problems) = config::merge_mcp(layers);
         problems.extend(Problem::tag(ProblemSource::Mcp, merge_problems));
+        // What a saved credential is checked against: a project's entry gets
+        // less than your own. See `crate::credentials`.
+        merged.layers = defined_in.clone();
         (merged, defined_in, problems)
     }
 
@@ -188,20 +191,11 @@ impl Host {
         let _reloading = self.mcp_reload.lock().await;
         let workspace = self.workspace.read().await.clone();
 
-        let mut problems = Vec::new();
-        // Plugins' servers first, the lowest layer, so your own mcp.json can
-        // switch one off by its key. See `crate::plugins`.
-        let mut layers = plugin_layers(Some(&workspace));
-        for dir in config::config_dirs(Some(&workspace)) {
-            match taurus_mcp::load(&dir) {
-                Ok(layer) => layers.push(layer),
-                // A layer that will not parse is skipped, not fatal: the other
-                // one is still a working set of servers.
-                Err(e) => problems.push(Problem::new(ProblemSource::Mcp, e)),
-            }
-        }
-        let (config, merge_problems) = config::merge_mcp(layers);
-        problems.extend(Problem::tag(ProblemSource::Mcp, merge_problems));
+        // The panel's read, so the servers started are the ones it lists, and
+        // each knows which layer wrote it. Plugins' servers are the lowest
+        // layer, so your own mcp.json can switch one off by its key, and a
+        // layer that won't parse is skipped rather than fatal.
+        let (config, _, problems) = self.mcp_layers(&workspace);
 
         let plan = self.mcp.plan(&config, restart).await;
 
@@ -280,25 +274,65 @@ impl Host {
     /// Nothing is registered and no live connection is disturbed — see
     /// [`taurus_mcp::probe`]. This is what makes "Test" safe to press against an
     /// edit of a server that is currently working.
+    ///
+    /// `scope` is the file the entry is in, or would be saved to, which is
+    /// what decides the saved credentials it may have.
     pub async fn test_mcp_server(
         &self,
         name: &str,
         server: &taurus_mcp::ServerConfig,
+        scope: Scope,
     ) -> Result<Vec<String>, String> {
         server.validate()?;
         // The same credentials the live connection would use, so Test tests
         // what actually runs rather than the unauthenticated half of it.
-        taurus_mcp::probe(name, server, Some(Arc::new(crate::secrets::Keychain))).await
+        taurus_mcp::probe(
+            name,
+            server,
+            Some(Arc::new(crate::secrets::Keychain)),
+            Some(&crate::credentials::ProfileCredentials),
+            scope,
+        )
+        .await
     }
-}
 
-/// Each active plugin's MCP servers, as a layer apiece. Read through the
-/// trust gate, like the files beside them.
-fn plugin_layers(workspace: Option<&Path>) -> Vec<taurus_mcp::McpConfig> {
-    crate::plugins::active(crate::trust::for_reading(workspace))
-        .into_iter()
-        .map(crate::plugins::Plugin::into_mcp)
-        .collect()
+    /// The active profile's saved credentials, with the servers using each.
+    pub async fn credentials(&self) -> Result<Vec<CredentialView>, String> {
+        let workspace = self.workspace.read().await.clone();
+        let (config, _, _) = self.mcp_layers(&workspace);
+        credentials::views(profile::active_id(), &config.servers)
+    }
+
+    /// Saves a credential, then restarts the servers that use it, since their
+    /// entries read the same as before and a reload would keep them running
+    /// with the old value.
+    pub async fn save_credential(
+        &self,
+        name: &str,
+        hosts: Vec<String>,
+        value: Option<String>,
+    ) -> Result<CredentialView, String> {
+        let (id, owned) = (profile::active_id(), name.to_string());
+        let saved = off_runtime("saving the credential", move || {
+            credentials::save(id, &owned, &hosts, value.as_deref())
+        })
+        .await?;
+        self.restart_mcp(taurus_mcp::Restart::Using(&saved.name))
+            .await;
+        Ok(saved)
+    }
+
+    /// Removes a credential, and restarts what used it, which then fails to
+    /// start and says the credential is gone.
+    pub async fn remove_credential(&self, name: &str) -> Result<(), String> {
+        let (id, owned) = (profile::active_id(), name.to_string());
+        off_runtime("removing the credential", move || {
+            credentials::remove(id, &owned)
+        })
+        .await?;
+        self.restart_mcp(taurus_mcp::Restart::Using(name)).await;
+        Ok(())
+    }
 }
 
 /// Which plugin each plugin server's key belongs to.

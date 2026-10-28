@@ -20,7 +20,7 @@ would write one project's overrides into the file every other project reads.
 | File | Global | Workspace |
 | --- | --- | --- |
 | `providers.json` | Backends, including the header a key is sent in. Never the key itself, which lives in the OS keychain or an env var. | Overrides and additions for this project. |
-| `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Values may name env vars. The **MCP** panel reads and writes it; **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
+| `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Values may name env vars, and `env` and `headers` may name [saved credentials](#saved-credentials). The **MCP** panel reads and writes it; **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `search.json` | Web search backends and which one is active. Never the key itself, which lives in the OS keychain or an env var, as with providers. | A different backend for this project, or field overrides on an inherited one. |
 | `settings.json` | Last workspace, the two synthesis toggles, `shell_integration` (whether the terminal dock marks each command; on by default), theme and theme id, fallback model, `max_iterations`, `max_concurrent_agents` (how many sub-agents one message runs at once, 2 by default, 1 to 8, see [how many run at once](capabilities.md#how-many-run-at-once)), `context_strategy` (`compact` or `relay`, see [the context window](working-with-it.md#the-context-window)), `context_limit` (the working context in tokens, 200,000 by default, `0` for the model's whole window), `plugins`, which plugins are switched on or off, `voice_model`, the speech model the mic transcribes with (`base.en` by default, see [Talking instead of typing](working-with-it.md#talking-instead-of-typing)), `notify_when_done` (on by default), `ui_scale` (the interface size in percent, 75 to 150), `terminal_shell` (read from this file only, never a project's), `terminal_font` and `terminal_font_size`, and `speech`, which reads replies aloud: `read_aloud` (off by default), `engine` (`system`, `elevenlabs` or `openai`), and each engine's own voice, model and `api_key_env`, kept so switching engines loses nothing (see [Hearing replies read aloud](working-with-it.md#hearing-replies-read-aloud)). A file that doesn't parse is shown at the top of **Settings › Behavior**, and the app won't write to it until you fix or delete it, so a typo never costs you the rest of the file. | The provider and model this project was last worked in, a step limit for turns here, how many sub-agents run at once, the context strategy, and the working context. Settings always writes the global file; when this one sets a value, **Settings › Behavior** says so under that control, because this one wins here. |
 | `themes/` | Custom palettes, typefaces, wordmarks and corner radii. See [Themes](#themes). | Themes that travel with the project, so a repository can brand the app for everyone who opens it. |
@@ -59,6 +59,9 @@ There's no workspace layer. A project can say how to work on it, but a
 prompt, so Taurus never reads one. An edit by hand is picked up at the next
 reload or folder switch. A file that doesn't parse is shown on the Profile
 tab, nobody is introduced until it's fixed, and the tab won't write over it.
+
+Below them, **Saved credentials** holds the tokens your MCP servers use. See
+[Saved credentials](#saved-credentials).
 
 Each profile has a folder of its own so a second one can sit beside it. Only
 `default` exists for now. See [Known gaps](known-gaps.md).
@@ -392,13 +395,17 @@ revoked.
 
 Stdio servers have no sign-in and aren't offered one. The MCP authorization
 spec says a local program takes its credentials from the environment, which is
-what `${VAR}` below is for.
+what `${VAR}` and saved credentials below are for.
 
-**A credential goes in the global file by default.** Cataloged entries that
-want one default to `~/.taurus/mcp.json`, which nobody commits. Choosing this
-project writes it into `<workspace>/.taurus/mcp.json` instead, a file one
-`git add .` from being published, so Taurus asks you to confirm. It isn't
-refused: there are good reasons to want it.
+**A token you type into the catalog goes to your keychain.** Filling in an
+entry that asks for one saves it as a [saved credential](#saved-credentials)
+named after the entry, and the file gets `${secret:github}` where the token
+would have gone. An HTTP server's credential is pinned to its own host. The
+one case that can't work that way is a stdio server saved into a project's
+file, because a project's program never gets a saved credential. There, the
+token is written into `<workspace>/.taurus/mcp.json`, a file one `git add .`
+from being published, so Taurus asks you to confirm first. The same happens
+on a system with no keychain.
 
 `mcp.json` takes stdio and streamable-HTTP servers in the format Claude Desktop
 and Claude Code use, so an existing `mcpServers` block pastes in unchanged:
@@ -425,6 +432,60 @@ An unset variable fails the server with the variable's name in the message.
 Taurus doesn't send an empty `Authorization` header and get a 401 that looks
 like a bad token instead of a missing one. A literal value passes through
 untouched.
+
+### Saved credentials
+
+A token can live in your keychain instead of a file or your shell. Add it under
+**Saved credentials** in **Settings › Profile**, then name it from a server's
+`env` or `headers`:
+
+```jsonc
+{
+  "mcpServers": {
+    "linear": {
+      "url": "https://mcp.linear.app/mcp",
+      "headers": { "Authorization": "Bearer ${secret:linear}" }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${secret:github}" }
+    }
+  }
+}
+```
+
+The file only names it, so it's safe to read, share and commit. The value is
+read from the keychain when the server starts and never comes back to the
+screen. The list of names lives in
+`~/.taurus/profiles/default/credentials.json`, beside your profile.
+
+A reference is only text, and a project's own `mcp.json` can write one as
+easily as yours. So each credential lists the hosts it may go to, and every use
+is checked:
+
+- **An HTTP server** gets it when its URL's host is on the list.
+  `*.example.com` covers every subdomain of `example.com`, but not
+  `example.com` itself. A pasted URL is cut down to its host.
+- **A credential with no hosts listed** goes to any server, but only one
+  defined in your own `~/.taurus/mcp.json`.
+- **A stdio program** gets it only when your own `mcp.json` defines it. A
+  project's program is a program the project chose, and it could send the
+  value anywhere, so it never gets one. Give it a `${VAR}` instead.
+
+A plugin's server counts as the layer the plugin is installed in. Workspace
+trust already stands between a project and its servers. This is the second
+gate, for the case trust can't see: a folder you trusted once, and a
+`git pull` since that added a server.
+
+A refused or missing credential fails that server with a message saying which
+rule stopped it and what to change. `${secret:…}` is refused outright in a
+`command`, an argument or a URL, all of which get logged and shown.
+
+Saving or removing a credential restarts the servers that use it, and no
+others. Their entries read the same as before, so without the restart they'd
+keep running with the old value. **Settings › Profile** shows which servers
+use each credential, and whether the keychain still holds it.
 
 ### The MCP panel
 
@@ -456,8 +517,9 @@ server cost you, not what it would cost. A connected server that offers
 nothing shows a real `~0`, which is worth saying out loud: it's a child
 process running for no benefit.
 
-A stored value that isn't a `${VAR}` reference is treated as a secret. The
-panel is told the key is set but never gets the value. Leave the field alone
+A stored value that isn't a reference is treated as a secret. A reference is
+`${VAR}` or `${secret:name}`, optionally after `Bearer`, `Token` or `Basic`.
+The panel is told the key is set but never gets the value. Leave the field alone
 to keep what's on disk, or type over it to replace it.
 
 Saving reconnects the MCP servers and nothing else. Skills, providers, and the

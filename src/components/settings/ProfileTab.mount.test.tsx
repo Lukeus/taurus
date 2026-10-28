@@ -29,6 +29,10 @@ beforeEach(() => {
   state.status = { problems: [] };
   stored = { name: "", introduce: false };
   invoke.mockImplementation((command: string, args?: { profile: Profile }) => {
+    // The credentials section below the profile, empty here; it has its own
+    // tests.
+    if (command === "list_credentials") return Promise.resolve([]);
+    if (command === "keychain_available") return Promise.resolve(true);
     if (command === "get_profile") {
       return Promise.resolve({ id: "default", profile: stored, path: PATH });
     }

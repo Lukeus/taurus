@@ -280,6 +280,62 @@ export function leaksSecret(entry: CatalogEntry, scope: Scope): boolean {
 }
 
 /**
+ * Whether installing this entry saves its tokens as credentials in the
+ * keychain, and writes `${secret:NAME}` where the token would have gone.
+ *
+ * Wherever the backend would hand the credential back: your own file, or an
+ * HTTP server, which gets one pinned to its own host. A project's program is
+ * the one place a saved credential never goes, so a token for one is still
+ * written into the file, and `leaksSecret` still asks first.
+ */
+export function keepsInKeychain(entry: CatalogEntry, scope: Scope, keychain: boolean): boolean {
+  return (
+    keychain &&
+    entry.inputs.some((i) => i.kind === "secret") &&
+    (scope === "global" || entry.transport === "http")
+  );
+}
+
+/**
+ * The saved credential a secret input becomes: the entry's id, with the
+ * input's key added when the entry asks for more than one.
+ */
+export function credentialFor(entry: CatalogEntry, inputKey: string): string {
+  const id = entry.id.replace(/[^A-Za-z0-9_.-]/g, "-");
+  const secrets = entry.inputs.filter((i) => i.kind === "secret");
+  return secrets.length > 1 ? `${id}-${inputKey}` : id;
+}
+
+/**
+ * The hosts a saved credential is for. An HTTP entry's own host, so the token
+ * goes nowhere else even if the entry is copied. None for a program, which
+ * only your own file can start with one.
+ */
+export function credentialHosts(entry: CatalogEntry, answers: Record<string, string>): string[] {
+  if (entry.transport !== "http") return [];
+  const url = fill(entry.url, answers);
+  try {
+    return url ? [new URL(url).hostname] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The answers with each secret replaced by the reference to its credential. */
+export function withReferences(
+  entry: CatalogEntry,
+  answers: Record<string, string>,
+): Record<string, string> {
+  const out = { ...answers };
+  for (const input of entry.inputs) {
+    if (input.kind === "secret" && (answers[input.key] ?? "").trim()) {
+      out[input.key] = `\${secret:${credentialFor(entry, input.key)}}`;
+    }
+  }
+  return out;
+}
+
+/**
  * Which config layer a catalogue entry wants to be written into.
  *
  * The catalogue says `project` where the harness says `workspace`; the two

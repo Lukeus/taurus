@@ -261,8 +261,8 @@ export function McpServerEditor({
             legend={stdio ? "Environment variables" : "Headers"}
             hint={
               stdio
-                ? "Passed to the program. Write ${VAR} to read the value from your environment instead of storing it here."
-                : "Sent with every request. Write ${VAR} — for example `Bearer ${GITHUB_TOKEN}` — to keep the token out of a file you commit."
+                ? "Passed to the program. To keep a token out of this file, save it in Settings › Profile and write ${secret:name}, or write ${VAR} to read it from your environment. A project's own program can't use a saved one."
+                : "Sent with every request. To keep a token out of this file, save it in Settings › Profile and write `Bearer ${secret:name}`, or `Bearer ${VAR}` to read it from your environment."
             }
             values={values}
             onChange={setValues}

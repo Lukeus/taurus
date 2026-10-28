@@ -35,12 +35,28 @@ const SERVERS_KEY: &str = "mcpServers";
 pub struct McpConfig {
     #[serde(rename = "mcpServers")]
     pub servers: BTreeMap<String, ServerConfig>,
+    /// Which layer wrote each server, by name. Filled in by whoever merged
+    /// the layers, since one file on its own doesn't know. A server missing
+    /// from here counts as a project's, the stricter of the two, so a caller
+    /// that forgets to say can't hand somebody else's entry your credentials.
+    #[serde(skip)]
+    pub layers: BTreeMap<String, taurus_tools::Scope>,
     /// Entries that would not parse, by name, each with what is wrong.
     ///
     /// Not written back out — these are diagnostics, and the text they describe
     /// is still in the file the user wrote.
     #[serde(skip)]
     pub invalid: BTreeMap<String, String>,
+}
+
+impl McpConfig {
+    /// The layer that wrote `name`, or a project's when nobody said.
+    pub fn layer_of(&self, name: &str) -> taurus_tools::Scope {
+        self.layers
+            .get(name)
+            .copied()
+            .unwrap_or(taurus_tools::Scope::Workspace)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -99,6 +115,19 @@ impl ServerConfig {
             Self::Stdio { disabled, .. } | Self::Http { disabled, .. } => *disabled = value,
             Self::Toggle(toggle) => toggle.disabled = value,
         }
+    }
+
+    /// Whether this entry uses the saved credential `name`, in its env or
+    /// headers, which are the only places one can go.
+    pub fn uses_secret(&self, name: &str) -> bool {
+        let values = match self {
+            Self::Stdio { env, .. } => env.values(),
+            Self::Http { headers, .. } => headers.values(),
+            Self::Toggle(_) => return false,
+        };
+        values
+            .into_iter()
+            .any(|value| taurus_tools::env::references_secret(value, name))
     }
 
     pub fn describe(&self) -> String {

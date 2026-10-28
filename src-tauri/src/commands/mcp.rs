@@ -203,7 +203,10 @@ pub async fn test_mcp_server(
     let source = previous.unwrap_or_else(|| draft.origin());
     let server = draft.to_config(stored(&workspace, &source).as_ref());
 
-    state.host.test_mcp_server(&draft.name, &server).await
+    state
+        .host
+        .test_mcp_server(&draft.name, &server, draft.scope)
+        .await
 }
 
 /// Signs in to an MCP server that wants OAuth.
@@ -329,4 +332,34 @@ async fn after_mcp_change(state: &AppState, restart: Restart<'_>) -> CmdResult<V
     state.host.restart_mcp(restart).await;
     emit_status(state).await;
     Ok(state.host.mcp_servers().await)
+}
+
+/// The active profile's saved credentials, for Settings › Profile.
+#[tauri::command]
+pub async fn list_credentials(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<CredentialView>> {
+    state.host.credentials().await
+}
+
+/// Saves a credential: the value to the keychain, the name and hosts to the
+/// profile. `value` is `None` to change only the hosts. Restarts the servers
+/// that use it.
+#[tauri::command]
+pub async fn save_credential(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    hosts: Vec<String>,
+    value: Option<String>,
+) -> CmdResult<CredentialView> {
+    let saved = state.host.save_credential(&name, hosts, value).await?;
+    // The servers it restarted changed what's registered.
+    emit_status(&state).await;
+    Ok(saved)
+}
+
+/// Removes a credential, from the keychain and the profile.
+#[tauri::command]
+pub async fn remove_credential(state: State<'_, Arc<AppState>>, name: String) -> CmdResult<()> {
+    state.host.remove_credential(&name).await?;
+    emit_status(&state).await;
+    Ok(())
 }
