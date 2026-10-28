@@ -587,7 +587,7 @@ export function Composer({
         />
         <div className="composer-foot">
           <button
-            className="pill"
+            className="pill composer-workspace"
             // The same rule the rail's workspace row follows: a switch closes
             // the conversation and restarts the MCP servers it changes.
             disabled={busy}

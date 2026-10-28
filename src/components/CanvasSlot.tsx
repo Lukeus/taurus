@@ -258,7 +258,7 @@ export function CanvasSlot({
   return (
     <>
       <ResizeHandle pane={pane} label="Editor width" />
-      <div className="side-slot" style={{ width: pane.size }}>
+      <div className="side-slot" ref={pane.slot} style={{ width: pane.size }}>
         <Canvas
           path={path}
           reveal={reveal}

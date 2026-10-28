@@ -211,6 +211,35 @@ describe("the stylesheet", () => {
     }
   });
 
+  it("never lets the shell scroll as a page", () => {
+    /*
+     * The bug this exists for: a dock dragged tall in a short window, or a
+     * canvas left wide in a narrow one, made the pane taller or wider than the
+     * window, and the webview scrolled the document — rail, composer and all
+     * slid out of the window's frame. The screenshot harness locked its own
+     * page, so not one picture showed it.
+     *
+     * Two halves. The page is locked, so an overflow can never move the
+     * window; and the regions clip with `clip`, because `hidden` is still a
+     * scroll container that focusing the terminal's input scrolls anyway.
+     */
+    const exact = (sel: string) =>
+      [...css.matchAll(/^([^\s@}][^{]*)\{([^}]*)\}/gm)].find(
+        ([, group]) => group.trim().replace(/\s+/g, " ") === sel,
+      )?.[2];
+
+    expect(exact("html, body, #root")).toMatch(/overflow:\s*hidden/);
+    for (const sel of [".app", ".pane", ".pane main", ".side-slot", ".dock-slot", ".dock-screen"]) {
+      expect(exact(sel), `${sel} has no rule`).toBeDefined();
+      expect(exact(sel), `${sel} lets its overflow scroll it`).toMatch(/overflow:\s*clip/);
+    }
+    // The two panes the user sizes give way rather than push: the dock shrinks
+    // and the side slot is capped by the room the conversation leaves.
+    expect(exact(".dock-slot")).toMatch(/flex:\s*0 1 auto/);
+    expect(exact(".dock-slot")).not.toMatch(/vh/);
+    expect(exact(".side-slot")).toMatch(/max-width:\s*calc\(100% - var\(--center-min-w\)\)/);
+  });
+
   it("keeps every layout distance on the ladder", () => {
     /*
      * The file grew up with every integer from 1 to 14 in use as a padding or a

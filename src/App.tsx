@@ -1580,7 +1580,7 @@ export default function App() {
           {side === "changes" && store.session && (
             <>
               <ResizeHandle pane={changesPane} label="Changes width" />
-              <div className="side-slot" style={{ width: changesPane.size }}>
+              <div className="side-slot" ref={changesPane.slot} style={{ width: changesPane.size }}>
                 <Suspense fallback={<aside className="drawer changes-pane" />}>
                   <ChangesDrawer
                     sessionId={store.session.id}
@@ -1611,7 +1611,7 @@ export default function App() {
           {side === "activity" && store.session && (
             <>
               <ResizeHandle pane={activityPane} label="Agent activity width" />
-              <div className="side-slot" style={{ width: activityPane.size }}>
+              <div className="side-slot" ref={activityPane.slot} style={{ width: activityPane.size }}>
                 <Suspense fallback={<aside className="drawer agents-pane" />}>
                   <AgentsPanel
                     model={store.session.model}
@@ -1735,7 +1735,7 @@ export default function App() {
           <>
             <ResizeHandle pane={dock} label="Terminal height" />
             <Suspense fallback={<div className="dock-loading" />}>
-              <div className="dock-slot" style={{ height: dock.size }}>
+              <div className="dock-slot" ref={dock.slot} style={{ height: dock.size }}>
                 <TerminalDock
                   // A new folder is a new shell. Keyed rather than handled
                   // inside, so the old one is torn down by the same path that

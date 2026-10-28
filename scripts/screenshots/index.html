@@ -3,19 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <title>Taurus</title>
-    <style>
-      /* The app fills a Tauri window, which has no page margin and never
-         scrolls as a document. The capture viewport stands in for that. */
-      html,
-      body {
-        margin: 0;
-        height: 100%;
-        overflow: hidden;
-      }
-      #root {
-        height: 100%;
-      }
-    </style>
+    <!-- No page styles of its own. This used to lock the page from scrolling,
+         which the app's index.html did not, and so every picture hid the bug
+         where an overflowing pane scrolled the whole shell out of the window.
+         The lock is the app's stylesheet's job now; see `html, body` there. -->
   </head>
   <body>
     <div id="root"></div>

@@ -7,6 +7,7 @@ import {
   ResizeHandle,
   TERMINAL_HEIGHT,
   clamp,
+  drawn,
   remembered,
   sizedBy,
   type Resizable,
@@ -40,6 +41,27 @@ describe("dragging an edge", () => {
     // moving again once the pointer has paid them all back.
     expect(sizedBy(grabbed, 5000, 1, 180, 360)).toBe(360);
     expect(sizedBy(grabbed, 420, 1, 180, 360)).toBe(256);
+  });
+});
+
+describe("a pane the layout has squeezed", () => {
+  const box = (width: number, height: number) =>
+    ({ getBoundingClientRect: () => ({ width, height }) }) as HTMLElement;
+
+  it("is dragged from the size it is drawn at", () => {
+    // A dock left at 600px in a window that now gives it 200: starting the
+    // drag from 600 would spend the first 400px of it with the edge stuck.
+    expect(drawn(600, box(1000, 200), "y")).toBe(200);
+    expect(drawn(560, box(280, 900), "x")).toBe(280);
+  });
+
+  it("is never made bigger than it was asked to be", () => {
+    expect(drawn(300, box(1000, 340), "y")).toBe(300);
+  });
+
+  it("keeps its own size when there is nothing drawn to read", () => {
+    expect(drawn(300, null, "y")).toBe(300);
+    expect(drawn(300, box(0, 0), "y")).toBe(300);
   });
 });
 
