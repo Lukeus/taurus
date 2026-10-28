@@ -266,8 +266,34 @@ describe("browsing the catalogue", () => {
   });
 });
 
-/** Mounts the setup step for one entry. */
+/**
+ * Mounts the setup step for one entry, before the keychain has answered,
+ * which the form treats as there being none. Never answering keeps a late
+ * state update out of these synchronous tests.
+ */
 function setup(entry: CatalogEntry) {
+  invoke.mockImplementation((command: string) =>
+    command === "keychain_available" ? new Promise(() => {}) : Promise.resolve(undefined),
+  );
+  return mountSetup(entry);
+}
+
+/**
+ * The same with a keychain, once it has said so. `save_credential` succeeds
+ * unless `refuse` is given.
+ */
+async function setupWithKeychain(entry: CatalogEntry, refuse?: string) {
+  invoke.mockImplementation((command: string) => {
+    if (command === "keychain_available") return Promise.resolve(true);
+    if (command === "save_credential" && refuse) return Promise.reject(refuse);
+    return Promise.resolve(undefined);
+  });
+  const form = mountSetup(entry);
+  await act(async () => {});
+  return form;
+}
+
+function mountSetup(entry: CatalogEntry) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -397,6 +423,68 @@ describe("filling an entry in", () => {
     form.choose("global");
     form.choose("workspace");
     expect(form.button("Continue").disabled).toBe(true);
+  });
+
+  it("puts a token in the keychain and names it in the draft", async () => {
+    const form = await setupWithKeychain(GITHUB);
+    form.type("ghp_realtokenvalue");
+    expect(form.host.querySelector(".mcp-preview")?.textContent).toContain(
+      "Bearer ${secret:github}",
+    );
+    await act(async () => form.button("Continue").click());
+
+    const saved = invoke.mock.calls.find(([n]) => n === "save_credential");
+    // Pinned to the server's own host, so a copy of the entry elsewhere
+    // doesn't take the token with it.
+    expect(saved?.[1]).toEqual({
+      name: "github",
+      hosts: ["api.githubcopilot.com"],
+      value: "ghp_realtokenvalue",
+    });
+    expect(form.ready).toHaveLength(1);
+    expect(form.ready[0].headers).toEqual([
+      { key: "Authorization", value: "Bearer ${secret:github}", secret: false },
+    ]);
+    expect(JSON.stringify(form.ready[0])).not.toContain("ghp_realtokenvalue");
+  });
+
+  it("doesn't warn about a project file that will only name the token", async () => {
+    // An HTTP server gets a credential pinned to its host from either file,
+    // so there's nothing in the project file to publish.
+    const form = await setupWithKeychain(GITHUB);
+    form.type("ghp_realtokenvalue");
+    form.choose("workspace");
+    expect(form.host.querySelector(".mcp-leak")).toBeNull();
+    expect(form.button("Continue").disabled).toBe(false);
+  });
+
+  it("still warns for a project's program, which never gets a saved one", async () => {
+    const LOCAL: CatalogEntry = {
+      ...GITHUB,
+      id: "local",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "local-server"],
+      env: [{ key: "TOKEN", value: "{token}" }],
+      url: "",
+      headers: [],
+    };
+    const form = await setupWithKeychain(LOCAL);
+    form.type("tok");
+    form.choose("workspace");
+    expect(form.host.querySelector(".mcp-leak")).not.toBeNull();
+    form.tick();
+    await act(async () => form.button("Continue").click());
+    expect(invoke.mock.calls.some(([n]) => n === "save_credential")).toBe(false);
+    expect(form.ready[0].env[0].value).toBe("tok");
+  });
+
+  it("stays put, saying why, when the keychain refuses", async () => {
+    const form = await setupWithKeychain(GITHUB, "the keychain is locked");
+    form.type("ghp_realtokenvalue");
+    await act(async () => form.button("Continue").click());
+    expect(form.ready).toHaveLength(0);
+    expect(form.host.textContent).toContain("the keychain is locked");
   });
 
   it("says nothing about scope for an entry with no credential", () => {

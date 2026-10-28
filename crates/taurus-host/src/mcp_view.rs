@@ -56,15 +56,14 @@ pub struct McpValue {
 impl McpValue {
     /// Splits a stored value into what is safe to show and what is not.
     ///
-    /// The test is whether it names a variable rather than holding one. A value
-    /// that is entirely `${…}` is a name, and showing it is the whole reason the
-    /// syntax exists — someone has to be able to see *which* variable a server
-    /// wants. Anything else is treated as a credential, including a value that
-    /// merely contains a reference, because `Bearer ${TOKEN}` and
-    /// `Bearer sk-live-…` are the same shape from here.
+    /// The test is whether it names a credential rather than holding one. A
+    /// value made of `${…}` references is names, and showing them is the whole
+    /// reason the syntax exists — someone has to be able to see *which*
+    /// variable or saved credential a server wants. So is a reference behind
+    /// an authorization scheme, `Bearer ${secret:linear}`, which is the shape
+    /// almost every header takes. Anything else is treated as a credential.
     fn from_stored(key: &str, value: &str) -> Self {
-        let is_reference =
-            value.starts_with("${") && value.ends_with('}') && !value[2..].contains("${");
+        let is_reference = names_only(value);
         Self {
             key: key.to_string(),
             value: if is_reference {
@@ -75,6 +74,32 @@ impl McpValue {
             secret: !is_reference,
         }
     }
+}
+
+/// Whether `value` is one or more `${…}` references, optionally after an
+/// authorization scheme, and nothing else that could be a secret.
+fn names_only(value: &str) -> bool {
+    let mut rest = value.trim();
+    for scheme in ["Bearer ", "Token ", "Basic "] {
+        if let Some(after) = rest
+            .get(..scheme.len())
+            .filter(|head| head.eq_ignore_ascii_case(scheme))
+            .map(|_| &rest[scheme.len()..])
+        {
+            rest = after.trim_start();
+            break;
+        }
+    }
+    if rest.is_empty() {
+        return false;
+    }
+    while let Some(after) = rest.strip_prefix("${") {
+        let Some(end) = after.find('}') else {
+            return false;
+        };
+        rest = after[end + 1..].trim_start();
+    }
+    rest.is_empty()
 }
 
 /// One configured server, as the panel renders it.
@@ -382,11 +407,18 @@ mod tests {
         assert_eq!(literal.value, "");
         assert!(literal.secret);
 
-        // A value that merely contains a reference is a credential too:
-        // `Bearer ${TOKEN}` and `Bearer sk-live-…` are the same shape from here.
-        let mixed = McpValue::from_stored("Authorization", "Bearer ${TOKEN}");
+        // A reference behind a scheme is still only a name, and it's the
+        // shape nearly every header is written in.
+        let header = McpValue::from_stored("Authorization", "Bearer ${secret:linear}");
+        assert_eq!(header.value, "Bearer ${secret:linear}");
+        assert!(!header.secret);
+
+        // Anything else beside a reference could be a token.
+        let mixed = McpValue::from_stored("Authorization", "sk-live-abc${TOKEN}");
         assert_eq!(mixed.value, "");
         assert!(mixed.secret);
+        let literal_after_scheme = McpValue::from_stored("Authorization", "Bearer sk-live-abc");
+        assert!(literal_after_scheme.secret);
     }
 
     #[test]
