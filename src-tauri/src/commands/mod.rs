@@ -34,6 +34,7 @@ use taurus_data::{
 };
 
 use taurus_host::onscreen::OnScreen;
+use taurus_host::profile::{Profile, ProfileView};
 use taurus_host::search::{self, SearchResults};
 use taurus_host::traces::{self, TraceReport};
 use taurus_host::trust::TrustStatus;

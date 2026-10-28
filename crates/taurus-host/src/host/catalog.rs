@@ -206,6 +206,7 @@ impl Host {
         // argument, where every guard lives until the call — see `Self::rosters`.
         let skills = self.catalog.read().await.prompt_section();
         let instructions = instructions::section(&self.instructions.read().await);
+        let person = self.profile.read().await.prompt_section();
         let (synthesis, agent_synthesis) = {
             let settings = self.settings.read().await;
             (
@@ -215,6 +216,7 @@ impl Host {
         };
         prompt::build(
             &workspace,
+            person,
             skills,
             instructions,
             memory_section,

@@ -7,6 +7,23 @@ impl Host {
         self.settings.read().await.clone()
     }
 
+    /// The active profile, for Settings › Profile.
+    pub async fn profile(&self) -> profile::ProfileView {
+        profile::ProfileView::new(profile::active_id(), self.profile.read().await.clone())
+    }
+
+    /// Saves the active profile and holds what was saved, so the next turn's
+    /// prompt carries it. A save clears whatever the last reload said was
+    /// wrong with the file, since the file is now the one this wrote.
+    pub async fn save_profile(&self, edited: Profile) -> Result<profile::ProfileView, String> {
+        let id = profile::active_id();
+        let saved = off_runtime("saving the profile", move || profile::save(id, edited)).await?;
+        *self.profile.write().await = saved.clone();
+        self.replace_problems(ProblemSource::Profile, Vec::new())
+            .await;
+        Ok(profile::ProfileView::new(id, saved))
+    }
+
     /// The global `search.json`, for the settings editor.
     pub fn global_search(&self) -> taurus_web::SearchFile {
         config::load_global_search()

@@ -13,6 +13,15 @@ nothing can make a model write a note. Read those as documentation. The ones
 worth watching end by naming something specific that isn't built. Those are
 the backlog, and they're the minority.
 
+- **There's one profile, and nothing switches between them.** Profiles are
+  laid out to be several, each in its own folder under `~/.taurus/profiles`,
+  but only `default` exists and Settings has no switcher. A profile also holds
+  nothing but your name so far. Provider keys, MCP sign-ins and the tokens
+  typed into the MCP panel aren't part of it: they belong to the machine, not
+  to a profile, and switching would leave them where they are. Moving them in
+  is the next piece, and it's where saved credentials for MCP servers (a
+  keychain reference in place of a token in `mcp.json`) belong. See
+  [Your profile](configuration.md#your-profile).
 - **A pty on Windows depends on a runtime fetched at build time.** The Windows
   bundle ships Microsoft's redistributable ConPTY next to the executable:
   `conpty.dll` and a headless `OpenConsole.exe`. The system's own console host

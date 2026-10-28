@@ -22,6 +22,7 @@ pub mod notebook;
 pub mod onscreen;
 pub mod plugins;
 pub mod problem;
+pub mod profile;
 pub mod prompt;
 pub mod review;
 pub mod search;
