@@ -396,11 +396,24 @@
   }
 }
 
+/*
+ * The window is the app, and it never scrolls as a page.
+ *
+ * A webview scrolls its document like any browser does the moment something in
+ * it is taller or wider than the window, and in a Tauri window that drags the
+ * whole shell — rail, composer and all — out of its own frame. Locked here
+ * rather than trusted to the layout below: the layout is what keeps anything
+ * from overflowing, and this is what keeps the one time it does from moving the
+ * window. `overscroll-behavior` stops the rubber band, which on macOS still
+ * bounces a page that has nothing to scroll.
+ */
 html,
 body,
 #root {
   height: 100%;
   margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
@@ -648,9 +661,38 @@ code:where(:not(.excalidraw *)) {
   flex-wrap: wrap;
 }
 
+/*
+ * The shell: fixed regions, each scrolling inside itself and none of them
+ * scrolling the region around it.
+ *
+ *   rail | topbar                    |
+ *        | centre column | side slot |
+ *        | composer                  |
+ *        | dock                      |
+ *
+ * Every region clips — `clip` rather than `hidden`, because a box that hides
+ * its overflow is still a scroll container, and focusing something inside it
+ * (the terminal's input follows its cursor) scrolls it anyway. The scrolling
+ * lives in the leaves: the transcript, the rail's list, a drawer's body, the
+ * shell's own scrollback.
+ *
+ * When the window is too small for everything, the centre column is what is
+ * kept. The side slot and the dock give way below the size they were dragged
+ * to — and come back to it when the window does — so the centre keeps
+ * `--center-min-w` and `--center-min-h`. Only a side slot already down to its
+ * own floor, `--side-min-w`, takes the centre below that, and then only as far
+ * as `--center-squeezed-w`: at the window's minimum width, with a file open,
+ * neither half can have all it wants, and a canvas cut off at its close button
+ * is worse than a narrower transcript.
+ */
 .app {
+  --center-min-w: 320px;
+  --center-squeezed-w: 200px;
+  --center-min-h: 140px;
+  --side-min-w: 280px;
   display: flex;
   height: 100%;
+  overflow: clip;
 }
 
 /* ------------------------------------------------------------------- rail */
@@ -732,12 +774,15 @@ body.resizing-y * {
 .pane {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: clip;
 }
 .pane main {
   flex: 1;
-  min-height: 0;
+  min-height: var(--center-min-h);
+  overflow: clip;
   display: flex;
   /* A row: the conversation, and the file open beside it. See the canvas
      section, which is why. */
@@ -2994,19 +3039,35 @@ body.resizing-y * {
   align-items: center;
   gap: 8px;
 }
+/*
+ * What gives way when the row is short, in order: the hint, which repeats what
+ * the keys already do; then the workspace's name, which the rail shows too.
+ * Never the unattended switch — half a word there is a control nobody can
+ * read the state of.
+ *
+ * A block rather than `inline-flex`: an ellipsis is drawn on a block's own
+ * text and never on a flex container's, so a long name was cut mid-letter.
+ */
 .composer-foot .pill {
+  flex: none;
   font-family: var(--mono);
   font-size: 11.5px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  display: block;
   color: var(--text-dim);
   max-width: 26ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.composer-foot .composer-workspace {
+  flex: 0 1 auto;
+  min-width: 6ch;
+}
 .composer-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text-faint);
@@ -4834,15 +4895,17 @@ button.link:where(:not(.excalidraw *)):hover {
 /*
  * How much room the dock takes.
  *
- * The height is the user's, set inline by the handle above it. The cap is not:
- * a pane dragged to the full height of a short window would push the box you
- * type in off the bottom of the screen, and the drag limit alone cannot know
- * how tall the window is.
+ * The height is the user's, set inline by the handle above it — while there is
+ * room for it. It is the one thing in the column that shrinks, so a dock
+ * dragged tall in a short window gives way down to a few rows rather than
+ * pushing the composer, or the whole shell, off the bottom of the screen. The
+ * centre column above it holds its floor; see `.app`. A fixed share of the
+ * window could not know how tall the composer and the banners are.
  */
 .dock-slot {
-  flex: none;
-  min-height: 0;
-  max-height: 70vh;
+  flex: 0 1 auto;
+  min-height: 96px;
+  overflow: clip;
   display: flex;
 }
 .dock-loading {
@@ -4923,17 +4986,21 @@ button.link:where(:not(.excalidraw *)):hover {
  *
  * `min-height: 0` is what makes the dock sizable at all: without it this floats
  * to the height of its content, which for a terminal is the scrollback, and the
- * pane grows instead of scrolling. The padding is on this rather than on the
- * emulator inside it — xterm measures its own parent to decide how many columns
- * there are, and padding it would have the shell told a width the text does not
- * have.
+ * pane grows instead of scrolling.
+ *
+ * The padding is here and the emulator is one box further in, in `.dock-term`,
+ * which has none. xterm's fit reads its parent's computed width and height, and
+ * under `border-box` those include the parent's padding — padded directly, the
+ * shell was told it had columns and rows the box does not, and drew its last
+ * column and row past the edge of the pane.
  */
 .dock-screen {
   flex: 1;
   min-height: 0;
   padding: 6px 4px 4px 10px;
-  overflow: hidden;
+  overflow: clip;
 }
+.dock-term,
 .dock-screen .xterm {
   height: 100%;
 }
@@ -5158,11 +5225,43 @@ button.link:where(:not(.excalidraw *)):hover {
  * are the hairlines that mark where a surface ends.
  */
 
+/*
+ * Conversation, Notes and Data: the view the centre column is showing.
+ *
+ * A strip of its own, on the same raised ground as the terminal's bar, because
+ * it is the same kind of thing — tabs over a pane — and on the window's ground
+ * the transcript scrolled straight up under two pills that seemed to float on
+ * it. The selected tab drops to the pane's ground and through the strip's rule,
+ * so it reads as continuous with what is under it, and carries the accent on
+ * its top edge so which view this is can be told from across the room.
+ * Scoped here rather than on `.seg`, which is also Columns/Rows inside the
+ * Data pane and stays the small inline control it is.
+ */
 .pane-switch {
   flex: none;
   display: flex;
-  gap: 4px;
-  padding: 8px var(--gutter) 0;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 6px var(--gutter) 0;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--rule);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.pane-switch .seg {
+  flex: none;
+  margin-bottom: -1px;
+  padding: 6px 12px 8px;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+}
+.pane-switch .seg:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.pane-switch .seg.on {
+  background: var(--bg);
+  border-color: var(--rule);
+  border-bottom-color: var(--bg);
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 /* A segmented control. Shared by the pane switch and by Columns/Rows inside
@@ -6769,10 +6868,16 @@ button.link:where(:not(.excalidraw *)):hover {
    and the Changes panel is open is drawn in it — see `App`. */
 .side-slot {
   flex: none;
-  min-width: 0;
-  display: flex;
   /* The width is the user's, set inline by the handle beside it — the same
-     arrangement the rail and the terminal dock use. */
+     arrangement the rail and the terminal dock use — up to whatever leaves
+     the conversation its floor. Past that it is the panel that narrows: a
+     canvas dragged wide in a wide window used to push the window's own edge
+     off screen once the window was made narrow. */
+  max-width: calc(100% - var(--center-min-w));
+  /* Wins over the max when the two cross, which is the point — see `.app`. */
+  min-width: min(var(--side-min-w), 100% - var(--center-squeezed-w));
+  overflow: clip;
+  display: flex;
 }
 
 /* Docked rather than floated: the modal version pinned itself to the right of

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 /** How wide the rail opens on a machine that has never been dragged. */
 export const RAIL_WIDTH = { initial: 236, min: 180, max: 360 };
@@ -42,6 +42,12 @@ export interface Resizable {
   /** The pointer's position along the axis — `clientX`, or `clientY` for `y`. */
   start: (client: number) => void;
   nudge: (steps: number) => void;
+  /**
+   * The box the size is applied to, for a pane the layout can squeeze below
+   * it. Attached, a drag or an arrow key starts from the size that is drawn
+   * rather than the one that was asked for — see `drawn`.
+   */
+  slot?: RefObject<HTMLDivElement | null>;
 }
 
 /**
@@ -80,18 +86,20 @@ export function useResizable({
   // Sizing from the delta rather than from the pointer's absolute position is
   // what keeps the edge under the cursor it was grabbed with.
   const from = useRef({ at: 0, size: initial });
+  const slot = useRef<HTMLDivElement>(null);
 
   const start = useCallback(
     (client: number) => {
-      from.current = { at: client, size };
+      from.current = { at: client, size: drawn(size, slot.current, axis) };
       setDragging(true);
     },
-    [size],
+    [size, axis],
   );
 
   const nudge = useCallback(
-    (steps: number) => setSize((s) => clamp(s + steps * grow, min, max)),
-    [grow, min, max],
+    (steps: number) =>
+      setSize((s) => clamp(drawn(s, slot.current, axis) + steps * grow, min, max)),
+    [grow, min, max, axis],
   );
 
   useEffect(() => {
@@ -124,7 +132,23 @@ export function useResizable({
     }
   }, [dragging, size, storageKey]);
 
-  return { size, dragging, min, max, axis, start, nudge };
+  return { size, dragging, min, max, axis, start, nudge, slot };
+}
+
+/**
+ * How big the pane is on screen: the size it was given, or less where the
+ * layout has squeezed it to keep the conversation its room.
+ *
+ * Only ever less. A dock dragged to 600px in a window that now leaves it 200
+ * would otherwise make the first 400px of a drag, or fifty presses of an arrow,
+ * do nothing visible — the edge stuck under a pointer that is plainly moving.
+ */
+export function drawn(size: number, slot: HTMLElement | null, axis: Axis): number {
+  if (!slot) return size;
+  const box = slot.getBoundingClientRect();
+  const shown = axis === "y" ? box.height : box.width;
+  // Unmounted, or not laid out yet: nothing to correct by.
+  return shown > 0 ? Math.min(size, Math.round(shown)) : size;
 }
 
 /** A pane sized by its width. */

@@ -586,10 +586,11 @@ export function TerminalDock({
         </p>
       )}
       {/* Hidden rather than unmounted: this is a live shell, and the emulator
-          holding it is also the only copy of its scrollback. */}
+          holding it is also the only copy of its scrollback. The emulator
+          goes in the unpadded box inside, which is the one it measures — see
+          `.dock-screen`. */}
       <div
         className="dock-screen"
-        ref={host}
         hidden={!onShell}
         // Only a tab panel while there are tabs: alone, it's just the terminal.
         {...(jobs.length > 0 && {
@@ -597,7 +598,9 @@ export function TerminalDock({
           id: panelId(null),
           "aria-labelledby": tabId(null),
         })}
-      />
+      >
+        <div className="dock-term" ref={host} />
+      </div>
       {shown && (
         <JobScreen
           key={shown.id}
