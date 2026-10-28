@@ -4040,3 +4040,86 @@ async fn an_otlp_endpoint_has_to_be_an_http_address() {
     host.set_otlp_endpoint("").await.unwrap();
     assert_eq!(host.settings().await.otlp_endpoint, "");
 }
+
+/// A stand-in whose environment names the saved credential `name`.
+fn stand_in_using(name: &str, tools: &[&str]) -> taurus_mcp::ServerConfig {
+    let mut server = stand_in(tools);
+    if let taurus_mcp::ServerConfig::Stdio { env, .. } = &mut server {
+        env.insert("TOKEN".into(), format!("${{secret:{name}}}"));
+    }
+    server
+}
+
+#[tokio::test]
+async fn your_own_server_gets_a_saved_credential_and_a_projects_does_not() {
+    // The same entry, in the two files. A trusted folder whose `git pull`
+    // added a server is the case trust can't see, and this is the gate for it.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, home) = host(&workspace);
+    let name = "host-test-own-not-project";
+    host.save_credential(name, vec![], Some("tok".into()))
+        .await
+        .unwrap();
+    write_mcp(home.path(), &[("mine", stand_in_using(name, &["a"]))]);
+    write_mcp(
+        &config::workspace_dir(&workspace),
+        &[("theirs", stand_in_using(name, &["b"]))],
+    );
+    crate::trust::trust(&workspace).unwrap();
+    host.reload_mcp().await;
+
+    let statuses: BTreeMap<String, ServerStatus> = host
+        .mcp_statuses()
+        .await
+        .into_iter()
+        .map(|s| (s.name.clone(), s))
+        .collect();
+    assert!(statuses["mine"].connected, "{:?}", statuses["mine"].error);
+    let refused = statuses["theirs"].error.clone().unwrap_or_default();
+    assert!(
+        refused.contains("program the project chose"),
+        "a project's server was given the credential, or failed for another reason: {refused}"
+    );
+
+    let listed = host.credentials().await.unwrap();
+    let mut used_by = listed[0].used_by.clone();
+    used_by.sort();
+    assert_eq!(used_by, ["mine", "theirs"]);
+}
+
+#[tokio::test]
+async fn saving_a_credential_restarts_what_uses_it_and_leaves_the_rest() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, home) = host(&workspace);
+    let name = "host-test-restart-using";
+    host.save_credential(name, vec![], Some("first".into()))
+        .await
+        .unwrap();
+    write_mcp(
+        home.path(),
+        &[
+            ("uses", stand_in_using(name, &["a"])),
+            ("other", stand_in(&["b"])),
+        ],
+    );
+    host.reload_mcp().await;
+    let (a, b) = (
+        taurus_mcp::namespaced("uses", "a"),
+        taurus_mcp::namespaced("other", "b"),
+    );
+    let (uses, other) = (
+        registered(&host, &a).await.unwrap(),
+        registered(&host, &b).await.unwrap(),
+    );
+
+    host.save_credential(name, vec![], Some("second".into()))
+        .await
+        .unwrap();
+    assert!(
+        !Arc::ptr_eq(&uses, &registered(&host, &a).await.unwrap()),
+        "the server using it kept the old value"
+    );
+    assert!(Arc::ptr_eq(&other, &registered(&host, &b).await.unwrap()));
+}

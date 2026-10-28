@@ -254,6 +254,12 @@ const ANSWERS: Record<string, unknown> = {
     profile: { name: "Ada", introduce: true },
     path: "~/.taurus/profiles/default/profile.json",
   },
+  // One pinned to its server's host and in use, and one for anywhere that
+  // nothing uses yet, so the shot shows both things a card says.
+  list_credentials: [
+    { name: "linear", hosts: ["mcp.linear.app"], stored: true, used_by: ["linear"] },
+    { name: "github", hosts: [], stored: true, used_by: [] },
+  ],
   // Empty, because the turn below is replayed as live events instead. Resume
   // still runs — it is what binds the window to a session and fills the rail.
   resume_session: {
@@ -580,13 +586,15 @@ requestAnimationFrame(() => {
         (await click(".settings-tab", (b) => b === "Terminal"))();
         await until(() => document.querySelector('input[aria-label="Shell"]'));
       },
-      // Settings › Profile: a name, and the switch that sends it.
+      // Settings › Profile: a name, the switch that sends it, and the saved
+      // credentials below.
       profile: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();
         (await click(".settings-tab", (b) => b === "Profile"))();
         await until(
           () =>
-            document.querySelector<HTMLInputElement>('input[aria-label="Your name"]')?.value === "Ada",
+            document.querySelector<HTMLInputElement>('input[aria-label="Your name"]')?.value ===
+              "Ada" && document.querySelectorAll(".credential-card").length === 2,
         );
       },
       appearance: async () => {

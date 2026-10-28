@@ -29,7 +29,7 @@ pub use builtin::pty::sideload_status;
 pub use checkpoint::{Checkpoint, CheckpointStore, Restored, Rewind, TurnChange, TurnRecorder};
 pub use delegate::{now_ms, DelegateReport, DelegateStep, Disposition, Owner, Touched};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
-pub use env::expand_env;
+pub use env::{expand, expand_env, Credentials, Destination, Secrets};
 pub use jobs::{BackgroundJob, JobOutput, Jobs};
 pub use login_path::Outcome as LoginPath;
 pub use pending::{Arrival, Pending, Ticket};

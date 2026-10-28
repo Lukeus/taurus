@@ -43,6 +43,7 @@ use taurus_tools::{
 
 use crate::command;
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme, WireApi};
+use crate::credentials::{self, CredentialView};
 use crate::document::{fingerprint, Document, Saved, MAX_DOCUMENT_BYTES};
 use crate::freshness::Freshness;
 use crate::instructions::{self, Instructions};
@@ -369,7 +370,8 @@ impl Host {
             permissions: RwLock::new(permissions),
             // Handed the keychain, so a server that wants OAuth can be signed
             // in to. See `secrets::Keychain`.
-            mcp: McpManager::with_vault(Arc::new(crate::secrets::Keychain)),
+            mcp: McpManager::with_vault(Arc::new(crate::secrets::Keychain))
+                .with_credentials(Arc::new(crate::credentials::ProfileCredentials)),
             mcp_reload: tokio::sync::Mutex::new(()),
             problems: RwLock::new(Vec::new()),
             prompts,

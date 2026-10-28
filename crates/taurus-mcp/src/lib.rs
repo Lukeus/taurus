@@ -30,7 +30,10 @@ use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use taurus_tools::{expand_env, Effect, SecretVault, Tool, ToolContext, ToolError, ToolResult};
+use taurus_tools::{
+    expand, Credentials, Destination, Effect, Scope, SecretVault, Secrets, Tool, ToolContext,
+    ToolError, ToolResult,
+};
 
 pub use catalog::{catalog, Catalog};
 pub use config::{load, parse, McpConfig, ServerConfig};
@@ -135,11 +138,53 @@ enum Resolved {
     },
 }
 
+/// What [`resolve`] is resolving for.
+#[derive(Clone, Copy)]
+enum Fill<'a> {
+    /// The comparison a reload makes. Variables are filled in and saved
+    /// credentials are left as written, so a folder switch never reads the
+    /// keychain. Changing a credential's value restarts what uses it instead;
+    /// see [`Restart::Using`].
+    Compare,
+    /// Starting the server, with what it may be given.
+    Start {
+        credentials: Option<&'a dyn Credentials>,
+        /// The layer that wrote the entry. See [`McpConfig::layers`].
+        layer: Scope,
+    },
+}
+
+impl<'a> Fill<'a> {
+    /// What a saved credential in a field bound for `host` becomes. `None` is
+    /// a program's environment.
+    fn secrets(self, host: Option<&'a str>) -> Secrets<'a> {
+        match self {
+            Self::Compare => Secrets::Keep,
+            Self::Start {
+                credentials: Some(credentials),
+                layer,
+            } => Secrets::Reveal(credentials, Destination { layer, host }),
+            Self::Start {
+                credentials: None, ..
+            } => Secrets::Refuse(
+                "there's no credential store here to read it from; set an environment \
+                 variable and write `${VAR}` instead",
+            ),
+        }
+    }
+}
+
+/// Where a saved credential may never go, because it would end up on a
+/// command line or in a URL, both of which get logged and shown.
+const NOT_HERE: Secrets<'static> = Secrets::Refuse(
+    "a saved credential can only go in `env` or `headers`, where it isn't logged or shown",
+);
+
 /// Fills in an entry's variables, naming the field that could not be.
 ///
 /// One function for the handshake and for the comparison a reload makes, so
 /// the two cannot come to disagree about what a server is started from.
-fn resolve(name: &str, server: &ServerConfig) -> Result<Resolved, String> {
+fn resolve(name: &str, server: &ServerConfig, fill: Fill<'_>) -> Result<Resolved, String> {
     match server {
         ServerConfig::Stdio {
             command, args, env, ..
@@ -150,16 +195,17 @@ fn resolve(name: &str, server: &ServerConfig) -> Result<Resolved, String> {
             // repository. An unset variable names itself here rather than
             // handing the server an empty string it will report as a bad
             // credential.
-            let command = expand_env(command).map_err(|e| format!("command: {e}"))?;
+            let command = expand(command, &NOT_HERE).map_err(|e| format!("command: {e}"))?;
             let mut expanded_args = Vec::with_capacity(args.len());
             for (i, arg) in args.iter().enumerate() {
-                expanded_args.push(expand_env(arg).map_err(|e| format!("args[{i}]: {e}"))?);
+                expanded_args.push(expand(arg, &NOT_HERE).map_err(|e| format!("args[{i}]: {e}"))?);
             }
+            let secrets = fill.secrets(None);
             let mut expanded_env = Vec::with_capacity(env.len());
             for (key, value) in env {
                 expanded_env.push((
                     key.clone(),
-                    expand_env(value).map_err(|e| format!("env {key}: {e}"))?,
+                    expand(value, &secrets).map_err(|e| format!("env {key}: {e}"))?,
                 ));
             }
             Ok(Resolved::Stdio {
@@ -169,12 +215,20 @@ fn resolve(name: &str, server: &ServerConfig) -> Result<Resolved, String> {
             })
         }
         ServerConfig::Http { url, headers, .. } => {
-            let url = expand_env(url).map_err(|e| format!("url: {e}"))?;
+            let url = expand(url, &NOT_HERE).map_err(|e| format!("url: {e}"))?;
+            // Checked against the host the request actually goes to, after
+            // the URL's own variables are filled in.
+            let parsed = reqwest::Url::parse(&url).ok();
+            let host = parsed.as_ref().and_then(|u| u.host_str());
+            let secrets = match host {
+                Some(host) => fill.secrets(Some(host)),
+                None => Secrets::Refuse("the url has no host to check the credential against"),
+            };
             let mut expanded = BTreeMap::new();
             for (header, value) in headers {
                 expanded.insert(
                     header.clone(),
-                    expand_env(value).map_err(|e| format!("header '{header}': {e}"))?,
+                    expand(value, &secrets).map_err(|e| format!("header '{header}': {e}"))?,
                 );
             }
             Ok(Resolved::Http {
@@ -206,14 +260,19 @@ pub enum Restart<'a> {
     Server(&'a str),
     /// Every server.
     All,
+    /// Every server whose entry uses this saved credential: what saving or
+    /// removing one restarts, since the entry's text doesn't change when the
+    /// value behind it does.
+    Using(&'a str),
 }
 
 impl Restart<'_> {
-    fn includes(&self, name: &str) -> bool {
+    fn includes(&self, name: &str, server: &ServerConfig) -> bool {
         match self {
             Self::Changed => false,
             Self::Server(only) => *only == name,
             Self::All => true,
+            Self::Using(secret) => server.uses_secret(secret),
         }
     }
 }
@@ -302,6 +361,10 @@ pub struct McpManager {
     /// that one. `None` leaves every HTTP server unauthenticated, which is what
     /// the CLI and the tests want and is the behaviour that existed before.
     vault: Option<Arc<dyn SecretVault>>,
+    /// Where `${secret:NAME}` is read from, and the rule for where each may
+    /// go. Injected for the reason the vault is. `None` refuses every one,
+    /// saying to use a variable instead.
+    credentials: Option<Arc<dyn Credentials>>,
 }
 
 impl McpManager {
@@ -315,6 +378,12 @@ impl McpManager {
             vault: Some(vault),
             ..Self::default()
         }
+    }
+
+    /// The same, able to fill in saved credentials.
+    pub fn with_credentials(mut self, credentials: Arc<dyn Credentials>) -> Self {
+        self.credentials = Some(credentials);
+        self
     }
 
     /// Whether this server has OAuth credentials stored.
@@ -380,11 +449,11 @@ impl McpManager {
             .servers
             .iter()
             .filter(|(name, server)| {
-                !server.disabled() && !restart.includes(name) && up.contains(name)
+                !server.disabled() && !restart.includes(name, server) && up.contains(name)
             })
             .filter_map(|(name, server)| {
                 let connection = connections.get(name)?;
-                let now = resolve(name, server).ok()?;
+                let now = resolve(name, server, Fill::Compare).ok()?;
                 (connection.resolved.as_ref() == Some(&now))
                     .then(|| (name.clone(), connection.tools.clone()))
             })
@@ -448,7 +517,7 @@ impl McpManager {
                     .insert(name.clone(), ServerStatus::switched_off(name, server));
                 return Vec::new();
             }
-            match self.connect(name, server).await {
+            match self.connect(name, server, config.layer_of(name)).await {
                 Ok(connected) => {
                     info!(server = %name, tools = connected.len(), "mcp server connected");
                     connected
@@ -475,8 +544,16 @@ impl McpManager {
         &self,
         name: &str,
         server: &ServerConfig,
+        layer: Scope,
     ) -> Result<Vec<Arc<dyn Tool>>, String> {
-        let (service, listed, child) = handshake(name, server, self.vault.clone()).await?;
+        let (service, listed, child) = handshake(
+            name,
+            server,
+            self.vault.clone(),
+            self.credentials.as_deref(),
+            layer,
+        )
+        .await?;
         let peer = service.peer().clone();
 
         let tools: Vec<Arc<dyn Tool>> = listed
@@ -518,7 +595,7 @@ impl McpManager {
                 // Resolved again rather than handed back by the handshake, which
                 // would have failed already if this could. Nothing it reads
                 // changes in between.
-                resolved: resolve(name, server).ok(),
+                resolved: resolve(name, server, Fill::Compare).ok(),
                 tools: tools.clone(),
             }),
         );
@@ -550,6 +627,9 @@ async fn handshake(
     // every HTTP server unauthenticated, which is what the CLI and the probe
     // example do.
     vault: Option<Arc<dyn SecretVault>>,
+    credentials: Option<&dyn Credentials>,
+    // The layer that wrote the entry. See `McpConfig::layers`.
+    layer: Scope,
 ) -> Result<
     (
         RunningService<RoleClient, ()>,
@@ -562,7 +642,7 @@ async fn handshake(
         let mut child = None;
         // Resolved through the same function a reload compares with, so what
         // is started here is what that comparison describes.
-        let service = match resolve(name, server)? {
+        let service = match resolve(name, server, Fill::Start { credentials, layer })? {
             Resolved::Stdio {
                 command,
                 args: expanded_args,
@@ -859,13 +939,17 @@ pub async fn probe(
     // So that testing a server you are signed in to tests the thing that
     // actually runs, rather than the unauthenticated half of it.
     vault: Option<Arc<dyn SecretVault>>,
+    // The same for saved credentials, checked against the layer the entry
+    // would be written to.
+    credentials: Option<&dyn Credentials>,
+    layer: Scope,
 ) -> Result<Vec<String>, String> {
     if server.disabled() {
         // Worth testing anyway — this is how you check an entry before switching
         // it on — so this is a note rather than a refusal.
         info!(server = %name, "probing a disabled server");
     }
-    let (service, listed, child) = handshake(name, server, vault).await?;
+    let (service, listed, child) = handshake(name, server, vault, credentials, layer).await?;
     let tools = listed.iter().map(|t| t.name.to_string()).collect();
     // Explicit rather than left to the drop glue, so the child is gone before
     // this returns and a run of tests cannot pile them up.
@@ -1351,7 +1435,9 @@ mod tests {
             env: BTreeMap::new(),
             disabled: false,
         };
-        let error = probe("t", &server, None).await.unwrap_err();
+        let error = probe("t", &server, None, None, Scope::Global)
+            .await
+            .unwrap_err();
         assert!(error.contains("GITHUB_TOKEN not set"), "{error}");
     }
 
@@ -1655,10 +1741,138 @@ mod tests {
             headers: raw.clone(),
             disabled: false,
         };
-        match resolve("remote", &server)? {
+        match resolve("remote", &server, STARTED)? {
             Resolved::Http { headers, .. } => http_headers(&headers),
             other => panic!("an HTTP entry resolved to {other:?}"),
         }
+    }
+
+    /// Hands out `<name>-value` to anybody, recording where each went.
+    #[derive(Default)]
+    struct Recorded(std::sync::Mutex<Vec<(String, Scope, Option<String>)>>);
+
+    impl Credentials for Recorded {
+        fn reveal(&self, name: &str, to: &Destination<'_>) -> Result<String, String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((name.into(), to.layer, to.host.map(str::to_string)));
+            Ok(format!("{name}-value"))
+        }
+    }
+
+    fn remote_with(header: &str) -> ServerConfig {
+        ServerConfig::Http {
+            url: "https://mcp.example.com/mcp".into(),
+            headers: BTreeMap::from([("Authorization".to_string(), header.to_string())]),
+            disabled: false,
+        }
+    }
+
+    fn local_with(env: &str) -> ServerConfig {
+        ServerConfig::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: BTreeMap::from([("TOKEN".to_string(), env.to_string())]),
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn a_saved_credential_is_asked_for_with_the_host_and_layer_it_would_go_to() {
+        let recorded = Recorded::default();
+        let start = Fill::Start {
+            credentials: Some(&recorded),
+            layer: Scope::Workspace,
+        };
+
+        let Resolved::Http { headers, .. } =
+            resolve("remote", &remote_with("Bearer ${secret:linear}"), start).unwrap()
+        else {
+            panic!("an HTTP entry resolved to something else");
+        };
+        assert_eq!(headers["Authorization"], "Bearer linear-value");
+
+        let Resolved::Stdio { env, .. } =
+            resolve("local", &local_with("${secret:github}"), start).unwrap()
+        else {
+            panic!("a stdio entry resolved to something else");
+        };
+        assert_eq!(env, vec![("TOKEN".to_string(), "github-value".to_string())]);
+
+        assert_eq!(
+            *recorded.0.lock().unwrap(),
+            vec![
+                (
+                    "linear".to_string(),
+                    Scope::Workspace,
+                    Some("mcp.example.com".to_string())
+                ),
+                ("github".to_string(), Scope::Workspace, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_comparison_never_asks_for_a_saved_credential() {
+        // Asking is a keychain read, and a reload compares every server on
+        // every folder switch.
+        let Resolved::Http { headers, .. } = resolve(
+            "remote",
+            &remote_with("Bearer ${secret:linear}"),
+            Fill::Compare,
+        )
+        .unwrap() else {
+            panic!("an HTTP entry resolved to something else");
+        };
+        assert_eq!(headers["Authorization"], "Bearer ${secret:linear}");
+    }
+
+    #[test]
+    fn a_saved_credential_is_refused_on_a_command_line_or_in_a_url() {
+        let recorded = Recorded::default();
+        let start = Fill::Start {
+            credentials: Some(&recorded),
+            layer: Scope::Global,
+        };
+        let in_args = ServerConfig::Stdio {
+            command: "npx".into(),
+            args: vec!["--token".into(), "${secret:github}".into()],
+            env: BTreeMap::new(),
+            disabled: false,
+        };
+        let err = resolve("local", &in_args, start).unwrap_err();
+        assert!(err.starts_with("args[1]"), "{err}");
+
+        let in_url = ServerConfig::Http {
+            url: "https://mcp.example.com/?key=${secret:linear}".into(),
+            headers: BTreeMap::new(),
+            disabled: false,
+        };
+        assert!(resolve("remote", &in_url, start)
+            .unwrap_err()
+            .starts_with("url"));
+        assert!(recorded.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn without_a_credential_store_a_saved_credential_says_what_to_use_instead() {
+        let err = resolve("local", &local_with("${secret:github}"), STARTED).unwrap_err();
+        assert!(err.contains("env TOKEN"), "{err}");
+        assert!(err.contains("${VAR}"), "{err}");
+    }
+
+    #[test]
+    fn saving_a_credential_restarts_the_servers_that_use_it_and_no_others() {
+        let using = remote_with("Bearer ${secret:linear}");
+        let other = remote_with("Bearer ${secret:linear-work}");
+        assert!(Restart::Using("linear").includes("a", &using));
+        assert!(!Restart::Using("linear").includes("b", &other));
+    }
+
+    #[test]
+    fn a_server_nobody_placed_in_a_layer_counts_as_a_projects() {
+        assert_eq!(McpConfig::default().layer_of("anything"), Scope::Workspace);
     }
 
     #[test]
@@ -1814,7 +2028,9 @@ mod tests {
         // absence of the variable's name rather than the presence of any
         // particular message, because how a missing program fails differs by
         // platform — see the test above.
-        let error = probe("t", &server, None).await.unwrap_err();
+        let error = probe("t", &server, None, None, Scope::Global)
+            .await
+            .unwrap_err();
         assert!(
             !error.contains("TAURUS_TEST_MCP_STDIO_TOKEN"),
             "a variable that is set must not be reported as a problem: {error}"
@@ -1829,7 +2045,9 @@ mod tests {
             )]),
             disabled: false,
         };
-        let error = probe("t", &unset, None).await.unwrap_err();
+        let error = probe("t", &unset, None, None, Scope::Global)
+            .await
+            .unwrap_err();
         assert!(
             error.contains("TAURUS_TEST_MCP_STDIO_DEFINITELY_UNSET"),
             "{error}"
@@ -1858,9 +2076,16 @@ mod tests {
                 .into_iter()
                 .map(|(name, server)| (name.to_string(), server))
                 .collect(),
+            layers: BTreeMap::new(),
             invalid: BTreeMap::new(),
         }
     }
+
+    /// Starting a server with no saved credentials to give it.
+    const STARTED: Fill<'static> = Fill::Start {
+        credentials: None,
+        layer: Scope::Global,
+    };
 
     /// The process id behind a tool, which the stand-in answers every call
     /// with.
@@ -2081,7 +2306,9 @@ mod tests {
             headers: Default::default(),
             disabled: false,
         };
-        assert!(probe("remote", &server, None).await.is_err());
+        assert!(probe("remote", &server, None, None, Scope::Global)
+            .await
+            .is_err());
         assert!(
             manager.statuses().await.is_empty(),
             "a probe must leave the manager untouched"

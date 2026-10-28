@@ -102,6 +102,7 @@ import type { Problem } from "../bindings/Problem";
 import type { ProblemSource } from "../bindings/ProblemSource";
 import type { Profile } from "../bindings/Profile";
 import type { ProfileView } from "../bindings/ProfileView";
+import type { CredentialView } from "../bindings/CredentialView";
 import type { ProviderConfig } from "../bindings/ProviderConfig";
 import type { AgentProposal } from "../bindings/AgentProposal";
 import type { AgentSaveTarget } from "../bindings/AgentSaveTarget";
@@ -286,6 +287,7 @@ export type {
   ProblemSource,
   Profile,
   ProfileView,
+  CredentialView,
   ProviderConfig,
   ProviderKind,
   RepoStatus,
@@ -1109,6 +1111,19 @@ export const getProfile = () => invoke<ProfileView>("get_profile");
 /** Saves the active profile and returns what was written. */
 export const saveProfile = (profile: Profile) =>
   invoke<ProfileView>("save_profile", { profile });
+
+/** The active profile's saved credentials, and the servers using each. */
+export const listCredentials = () => invoke<CredentialView[]>("list_credentials");
+
+/**
+ * Saves a credential to the keychain. `value` null changes only the hosts.
+ * Restarts the servers that use it.
+ */
+export const saveCredential = (name: string, hosts: string[], value: string | null) =>
+  invoke<CredentialView>("save_credential", { name, hosts, value });
+
+/** Removes a saved credential from the keychain and the profile. */
+export const removeCredential = (name: string) => invoke<void>("remove_credential", { name });
 
 /** Every hook the layers define, on or off, and which layer decided each. */
 export const hookList = () => invoke<HookView[]>("hook_list");
