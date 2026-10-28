@@ -492,15 +492,24 @@ Taurus asks your login shell for its PATH at startup and merges what it
 finds, which fixes this for most setups. It uses `-l -i`, because nvm and pyenv
 install themselves into `.zshrc`, not `.zprofile`.
 
-Installed something since? Press **Reconnect**. It asks your shell again
-before restarting the servers. The new PATH reaches every program Taurus
-starts from then on, not only MCP servers: `run_command`, skill scripts,
-hooks, git, and a new terminal tab. It only ever adds directories.
+Windows has the same problem in a different form. A program there gets a
+copy of whatever started it, as it was then, so a Taurus started before you
+installed Rust, or started from VS Code or an old terminal, doesn't have
+`cargo`. A new Windows Terminal tab does, because it reads the PATH saved in
+your Windows settings. Taurus reads that one too, the system entries then
+yours, and adds whatever's missing after what it already had. Nothing that
+started Taurus loses its place at the front.
+
+Installed something since? Press **Reconnect**. It asks your shell (on
+Windows, the registry) again before restarting the servers. The new PATH
+reaches every program Taurus starts from then on, not only MCP servers:
+`run_command`, skill scripts, hooks, git, and a new terminal tab. It only
+ever adds directories.
 
 The panel's **Program search path** section shows the result:
 
 - the directories being searched
-- which of them the shell contributed
+- which of them the shell (or the registry) contributed
 - when a server's command isn't among them, that it couldn't be found
 
 Set `TAURUS_SKIP_LOGIN_PATH=1` to skip the probe. A program named by its full

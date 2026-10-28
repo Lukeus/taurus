@@ -38,6 +38,7 @@ const server = (patch: Partial<McpServerView> = {}): McpServerView => ({
 
 const environment = {
   path: ["/opt/homebrew/bin", "/usr/bin"],
+  source: "your login shell's PATH",
   added: ["/opt/homebrew/bin"],
 };
 
@@ -278,10 +279,11 @@ describe("what a server costs", () => {
 describe("Reconnect", () => {
   it("reads the PATH again, and the search path shows what it found", async () => {
     // `npm i -g` in a terminal after launch: the program is there, and only a
-    // fresh read of the login shell's PATH can see it.
+    // fresh read of the PATH can see it.
     const { host, unmount } = await mount([]);
     const grown = {
       path: ["/Users/me/.npm-global/bin", "/opt/homebrew/bin", "/usr/bin"],
+      source: "the PATH saved in your Windows settings",
       added: ["/opt/homebrew/bin", "/Users/me/.npm-global/bin"],
     };
     invoke.mockImplementation((command: string) => {
@@ -298,6 +300,10 @@ describe("Reconnect", () => {
     expect(invoke.mock.calls.map(([name]) => name)).toContain("reload_mcp");
     expect(host.innerHTML).toContain("3 directories");
     expect(host.innerHTML).toContain("added 2 directories");
+    // Named for where it came from, which on Windows is not a shell.
+    expect(host.textContent).toContain(
+      "Taurus read the PATH saved in your Windows settings and added",
+    );
     unmount();
   });
 });

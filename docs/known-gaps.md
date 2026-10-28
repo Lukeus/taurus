@@ -697,8 +697,9 @@ the backlog, and they're the minority.
   and bring back the unreviewed-package problem. If one is added, it'll be
   marked as such and land in the manual form, not the guided one.
 - **A PATH read again only reaches programs started afterwards.** Taurus asks
-  your login shell for its PATH at startup, because a window launched from
-  the Dock inherits the launcher's PATH, not yours. **Reconnect** in the MCP
+  your login shell for its PATH at startup (on Windows, the registry),
+  because a window launched from the Dock or Start inherits the launcher's
+  PATH, not yours. **Reconnect** in the MCP
   panel asks again, so a server installed since (`npm i -g` in a terminal
   beside the app) is found without a restart.
 

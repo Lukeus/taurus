@@ -109,6 +109,10 @@ windows = { version = "0.62", features = ["Win32_System_Threading"] }
 # `cmd.exe` cannot start in one, and every shell prints it in the prompt. Already
 # in the tree as a transitive dependency, and a no-op everywhere but Windows.
 dunce = "1"
+# Reading the PATH Windows keeps in the registry, which is the one a new
+# Windows Terminal tab gets and the one a long-running GUI process falls behind.
+# Already in the tree through Tauri, and only compiled on Windows.
+windows-registry = "0.6"
 ignore = "0.4"
 globset = "0.4"
 # Hook matchers from Claude Code, Codex and Copilot files, which are regexes.

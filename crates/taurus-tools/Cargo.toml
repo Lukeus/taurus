@@ -29,6 +29,9 @@ tracing.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-registry.workspace = true
+
 [dev-dependencies]
 tokio ={ workspace = true, features = ["rt", "macros"] }
 tokio-util.workspace = true
