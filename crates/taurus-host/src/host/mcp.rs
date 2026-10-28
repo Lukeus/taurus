@@ -296,6 +296,20 @@ impl Host {
         .await
     }
 
+    /// Moves the tokens a draft marks for the keychain into it, returning the
+    /// draft with references in their place. See
+    /// [`crate::mcp_view::McpServerDraft::keep_in_keychain`].
+    pub async fn keep_in_keychain(
+        &self,
+        mut draft: crate::mcp_view::McpServerDraft,
+    ) -> Result<crate::mcp_view::McpServerDraft, String> {
+        off_runtime("saving the token", move || {
+            draft.keep_in_keychain(profile::active_id())?;
+            Ok(draft)
+        })
+        .await
+    }
+
     /// The active profile's saved credentials, with the servers using each.
     pub async fn credentials(&self) -> Result<Vec<CredentialView>, String> {
         let workspace = self.workspace.read().await.clone();

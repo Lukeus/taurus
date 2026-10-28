@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
 import type {
@@ -13,10 +13,14 @@ import { plural } from "../lib/format";
 import {
   blankDraft,
   blankValue,
+  canKeep,
   draftFrom,
   draftProblem,
   joinCommandLine,
+  keepable,
+  keepsByDefault,
   splitCommandLine,
+  withKeep,
 } from "../lib/mcp";
 import { DrawerHead } from "./Drawer";
 import { Modal } from "./Modal";
@@ -82,6 +86,19 @@ export function McpServerEditor({
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Asked once. Until it answers, typed tokens are written into the file. */
+  const [keychain, setKeychain] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .keychainAvailable()
+      .then((available) => live && setKeychain(available))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const stdio = draft.transport === "stdio";
   const values = stdio ? draft.env : draft.headers;
@@ -144,7 +161,7 @@ export function McpServerEditor({
     setSaving(true);
     setError(null);
     try {
-      onSaved(await api.saveMcpServer(resolved(), previous));
+      onSaved(await api.saveMcpServer(withKeep(resolved(), keychain), previous));
     } catch (e) {
       setError(String(e));
       setSaving(false);
@@ -261,11 +278,16 @@ export function McpServerEditor({
             legend={stdio ? "Environment variables" : "Headers"}
             hint={
               stdio
-                ? "Passed to the program. To keep a token out of this file, save it in Settings › Profile and write ${secret:name}, or write ${VAR} to read it from your environment. A project's own program can't use a saved one."
-                : "Sent with every request. To keep a token out of this file, save it in Settings › Profile and write `Bearer ${secret:name}`, or `Bearer ${VAR}` to read it from your environment."
+                ? canKeep(draft, keychain)
+                  ? "Passed to the program. A token typed here with Keychain ticked is saved to your keychain on save, and the file gets ${secret:name}. ${VAR} reads one from your environment instead."
+                  : "Passed to the program. A token typed here is written into the file: a project's own program can't use a saved credential. Write ${VAR} to read it from your environment instead."
+                : canKeep(draft, keychain)
+                  ? "Sent with every request. A token typed here with Keychain ticked is saved to your keychain for this server's host, and the file gets `Bearer ${secret:name}`."
+                  : "Sent with every request. Write `Bearer ${VAR}` to read a token from your environment instead of this file."
             }
             values={values}
             onChange={setValues}
+            keychain={canKeep(draft, keychain)}
           />
         </div>
 
@@ -317,12 +339,16 @@ export function ValueEditor({
   hint,
   values,
   onChange,
+  keychain = false,
 }: {
   legend: string;
   hint: string;
   values: McpValue[];
   onChange: (values: McpValue[]) => void;
+  /** Whether a typed token can be kept in the keychain instead of the file. */
+  keychain?: boolean;
 }) {
+  const header = legend === "Headers";
   const patch = (index: number, next: Partial<McpValue>) =>
     onChange(values.map((v, i) => (i === index ? { ...v, ...next } : v)));
 
@@ -354,6 +380,20 @@ export function ValueEditor({
               patch(index, { value: e.target.value, secret: false })
             }
           />
+          {/* Only on a value just typed that holds something other than names.
+              A reference already keeps the token out of the file, and a held-back
+              literal isn't in the form to move. */}
+          {keepable(value, keychain) && (
+            <label className="keep-toggle" data-tip="Save this to your keychain, and write its name in the file">
+              <input
+                type="checkbox"
+                aria-label={`Keep ${legend.toLowerCase()} value ${index + 1} in the keychain`}
+                checked={value.keep ?? keepsByDefault(header, value.key)}
+                onChange={(e) => patch(index, { keep: e.target.checked })}
+              />
+              <span>Keychain</span>
+            </label>
+          )}
           <button
             aria-label={`Remove ${value.key || `${legend} ${index + 1}`}`}
             onClick={() => onChange(values.filter((_, i) => i !== index))}

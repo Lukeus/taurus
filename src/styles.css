@@ -4895,6 +4895,19 @@ button.link:where(:not(.excalidraw *)):hover {
   flex: none;
   padding: 0 10px;
 }
+/* The keychain box sits between the value and the remove button, and keeps
+   its size: the rule above stretches every input in the row. */
+.value-row .keep-toggle {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.value-row .keep-toggle input {
+  flex: none;
+}
 
 /* The search path, in the order it is searched. Scrolls rather than wraps: the
    order is the information, and a wrapped path list loses which line is which. */

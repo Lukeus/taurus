@@ -125,6 +125,10 @@ pub async fn save_mcp_server(
             target.name.trim()
         ));
     }
+    // Tokens marked for the keychain go there now, after the checks that
+    // could refuse the save and before anything is written, so the file only
+    // ever holds their names.
+    let draft = state.host.keep_in_keychain(draft).await?;
     let source = previous.clone().unwrap_or(target);
     let server = draft.to_config(stored(&workspace, &source).as_ref());
 
