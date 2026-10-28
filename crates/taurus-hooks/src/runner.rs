@@ -87,6 +87,10 @@ pub struct HookPayload {
     /// Whether the call succeeded, on `post_tool_use`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
+    /// The plan and what changed in it, on `plan_change`. A value rather than
+    /// a type because the plan is the tools crate's, which depends on this one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<serde_json::Value>,
 }
 
 impl HookPayload {
@@ -100,6 +104,7 @@ impl HookPayload {
             paths: Vec::new(),
             prompt: None,
             ok: None,
+            plan: None,
         }
     }
 
@@ -131,6 +136,12 @@ impl HookPayload {
     #[must_use]
     pub fn with_outcome(mut self, ok: bool) -> Self {
         self.ok = Some(ok);
+        self
+    }
+
+    #[must_use]
+    pub fn with_plan(mut self, plan: serde_json::Value) -> Self {
+        self.plan = Some(plan);
         self
     }
 

@@ -5,7 +5,7 @@ use super::*;
 use taurus_provider::{ContentBlock, Message};
 use taurus_tools::builtin::plan::{UpdatePlanInput, UPDATE_PLAN_TOOL};
 use taurus_tools::view::Step;
-use taurus_tools::{EditRefused, PlanEdit, RestoredPlan};
+use taurus_tools::{ChangedBy, EditRefused, PlanChange, PlanEdit, RestoredPlan};
 
 use crate::sessions::PlanEditMark;
 
@@ -548,7 +548,20 @@ impl Host {
         seen: &[Step],
         steps: Vec<Step>,
     ) -> Result<Option<(Vec<Step>, PlanEdit)>, EditRefused> {
-        self.plan_board(session_id).await.edit(seen, steps)
+        let board = self.plan_board(session_id).await;
+        let before = board.steps();
+        let edited = board.edit(seen, steps)?;
+        if let Some((after, _)) = &edited {
+            // An empty board took `seen` as what was there; so does the hook.
+            let before = if before.is_empty() { seen } else { &before[..] };
+            if let Some(change) =
+                PlanChange::between(before, after, ChangedBy::User, board.revision())
+            {
+                let hooks = self.hooks().await;
+                change.announce(Some(&hooks), &self.workspace().await, Some(session_id));
+            }
+        }
+        Ok(edited)
     }
 
     /// Rebuilds a reopened conversation's checklist from its transcript.
