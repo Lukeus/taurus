@@ -31,6 +31,8 @@ import type {
   OnScreen,
   PermissionDecision,
   PermissionRequest,
+  PlanEditMark,
+  PlanEdited,
   RunningTurn,
   SessionMeta,
   AgentProposal,
@@ -162,6 +164,14 @@ export type Entry =
        * there would be offering to redo something that already finished.
        */
       failed?: boolean;
+      /**
+       * The plan as the person left it, on the line drawn where they edited
+       * it. `pinnedPlan` reads it the way it reads an `update_plan` call's
+       * view, so the panel shows the newest list whoever wrote it.
+       */
+      plan?: PlanView;
+      /** What that edit added and took off, by step text. */
+      edit?: { added: string[]; removed: string[] };
     };
 
 /** A message on its way, or waiting for the turn in front of it to finish. */
@@ -413,6 +423,15 @@ interface Store {
    * in the API layer.
    */
   switchModel: (providerId: string, model: string) => Promise<void>;
+  /**
+   * Replaces the pinned plan with the person's edit of it.
+   *
+   * Answers with what became of it, for the panel to act on: it closes its
+   * editor on a save, and goes back to the current plan when the model moved
+   * it in the meantime. `seen` is the plan the editor was opened on, which is
+   * what makes "in the meantime" detectable. `null` with no conversation open.
+   */
+  editPlan: (seen: Step[], steps: Step[]) => Promise<PlanEdited | null>;
   send: (
     text: string,
     images?: Attachment[],
@@ -951,6 +970,7 @@ export const useStore = create<Store>((set, get) => ({
       const {
         messages,
         switches,
+        plan_edits: planEdits,
         turns,
         interrupted,
         delegates = [],
@@ -966,8 +986,8 @@ export const useStore = create<Store>((set, get) => ({
         away: away ?? null,
         entries: linkDelegates(
           interrupted
-            ? unknownOutcomes(entriesFromMessages(messages, switches, turns))
-            : entriesFromMessages(messages, switches, turns),
+            ? unknownOutcomes(entriesFromMessages(messages, switches, turns, planEdits))
+            : entriesFromMessages(messages, switches, turns, planEdits),
           delegates,
         ),
         interrupted: interrupted ?? null,
@@ -1134,6 +1154,18 @@ export const useStore = create<Store>((set, get) => ({
       error: null,
       entries: [...s.entries, switchNotice(session)],
     }));
+  },
+
+  editPlan: async (seen, steps) => {
+    const session = get().session;
+    if (!session) return null;
+    const result = await api.editPlan(session.id, seen, steps);
+    // Drawn into the conversation it was made in, and only that one: the
+    // window may have moved on while the call was out.
+    if (result.outcome === "saved" && get().session?.id === session.id) {
+      set((s) => ({ entries: [...s.entries, planEditNotice(result.mark)] }));
+    }
+    return result;
   },
 
   send: async (text, images = [], onScreen = null, continuing = false) => {
@@ -1679,6 +1711,7 @@ export function entriesFromMessages(
   messages: Message[],
   switches: Switch[] = [],
   turns: TurnMark[] = [],
+  planEdits: PlanEditMark[] = [],
 ): Entry[] {
   const entries: Entry[] = [];
 
@@ -1689,6 +1722,9 @@ export function entriesFromMessages(
     // two switches with no turn between them are two clicks of the picker.
     for (const moved of switches.filter((s) => s.after === index)) {
       entries.push(switchNotice(moved));
+    }
+    for (const edit of planEdits.filter((e) => e.after === index)) {
+      entries.push(planEditNotice(edit));
     }
 
     if (message.role === "user") {
@@ -1819,6 +1855,10 @@ export function entriesFromMessages(
   for (const moved of switches.filter((s) => s.after >= messages.length)) {
     entries.push(switchNotice(moved));
   }
+  // Edited after the last round on disk, which mid-turn is the ordinary case.
+  for (const edit of planEdits.filter((e) => e.after >= messages.length)) {
+    entries.push(planEditNotice(edit));
+  }
 
   // Applied once at the end rather than per call: the rule is about the whole
   // conversation, and a resumed transcript has every update in it at once.
@@ -1881,6 +1921,31 @@ function switchNotice(moved: {
       label: "Model changed",
       note: provider ? `${provider} · ${moved.model}` : moved.model,
     },
+  };
+}
+
+/**
+ * The hairline drawn where the person edited the plan.
+ *
+ * One function for the live edit and the reopened transcript, for the reason
+ * `switchNotice` is. Counts rather than the steps themselves: the panel above
+ * the composer is where the steps are read, and a line quoting three of them
+ * would be a second copy of the plan in the transcript.
+ */
+export function planEditNotice(mark: PlanEditMark): Entry {
+  const parts = [
+    mark.added.length > 0 && `${mark.added.length} added`,
+    mark.removed.length > 0 && `${mark.removed.length} removed`,
+    mark.reordered && "reordered",
+  ].filter((part): part is string => typeof part === "string");
+  return {
+    kind: "notice",
+    id: nextId(),
+    tone: "info",
+    text: "You edited the plan. Taurus reads the change before its next step.",
+    rule: { label: "Plan edited", note: parts.join(" · ") },
+    plan: { type: "plan", steps: mark.steps },
+    edit: { added: mark.added, removed: mark.removed },
   };
 }
 
@@ -2304,9 +2369,9 @@ export function pinnedPlan(entries: Entry[]): PlanView | null {
   let plan: PlanView | null = null;
   let at = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (entry.kind === "tool" && entry.view?.type === "plan") {
-      plan = entry.view;
+    const found = planOf(entries[i]);
+    if (found) {
+      plan = found;
       at = i;
       break;
     }
@@ -2317,6 +2382,36 @@ export function pinnedPlan(entries: Entry[]): PlanView | null {
 
   if (!plan.steps.every((step) => step.state === "done")) return plan;
   return entries.some((e, i) => i > at && e.kind === "user") ? null : plan;
+}
+
+/** The plan an entry carries: a model's `update_plan` view, or a person's edit. */
+function planOf(entry: Entry): PlanView | undefined {
+  if (entry.kind === "tool" && entry.view?.type === "plan") return entry.view;
+  if (entry.kind === "notice") return entry.plan;
+  return undefined;
+}
+
+/**
+ * The steps on the pinned plan that the person wrote, by text.
+ *
+ * Every edit's additions, less what a later edit took off, kept to what is
+ * still on the plan. The backend holds the same set to stop the model's next
+ * list dropping them (see `taurus_tools::plan`), and this is how the panel
+ * says which ones those are. It doesn't follow the backend's one other rule —
+ * a new plan with nothing in common leaves the old marks behind — because a
+ * new plan with nothing in common has none of those steps on it anyway, short
+ * of reusing the exact wording.
+ */
+export function yourSteps(entries: Entry[]): string[] {
+  const plan = pinnedPlan(entries);
+  if (!plan) return [];
+  const yours = new Set<string>();
+  for (const entry of entries) {
+    if (entry.kind !== "notice" || !entry.edit) continue;
+    for (const text of entry.edit.added) yours.add(text);
+    for (const text of entry.edit.removed) yours.delete(text);
+  }
+  return plan.steps.map((s) => s.text.trim()).filter((text) => yours.has(text));
 }
 
 /**

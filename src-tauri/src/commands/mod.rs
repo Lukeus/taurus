@@ -23,7 +23,10 @@ use taurus_mcp::ServerStatus;
 use taurus_provider::{ChatRequest, Message, ModelInfo, StopReason, StreamAccumulator};
 use taurus_skills::proposal::{save, SaveTarget, SkillProposal};
 use taurus_skills::skill::SkillSummary;
-use taurus_tools::{AllowedRule, Answer, BackgroundJob, JobOutput, PermissionDecision, Scope};
+use taurus_tools::view::Step;
+use taurus_tools::{
+    AllowedRule, Answer, BackgroundJob, EditRefused, JobOutput, PermissionDecision, Scope,
+};
 
 use taurus_data::{
     Dataset, Materialized as DataRun, Page as DataPage, Profile as DataProfile,
@@ -37,9 +40,9 @@ use taurus_host::trust::TrustStatus;
 use taurus_host::usage::{self, UsageReport};
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, CustomTheme, Document, Host, KeyStatus,
-    McpServerDraft, McpServerRef, McpServerView, Note, Page, PageKind, PageRef, PageSaved, Problem,
-    ProviderConfig, Repo, RepoStatus, Rewind, Saved, SessionLog, SessionMeta, Settings, Switch,
-    Theme, ThemeFile, TurnChange, TurnRef,
+    McpServerDraft, McpServerRef, McpServerView, Note, Page, PageKind, PageRef, PageSaved,
+    PlanEditMark, Problem, ProviderConfig, Repo, RepoStatus, Rewind, Saved, SessionLog,
+    SessionMeta, Settings, Switch, Theme, ThemeFile, TurnChange, TurnRef,
 };
 
 use crate::live::Live;

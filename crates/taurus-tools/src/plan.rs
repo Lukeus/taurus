@@ -45,9 +45,33 @@
 //! is not a coincidence: what the reader sees above the composer and what the
 //! model reads in its prompt are the same checklist, and they would be worse
 //! than useless if they disagreed about whether it was still live.
+//!
+//! # When the person edits it
+//!
+//! The checklist has two authors. The person watching can add a step, reword
+//! one, take one off or move one, from the panel, while a turn runs or between
+//! turns — [`PlanBoard::edit`]. Nothing has to interrupt the model for that to
+//! reach it: the reminder is rebuilt from the board every iteration, so an edit
+//! lands at the next round boundary on its own.
+//!
+//! What does need saying is that whole-list replacement would undo it. The
+//! model sends back the list it remembers, and an edit it didn't make is
+//! exactly what it doesn't remember. So the board keeps, by step text, which
+//! steps the person wrote and which they took off, and `update_plan` refuses a
+//! list that drops one or brings one back. The model is told once, in the
+//! reminder, what changed, and every step the person wrote stays marked as
+//! theirs for as long as the plan lives.
+//!
+//! Finished steps are history and the person can't edit them; that is also
+//! what keeps an edit inside the ordering rule `update_plan` holds the model
+//! to, since everything done stays at the front.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use crate::builtin::plan::{MAX_STEPS, MAX_STEP_CHARS};
 use crate::view::{Step, StepState};
 
 /// The plan for one conversation, shared between the tool that writes it and
@@ -75,6 +99,102 @@ struct Board {
     /// Whether these steps were written before the current turn began. Only
     /// ever changes at a turn boundary; see [`PlanBoard::start_turn`].
     carried: bool,
+    /// The steps the person wrote, by trimmed text. `update_plan` may change
+    /// their state and nothing else.
+    yours: Vec<String>,
+    /// The steps the person took off, by trimmed text. `update_plan` may not
+    /// put them back.
+    removed: Vec<String>,
+    /// What the person changed since the model last wrote the plan, said once
+    /// in the reminder and cleared by the model's next [`PlanBoard::set`].
+    edited: Option<PlanEdit>,
+}
+
+/// What a person changed about the plan, by step text.
+///
+/// By text because steps have no ids, which is deliberate — see the module
+/// doc. Rewording a step is therefore one removed and one added, and that is
+/// what the model is told, which is also the truth about what it has to do
+/// differently.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PlanEdit {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    /// The steps that were already there are in a new order.
+    pub reordered: bool,
+}
+
+impl PlanEdit {
+    /// Folds a later edit into this one, for two edits the model hasn't read
+    /// yet. A step added and then removed again was never news.
+    pub fn then(mut self, later: PlanEdit) -> PlanEdit {
+        for text in later.added {
+            if let Some(at) = self.removed.iter().position(|t| *t == text) {
+                self.removed.remove(at);
+            } else if !self.added.contains(&text) {
+                self.added.push(text);
+            }
+        }
+        for text in later.removed {
+            if let Some(at) = self.added.iter().position(|t| *t == text) {
+                self.added.remove(at);
+            } else if !self.removed.contains(&text) {
+                self.removed.push(text);
+            }
+        }
+        self.reordered |= later.reordered;
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && !self.reordered
+    }
+}
+
+/// A plan as a transcript left it, for [`PlanBoard::restore`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoredPlan {
+    pub steps: Vec<Step>,
+    /// Steps the person wrote.
+    pub yours: Vec<String>,
+    /// Steps the person took off.
+    pub removed: Vec<String>,
+    /// The person's edits since the model's last accepted list, which it
+    /// hasn't seen yet.
+    pub pending: Option<PlanEdit>,
+}
+
+/// Why an edit was not applied.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EditRefused {
+    /// The plan moved while the person was editing it, so their list was
+    /// drawn from one that is no longer there.
+    Stale,
+    /// The list breaks a rule the plan holds. Says which, to the person.
+    Invalid(String),
+}
+
+impl std::fmt::Display for EditRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditRefused::Stale => f.write_str(
+                "Taurus updated the plan while you were editing it, so your changes weren't \
+                 saved. The plan as it stands is back on screen.",
+            ),
+            EditRefused::Invalid(reason) => f.write_str(reason),
+        }
+    }
+}
+
+/// What `update_plan` checks a list against: the board as it stands.
+pub(crate) struct Rules {
+    pub previous: Vec<Step>,
+    pub carried: bool,
+    pub yours: Vec<String>,
+    pub removed: Vec<String>,
+    /// The person has changed the plan since the model last wrote it.
+    pub edited: bool,
 }
 
 impl PlanBoard {
@@ -86,10 +206,138 @@ impl PlanBoard {
     pub fn set(&self, steps: Vec<Step>) -> String {
         let summary = summarize(&steps);
         let mut board = self.board();
+        // A list that shares no step with the one it replaces is a new plan,
+        // which `update_plan` only allows over a carried one — the request has
+        // moved on, and the person's steps belonged to the old one.
+        if !board.steps.iter().any(|old| has(&steps, &old.text)) {
+            board.yours.clear();
+            board.removed.clear();
+        }
         board.steps = steps;
         // Written in this turn, so it is no longer somebody else's checklist.
         board.carried = false;
+        // Whatever the person changed, this list was written after reading it.
+        board.edited = None;
         summary
+    }
+
+    /// Replaces the plan with one the person edited.
+    ///
+    /// `seen` is the plan they were looking at when they started. If the board
+    /// has moved on since, their list was drawn from a plan that is no longer
+    /// there, and applying it would silently undo whatever the model just
+    /// did — so it is refused and they edit the current one instead. An empty
+    /// board takes `seen` as what was there, which is the case of a process
+    /// that restarted since the plan was drawn.
+    ///
+    /// Answers with the list as stored, which is the person's tidied of
+    /// stray whitespace, and what changed. `Ok(None)` is an edit that changed
+    /// nothing, which is not worth telling the model about or writing down.
+    pub fn edit(
+        &self,
+        seen: &[Step],
+        steps: Vec<Step>,
+    ) -> Result<Option<(Vec<Step>, PlanEdit)>, EditRefused> {
+        let mut board = self.board();
+        if !board.steps.is_empty() && !same_steps(&board.steps, seen) {
+            return Err(EditRefused::Stale);
+        }
+        let previous = if board.steps.is_empty() {
+            seen.to_vec()
+        } else {
+            board.steps.clone()
+        };
+        let steps = valid_edit(&previous, steps).map_err(EditRefused::Invalid)?;
+
+        let edit = PlanEdit {
+            added: steps
+                .iter()
+                .filter(|s| !has(&previous, &s.text))
+                .map(|s| s.text.trim().to_string())
+                .collect(),
+            removed: previous
+                .iter()
+                .filter(|s| !has(&steps, &s.text))
+                .map(|s| s.text.trim().to_string())
+                .collect(),
+            reordered: {
+                let kept: Vec<&str> = steps
+                    .iter()
+                    .map(|s| s.text.trim())
+                    .filter(|t| has(&previous, t))
+                    .collect();
+                let was: Vec<&str> = previous
+                    .iter()
+                    .map(|s| s.text.trim())
+                    .filter(|t| has(&steps, t))
+                    .collect();
+                kept != was
+            },
+        };
+        if edit.is_empty() {
+            return Ok(None);
+        }
+
+        for text in &edit.added {
+            board.removed.retain(|t| t != text);
+            if !board.yours.contains(text) {
+                board.yours.push(text.clone());
+            }
+        }
+        for text in &edit.removed {
+            board.yours.retain(|t| t != text);
+            if !board.removed.contains(text) {
+                board.removed.push(text.clone());
+            }
+        }
+        board.edited = Some(match board.edited.take() {
+            Some(earlier) => earlier.then(edit.clone()),
+            None => edit.clone(),
+        });
+        board.steps = steps.clone();
+        Ok(Some((steps, edit)))
+    }
+
+    /// Puts back a plan read from a transcript, into a board this process
+    /// hasn't used yet.
+    ///
+    /// The board isn't saved, so without this a restart forgets it: the panel
+    /// redraws the plan from the transcript while the model's reminder is
+    /// empty, and the steps the person wrote lose their protection. Ignored if
+    /// the board already holds something, which is newer than any transcript.
+    ///
+    /// An edit the model hadn't answered before the restart is still news to
+    /// it, so it comes back as pending and the reminder says what changed. A
+    /// plan that only lists the person's steps would read, to a model whose
+    /// history holds its own older list, like a list to argue with.
+    pub fn restore(&self, plan: RestoredPlan) {
+        let mut board = self.board();
+        if !board.steps.is_empty() || plan.steps.is_empty() {
+            return;
+        }
+        let RestoredPlan {
+            steps,
+            yours,
+            removed,
+            pending,
+        } = plan;
+        board.yours = yours.into_iter().filter(|t| has(&steps, t)).collect();
+        board.removed = removed.into_iter().filter(|t| !has(&steps, t)).collect();
+        board.edited = pending.filter(|edit| !edit.is_empty());
+        board.steps = steps;
+        board.carried = true;
+    }
+
+    /// The board, as `update_plan` checks a list against it.
+    pub(crate) fn rules(&self) -> Rules {
+        let board = self.board();
+        Rules {
+            previous: board.steps.clone(),
+            carried: board.carried,
+            yours: board.yours.clone(),
+            removed: board.removed.clone(),
+            edited: board.edited.is_some(),
+        }
     }
 
     pub fn steps(&self) -> Vec<Step> {
@@ -166,8 +414,7 @@ impl PlanBoard {
             return false;
         }
         if board.steps.iter().all(|s| s.state == StepState::Done) {
-            board.steps.clear();
-            board.carried = false;
+            *board = Board::default();
             return false;
         }
         board.carried = true;
@@ -188,14 +435,22 @@ impl PlanBoard {
         }
 
         let mut out = String::from("# Your current plan\n\n");
-        out.push_str(if board.carried {
-            "You wrote this with update_plan earlier in this conversation, before the message you \
-             are answering now. It is restated here every time because it is the record of where \
-             you are:\n\n"
+        // An edit leads, ahead of the list. A model's history holds its own
+        // older list, and a note after the steps was read, by the small
+        // models that most needed it, only once they had worked from that
+        // older list instead.
+        if let Some(edit) = &board.edited {
+            out.push_str(&edit_note(edit));
         } else {
-            "You wrote this with update_plan. It is restated here every time because it is the \
-             record of where you are:\n\n"
-        });
+            out.push_str(if board.carried {
+                "You wrote this with update_plan earlier in this conversation, before the message \
+                 you are answering now. It is restated here every time because it is the record \
+                 of where you are:\n\n"
+            } else {
+                "You wrote this with update_plan. It is restated here every time because it is \
+                 the record of where you are:\n\n"
+            });
+        }
         for (index, step) in board.steps.iter().enumerate() {
             out.push_str(&format!(
                 "{}. {} {}",
@@ -206,7 +461,19 @@ impl PlanBoard {
             if let Some(check) = &step.check {
                 out.push_str(&format!(" (check: {check})"));
             }
+            if board.yours.iter().any(|t| t == step.text.trim()) {
+                out.push_str(" (added by the user)");
+            }
             out.push('\n');
+        }
+        // Named on every request, not once: the older list naming them stays
+        // in the history for as long as the conversation does.
+        if !board.removed.is_empty() {
+            out.push_str(&format!(
+                "\nThe user took these off the plan. Don't do them, even where an earlier message \
+                 lists them: {}.\n",
+                quoted(&board.removed)
+            ));
         }
         out.push_str(
             "\nCall update_plan again the moment a step's state changes — send the whole list \
@@ -246,6 +513,117 @@ fn summarize(steps: &[Step]) -> String {
         None => line.push_str(" No step is marked in progress."),
     }
     line
+}
+
+/// What the model is told about an edit it hasn't written a list since.
+///
+/// Said as what to do, not only what happened: the edit is already on the list
+/// above it, so the news is the two rules that now apply to the next list it
+/// sends.
+fn edit_note(edit: &PlanEdit) -> String {
+    let mut changes = Vec::new();
+    if !edit.added.is_empty() {
+        changes.push(format!("added {}", quoted(&edit.added)));
+    }
+    if !edit.removed.is_empty() {
+        changes.push(format!("removed {}", quoted(&edit.removed)));
+    }
+    if edit.reordered {
+        changes.push("changed the order".to_string());
+    }
+    format!(
+        "The user edited this plan since you last sent it: {}. This list replaces the one in \
+         your earlier update_plan calls, so work from it, not from those. Steps marked (added by \
+         the user) stay on it, worded as they are: send each one back in every list, and mark it \
+         'done' once you have done it. Your next update_plan call sends this list back, with the \
+         states as they stand.\n\n",
+        changes.join("; ")
+    )
+}
+
+fn quoted(texts: &[String]) -> String {
+    texts
+        .iter()
+        .map(|t| format!("'{t}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether `steps` has one whose text is `text`, whitespace at the ends aside.
+fn has(steps: &[Step], text: &str) -> bool {
+    steps.iter().any(|s| s.text.trim() == text.trim())
+}
+
+/// Whether two lists say the same thing about the same steps.
+///
+/// Trimmed, because the difference between "Add the token type" and the same
+/// with a trailing space is not a plan that moved. Compared on text and state
+/// alone: `active_form` is the same step said differently.
+pub(crate) fn same_steps(steps: &[Step], previous: &[Step]) -> bool {
+    steps.len() == previous.len()
+        && steps
+            .iter()
+            .zip(previous)
+            .all(|(a, b)| a.state == b.state && a.text.trim() == b.text.trim())
+}
+
+/// The person's list, if it is one the plan can hold.
+///
+/// Its own rules rather than `update_plan`'s, in the person's words rather
+/// than the model's, and narrower: the panel lets you write steps and move
+/// them, not finish them. So every finished step stays exactly where it was,
+/// nothing new arrives finished, and the one step in progress is the one the
+/// model said it was on, or its rewording.
+fn valid_edit(previous: &[Step], steps: Vec<Step>) -> Result<Vec<Step>, String> {
+    if steps.is_empty() {
+        return Err("A plan needs at least one step.".into());
+    }
+    if steps.len() > MAX_STEPS {
+        return Err(format!("A plan holds at most {MAX_STEPS} steps."));
+    }
+    let mut steps = steps;
+    for step in &mut steps {
+        let text = step.text.trim();
+        if text.is_empty() {
+            return Err("Every step needs some text.".into());
+        }
+        if text.chars().count() > MAX_STEP_CHARS {
+            return Err(format!(
+                "Keep each step under {MAX_STEP_CHARS} characters: '{}…' is longer.",
+                text.chars().take(40).collect::<String>()
+            ));
+        }
+        step.text = text.to_string();
+    }
+    for (n, step) in steps.iter().enumerate() {
+        if steps[..n].iter().any(|s| s.text == step.text) {
+            return Err(format!("'{}' is on the plan twice.", step.text));
+        }
+    }
+
+    let done = |list: &[Step]| -> Vec<String> {
+        list.iter()
+            .filter(|s| s.state == StepState::Done)
+            .map(|s| s.text.trim().to_string())
+            .collect()
+    };
+    let finished = done(previous);
+    if done(&steps) != finished
+        || steps[..finished.len()]
+            .iter()
+            .any(|s| s.state != StepState::Done)
+    {
+        return Err("Finished steps can't be changed, removed or moved.".into());
+    }
+    if steps
+        .iter()
+        .filter(|s| s.state == StepState::Active)
+        .count()
+        > 1
+    {
+        return Err("Only one step can be in progress.".into());
+    }
+    Ok(steps)
 }
 
 /// Runs of whitespace as one space, ends trimmed.
@@ -507,5 +885,226 @@ mod tests {
         let reminder = board.reminder().unwrap();
         assert!(!reminder.contains("[ ] One"), "{reminder}");
         assert!(reminder.contains("[x] One"), "{reminder}");
+    }
+
+    #[test]
+    fn an_edit_says_what_it_added_removed_and_moved() {
+        let board = PlanBoard::new();
+        let plan = vec![
+            step("One", StepState::Done),
+            step("Two", StepState::Active),
+            step("Three", StepState::Todo),
+        ];
+        board.set(plan.clone());
+
+        let edit = board
+            .edit(
+                &plan,
+                vec![
+                    step("One", StepState::Done),
+                    step("Four", StepState::Todo),
+                    step("Two", StepState::Active),
+                ],
+            )
+            .expect("a valid edit")
+            .expect("something changed")
+            .1;
+        assert_eq!(edit.added, ["Four"]);
+        assert_eq!(edit.removed, ["Three"]);
+        assert!(!edit.reordered, "the steps that stayed kept their order");
+
+        let reminder = board.reminder().unwrap();
+        assert!(
+            reminder.contains("2. [ ] Four (added by the user)"),
+            "{reminder}"
+        );
+        assert!(
+            reminder.contains("added 'Four'; removed 'Three'"),
+            "{reminder}"
+        );
+    }
+
+    #[test]
+    fn an_edit_drawn_from_a_plan_that_has_since_moved_is_refused() {
+        // The model wrote a new list while the panel was open. Applying the
+        // person's list would undo it without either of them knowing.
+        let board = PlanBoard::new();
+        let seen = vec![step("One", StepState::Active), step("Two", StepState::Todo)];
+        board.set(seen.clone());
+        board.set(vec![
+            step("One", StepState::Done),
+            step("Two", StepState::Active),
+        ]);
+
+        assert_eq!(
+            board.edit(&seen, vec![step("One", StepState::Active)]),
+            Err(EditRefused::Stale)
+        );
+    }
+
+    #[test]
+    fn an_edit_on_an_empty_board_takes_the_plan_on_screen_as_the_one_it_changed() {
+        // A restart empties the board while the panel still draws the plan
+        // from the transcript. The model's steps must not become the user's.
+        let board = PlanBoard::new();
+        let seen = vec![step("One", StepState::Active)];
+        let edit = board
+            .edit(
+                &seen,
+                vec![step("One", StepState::Active), step("Two", StepState::Todo)],
+            )
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(edit.added, ["Two"]);
+        assert!(!board
+            .reminder()
+            .unwrap()
+            .contains("One (added by the user)"));
+    }
+
+    #[test]
+    fn a_finished_step_cannot_be_edited_away() {
+        let board = PlanBoard::new();
+        let plan = vec![step("One", StepState::Done), step("Two", StepState::Active)];
+        board.set(plan.clone());
+
+        for edited in [
+            vec![step("Two", StepState::Active)],
+            vec![
+                step("One!", StepState::Done),
+                step("Two", StepState::Active),
+            ],
+            vec![step("Two", StepState::Active), step("One", StepState::Done)],
+            vec![step("One", StepState::Done), step("Two", StepState::Done)],
+        ] {
+            assert!(
+                matches!(
+                    board.edit(&plan, edited.clone()),
+                    Err(EditRefused::Invalid(_))
+                ),
+                "{edited:?}"
+            );
+        }
+        assert_eq!(board.steps(), plan, "a refused edit changes nothing");
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_is_not_news() {
+        let board = PlanBoard::new();
+        let plan = vec![step("One", StepState::Active)];
+        board.set(plan.clone());
+        assert_eq!(
+            board.edit(&plan, vec![step(" One ", StepState::Active)]),
+            Ok(None)
+        );
+        assert!(!board.reminder().unwrap().contains("The user edited"));
+    }
+
+    #[test]
+    fn two_edits_before_the_model_reads_either_are_one_note() {
+        // A step added and taken off again was never news to the model.
+        let board = PlanBoard::new();
+        let plan = vec![step("One", StepState::Active)];
+        board.set(plan.clone());
+        let with_two = vec![step("One", StepState::Active), step("Two", StepState::Todo)];
+        board.edit(&plan, with_two.clone()).unwrap();
+        board
+            .edit(
+                &with_two,
+                vec![
+                    step("One", StepState::Active),
+                    step("Three", StepState::Todo),
+                ],
+            )
+            .unwrap();
+
+        let reminder = board.reminder().unwrap();
+        assert!(reminder.contains("added 'Three'."), "{reminder}");
+        assert!(!reminder.contains("added 'Two'"), "{reminder}");
+        assert!(!reminder.contains("removed 'Two'"), "{reminder}");
+    }
+
+    #[test]
+    fn a_restored_plan_is_carried_and_keeps_whose_steps_are_whose() {
+        let board = PlanBoard::new();
+        board.restore(RestoredPlan {
+            steps: vec![step("One", StepState::Active), step("Two", StepState::Todo)],
+            yours: vec!["Two".into(), "Gone".into()],
+            removed: vec!["Three".into()],
+            pending: None,
+        });
+        assert!(board.carried());
+        let reminder = board.reminder().unwrap();
+        assert!(reminder.contains("Two (added by the user)"), "{reminder}");
+        assert!(!reminder.contains("edited this plan"), "{reminder}");
+
+        // Something newer is already there.
+        board.restore(RestoredPlan {
+            steps: vec![step("Other", StepState::Todo)],
+            ..RestoredPlan::default()
+        });
+        assert_eq!(board.steps().len(), 2);
+    }
+
+    #[test]
+    fn an_edit_the_model_never_answered_is_still_news_after_a_restart() {
+        let board = PlanBoard::new();
+        board.restore(RestoredPlan {
+            steps: vec![step("One", StepState::Done), step("Four", StepState::Todo)],
+            yours: vec!["Four".into()],
+            removed: vec!["Three".into()],
+            pending: Some(PlanEdit {
+                added: vec!["Four".into()],
+                removed: vec!["Three".into()],
+                reordered: false,
+            }),
+        });
+        let reminder = board.reminder().unwrap();
+        assert!(
+            reminder.contains("added 'Four'; removed 'Three'"),
+            "{reminder}"
+        );
+
+        assert!(
+            reminder.find("edited this plan") < reminder.find("1. [x] One"),
+            "the edit leads, ahead of the list: {reminder}"
+        );
+
+        // Re-sending the list is how the model says it read the note. The
+        // step that came off is still named, since the older list is still in
+        // the history.
+        assert!(board.rules().edited);
+        board.set(vec![
+            step("One", StepState::Done),
+            step("Four", StepState::Active),
+        ]);
+        let reminder = board.reminder().unwrap();
+        assert!(!reminder.contains("edited this plan"), "{reminder}");
+        assert!(
+            reminder.contains("Don't do them, even where an earlier message lists them: 'Three'."),
+            "{reminder}"
+        );
+    }
+
+    #[test]
+    fn a_finished_plan_takes_the_users_marks_with_it() {
+        let board = PlanBoard::new();
+        let plan = vec![step("One", StepState::Active)];
+        board.set(plan.clone());
+        board
+            .edit(
+                &plan,
+                vec![step("One", StepState::Active), step("Two", StepState::Todo)],
+            )
+            .unwrap();
+        board.set(vec![
+            step("One", StepState::Done),
+            step("Two", StepState::Done),
+        ]);
+        assert!(!board.start_turn());
+
+        board.set(vec![step("Two", StepState::Active)]);
+        assert!(!board.reminder().unwrap().contains("added by the user"));
     }
 }

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppStatus,
   Message,
+  PlanEditMark,
   SessionMeta,
   Switch,
   UiEvent,
@@ -18,8 +19,10 @@ import {
   mergeContext,
   mergeSession,
   pinnedPlan,
+  planEditNotice,
   reduce,
   viewFromCall,
+  yourSteps,
   type Entry,
 } from "./store";
 
@@ -851,6 +854,63 @@ describe("the plan pinned above the composer", () => {
       },
     ]);
     expect(pinnedPlan(entries)?.steps[1]).toMatchObject({ state: "active" });
+  });
+});
+
+describe("a plan the person edited", () => {
+  const call = (id: string, steps: { text: string; state: string }[]): Message => ({
+    role: "assistant",
+    content: [{ type: "tool_use", id, name: "update_plan", input: { steps } }],
+  });
+  const answered = (id: string): Message => ({
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: "ok" }], is_error: false }],
+  });
+  const mark = (after: number, texts: string[], added: string[], removed: string[] = []): PlanEditMark => ({
+    after,
+    steps: texts.map((text) => ({ text, state: "todo" as const })),
+    added,
+    removed,
+    reordered: false,
+    at: 0,
+  });
+
+  it("redraws the edit where it happened, and pins it over the model's older list", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "go" }] },
+      call("p1", [{ text: "One", state: "active" }]),
+      answered("p1"),
+    ];
+    const entries = entriesFromMessages(messages, [], [], [mark(3, ["One", "Two"], ["Two"])]);
+    const line = entries.at(-1)!;
+    expect(line).toMatchObject({ kind: "notice", rule: { label: "Plan edited", note: "1 added" } });
+    expect(pinnedPlan(entries)?.steps.map((s) => s.text)).toEqual(["One", "Two"]);
+    expect(yourSteps(entries)).toEqual(["Two"]);
+  });
+
+  it("gives way to the model's next list, and the person's steps stay theirs", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "go" }] },
+      call("p1", [{ text: "One", state: "active" }]),
+      answered("p1"),
+      call("p2", [
+        { text: "One", state: "done" },
+        { text: "Two", state: "active" },
+      ]),
+      answered("p2"),
+    ];
+    const entries = entriesFromMessages(messages, [], [], [mark(3, ["One", "Two"], ["Two"])]);
+    expect(pinnedPlan(entries)?.steps[1]).toMatchObject({ text: "Two", state: "active" });
+    expect(yourSteps(entries)).toEqual(["Two"]);
+  });
+
+  it("forgets a step the person added and then took off again", () => {
+    const entries = [
+      planEditNotice(mark(0, ["One", "Two"], ["Two"])),
+      planEditNotice(mark(0, ["One"], [], ["Two"])),
+    ];
+    expect(yourSteps(entries)).toEqual([]);
+    expect(entries[1]).toMatchObject({ rule: { note: "1 removed" } });
   });
 });
 

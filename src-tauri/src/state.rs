@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use taurus_agents::proposal::AgentProposal;
 use taurus_core::telemetry::Traces;
 use taurus_core::Session;
-use taurus_host::{Host, PermissionPromptFactory, SessionLog, Switch};
+use taurus_host::{Host, PermissionPromptFactory, PlanEditMark, SessionLog, Switch};
 use taurus_skills::proposal::SkillProposal;
 use taurus_tools::{Answer, PermissionDecision, PermissionPrompt};
 
@@ -95,6 +95,9 @@ pub struct SessionEntry {
     /// Without it the two paths disagree: the file has the switches and the
     /// session in memory does not.
     pub switches: Mutex<Vec<Switch>>,
+    /// Where the person has edited the plan, oldest first. Held for the
+    /// reason `switches` is.
+    pub plan_edits: Mutex<Vec<PlanEditMark>>,
 }
 
 /// What letting go of a conversation means, asked at the moment of letting go.

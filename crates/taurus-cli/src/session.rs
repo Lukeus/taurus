@@ -78,6 +78,16 @@ async fn open_session(
     // command happens to have open: a session is found by id across every
     // workspace, and appending anywhere else would fork it.
     let log = SessionLog::resume(&loaded);
+    // So an unfinished plan, and any edits made to it in the app, go on being
+    // restated to the model rather than starting again from nothing.
+    runtime
+        .host
+        .restore_plan(
+            &loaded.session.id,
+            &loaded.session.messages,
+            &loaded.plan_edits,
+        )
+        .await;
     let session = loaded.session;
     eprintln!(
         "  resuming {} — {} messages, model {}",
