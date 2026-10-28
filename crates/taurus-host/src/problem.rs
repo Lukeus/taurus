@@ -42,6 +42,9 @@ pub enum ProblemSource {
     Themes,
     /// `settings.json` itself — a layer that won't parse, and so isn't in use.
     Settings,
+    /// `profiles/<id>/profile.json` — a profile that won't parse, and so isn't
+    /// in use.
+    Profile,
 }
 
 impl ProblemSource {
@@ -50,7 +53,7 @@ impl ProblemSource {
     /// What a check that has to hold for all of them walks, so a test never
     /// lists them by hand and falls behind. A new variant does not compile
     /// until [`Self::label`] names it; this is the other place it goes.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Providers,
         Self::Search,
         Self::Mcp,
@@ -61,6 +64,7 @@ impl ProblemSource {
         Self::Hooks,
         Self::Themes,
         Self::Settings,
+        Self::Profile,
     ];
 
     /// Where a person goes to fix this, in the words the UI uses for it.
@@ -82,6 +86,7 @@ impl ProblemSource {
             // is where a brief that is not arriving belongs.
             Self::Instructions => "Skills",
             Self::Hooks => "Settings › Hooks",
+            Self::Profile => "Settings › Profile",
             Self::Mcp | Self::Skills => "Skills",
         }
     }
@@ -99,6 +104,7 @@ impl ProblemSource {
             Self::Hooks => "hooks",
             Self::Themes => "themes",
             Self::Settings => "settings",
+            Self::Profile => "profile",
         }
     }
 }

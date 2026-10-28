@@ -153,6 +153,7 @@ impl Host {
         let workspace = self.workspace.read().await.clone();
         let skill_section = self.catalog.read().await.prompt_section();
         let instructions_section = instructions::section(&self.instructions.read().await);
+        let person_section = self.profile.read().await.prompt_section();
         // This conversation's own notes are left out — see `memory::section`.
         let memory_section = memory::section(&memory::load(&workspace), turn.session_id);
         let synthesis = self.settings.read().await.skill_synthesis_enabled;
@@ -183,6 +184,7 @@ impl Host {
             AgentConfig {
                 system_prompt: prompt::build(
                     &workspace,
+                    person_section,
                     skill_section,
                     instructions_section,
                     memory_section,

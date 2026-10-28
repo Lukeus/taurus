@@ -375,6 +375,8 @@ pub fn run() {
             commands::set_ui_scale,
             commands::set_terminal_shell,
             commands::set_terminal_font,
+            commands::get_profile,
+            commands::save_profile,
             commands::build_index,
             commands::stop_index_build,
             commands::voice_status,

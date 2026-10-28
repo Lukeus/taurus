@@ -347,3 +347,22 @@ pub async fn set_terminal_font(
     emit_status(&state).await;
     Ok(())
 }
+
+/// The active profile, for Settings › Profile.
+#[tauri::command]
+pub async fn get_profile(state: State<'_, Arc<AppState>>) -> CmdResult<ProfileView> {
+    Ok(state.host.profile().await)
+}
+
+/// Saves the active profile. Returns what was written, with the whitespace a
+/// text box collects taken off, so the form shows the saved value.
+#[tauri::command]
+pub async fn save_profile(
+    state: State<'_, Arc<AppState>>,
+    profile: Profile,
+) -> CmdResult<ProfileView> {
+    let saved = state.host.save_profile(profile).await?;
+    // A save is also how a broken file's problem is cleared from Settings.
+    emit_status(&state).await;
+    Ok(saved)
+}

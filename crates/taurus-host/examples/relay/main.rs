@@ -157,7 +157,9 @@ async fn once(
         registry,
         ToolContext::new(workspace.clone(), permissions, cancel).with_checkpoints(recorder),
         AgentConfig {
-            system_prompt: taurus_host::prompt::build(&workspace, None, None, None, false, false),
+            system_prompt: taurus_host::prompt::build(
+                &workspace, None, None, None, None, false, false,
+            ),
             max_iterations: MAX_ITERATIONS,
             context_strategy: strategy,
             ..Default::default()

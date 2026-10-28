@@ -32,10 +32,12 @@ import { ToolsTab } from "./settings/ToolsTab";
 import { TracingTab } from "./settings/TracingTab";
 import { HooksTab } from "./settings/HooksTab";
 import { TerminalTab } from "./settings/TerminalTab";
+import { ProfileTab } from "./settings/ProfileTab";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
 import { onTabKeys } from "../lib/tabs";
 
 export type SettingsTab =
+  | "profile"
   | "models"
   | "search"
   | "tools"
@@ -399,6 +401,8 @@ export function Settings({
               />
             </>
           )}
+
+          {tab === "profile" && <ProfileTab />}
 
           {tab === "tools" && <ToolsTab />}
 
@@ -1026,6 +1030,8 @@ const THEMES: [Theme, string][] = [
 ];
 
 const TABS: [Tab, string][] = [
+  // First, as the one tab that is about you rather than the software.
+  ["profile", "Profile"],
   ["models", "Models"],
   ["search", "Search"],
   ["tools", "Tools"],

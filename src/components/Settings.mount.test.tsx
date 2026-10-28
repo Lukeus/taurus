@@ -826,13 +826,15 @@ describe("finding your way around", () => {
       });
     host.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')!.focus();
 
-    // Up from the first wraps to the last, and Down comes back. Not Down
+    // Up past the first wraps to the last, and Down comes back. Not Down
     // first: that lands on Search, whose read of its own settings would
     // outlive this test.
     press("ArrowUp");
+    expect(selected(host)).toBe("Profile");
+    press("ArrowUp");
     expect(selected(host)).toBe("About");
     press("ArrowDown");
-    expect(selected(host)).toBe("Models");
+    expect(selected(host)).toBe("Profile");
   });
 });
 

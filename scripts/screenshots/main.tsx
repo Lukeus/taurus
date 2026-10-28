@@ -248,6 +248,12 @@ const ANSWERS: Record<string, unknown> = {
   // Terminal tab is an empty emulator — which is the right picture, because
   // the shot is of the tab beside it.
   terminal_open: "shell-1",
+  // A profile with a name and the switch on, so the shot shows both halves.
+  get_profile: {
+    id: "default",
+    profile: { name: "Ada", introduce: true },
+    path: "~/.taurus/profiles/default/profile.json",
+  },
   // Empty, because the turn below is replayed as live events instead. Resume
   // still runs — it is what binds the window to a session and fills the rail.
   resume_session: {
@@ -573,6 +579,15 @@ requestAnimationFrame(() => {
         (await click(".rail-link b", (b) => b === "Settings"))();
         (await click(".settings-tab", (b) => b === "Terminal"))();
         await until(() => document.querySelector('input[aria-label="Shell"]'));
+      },
+      // Settings › Profile: a name, and the switch that sends it.
+      profile: async () => {
+        (await click(".rail-link b", (b) => b === "Settings"))();
+        (await click(".settings-tab", (b) => b === "Profile"))();
+        await until(
+          () =>
+            document.querySelector<HTMLInputElement>('input[aria-label="Your name"]')?.value === "Ada",
+        );
       },
       appearance: async () => {
         (await click(".rail-link b", (b) => b === "Settings"))();

@@ -50,6 +50,7 @@ use crate::mcp_view::{LayerOf, McpServerView};
 use crate::memory;
 use crate::notebook;
 use crate::problem::{self, Problem, ProblemSource};
+use crate::profile::{self, Profile};
 use crate::prompt;
 use crate::secrets;
 use crate::sessions::SubagentLogs;
@@ -180,6 +181,10 @@ pub struct Host {
     /// What the held instructions were read from, so a turn can tell in a few
     /// `stat`s whether reading them again would produce anything different.
     instructions_seen: RwLock<Freshness>,
+    /// The person using this, from the active profile. Held for the reason
+    /// the instructions are, and re-read at every reload, so an edit by hand
+    /// takes effect at the next folder switch. See [`crate::profile`].
+    profile: RwLock<Profile>,
     /// The sub-agent roster. Seeded with the built-ins so `explorer` and
     /// `worker` work before anything has been scanned.
     ///
@@ -351,6 +356,7 @@ impl Host {
             indexing: Arc::new(taurus_index::Indexing::new()),
             instructions: RwLock::new(Vec::new()),
             instructions_seen: RwLock::new(Freshness::default()),
+            profile: RwLock::new(Profile::default()),
             agents: Arc::new(RwLock::new(AgentCatalog::default())),
             agent_models: RwLock::new(ModelOverrides::new()),
             agents_seen: RwLock::new(Freshness::default()),
@@ -478,6 +484,10 @@ impl Host {
         // Through the same call a turn makes, so the two cannot come to
         // disagree about what an instruction file is.
         problems.extend(self.load_instructions(&workspace).await);
+
+        // Not the workspace's, so a switch can't change it, but read here so
+        // a reload is still the way a hand edit is picked up.
+        problems.extend(self.load_profile().await);
 
         let mut registry = ToolRegistry::with_builtins();
         registry.register(Arc::new(taurus_skills::LoadSkill::new(
@@ -763,6 +773,20 @@ impl Host {
             ));
         *self.instructions.write().await = loaded.instructions;
         Problem::tag(ProblemSource::Instructions, loaded.problems)
+    }
+
+    /// Reads the active profile. One that won't parse is reported and held as
+    /// empty, so a broken file introduces nobody rather than half of somebody.
+    async fn load_profile(&self) -> Vec<Problem> {
+        let (profile, problems) = match profile::load(profile::active_id()) {
+            Ok(profile) => (profile, Vec::new()),
+            Err(e) => (
+                Profile::default(),
+                vec![Problem::new(ProblemSource::Profile, e)],
+            ),
+        };
+        *self.profile.write().await = profile;
+        problems
     }
 
     /// Scans every skill directory and installs what it finds.

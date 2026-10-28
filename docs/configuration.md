@@ -31,7 +31,39 @@ would write one project's overrides into the file every other project reads.
 | `hooks.json` | Programs run at fixed points in a turn. | Extra hooks, or `{"disabled": true}` to switch an inherited one off. |
 | `plugins/` | Plugins, each a folder of skills, sub-agents, MCP servers and hooks in Claude Code's layout. See [Plugins](#plugins). | Plugins that travel with the project. |
 | `models/whisper/` | Speech models the mic downloaded, each checked against its pinned SHA-256. **Settings › Voice** deletes them. | — |
+| `profiles/` | Who's using Taurus, a folder per profile. Global only, because a repository doesn't get to say who you are. See [Your profile](#your-profile). | — |
 | `trust.json` | Which workspaces' own config may be read. Global only, because a repository that declared itself trusted would have declared nothing. A file that doesn't parse trusts nothing and is never written over. Trusting a folder then tells you which file to fix. | — |
+
+## Your profile
+
+**Settings › Profile** holds who's using Taurus. Today that's your name and
+one switch:
+
+- **Your name** is what you'd like to be called. It stays on this computer.
+- **Tell the model your name** adds one line to every conversation's
+  instructions, so the model knows who it's working with. It's off until you
+  turn it on, because that line goes to whichever provider you're using. It
+  takes effect on your next message.
+
+The profile is a file, `~/.taurus/profiles/default/profile.json`:
+
+```json
+{
+  "name": "Ada",
+  "introduce": true
+}
+```
+
+There's no workspace layer. A project can say how to work on it, but a
+`.taurus/profile.json` committed by somebody else would put their name in your
+prompt, so Taurus never reads one. An edit by hand is picked up at the next
+reload or folder switch. A file that doesn't parse is shown on the Profile
+tab, nobody is introduced until it's fixed, and the tab won't write over it.
+
+Each profile has a folder of its own so a second one can sit beside it. Only
+`default` exists for now. See [Known gaps](known-gaps.md).
+
+![Settings, Profile](screenshots/profile.png)
 
 ## Trusting a workspace
 
