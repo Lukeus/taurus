@@ -37,7 +37,7 @@ pub use permission::{
     AllowAll, AllowedRule, DenyAll, PermissionDecision, PermissionEngine, PermissionPrompt,
     PermissionRequest, Scope,
 };
-pub use plan::PlanBoard;
+pub use plan::{EditRefused, PlanBoard, PlanEdit, RestoredPlan};
 pub use registry::ToolRegistry;
 pub use sweep::{Sweep, SweepCache};
 pub use taurus_process::{no_console, Programs};

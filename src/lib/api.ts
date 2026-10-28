@@ -119,6 +119,8 @@ import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
 import type { Skipped } from "../bindings/Skipped";
+import type { PlanEditMark } from "../bindings/PlanEditMark";
+import type { PlanEdited } from "../bindings/PlanEdited";
 import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
 import type { StepState } from "../bindings/StepState";
@@ -296,6 +298,8 @@ export type {
   SkillProposal,
   SkillSummary,
   Skipped,
+  PlanEditMark,
+  PlanEdited,
   Step,
   StepState,
   Switch,
@@ -495,6 +499,14 @@ export const switchModel = (
   providerId: string,
   model: string,
 ) => invoke<CreatedSession>("switch_model", { sessionId, providerId, model });
+
+/**
+ * Replaces the plan with one the person edited. `seen` is the plan they
+ * started from, so an edit drawn from a plan the model has since rewritten is
+ * refused rather than undoing what it did.
+ */
+export const editPlan = (sessionId: string, seen: Step[], steps: Step[]) =>
+  invoke<PlanEdited>("edit_plan", { sessionId, seen, steps });
 
 export const cancelSession = (sessionId: string) =>
   invoke<void>("cancel_session", { sessionId });

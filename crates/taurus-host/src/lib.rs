@@ -53,7 +53,9 @@ pub use plugins::{PluginSource, PluginSummary, Unsupported};
 pub use problem::{Problem, ProblemSource};
 pub use search::{Match, SearchResults, SessionHit};
 pub use secrets::KeyStatus;
-pub use sessions::{ForkedFrom, SessionLog, SessionMeta, SubagentLogs, Switch, TurnMark};
+pub use sessions::{
+    ForkedFrom, PlanEditMark, SessionLog, SessionMeta, SubagentLogs, Switch, TurnMark,
+};
 pub use taurus_tools::{Checkpoint, Restored, Rewind, TurnChange};
 pub use theme::{CustomTheme, ThemeFile, ThemeModes};
 pub use traces::{ModelLatency, ToolLatency, TraceReport, TraceStep, TurnTrace};

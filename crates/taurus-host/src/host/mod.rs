@@ -289,9 +289,9 @@ pub struct Host {
     /// session — see [`Host::forget_plan`].
     ///
     /// Held here rather than in the session log because a plan is working state,
-    /// not a record: it is rebuilt by the model from the transcript if this
-    /// process restarts, and writing it to disk would create a second copy that
-    /// could disagree with the tool calls that made it.
+    /// not a record: a reopened conversation rebuilds it from the transcript's
+    /// `update_plan` calls and the person's edits (see [`Host::restore_plan`]),
+    /// and a second copy on disk could disagree with the calls that made it.
     plans: RwLock<std::collections::HashMap<String, PlanBoard>>,
 }
 

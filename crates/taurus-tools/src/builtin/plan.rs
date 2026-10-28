@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::plan::PlanBoard;
+use crate::plan::{same_steps, PlanBoard, Rules};
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
 use crate::view::{Step, StepState, TranscriptView};
 
@@ -22,14 +22,14 @@ use crate::view::{Step, StepState, TranscriptView};
 /// task instead of planning it, and a checklist that long stops being something
 /// either party can hold in view. The failure it produces is a model that
 /// spends its iterations maintaining the list.
-const MAX_STEPS: usize = 12;
+pub(crate) const MAX_STEPS: usize = 12;
 
 /// Longest a single step may be.
 ///
 /// A step is a thing to do, not a paragraph explaining it. The cap is what
 /// stops a plan turning into the model's notes, which is where the reminder's
 /// cost stops being negligible.
-const MAX_STEP_CHARS: usize = 120;
+pub(crate) const MAX_STEP_CHARS: usize = 120;
 
 pub const UPDATE_PLAN_TOOL: &str = "update_plan";
 
@@ -104,15 +104,133 @@ impl Tool for UpdatePlan {
         // lock — see [`crate::plan::PlanBoard`]. A check that ran only in
         // `execute` would draw a card the call then rejects, and the card is
         // what the pinned panel shows.
-        check(&input.steps, &self.board.steps(), self.board.carried()).ok()?;
-        Some(TranscriptView::Plan { steps: input.steps })
+        let rules = self.board.rules();
+        let (steps, _) = honor_edits(input.steps, &rules);
+        check(&steps, &rules).ok()?;
+        Some(TranscriptView::Plan { steps })
     }
 
     async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
         let input: UpdatePlanInput = parse_input(input)?;
-        check(&input.steps, &self.board.steps(), self.board.carried())?;
-        Ok(self.board.set(input.steps).into())
+        let rules = self.board.rules();
+        let (steps, kept) = honor_edits(input.steps, &rules);
+        // A list that only differs from the board by the person's edit comes
+        // out of the repair as the board itself, and is refused as a list
+        // sent twice. Without the note, that refusal never says why.
+        if let Err(error) = check(&steps, &rules) {
+            return Err(match (error, kept) {
+                (ToolError::InvalidInput(m), Some(k)) => {
+                    ToolError::InvalidInput(format!("{m}. {k}"))
+                }
+                (ToolError::Rejected(m), Some(k)) => ToolError::Rejected(format!("{m}. {k}")),
+                (error, _) => error,
+            });
+        }
+        let mut result = self.board.set(steps);
+        if let Some(kept) = kept {
+            result.push(' ');
+            result.push_str(&kept);
+        }
+        Ok(result.into())
     }
+}
+
+/// The model's list with the person's edits put back: their steps kept, the
+/// ones they took off left off. Says what it changed, for the tool result.
+///
+/// Repaired where everything in [`check`] is refused, because the model can't
+/// be relied on to comply. Its history holds the list it wrote before the
+/// edit, and a small model sends that list again however plainly the reminder
+/// says otherwise: refused, it sends it again, until the turn gives up. The
+/// person's edit is a fact the harness holds, not a mistake the model made,
+/// so the harness applies it and says so, and the list the model reads back
+/// next is the one it's told it set.
+///
+/// A step put back keeps its place after the step it followed, and its state,
+/// moved only as far as the order rule needs.
+fn honor_edits(mut steps: Vec<Step>, rules: &Rules) -> (Vec<Step>, Option<String>) {
+    let previous = &rules.previous[..];
+    // A carried plan replaced by one with nothing in common is the request
+    // having moved on, and the person's steps belonged to the plan it left.
+    if rules.carried && !previous.iter().any(|old| has(&steps, &old.text)) {
+        return (steps, None);
+    }
+
+    let mut left_off = Vec::new();
+    steps.retain(|s| {
+        let removed = rules.removed.iter().any(|t| t == s.text.trim());
+        if removed {
+            left_off.push(s.text.trim().to_string());
+        }
+        !removed
+    });
+
+    let mut kept = Vec::new();
+    for (index, old) in previous.iter().enumerate() {
+        let text = old.text.trim();
+        if !rules.yours.iter().any(|t| t == text) || has(&steps, text) {
+            continue;
+        }
+        let mut at = previous[..index]
+            .iter()
+            .filter_map(|before| {
+                steps
+                    .iter()
+                    .position(|s| s.text.trim() == before.text.trim())
+            })
+            .max()
+            .map_or(0, |n| n + 1);
+        let mut step = old.clone();
+        let first_open = steps
+            .iter()
+            .position(|s| s.state != StepState::Done)
+            .unwrap_or(steps.len());
+        if step.state == StepState::Done {
+            at = at.min(first_open);
+        } else {
+            at = at.max(first_open);
+            if step.state == StepState::Active && steps.iter().any(|s| s.state == StepState::Active)
+            {
+                step.state = StepState::Todo;
+            }
+        }
+        steps.insert(at, step);
+        kept.push(text.to_string());
+    }
+
+    let quoted = |texts: &[String]| {
+        texts
+            .iter()
+            .map(|t| format!("'{t}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut said = Vec::new();
+    if !kept.is_empty() {
+        said.push(format!(
+            "Kept {} on the plan: the user added it, so it stays, worded as it is.",
+            quoted(&kept)
+        ));
+    }
+    if !left_off.is_empty() {
+        said.push(format!(
+            "Left {} off: the user took it off the plan, so don't do it.",
+            quoted(&left_off)
+        ));
+    }
+    let note = (!said.is_empty()).then(|| {
+        let list: Vec<String> = steps
+            .iter()
+            .enumerate()
+            .map(|(n, s)| format!("{}. {} {}", n + 1, s.state.marker(), s.text))
+            .collect();
+        said.push(format!(
+            "The plan is now this, and it's the list to send next time:\n{}",
+            list.join("\n")
+        ));
+        said.join(" ")
+    });
+    (steps, note)
 }
 
 /// Everything about a plan that has to hold before it is worth keeping.
@@ -122,10 +240,11 @@ impl Tool for UpdatePlan {
 /// not write is worse than a rejected call: the checklist it then reads back
 /// would not be the one it believes it set.
 ///
-/// `previous` is the plan on the board, which the last three rules are about. A
-/// whole-list replacement carries no memory, so the only place a step that
+/// `rules.previous` is the plan on the board, which the later rules are about.
+/// A whole-list replacement carries no memory, so the only place a step that
 /// silently un-finished itself can be noticed is here, against what it replaced.
-fn check(steps: &[Step], previous: &[Step], carried: bool) -> Result<(), ToolError> {
+fn check(steps: &[Step], rules: &Rules) -> Result<(), ToolError> {
+    let previous = &rules.previous[..];
     if steps.is_empty() {
         return Err(ToolError::InvalidInput(
             "a plan needs at least one step. To finish a plan, send it back with every step \
@@ -280,8 +399,12 @@ fn check(steps: &[Step], previous: &[Step], carried: bool) -> Result<(), ToolErr
      * something real even though no step moved: `PlanBoard::set` clears the
      * carried flag, and the reminder stops telling the model this was written
      * before the message it is answering.
+     *
+     * So is a plan the person has edited since the model last wrote it.
+     * Sending their list back unchanged is the model saying it has read the
+     * edit, and that clears the note the reminder carries about it.
      */
-    if !carried && same_plan(steps, previous) {
+    if !rules.carried && !rules.edited && same_steps(steps, previous) {
         let next = steps
             .iter()
             .position(|s| s.state != StepState::Done)
@@ -308,18 +431,9 @@ fn check(steps: &[Step], previous: &[Step], carried: bool) -> Result<(), ToolErr
     Ok(())
 }
 
-/// Whether two lists say the same thing about the same steps.
-///
-/// Trimmed, because the difference between "Add the token type" and the same
-/// with a trailing space is not a plan that moved — and `check` above already
-/// compares step text trimmed, so doing it differently here would let a list
-/// be identical by one rule and not the other.
-fn same_plan(steps: &[Step], previous: &[Step]) -> bool {
-    steps.len() == previous.len()
-        && steps
-            .iter()
-            .zip(previous)
-            .all(|(a, b)| a.state == b.state && a.text.trim() == b.text.trim())
+/// Whether `steps` has one whose text is `text`, whitespace at the ends aside.
+fn has(steps: &[Step], text: &str) -> bool {
+    steps.iter().any(|s| s.text.trim() == text.trim())
 }
 
 /// A state in the word the model writes it with, for an error message that can
@@ -349,6 +463,10 @@ mod tests {
 
     fn input(steps: Vec<Step>) -> serde_json::Value {
         serde_json::json!({ "steps": steps })
+    }
+
+    fn text(output: taurus_provider::ToolOutput) -> String {
+        output.as_text().unwrap_or_default().to_string()
     }
 
     #[tokio::test]
@@ -801,5 +919,163 @@ mod tests {
         // It writes no file and runs nothing. A prompt here would be a dialog
         // in front of the model saying what it intends to do.
         assert_eq!(UpdatePlan::new(PlanBoard::new()).effect(), Effect::Read);
+    }
+
+    fn texts(board: &PlanBoard) -> Vec<(String, StepState)> {
+        board
+            .steps()
+            .into_iter()
+            .map(|s| (s.text, s.state))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_list_that_drops_a_step_the_user_added_gets_it_back() {
+        // The rule the edit panel depends on. The model sends the list it
+        // remembers, and a step it didn't write is exactly what it forgets.
+        // Refused, a small model sends the same list again until the turn
+        // gives up, so the step is put back and the model is told.
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let mine = vec![
+            step("Read the parser", StepState::Active),
+            step("Add the token type", StepState::Todo),
+        ];
+        tool.execute(input(mine.clone()), &ctx)
+            .await
+            .expect("a valid plan");
+        let mut edited = mine.clone();
+        edited.insert(1, step("Update the changelog", StepState::Todo));
+        board.edit(&mine, edited).expect("a valid edit");
+
+        let said = text(
+            tool.execute(
+                input(vec![
+                    step("Read the parser", StepState::Done),
+                    step("Add the token type", StepState::Active),
+                ]),
+                &ctx,
+            )
+            .await
+            .expect("repaired, not refused"),
+        );
+        assert!(
+            said.contains("Kept 'Update the changelog' on the plan"),
+            "{said}"
+        );
+        assert!(
+            said.contains(
+                "1. [x] Read the parser\n2. [ ] Update the changelog\n3. [>] Add the token type"
+            ),
+            "the list to send next time, spelled out: {said}"
+        );
+        // Back where the person put it: after the step it followed, and
+        // still ahead of the step the model has moved on to.
+        assert_eq!(
+            texts(&board),
+            [
+                ("Read the parser".to_string(), StepState::Done),
+                ("Update the changelog".to_string(), StepState::Todo),
+                ("Add the token type".to_string(), StepState::Active),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_list_that_brings_back_a_step_the_user_removed_leaves_it_off() {
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let plan = vec![
+            step("Read the parser", StepState::Active),
+            step("Rewrite the lexer", StepState::Todo),
+        ];
+        tool.execute(input(plan.clone()), &ctx)
+            .await
+            .expect("a valid plan");
+        board
+            .edit(&plan, vec![step("Read the parser", StepState::Active)])
+            .expect("a valid edit");
+
+        let said = text(
+            tool.execute(input(plan), &ctx)
+                .await
+                .expect("repaired, not refused"),
+        );
+        assert!(said.contains("Left 'Rewrite the lexer' off"), "{said}");
+        assert_eq!(
+            texts(&board),
+            [("Read the parser".to_string(), StepState::Active)]
+        );
+    }
+
+    #[tokio::test]
+    async fn sending_back_the_edited_plan_unchanged_is_how_the_model_reads_the_edit() {
+        // Otherwise the identical-plan rule would refuse the one call that
+        // says the model has seen what the user did.
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let plan = vec![step("Read the parser", StepState::Active)];
+        tool.execute(input(plan.clone()), &ctx)
+            .await
+            .expect("a valid plan");
+        let edited = vec![
+            step("Read the parser", StepState::Active),
+            step("Add a test", StepState::Todo),
+        ];
+        board.edit(&plan, edited.clone()).expect("a valid edit");
+        assert!(board
+            .reminder()
+            .unwrap()
+            .contains("The user edited this plan"));
+
+        tool.execute(input(edited.clone()), &ctx)
+            .await
+            .expect("adopting the edit is a change");
+        let reminder = board.reminder().unwrap();
+        assert!(
+            !reminder.contains("The user edited this plan"),
+            "{reminder}"
+        );
+        // The step is still the user's, for as long as the plan lives.
+        assert!(
+            reminder.contains("Add a test (added by the user)"),
+            "{reminder}"
+        );
+        assert!(tool.execute(input(edited), &ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_new_plan_over_a_carried_one_may_leave_the_users_steps_behind() {
+        // The request moved on. Holding the model to a step the user added to
+        // a task they've stopped asking about would chain every later plan to
+        // the first one.
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let plan = vec![step("Read the parser", StepState::Active)];
+        tool.execute(input(plan.clone()), &ctx)
+            .await
+            .expect("a valid plan");
+        board
+            .edit(
+                &plan,
+                vec![
+                    step("Read the parser", StepState::Active),
+                    step("Add a test", StepState::Todo),
+                ],
+            )
+            .expect("a valid edit");
+
+        board.start_turn();
+        tool.execute(
+            input(vec![step("Write the release notes", StepState::Active)]),
+            &ctx,
+        )
+        .await
+        .expect("a different task");
+        assert!(!board.reminder().unwrap().contains("added by the user"));
     }
 }

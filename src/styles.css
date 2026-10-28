@@ -2136,6 +2136,100 @@ body.resizing-y * {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.plan-foot > span {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The person's steps say so, quietly: the model is bound to keep them, and
+   this is where that is visible. A word rather than a tint, for the reason the
+   status column is a word. */
+.plan-yours {
+  margin-left: 8px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* A text link rather than a button-shaped button: it sits in the foot line,
+   and reading the plan is still the thing the open panel is for. */
+.plan-edit {
+  flex: none;
+  padding: 2px 6px;
+  border: none;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.plan-edit:hover {
+  text-decoration: underline;
+}
+
+/* Editing keeps the row's shape, mark and all, so the list doesn't jump when
+   it turns into boxes. The status column becomes the row's three controls. */
+.plan-step-edit {
+  align-items: center;
+  padding: 4px 10px;
+}
+.plan-step-edit .plan-mark {
+  margin-top: 0;
+}
+.plan-input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+}
+.plan-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.plan-tools {
+  display: flex;
+  gap: 2px;
+}
+.plan-tools button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.plan-tools button:hover:not(:disabled) {
+  background: var(--bg-sunken);
+  color: var(--text);
+}
+.plan-tools button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* Lined up under the step boxes: a row's padding, its mark, and its gap. */
+.plan-add {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px 0 calc(10px + 16px + 12px);
+}
+.plan-problem {
+  margin: 0;
+  padding: 0 10px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.plan-problem[role="alert"] {
+  color: var(--danger);
 }
 
 /* Present for a screen reader, absent for everyone else. The marker beside

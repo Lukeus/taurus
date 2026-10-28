@@ -66,7 +66,7 @@ import { useStable } from "./lib/stable";
 import { onTabKeys } from "./lib/tabs";
 import { applyTheme, currentToken, watchSystemTheme } from "./lib/theme";
 import type { Entry } from "./state/store";
-import { pinnedPlan, useStore } from "./state/store";
+import { pinnedPlan, useStore, yourSteps } from "./state/store";
 import { Composer, type Parked } from "./components/Composer";
 import { DICTATE_SHORTCUT } from "./components/Mic";
 import { useSpeech } from "./state/speech";
@@ -2075,7 +2075,10 @@ function TranscriptPane(props: Omit<TranscriptProps, "entries">) {
  */
 function PinnedPlan() {
   const plan = useStore((s) => pinnedPlan(s.entries));
-  return plan ? <PlanPanel view={plan} /> : null;
+  // Shallow: a fresh array of the same strings every frame is the same answer.
+  const yours = useStore(useShallow((s) => yourSteps(s.entries)));
+  const editPlan = useStore((s) => s.editPlan);
+  return plan ? <PlanPanel view={plan} yours={yours} onEdit={editPlan} /> : null;
 }
 
 /**

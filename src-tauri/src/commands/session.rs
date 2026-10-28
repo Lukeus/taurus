@@ -62,6 +62,7 @@ pub async fn create_session(
             // A conversation starts where it starts; a switch is what puts
             // anything in here.
             switches: Mutex::new(Vec::new()),
+            plan_edits: Mutex::new(Vec::new()),
         }),
     );
 
@@ -111,6 +112,10 @@ pub struct ResumedSession {
     /// Where each request starts, positioned the way `switches` are, so each
     /// question on screen knows the turn a fork made from it names.
     pub turns: Vec<taurus_host::TurnMark>,
+    /// Where the person edited the plan, positioned the way `switches` are.
+    /// The panel draws the newest plan, whichever of the model and the person
+    /// wrote it.
+    pub plan_edits: Vec<PlanEditMark>,
     /// The turn that ended before its work did — the process died in it, or
     /// it ran out of round trips — when this conversation's transcript ends in
     /// one. `None` for one that finished, and for one whose turn is running
@@ -206,77 +211,88 @@ pub async fn resume_session(
 ) -> CmdResult<ResumedSession> {
     // `loaded` is carried alongside so the log below can be opened on the
     // transcript this was actually read from — see `SessionLog::resume`.
-    let (session, provider_id, switches, turns, loaded) = match state.sessions.get(&session_id) {
-        Some(open) => {
-            let entry = open.clone();
-            // Reopening is the opposite of letting go: a conversation released
-            // while its turn ran must not be reaped out from under the window
-            // that has just come back to it. See `reap_released`.
-            entry.keep();
-            let provider_id = entry.provider_id.lock().await.clone();
-            let switches = entry.switches.lock().await.clone();
-            // Never waited for. A turn holds this lock for its whole run, which
-            // is minutes for a long one, and awaiting it here hung the window
-            // on the click that reopens the conversation that is *already*
-            // streaming — the one case where the frontend does not close the
-            // previous session first, so the one case that could reach it.
-            //
-            // `delete` and `rewind` meet the same lock and refuse; this does
-            // not, because reopening a conversation has to work. What it falls
-            // back to is what a cold open would have read: the transcript on
-            // disk, complete to the end of the last round. The turn's own
-            // stream carries on appending from there.
-            let live = entry.session.try_lock().ok().map(|s| s.clone());
-            match live {
-                Some(session) => {
-                    // The log's lock is held a line at a time, never for a turn.
-                    let turns = entry.log.lock().await.marks().to_vec();
-                    (session, provider_id, switches, turns, None)
-                }
-                None => {
-                    let id = session_id.clone();
-                    let loaded = off_runtime(move || sessions::load(&id)).await?;
-                    // Deliberately not `Some(loaded)`: that is what opens a log
-                    // and installs a session entry, and this conversation
-                    // already has both — with a turn running through them.
-                    // Which is also why its open turn on disk is not an
-                    // interrupted one.
-                    let mut session = loaded.session;
-                    session.interrupted = None;
-                    (session, provider_id, switches, loaded.turns, None)
+    let (session, provider_id, switches, plan_edits, turns, loaded) =
+        match state.sessions.get(&session_id) {
+            Some(open) => {
+                let entry = open.clone();
+                // Reopening is the opposite of letting go: a conversation released
+                // while its turn ran must not be reaped out from under the window
+                // that has just come back to it. See `reap_released`.
+                entry.keep();
+                let provider_id = entry.provider_id.lock().await.clone();
+                let switches = entry.switches.lock().await.clone();
+                let plan_edits = entry.plan_edits.lock().await.clone();
+                // Never waited for. A turn holds this lock for its whole run, which
+                // is minutes for a long one, and awaiting it here hung the window
+                // on the click that reopens the conversation that is *already*
+                // streaming — the one case where the frontend does not close the
+                // previous session first, so the one case that could reach it.
+                //
+                // `delete` and `rewind` meet the same lock and refuse; this does
+                // not, because reopening a conversation has to work. What it falls
+                // back to is what a cold open would have read: the transcript on
+                // disk, complete to the end of the last round. The turn's own
+                // stream carries on appending from there.
+                let live = entry.session.try_lock().ok().map(|s| s.clone());
+                match live {
+                    Some(session) => {
+                        // The log's lock is held a line at a time, never for a turn.
+                        let turns = entry.log.lock().await.marks().to_vec();
+                        (session, provider_id, switches, plan_edits, turns, None)
+                    }
+                    None => {
+                        let id = session_id.clone();
+                        let loaded = off_runtime(move || sessions::load(&id)).await?;
+                        // Deliberately not `Some(loaded)`: that is what opens a log
+                        // and installs a session entry, and this conversation
+                        // already has both — with a turn running through them.
+                        // Which is also why its open turn on disk is not an
+                        // interrupted one.
+                        let mut session = loaded.session;
+                        session.interrupted = None;
+                        (
+                            session,
+                            provider_id,
+                            switches,
+                            plan_edits,
+                            loaded.turns,
+                            None,
+                        )
+                    }
                 }
             }
-        }
-        None => {
-            // The whole `.jsonl` — file contents, shell output, MCP results
-            // and all — parsed a line at a time. Several megabytes is ordinary
-            // for a long coding conversation, and this is the click that used
-            // to stutter an unrelated live stream.
-            let id = session_id.clone();
-            let loaded = off_runtime(move || sessions::load(&id)).await?;
-            // Whichever provider the caller is on; failing that the one this
-            // conversation was last worked on, which is known only for one that
-            // has moved at least once; failing that whatever the host resolves.
-            // A header records the model but deliberately not the backend that
-            // served it, and that backend may not even be configured now.
-            let (resolved, _) = state
-                .host
-                .resolve_model(
-                    provider_id.as_deref().or(loaded.provider.as_deref()),
-                    Some(&loaded.session.model),
+            None => {
+                // The whole `.jsonl` — file contents, shell output, MCP results
+                // and all — parsed a line at a time. Several megabytes is ordinary
+                // for a long coding conversation, and this is the click that used
+                // to stutter an unrelated live stream.
+                let id = session_id.clone();
+                let loaded = off_runtime(move || sessions::load(&id)).await?;
+                // Whichever provider the caller is on; failing that the one this
+                // conversation was last worked on, which is known only for one that
+                // has moved at least once; failing that whatever the host resolves.
+                // A header records the model but deliberately not the backend that
+                // served it, and that backend may not even be configured now.
+                let (resolved, _) = state
+                    .host
+                    .resolve_model(
+                        provider_id.as_deref().or(loaded.provider.as_deref()),
+                        Some(&loaded.session.model),
+                    )
+                    .await?;
+                let switches = loaded.switches.clone();
+                let plan_edits = loaded.plan_edits.clone();
+                let turns = loaded.turns.clone();
+                (
+                    loaded.session.clone(),
+                    resolved,
+                    switches,
+                    plan_edits,
+                    turns,
+                    Some(loaded),
                 )
-                .await?;
-            let switches = loaded.switches.clone();
-            let turns = loaded.turns.clone();
-            (
-                loaded.session.clone(),
-                resolved,
-                switches,
-                turns,
-                Some(loaded),
-            )
-        }
-    };
+            }
+        };
 
     let provider = state.host.provider(&provider_id).await?;
     let capabilities = provider
@@ -322,6 +338,7 @@ pub async fn resume_session(
         context_length: capabilities.context_length,
         messages: session.messages.clone(),
         switches: switches.clone(),
+        plan_edits: plan_edits.clone(),
         turns,
         interrupted: session.interrupted.as_ref().map(InterruptedTurn::from),
         delegates,
@@ -332,6 +349,12 @@ pub async fn resume_session(
     // the newer of the two — an insert here would drop the log it is appending
     // through and its in-flight turn's cancellation token with it.
     if let Some(loaded) = loaded {
+        // Into a board this process hasn't touched, so the model's reminder
+        // carries the plan the panel is about to draw.
+        state
+            .host
+            .restore_plan(&session_id, &loaded.session.messages, &loaded.plan_edits)
+            .await;
         let log = SessionLog::resume(&loaded);
         if let Entry::Vacant(slot) = state.sessions.entry(session_id.clone()) {
             slot.insert(Arc::new(SessionEntry {
@@ -348,6 +371,7 @@ pub async fn resume_session(
                 unattended: Arc::new(AtomicBool::new(false)),
                 released: AtomicBool::new(false),
                 switches: Mutex::new(switches),
+                plan_edits: Mutex::new(plan_edits),
             }));
             info!(session = %session_id, "session resumed");
         }
@@ -890,6 +914,69 @@ pub async fn switch_model(
         vision: capabilities.vision,
         context_length: capabilities.context_length,
     })
+}
+
+/// What became of an edit to the plan.
+#[derive(Serialize, TS)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[ts(export)]
+pub enum PlanEdited {
+    /// On the board, and written down where the transcript has a place for it.
+    Saved { mark: PlanEditMark },
+    /// The list was the plan already there.
+    Unchanged,
+    /// The plan moved while it was being edited. The panel goes back to it.
+    Stale { message: String },
+    /// The list breaks a rule the plan holds. The panel stays open on it.
+    Invalid { message: String },
+}
+
+/// Replaces a conversation's plan with one the person edited.
+///
+/// Allowed while a turn runs, which is most of the point: the model reads the
+/// board at the top of every round, so the edit reaches it at the next one
+/// without anything being interrupted. See [`taurus_tools::PlanBoard::edit`]
+/// for the rules that keep the model's next list from undoing it.
+#[tauri::command]
+pub async fn edit_plan(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    seen: Vec<Step>,
+    steps: Vec<Step>,
+) -> CmdResult<PlanEdited> {
+    let entry = state.session(&session_id)?;
+    let (steps, edit) = match state.host.edit_plan(&session_id, &seen, steps).await {
+        Ok(Some(edited)) => edited,
+        Ok(None) => return Ok(PlanEdited::Unchanged),
+        Err(refused @ EditRefused::Stale) => {
+            return Ok(PlanEdited::Stale {
+                message: refused.to_string(),
+            })
+        }
+        Err(EditRefused::Invalid(message)) => return Ok(PlanEdited::Invalid { message }),
+    };
+
+    // The log's lock is held a line at a time, never for a turn, so this
+    // doesn't wait on one. An edit the log couldn't place is still on the
+    // board; it just won't survive a reopen.
+    let recorded = entry.log.lock().await.record_plan(&steps, &edit);
+    let mark = match recorded {
+        Some(mark) => {
+            entry.plan_edits.lock().await.push(mark.clone());
+            mark
+        }
+        None => PlanEditMark {
+            after: 0,
+            steps,
+            edit,
+            at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default(),
+        },
+    };
+    info!(session = %session_id, "plan edited");
+    Ok(PlanEdited::Saved { mark })
 }
 
 /// Gives a conversation a title of its own, or takes one away.

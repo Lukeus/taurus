@@ -43,6 +43,8 @@ use ts_rs::TS;
 
 use taurus_core::{Session, SubagentRecorder, TurnRecorder};
 use taurus_provider::{ContentBlock, Message, Role, TokenUsage};
+use taurus_tools::view::Step;
+use taurus_tools::PlanEdit;
 
 /// Bumped when a record shape changes incompatibly. Transcripts written by a
 /// newer version are skipped rather than misread.
@@ -189,6 +191,20 @@ enum Record {
     TurnEnd {
         id: String,
         outcome: String,
+    },
+    /// The person edited the plan, and this is the list it left. See
+    /// [`taurus_tools::PlanBoard::edit`].
+    ///
+    /// Written down because the plan otherwise lives only in the model's
+    /// `update_plan` calls, and an edit is the one change to it that isn't one.
+    /// Without this a reopened conversation would draw the model's last list
+    /// and lose what the person did to it. Skipped by an older build, like
+    /// [`Record::Model`].
+    Plan {
+        steps: Vec<Step>,
+        #[serde(flatten)]
+        edit: PlanEdit,
+        at: u64,
     },
 }
 
@@ -687,6 +703,30 @@ impl SessionLog {
         });
     }
 
+    /// Records an edit the person made to the plan, and where it falls.
+    ///
+    /// Positioned by what is on disk, which mid-turn is everything up to the
+    /// last round recorded: an edit made during a round reads back just before
+    /// that round's messages. `None` when nothing was written, which leaves the
+    /// edit on the board for the model and off the record.
+    pub fn record_plan(&mut self, steps: &[Step], edit: &PlanEdit) -> Option<PlanEditMark> {
+        if self.off || !has_header(&self.path) {
+            return None;
+        }
+        let mark = PlanEditMark {
+            after: self.persisted,
+            steps: steps.to_vec(),
+            edit: edit.clone(),
+            at: now(),
+        };
+        self.write(&Record::Plan {
+            steps: mark.steps.clone(),
+            edit: mark.edit.clone(),
+            at: mark.at,
+        })
+        .then_some(mark)
+    }
+
     /// Appends one record. Returns whether it landed.
     fn write(&mut self, record: &Record) -> bool {
         match self.open() {
@@ -815,6 +855,23 @@ pub struct Switch {
     pub at: u64,
 }
 
+/// One edit the person made to the plan, positioned the way a [`Switch`] is.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PlanEditMark {
+    /// How many messages preceded it.
+    #[ts(type = "number")]
+    pub after: usize,
+    /// The plan as the edit left it.
+    pub steps: Vec<Step>,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub edit: PlanEdit,
+    /// Unix seconds.
+    #[ts(type = "number")]
+    pub at: u64,
+}
+
 pub struct Loaded {
     pub session: Session,
     /// The backend this conversation was last worked on, when it has moved at
@@ -822,6 +879,8 @@ pub struct Loaded {
     pub provider: Option<String>,
     /// Where it changed model, oldest first. Empty for one that never did.
     pub switches: Vec<Switch>,
+    /// Where the person edited the plan, oldest first.
+    pub plan_edits: Vec<PlanEditMark>,
     /// Where each request starts, oldest first. A turn that continued an
     /// interrupted one isn't here, and neither is any turn of a transcript
     /// written before turns had ids.
@@ -859,6 +918,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     let mut messages = Vec::new();
     let mut usage = TokenUsage::default();
     let mut switches: Vec<Switch> = Vec::new();
+    let mut plan_edits: Vec<PlanEditMark> = Vec::new();
     let mut turns: Vec<TurnMark> = Vec::new();
     // Turns spent on the current request, the turn with no end yet, and
     // whether the last turn to end ran out of round trips.
@@ -898,6 +958,12 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
                 open_turn = Some(id);
                 out_of_rounds = false;
             }
+            Ok(Record::Plan { steps, edit, at }) => plan_edits.push(PlanEditMark {
+                after: messages.len(),
+                steps,
+                edit,
+                at,
+            }),
             Ok(Record::TurnEnd { id, outcome }) => {
                 if open_turn.as_deref() == Some(id.as_str()) {
                     open_turn = None;
@@ -971,6 +1037,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
             interrupted,
         },
         switches,
+        plan_edits,
         turns,
         path,
     })
@@ -2526,6 +2593,37 @@ mod tests {
         assert_eq!(switches[0].model, "claude-opus-5");
         assert_eq!(switches[1].after, 4);
         assert_eq!(switches[1].model, "qwen3.6:27b");
+    }
+
+    #[test]
+    fn a_plan_edit_reads_back_where_it_happened() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/plan-edit");
+        let session = session_with("pe", &["first"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        let steps = vec![Step {
+            text: "Add a test".into(),
+            state: taurus_tools::view::StepState::Todo,
+            active_form: None,
+            check: None,
+        }];
+        let edit = PlanEdit {
+            added: vec!["Add a test".into()],
+            removed: vec![],
+            reordered: false,
+        };
+        // Nothing on disk yet, so nothing to position it against.
+        assert!(log.record_plan(&steps, &edit).is_none());
+
+        log.record(&session);
+        let mark = log.record_plan(&steps, &edit).expect("written");
+        assert_eq!(mark.after, 2);
+
+        let edits = load("pe").unwrap().plan_edits;
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].after, 2);
+        assert_eq!(edits[0].steps, steps);
+        assert_eq!(edits[0].edit, edit);
     }
 
     #[test]

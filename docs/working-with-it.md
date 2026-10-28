@@ -290,6 +290,55 @@ finished plan stays up until you ask for something else. "Done" is worth
 seeing, but last hour's checklist over an unrelated question isn't. An
 unfinished one stays regardless, which is most of the point.
 
+**You can edit the plan.** Open the panel and press **Edit**, during a turn or
+between turns. You can reword a step, add one, move one, or take one off.
+Finished steps stay as they are: they're history, and new steps go after
+them. **Save** (⌘↵) puts your list on the plan, and **Escape** cancels.
+
+Nothing has to stop for the model to see it. The plan is rebuilt onto every
+request, so your edit reaches the model at its next step. The edit leads,
+ahead of the list, and whatever you took off is named for as long as the plan
+lives:
+
+```
+The user edited this plan since you last sent it: added 'Update the
+changelog'; removed 'Rewrite the lexer'. This list replaces the one in your
+earlier update_plan calls, so work from it, not from those. …
+
+3. [ ] Update the changelog (added by the user)
+
+The user took these off the plan. Don't do them, even where an earlier message
+lists them: 'Rewrite the lexer'.
+```
+
+Your edit holds even when the model doesn't follow it. The model replaces the
+whole list every time, and the list it remembers is the one before your edit.
+So when it sends a list without a step you added, or with one you took off,
+`update_plan` puts yours back and leaves the other off, then tells the model
+what it changed and what the list is now. It doesn't refuse the call: a small
+model refused for this sends the same list again until the turn gives up.
+Your steps say **added by you** in the panel for as long as the plan lives.
+The one way past them is a new plan that shares nothing with yours, written
+after you've asked for something else. The request moved on, and your steps
+belonged to the work you'd stopped asking about.
+
+This keeps the plan right, not the work. A model that reads past the plan can
+still do a step you took off. Checked with
+`cargo run -p taurus-cli --example plan_edit -- <model>`, which edits a plan
+between two runs: a 27B and a 9B model worked the edited plan, and
+qwen3.5:9b lost its place and rewrote files it had already made.
+
+Saving checks that the plan is still the one you started editing. If the model
+moved a step while you were typing, the panel says so and won't save, because
+your list was drawn from a plan that's no longer there. Saving it would quietly
+undo what the model just did. **Start again from the current plan** picks up
+from where it is now.
+
+Each edit leaves a **Plan edited** line in the transcript, and the plan you
+left goes into the conversation's saved record with it. Reopening the
+conversation, even after a restart, puts the same plan back in front of both
+of you: on screen, and in the model's prompt.
+
 **An unfinished plan survives into the next message**, in the prompt and on
 screen. It has to. A six-step task is often six steps with a question in the
 middle. If the checklist vanished when you answered "yes, go on", the model

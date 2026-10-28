@@ -298,6 +298,7 @@ pub fn run() {
             commands::delete_session,
             commands::rename_session,
             commands::switch_model,
+            commands::edit_plan,
             commands::respond_permission,
             commands::answer_questions,
             commands::list_permission_rules,

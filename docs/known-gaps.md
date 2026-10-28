@@ -507,13 +507,23 @@ the backlog, and they're the minority.
   That's the same lever as the verify nudge, with the same limit. A model
   that answers without calling `update_plan` gets to stop, and the panel
   clears on the next request.
-- **A plan doesn't survive the process.** The board is held per session in
-  memory, not written to disk. An unfinished plan carries across messages and
-  is gone if the app restarts. Reopening the conversation redraws the panel
-  from the transcript, because the panel is derived, but the model has to
-  rebuild its own copy. Persisting it would mean a second record that can
-  disagree with the tool calls that made it, which is a worse failure than
-  re-deriving.
+- **A plan is rebuilt from the transcript, not saved on its own.** The board
+  is held per conversation in memory. Reopening a conversation, after a
+  restart too, replays the model's accepted `update_plan` calls and your edits
+  in the order they happened, and puts the result back on the board. A call
+  the harness refused is skipped, because it never reached the board either.
+  There's no separate plan file that could disagree with the calls that made
+  it.
+- **An edit is by step text, not by step.** Steps have no ids, so rewording
+  one is the old text removed and the new text added, and that's what the
+  model is told. An edit made in the middle of a round is placed just before
+  that round's messages when the conversation is reopened, because the round
+  isn't on disk yet when you save. And if the model rewrites the plan while
+  you're editing, your edit isn't merged into the new list. You start again
+  from the current one.
+- **Only the desktop app edits a plan.** The CLI has no way to make an edit.
+  It does honor edits made in the app when it resumes the conversation, since
+  it rebuilds the plan from the same transcript.
 - **Whether a carried plan still applies is the model's call.** The harness
   clears a finished plan and labels an unfinished one as belonging to an
   earlier message. It can't tell whether a follow-up continues the task or

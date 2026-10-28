@@ -2,6 +2,13 @@
 
 use super::*;
 
+use taurus_provider::{ContentBlock, Message};
+use taurus_tools::builtin::plan::{UpdatePlanInput, UPDATE_PLAN_TOOL};
+use taurus_tools::view::Step;
+use taurus_tools::{EditRefused, PlanEdit, RestoredPlan};
+
+use crate::sessions::PlanEditMark;
+
 impl Host {
     /// Builds the agent for one turn.
     ///
@@ -533,6 +540,34 @@ impl Host {
             .clone()
     }
 
+    /// Applies the person's edit to a conversation's checklist. See
+    /// [`PlanBoard::edit`].
+    pub async fn edit_plan(
+        &self,
+        session_id: &str,
+        seen: &[Step],
+        steps: Vec<Step>,
+    ) -> Result<Option<(Vec<Step>, PlanEdit)>, EditRefused> {
+        self.plan_board(session_id).await.edit(seen, steps)
+    }
+
+    /// Rebuilds a reopened conversation's checklist from its transcript.
+    ///
+    /// The board isn't saved — the model's `update_plan` calls and the
+    /// person's edits are — so this replays both, in the order they happened,
+    /// into a board nothing has written yet. Without it, a restart left the
+    /// panel drawing a plan the model's reminder no longer carried.
+    pub async fn restore_plan(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+        edits: &[PlanEditMark],
+    ) {
+        if let Some(plan) = replay_plan(messages, edits) {
+            self.plan_board(session_id).await.restore(plan);
+        }
+    }
+
     /// Drops a conversation's checklist.
     ///
     /// Called when a session is deleted. Without it the map is the one thing in
@@ -545,5 +580,213 @@ impl Host {
 
     pub async fn permissions(&self) -> Arc<PermissionEngine> {
         self.permissions.read().await.clone()
+    }
+}
+
+/// A transcript's plan as it stood at the end: its steps, which of them the
+/// person wrote, what they took off, and the edits the model hadn't answered
+/// yet. `None` when it never had one.
+///
+/// Replays the model's accepted `update_plan` calls and the person's edits in
+/// transcript order, through the same rule [`PlanBoard::set`] keeps: a list
+/// that shares no step with the one before it is a new plan, and the person's
+/// marks belonged to the old one. A call the harness refused never reached
+/// the board, so it is skipped here too.
+///
+/// An edit is positioned by how many messages came before it, so one at
+/// `after <= i` happened before the call in message `i`. Any accepted call
+/// answers the edits before it, the way [`PlanBoard::set`] clears the note.
+fn replay_plan(messages: &[Message], edits: &[PlanEditMark]) -> Option<RestoredPlan> {
+    let accepted = |id: &str, at: usize| {
+        messages.get(at + 1).is_some_and(|reply| {
+            reply.content.iter().any(|block| {
+                matches!(block, ContentBlock::ToolResult { tool_use_id, is_error, .. }
+                    if tool_use_id == id && !is_error)
+            })
+        })
+    };
+    let mut plan: Vec<Step> = Vec::new();
+    let mut yours: Vec<String> = Vec::new();
+    let mut removed: Vec<String> = Vec::new();
+    let mut pending: Option<PlanEdit> = None;
+    let mut edits = edits.iter().peekable();
+    let apply = |edit: &PlanEditMark,
+                 plan: &mut Vec<Step>,
+                 yours: &mut Vec<String>,
+                 removed: &mut Vec<String>,
+                 pending: &mut Option<PlanEdit>| {
+        for text in &edit.edit.added {
+            removed.retain(|t| t != text);
+            yours.push(text.clone());
+        }
+        for text in &edit.edit.removed {
+            yours.retain(|t| t != text);
+            removed.push(text.clone());
+        }
+        *plan = edit.steps.clone();
+        *pending = Some(match pending.take() {
+            Some(earlier) => earlier.then(edit.edit.clone()),
+            None => edit.edit.clone(),
+        });
+    };
+
+    for (at, message) in messages.iter().enumerate() {
+        while let Some(edit) = edits.next_if(|edit| edit.after <= at) {
+            apply(edit, &mut plan, &mut yours, &mut removed, &mut pending);
+        }
+        for block in &message.content {
+            let ContentBlock::ToolUse {
+                id, name, input, ..
+            } = block
+            else {
+                continue;
+            };
+            if name != UPDATE_PLAN_TOOL || !accepted(id, at) {
+                continue;
+            }
+            let Ok(input) = serde_json::from_value::<UpdatePlanInput>(input.clone()) else {
+                continue;
+            };
+            if !plan
+                .iter()
+                .any(|old| input.steps.iter().any(|s| s.text.trim() == old.text.trim()))
+            {
+                yours.clear();
+                removed.clear();
+            }
+            plan = input.steps;
+            pending = None;
+        }
+    }
+    for edit in edits {
+        apply(edit, &mut plan, &mut yours, &mut removed, &mut pending);
+    }
+    (!plan.is_empty()).then_some(RestoredPlan {
+        steps: plan,
+        yours,
+        removed,
+        pending,
+    })
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use taurus_provider::Role;
+    use taurus_tools::view::StepState;
+
+    use super::*;
+
+    fn call(id: &str, steps: &[(&str, &str)]) -> Message {
+        let steps: Vec<_> = steps
+            .iter()
+            .map(|(text, state)| serde_json::json!({ "text": text, "state": state }))
+            .collect();
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                id,
+                UPDATE_PLAN_TOOL,
+                serde_json::json!({ "steps": steps }),
+            )],
+        )
+    }
+
+    fn answered(id: &str) -> Message {
+        Message::new(Role::User, vec![ContentBlock::tool_result(id, "ok")])
+    }
+
+    fn refused(id: &str) -> Message {
+        Message::new(Role::User, vec![ContentBlock::tool_error(id, "no")])
+    }
+
+    fn edit(after: usize, steps: &[&str], added: &[&str], removed: &[&str]) -> PlanEditMark {
+        PlanEditMark {
+            after,
+            steps: steps
+                .iter()
+                .map(|text| Step {
+                    text: text.to_string(),
+                    state: StepState::Todo,
+                    active_form: None,
+                    check: None,
+                })
+                .collect(),
+            edit: PlanEdit {
+                added: added.iter().map(|t| t.to_string()).collect(),
+                removed: removed.iter().map(|t| t.to_string()).collect(),
+                reordered: false,
+            },
+            at: 0,
+        }
+    }
+
+    fn texts(steps: &[Step]) -> Vec<&str> {
+        steps.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn the_last_accepted_list_wins_and_a_refused_one_never_happened() {
+        let messages = [
+            Message::user("go"),
+            call("a", &[("One", "active")]),
+            answered("a"),
+            call("b", &[("One", "active"), ("One", "active")]),
+            refused("b"),
+        ];
+        let plan = replay_plan(&messages, &[]).expect("a plan");
+        assert_eq!(texts(&plan.steps), ["One"]);
+    }
+
+    #[test]
+    fn an_edit_after_the_models_last_list_is_the_plan() {
+        let messages = [
+            Message::user("go"),
+            call("a", &[("One", "active")]),
+            answered("a"),
+        ];
+        let edits = [edit(3, &["One", "Two"], &["Two"], &[])];
+        let plan = replay_plan(&messages, &edits).unwrap();
+        assert_eq!(texts(&plan.steps), ["One", "Two"]);
+        assert_eq!(plan.yours, ["Two"]);
+        // The model never answered it, so it's still news.
+        assert_eq!(plan.pending.unwrap().added, ["Two"]);
+    }
+
+    #[test]
+    fn the_models_list_after_an_edit_keeps_the_users_marks() {
+        let messages = [
+            Message::user("go"),
+            call("a", &[("One", "active"), ("Three", "todo")]),
+            answered("a"),
+            call("b", &[("One", "done"), ("Two", "active")]),
+            answered("b"),
+        ];
+        let edits = [edit(3, &["One", "Two"], &["Two"], &["Three"])];
+        let plan = replay_plan(&messages, &edits).unwrap();
+        assert_eq!(texts(&plan.steps), ["One", "Two"]);
+        assert_eq!(plan.yours, ["Two"]);
+        assert_eq!(plan.removed, ["Three"]);
+        assert_eq!(plan.pending, None, "the model's list answered it");
+    }
+
+    #[test]
+    fn a_new_plan_leaves_the_old_ones_marks_behind() {
+        let messages = [
+            Message::user("go"),
+            call("a", &[("One", "active")]),
+            answered("a"),
+            Message::user("something else"),
+            call("b", &[("Other", "active")]),
+            answered("b"),
+        ];
+        let edits = [edit(3, &["One", "Two"], &["Two"], &[])];
+        let plan = replay_plan(&messages, &edits).unwrap();
+        assert_eq!(texts(&plan.steps), ["Other"]);
+        assert!(plan.yours.is_empty());
+    }
+
+    #[test]
+    fn a_conversation_without_a_plan_restores_nothing() {
+        assert!(replay_plan(&[Message::user("hi")], &[]).is_none());
     }
 }
