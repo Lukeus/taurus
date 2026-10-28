@@ -1063,6 +1063,25 @@ requestAnimationFrame(() => {
         (await click(".rail-link", (b) => b.startsWith("MCP")))();
         await until(() => document.querySelector(".drawer .card"));
       },
+      // A token typed over GitHub's held-back header, with the keychain box
+      // ticked beside it: what the file will get instead of the token.
+      "mcp-keychain": async () => {
+        (await click(".rail-link", (b) => b.startsWith("MCP")))();
+        const card = await until(() =>
+          [...document.querySelectorAll(".drawer .card")].find((c) =>
+            c.querySelector(".card-title")?.textContent?.startsWith("github"),
+          ),
+        );
+        const edit = [...(card as HTMLElement).querySelectorAll("button")].find(
+          (b) => b.textContent === "Edit",
+        );
+        (edit as HTMLButtonElement).click();
+        const value = await until(() =>
+          document.querySelector<HTMLInputElement>('[aria-label="Headers value 1"]'),
+        );
+        typeInto(value as HTMLInputElement, "Bearer github_pat_11ABCDEFG");
+        await until(() => document.querySelector(".keep-toggle input:checked"));
+      },
       // The drawer with what a plugin brings, what isn't run here, and one
       // that doesn't load. Gated on the list, like `mcp`.
       plugins: async () => {

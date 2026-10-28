@@ -176,6 +176,63 @@ export function draftProblem(draft: McpServerDraft): string | null {
 }
 
 /** A fresh row for the env/headers editor. */
+/**
+ * Whether a value is only names: `${VAR}` and `${secret:name}` references,
+ * optionally after `Bearer`, `Token` or `Basic`. The backend's `names_only`,
+ * for deciding what the keychain box is offered on.
+ */
+export function namesOnly(value: string): boolean {
+  let rest = value.trim().replace(/^(bearer|token|basic) +/i, "");
+  if (rest === "") return false;
+  while (rest.startsWith("${")) {
+    const end = rest.indexOf("}");
+    if (end < 0) return false;
+    rest = rest.slice(end + 1).trimStart();
+  }
+  return rest === "";
+}
+
+/**
+ * Whether a typed value goes to the keychain unless it's unticked. Every
+ * header, since a header that isn't a credential is rarely typed into this
+ * form, and an environment variable whose name says it holds one.
+ */
+export function keepsByDefault(header: boolean, key: string): boolean {
+  return header || /token|key|secret|password|passwd|auth|credential|\bpat\b/i.test(key);
+}
+
+/**
+ * Whether a typed token in this draft can be kept in the keychain at all:
+ * there's a keychain, and the server is one a saved credential reaches. A
+ * project's own program never gets one.
+ */
+export function canKeep(draft: McpServerDraft, keychain: boolean): boolean {
+  return keychain && (draft.transport === "http" || draft.scope === "global");
+}
+
+/** Whether this row is offered the keychain box. */
+export function keepable(value: McpValue, offered: boolean): boolean {
+  return offered && !value.secret && value.value.trim() !== "" && !namesOnly(value.value);
+}
+
+/**
+ * The draft as it's sent to be saved: every row offered the keychain says
+ * whether to use it, its default filled in where nobody touched the box, and
+ * no other row says anything.
+ */
+export function withKeep(draft: McpServerDraft, keychain: boolean): McpServerDraft {
+  const offered = canKeep(draft, keychain);
+  const header = draft.transport === "http";
+  const decide = (values: McpValue[]) =>
+    values.map((value) => ({
+      ...value,
+      keep: keepable(value, offered)
+        ? (value.keep ?? keepsByDefault(header, value.key))
+        : undefined,
+    }));
+  return { ...draft, env: decide(draft.env), headers: decide(draft.headers) };
+}
+
 export function blankValue(): McpValue {
   return { key: "", value: "", secret: false };
 }

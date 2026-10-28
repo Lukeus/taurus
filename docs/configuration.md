@@ -522,6 +522,22 @@ A stored value that isn't a reference is treated as a secret. A reference is
 The panel is told the key is set but never gets the value. Leave the field alone
 to keep what's on disk, or type over it to replace it.
 
+**A token you type into a header or variable goes to your keychain.** A
+**Keychain** box appears beside any value you type that isn't a reference.
+It's ticked for every header, and for a variable whose name says it holds a
+credential (`TOKEN`, `KEY`, `SECRET`, `PASSWORD` and the like). Saving with it
+ticked stores the value as a [saved credential](#saved-credentials) named after
+the server and the key, such as `github-authorization`, and writes
+`Bearer ${secret:github-authorization}` into the file. The scheme stays in the
+file, and only the token moves. An HTTP server's credential is pinned to its
+own host. Untick the box to write the value as typed.
+
+The box isn't offered to a stdio server in a project's file, which can't use a
+saved credential, or on a system with no keychain.
+
+![Editing a server, with a token typed into its header and Keychain
+ticked](screenshots/mcp-keychain.png)
+
 Saving reconnects the MCP servers and nothing else. Skills, providers, and the
 index are untouched, the same rule agent edits follow. The one exception is the
 agent roster, and only when a save changes which tools the servers offer. An

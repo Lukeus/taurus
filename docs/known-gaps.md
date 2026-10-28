@@ -656,15 +656,13 @@ the backlog, and they're the minority.
   two minutes may well answer the next one, so its card is left alone and
   only the call fails. That's a judgment, and it can be wrong in one
   direction: the panel can look healthier than the server is.
-- **A token typed into the server form is still stored in plain text.** The
-  catalog puts a token in the keychain and writes a
-  [saved credential](configuration.md#saved-credentials) reference. The form
-  you edit a server in doesn't: a literal typed into a header or `env` field
-  is written into `mcp.json` as typed. The field's hint says to save it in
-  Settings › Profile and write `${secret:name}` instead. Doing that for you on
-  save is the missing piece. A stdio server in a project's file can't use a
-  saved credential at all, by design, so a token for one goes in the file or
-  in a `${VAR}`.
+- **A token for a project's own program is stored in plain text.** A saved
+  credential never reaches a stdio server defined in a project's `mcp.json`,
+  by design, so a token typed for one is written into that file as typed, and
+  the catalog asks you to confirm first. Everywhere else, a typed token goes
+  to the keychain. The way to keep one out of a project file is to define the
+  server in your own `~/.taurus/mcp.json`, or name a `${VAR}`. See
+  [Saved credentials](configuration.md#saved-credentials).
 - **A sign-in needs the authorization server to register Taurus on the spot.**
   OAuth works through dynamic client registration (RFC 7591): Taurus asks the
   authorization server for a client id when you press Sign in. The current
