@@ -9,6 +9,7 @@ import { useWindowPalette } from "../lib/windowTheme";
 import { useStore } from "../state/store";
 import { DEFAULT_TERMINAL_FONT_SIZE } from "../lib/limits";
 import { basename } from "../lib/format";
+import { families, fixedPitch } from "../lib/fixedPitch";
 import { APPLE, TERMINAL_SHORTCUT } from "../lib/keys";
 import {
   acknowledger,
@@ -464,7 +465,19 @@ export function TerminalDock({
   // says.
   const colours = useWindowPalette();
   useEffect(() => {
-    if (term.current) term.current.options.theme = palette();
+    const emulator = term.current;
+    if (!emulator) return;
+    emulator.options.theme = palette();
+    // A theme can bring a mono face of its own, and the stack is read from
+    // the stylesheet like the colours are. Unchanged, this is a no-op.
+    const family = terminalFont(font.current.family);
+    if (emulator.options.fontFamily === family) return;
+    emulator.options.fontFamily = family;
+    try {
+      fit.current?.fit();
+    } catch {
+      // Laid out to nothing; the next resize refits.
+    }
   }, [colours]);
 
   // A tab whose command has gone — a workspace change forgets them — leaves
@@ -683,9 +696,13 @@ function sentence(text: string): string {
  * area, and the app's face has nothing there. See `--mono-terminal` in the
  * stylesheet for what is in the stack and why the names are spelled out. A
  * chosen face that lacks those glyphs still gets them from the stack behind it.
+ *
+ * A family that isn't fixed-width is left out, whether it was chosen here or
+ * is the theme's mono face: see `fixedPitch` for what one does to the grid.
  */
 export function terminalFont(chosen: string): string {
   const stack = read("--mono-terminal") || read("--mono") || "monospace";
   const name = chosen.trim().replace(/"/g, "");
-  return name ? `"${name}", ${stack}` : stack;
+  const listed = families(name ? `"${name}", ${stack}` : stack);
+  return listed.filter((family) => fixedPitch(family)).join(", ") || "monospace";
 }

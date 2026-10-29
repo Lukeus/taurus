@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import * as api from "../../lib/api";
 import { useStore } from "../../state/store";
 import { DEFAULT_TERMINAL_FONT_SIZE } from "../../lib/limits";
+import { bare, families, fixedPitch } from "../../lib/fixedPitch";
 import { Problem } from "../Problem";
 import { Field, FromProject } from "./Field";
 
@@ -73,6 +74,14 @@ export function TerminalTab() {
     }
   };
 
+  // The saved font and the theme's mono face, whichever the terminal would
+  // have drawn in and won't. Said here because the terminal itself just looks
+  // like the font didn't take.
+  const chosen = savedFont.trim().replace(/"/g, "");
+  const skipped = [...(chosen ? [`"${chosen}"`] : []), ...families(monoFace())].filter(
+    (family) => !fixedPitch(family),
+  );
+
   const enter = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") e.currentTarget.blur();
   };
@@ -117,6 +126,12 @@ export function TerminalTab() {
           />
         </Field>
       </div>
+      {skipped.length > 0 && (
+        <Problem>
+          {skipped.map((family) => `${bare(family)} isn't fixed-width`).join(", and ")}, so
+          the terminal skips it and draws in the next face that is.
+        </Problem>
+      )}
 
       {/* Moved here from Behavior, where it was the one switch about the
           terminal among switches about the agent. */}
@@ -146,4 +161,9 @@ export function TerminalTab() {
       {error && <Problem>{error}</Problem>}
     </>
   );
+}
+
+/** The theme's mono face as it stands, or the stylesheet's when no theme sets one. */
+function monoFace(): string {
+  return getComputedStyle(document.documentElement).getPropertyValue("--lk-mono-face").trim();
 }
