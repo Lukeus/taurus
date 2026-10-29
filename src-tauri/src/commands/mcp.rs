@@ -66,10 +66,13 @@ pub async fn list_mcp_servers(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<
 pub struct McpEnvironment {
     /// The search directories, in order.
     pub path: Vec<String>,
-    /// What the login shell contributed that the launcher did not. Empty when
+    /// Where the PATH was read from, as a phrase for the panel: the login
+    /// shell's, or on Windows the one saved in the registry.
+    pub source: String,
+    /// What that source contributed that the launcher did not. Empty when
     /// Taurus was started from a terminal, which is when it has nothing to add.
     pub added: Vec<String>,
-    /// Why the shell was not asked, when it was not.
+    /// Why it was not read, when it was not.
     #[ts(optional)]
     pub skipped: Option<String>,
 }
@@ -85,6 +88,7 @@ pub async fn mcp_environment() -> CmdResult<McpEnvironment> {
             .iter()
             .map(|p| p.display().to_string())
             .collect(),
+        source: taurus_tools::login_path::SOURCE.into(),
         added: outcome.added.clone(),
         skipped: outcome.skipped,
     })

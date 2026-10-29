@@ -161,13 +161,13 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
             onClick={() =>
               apply(async () => {
                 const found = await api.reloadMcp();
-                // Reconnect read the login shell's PATH again, so the search
+                // Reconnect read the PATH again, so the search
                 // path below may have grown.
                 setEnvironment(await api.mcpEnvironment());
                 return found;
               })
             }
-            data-tip="Read your shell's PATH again, then restart every server"
+            data-tip="Read your PATH again, then restart every server"
           >
             {busy ? "Connecting…" : "Reconnect"}
           </button>
@@ -521,8 +521,9 @@ function ServerCard({
  * Collapsed by default, because on a healthy setup it is a list of directories
  * nobody needs — and opened by default when something above it is missing, which
  * is exactly when it is the answer. A window started from the Dock inherits the
- * launcher's PATH, so Taurus asks the login shell for the real one at startup,
- * and again on Reconnect; this says whether that worked and what it added.
+ * launcher's PATH, so Taurus reads the real one at startup (the login shell's,
+ * or on Windows the registry's), and again on Reconnect; this says whether
+ * that worked and what it added.
  */
 export function PathSection({
   environment,
@@ -553,20 +554,20 @@ export function PathSection({
 
       {environment.skipped ? (
         <p className="hint">
-          Taurus did not read your login shell's PATH ({environment.skipped}), so
+          Taurus did not read {environment.source} ({environment.skipped}), so
           it searches only what it was started with.
         </p>
       ) : environment.added.length > 0 ? (
         <p className="hint">
-          Taurus read your login shell's PATH and added{" "}
+          Taurus read {environment.source} and added{" "}
           {plural(environment.added.length, "directory", "directories")} the
           launcher did not have. Installed something since? Reconnect reads it
           again.
         </p>
       ) : (
         <p className="hint">
-          Your login shell had nothing to add. Installed something since?
-          Reconnect reads it again.
+          Reading {environment.source} added nothing. Installed something
+          since? Reconnect reads it again.
         </p>
       )}
 
