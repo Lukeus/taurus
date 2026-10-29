@@ -295,7 +295,10 @@ pub struct ToolContext {
     /// every round; `None` wherever nothing reads it. Without it a delegation
     /// was free on every screen that reports cost, and a turn that handed its
     /// work to three children read as the cheapest one of the day.
-    pub spent: Option<Arc<std::sync::Mutex<taurus_provider::TokenUsage>>>,
+    ///
+    /// By model, because a delegate can run on a different one than the turn
+    /// that spawned it.
+    pub spent: Option<Arc<std::sync::Mutex<taurus_provider::Spend>>>,
 }
 
 impl ToolContext {
@@ -351,16 +354,16 @@ impl ToolContext {
     /// Gives this context's calls somewhere to report tokens they spent. See
     /// [`Self::spent`].
     #[must_use]
-    pub fn with_spent(mut self, spent: Arc<std::sync::Mutex<taurus_provider::TokenUsage>>) -> Self {
+    pub fn with_spent(mut self, spent: Arc<std::sync::Mutex<taurus_provider::Spend>>) -> Self {
         self.spent = Some(spent);
         self
     }
 
     /// Reports tokens spent on this turn's behalf. A no-op where nothing
     /// collects them.
-    pub fn add_spent(&self, usage: &taurus_provider::TokenUsage) {
+    pub fn add_spent(&self, spend: &taurus_provider::Spend) {
         if let Some(spent) = &self.spent {
-            spent.lock().unwrap_or_else(|e| e.into_inner()).add(usage);
+            spent.lock().unwrap_or_else(|e| e.into_inner()).merge(spend);
         }
     }
 

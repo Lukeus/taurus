@@ -11,8 +11,8 @@ use std::time::Duration;
 use futures::stream::{FuturesUnordered, StreamExt};
 use taurus_provider::prompted::MALFORMED_TOOL;
 use taurus_provider::{
-    ChatRequest, ContentBlock, Message, Provider, Role, StopReason, StreamAccumulator, StreamEvent,
-    TokenUsage, ToolDef,
+    ChatRequest, ContentBlock, Message, Provider, Role, Spend, StopReason, StreamAccumulator,
+    StreamEvent, TokenUsage, ToolDef,
 };
 use taurus_tools::{
     Arrival, Effect, OutputBudget, Pending, PlanBoard, ToolContext, ToolError, ToolProgress,
@@ -328,7 +328,7 @@ fn append_to_tail(messages: &mut Vec<Message>, text: String) -> usize {
 }
 
 /// Empties a turn's spend collector. See [`ToolContext::spent`].
-fn take_spent(spent: &std::sync::Mutex<TokenUsage>) -> TokenUsage {
+fn take_spent(spent: &std::sync::Mutex<Spend>) -> Spend {
     std::mem::take(&mut *spent.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
@@ -589,7 +589,7 @@ impl Agent {
         // rather than a flat list somebody reassembles by timestamp.
         let span = crate::telemetry::turn_span(self.provider.id(), &session.model, &session.id);
         let pending = Arc::new(Pending::new(&self.tools.cancel));
-        let spent = Arc::new(std::sync::Mutex::new(TokenUsage::default()));
+        let spent = Arc::new(std::sync::Mutex::new(Spend::default()));
         let turn_id = uuid::Uuid::new_v4().to_string();
         if let Some(recorder) = &self.recorder {
             recorder.turn_started(&turn_id, continues).await;
@@ -651,7 +651,7 @@ impl Agent {
             }
         }
         // Whatever a delegate stopped above managed to spend before it went.
-        session.add_usage(take_spent(&spent));
+        session.add_spend(&take_spent(&spent));
         match &outcome {
             Ok(finished) => {
                 crate::telemetry::record_usage(&span, &finished.usage);
@@ -750,7 +750,7 @@ impl Agent {
         request: Option<String>,
         ui: mpsc::Sender<UiEvent>,
         pending: &Arc<Pending>,
-        spent: &Arc<std::sync::Mutex<TokenUsage>>,
+        spent: &Arc<std::sync::Mutex<Spend>>,
     ) -> Result<TurnOutcome, AgentError> {
         // A new turn, typed or continued, is the end of the interrupted one.
         session.interrupted = None;
@@ -866,7 +866,7 @@ impl Agent {
             // was sent, and the estimate it is paired with has to be of the
             // same messages. See `Session::record_request`.
             session.record_request(usage.input_tokens, self.request_overhead());
-            session.add_usage(usage);
+            session.add_usage(self.provider.id(), &session.model.clone(), usage);
 
             let has_tools = assistant.has_tool_use();
             let canceled_results = (stop == StopReason::Canceled && has_tools)
@@ -921,8 +921,8 @@ impl Agent {
                     }
                     let arrived = pending.take();
                     let delegated = take_spent(spent);
-                    total.add(&delegated);
-                    session.add_usage(delegated);
+                    total.add(&delegated.total());
+                    session.add_spend(&delegated);
                     if !arrived.is_empty() {
                         let text = arrived
                             .iter()
@@ -994,8 +994,8 @@ impl Agent {
                 .run_tool_calls(&assistant, &session.model, &ui, pending, spent)
                 .await;
             let delegated = take_spent(spent);
-            total.add(&delegated);
-            session.add_usage(delegated);
+            total.add(&delegated.total());
+            session.add_spend(&delegated);
             // Reports from background work ride along with this round's
             // results rather than as a message of their own, which would put
             // two user messages in a row. Every provider's converter already
@@ -1445,7 +1445,7 @@ impl Agent {
         model: &str,
         ui: &mpsc::Sender<UiEvent>,
         background: &Arc<Pending>,
-        spent: &Arc<std::sync::Mutex<TokenUsage>>,
+        spent: &Arc<std::sync::Mutex<Spend>>,
     ) -> Vec<ContentBlock> {
         // Once per round rather than per call, and cached by every adapter, so
         // after the first turn this is a map lookup. A window that cannot be
@@ -1677,7 +1677,7 @@ impl Agent {
         budget: OutputBudget,
         ui: &mpsc::Sender<UiEvent>,
         pending: &Arc<Pending>,
-        spent: &Arc<std::sync::Mutex<TokenUsage>>,
+        spent: &Arc<std::sync::Mutex<Spend>>,
     ) -> ToolContext {
         self.tools
             .clone()
@@ -2004,7 +2004,7 @@ impl Agent {
         // Billed whether or not it worked, so counted either way. It used to be
         // counted never: the summary is not in the transcript, and neither was
         // what it cost.
-        session.add_usage(asked);
+        session.add_usage(self.provider.id(), &session.model.clone(), asked);
         spent.add(&asked);
         let summary = match summary {
             Ok(summary) => summary,
@@ -2124,7 +2124,7 @@ impl Agent {
             .and_then(|text| {
                 crate::relay::parse_notes(&text).ok_or_else(|| "the model returned nothing".into())
             });
-        session.add_usage(asked);
+        session.add_usage(self.provider.id(), &session.model.clone(), asked);
         spent.add(&asked);
         if let Err(reason) = &notes {
             warn!(%reason, "handover notes could not be written; handing over without them");

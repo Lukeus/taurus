@@ -1257,7 +1257,11 @@ billed and how much came from cache (and, on Anthropic, how much was written
 to it), what the transcript holds now, and a row per tool with its calls,
 tokens, and share. What a compaction summary or a sub-agent's whole
 conversation cost is in the billed figure of the conversation that asked for
-it.
+it. Once more than one model did the work (a sub-agent
+[routed](configuration.md#sending-jobs-to-other-models) to a cheaper one, or
+a conversation you switched partway), the billed figure is split by model
+too. A conversation recorded before that split was kept shows its older turns
+as one "earlier turns" row.
 
 Two numbers on it are worth acting on:
 

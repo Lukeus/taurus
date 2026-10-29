@@ -786,8 +786,8 @@ export function TurnDetail({
   const stopped = useRef(false);
 
   // A review outlives the card that asked for it unless something ends it:
-  // it is minutes of model time on the conversation's own provider, with
-  // nobody left to read the answer.
+  // it is minutes of model time, on the conversation's model or the review
+  // route's, with nobody left to read the answer.
   useEffect(
     () => () => {
       if (reviewingNow.current) {

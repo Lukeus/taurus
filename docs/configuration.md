@@ -1093,6 +1093,63 @@ An unreachable collector is reported once, at startup, and changes nothing
 else: the turn runs and the logs still work. Refusing to start because a
 dashboard is down would be a strange trade.
 
+## Sending jobs to other models
+
+The conversation runs on the model you picked. Some of the work it starts
+doesn't need that model, and some of it needs a different one. Settings ›
+Routing sends each kind of job to its own provider and model:
+
+- **Drafts**: an agent or skill editor's Generate button.
+- **Reviews**: reviewing a turn's changes. A different strong model is often
+  the better choice here, so the work isn't marked by the model that did it.
+- **Sub-agents**: every delegate that doesn't name its own model.
+- **One sub-agent**: a route for one agent by name, over the one above.
+
+A job with no route runs on the conversation's model. A route with an empty
+provider is a different model on the conversation's provider, which is how you
+name a smaller model on the same Ollama. The routes live in your own
+`~/.taurus/settings.json`:
+
+```jsonc
+"routes": {
+  "utility": { "provider": "gemini", "model": "gemini-2.5-flash" },
+  "review": { "provider": "anthropic", "model": "claude-opus-5-5" },
+  "delegate": { "provider": "ollama", "model": "qwen3:8b" },
+  "agents": {
+    "coder": { "provider": "anthropic", "model": "claude-sonnet-5-5" }
+  }
+}
+```
+
+A project's `.taurus/settings.json` can't set these. A route decides which
+backend your code is sent to and whose bill it lands on, and a cloned
+repository has no business choosing either.
+
+**An agent file's own `model:` wins** while its provider can be used. The file
+is the more specific statement, and somebody wrote it for that agent. When the
+file names a provider this machine doesn't have, or one with no key, the agent
+runs on its route instead of the conversation's model. The Agents drawer says
+which route an agent is on.
+
+**A route that can't be used falls back.** If it names a provider with no key,
+the job runs on the conversation's model and the problem list says why. Saving
+a route to a provider that isn't configured at all is refused on the spot.
+
+**Compaction isn't routable, on purpose.** A summary reads the conversation's
+history from the provider's prompt cache, and a cached read costs a tenth of a
+fresh one on Anthropic. A cheaper model reading that history uncached usually
+costs more as well as summarizing worse, so summaries and relay notes stay on
+the conversation's model.
+
+The routing is by job, not by guessing how hard each message is. A job that
+starts a fresh context can go to any backend without losing anything.
+Switching the conversation's own model between messages would lose its prompt
+cache, which belongs to one model, and any reasoning the backend handed back
+for its own eyes only. You can still switch it yourself from the picker.
+
+The Context panel splits what was billed by model once more than one did the
+work. See [The context window](working-with-it.md#the-context-window).
+
 ## Ollama, and the window nothing chooses for you
 
 Ollama needs nothing but a `base_url`. Its models are probed: tool support,

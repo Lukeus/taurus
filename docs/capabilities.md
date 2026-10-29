@@ -632,10 +632,14 @@ refused instead of run unscoped, because an empty list would otherwise mean
 
 `model:` runs one agent somewhere else: a bigger model for review, a smaller
 one for search. If it names a provider that isn't configured on this machine,
-the agent is degraded instead of failing to load. It runs on the session's
-model, and both the drawer and `taurus agents check` say so. That way a repo
-can ship an agent naming a cloud model without breaking for a contributor who
-only runs Ollama.
+or one with no key, the agent is degraded instead of failing to load. It runs
+on its [route](configuration.md#sending-jobs-to-other-models) if you've set
+one, or the session's model if not, and both the drawer and `taurus agents
+check` say so. That way a repo can ship an agent naming a cloud model without
+breaking for a contributor who only runs Ollama.
+
+An agent whose file names no model runs on its route too. Settings › Routing
+sets one for every sub-agent, or for one by name, without touching the file.
 
 A sub-agent can't delegate further. Its registry has no `spawn_subagent` in
 it, so the depth cap is structural, not a counter the model could talk its way
@@ -717,8 +721,9 @@ that wrote it:
 
 `model:` and `provider:` aren't proposable at all. Which model a delegate runs
 on is a cost decision on a provider you pay for, and it's the one field with
-no bearing on what the agent can do. An approved agent inherits the session's
-model. To change it, edit the file, where the decision is yours and visible.
+no bearing on what the agent can do. An approved agent runs on its route, or
+the session's model if it has none. To pin it to one model, edit the file,
+where the decision is yours and visible.
 
 Approving rescans the roster instead of reloading everything, so saving an
 agent doesn't restart every MCP server. Saving a server works the same way. It

@@ -532,7 +532,7 @@ impl Launch {
         // The child's whole conversation, its own compaction included, onto
         // the parent's bill. Its transcript is kept apart from the parent's
         // listing, so this is the only place it is counted.
-        ctx.add_spent(&session.usage);
+        ctx.add_spent(&session.spend);
         ctx.report_activity(DelegateStep::Finished {
             input_tokens: session.usage.input_tokens,
             output_tokens: session.usage.output_tokens,
@@ -867,7 +867,7 @@ mod tests {
             ],
             None,
         );
-        let spent = Arc::new(std::sync::Mutex::new(taurus_provider::TokenUsage::default()));
+        let spent = Arc::new(std::sync::Mutex::new(taurus_provider::Spend::default()));
         let ctx = ctx.with_spent(spent.clone());
         tool.execute(
             serde_json::json!({ "agent_type": "explorer", "prompt": "Find the parser." }),
@@ -875,9 +875,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let spent = *spent.lock().unwrap();
-        assert_eq!(spent.output_tokens, 2, "{spent:?}");
-        assert!(spent.input_tokens > 0, "{spent:?}");
+        let spent = spent.lock().unwrap().clone();
+        let total = spent.total();
+        assert_eq!(total.output_tokens, 2, "{spent:?}");
+        assert!(total.input_tokens > 0, "{spent:?}");
+        // Against the model the child ran on, so a delegate routed elsewhere
+        // shows up as that model's spending rather than the parent's.
+        assert_eq!(spent.0.len(), 1, "{spent:?}");
     }
 
     #[tokio::test]
@@ -1534,6 +1538,8 @@ mod tests {
             overrides,
         );
 
+        let spent = Arc::new(std::sync::Mutex::new(taurus_provider::Spend::default()));
+        let ctx = ctx.with_spent(spent.clone());
         tool.execute(
             serde_json::json!({
                 "agent_type": "big-thinker",
@@ -1545,6 +1551,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(provider.last_request().await.unwrap().model, "qwen3:32b");
+        let spent = spent.lock().unwrap().clone();
+        let models: Vec<&str> = spent.0.iter().map(|s| s.model.as_str()).collect();
+        assert_eq!(models, ["qwen3:32b"], "{spent:?}");
     }
 
     #[test]

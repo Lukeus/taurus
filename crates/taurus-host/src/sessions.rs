@@ -42,7 +42,7 @@ use tokio::sync::Mutex;
 use ts_rs::TS;
 
 use taurus_core::{Session, SubagentRecorder, TurnRecorder};
-use taurus_provider::{ContentBlock, Message, Role, TokenUsage};
+use taurus_provider::{ContentBlock, Message, Role, Spend, TokenUsage};
 use taurus_tools::view::Step;
 use taurus_tools::PlanEdit;
 
@@ -152,6 +152,14 @@ enum Record {
     /// A running total rather than a per-turn delta: the last one wins, so a
     /// dropped tail line costs accuracy in the token counter and nothing else.
     Usage(TokenUsage),
+    /// The same running total, by the model that spent it. See [`Spend`].
+    ///
+    /// Written after every [`Record::Usage`], and a record of its own rather
+    /// than a field on that one so a build that predates it skips the line and
+    /// still reads the total. Last one wins, like the total.
+    Spend {
+        models: Spend,
+    },
     /// The conversation moved to another model, or another backend, from here
     /// on.
     ///
@@ -379,6 +387,7 @@ pub struct Unrecorded {
     from: usize,
     messages: Vec<Message>,
     usage: TokenUsage,
+    spend: Spend,
 }
 
 /// An open transcript, appended to as turns complete.
@@ -577,6 +586,7 @@ impl SessionLog {
                 from: self.persisted,
                 messages: Vec::new(),
                 usage: session.usage,
+                spend: session.spend.clone(),
             };
         }
         // `persisted` counts the transcript, which still holds what a
@@ -592,6 +602,7 @@ impl SessionLog {
             from: start + session.summarized_away,
             messages: session.messages[start..].to_vec(),
             usage: session.usage,
+            spend: session.spend.clone(),
         }
     }
 
@@ -635,6 +646,14 @@ impl SessionLog {
             self.persisted += 1;
         }
         self.append(&mut file, &Record::Usage(pending.usage));
+        if !pending.spend.is_empty() {
+            self.append(
+                &mut file,
+                &Record::Spend {
+                    models: pending.spend,
+                },
+            );
+        }
         created
     }
 
@@ -917,6 +936,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     let mut header: Option<Header> = None;
     let mut messages = Vec::new();
     let mut usage = TokenUsage::default();
+    let mut spend = Spend::default();
     let mut switches: Vec<Switch> = Vec::new();
     let mut plan_edits: Vec<PlanEditMark> = Vec::new();
     let mut turns: Vec<TurnMark> = Vec::new();
@@ -934,6 +954,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
             Ok(Record::Header(h)) => header = Some(h),
             Ok(Record::Message(m)) => messages.push(m),
             Ok(Record::Usage(u)) => usage = u,
+            Ok(Record::Spend { models }) => spend = models,
             // Positioned by how much of the conversation came before it, so a
             // reopened conversation can show where it changed model rather than
             // only what it ended on.
@@ -1026,6 +1047,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
                 .unwrap_or(header.model),
             messages,
             usage,
+            spend,
             // Not carried across a reopen. The transcript keeps a running
             // total rather than what any one request cost, so there is nothing
             // here to restore it from — and the first request of the resumed
@@ -1894,11 +1916,15 @@ mod tests {
         let workspace = Path::new("/tmp/project");
 
         let mut session = session_with("abc123", &["first question"]);
-        session.add_usage(TokenUsage {
-            input_tokens: 10,
-            output_tokens: 4,
-            ..Default::default()
-        });
+        session.add_usage(
+            "ollama",
+            "test-model",
+            TokenUsage {
+                input_tokens: 10,
+                output_tokens: 4,
+                ..Default::default()
+            },
+        );
         let mut log = SessionLog::create(&session, workspace, None);
         log.record(&session);
 
@@ -1909,6 +1935,7 @@ mod tests {
         assert_eq!(loaded.model, "test-model");
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.usage.total(), 14);
+        assert_eq!(loaded.spend, session.spend, "by model, as well as in total");
     }
 
     #[test]

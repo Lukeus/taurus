@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use taurus_provider::{ContentBlock, Message, Role, TokenUsage};
+use taurus_provider::{ContentBlock, Message, Role, Spend, TokenUsage};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -13,6 +13,12 @@ pub struct Session {
     pub messages: Vec<Message>,
     /// Cumulative across the session, for the UI's token counter.
     pub usage: TokenUsage,
+    /// The same spending, by the model that did it. See [`Spend`].
+    ///
+    /// Short of `usage` on a conversation recorded before this was kept: what
+    /// those earlier turns spent is in the total and nowhere here.
+    #[serde(default)]
+    pub spend: Spend,
     /// What the last request really cost, beside what was estimated for it.
     ///
     /// Kept because it is the only exact number in this file. See
@@ -216,6 +222,7 @@ impl Session {
             model: model.into(),
             messages: Vec::new(),
             usage: TokenUsage::default(),
+            spend: Spend::default(),
             last_request: None,
             summarized_away: 0,
             owed: Vec::new(),
@@ -244,8 +251,17 @@ impl Session {
         self.summarized_away = (self.summarized_away + drop).saturating_sub(1);
     }
 
-    pub fn add_usage(&mut self, usage: TokenUsage) {
+    /// Adds one request's usage, against the model that served it.
+    pub fn add_usage(&mut self, provider: &str, model: &str, usage: TokenUsage) {
         self.usage.add(&usage);
+        self.spend.add(provider, model, &usage);
+    }
+
+    /// Adds what was spent on this session's behalf elsewhere: a delegate's
+    /// whole conversation, model by model.
+    pub fn add_spend(&mut self, spend: &Spend) {
+        self.usage.add(&spend.total());
+        self.spend.merge(spend);
     }
 
     /// Records what a request cost, against what was estimated for it.
@@ -1336,17 +1352,51 @@ mod tests {
     #[test]
     fn usage_accumulates_across_turns() {
         let mut session = Session::new("m");
-        session.add_usage(TokenUsage {
+        session.add_usage(
+            "p",
+            "m",
+            TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Default::default()
+            },
+        );
+        session.add_usage(
+            "p",
+            "m",
+            TokenUsage {
+                input_tokens: 3,
+                output_tokens: 2,
+                ..Default::default()
+            },
+        );
+        assert_eq!(session.usage.total(), 20);
+    }
+
+    #[test]
+    fn usage_is_kept_by_model_as_well_as_in_total() {
+        let mut session = Session::new("m");
+        let one = TokenUsage {
             input_tokens: 10,
             output_tokens: 5,
             ..Default::default()
-        });
-        session.add_usage(TokenUsage {
-            input_tokens: 3,
-            output_tokens: 2,
-            ..Default::default()
-        });
-        assert_eq!(session.usage.total(), 20);
+        };
+        session.add_usage("anthropic", "big", one);
+        session.add_usage("anthropic", "big", one);
+        // A delegate on another backend, handed back as its own spend.
+        let mut delegated = Spend::default();
+        delegated.add("ollama", "small", &one);
+        session.add_spend(&delegated);
+
+        assert_eq!(session.usage.total(), 45);
+        assert_eq!(session.spend.total(), session.usage);
+        let by_model: Vec<(&str, u32)> = session
+            .spend
+            .0
+            .iter()
+            .map(|s| (s.model.as_str(), s.usage.total()))
+            .collect();
+        assert_eq!(by_model, [("big", 30), ("small", 15)]);
     }
 
     #[test]
@@ -1354,19 +1404,27 @@ mod tests {
         // Summing only input and output told a cached Anthropic session it had
         // read nothing from the cache, however much it had.
         let mut session = Session::new("m");
-        session.add_usage(TokenUsage {
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_read_input_tokens: Some(700),
-            cache_creation_input_tokens: Some(40),
-            reasoning_tokens: Some(12),
-        });
+        session.add_usage(
+            "p",
+            "m",
+            TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_input_tokens: Some(700),
+                cache_creation_input_tokens: Some(40),
+                reasoning_tokens: Some(12),
+            },
+        );
         // A turn on a backend that reports none of them adds nothing to them.
-        session.add_usage(TokenUsage {
-            input_tokens: 3,
-            output_tokens: 2,
-            ..Default::default()
-        });
+        session.add_usage(
+            "p",
+            "m",
+            TokenUsage {
+                input_tokens: 3,
+                output_tokens: 2,
+                ..Default::default()
+            },
+        );
         assert_eq!(session.usage.cache_read_input_tokens, Some(700));
         assert_eq!(session.usage.cache_creation_input_tokens, Some(40));
         assert_eq!(session.usage.reasoning_tokens, Some(12));

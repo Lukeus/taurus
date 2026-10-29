@@ -59,8 +59,19 @@ pub async fn run(
     // and `--model` override it here exactly as they do for `taurus run`, which
     // is what makes "review it with the big model" expressible without moving
     // the conversation onto one.
+    //
+    // The review route applies only when neither is given: a flag on this
+    // command is a decision about this review, and a standing setting
+    // shouldn't overrule it.
+    let named = provider.is_some() || model.is_some();
     let (provider_id, model) = host.resolve_model(provider, model).await?;
     let provider = host.provider(&provider_id).await?;
+    let (provider, model) = if named {
+        (provider, model)
+    } else {
+        host.routed(taurus_host::RouteJob::Review, provider, &model)
+            .await
+    };
 
     // Said before the wait rather than after it. On a local model this takes
     // minutes, and a command that prints nothing for that long looks hung.

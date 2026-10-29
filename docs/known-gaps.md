@@ -106,13 +106,22 @@ the backlog, and they're the minority.
   trip before each request, which is the cost the estimate exists to avoid.
   The threshold covers what's left, and the meter above the composer shows you
   when it's wrong.
-- **Side jobs run on the conversation's own model.** Compaction summaries,
-  relay notes, reviews, agent drafts, and the built-in `explorer`, `worker`,
-  and `coder` sub-agents all use whatever model the conversation is on, so on
-  a frontier hosted model they're billed at its price. There's no cheaper
-  "utility model" setting. The lever today is a custom agent with its own
-  `model:` that shadows a built-in one. Closing this takes a small-model
-  setting per provider and a decision about which jobs may use it.
+- **Summaries stay on the conversation's model.** Sub-agents, reviews and
+  drafts can each be [routed](configuration.md#sending-jobs-to-other-models)
+  to another model; compaction summaries and relay notes can't. That's on
+  purpose: they read the conversation's prompt cache, and on a hosted model a
+  cheaper model reading it uncached usually costs more. A local model in front
+  of a hosted one is the case it doesn't serve.
+- **A route is checked, not tried.** Settings looks for a configured provider
+  and, where the backend needs one, a stored key. An Ollama that isn't
+  running, or a model nobody pulled, passes that check, and the job fails
+  when it runs instead of falling back to the conversation's model. Telling
+  those apart from a real failure halfway through a job would take a probe
+  per route at every reload, which is a network call the window would wait on.
+- **Nothing picks a model for you.** Routes are per kind of job, set by hand.
+  Nothing reads a message, judges how hard it is, and moves the conversation
+  to a bigger or smaller model, because the move would cost the prompt cache
+  and any reasoning the old backend kept to itself.
 - **Nothing caps what a conversation spends.** There's no price table, no
   cost estimate, and no limit per conversation or per day. The ceilings are
   the iteration ceiling, the two-at-a-time limit on sub-agents, and the

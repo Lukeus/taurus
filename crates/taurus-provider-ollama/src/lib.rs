@@ -65,6 +65,9 @@ pub const DEFAULT_CONTEXT_LIMIT: u32 = 32_768;
 const UNKNOWN_CONTEXT: u32 = 8192;
 
 pub struct OllamaProvider {
+    /// The configured provider's id, which is what errors, traces and usage
+    /// name it by. `ollama` until told otherwise.
+    id: String,
     base_url: String,
     client: http::Client,
     /// Ceiling on the window, whatever the model says it was trained for.
@@ -78,11 +81,20 @@ impl OllamaProvider {
     pub fn new(base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         Self {
+            id: PROVIDER_ID.to_string(),
             base_url,
             client: http::Client::new(),
             context_limit: DEFAULT_CONTEXT_LIMIT,
             caps: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Answers to `id` rather than `ollama`, as the other adapters answer to
+    /// theirs. Two Ollama servers configured side by side, a laptop's and a
+    /// GPU box's, are otherwise the same name on every screen that counts.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
     }
 
     /// Talks through `client` instead of the shared one. For a test of a
@@ -110,7 +122,7 @@ impl OllamaProvider {
     }
 
     fn unreachable(&self, source: reqwest::Error) -> ProviderError {
-        self.client.failure(PROVIDER_ID, &self.base_url, source)
+        self.client.failure(&self.id, &self.base_url, source)
     }
 
     async fn post_json<B: serde::Serialize>(
@@ -140,12 +152,12 @@ impl OllamaProvider {
         // a network problem they do not have.
         if status.as_u16() == 404 && body.contains("not found") {
             return Err(ProviderError::ModelNotFound {
-                provider: PROVIDER_ID.into(),
+                provider: self.id.clone(),
                 model: body.trim().to_string(),
             });
         }
         Err(ProviderError::Api {
-            provider: PROVIDER_ID.into(),
+            provider: self.id.clone(),
             status: status.as_u16(),
             body,
             retry_after,
@@ -156,7 +168,7 @@ impl OllamaProvider {
 #[async_trait]
 impl Provider for OllamaProvider {
     fn id(&self) -> &str {
-        PROVIDER_ID
+        &self.id
     }
 
     async fn models(&self) -> Result<Vec<ModelInfo>> {
@@ -270,7 +282,7 @@ impl Provider for OllamaProvider {
         if embedded.embeddings.len() != inputs.len() {
             return Err(ProviderError::Protocol(format!(
                 "asked {} for {} embeddings and got {}",
-                PROVIDER_ID,
+                self.id,
                 inputs.len(),
                 embedded.embeddings.len()
             )));
@@ -354,7 +366,7 @@ impl Provider for OllamaProvider {
 
             if let Some(error) = chunk.error {
                 return Err(ProviderError::Stream {
-                    provider: PROVIDER_ID.into(),
+                    provider: self.id.clone(),
                     message: error,
                 });
             }

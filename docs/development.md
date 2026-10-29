@@ -550,6 +550,20 @@ taurus plugin add <plugin folder> -w $W
 taurus skills list -w $W                   # its skills as <plugin>:<skill>
 taurus run -w $W -m ornith-1.5:9b -q "/<plugin>:<skill> …"
 
+# Routing, through the real CLI under a throwaway TAURUS_HOME: the same Ollama
+# under two provider ids, sub-agents routed to the second. `agents list` names
+# each agent's route, and `usage` splits the bill between the two models. Add a
+# "review" route and `taurus review --turn 1` says it reviewed on that model;
+# pass -m and it uses that instead.
+export TAURUS_HOME=$(mktemp -d) W=$(mktemp -d)
+echo '[{"id":"ollama","kind":"ollama","base_url":"http://localhost:11434"},
+      {"id":"small","kind":"ollama","base_url":"http://localhost:11434"}]' > $TAURUS_HOME/providers.json
+echo '{"routes":{"delegate":{"provider":"small","model":"ornith-1.5:9b"}}}' > $TAURUS_HOME/settings.json
+mkdir $W/src && echo 'pub fn parse_port(s: &str) -> Option<u16> { s.parse().ok() }' > $W/src/net.rs
+taurus agents list -w $W                   # runs on: small/ornith-1.5:9b
+taurus run -w $W -p ollama -m qwen3.6:27b "Use the explorer sub-agent to find which file defines parse_port."
+taurus usage -w $W                         # By model: one row for each
+
 # Skill authoring: propose, validate, save, rediscover.
 cargo run -p taurus-skills --example synthesis -- qwen3.6:27b
 

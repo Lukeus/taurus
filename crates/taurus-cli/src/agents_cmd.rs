@@ -49,6 +49,9 @@ pub async fn run(host: &Host, command: AgentsCommand) -> Result<ExitCode, String
                         None => println!("    model: {model}"),
                     }
                 }
+                if let Some(route) = &agent.route {
+                    println!("    runs on: {route} (its route in settings.json)");
+                }
                 if let Some(path) = &agent.path {
                     println!("    file: {path}");
                 }

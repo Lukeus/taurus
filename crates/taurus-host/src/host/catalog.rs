@@ -39,6 +39,11 @@ impl Host {
     /// place, like any file of your own.
     pub async fn agents(&self) -> Vec<AgentSummary> {
         let mut agents = self.agents.read().await.summaries();
+        let routes = self.agent_routes.read().await;
+        for agent in &mut agents {
+            agent.route = routes.get(&agent.name).cloned();
+        }
+        drop(routes);
         if agents.iter().any(|agent| agent.plugin.is_some()) {
             let managed = self.managed_plugins().await;
             for agent in &mut agents {

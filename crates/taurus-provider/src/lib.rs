@@ -23,7 +23,7 @@ pub use message::{
 pub use prompted::PromptedTools;
 pub use provider::{Capabilities, ModelInfo, Provider, RerankScore};
 pub use request::{ChatRequest, ToolDef};
-pub use stream::{StopReason, StreamAccumulator, StreamEvent, TokenUsage};
+pub use stream::{ModelSpend, Spend, StopReason, StreamAccumulator, StreamEvent, TokenUsage};
 
 /// Fresh tool-call id. Used by adapters whose wire format omits one.
 pub fn new_tool_use_id() -> String {

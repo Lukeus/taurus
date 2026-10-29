@@ -31,6 +31,7 @@ import { UpdatesSection } from "./settings/UpdatesSection";
 import { ToolsTab } from "./settings/ToolsTab";
 import { TracingTab } from "./settings/TracingTab";
 import { HooksTab } from "./settings/HooksTab";
+import { RoutingTab } from "./settings/RoutingTab";
 import { TerminalTab } from "./settings/TerminalTab";
 import { ProfileTab } from "./settings/ProfileTab";
 import { type Row, newRow, rowsOf, ProviderForm, overrideOf, problemsWith, validate, blankProvider } from "./settings/ProvidersTab";
@@ -39,6 +40,7 @@ import { onTabKeys } from "../lib/tabs";
 export type SettingsTab =
   | "profile"
   | "models"
+  | "routing"
   | "search"
   | "tools"
   | "permissions"
@@ -406,6 +408,7 @@ export function Settings({
 
           {tab === "tools" && <ToolsTab />}
 
+          {tab === "routing" && <RoutingTab />}
           {tab === "tracing" && <TracingTab />}
 
           {tab === "hooks" && <HooksTab />}
@@ -1033,6 +1036,9 @@ const TABS: [Tab, string][] = [
   // First, as the one tab that is about you rather than the software.
   ["profile", "Profile"],
   ["models", "Models"],
+  // Beside Models, since a route is a provider and a model from there put to
+  // one kind of job.
+  ["routing", "Routing"],
   ["search", "Search"],
   ["tools", "Tools"],
   ["permissions", "Permissions"],

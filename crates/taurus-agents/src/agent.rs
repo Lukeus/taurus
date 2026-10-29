@@ -226,6 +226,12 @@ pub struct AgentSummary {
     /// layer that knows where a plugin came from.
     #[serde(default)]
     pub managed: bool,
+    /// The Settings route it runs on, as `provider/model`, when its file
+    /// doesn't name a model it can use. Filled in by the host, which is the
+    /// layer that holds the routes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub route: Option<String>,
 }
 
 impl From<&AgentDefinition> for AgentSummary {
@@ -247,6 +253,7 @@ impl From<&AgentDefinition> for AgentSummary {
             path: agent.path.as_ref().map(|p| p.display().to_string()),
             plugin: agent.plugin.clone(),
             managed: false,
+            route: None,
         }
     }
 }

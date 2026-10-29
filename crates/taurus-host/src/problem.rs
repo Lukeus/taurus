@@ -45,6 +45,9 @@ pub enum ProblemSource {
     /// `profiles/<id>/profile.json` — a profile that won't parse, and so isn't
     /// in use.
     Profile,
+    /// `routes` in `settings.json` — a job sent to a provider that can't be
+    /// used, which then runs on the conversation's model.
+    Routes,
 }
 
 impl ProblemSource {
@@ -53,7 +56,7 @@ impl ProblemSource {
     /// What a check that has to hold for all of them walks, so a test never
     /// lists them by hand and falls behind. A new variant does not compile
     /// until [`Self::label`] names it; this is the other place it goes.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Providers,
         Self::Search,
         Self::Mcp,
@@ -65,12 +68,14 @@ impl ProblemSource {
         Self::Themes,
         Self::Settings,
         Self::Profile,
+        Self::Routes,
     ];
 
     /// Where a person goes to fix this, in the words the UI uses for it.
     pub fn where_to_fix(self) -> &'static str {
         match self {
             Self::Providers => "Settings › Models",
+            Self::Routes => "Settings › Routing",
             Self::Search => "Settings › Search",
             // The drawer that lists the roster, which is where a broken agent
             // file is both visible and explicable.
@@ -105,6 +110,7 @@ impl ProblemSource {
             Self::Themes => "themes",
             Self::Settings => "settings",
             Self::Profile => "profile",
+            Self::Routes => "routes",
         }
     }
 }

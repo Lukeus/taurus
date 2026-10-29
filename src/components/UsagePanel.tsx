@@ -163,6 +163,8 @@ export function UsagePanel({
                 />
               </dl>
 
+              <ByModel report={report} />
+
               {report.tools.length === 0 ? (
                 <p className="drawer-empty">No tool calls recorded.</p>
               ) : (
@@ -305,6 +307,59 @@ export function UsagePanel({
 
       <p className="drawer-foot">also `taurus usage`</p>
     </Drawer>
+  );
+}
+
+/**
+ * The billed totals by model, once there's more than one to tell apart.
+ *
+ * Routing sends delegates, reviews and drafts to other models, and the total
+ * above can't say which of them the tokens went to. With one model the split
+ * is the total, so nothing is drawn.
+ */
+function ByModel({ report }: { report: UsageReport }) {
+  const earlier = report.unattributed.input_tokens + report.unattributed.output_tokens;
+  const rows = report.models.map((m) => ({
+    name: m.provider ? `${m.provider}/${m.model}` : m.model,
+    input: m.usage.input_tokens,
+    output: m.usage.output_tokens,
+    tip: undefined as string | undefined,
+  }));
+  if (earlier > 0) {
+    rows.push({
+      name: "earlier turns",
+      input: report.unattributed.input_tokens,
+      output: report.unattributed.output_tokens,
+      tip: "Recorded before spending was kept by model, so they're in the total and nowhere else.",
+    });
+  }
+  if (rows.length < 2) return null;
+  return (
+    <>
+      <h3 className="usage-heading">Billed by model</h3>
+      <table className="usage-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th className="num">In</th>
+            <th className="num">Out</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.name}>
+              <th scope="row">
+                <span className="usage-name" tabIndex={row.tip ? 0 : undefined} data-tip={row.tip}>
+                  {row.name}
+                </span>
+              </th>
+              <td className="num">{short(row.input)}</td>
+              <td className="num">{short(row.output)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }
 

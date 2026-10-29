@@ -81,7 +81,9 @@ impl Host {
     pub(super) fn build_provider(config: ProviderConfig, key: Option<String>) -> Arc<dyn Provider> {
         match config.kind {
             ProviderKind::Ollama => Arc::new(
-                OllamaProvider::new(config.base_url).with_context_limit(config.context_length),
+                OllamaProvider::new(config.base_url)
+                    .with_id(config.id)
+                    .with_context_limit(config.context_length),
             ),
             ProviderKind::OpenAiCompatible => {
                 let defaults = OpenAiCapabilities::default();
